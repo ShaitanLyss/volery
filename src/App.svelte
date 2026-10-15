@@ -89,6 +89,7 @@
   import Hearing from "./lib/Hearing.svelte";
   import { ink } from "./lib/theme.svelte";
   import { skin } from "./lib/palette.svelte";
+  import { levelSaid } from "./lib/brightness";
   import Canvas from "./lib/Canvas.svelte";
   import Dock from "./lib/Dock.svelte";
   import Dogears from "./lib/Dogears.svelte";
@@ -567,6 +568,13 @@
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
+    else if (verb.kind === "bright") {
+      /* Said back, because a tenth of a step can be small enough to doubt,
+         and with the skin's name, because the level belongs to that skin. */
+      if (verb.act === "reset") skin.setBrightness(0);
+      else skin.nudge(verb.act === "up" ? 1 : -1);
+      leader.say(`${skin.theme.label}: ${levelSaid(skin.brightness)}`);
+    }
     else if (verb.kind === "machine") {
       /* Not the machine's own setting but the wall's, and it lives on `Skein`
          rather than `machine` — the same toggle the ground menu offers, said

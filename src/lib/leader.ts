@@ -81,7 +81,8 @@ export type Verb =
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" };
+  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" }
+  | { kind: "bright"; act: "up" | "down" | "reset" };
 
 /** One sequence the leader opens onto.
  *
@@ -291,6 +292,13 @@ export const CHORDS: readonly Chord[] = [
     label: "cards left awake come back awake: on / off",
     verb: { kind: "machine", act: "reawaken" },
   },
+  /* `v` is how the room is lit: the brightness of whichever skin is on, a
+     tenth at a press. `k` and `j` are up and down after nvim's, and `0` is
+     the skin as it is. Each is said back, since the change can be small enough
+     to doubt. See `brightness.ts`. */
+  { keys: "vk", label: "the wall brighter", verb: { kind: "bright", act: "up" } },
+  { keys: "vj", label: "the wall dimmer", verb: { kind: "bright", act: "down" } },
+  { keys: "v0", label: "the wall as its skin is", verb: { kind: "bright", act: "reset" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];

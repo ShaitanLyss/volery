@@ -5,6 +5,8 @@ paths:
   - "src/lib/catalogue.ts"
   - "src/lib/palette.ts"
   - "src/lib/palette.svelte.ts"
+  - "src/lib/brightness.ts"
+  - "test/brightness.test.ts"
   - "src/lib/Themes.svelte"
   - "src/lib/tokens.css"
   - "test/theme.test.ts"
@@ -312,6 +314,37 @@ comes from studio, the case that works, for the reason the dormant section gives
   floats. Its `--st-fail` is the strongest of its three status colours on purpose — on a
   restful, low-contrast ground the one thing that must still interrupt you is a card that
   broke.
+
+## Brightness is a third control on the wall ring, and not a skin
+
+Asked for alongside the light-skin rework: make studio brighter with a slider without it
+becoming another skin, and dim a light skin if it still feels bright. `brightness.ts` is the
+transform and `palette.svelte.ts` applies it, as a second pass of `paint` over what the skin
+drew.
+
+- **A level per skin, per machine.** It lives in localStorage as `skein.brightness.v1`, by
+  skin id, like which skin is on: it is about this screen and this room. Per skin because
+  "studio brighter" and "meadow dimmer" are two settings, and one shared number would mean
+  opposite things on a dark ground and a light one.
+- **Zero writes nothing.** No second pass happens at all, so `studio` at zero is still the
+  untouched app. Asserted for every skin.
+- **The ground moves together, in Oklab L.** Every surface and line takes the same shift,
+  which keeps the spacing that makes a skin work. The ink ramp and status colours are
+  re-solved along their own hue to keep their contrast against the moved panel, so a status
+  colour cannot leave its family.
+- **Not `filter: brightness()`.** That brightens text and status with the ground and lifts
+  black to grey, which looks washed out. It also re-rasters the window under it on every
+  animated frame, which is `motion.md`'s cost class.
+- **It never crosses grey.** Mid-grey is a dead zone where neither light nor dark text reads.
+  A dark skin travels from a little darker to a dim charcoal room (studio's panel L 0.16 to
+  0.29); a light skin from a dimmer paper to a little brighter. Becoming light is a skin's job.
+- **The brightest ink keeps its own colour.** Solving studio's top rung for 15:1 on a lifted
+  ground produced `#ffffff`. That is a different ink, not the same one in a brighter room. So
+  it travels at most 0.05 in L past where its skin put it, and only rungs that would then
+  crowd it give way (`LADDER_STEP`), so muted text keeps AA. The first cut squeezed the whole
+  ladder by one power instead, and that dragged muted text under 4.5.
+- **The keys are `space v k` / `v j` / `v 0`**, a tenth per press, said back with the
+  skin's name. There is also a slider under the wall tab's note in the themes panel.
 
 ## A knob is a contract between two files, and nothing in either half can see the other
 

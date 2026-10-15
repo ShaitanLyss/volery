@@ -16,6 +16,7 @@
    * code in it, and it is always one click away at the head of the list. */
   import { ink, KNOB_GROUPS, KNOB_INFO } from "./theme.svelte";
   import { skin, SKIN_GROUPS, SKIN_KNOB_INFO } from "./palette.svelte";
+  import { levelSaid } from "./brightness";
   import type { Entry, Ring } from "./catalogue";
 
   let { onclose }: { onclose: () => void } = $props();
@@ -238,6 +239,27 @@
         illegible; what they may not do is stop meaning what they mean, and a test holds them
         to their families. <b>studio</b> is the app untouched and is always the way back.
       </p>
+      <!-- How bright the room is, for the skin that is on: a pass over what
+           the skin drew rather than a knob in it, so it is remembered per skin
+           and never written into one. See `brightness.ts`. -->
+      <div class="bright" title="how bright {skin.theme.label} is set (space then v k, v j, v 0)">
+        <span class="bname">brightness</span>
+        <input
+          type="range"
+          min="-1"
+          max="1"
+          step="0.05"
+          value={skin.brightness}
+          oninput={(e) => skin.setBrightness(Number((e.currentTarget as HTMLInputElement).value))}
+          aria-label="brightness of {skin.theme.label}"
+        />
+        <span class="level">{levelSaid(skin.brightness)}</span>
+        {#if skin.brightness !== 0}
+          <button class="tiny" onclick={() => skin.setBrightness(0)} title="as the skin is (space then v 0)"
+            >↺</button
+          >
+        {/if}
+      </div>
     {/if}
 
     <div class="body">
@@ -488,6 +510,27 @@
   .note b {
     color: var(--paper-dim);
     font-weight: 600;
+  }
+
+  /* One row, under the note it belongs to. The range is drawn in the ink it
+     moves through rather than in a status colour, because brightness is not a
+     status. */
+  .bright {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-family: var(--util);
+    font-size: 0.7rem;
+    color: var(--paper-mute);
+  }
+  .bright input {
+    flex: 0 1 16rem;
+    accent-color: var(--paper-mute);
+  }
+  .bright .level {
+    min-width: 4.5rem;
+    color: var(--paper-dim);
+    font-variant-numeric: tabular-nums;
   }
 
   /* Two columns: the ring on the left stays put while the knobs on the right

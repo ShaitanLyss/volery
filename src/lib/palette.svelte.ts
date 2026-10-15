@@ -40,10 +40,18 @@ import {
   type Derivation,
 } from "./palette";
 
+import { BRIGHT_KEYS, brighten, cleanLevel, cleanLevels, nudged } from "./brightness";
+
 export * from "./palette";
 
 const SKIN_KEY = "skein.skin.v1";
 const CUSTOM_KEY = "skein.skins.v1";
+/* How bright each skin is set, by skin id. Per-machine and disposable, like
+   which skin is on: it is about this screen, this room and this pair of eyes,
+   which is also why it is per skin. Studio brightened and meadow dimmed are
+   two settings, and one shared number would mean opposite things on a dark
+   ground and a light one. */
+const LEVEL_KEY = "skein.brightness.v1";
 
 /* ── the seam ──────────────────────────────────────────────────────────── */
 
@@ -65,6 +73,21 @@ function writeCustoms(list: Skin[]) {
   } catch {
     /* Quota, or a browser refusing storage. The skins stand for this session. */
   }
+}
+
+function readLevels(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(LEVEL_KEY);
+    return raw ? cleanLevels(JSON.parse(raw)) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLevels(levels: Record<string, number>) {
+  try {
+    localStorage.setItem(LEVEL_KEY, JSON.stringify(levels));
+  } catch {}
 }
 
 /* ── applying ──────────────────────────────────────────────────────────── */
@@ -163,6 +186,9 @@ class Skins {
    *  on. Reading `skin.painted` inside the effect that reads the tokens is the
    *  whole of what it takes. */
   painted = $state(0);
+  /** Brightness by skin id. See `brightness.ts`, and `LEVEL_KEY` above for
+   *  why it is per skin. */
+  levels = $state<Record<string, number>>(readLevels());
 
   constructor() {
     this.customs = readCustoms();
@@ -177,8 +203,41 @@ class Skins {
   }
 
   #paint() {
-    this.light = paint(resolveSkin(this.id, this.customs));
+    const over = resolveSkin(this.id, this.customs);
+    this.light = paint(over);
+    /* Brightness is a second pass over what the skin drew, never a value
+       stored into a skin. It needs the tokens as the browser resolves them,
+       tokens.css's defaults included, and the only honest source for that is
+       the document just painted. At zero the second pass does not happen at
+       all, which is what keeps `studio` the untouched app. */
+    const level = this.levels[this.id] ?? 0;
+    if (level !== 0) {
+      const cs = getComputedStyle(document.documentElement);
+      const drawn: Record<string, string> = {};
+      for (const k of BRIGHT_KEYS) drawn[k] = cs.getPropertyValue(k).trim();
+      paint({ ...over, ...brighten(drawn, level) });
+    }
     this.painted++;
+  }
+
+  /** How bright the skin on is set, from -1 to 1. 0 is the skin as it is. */
+  get brightness(): number {
+    return this.levels[this.id] ?? 0;
+  }
+
+  setBrightness(v: number) {
+    const n = cleanLevel(v);
+    const next = { ...this.levels };
+    if (n === 0) delete next[this.id];
+    else next[this.id] = n;
+    this.levels = next;
+    writeLevels(next);
+    this.#paint();
+  }
+
+  /** One step brighter (1) or dimmer (-1). The chords are space v k and v j. */
+  nudge(dir: number) {
+    this.setBrightness(nudged(this.brightness, dir));
   }
 
   /** The ring, in the order it cycles: built-ins first, then yours. */
