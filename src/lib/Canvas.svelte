@@ -1303,10 +1303,15 @@
        or carry, so to `nodeOf` it is bare ground — and a plain click on it would
        release as "let go of everything", closing the panel before its own click
        opened it again, and a modified click would drop the whole selection and
-       focus nothing. Its left press is its own. */
+       focus nothing. Its left press is its own.
+
+       A card's glance button is the third: reading what a card said is the
+       one gesture on it that must leave the selection exactly as it was
+       (`Glance.svelte`), and a press the wall records is a press that
+       settles the selection on its release. */
     if (
       e.button === 0 &&
-      (e.target as HTMLElement | null)?.closest?.("[data-timeline], [data-shadow]")
+      (e.target as HTMLElement | null)?.closest?.("[data-timeline], [data-shadow], [data-glance]")
     ) {
       return;
     }

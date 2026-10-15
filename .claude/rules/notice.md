@@ -3,6 +3,10 @@ paths:
   - "src-tauri/src/notice.rs"
   - "src/lib/notice.ts"
   - "src/lib/Notice.svelte"
+  - "src/lib/Said.svelte"
+  - "src/lib/Glance.svelte"
+  - "src/lib/glance.ts"
+  - "src/lib/glancing.svelte.ts"
 ---
 
 # Notices: a card that stopped, in the queue that waits for you
@@ -103,6 +107,45 @@ snappy. A wrong answer costs only the label, since both kinds carry the text and
 A first labelling pass with Haiku counted *"I'll look again in two minutes"* as waiting on
 the user. It is the card waiting on **itself** — which is the next section's problem, and the
 four-way prompt exists to tell the two apart.
+
+### The reader is one component, and a glance is it opened on demand
+
+What Lyss liked about a notice was the reading itself — the closing message as the transcript
+renders it, in a scroller with a ceiling — and she wanted it without a notice (2026-10-15):
+first beside a question, *"I want it on ask tools and any kind of prompts"*, so what prompted a
+question can be read without leaving it for the transcript; then on a card, so a card can be
+read *"without changing the card I've actually selected"*. So the reading is `Said.svelte`,
+and every surface that shows a card's last message draws through it: the notice, the glance,
+and a widget that pins one to the wall. It was the notice's inline markup, and leaving that
+behind as a second path would have been two readings free to drift. Its ceiling is
+`--said-ceiling`, so a surface with a box of its own can lift it.
+
+**A glance** (`Glance.svelte`) is that reader over the wall, one at a time, opened from a
+question's *what it said* (alt+R inside it, `space d r` from the wall), from a card's hover
+button, or `space c r` for the focused card. It moves nothing: not the ring, not the
+selection — the card's button carries `data-glance`, which `Canvas.groundDown` lets through
+for the reason it lets a timeline plate through — and not the panel. Escape closes it and is
+swallowed (Escape stops a turn here), and so does a press or a wheel anywhere else, since the
+wall moving under it would leave it pointing at nothing. While it is up it takes ctrl+arrow
+and ctrl+page from the transcript, because it is what is on top; opened from the keyboard it
+takes the focus and hands it back.
+
+**What "the last message" is** is `glance.ts::lastMessage`, one function for both kinds of
+card and for the widget: at rest, `lastWords` — the notice's own text, so a glance at a card
+with a notice up cannot disagree with the notice; otherwise the last run of prose in `lines`,
+which is the prose just before a parked `ask_user` and the current turn's while one runs; and
+for a card restored at launch, the same run out of `history`, since `--resume` replays
+nothing into `lines` and no `result` this process heard ever set `lastWords`. A card on another
+wall has the digest's one line until `history()` pulls its tail, which opening a glance does.
+
+The button exists only where there is something to read and somewhere to read it — the peek
+window never `provide`s, so `glance.ready` is false there and no card draws a dead button —
+and nothing is parsed until a glance is open: a card face asks `hasSaid`, which stops at the
+first line said from the end.
+
+**The store is `glancing.svelte.ts`, not `glance.svelte.ts`**, because this disk folds case:
+`./glance.svelte` resolved to `Glance.svelte` and svelte-check refused the pair. Name a rune
+module so it differs from its component by more than a capital.
 
 ### Holds: a rest is very often not the end of anything
 

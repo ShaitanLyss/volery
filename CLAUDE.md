@@ -72,7 +72,8 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
-                         # timeline, span, notice, shadow, machine, handle, waiting
+                         # timeline, span, notice, shadow, machine, handle, waiting,
+                         # glance
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -264,7 +265,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
 | `timeline.md` | a card's plan drawn on the glass as a frise: one live timeline per card and parallel work as strands, the two writes priced differently, colour only on the live markers, the receipt that lets a clicked step find its write in the transcript, the close that asks whoever closes, picking one back up by adopting its session, and the inert layer that owes Canvas an exception | `timeline.rs`, `timeline.ts`, `timelines.svelte.ts`, `Frise.svelte`, `Lintel.svelte`, `Annals.svelte` |
-| `notice.md` | notices: a card that finished, ended on a question or gave up, waiting in the ask queue until acknowledged — the question detector and the holds, both measured on real transcripts, the `notice` tool that may park, and the chime that rings with the window in front | `notice.rs`, `notice.ts`, `Notice.svelte` |
+| `notice.md` | notices: a card that finished, ended on a question or gave up, waiting in the ask queue until acknowledged — the question detector and the holds, both measured on real transcripts, the `notice` tool that may park, the chime that rings with the window in front, and the notice's reader shared as a glance at any card's last message | `notice.rs`, `notice.ts`, `Notice.svelte`, `Said.svelte`, `Glance.svelte`, `glance.ts` |
 | `machine.md` | the machine under the wall: a power request held on mains and released on battery, the closed lid that beats it, the `Run` entry that *is* the was-open flag and why it may only be cleared on the studio's own close, the one argv the studio takes, and ARSO — whether a restart signs her back in at all, and the ceiling on a machine with no admin | `machine.rs`, `machine.ts`, `machine.svelte.ts`, `tools/check-machine.ps1` |
 | `elsewhere.md` | cards on other walls: why a shadow is a fifth kind rather than a card with a mark, the digest the owner's front end makes and Rust never reads, publishing by folding with the idle shipped as a moment, a quiet wall's cards claiming nothing, the fourth reading a remote prompt needs — left this wall, not yet acknowledged — and the one card handle every gesture takes, so a card on another wall offers what a card here does | `shadow.ts`, `shadows.svelte.ts`, `cards.svelte.ts`, `handle.ts` |
 | `chronicle.md` | the chronicle: one record read as a wisp on the wall and as a row forever, why the geometry replaces a label, the level a card may not write, why the trim deletes seen rows first, and the one byte that left `wisp` deferred | `chronicle.ts`, `chronicle.svelte.ts`, `Register.svelte`, `chronicle.rs` |
@@ -397,7 +398,8 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `unreallog.ts`,
 `gears.ts`, `handoff.ts`,
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
-`timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`) are pure
+`timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
+`glance.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

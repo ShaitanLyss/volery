@@ -60,11 +60,12 @@ export type CardChord =
   | "copy-resume"
   | "copy-cwd"
   | "processes"
-  | "menu";
+  | "menu"
+  | "glance";
 
 /** What a `d` chord does in the dock's queue: step to the next thing waiting,
  *  or deal with a reply whose item went before it was sent (`Dock.svelte`). */
-export type DockChord = "next" | "reclaim" | "copy" | "drop";
+export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance";
 
 export type Verb =
   | { kind: "find"; mode: FindMode }
@@ -163,6 +164,9 @@ export const CHORDS: readonly Chord[] = [
   { keys: "dp", label: "unsent reply: into its card's prompt", verb: { kind: "dock", act: "reclaim" } },
   { keys: "dc", label: "unsent reply: copy it", verb: { kind: "dock", act: "copy" } },
   { keys: "dx", label: "unsent reply: drop it", verb: { kind: "dock", act: "drop" } },
+  /* `dr`: what the card asking the question in the dock last said — the thing
+     the question is usually about. alt+R from inside the question. */
+  { keys: "dr", label: "what the asking card last said", verb: { kind: "dock", act: "glance" } },
   { keys: "sd", label: "drop something in the sink", verb: { kind: "sink", act: "drop" } },
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
   /* `g` is the grouping family — how this folder's work is arranged on the
@@ -239,6 +243,10 @@ export const CHORDS: readonly Chord[] = [
      machine — are reached without the mouse, on this wall or another; every
      row the right-click offers is under the keyboard through it. */
   { keys: "cm", label: "its menu — everything the right-click offers", verb: { kind: "card", act: "menu" } },
+  /* `cr`: read what it last said, in the notice's reader over the wall
+     (`Glance.svelte`). Like `cm`, not a `handle.ts` verb — it does nothing to
+     the card, it only shows you a thing the card already holds. */
+  { keys: "cr", label: "read what it last said", verb: { kind: "card", act: "glance" } },
   /* `m` is the machine the wall runs on, rather than anything on the wall or
      the window: whether it is held awake on mains and whether a wall Windows
      took down comes back — and then whether the cards that were awake when it

@@ -25,6 +25,7 @@
   import Gallery from "./Gallery.svelte";
   import { parseMarkdown } from "./markdown";
   import { replies } from "./replies.svelte";
+  import { glance } from "./glancing.svelte";
   import { replyKey } from "./replies";
   import {
     NO_PREFERENCE,
@@ -110,6 +111,18 @@
   } = $props();
 
   let free = $state("");
+
+  /* What the asking card last said — usually the very thing the question is
+     about — read in a glance over the wall, so it can be read without leaving
+     the question for the transcript (`Glance.svelte`). Anchored on the whole
+     panel, so it stands clear of the field you are answering in rather than
+     growing the dock. Absent when there is nothing to read, or nowhere to
+     open it: never a dead button. */
+  let root = $state<HTMLElement | null>(null);
+  const readable = $derived(glance.can(card));
+  function read(keyed: boolean) {
+    if (readable) glance.open(card, root, keyed);
+  }
 
   /* A typed yes on one of Volery's own confirmations, which only the button
      answers. Set by `give`, cleared the moment the field changes or the
@@ -396,6 +409,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="ask"
+  bind:this={root}
   data-ask={ask.askId}
   onkeydowncapture={stir}
   onpointerdowncapture={stir}
@@ -405,6 +419,11 @@
     if (ondefer && e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "d") {
       e.preventDefault();
       void defer();
+    }
+    /* And alt+R for the glance, from the field too, beside it. */
+    if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r" && readable) {
+      e.preventDefault();
+      read(true);
     }
   }}
 >
@@ -426,6 +445,15 @@
         class="goto"
         onclick={() => onselect?.()}
         title="Select the card that asked, and open its transcript">select it</button
+      >
+    {/if}
+    {#if readable}
+      <button
+        class="glimpse"
+        data-glance
+        onclick={() => read(false)}
+        title="Read what it last said, without leaving the question (alt+R, or space then d r)"
+        >what it said</button
       >
     {/if}
     <span class="grow"></span>
@@ -676,6 +704,25 @@
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 3px;
+  }
+  /* Achromatic, unlike `.goto`: it is chrome offering a reading, not part of
+     what the question is saying. */
+  .glimpse {
+    flex: 0 0 auto;
+    font-family: var(--util);
+    font-size: 0.64rem;
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--paper-mute);
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--paper-faint);
+    text-underline-offset: 3px;
+  }
+  .glimpse:hover,
+  .glimpse:focus-visible {
+    color: var(--paper);
   }
   .of {
     font-family: var(--mono);

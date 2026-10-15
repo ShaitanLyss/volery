@@ -26,6 +26,7 @@
   import type { Bang } from "./bang.svelte";
   import { nextItem, settleHold, shownItem, steady, type Hold, type Waiting } from "./queue";
   import { replies } from "./replies.svelte";
+  import { glance } from "./glancing.svelte";
   import type { Orphan, Reply } from "./replies";
   import { isShadowKey } from "./shadow";
   import type { DockChord } from "./leader";
@@ -354,6 +355,15 @@
       if (!next) return "nothing else is waiting on you";
       more();
       return null;
+    }
+    if (act === "glance") {
+      /* What the asking card last said, beside the question. A notice already
+         *is* that reading, so there is nothing to open for one. */
+      if (shown?.kind !== "ask") {
+        return shown ? "the notice already shows what it said" : "nothing is waiting on you";
+      }
+      const at = heldEl?.querySelector("[data-ask]") ?? null;
+      return glance.open(shown.of.id, at, true) ? null : "it has not said anything yet";
     }
     if (!stray) return "no unsent reply is waiting";
     if (act === "reclaim") {

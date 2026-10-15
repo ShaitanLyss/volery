@@ -9,8 +9,7 @@
      wears — rest grey for finished, half-amber for a question, rust for an
      error — and has no glow. A card's own notice holding its turn open is the
      one that is genuinely blocking, and it borrows the ask's amber. */
-  import Markdown from "./Markdown.svelte";
-  import { parseMarkdown } from "./markdown";
+  import Said from "./Said.svelte";
   import { replies } from "./replies.svelte";
   import { clock } from "./conversation.svelte";
   import { stood } from "./presence";
@@ -154,12 +153,9 @@
     <span class="ago">{stood(clock.t - notice.raisedAt)}</span>
   </div>
 
-  <!-- The closing message, as the transcript would render it. Its own scroller
-       with a ceiling, so a long summary scrolls here rather than pushing the
-       draft field off the bottom of the window. -->
-  <div class="said">
-    <Markdown blocks={parseMarkdown(notice.text)} nav={false} />
-  </div>
+  <!-- The closing message, as the transcript would render it, in the reader
+       every surface that shows a card's last message shares (`Said.svelte`). -->
+  <Said text={notice.text} />
 
   <div class="row">
     <input
@@ -283,28 +279,6 @@
     color: var(--paper-faint);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-  }
-
-  .said {
-    max-height: 16rem;
-    flex: 0 1 auto;
-    min-height: 3.2rem;
-    overflow-y: auto;
-    border: 1px solid var(--edge);
-    border-radius: 3px;
-    background: var(--well);
-    padding: 0.45rem 0.6rem;
-    font-size: 0.86rem;
-    line-height: 1.55;
-    color: var(--paper-dim);
-  }
-  .said :global(p) {
-    margin: 0;
-  }
-  .said :global(p + p),
-  .said :global(ul),
-  .said :global(ol) {
-    margin-top: 0.4em;
   }
 
   .row {

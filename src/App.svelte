@@ -91,6 +91,8 @@
   import Dogears from "./lib/Dogears.svelte";
   import { Field } from "./lib/field.svelte";
   import ContextMenu from "./lib/ContextMenu.svelte";
+  import Glance from "./lib/Glance.svelte";
+  import { glance } from "./lib/glancing.svelte";
   import Effects from "./lib/Effects.svelte";
   import Import from "./lib/Import.svelte";
   import Themes from "./lib/Themes.svelte";
@@ -507,6 +509,7 @@
     }
     else if (verb.kind === "card") {
       if (verb.act === "menu") menuFocused();
+      else if (verb.act === "glance") glanceFocused();
       else verbFocused(verb.act);
     }
     else if (verb.kind === "sink") {
@@ -981,6 +984,10 @@
    *  every gesture takes — the menu, the dock, the chords and the panel ask it
    *  `can` and call `do`, and none of them asks which kind it is. */
   const card = $derived(cards.find(focusedId));
+  /* How a glance turns a card id into a card — said once, here, so every
+     surface that opens one (a card, a question, a chord) has it by existing.
+     The peek window never says it, and so offers no glance. */
+  glance.provide((id) => cards.find(id));
   /** The same card when it is one of this wall's: for what only a card here
    *  can be — picked into a gathering, the directory a `!` line runs in, the
    *  shell's project. A gesture takes `card`. A shadow is never this, which is
@@ -4013,6 +4020,20 @@
    *  two cannot disagree. A verb the card cannot be asked says why (its wall
    *  needs updating, has not been heard, the card has nothing to clear) rather
    *  than the key doing nothing. */
+  /** `space c r`: the focused card's last message, beside the card. Read from
+   *  the card where it is drawn, and in the middle of the window where it is
+   *  not on screen (`glance.ts::placeGlance`). */
+  function glanceFocused() {
+    const id = card?.id;
+    if (!id) {
+      skein.fault = "no card has the focus";
+      return;
+    }
+    const q = CSS.escape(id);
+    const at = document.querySelector(`[data-conv="${q}"] .slot, [data-shadow="${q}"] .slot`);
+    if (!glance.open(id, at, true)) skein.fault = "it has not said anything yet";
+  }
+
   function verbFocused(verb: Verb) {
     const c = card;
     if (!c) {
@@ -4737,6 +4758,8 @@
   {#if skein.fault}
     <button class="fault" onclick={() => (skein.fault = null)}>{skein.fault}</button>
   {/if}
+
+  <Glance />
 
   {#if menu}
     <ContextMenu

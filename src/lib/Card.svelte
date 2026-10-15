@@ -11,6 +11,7 @@
    *  the head of `shadow.ts`. */
   export type CardFace = Pick<
     Conversation,
+    | "id"
     | "title"
     | "project"
     | "tier"
@@ -43,6 +44,14 @@
      *  drawn off its digest, whose tier already says `rest` and which carries
      *  no such flag: there it reads as an ordinary rest, which is not false. */
     restSeen?: boolean;
+    /** The closing message of the last turn — what a notice about its rest
+     *  showed, and so what a glance at it shows (`glance.ts::lastMessage`).
+     *  Optional for `restSeen`'s reason: a card on another wall has no such
+     *  field, and its lines are what it said. */
+    lastWords?: string;
+    /** The scrollback read off disk — what a card restored at launch holds
+     *  until it speaks again. A card on another wall has none. */
+    history?: readonly { kind: string; text: string }[];
   };
 </script>
 
@@ -52,6 +61,8 @@
   import { planTitle } from "./gears";
   import { waitLine, waitTitle } from "./waiting";
   import { clock } from "./conversation.svelte";
+  import { glance } from "./glancing.svelte";
+  import { hasSaid } from "./glance";
 
   import type { Lod } from "./studio.svelte";
 
@@ -135,6 +146,13 @@
       .slice(-1)
       .map((l) => say(l.text)),
   );
+
+  /** Whether there is a last message to glance at. Asked of the lines, which
+   *  stops at the first line said from the end — the message itself is built
+   *  and parsed only when somebody opens it (`Glance.svelte`), never per card
+   *  per change. Off where nothing at the root can open one (the peek
+   *  window), so the button is absent there rather than dead. */
+  const readable = $derived(glance.ready && hasSaid(conv));
 
   /** The turn's own words, while it is writing them. */
   const saying = $derived(say(conv.streaming));
@@ -405,6 +423,28 @@
       <svg viewBox="0 0 10 10" aria-hidden="true"
         ><path d="M2 2h6M2 5h6M2 8h3" /></svg
       >
+    </button>
+  {/if}
+
+  <!-- Read what it last said without selecting it: the notice's own reader,
+       over the wall, with the ring, the selection and the panel left where
+       they were — which is the whole difference from clicking the card.
+       `data-glance` keeps the press off the wall (`Canvas.groundDown`), so it
+       does not select the card either, and lets a second press close it.
+       Beside `.shut` and revealed with it, for its reason: a control on every
+       card drawn always is noise on a wall of them. Achromatic. -->
+  {#if readable}
+    <button
+      class="read"
+      data-glance
+      onclick={(e) => {
+        e.stopPropagation();
+        glance.open(conv.id, e.currentTarget.closest(".slot"));
+      }}
+      aria-label="Read what it last said"
+      title="read what it last said, without selecting it (space then c r)"
+    >
+      <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2.5h6v4.2H4.6L3 8.2V6.7H2z" /></svg>
     </button>
   {/if}
 
@@ -721,6 +761,45 @@
   .slot:hover .shut,
   .shut:focus-visible {
     opacity: 1;
+  }
+
+  /* Inboard of `.shut`, shaped and revealed like it. */
+  .read {
+    position: absolute;
+    top: 4px;
+    right: 24px;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: 0;
+    padding: 0;
+    border-radius: 3px;
+    cursor: pointer;
+    color: var(--paper-faint);
+    opacity: 0;
+    transition:
+      opacity 0.15s ease,
+      color 0.15s ease,
+      background 0.15s ease;
+  }
+  .read svg {
+    width: 9px;
+    height: 9px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.2;
+    stroke-linejoin: round;
+  }
+  .slot:hover .read,
+  .read:focus-visible {
+    opacity: 1;
+  }
+  .read:hover,
+  .read:focus-visible {
+    color: var(--paper);
+    background: var(--rule);
   }
 
   /* Waiting post. Shaped like `.jobs` and coloured unlike it, which is the
