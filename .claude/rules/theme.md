@@ -165,6 +165,15 @@ Two fixes, and the first is the one that generalises:
   you notice first. **A hairline needs more contrast on a light ground than a dark one**,
   which is the opposite of the instinct that produced the first draft.
 
+**The first fix was the wrong polarity, and the rework took it back.** "Greyed" meant filling
+the dormant card *darker* than the wall (1.20 off it, against a live card's 1.13). That made
+the least important thing on the board the most inked block on it. The real trouble was that
+live cards were not objects: no shadow, and a fill 0.04 off the wall. Once a live card is
+raised by a ground-tinted shadow and a real lightness step, the original relationship
+carries. A spent card is the wall's own colour with a dashed edge and no shadow, which on
+paper is what "unlit" means: flat on the surface. The light skins no longer set `--hollow`,
+and "a dormant card is never heavier than a live one" is now asserted for every skin.
+
 ### Two ways the test suite was complicit, and both are general
 
 **The floor was set from the cases in front of me, not from the case that works.** The check
@@ -222,28 +231,87 @@ cheapest — corner radius and a drop shadow — do more for that than any singl
 - **`--ch-lift-ms` is one clock for the float and the glow's breath**, deliberately. Two
   independent periods on the same card produce a visible beat.
 
-## The four skins
+## A light skin is a different lighting, not the dark one's values flipped
+
+**The first light skins shipped legible, tested and wrong.** Every contrast floor passed.
+The person they were for said they burned their eyes and had no depth, and both were
+measurable once somebody looked at the scene instead of at colour pairs (2026-10-15, card
+`87d24e83`, lab screenshots of a seeded wall in all four skins):
+
+- **The burn.** Cards were `#ffffff` and panels within a hair of it, so the bright thing on
+  screen was the whole window. On studio the bright things are small: text, a glow, a
+  selected outline. That is 150-250 times the light studio sends, all day, under dark text at
+  14:1.
+- **No depth.** The four surfaces sat within 0.04 in Oklab lightness, and out of order: chips
+  darker than the card under them, the panel lighter than the wall. Wall, panel, card and
+  plate were one white, and only the hairlines drew structure.
+- **Dark-wall physics.** Studio is a dark room where whatever matters is lit. Cards are
+  lighter than the floor, a live card *emits* (a blurred status halo), and shadows are black
+  because on near-black nobody sees them. Kept on paper, the halo is an orange or green stain,
+  every black shadow is a grey smear, and the dormant fix above made spent cards the heaviest
+  thing on the board.
+- **Colour in the neutrals.** At low lightness a tint hides; at high lightness it shows.
+  `sugar`'s lines at chroma 0.036 made the whole wall pink, and once the wall is pink, colour
+  no longer means status. `twilight`'s 0.03-0.06 read as a purple application.
+
+What fixed it is vocabulary first, then values:
+
+- **`--shade`** (`tokens.css`): every drop shadow is
+  `color-mix(in srgb, var(--shade) N%, transparent)`. Studio's is `#000`, which is exactly the
+  `rgba(0,0,0,N)` each one replaced. A light skin sets a ground-hued colour *with its own
+  alpha*, and the mix multiplies the two, so forty shadows keep their relative weights and land
+  lighter, in the ground's hue.
+- **`--ch-bloom` and `--ch-wash`** (`Card.svelte`): a multiplier on the halo's strength (1 on
+  dark) and a status tint in a live card's fill (0% on dark). The tint is a `background-image`
+  layer over the surface, so at 0% it is a transparent gradient and studio is exact. On paper
+  a live card says "alive" by tint and the ask's ring, not by light.
+- **`data-ground="light"`** on the root, set by `paint` from the computed `--well`, for what
+  one token cannot say (the sixteen terminal colours have a light set). It is absent on dark.
+- **`skin.painted`**, bumped on every repaint. A canvas reads tokens once and cannot see a
+  custom property change, which is why the lineage tether went on drawing studio's brown on
+  cream. Reading it in the effect that reads the tokens makes the canvas re-read.
+
+Then **one lightness ladder for every light skin**, with only hue, chroma, faces and character
+telling them apart. In Oklab L: wall 0.885, chip 0.912, panel 0.928, card 0.958, edge 0.79,
+rule 0.735, and ink 0.30 / 0.405 / 0.475 / 0.64, which is about 11.0 / 7.3 / 5.4 / 2.7 on the
+panel. Nothing is white (the wall is 0.69 of white and a card 0.88). The ladder is ordered for
+a page, card brightest and chips inset. Surfaces stay at chroma 0.011-0.016, and status colours
+are picked in Oklch at mid lightness with as much chroma as the hue holds there. The values are
+generated rather than picked; `palette.ts` above `SKINS` has the arithmetic.
+
+**The tests that would have caught it are about the ground, not pairs** ("is a place" in
+`test/palette.test.ts`): surfaces in the polarity's order and spread at least 0.06; no
+near-white surface, wall under 0.75 of white, top ink under 13:1; neutral chroma ceilings at
+about three times studio's; a light ground has bloom ≤ 0.5, a non-zero wash and an alpha'd
+`--shade`; a dormant fill never further from the wall than a live card. **Run against the old
+skins they fail ten times**: every defect above, and studio passes all of it. Every number
+comes from studio, the case that works, for the reason the dormant section gives.
+
+## The five skins
 
 - **`studio`** — as it always was. Empty, and its emptiness is the revert guarantee. This is
   the one hard requirement the feature was asked for under: the default does not move.
-- **`sugar`** — pastel light. Blush ground, plum ink, mint and peach and rose. Candara
-  throughout, which does more for the identity than any colour here: Sitka is a transitional
-  serif with the manners of a printed page, and Candara is a humanist sans with flared stems
-  and rounded terminals drawn for screens. `--mono` is left alone on purpose — a fence is
-  somebody's literal output and is the one place on the wall that should not have a mood.
-  Floats, pops, and is very awake. Its `--edge` is at studio's 1.36 rather than the 1.18 it
-  first shipped with — see the dormant-card section above.
+- **`vellum`** — studio by day. Warm unbleached paper (hue 75, chroma 0.011), the same faces,
+  the same corners, nothing that moves. The reference the other light skins vary, and the
+  direct answer to "the default is good, the light ones are not".
+- **`sugar`** — pastel light. Blush in the hue at half the first draft's chroma, plum ink, and
+  mint, tangerine and rose. Candara throughout, which does more for the identity than any
+  colour here: Sitka is a transitional serif with the manners of a printed page, and Candara
+  is a humanist sans with flared stems and rounded terminals drawn for screens. `--mono` is
+  left alone on purpose — a fence is somebody's literal output and is the one place on the
+  wall that should not have a mood. Floats, pops, and is very awake.
 - **`twilight`** — pastel dark. The complaint was that the wall is dark *every day*, and half
   of that is monotony rather than luminance; a wall you look at at eleven at night should not
-  have to become a light one to stop being the same brown. So the ramp stays within a tenth
-  of the default's at every rung, the hue underneath it goes violet, and the status goes
-  candy. One face changed (`--display`) rather than three: **one face is a mood, three is a
-  different application.**
-- **`meadow`** — soft daylight, cream and sage, Constantia for the reading. The one that is
-  not cute, and it exists to prove the axis carries a quiet answer as well as a loud one:
-  `sugar` is a mood you choose, this is one you could leave on. Nothing floats. Its
-  `--st-fail` is the strongest of its three status colours on purpose — on a bright, restful,
-  low-contrast ground the one thing that must still interrupt you is a card that broke.
+  have to become a light one to stop being the same brown. So the ladder stays within a few
+  hundredths of the default's, the hue underneath goes violet at chroma 0.024, and the
+  status goes candy. It keeps `--ch-bloom` at 1: on a dark ground the glow is light. One face
+  changed (`--display`) rather than three: **one face is a mood, three is a different
+  application.**
+- **`meadow`** — soft daylight, cream with sage in it, Constantia for the reading. The one
+  that is not cute: `sugar` is a mood you choose, this is one you could leave on. Nothing
+  floats. Its `--st-fail` is the strongest of its three status colours on purpose — on a
+  restful, low-contrast ground the one thing that must still interrupt you is a card that
+  broke.
 
 ## A knob is a contract between two files, and nothing in either half can see the other
 

@@ -201,7 +201,7 @@ export type Skin = Entry<SkinKnob>;
 export const STUDIO = "studio";
 
 /* The figures in the built-ins below are computed rather than eyeballed, by the
-   same arithmetic `test/palette.test.ts` runs — WCAG contrast against that
+   same arithmetic `test/palette.test.ts` runs: WCAG contrast against that
    skin's own `--well`, and Oklab distance between the three status colours that
    have to stay apart. The default ink is the ladder the others are tuned to
    match:
@@ -214,7 +214,49 @@ export const STUDIO = "studio";
    Keeping the ramp's *shape* matters more than matching any one rung: the four
    rungs are a ladder the whole front end reaches for by position, and a skin
    that flattens two of them together loses a distinction ninety-odd rules are
-   drawing with. */
+   drawing with.
+
+   ## The light skins share one ladder, and it is not white
+
+   The first light skins were a dark wall with its values flipped, and the
+   person they were for said they burned and had no depth. Both were measurable.
+   Their cards were `#ffffff` and their panels within a hair of it. So the
+   bright thing on screen was the whole window, rather than the text and the
+   status marks as on the dark wall. That is 150-250 times the light studio
+   sends, all day. And their four surfaces sat inside 0.04 of each other in
+   Oklab lightness, out of order: chips darker than the card under them, the
+   panel lighter than the wall. Wall, panel, card and plate were one white,
+   and only the hairlines drew structure.
+
+   So the three light skins below stand on one lightness ladder, and only hue,
+   chroma, faces and character tell them apart:
+
+     wall 0.885   chip 0.912   panel 0.928   card 0.958   (Oklab L)
+     edge 0.79    rule 0.735
+     ink  0.30 / 0.405 / 0.475 / 0.64 ≈ 11.0 / 7.3 / 5.4 / 2.7 on the panel
+
+   - **Nothing is white.** The wall is a dim paper, about 0.69 in luminance
+     where white is 1, and the brightest thing is a card at 0.88. Paper under
+     room light is far dimmer than a monitor's white, and a light skin is
+     meant to read like paper.
+   - **Ordered, and as spread as studio's.** About 0.07 from wall to card,
+     against studio's 0.10 across the same four, and in the order a page
+     needs: a card is the brightest object, the panel a reading surface a step
+     down, chips and fences a step toward the wall.
+   - **Depth from shadow, not from light.** On a light ground nothing glows. A
+     card is raised by a shadow tinted to the ground (`--ch-shadow`), every
+     other shadow is made of a ground-hued `--shade` at an alpha, and a live
+     card takes a little of its status colour into its fill (`--ch-wash`) with
+     its halo turned down (`--ch-bloom`). A dormant card is the wall's own
+     colour with a dashed edge and no shadow. On paper, being flat on the
+     surface is what "unlit" means, so `--hollow` keeps its default.
+   - **Near-colourless neutrals.** Surface chroma 0.011-0.016, which is a tint
+     and not a colour. At this lightness chroma shows in a way it never does
+     at studio's: the first `sugar` was simply pink, and on a pink wall colour
+     stops meaning status.
+   - **Status deeper and more saturated, not muddier.** A pastel on paper says
+     nothing, and darkening a pastel gives you brown. Each is picked in Oklch
+     at a mid lightness, with as much chroma as its hue holds there. */
 
 export const SKINS: Skin[] = [
   {
@@ -229,93 +271,104 @@ export const SKINS: Skin[] = [
     builtin: true,
   },
   {
+    id: "vellum",
+    label: "vellum",
+    note: "studio by day — warm paper, the same faces, nothing glows",
+    from: null,
+    over: {
+      /* The studio's daylight twin, and the reference the other light skins
+         are variations on. Same faces, same corners, nothing that moves: the
+         only answer this skin gives is to "the same room, with the lights
+         on". Hue 75 at chroma 0.011, the warm of unbleached paper, which is
+         studio's bone ink turned into a ground. */
+      "--ink": "#ddd8d1",
+      "--well": "#ece6df",
+      "--surface": "#f6f0e9",
+      "--raised": "#e6e1da",
+      "--edge": "#c1b9ae",
+      "--rule": "#b1a89c",
+      /* Ground-hued, at an alpha. Every shadow on the wall is this mixed with
+         transparent at the strength its site was tuned to, so 0.24 lands the
+         heaviest (90%) at about 0.22, in brown rather than black. */
+      "--shade": "rgb(62 48 36 / 0.24)",
+      /* 11.0 / 7.3 / 5.4 / 2.7 on the panel. The top rung is held under
+         studio's 15.4: dark text on a light field at full contrast is the
+         other half of what made the first light skins tiring. */
+      "--paper": "#352c25",
+      "--paper-dim": "#514740",
+      "--paper-mute": "#655a53",
+      "--paper-faint": "#958a82",
+      /* work 3.6, ask 2.6, fail 4.6 on the panel, rest desaturated. Ask is the
+         tightest. Amber is a light hue, and an amber dark enough to read
+         higher than this on paper is brown. */
+      "--st-work": "#22876b",
+      "--st-ask": "#ca7f10",
+      "--st-soft": "#a17740",
+      "--st-rest": "#8b857f",
+      "--st-fail": "#b63d29",
+      "--ch-shadow": "0 1px 2px rgb(62 48 36 / 0.1), 0 6px 18px -8px rgb(62 48 36 / 0.26)",
+      "--ch-bloom": "0.3",
+      "--ch-wash": "5%",
+    },
+    builtin: true,
+  },
+  {
     id: "sugar",
     label: "sugar",
     note: "pastel light — blush ground, plum ink, and it is very awake",
     from: null,
     over: {
-      /* Blush rather than white. A pure #fff ground under a serif at this size
-         glares, and the whole point of a light skin here is relief from the
-         dark rather than a trade of one discomfort for another. The card is
-         the brightest thing, so a card still reads as raised off the wall —
-         which is the relationship the dark ink gets by making the card
-         *lighter* than the floor, and it has to survive the inversion. */
-      "--ink": "#f7eff3",
-      "--well": "#fffbfd",
-      "--surface": "#ffffff",
-      /* A spent card is a *greyed* card here, not a hole in the wall. The
-         dark-wall idiom does not carry — see `--hollow` in `tokens.css`. This
-         is 1.20 against the wall and 1.35 against a live card, so it is
-         distinct from both rather than merely from one, and it is duller than
-         either: a dormant card should look like the colour has gone out of
-         it, which on paper is what "unlit" means. */
-      "--hollow": "#e8dae2",
-      "--raised": "#fdf3f7",
-      /* 1.36 against the wall, which is exactly the relationship the dark wall
-         has — and it was 1.18 in the first draft, which is the whole of why a
-         dormant card was invisible here. A hairline needs *more* contrast on a
-         light ground than a dark one, not less, and every card outline, seam
-         and meta-bar rule on the wall is this token. */
-      "--edge": "#e2cad7",
-      "--rule": "#d9bfcf",
-      /* The ramp, tuned to the default's shape: 14.3 / 7.9 / 4.8 / 2.8 against
-         this well, versus 15.4 / 8.3 / 4.9 / 2.8 in the dark. `--paper-mute`
-         is the rung that matters most to get right — it carries tool lines and
-         fold caps, and the first draft of this skin had it at 3.8:1, which is
-         below AA for the body text it is actually set in. */
-      "--paper": "#35232c",
-      "--paper-dim": "#614954",
-      "--paper-mute": "#816a76",
-      "--paper-faint": "#a9939e",
-      /* Status, re-tuned for a light ground rather than carried over. Note
-         these are *deeper* than the ground is pastel: a pastel green on white
-         is 1.4:1 and says nothing. The pastel is the wall; the status marks
-         still have to be marks. work 3.9:1, ask 3.3:1, fail 4.0:1 — all above
-         the 3:1 floor for a non-text mark, and all in their own families. */
-      "--st-work": "#2e8f76",
-      "--st-ask": "#c8791a",
-      "--st-soft": "#a98a5c",
-      "--st-rest": "#9a8a93",
-      /* Rose rather than rust: on a blush ground rust goes muddy, and rose is
-         both legible and the right amount of alarming for a wall that is
-         otherwise this cheerful. Still red-family, 0.13 from ask in Oklab. */
-      "--st-fail": "#cf5568",
-      /* The face, and it does more for the identity than any single colour
-         here. Sitka is a *transitional serif* — it has the manners of a
-         printed page, which is exactly right for the studio and exactly wrong
-         for this. Candara is a humanist sans with flared stems and rounded
-         terminals, it ships with Windows so nothing is downloaded, and it was
-         drawn for screens at these sizes. Corbel stays available behind it for
-         the same family's proportions if a machine somehow lacks it.
-         `--mono` is left alone: a fence is somebody's literal output and is
-         the one place on the wall that should not have a mood. */
+      /* Blush, on the light ladder. The first `sugar` was a near-white pink at
+         chroma 0.03 on its lines and 0.031 in its ink. That made the whole
+         wall the colour, and it burned. This keeps the blush in the hue and
+         halves the chroma (0.016 on the surfaces), so it is a pink wall in the
+         way a paper is warm. The pastel is still there, but not as the light
+         source. */
+      "--ink": "#e2d5da",
+      "--well": "#f0e3e9",
+      "--surface": "#faedf3",
+      "--raised": "#ebdee3",
+      "--edge": "#c8b4bd",
+      "--rule": "#b8a2ac",
+      "--shade": "rgb(72 40 58 / 0.24)",
+      /* Plum, 11.1 / 7.3 / 5.5 / 2.8 on the panel. The ink keeps more chroma
+         than the ground (0.03), since text is small enough to carry a colour
+         without the page becoming it. */
+      "--paper": "#382833",
+      "--paper-dim": "#55434e",
+      "--paper-mute": "#685662",
+      "--paper-faint": "#998592",
+      /* Mint, tangerine and rose, deep enough to be marks: work 3.4, ask 2.65,
+         fail 4.1. Rose rather than rust, because rust goes muddy on blush and
+         rose is the right amount of alarm for a wall this cheerful. It is
+         still in the red family, and 0.17 from ask in Oklab. */
+      "--st-work": "#238a71",
+      "--st-ask": "#d07803",
+      "--st-soft": "#ab7b49",
+      "--st-rest": "#90868c",
+      "--st-fail": "#c23d61",
+      /* The face, which does more for the identity than any colour here. Sitka
+         is a transitional serif with the manners of a printed page, which is
+         right for the studio and wrong for this. Candara is a humanist sans
+         with flared stems and rounded terminals, drawn for screens, and it
+         ships with Windows. `--mono` is left alone: a fence is somebody's
+         literal output and should not have a mood. */
       "--display": '"Candara", "Segoe UI Variable Display", Corbel, system-ui, sans-serif',
       "--body": '"Candara", Corbel, "Segoe UI", system-ui, sans-serif',
       "--util": '"Candara", Corbel, "Segoe UI", system-ui, sans-serif',
-      /* Rounder, and it is most of what makes this read as friendly. Free —
-         no motion, no present, no raster beyond the one the card already
-         does. */
       "--ch-radius": "10px",
-      /* A real shadow, which the dark wall never needed and this one does. On
-         `#151210` a 1px `--edge` is a visible seam; on blush it is almost
-         nothing, and without this the cards stop reading as objects sitting on
-         a surface and start reading as regions of a flat diagram. Two layers:
-         a tight one for the contact edge and a wide soft one for the lift.
-         Static, so it is rastered once and never repainted — this is *not* the
-         animated `box-shadow` that `motion.ts` is about, and the distinction is
-         the whole of why one is free and the other cost 8% a card. */
-      "--ch-shadow": "0 1px 2px rgb(90 40 65 / 0.06), 0 6px 18px -8px rgb(90 40 65 / 0.16)",
-      /* The float. This is the knob that costs, and it is switched on here
-         because a "cutesie happy" wall that does not move is a screenshot of
-         one. 3px over 3.4 seconds is a drift you notice at the edge of vision
-         rather than a bounce you watch; anything faster reads as agitation,
-         which is the opposite of what this skin is for. `spare` steps it and
-         `still` stops it — see `Card.svelte`. */
+      /* Deeper than vellum's, since a cheerful wall wants its cards to sit
+         up. Plum rather than black. Static, so it is rastered once: this is
+         not the animated shadow `motion.ts` is about. */
+      "--ch-shadow": "0 1px 2px rgb(72 40 58 / 0.1), 0 8px 20px -9px rgb(72 40 58 / 0.28)",
+      "--ch-bloom": "0.3",
+      "--ch-wash": "6%",
+      /* The float, which costs. It is on because a "cutesie happy" wall that
+         does not move is a screenshot of one. 3px over 3.4s is a drift at the
+         edge of vision, not a bounce. `spare` steps it and `still` stops it
+         (see `Card.svelte`). */
       "--ch-lift": "3px",
       "--ch-lift-ms": "3400ms",
-      /* Arrival. Overshooting past 1 and settling back is the difference
-         between a card appearing and a card *arriving*; the curve is what
-         carries it, and this one goes past its target and comes back. */
       "--ch-pop": "1.05",
       "--ch-pop-ms": "320ms",
       "--ch-ease": "cubic-bezier(0.34, 1.56, 0.64, 1)",
@@ -330,54 +383,55 @@ export const SKINS: Skin[] = [
     from: null,
     over: {
       /* The argument for this one existing beside `sugar`: the complaint was
-         that the wall is dark *every day*, and half of that is monotony rather
-         than luminance. A wall you look at at eleven at night should not have
-         to become a light one to stop being the same brown. So this keeps the
-         dark — the ramp is within a tenth of the default's at every rung — and
-         changes the hue underneath it and the sweets on top. */
-      "--ink": "#1a1626",
-      "--well": "#141120",
-      "--surface": "#241f34",
-      "--raised": "#2e2843",
-      "--edge": "#3b3453",
-      "--rule": "#4c4468",
-      /* 15.2 / 8.9 / 5.3 / 3.0 — the default ladder, a shade more generous at
-         the bottom because violet at low lightness closes up faster than the
-         warm brown it replaces. */
-      "--paper": "#ece6f7",
-      "--paper-dim": "#b8afcd",
-      "--paper-mute": "#8e85a5",
-      "--paper-faint": "#645c7a",
-      /* Brighter and more saturated than the default's, which a violet ground
-         can carry and a warm one cannot: 12.0 / 12.1 / 8.6 against this well.
-         The families are unchanged — mint is still green, buttercup is still
-         amber, and the rose is the red end. */
-      "--st-work": "#8fe0c0",
-      "--st-ask": "#ffc861",
-      "--st-soft": "#b08f4e",
-      "--st-rest": "#7b7391",
-      "--st-fail": "#ff8fa8",
-      /* The display face only, and the restraint is the point. `sugar` goes
-         humanist throughout because it is trying to be a different room; this
-         is trying to be the *same* room after dark, so the reading stays the
-         serif it always was and only the card titles soften. One face changed
-         is a mood; three is a different application. */
+         that the wall is dark *every day*, and half of that is monotony
+         rather than luminance. A wall you look at at eleven at night should
+         not have to become light to stop being the same brown. So this keeps
+         studio's ladder (within a few hundredths of Oklab L at every rung)
+         and changes the hue under it.
+
+         At chroma 0.024 on the surfaces. The first draft ran 0.03-0.06, five
+         to eight times studio's, and read as a purple application rather than
+         the studio after dark. Chrome here is meant to be close to colourless,
+         and violet at 0.024 is a tint you feel more than see. */
+      "--ink": "#171521",
+      "--well": "#11101c",
+      "--surface": "#201f2b",
+      "--raised": "#2a2835",
+      "--edge": "#353248",
+      "--rule": "#44415b",
+      /* 15.2 / 9.1 / 5.4 / 3.0, the default ladder a shade more generous at
+         the bottom, because violet at low lightness closes up faster than
+         warm brown. */
+      "--paper": "#e8e5f5",
+      "--paper-dim": "#b5b2c1",
+      "--paper-mute": "#8b8897",
+      "--paper-faint": "#615e6c",
+      /* Candy: brighter and more saturated than the default's, which a dark
+         violet ground carries and a warm one cannot. 12.0 / 12.2 / 8.6. Mint
+         is still green, buttercup still amber, and the rose is the red end. */
+      "--st-work": "#85e0be",
+      "--st-ask": "#fac871",
+      "--st-soft": "#b4925e",
+      "--st-rest": "#7a7986",
+      "--st-fail": "#f493aa",
+      /* The display face only. `sugar` goes humanist throughout because it is
+         trying to be a different room. This is trying to be the *same* room
+         after dark, so the reading stays the serif it always was. One face
+         changed is a mood; three is a different application. */
       "--display": '"Candara", "Segoe UI Variable Display", Corbel, system-ui, sans-serif',
       "--ch-radius": "9px",
-      /* Violet-black rather than neutral. A shadow on a dark wall is nearly
-         invisible and this one is doing something else: it seats the card in
-         the ground so the ground reads as having depth, which is what makes a
-         violet wall look lit rather than merely tinted. */
+      /* Violet-black rather than neutral, seating the card in the ground so
+         the ground reads as having depth. */
       "--ch-shadow": "0 2px 14px -6px rgb(8 4 20 / 0.55)",
       "--ch-lift": "2px",
       "--ch-lift-ms": "4600ms",
       "--ch-pop": "1.04",
       "--ch-pop-ms": "300ms",
       "--ch-ease": "cubic-bezier(0.34, 1.4, 0.64, 1)",
-      /* A wider, softer bloom than the default's 34px. On a violet ground the
-         mint reads as light in a room rather than as an outline, which is the
-         whole conceit of the status glow and is easier to see here than
-         anywhere else. */
+      /* A wider, softer bloom than the default's 34px. On a dark violet ground
+         the mint reads as light in a room rather than as an outline, which is
+         the whole conceit of the status glow. That is why this skin keeps
+         `--ch-bloom` at 1 where the light ones turn it down. */
       "--ch-glow": "50px",
     },
     builtin: true,
@@ -388,54 +442,44 @@ export const SKINS: Skin[] = [
     note: "soft daylight — cream and sage, bright without the sugar",
     from: null,
     over: {
-      /* The third feel, and the one that is not cute. `sugar` is a mood you
-         choose; this is one you could leave on. Same inversion, none of the
-         character knobs turned up — corners a shade rounder than the default
-         and nothing moving, because the argument for this skin is calm and a
-         floating card is not that. It exists to prove the axis carries a
-         *quiet* answer as well as a loud one. */
-      "--ink": "#eeece2",
-      "--well": "#faf8f1",
-      "--surface": "#fffdf7",
-      /* 1.17 against the wall, 1.37 against a live card — `sugar`'s reasoning
-         on cream. */
-      "--hollow": "#dedbcd",
-      "--raised": "#f4f1e7",
-      /* 1.35, up from 1.19. See `sugar`'s note. */
-      "--edge": "#d2cdba",
-      "--rule": "#c6c1b0",
-      /* 14.1 / 8.0 / 4.6 / 2.6 — the default ladder again, on cream. */
-      "--paper": "#262820",
-      "--paper-dim": "#4b4e43",
-      "--paper-mute": "#6f7266",
-      "--paper-faint": "#9a9d90",
-      /* work 3.9:1, ask 3.5:1, fail 5.8:1. The fail is deliberately the
-         strongest of the three here: on a bright, low-contrast, restful ground
-         the one thing that must still interrupt you is a card that broke. It
-         was #b8523c in the first draft and sat 0.098 from ask in Oklab — two
-         browns on cream, which is precisely the confusion the distance floor
-         exists to catch, and it caught it. */
-      "--st-work": "#3d8a6b",
-      "--st-ask": "#b8761c",
-      "--st-soft": "#96793f",
-      "--st-rest": "#8b8d82",
-      "--st-fail": "#a8402c",
-      /* Constantia rather than Sitka, and it is the one change here that is
-         not the ground. Both are screen serifs and they disagree about what a
-         screen serif is for: Sitka was drawn for legibility at small sizes and
-         is fairly neutral about it, Constantia has more colour on the page —
-         a larger x-height, more open counters, and a slight calligraphic
-         slope to the terminals. On a cream ground at reading length that is
-         the difference between a document and a book, which is what this skin
-         is for. `--util` stays Corbel: labels want to stay out of the way. */
+      /* The quiet one: `sugar` is a mood you choose, this is one you could
+         leave on. The light ladder at hue 100 and chroma 0.013, a cream with
+         sage in it, and nothing moves. */
+      "--ink": "#dbd9d0",
+      "--well": "#e9e8de",
+      "--surface": "#f3f1e8",
+      "--raised": "#e4e2d9",
+      "--edge": "#bdbbac",
+      "--rule": "#acaa99",
+      "--shade": "rgb(46 52 36 / 0.24)",
+      /* 11.0 / 7.3 / 5.4 / 2.7 on the panel, in a green-grey ink. */
+      "--paper": "#2d2f27",
+      "--paper-dim": "#484a42",
+      "--paper-mute": "#5b5d55",
+      "--paper-faint": "#8b8e84",
+      /* work 3.8, ask 2.7, fail 5.3. The fail is deliberately the strongest
+         of the three here: on a restful, low-contrast ground the one thing
+         that must still interrupt you is a card that broke. The first draft's
+         fail sat 0.098 from its ask in Oklab, two browns on cream. This one is
+         0.18 away. */
+      "--st-work": "#31835d",
+      "--st-ask": "#c47d04",
+      "--st-soft": "#9c7a42",
+      "--st-rest": "#86877f",
+      "--st-fail": "#a8372a",
+      /* Constantia rather than Sitka. Both are screen serifs, and Constantia
+         has more colour on the page: open counters and a slight calligraphic
+         slope. On cream at reading length that is the difference between a
+         document and a book. `--util` stays Corbel: labels stay out of the
+         way. */
       "--display": '"Constantia", "Sitka Display", Georgia, serif',
       "--body": '"Constantia", "Sitka Text", Georgia, serif',
       "--ch-radius": "6px",
-      /* Sage-tinted and shallower than `sugar`'s. Cards on this wall should
-         look set down on paper rather than floating above it — the skin's
-         whole argument is calm, and a deep shadow is a card demanding to be
-         noticed. */
-      "--ch-shadow": "0 1px 2px rgb(45 50 35 / 0.05), 0 4px 12px -6px rgb(45 50 35 / 0.13)",
+      /* Shallower than sugar's. Cards here should look set down on paper,
+         not floating above it. */
+      "--ch-shadow": "0 1px 2px rgb(46 52 36 / 0.09), 0 5px 14px -7px rgb(46 52 36 / 0.22)",
+      "--ch-bloom": "0.3",
+      "--ch-wash": "5%",
     },
     builtin: true,
   },
@@ -577,14 +621,18 @@ export const FAMILIES: Record<string, { from: number; to: number; what: string }
 };
 
 /** The floors, all of them observed rather than invented: each is set just
- *  below the tightest value the four built-in skins actually reach, so a skin
+ *  below the tightest value the built-in skins actually reach, so a skin
  *  that is materially worse than the ones that ship fails and one that is
  *  merely different does not.
  *
- *    contrast   tightest shipped 2.6  (meadow's faint-adjacent rest)
- *    apart      tightest shipped 0.13 (sugar's ask/fail)
- *    rest sat   loosest  shipped 0.12 (twilight)
- */
+ *    contrast   tightest shipped 2.59 (vellum's ask: amber dark enough for
+ *                                      more on paper is brown)
+ *    apart      tightest shipped 0.16 (vellum's ask/fail)
+ *    rest sat   loosest  shipped 0.10 (studio)
+ *
+ *  These are about status. What the ground itself owes (order, spread, no
+ *  glare, neutral neutrals) is asserted in `test/palette.test.ts` under "is
+ *  a place", with its numbers taken from studio. */
 export const FLOORS = {
   /** A status colour is a mark rather than a glyph, so 3:1 is the standard to
    *  reach for and 2.5 is where it stops being a mark at all. */

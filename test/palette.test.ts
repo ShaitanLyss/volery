@@ -25,7 +25,9 @@ import {
   importSkins,
   inFamily,
   isSkinKnob,
+  luminance,
   nextSkin,
+  oklab,
   parseHex,
   resolveSkin,
   skinChainOf,
@@ -385,6 +387,142 @@ describe.each(SKINS.map((s) => [s.label, s.id] as const))("%s keeps status meani
   });
 });
 
+/* ── the ground is a place, not a palette ─────────────────────────────────
+ *
+ * Everything above is about legibility: can you read a status, a rung, a
+ * hairline. All four shipped skins passed all of it while the two light ones
+ * were, in the words of the person they were for, burning their eyes with no
+ * depth left. Card against wall measured 1.13 on `sugar` against studio's
+ * 1.08, so the number said "fine" while the scene was broken. What was broken
+ * was never a pair of colours. It was the *ground*: how bright the field is,
+ * whether the surfaces are in order and spread far enough apart to be objects,
+ * whether the neutrals are neutral, and whether light was being asked to do a
+ * job only a dark ground lets it do.
+ *
+ * Every number below comes from studio, the case known to work, and the light
+ * skins are held to it. The lesson the dormant check above already records:
+ * a floor derived from the skins in front of you cannot fail, it can only
+ * ratify. */
+
+/** Oklab lightness and chroma of a literal colour, or null. */
+const lightness = (hex: string) => oklab(hex)?.[0] ?? null;
+const chroma = (hex: string) => {
+  const o = oklab(hex);
+  return o ? Math.hypot(o[1], o[2]) : null;
+};
+const isLight = (v: Record<string, string>) => (luminance(v["--well"]) ?? 0) > 0.3;
+
+describe.each(SKINS.map((s) => [s.label, s.id] as const))("%s is a place", (_l, id) => {
+  const v = drawn(id);
+  const L = (k: string) => lightness(v[k]);
+
+  /* Studio's four surfaces are a ladder: panel 0.161 < wall 0.185 < card
+     0.222 < chip 0.257. The panel is a recess, a card is lit, and a chip sits
+     on a card. A light ground needs the other order: wall < chip < panel <
+     card. The card is the brightest object, the panel a reading surface a step
+     down, and chips and fences a step toward the wall, so they read as inset.
+     The first `sugar` had neither order: its chips were darker than its cards
+     *and* its panel was lighter than its wall *and* all four sat within 0.04.
+     That is one white, which is what "no depth" was. */
+  test("its surfaces are in order and far enough apart to be objects", () => {
+    const [well, wall, card, chip] = ["--well", "--ink", "--surface", "--raised"].map(L);
+    if ([well, wall, card, chip].some((x) => x === null)) return;
+    const order = isLight(v)
+      ? ([["--ink", wall], ["--raised", chip], ["--well", well], ["--surface", card]] as const)
+      : ([["--well", well], ["--ink", wall], ["--surface", card], ["--raised", chip]] as const);
+    for (let i = 1; i < order.length; i++) {
+      expect(
+        order[i][1]!,
+        `${order[i][0]} (L ${order[i][1]!.toFixed(3)}) is not above ${order[i - 1][0]} (L ${order[i - 1][1]!.toFixed(3)})`,
+      ).toBeGreaterThan(order[i - 1][1]!);
+    }
+    /* Studio spreads 0.096 across the four, and its card sits 0.037 above
+       its wall. The floors are set under those, not under what the light
+       skins happened to reach. */
+    const all = [well!, wall!, card!, chip!];
+    const spread = Math.max(...all) - Math.min(...all);
+    expect(spread, `the four surfaces span only ${spread.toFixed(3)} in Oklab L`).toBeGreaterThanOrEqual(
+      0.06,
+    );
+    expect(Math.abs(card! - wall!), "a card is not a step off its wall").toBeGreaterThanOrEqual(0.03);
+  });
+
+  /* The burn. On studio the bright things are small: text, a glow, a selected
+     outline. On the first light skins the bright thing was the whole window,
+     with cards at #ffffff and panels a hair under. A light skin is paper under
+     room light, and paper is far dimmer than a monitor's white. So no surface
+     may reach near-white, and the wall, which is most of the window, must stay
+     a dim paper. */
+  test("its field does not glare", () => {
+    if (!isLight(v)) return;
+    for (const k of ["--ink", "--well", "--surface", "--raised", "--hollow"]) {
+      const l = L(k);
+      if (l === null) continue;
+      expect(l, `${k} is at Oklab L ${l.toFixed(3)}, which is near-white`).toBeLessThanOrEqual(0.965);
+    }
+    const wall = luminance(v["--ink"]);
+    if (wall !== null) {
+      expect(wall, `the wall is at ${wall.toFixed(2)} of white`).toBeLessThanOrEqual(0.75);
+    }
+    /* And the top of the ink ramp is held under studio's 15.4. Dark text at
+       full contrast on a light field is the other half of what tires the eye. */
+    const top = contrast(v["--paper"], v["--well"]);
+    if (top !== null) expect(top).toBeLessThanOrEqual(13);
+  });
+
+  /* Colour on this wall means status, so the ground and the ink must be close
+     to colourless. Studio's surfaces reach chroma 0.008, its lines 0.013 and
+     its ink 0.019. At low lightness a tint hides, which is why studio's brown
+     reads as near-black. At high lightness it shows: the first `sugar` had
+     lines at 0.036 and was simply pink, and the first `twilight` ran
+     0.03-0.06 and read as a purple application. The ceilings are about
+     three times studio's, enough for a skin to have a hue and too little for
+     it to be one. */
+  test("its neutrals are near colourless", () => {
+    const ceilings: [string[], number][] = [
+      [["--ink", "--well", "--surface", "--raised"], 0.025],
+      [["--edge", "--rule"], 0.045],
+      [["--paper", "--paper-dim", "--paper-mute", "--paper-faint"], 0.035],
+    ];
+    for (const [keys, max] of ceilings) {
+      for (const k of keys) {
+        const c = chroma(v[k]);
+        if (c === null) continue;
+        expect(c, `${k} ${v[k]} has chroma ${c.toFixed(3)}`).toBeLessThanOrEqual(max);
+      }
+    }
+  });
+
+  /* Light only reads as light where the ground is dark. On paper the status
+     halo at studio's strength is a coloured stain spreading under the card,
+     and a black shadow is a grey smear. So a light skin owes three things:
+     its glow turned down, a live card that says "alive" by tint instead, and
+     shadows made of its own ground at an alpha rather than of black. */
+  test("on a light ground, nothing glows and nothing is black", () => {
+    if (!isLight(v)) return;
+    expect(Number(v["--ch-bloom"]), "--ch-bloom on a light ground").toBeLessThanOrEqual(0.5);
+    expect(parseFloat(v["--ch-wash"]), "--ch-wash on a light ground").toBeGreaterThan(0);
+    const alpha = /\/\s*([\d.]+)\s*\)/.exec(v["--shade"] ?? "");
+    expect(alpha, `--shade is "${v["--shade"]}", which has no alpha of its own`).not.toBeNull();
+    expect(Number(alpha![1])).toBeLessThanOrEqual(0.4);
+  });
+
+  /* A dormant card is the least important thing on the wall, and it must not
+     be drawn as the heaviest. The first light skins fixed "invisible" by
+     filling it darker than the wall (1.20 off it, against a live card's 1.13),
+     so the spent card became the most inked block on the board. On a dark
+     wall a spent card is unlit; on paper it is flat on the surface. Either
+     way its fill sits no further from the wall than a live card does. */
+  test("a dormant card is never heavier than a live one", () => {
+    const fill = contrast(v["--hollow"], v["--ink"]);
+    const live = contrast(v["--surface"], v["--ink"]);
+    if (fill === null || live === null) return;
+    expect(fill, `dormant fill ${fill.toFixed(2)} vs live card ${live.toFixed(2)}`).toBeLessThanOrEqual(
+      live,
+    );
+  });
+});
+
 describe("the shipped skins are what they say they are", () => {
   test("every colour in a built-in is a literal, so the suite can read it", () => {
     /* Not a rule for authored skins — `var(…)` and `color-mix(…)` are legal
@@ -407,10 +545,11 @@ describe("the shipped skins are what they say they are", () => {
     }
   });
 
-  test("the two light skins really are light, and twilight really is dark", () => {
-    /* A cheap sanity check that the three feels are three feels — if a skin
-       were pasted in from the wrong place this is what would notice. */
+  test("the light skins really are light, and twilight really is dark", () => {
+    /* A cheap sanity check that the feels are distinct feels: if a skin were
+       pasted in from the wrong place, this is what would notice. */
     const lum = (id: string) => contrast(drawn(id)["--well"], "#000000")!;
+    expect(lum("vellum")).toBeGreaterThan(lum(STUDIO));
     expect(lum("sugar")).toBeGreaterThan(lum(STUDIO));
     expect(lum("meadow")).toBeGreaterThan(lum(STUDIO));
     expect(lum("twilight")).toBeLessThan(lum("sugar"));
