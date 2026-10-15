@@ -308,7 +308,7 @@ export const SKINS: Skin[] = [
       "--st-fail": "#b63d29",
       "--ch-shadow": "0 1px 2px rgb(62 48 36 / 0.1), 0 6px 18px -8px rgb(62 48 36 / 0.26)",
       "--ch-bloom": "0.3",
-      "--ch-wash": "5%",
+      "--ch-wash": "7%",
     },
     builtin: true,
   },
@@ -362,7 +362,7 @@ export const SKINS: Skin[] = [
          not the animated shadow `motion.ts` is about. */
       "--ch-shadow": "0 1px 2px rgb(72 40 58 / 0.1), 0 8px 20px -9px rgb(72 40 58 / 0.28)",
       "--ch-bloom": "0.3",
-      "--ch-wash": "6%",
+      "--ch-wash": "8%",
       /* The float, which costs. It is on because a "cutesie happy" wall that
          does not move is a screenshot of one. 3px over 3.4s is a drift at the
          edge of vision, not a bounce. `spare` steps it and `still` stops it
@@ -479,7 +479,7 @@ export const SKINS: Skin[] = [
          not floating above it. */
       "--ch-shadow": "0 1px 2px rgb(46 52 36 / 0.09), 0 5px 14px -7px rgb(46 52 36 / 0.22)",
       "--ch-bloom": "0.3",
-      "--ch-wash": "5%",
+      "--ch-wash": "7%",
     },
     builtin: true,
   },

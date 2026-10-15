@@ -258,6 +258,14 @@
       live.add(l.id);
       const r = runtime(l.id);
       ctx.save();
+      /* Weather on paper is a mark on the page. On the dark wall a stroke
+         halfway between the ground and the bone reads as smoke in a room; on a
+         light skin the same stroke, halfway to the ink, reads as graphite
+         somebody left on the paper, heavier than anything else at rest. That is
+         the same lesson as the status glow (`--ch-bloom`), so it gets the same
+         answer: everything this layer draws is taken down together. 1 on a dark
+         ground, so the studio's weather is exactly what it was. */
+      ctx.globalAlpha = skin.light ? LIGHT_WEATHER : 1;
       if (l.kind === "swirls") swirls(ctx, l, r, dt);
       else if (l.kind === "leaves") leaves(ctx, l, r, dt);
       else if (l.kind === "ripples") ripples(ctx, l, r, dt);
@@ -268,6 +276,9 @@
        keeps nothing alive. */
     for (const id of [...runtimes.keys()]) if (!live.has(id)) runtimes.delete(id);
   }
+
+  /** How much of the weather a light ground keeps. See the loop above. */
+  const LIGHT_WEATHER = 0.55;
 
   /** The tone a layer draws in. */
   function tone(l: Layer): Rgb {
