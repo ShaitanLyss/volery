@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Conversation } from "./conversation.svelte";
   import { cubicOut } from "svelte/easing";
+  import { untrack } from "svelte";
   import {
     Studio,
     layout,
@@ -51,6 +52,7 @@
   import type { Cycle } from "./cycle.svelte";
   import type { Profile } from "./ambience";
   import { glassAt, spotOf, stickTo, unstickFrom, type Spot } from "./glass";
+  import type { Measure } from "./arrange.svelte";
   import Wisps from "./Wisps.svelte";
   import { overflowScrolls, wheelMeaning, type Box as Reachable } from "./wheel";
   import { adrift } from "./portage.svelte";
@@ -115,6 +117,7 @@
     pane,
     beacon,
     homeScreen = null,
+    onchrome,
     focusedId,
     draft = "",
     draftIds = [],
@@ -168,6 +171,13 @@
      *  here because it is `App.svelte`'s arithmetic (`span.ts`), and `Canvas`
      *  measuring a box it does not own is how two numbers drift apart. */
     homeScreen?: { x: number; y: number; w: number; h: number } | null;
+    /** Every reading of what the window draws besides the pane, on one screen
+     *  — the title bar and the dock, as tall as they are this instant. The
+     *  arrangement keeps the least of them as the chrome at rest
+     *  (`arrange.ts::Chromes`), and the more readings it sees the likelier the
+     *  dock was seen with nothing open in it. Not asked while spread, when the
+     *  pane is the whole window. */
+    onchrome?: (h: number) => void;
     /** Cards an agent has just closed, for as long as their fade lasts.
      *
      *  Deliberately **not** part of `convs` and never laid out: they have left
@@ -428,11 +438,15 @@
       const w = wall.getBoundingClientRect();
       homeBox = { x: w.left - g.left, y: w.top - g.top, w: wall.clientWidth, h: wall.clientHeight };
       paneBox = { x: 0, y: 0, w: el.clientWidth, h: el.clientHeight };
+      if (!homeScreen && el.clientHeight > 0) onchrome?.(window.innerHeight - el.clientHeight);
     };
     const ro = new ResizeObserver(read);
     ro.observe(el);
     ro.observe(wall);
-    read();
+    /* Untracked: `read` hands a reading to `onchrome` only while on one
+       screen, and that test must not make this effect — and its observer —
+       start again every time the studio is spread or gathered. */
+    untrack(read);
     return () => ro.disconnect();
   });
 
@@ -2409,6 +2423,65 @@
     studio.x += dx;
     studio.y += dy;
     /* The debounced save above is watching x/y, so nothing to persist by hand. */
+  }
+
+  /** Whether the pane has been measured yet — the one thing a one-screen room
+   *  is adopted against (`arrangements.measure`). Read through a `$derived`
+   *  upstairs, so it is a dependency on the transition and not on every
+   *  pixel the dock grows. */
+  export function glassReady(): boolean {
+    return paneBox.w > 0 && paneBox.h > 0;
+  }
+
+  /** What `arrange.svelte.ts::settle` needs to carry a one-screen glass onto a
+   *  screen of another size: what the window draws that the pane is not (the
+   *  title bar and the dock), and what each thing that can stand on the glass
+   *  is drawn at there — since a thing that does not grow with the screen has
+   *  to keep its edge, and only this file knows the sizes.
+   *
+   *  Every thing that *could* be on the glass, not only what is on it now: the
+   *  room being adopted may not be the room in front of you, and what it holds
+   *  is the store's to know. A card and a card on another wall are one size
+   *  whichever card it is (`*`). Null before the pane has been measured.
+   *
+   *  The pane is read off the element here and now rather than out of
+   *  `paneBox`, which only the ResizeObserver refreshes — and a settle asked
+   *  the moment the studio comes back from being spread would otherwise read
+   *  the whole window as the pane and no chrome at all. `site` is the caller's
+   *  to add: where the dock is moored is not this file's to know. */
+  export function measureGlass(): Omit<NonNullable<ReturnType<Measure>>, "site"> | null {
+    if (!glassReady() || !glassEl) return null;
+    const pane = { w: glassEl.clientWidth, h: glassEl.clientHeight };
+    if (pane.w <= 0 || pane.h <= 0) return null;
+    const card: [number, number] = [CARD_BOX.wall.w, CARD_BOX.wall.h];
+    /* A size that is not a finite number goes to JSON as `null`, which the
+       store cannot read as a size — and one unreadable entry would refuse the
+       whole adopt. Left out instead, it travels as a point. */
+    const sized = <T,>(
+      items: T[],
+      id: (t: T) => string,
+      box: (t: T) => { w: number; h: number },
+    ): Record<string, [number, number]> => {
+      const out: Record<string, [number, number]> = {};
+      for (const t of items) {
+        const b = box(t);
+        if (Number.isFinite(b.w) && Number.isFinite(b.h)) out[id(t)] = [b.w, b.h];
+      }
+      return out;
+    };
+    return {
+      chrome: {
+        w: Math.max(0, window.innerWidth - pane.w),
+        h: Math.max(0, window.innerHeight - pane.h),
+      },
+      sizes: {
+        card: { "*": card },
+        shadow: { "*": card },
+        territory: sized(model.regions, (r) => r.id, (r) => r),
+        image: sized(board.images, (i) => i.id, (i) => i),
+        widget: sized(widgets.items, (w) => w.id, drawnSize),
+      },
+    };
   }
 
   export function fitAll() {

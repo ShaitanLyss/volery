@@ -60,12 +60,11 @@ and the external monitor beside it were two rooms with two glasses, each going s
 worked in the other, and what she saw was "my glass did not carry from the laptop to three
 screens with Volery on one". Her own words are the rule: *both have Volery on one landscape
 screen; the number of connected screens or which screen shouldn't matter.* Orientation is the
-one fact kept, because a portrait pane is a genuinely different shape to arrange in; a
-different size is absorbed where it always was, by `glassAt` clamping a spot onto the pane it
-lands on. **Scale in the fingerprint still holds for a spread desk**, which is a shape; it
-stopped applying to one screen, which is not. (A glass that is *proportional* across
-landscape screens of different sizes — fractions rather than pixels — is a separate change
-and not this one.)
+one fact kept, because a portrait pane is a genuinely different shape to arrange in. A
+different size was at first absorbed by `glassAt` clamping a spot onto the pane it landed on;
+it is now carried proportionally — see "A different size is the same glass, scaled" below.
+**Scale in the fingerprint still holds for a spread desk**, which is a shape; it stopped
+applying to one screen, which is not.
 
 The key changing is itself a way to lose a glass, so the fix leans on the path that already
 existed: a first sighting of `one landscape screen` is copied from `nearest`, and the room this
@@ -95,12 +94,159 @@ nothing on the glass.**
   the most anything can honestly say when it has.
 - **A clone is not rescaled.** Copying into a fresh room is "arrive looking like the one you
   came from" on the home screen, and the home screen is drawn at its own scale in both.
-- **`settle`'s early return is on the key *and* the unit.** A re-spread from another home that
-  lands while a settle is in flight never passes through the unspread room, and the key alone
-  would call it unchanged.
+- **`settle`'s early return is on the key *and* the unit** — and, unspread, the one screen's
+  size (below). A re-spread from another home that lands while a settle is in flight never
+  passes through the unspread room, and the key alone would call it unchanged.
 - **The timeline stack still hangs off the home screen**, by design (`glass.md`): it is the
   default for a timeline nobody has placed, and centring a default across the spread puts it on
   a seam. Anything you *put* on the glass stays put.
+
+### A different size is the same glass, scaled
+
+Lyss, 2026-10-15, the same afternoon: *"it should be identical but scaled to match."* Sharing
+one room between the laptop and the monitor beside it was half of that; the clamp that absorbed
+the size difference was the other half going wrong. A widget in the laptop's top-right corner
+landed two-thirds of the way across the monitor, and one at the laptop's bottom edge floated in
+the monitor's middle — the same pixels, read on a pane half again as big.
+
+**A one-screen room's spots are a share of a frame**, and the frame is recorded against the
+room (`arrangement.frame_w`/`frame_h`, schema v53). When the room comes back on a screen of
+another size, `adopt_in` carries every spot from the frame it was laid out in to the one it is
+about to be drawn in (`arrange::reframe`), and records the new one. The decided fork holds:
+**position scales, size does not, and the clamp is what is left for what cannot fit at all.**
+
+- **Proportional over the travel, not over the pane** (`arrange::travel`). What is kept is
+  `x / (frame - size)` — how far along the room it has to move in a thing is — so flush right
+  stays flush right, the middle stays the middle, and anything that fitted the laptop fits the
+  monitor without the clamp touching it. A share of the pane keeps the *top-left corner's*
+  share instead, and everything near the far edges drifts inwards by its own size times the
+  growth. That needs each thing's size, which only the canvas knows (a card is `CARD_BOX.wall`,
+  a territory is however its cards laid it out), so `settle` hands a size book in with the
+  adopt (`Canvas.measureGlass`); anything missing from it travels as a point.
+- **It stays invertible, and that is what every other choice serves.** Nothing is clamped in
+  storage and a thing too big for either frame is left where it is both ways, so laptop →
+  monitor → laptop gives back the pixels you left (measured on a copy of her wall: 50 spots, the
+  worst off by 1e-13 px). Successive carries telescope — `(F₂−w)/(F₁−w) · (F₃−w)/(F₂−w)` is
+  `(F₃−w)/(F₁−w)` — so nothing creeps across many moves either. **Both hold for a thing whose
+  size did not change in between.** A territory grows as its cards open, a plate as its plan
+  does, and each carry keeps the share the thing had *at that moment* — which is the right
+  answer and not a round trip.
+- **Pixels and a frame rather than fractions in the table**, deliberately. Fractions in the
+  columns would change what `glass_x` means to every read path in the app (`layout`'s carried
+  territory cards add offsets to it), and fractions in `glass_spot` alone would need `remember`
+  to divide by a size Rust does not have. Pixels with the frame they are in say exactly what
+  fractions say, the columns stay a cache of the room you are in, and the conversion happens
+  once per change of screen in the one place that has the sizes.
+- **The frame is the screen's, not the window's** (`arrange.ts::frameOf`): the monitor's work
+  area less the window's own chrome *at rest*. So un-maximising the window changes nothing and
+  a narrower window is still absorbed by the clamp, as it always was. Only a change of *screen*
+  re-expresses anything.
+- **The chrome is a memory, not a reading** (`arrange.ts::Chromes`, `restChrome`). It was read
+  live, as the window less the pane, and the pane is `main.wall`, which shrinks under the dock
+  whenever the dock grows — so a question open in the dock at the moment the screen changed
+  was baked into the frame the whole glass was carried onto, three hundred pixels short for
+  good, and a draft restored at launch skewed the migration's first record (red-team,
+  2026-10-15). The chrome at rest is the *least* it ever is, so the least seen is the honest
+  estimate: every pane the canvas measures is a reading (`Canvas`'s `onchrome`), not only the
+  ones a settle happens to take, and the memory is kept across launches because the first
+  settle of a launch is the one likeliest to find something open in the dock. **Per dock
+  mooring**, since a floating dock is no chrome at all and a minimum carried from it to a
+  moored one would be a lie about the other. A reading below one pixel is not a reading — a
+  pane caught mid-way out of being spread covers the whole window, which a window with a
+  title bar never does — and `measureGlass` reads the pane off the element rather than out of
+  the ResizeObserver's last answer, which is the spread pane for a beat after unspreading.
+  **The settle's own reading is taken before `arrangements.wanted` moves**, because the
+  moorings follow `wanted`: the moment it names the new room, the dock's mooring is the new
+  room's while the pane on screen is still the old one's, and a reading filed then went under
+  the wrong mooring — a floating dock's header-only height kept as a moored one's rest, for
+  good, since the memory only goes down (red-team's second pass). The frame is then built from
+  the memory for the mooring the *new* room will be drawn with, and a mooring never seen at
+  rest is no frame at all: the dock re-moors, the canvas reports what that measures, and the
+  next focus, move or resize adopts with it. What the memory cannot follow is the title bar
+  growing (a larger reading size): the least seen then stays a little under the truth until
+  that mooring is next seen smaller. Nor does a frame already recorded improve when the memory
+  later finds a lower minimum; it is what the next carry starts from.
+- **Only a change of screen moves anything** (`framePlan`). A room whose last screen
+  (`screenOf`: size and scale, never position) is the one in front of you is already in this
+  screen's frame, whatever the pane measures today, and keeps the frame it recorded on arrival.
+  Re-expressing off a fresh measurement every focus would creep every spot by the height of
+  whatever draft was open. A scale change on the same panel *is* a change of screen — the CSS
+  pane differs — and is carried.
+- **A room is never adopted blind.** One screen's room waits for the pane to be measured
+  (`settle` returns before adopting, and the effect in `App.svelte` asks again on the canvas's
+  `glassReady` transition), because adopting writes this screen into the room's
+  `screens_json`, and beside a frame from another screen that is a room whose every later
+  settle believes its spots were laid out here — nothing is ever carried again. The same for a
+  `known_arrangements` that failed, and for a pane that cannot be made into a frame. The next
+  focus, move or measurement asks again.
+- **And the moorings do not wait for it.** `arrangements.wanted` is the room the screens call
+  for whether or not it has been adopted, and `berth.svelte.ts` keys on that first: a mooring
+  needs nothing of the pane, and an empty wall — which draws no canvas, so never adopts a
+  one-screen room — was otherwise left using the moorings of the spread desk it had just left.
+- **A copy arrives scaled.** A fresh room cloned from an ancestor laid out on another screen
+  size is that glass carried onto this one; an ancestor on *this* screen arrives as it was, with
+  its frame — which is what makes the first flip between the two modes below move nothing.
+- **Spread rooms have no frame** and are never reframed: their spots are about the desk, and
+  `unit` is what carries them between homes. One adopt moves a room by at most one of the two.
+- **Portrait screens get it too.** `one portrait screen` is one room for every portrait screen
+  for the reason landscape is, and the carry is the same arithmetic; special-casing it out would
+  have been code to keep a clamp nobody wanted.
+
+**The migration is the frame, and it is estimated at first sight rather than in the rung.**
+v53 adds the two columns and every room starts with none, because what a pane is short of its
+screen — the taskbar, the title bar, the dock — is a fact about the live window that no stored
+row carries. `estimateFrame` takes it to be what it is *now*: the live frame moved by the
+difference between the screen the room was last seen on (`screens_json`) and this one. Exact
+when they are the same screen (the first launch on the laptop the glass was laid out on moves
+nothing and records the laptop's frame), and exact again when the taskbar is the same size on
+both — proved on a copy of her v52 wall seeded with the room recorded as laid out on the
+external and launched on the laptop: carried down by the estimate, and back on the external
+every spot was exactly what had been saved there. **The one thing it cannot know** is a
+room moved between two landscape screens after `de1a479` and before this, without anything
+asking — its `screens_json` names the screen of its last adopt, which a move within one room
+never triggered. Nothing records which screen those drags were made on.
+
+### Scaled, or one glass per screen size
+
+Both are wanted, and she said why: one glass that follows you is the point, and on a bigger
+screen you may want more on it or the same things elsewhere. So a choice, **one for the whole
+wall, default scaled** (`arrange.ts::GlassScale`, kept in `localStorage` beside the other
+ground-menu settings, since it is about the screens on this desk).
+
+- **Per size puts the size back in the key, and only the size** — `one screen 1920x1200@1.50`.
+  Which screen, how many and which is primary still reach nothing. Spelt apart from the
+  pre-orientation per-monitor keys (`1920x1200+0+0@1.50`): those rows are the glass from before
+  `de1a479`, and the first flip should find the glass you have rather than revive that one.
+- **Two rooms, never two readings of one**, which is what makes the flip lossless: it selects
+  whose spots are drawn and converts nothing. The scaled room is not touched while you are in
+  per-size, so flipping back finds it exactly as it was left — asserted in Rust and on a lab.
+- **A first per-size sighting is copied from the scaled room of its orientation**, carried onto
+  this screen (`ancestorFor`) — not from `nearest`. On the screen you were just on the two are
+  the same room and nothing moves. On a screen size never seen per size, `nearest` would pick
+  the pre-orientation per-monitor row for that very screen, a perfect 1, and hand back the
+  glass as it stood before `de1a479`: things taken off since reappearing, things put up since
+  missing (red-team, 2026-10-15). Per size means "this screen keeps its own from here on", and
+  from here on starts from what is in front of you. The scaled room's *own* first sighting
+  still goes through `nearest`, where that old row is exactly right.
+- **The moorings fork with it.** The panel and the dock are kept per room (`berth.md`), so per
+  size each screen size keeps its own moorings too — and flipping back finds the scaled room's
+  as they were, for the same reason the glass does.
+- **Spread is untouched by it** — a desk is a shape either way.
+- `<space>w g` flips it and says what is now true (`glassScaleSaid`), since the flip itself
+  often moves nothing; the ground menu carries both rows with the chord as their note.
+
+### Testing it from one desk
+
+Nobody can plug a monitor in over the control surface, so the `screens` op answers `look` with
+the monitors it is given (`arrangements.pretend`) and lets the glass follow — everything after
+`look` is the app's own path, and `snapshot.arrangement` says `pretend: true` until `screens`
+is called with nothing. A pretend screen's frame comes off its own work area, so it can be
+bigger than the lab window: the store carries the spots to the pretend frame and the pane
+clamps what it draws, which is the clamp doing its job rather than a failure.
+
+**A widget saves on a 250ms debounce, and a room change supersedes a save still queued**
+(`Widgets.adoptGlass`) — so a harness that moves a widget and changes screens in the same
+breath loses the move, correctly. Let it land first, as any hand would.
 
 ### Similarity is an alignment search, and trusting the normalisation was the bug
 
@@ -167,9 +313,17 @@ clamp on the very first draw.
 Off `attention.focused`, which is the shape the architecture note prefers: nothing emits an
 event when a monitor is plugged in or the window is dragged onto another screen, but coming
 back to the window is both when the answer can have changed and when it is worth having. The
-spread is the other trigger and that one genuinely *is* an event. Everything past the first
-question is bounded by `settle`, which returns nothing at all unless the room's key or its unit moved —
-so the residue of a focus is one `currentMonitor` call.
+spread is the other trigger and that one genuinely *is* an event, and so are two more: the
+window **moving** — dragged by its title bar onto the monitor beside it, which at one scale fires
+no resize and keeps the focus, and which was the gap a widget placed straight afterwards fell
+through to be carried twice (`onMoved`, `onScaleChanged`); the window **resizing**, which is what
+maximising on the monitor you just dragged it to is, or Windows
+moving it when a screen goes away (`resize`); all three coming to rest at 400ms rather than
+every frame of a drag; and the canvas's pane being **measured** for the first time, since a
+one-screen room is never adopted before it is. Everything past the first question is bounded by
+`settle`, which returns nothing at all unless the room's key, its unit or its one screen moved —
+so the residue of each is one `currentMonitor` call. What is left is a widget placed inside the
+400ms after a window lands on another screen, which no hand does.
 
 ### The one kind with no columns
 

@@ -1,13 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import {
+  GLASS_SCALES,
   NO_ARRANGEMENT,
+  ancestorFor,
+  chromesFor,
+  restChrome,
   ONE_LANDSCAPE,
   ONE_PORTRAIT,
+  estimateFrame,
   fingerprint,
+  frameOf,
+  framePlan,
+  glassScaleFor,
+  glassScaleSaid,
   nearest,
   normalise,
   roomKey,
+  screenOf,
   similarity,
+  type Known,
   type Screen,
 } from "../src/lib/arrange";
 
@@ -266,5 +277,285 @@ describe("spread, which screen is primary or home changes nothing on the glass",
     const a: Screen = { x: 0, y: 0, w: 1920, h: 1080, scale: 1 };
     const b: Screen = { ...a, scale: 1.5 };
     expect(fingerprint([a, b])).toBe(fingerprint([b, a]));
+  });
+});
+
+/* Sink 398d2509, Lyss 2026-10-15: "it should be identical but scaled to match".
+   A landscape screen of another size is the same room — and now the same glass,
+   carried onto the new pane rather than clamped onto it. What is decided here
+   is *whether* and *from what*; the arithmetic is `arrange.rs::travel`. */
+
+/* The laptop at 150% — 1280×800 CSS — with a 48px taskbar, and the monitor
+   beside it at 100%. */
+const LAPTOP_150: Screen = { x: 0, y: 0, w: 1920, h: 1200, scale: 1.5, work: { w: 1920, h: 1128 } };
+const MONITOR_100: Screen = { x: 1920, y: 0, w: 2560, h: 1440, scale: 1, work: { w: 2560, h: 1392 } };
+/* What the window draws that the pane is not: the title bar and the dock. */
+const CHROME = { w: 0, h: 106 };
+
+describe("the pane a one-screen glass is a share of", () => {
+  test("is the screen's work area less the window's own chrome, in CSS pixels", () => {
+    expect(frameOf(LAPTOP_150, CHROME)).toEqual({ w: 1280, h: 646 });
+    expect(frameOf(MONITOR_100, CHROME)).toEqual({ w: 2560, h: 1286 });
+  });
+
+  test("an older Tauri with no work area reads as the whole screen", () => {
+    const bare: Screen = { x: 1920, y: 0, w: 2560, h: 1440, scale: 1 };
+    expect(frameOf(bare, CHROME)).toEqual({ w: 2560, h: 1334 });
+  });
+
+  test("nothing sensible is no frame, never a reason to move anything", () => {
+    expect(frameOf(undefined, CHROME)).toBeNull();
+    expect(frameOf({ x: 0, y: 0, w: 100, h: 100, scale: 1 }, { w: 0, h: 500 })).toBeNull();
+  });
+
+  test("a room stored before frames is estimated off the screen it was last on", () => {
+    const live = frameOf(MONITOR_100, CHROME)!;
+    // On that very screen, exactly the live frame.
+    expect(estimateFrame([MONITOR_100], MONITOR_100, live)).toEqual(live);
+    // On the laptop, exactly the laptop's — the taskbar and the chrome are
+    // taken to be what they are now, and here they are.
+    expect(estimateFrame([LAPTOP_150], MONITOR_100, live)).toEqual({ w: 1280, h: 646 });
+    // A spread room is not a share of one pane.
+    expect(estimateFrame([LAPTOP_150, MONITOR_100], MONITOR_100, live)).toBeNull();
+    expect(estimateFrame([], MONITOR_100, live)).toBeNull();
+  });
+
+  test("the same screen is its size and scale, not where it is or its taskbar", () => {
+    const elsewhere = { ...LAPTOP_150, x: 4000, work: { w: 1920, h: 1200 } };
+    expect(screenOf([elsewhere])).toBe(screenOf([LAPTOP_150]));
+    expect(screenOf([MONITOR_100])).not.toBe(screenOf([LAPTOP_150]));
+    expect(screenOf([{ ...LAPTOP_150, scale: 1.25 }])).not.toBe(screenOf([LAPTOP_150]));
+    expect(screenOf([LAPTOP_150, MONITOR_100])).toBe(NO_ARRANGEMENT);
+  });
+});
+
+describe("whether a room's glass is carried, and from what", () => {
+  const LIVE_LAPTOP = frameOf(LAPTOP_150, CHROME)!;
+  const LIVE_MONITOR = frameOf(MONITOR_100, CHROME)!;
+  const NONE = { frame: null, fromFrame: null, cloneFrame: null };
+  const room = (screens: Screen[], frame: { w: number; h: number } | null, key = ONE_LANDSCAPE): Known => ({
+    key,
+    screens,
+    seenAt: 1,
+    frame,
+  });
+  const plan = (key: string, screens: Screen[], live: { w: number; h: number } | null, known: Known[], ancestor: Known | null = null) =>
+    framePlan({ key, spread: false, screens, live, known, ancestor });
+
+  test("the laptop's room arriving on the monitor is carried from the laptop's pane", () => {
+    const known = [room([LAPTOP_150], LIVE_LAPTOP)];
+    expect(plan(ONE_LANDSCAPE, [MONITOR_100], LIVE_MONITOR, known)).toEqual({
+      frame: LIVE_MONITOR,
+      fromFrame: LIVE_LAPTOP,
+      cloneFrame: null,
+    });
+  });
+
+  test("back on the screen it was laid out on, nothing moves and the frame is kept", () => {
+    /* Measured a little short today — a draft open in the dock — and that must
+       not creep every spot each time the window comes back into focus. */
+    const known = [room([LAPTOP_150], LIVE_LAPTOP)];
+    const short = { ...LIVE_LAPTOP, h: LIVE_LAPTOP.h - 140 };
+    expect(plan(ONE_LANDSCAPE, [LAPTOP_150], short, known)).toEqual(NONE);
+  });
+
+  test("her glass from before this change is carried from the screen it was saved on", () => {
+    /* The migration: v53 adds the column and every room starts with no frame.
+       Laid out on the laptop and first seen again on the monitor, it is
+       estimated off the laptop and carried; first seen on the laptop, it is
+       recorded as it stands and nothing moves. */
+    const known = [room([LAPTOP_150], null)];
+    expect(plan(ONE_LANDSCAPE, [MONITOR_100], LIVE_MONITOR, known)).toEqual({
+      frame: LIVE_MONITOR,
+      fromFrame: LIVE_LAPTOP,
+      cloneFrame: null,
+    });
+    expect(plan(ONE_LANDSCAPE, [LAPTOP_150], LIVE_LAPTOP, known)).toEqual({
+      frame: LIVE_LAPTOP,
+      fromFrame: null,
+      cloneFrame: null,
+    });
+  });
+
+  test("the first flip to per-size copies the room you are in, and moves nothing", () => {
+    const scaled = room([LAPTOP_150], LIVE_LAPTOP);
+    const perSize = roomKey([LAPTOP_150], false, "per-size");
+    // Measured short, and still: the copy is in the ancestor's frame already.
+    expect(plan(perSize, [LAPTOP_150], { ...LIVE_LAPTOP, h: 600 }, [scaled], scaled)).toEqual({
+      frame: LIVE_LAPTOP,
+      fromFrame: null,
+      cloneFrame: null,
+    });
+  });
+
+  test("a per-size room first seen on the monitor is the nearest glass scaled to it", () => {
+    const laptop = room([LAPTOP_150], LIVE_LAPTOP, roomKey([LAPTOP_150], false, "per-size"));
+    const key = roomKey([MONITOR_100], false, "per-size");
+    expect(plan(key, [MONITOR_100], LIVE_MONITOR, [laptop], laptop)).toEqual({
+      frame: LIVE_MONITOR,
+      fromFrame: null,
+      cloneFrame: LIVE_LAPTOP,
+    });
+  });
+
+  test("spread, or before the pane is measured, there is nothing to say", () => {
+    const known = [room([LAPTOP_150], LIVE_LAPTOP)];
+    const key = roomKey(INVERTED_L, true);
+    expect(
+      framePlan({ key, spread: true, screens: INVERTED_L, live: LIVE_MONITOR, known, ancestor: null }),
+    ).toEqual(NONE);
+    expect(plan(ONE_LANDSCAPE, [MONITOR_100], null, known)).toEqual(NONE);
+  });
+
+  test("a copy of a spread room is not reframed — it has no one pane", () => {
+    const desk: Known = { key: fingerprint(INVERTED_L), screens: INVERTED_L, seenAt: 1, frame: null };
+    expect(plan(ONE_LANDSCAPE, [MONITOR_100], LIVE_MONITOR, [desk], desk)).toEqual({
+      frame: LIVE_MONITOR,
+      fromFrame: null,
+      cloneFrame: null,
+    });
+  });
+});
+
+describe("scaled or per size", () => {
+  test("scaled is one room for every landscape screen; per size puts the size back", () => {
+    expect(roomKey([LAPTOP_150], false, "scaled")).toBe(ONE_LANDSCAPE);
+    expect(roomKey([MONITOR_100], false, "scaled")).toBe(ONE_LANDSCAPE);
+    const a = roomKey([LAPTOP_150], false, "per-size");
+    expect(a).toBe("one screen 1920x1200@1.50");
+    expect(roomKey([MONITOR_100], false, "per-size")).not.toBe(a);
+    // Same size at another scale is another room — the pane differs.
+    expect(roomKey([{ ...LAPTOP_150, scale: 1.25 }], false, "per-size")).not.toBe(a);
+    // Which screen, where, and how many still reach nothing.
+    expect(roomKey([{ ...LAPTOP_150, x: 5000, y: 300 }], false, "per-size")).toBe(a);
+  });
+
+  test("per size never collides with a pre-orientation per-monitor key", () => {
+    /* Those rows are this morning's glass; the first flip should copy the
+       glass you have, not revive one from then under the same name. */
+    expect(roomKey([LAPTOP_150], false, "per-size")).not.toBe(fingerprint([LAPTOP_150]));
+  });
+
+  test("the choice does not reach a spread desk, which is a shape either way", () => {
+    expect(roomKey(INVERTED_L, true, "per-size")).toBe(roomKey(INVERTED_L, true, "scaled"));
+  });
+
+  test("anything but per-size is scaled, so a machine never asked gets the default", () => {
+    expect(glassScaleFor("per-size")).toBe("per-size");
+    expect(glassScaleFor("scaled")).toBe("scaled");
+    expect(glassScaleFor(null)).toBe("scaled");
+    expect(glassScaleFor("PER-SIZE")).toBe("scaled");
+    expect(glassScaleFor(undefined)).toBe("scaled");
+  });
+
+  test("the rows and the chord say what each does, in the house's lowercase", () => {
+    expect(GLASS_SCALES.map((g) => g.id)).toEqual(["scaled", "per-size"]);
+    for (const g of GLASS_SCALES) expect(g.label).toBe(g.label.toLowerCase());
+    expect(glassScaleSaid("scaled")).not.toBe(glassScaleSaid("per-size"));
+  });
+});
+
+describe("the chrome at rest", () => {
+  /* Red-team, 2026-10-15: the chrome was read live, so a question open in the
+     dock at the moment the screen changed was baked into the frame the whole
+     glass was carried onto — 300px short, for good. */
+  test("is the least seen at a mooring, and never more than now", () => {
+    let seen = {};
+    let r = restChrome(seen, "bottom", 133);
+    expect(r.chrome).toBe(133);
+    seen = r.seen;
+    // A question opens in the dock: the reading grows, the rest does not.
+    r = restChrome(seen, "bottom", 433);
+    expect(r.chrome).toBe(133);
+    expect(r.seen).toBe(seen);
+    // A smaller reading is a truer one.
+    r = restChrome(seen, "bottom", 120);
+    expect(r.chrome).toBe(120);
+    expect(r.seen).toEqual({ bottom: 120 });
+  });
+
+  test("a floating dock is its own mooring, so it cannot drag a moored one down", () => {
+    const { seen } = restChrome({ bottom: 133 }, "float", 47);
+    expect(restChrome(seen, "bottom", 400).chrome).toBe(133);
+    expect(restChrome(seen, "float", 400).chrome).toBe(47);
+  });
+
+  test("a reading that is not one leaves the memory alone", () => {
+    /* A pane caught mid-way out of being spread covers the whole window: no
+       chrome at all, which a window with a title bar never has. */
+    const seen = { bottom: 133 };
+    expect(restChrome(seen, "bottom", 0)).toEqual({ chrome: 133, seen });
+    expect(restChrome(seen, "bottom", Number.NaN)).toEqual({ chrome: 133, seen });
+    expect(restChrome({}, "top", -5)).toEqual({ chrome: null, seen: {} });
+  });
+
+  test("what is kept is read back safely", () => {
+    expect(chromesFor(JSON.stringify({ bottom: 133, float: 47 }))).toEqual({ bottom: 133, float: 47 });
+    expect(chromesFor("{not json")).toEqual({});
+    expect(chromesFor(null)).toEqual({});
+    expect(chromesFor(JSON.stringify([1, 2]))).toEqual({});
+    expect(chromesFor(JSON.stringify({ bottom: "133", top: -1, float: null }))).toEqual({});
+  });
+});
+
+describe("what a room seen for the first time is copied from", () => {
+  const SCALED: Known = { key: ONE_LANDSCAPE, screens: [LAPTOP_150], seenAt: 5, frame: { w: 1280, h: 646 } };
+  /* The pre-orientation per-monitor row for the external: this morning's glass. */
+  const LEGACY: Known = { key: fingerprint([MONITOR_100]), screens: [MONITOR_100], seenAt: 1, frame: null };
+  const PER_SIZE_LAPTOP: Known = {
+    key: roomKey([LAPTOP_150], false, "per-size"),
+    screens: [LAPTOP_150],
+    seenAt: 6,
+    frame: { w: 1280, h: 646 },
+  };
+  const known = [SCALED, LEGACY, PER_SIZE_LAPTOP];
+
+  test("per size on a screen never seen per size starts from the glass you have", () => {
+    /* Red-team: `nearest` picks the legacy row (it is this very screen), and
+       things taken off the glass since this morning come back. */
+    const key = roomKey([MONITOR_100], false, "per-size");
+    expect(nearest([MONITOR_100], known, key)?.key).toBe(LEGACY.key);
+    expect(ancestorFor({ key, screens: [MONITOR_100], spread: false, scale: "per-size", known })?.key).toBe(
+      ONE_LANDSCAPE,
+    );
+    // And it is carried, since the scaled room was last on the laptop.
+    const live = frameOf(MONITOR_100, CHROME);
+    const ancestor = ancestorFor({ key, screens: [MONITOR_100], spread: false, scale: "per-size", known });
+    expect(framePlan({ key, spread: false, screens: [MONITOR_100], live, known, ancestor }).cloneFrame).toEqual({
+      w: 1280,
+      h: 646,
+    });
+  });
+
+  test("a portrait screen per size starts from the portrait room, not the landscape one", () => {
+    const portrait: Screen = { x: 0, y: 0, w: 1080, h: 1920, scale: 1 };
+    const tall: Known = { key: ONE_PORTRAIT, screens: [portrait], seenAt: 2, frame: null };
+    const key = roomKey([portrait], false, "per-size");
+    expect(ancestorFor({ key, screens: [portrait], spread: false, scale: "per-size", known: [...known, tall] })?.key).toBe(
+      ONE_PORTRAIT,
+    );
+  });
+
+  test("the scaled room's own first sighting still finds this panel's old row", () => {
+    /* de1a479's path, unchanged: on a wall updating straight past
+       orientation-only rooms, that row *is* its glass. */
+    const fresh = [LEGACY, { key: fingerprint([LAPTOP_150]), screens: [LAPTOP_150], seenAt: 1 }];
+    expect(
+      ancestorFor({ key: ONE_LANDSCAPE, screens: [LAPTOP_150], spread: false, scale: "scaled", known: fresh })?.key,
+    ).toBe(fingerprint([LAPTOP_150]));
+  });
+
+  test("with no scaled room yet, per size falls back to the nearest", () => {
+    const key = roomKey([MONITOR_100], false, "per-size");
+    expect(ancestorFor({ key, screens: [MONITOR_100], spread: false, scale: "per-size", known: [LEGACY] })?.key).toBe(
+      LEGACY.key,
+    );
+  });
+
+  test("spread, the choice changes nothing about the ancestor", () => {
+    const key = roomKey(INVERTED_L, true);
+    expect(ancestorFor({ key, screens: INVERTED_L, spread: true, scale: "per-size", known })?.key).toBe(
+      nearest(INVERTED_L, known, key)?.key,
+    );
   });
 });

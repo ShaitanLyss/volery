@@ -22,7 +22,9 @@ export type MenuKind =
   | "section";
 
 /** One option among several, of which one is in force — a widget's variant. */
-export type Pick = { id: string; label: string; on: boolean };
+/** One choice in a group of them. `note` is the quieter half of the row, as on
+ *  an item — the chord, where a knob has one, in the house form. */
+export type Pick = { id: string; label: string; on: boolean; note?: string };
 
 export type MenuTarget = {
   kind: MenuKind;
@@ -210,9 +212,10 @@ export type MenuItem =
       danger?: boolean;
       on?: boolean;
       /** A second, quieter half of the row — what the item costs, where the
-       *  label says what it is for. Only the spawn menu has one: everywhere
-       *  else the label is the whole of the answer, and a menu that puts two
-       *  columns in front of you for "close" is a menu you read slower. */
+       *  label says what it is for, or the chord that does the same thing.
+       *  Everywhere else the label is the whole of the answer, and a menu that
+       *  puts two columns in front of you for "close" is a menu you read
+       *  slower. */
       note?: string;
     }
   | { kind: "sep" }
@@ -255,11 +258,12 @@ const item = (id: string, label: string, danger = false): MenuItem => ({
 
 /** An item that is currently in force. Marked rather than labelled — "analog
  *  (showing)" is a sentence, and a menu of five of them is a paragraph. */
-const chosen = (id: string, label: string, on: boolean): MenuItem => ({
+const chosen = (id: string, label: string, on: boolean, note?: string): MenuItem => ({
   kind: "item",
   id,
   label,
   on,
+  ...(note ? { note } : {}),
 });
 const sep: MenuItem = { kind: "sep" };
 
@@ -801,7 +805,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            a group, and two knobs run together read as one list of seven
            unrelated choices. `tidy` drops the rule if the group is empty. */
         ...(t.options ?? []).flatMap((group) => [
-          ...group.map((p) => chosen(p.id, p.label, p.on)),
+          ...group.map((p) => chosen(p.id, p.label, p.on, p.note)),
           sep,
         ]),
         /* The ground is what the ambience is drawn on, so this is where asking

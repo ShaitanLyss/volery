@@ -78,12 +78,18 @@ resize them, and they go over the transcript panel but never over the dock or th
   is the thing this file exists to promise it will not do. A rescue, not a layout rule.
 - **Clamped where it is drawn, not where it is stored** (`glassAt`). The pane has edges where
   the wall has none, so a spot that was fine yesterday can be off it today — a narrower
-  window, a wider panel, a smaller screen. Squeezing the window borrows a thing back from the
+  window, a dock grown under a long draft. Squeezing the window borrows a thing back from the
   edge and widening it gives it straight back, which is the bargain `panelWidth` already
   strikes. Fully inside rather than merely overlapping, since the pane clips; top-left wins
   for anything larger than it, as in `revealBox`. And an *unmeasured* pane clamps nothing —
   a box of zero is not a box with no room, and without that guard the whole glass stacks in
   the corner for the frame between mounting and the ResizeObserver's first call.
+- **A screen of another size is not a clamp any more.** It was, and a clock in the laptop's
+  corner landed two-thirds of the way across the monitor. Now the store carries every spot
+  onto the new screen's frame when the screen changes — position scales, size does not — and
+  the clamp is only the fallback for what cannot fit at all (`arrange.md`, "A different size is
+  the same glass, scaled"). The window and the dock are still the clamp's: the frame is the
+  *screen's*, so nothing slides when you resize the window or type a long prompt.
 - **One layout pass, two frames, one set of snippets.** The markup is shared, so a card on
   the pane is the same card with a different origin rather than a second code path to keep in
   step. `glass` reaches exactly three things: which units a drag is measured in (divided by

@@ -376,6 +376,27 @@ describe("the list is shaped like something a person meant", () => {
     expect(ids(m)).not.toContain("undo");
   });
 
+  /* A knob with a chord says so on its rows — the house form, where the mouse
+     user will see it — as the scaled / per-size glass does. A pick with no
+     note carries none, so the rows that had none are unchanged. */
+  test("a ground pick carries its chord as the row's note", () => {
+    const m = menuFor({
+      kind: "ground",
+      options: [
+        [
+          { id: "glass-scale:scaled", label: "one glass, scaled to fit any screen", on: true, note: "space then w g" },
+          { id: "glass-scale:per-size", label: "a glass of its own for each screen size", on: false, note: "space then w g" },
+        ],
+        [{ id: "reawaken", label: "cards left awake come back awake", on: true }],
+      ],
+    });
+    const row = (id: string) => m.find((i) => i.kind === "item" && i.id === id) as { note?: string; on?: boolean };
+    expect(row("glass-scale:scaled").note).toBe("space then w g");
+    expect(row("glass-scale:scaled").on).toBe(true);
+    expect(row("glass-scale:per-size").on).toBe(false);
+    expect("note" in row("reawaken")).toBe(false);
+  });
+
   /* Dropping a file in from another window was the only way to pin one up,
      which is no help when what you want is a file rather than something
      already on screen. */

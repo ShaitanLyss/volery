@@ -1,6 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { availableMonitors, currentMonitor } from "@tauri-apps/api/window";
-import { NO_ARRANGEMENT, nearest, roomKey, type Known, type Screen } from "./arrange";
+import {
+  GLASS_CHROME_KEY,
+  GLASS_SCALE_KEY,
+  NO_ARRANGEMENT,
+  ancestorFor,
+  chromesFor,
+  frameOf,
+  framePlan,
+  glassScaleFor,
+  restChrome,
+  roomKey,
+  screenOf,
+  type Chromes,
+  type Frame,
+  type FramePlan,
+  type GlassScale,
+  type Known,
+  type Screen,
+} from "./arrange";
 import { span } from "./span.svelte";
 
 /* Which screen arrangement the glass is currently being arranged in.
@@ -29,7 +47,18 @@ export type GlassSpots = {
   shadows?: Record<string, [number, number]>;
 };
 
-type Row = { key: string; screens: string; seenAt: number };
+type Row = { key: string; screens: string; seenAt: number; frame?: [number, number] | null };
+
+/** What each thing on the glass is drawn at, by kind (`arrange.rs`'s spelling)
+ *  and id, `"*"` standing for every id of a kind. `arrange.rs::Sizes`. */
+export type SizeBook = Record<string, Record<string, [number, number]>>;
+
+/** What `settle` needs from the canvas to say what a pane is on this screen:
+ *  what the window draws that the pane is not, where the dock is moored (the
+ *  chrome is remembered per mooring — see `arrange.ts::Chromes`), and what
+ *  everything on the glass is drawn at. Null before the pane has been
+ *  measured. */
+export type Measure = () => { chrome: Frame; site: string; sizes: SizeBook } | null;
 
 class Arrangements {
   /** The fingerprint of the room the glass is in, or `NO_ARRANGEMENT` before
@@ -42,9 +71,32 @@ class Arrangements {
    *  unspread, where nothing is ever rescaled. Part of "has anything changed",
    *  since the same room under a new unit still has to be told. */
   unit = $state<number | null>(null);
+  /** The one screen the glass is on, as `screenOf` names it — its size and
+   *  scale — or the key itself while spread. Part of "has anything changed",
+   *  since a landscape screen of another size is the same room and still has
+   *  to be told: its spots are carried onto the new pane. */
+  screen = $state(NO_ARRANGEMENT);
+  /** The pane this room's spots were last carried onto, for anybody looking
+   *  from outside (`snapshot.arrangement`). Null while spread. */
+  frame = $state<Frame | null>(null);
+  /** Scaled or per size. See `arrange.ts::GlassScale`. */
+  scale = $state<GlassScale>(readScale());
+  /** The room the screens in front of you call for, whether or not the store
+   *  has been pointed at it yet — which it is not, for a one-screen room,
+   *  until the pane has been measured (an empty wall draws no canvas at all).
+   *  What the panel and the dock moor by (`berth.svelte.ts`): a mooring needs
+   *  no frame, and keying it on the last *adopted* room left an empty wall
+   *  unspread using the moorings of the spread desk it had just left. */
+  wanted = $state(NO_ARRANGEMENT);
+  /** The chrome at rest, per dock mooring. */
+  #chromes: Chromes = readChromes();
   /** The last thing that went wrong looking, so a failure is visible rather
    *  than a glass that quietly stopped following the screens. */
   fault = $state<string | null>(null);
+  /** Monitors to answer instead of the real ones, for the control surface's
+   *  `screens` op — the one input to all of this that a test on one desk has
+   *  no other way to reach. Everything after `look` runs as it would. */
+  pretend: Screen[] | null = null;
   /** A settle in flight. Two at once would race to be current, and the loser
    *  would leave the columns holding one arrangement and the flag naming the
    *  other — which nothing afterwards could tell apart. */
@@ -76,6 +128,7 @@ class Arrangements {
    *  a reason to leave the arrangement alone, not a reason for anything to
    *  stop. */
   async look(spread: boolean): Promise<Screen[]> {
+    if (this.pretend) return spread ? this.pretend : this.pretend.slice(0, 1);
     try {
       const ms = spread ? await availableMonitors() : [await currentMonitor()];
       return ms
@@ -86,6 +139,12 @@ class Arrangements {
           w: m.size.width,
           h: m.size.height,
           scale: m.scaleFactor,
+          /* What a maximised window gets of it — the frame a glass on this
+             screen is a share of (`frameOf`). Absent from an older Tauri,
+             which `frameOf` reads as the whole screen. */
+          work: m.workArea?.size
+            ? { w: m.workArea.size.width, h: m.workArea.size.height }
+            : undefined,
         }));
     } catch (err) {
       this.fault = String(err);
@@ -119,7 +178,7 @@ class Arrangements {
     this.#busy = true;
     try {
       const screens = await this.look(spread);
-      const key = roomKey(screens, spread);
+      const key = roomKey(screens, spread, this.scale);
       /* Spread over a desk whose screens are at different scales, the page is
          zoomed to the home screen's, so a glass spot in CSS pixels lands in a
          different *physical* place depending on which screen the window was
@@ -129,39 +188,102 @@ class Arrangements {
          `spread`, because the second pass of `#again` exists to catch exactly
          the spread that changed under the first. */
       const unit = spread ? (span.view?.scale ?? null) : null;
+      const screen = spread ? key : screenOf(screens);
       /* Nothing usable, or the same room as last time. The early return is on
          the *key* rather than on the monitor list, so a screen that reports a
          pixel differently between two calls does not fork an arrangement — and
          on the unit beside it, so a re-spread from another home that arrives
          while this was busy (and so never passes through the unspread room)
-         still has its spots put back where they physically were. */
-      if (key === NO_ARRANGEMENT || (key === this.key && unit === this.unit)) return null;
+         still has its spots put back where they physically were — and on the
+         one screen's size, since the laptop and the monitor beside it are one
+         room whose spots still have to be carried from one to the other. */
+      if (key === NO_ARRANGEMENT) return null;
+      if (key === this.key && unit === this.unit && screen === this.screen) {
+        this.wanted = key;
+        return null;
+      }
+      /* One screen's room is never adopted blind. What its spots are a share of
+         is the pane, and before the pane has been measured there is no saying
+         — adopting anyway would record a room as being on this screen with no
+         frame to show for it, and the next settle would then believe the
+         spots were already laid out here. The canvas measuring itself is what
+         asks again (`App.svelte`'s effect on `paneReady`).
+
+         Measured *before* `wanted` moves, and that order is the point: the
+         moorings follow `wanted`, so the moment it names the new room the
+         dock's mooring is the new room's while the pane on screen is still
+         the old one's — and a reading taken then was filed under the wrong
+         mooring, a floating dock's header-only height kept as a moored one's
+         rest for good (red-team, 2026-10-15). Before it moves, the pane and
+         the mooring are the same room's, so the reading is a true one. */
+      const measured = spread ? null : (this.measure?.() ?? null);
+      if (measured) this.#restChrome(measured.site, measured.chrome.h);
+      this.wanted = key;
+      if (!spread && !measured) return null;
+      /* And the frame is built from the chrome at rest *for the mooring this
+         room will be drawn with* — which is the memory's, not this reading's,
+         when the two rooms are moored differently. A mooring never seen at
+         rest is one there is no honest number for yet: the dock re-moors under
+         the new room, the canvas hands in what that measures, and the next
+         focus, move or resize asks again with it. */
+      const site = measured ? (this.mooring?.() ?? measured.site) : null;
+      const rest = site !== null ? (this.#chromes[site] ?? null) : null;
+      if (!spread && rest === null) return null;
 
       let known: Known[] = [];
+      let knew = false;
       try {
         const rows = await invoke<Row[]>("known_arrangements");
         known = rows.map((r) => ({
           key: r.key,
           screens: parse(r.screens),
           seenAt: r.seenAt,
+          frame: r.frame ? { w: r.frame[0], h: r.frame[1] } : null,
         }));
+        knew = true;
       } catch (err) {
-        /* A first sighting with no ancestor named falls back to whatever is on
-           the glass right now, which is a worse answer than the nearest room
-           but a much better one than refusing to follow the screens at all. */
+        /* Spread, a first sighting with no ancestor named falls back to
+           whatever is on the glass right now, which is a worse answer than the
+           nearest room but a much better one than refusing to follow the
+           screens at all. */
         this.fault = String(err);
       }
+      /* One screen, it is a reason not to adopt at all. Without the rows there
+         is no telling whether this room is known or what its spots are a share
+         of, and adopting anyway writes this screen into the room's
+         `screens_json` beside a frame from another — after which every settle
+         believes the spots were laid out here and nothing is ever carried. The
+         next focus asks again. */
+      if (!spread && !knew) return null;
+
+      const ancestor = ancestorFor({ key, screens, spread, scale: this.scale, known });
+      /* The chrome at rest rather than as it is this instant: a question open
+         in the dock right now would otherwise be baked into the frame the whole
+         glass is carried onto. */
+      const live =
+        measured && rest !== null ? frameOf(screens[0], { w: measured.chrome.w, h: rest }) : null;
+      /* And a pane that cannot be made into a frame is the same refusal as one
+         not measured yet, for the same reason. */
+      if (!spread && !live) return null;
+      const plan: FramePlan = framePlan({ key, spread, screens, live, known, ancestor });
+      const pair = (f: Frame | null) => (f ? [f.w, f.h] : null);
 
       const spots = await invoke<GlassSpots | null>("adopt_arrangement", {
         key,
         screens: JSON.stringify(screens),
         origin,
         unit,
-        cloneFrom: nearest(screens, known, key)?.key ?? null,
+        cloneFrom: ancestor?.key ?? null,
+        frame: pair(plan.frame),
+        fromFrame: pair(plan.fromFrame),
+        cloneFrame: pair(plan.cloneFrame),
+        sizes: plan.fromFrame || plan.cloneFrame ? (measured?.sizes ?? null) : null,
       });
       this.key = key;
       this.screens = screens;
       this.unit = unit;
+      this.screen = screen;
+      this.frame = spread ? null : (plan.frame ?? known.find((k) => k.key === key)?.frame ?? live);
       this.fault = null;
       return spots;
     } catch (err) {
@@ -186,7 +308,83 @@ class Arrangements {
    *  Set once by `App.svelte`. It is a hook rather than a stored argument list
    *  because the whole point of the second pass is that the first pass's
    *  `spread` and `origin` are the ones that went stale. */
-  rerun: (() => void) | null = null;
+  rerun: (() => Promise<void> | void) | null = null;
+
+  /** A settle in flight, or one owed as soon as it lands — what a caller that
+   *  asked for one (the control surface's `screens`) waits out. */
+  get busy(): boolean {
+    return this.#busy || this.#again;
+  }
+
+  /** What the canvas says about the pane and the things on it — set by
+   *  `App.svelte` from `Canvas`, which is the one place that knows what each
+   *  thing is drawn at. Null leaves every one-screen room unadopted, which is
+   *  the honest state for a canvas that is not up. */
+  measure: Measure | null = null;
+
+  /** Where the dock is moored in the room being drawn — `berths.dock.site`,
+   *  set by `App.svelte` beside `measure`. Asked after `wanted` has moved, so
+   *  it names the mooring the room being adopted will be drawn with. */
+  mooring: (() => string) | null = null;
+
+  /** Fold one reading of the chrome into the memory of it at rest, and say
+   *  what that memory now is. Every pane the canvas measures is a reading
+   *  (`App.svelte` hands them in), not only the ones a settle happens to take,
+   *  so the dock has had every chance to have been seen at rest. Written to
+   *  storage only when the least seen goes down, which after the first few
+   *  readings is never. */
+  observeChrome(site: string, h: number): number | null {
+    return this.#restChrome(site, h);
+  }
+
+  /** The chrome at rest as remembered, per mooring — for a reading from
+   *  outside (`snapshot.arrangement.chromes`). A copy. */
+  get chromes(): Chromes {
+    return { ...this.#chromes };
+  }
+
+  #restChrome(site: string, h: number): number | null {
+    const { chrome, seen } = restChrome(this.#chromes, site, h);
+    if (seen !== this.#chromes) {
+      this.#chromes = seen;
+      try {
+        localStorage.setItem(GLASS_CHROME_KEY, JSON.stringify(seen));
+      } catch {
+        /* Forgotten at the next launch, which costs one launch's readings. */
+      }
+    }
+    return chrome;
+  }
+
+  /** Scaled or per size, from now on. Kept, and then the glass is asked to
+   *  follow — which, the first time, copies the room you are in, so nothing
+   *  moves until the screen does. */
+  setScale(scale: GlassScale) {
+    this.scale = scale;
+    try {
+      localStorage.setItem(GLASS_SCALE_KEY, scale);
+    } catch {
+      /* This machine forgets the choice and the default stands, as
+         `setReawaken` does. */
+    }
+    this.rerun?.();
+  }
+}
+
+function readChromes(): Chromes {
+  try {
+    return chromesFor(localStorage.getItem(GLASS_CHROME_KEY));
+  } catch {
+    return {};
+  }
+}
+
+function readScale(): GlassScale {
+  try {
+    return glassScaleFor(localStorage.getItem(GLASS_SCALE_KEY));
+  } catch {
+    return "scaled";
+  }
 }
 
 /** A stored shape, or nothing. Opaque to Rust and written by us, so the only

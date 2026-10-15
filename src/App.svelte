@@ -210,6 +210,7 @@
   import WindowControls from "./lib/WindowControls.svelte";
   import { span } from "./lib/span.svelte";
   import { arrangements } from "./lib/arrange.svelte";
+  import { GLASS_SCALES, glassScaleFor, glassScaleSaid } from "./lib/arrange";
   import { berths } from "./lib/berth.svelte";
   import { fullPath, insideRoot } from "./lib/finding";
   import {
@@ -556,6 +557,13 @@
     else if (verb.kind === "window") {
       if (verb.act === "span") void span.toggle();
       else if (verb.act === "panel") berths.cyclePanel();
+      else if (verb.act === "glass") {
+        /* Said back, the way the machine toggles are: on the screen the glass
+           was laid out on, both rooms hold the same thing, so the flip itself
+           may move nothing at all. */
+        arrangements.setScale(arrangements.scale === "scaled" ? "per-size" : "scaled");
+        leader.say(glassScaleSaid(arrangements.scale));
+      }
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
@@ -1570,21 +1578,81 @@
      to the window is when the answer can have changed and is also when it is
      worth having. The spread is the other trigger, and that one *is* an event.
      Everything past the first question is bounded by `settle`, which returns
-     nothing at all unless the fingerprint actually moved. */
+     nothing at all unless the fingerprint actually moved.
+
+     And the pane being measured is the third: a one-screen room is never
+     adopted before the canvas can say what its pane is (`settle`), so the
+     moment it can is the moment to ask. Through a `$derived` boolean, so this
+     re-runs on the transition and not on every pixel the dock grows. */
+  const paneReady = $derived(canvas?.glassReady() ?? false);
   $effect(() => {
     if (!skein.loaded) return;
     const spreading = !!span.view;
     void attention.focused;
+    void paneReady;
     untrack(() => void settleArrangement(spreading));
   });
 
   /* And the way back in for a settle that arrived while one was already in
      flight. `settle` keeps a flag rather than a queue and calls this once the
      first pass has landed; the live `span.view` is read here, because the whole
-     point of the second pass is that the first one's was stale. */
+     point of the second pass is that the first one's was stale.
+
+     `measure` beside it, for the same reason it is a hook: what a pane is and
+     what each thing on it is drawn at are the canvas's to say, at the moment
+     they are asked. */
   $effect(() => {
-    arrangements.rerun = () => void settleArrangement(!!span.view);
-    return () => (arrangements.rerun = null);
+    arrangements.rerun = () => settleArrangement(!!span.view);
+    arrangements.measure = () => {
+      const m = canvas?.measureGlass();
+      return m ? { ...m, site: berths.dock.site } : null;
+    };
+    arrangements.mooring = () => berths.dock.site;
+    return () => {
+      arrangements.rerun = null;
+      arrangements.measure = null;
+      arrangements.mooring = null;
+    };
+  });
+
+  /* The window moving, changing size or changing scale is the other moment the
+     screen under it may have changed — dragged by its title bar onto the
+     monitor beside it, maximised there, or moved by Windows when a screen went
+     away — and each is an event the window is told about. The move matters
+     most and was missed at first: a window dragged between two screens of one
+     scale and different sizes fires no resize and keeps the focus, so nothing
+     asked until the next focus — and a widget placed in between was written in
+     the new screen's pixels into a room still recorded as laid out on the old
+     one, then carried a second time when the question was finally asked.
+     Coming to rest rather than every frame: `settle` is cheap when nothing
+     moved, but a drag fires these sixty times a second, and the screen it ends
+     on is the one that matters. The two Tauri subscriptions are released with
+     the effect, including one that resolves after it has already gone. */
+  $effect(() => {
+    let rest: ReturnType<typeof setTimeout> | undefined;
+    let gone = false;
+    const offs: (() => void)[] = [];
+    const moved = () => {
+      clearTimeout(rest);
+      rest = setTimeout(() => {
+        if (skein.loaded) void settleArrangement(!!span.view);
+      }, 400);
+    };
+    window.addEventListener("resize", moved);
+    const win = getCurrentWindow();
+    for (const listening of [win.onMoved(moved), win.onScaleChanged(moved)]) {
+      listening
+        .then((off) => (gone ? off() : void offs.push(off)))
+        .catch(() => {
+          /* No move events is the old behaviour — focus and resize still ask. */
+        });
+    }
+    return () => {
+      gone = true;
+      clearTimeout(rest);
+      window.removeEventListener("resize", moved);
+      for (const off of offs) off();
+    };
   });
 
   async function settleArrangement(spreading: boolean) {
@@ -2301,6 +2369,17 @@
                 { id: "machine:reopen", label: reopenLine(machine.status), on: machine.status.reopen },
               ]
             : [],
+          /* And how the glass follows the screen under it: one layout scaled
+             to whichever screen it is on, or one per screen size. A pick of
+             two rather than a check, because both answers are things somebody
+             wants and neither is "off". The chord on both rows, since either
+             row is what it flips to. */
+          GLASS_SCALES.map((g) => ({
+            id: `glass-scale:${g.id}`,
+            label: g.label,
+            on: arrangements.scale === g.id,
+            note: "space then w g",
+          })),
         ],
         undoing: undo.goingBack,
         redoing: undo.goingForward,
@@ -2328,6 +2407,7 @@
         else if (id.startsWith("motion:")) motion.set(id.slice(7));
         else if (id.startsWith("rest:")) skein.setResting(id.slice(5));
         else if (id === "reawaken") skein.setReawaken(!skein.reawaken);
+        else if (id.startsWith("glass-scale:")) arrangements.setScale(glassScaleFor(id.slice(12)));
         else if (id === "machine:awake" || id === "machine:reopen")
           void machine.toggle(id.slice(8) as "awake" | "reopen").catch((e) => (skein.fault = String(e)));
         /* And what the wall tells every card standing on it, one scope out from
@@ -5171,6 +5251,7 @@
         homeScreen={spread
           ? { x: spread.x, y: spread.y, w: roomW, h: Math.max(0, winH - spread.y - spread.b) }
           : null}
+        onchrome={(h) => void arrangements.observeChrome(berths.dock.site, h)}
         {focusedId}
         draft={field.preview}
         draftIds={targetIds}

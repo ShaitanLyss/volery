@@ -211,6 +211,7 @@ describe("the which-key hint", () => {
       { keys: "tm", label: "motus" },
       { keys: "ts", label: "synth" },
       { keys: "wd", label: "dock: bottom / top / floating" },
+      { keys: "wg", label: "glass: scaled to any screen / one per screen size" },
       { keys: "wp", label: "panel: right / left / floating" },
       { keys: "ws", label: "every screen / one screen" },
       { keys: "z", label: "away / back" },
@@ -264,15 +265,18 @@ describe("the which-key hint", () => {
   });
 
   test("so is the window", () => {
-    /* Three verbs now: which screens the studio is over, and where each of the
-       two things you work *in* is moored. The family was always the argument —
-       placing a window is several verbs and they want to sit together in the
-       hint — and this is it being taken. */
+    /* Four verbs now: which screens the studio is over, where each of the two
+       things you work *in* is moored, and how the glass follows the one screen
+       it is on. The family was always the argument — placing a window is
+       several verbs and they want to sit together in the hint — and this is it
+       being taken. */
     expect(offers("w")).toEqual([
       { keys: "d", label: "dock: bottom / top / floating" },
+      { keys: "g", label: "glass: scaled to any screen / one per screen size" },
       { keys: "p", label: "panel: right / left / floating" },
       { keys: "s", label: "every screen / one screen" },
     ]);
+    expect(chord("w", "g")).toMatchObject({ kind: "fire", verb: { kind: "window", act: "glass" } });
   });
 
   test("so is the machine the wall runs on", () => {

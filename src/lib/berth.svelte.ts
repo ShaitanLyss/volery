@@ -58,9 +58,12 @@ class Berths {
   }
 
   /** The room being drawn: the one in front of you, or the one you were last
-   *  in while that is still being worked out. */
+   *  in while that is still being worked out. `wanted` before `key`, because a
+   *  one-screen room is not *adopted* until the canvas has measured its pane —
+   *  and on an empty wall there is no canvas — while a mooring needs nothing of
+   *  the pane at all. */
   get key(): string {
-    return arrangements.key || this.#last;
+    return arrangements.wanted || arrangements.key || this.#last;
   }
 
   get now(): Moorings {

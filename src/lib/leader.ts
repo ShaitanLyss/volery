@@ -73,7 +73,7 @@ export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
   | { kind: "open"; what: "timelines" | "pile" | "flyway" }
-  | { kind: "window"; act: "span" | "panel" | "dock" }
+  | { kind: "window"; act: "span" | "panel" | "dock" | "glass" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" }
@@ -206,6 +206,16 @@ export const CHORDS: readonly Chord[] = [
   { keys: "la", label: "archive the plan", verb: { kind: "plan", act: "archive" } },
   { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
   { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
+  /* `wg`: how the glass follows the one screen it is on — one layout scaled to
+     any screen, or a layout of its own per screen size. In the window family
+     beside `ws`, which decides how many screens the glass is on at all. It
+     says what is now true, as the `m` toggles do (`arrange.ts::glassScaleSaid`),
+     since on the screen the glass was laid out on the flip moves nothing. */
+  {
+    keys: "wg",
+    label: "glass: scaled to any screen / one per screen size",
+    verb: { kind: "window", act: "glass" },
+  },
   /* Away mode, and it has two chords on purpose. `z` is the one you reach for
      — one key, zzz, and nothing else here begins with it. `ia` is the one you
      *think of*: "I'm away" is what the thing is called in the user's own

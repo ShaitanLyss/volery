@@ -120,6 +120,10 @@ pub struct KnownArrangement {
     /// Opaque here. `src/lib/arrange.ts`'s `Screen[]`, as JSON.
     pub screens: String,
     pub seen_at: i64,
+    /// The pane a one-screen room's spots are laid out in, in CSS pixels, or
+    /// `None` — every spread room, and every room stored before v53, whose
+    /// frame the front end estimates off `screens` instead. See `reframe`.
+    pub frame: Option<[f64; 2]>,
 }
 
 /// The arrangement the columns currently hold, or `None` before the front end
@@ -278,7 +282,10 @@ pub async fn known_arrangements(app: tauri::AppHandle) -> Result<Vec<KnownArrang
 
 fn known_in(conn: &Connection) -> Result<Vec<KnownArrangement>, String> {
     let mut q = conn
-        .prepare("SELECT key, screens_json, seen_at FROM arrangement ORDER BY seen_at DESC")
+        .prepare(
+            "SELECT key, screens_json, seen_at, frame_w, frame_h FROM arrangement
+             ORDER BY seen_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = q
         .query_map([], |r| {
@@ -286,6 +293,7 @@ fn known_in(conn: &Connection) -> Result<Vec<KnownArrangement>, String> {
                 key: r.get(0)?,
                 screens: r.get(1)?,
                 seen_at: r.get(2)?,
+                frame: pair(r.get::<_, Option<f64>>(3)?, r.get::<_, Option<f64>>(4)?),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -317,8 +325,17 @@ fn known_in(conn: &Connection) -> Result<Vec<KnownArrangement>, String> {
 ///
 /// And before any of that, a room already known is **put back into the unit it
 /// is being drawn in** (`unit`, see `rescale`), so the spots it hands back are
-/// in the same physical places they were left in.
+/// in the same physical places they were left in — and, on one screen, **into
+/// the pane it is being drawn in** (`frame`, see `reframe`), so a glass laid out
+/// on the laptop lands in the same relative places on the monitor beside it.
+///
+/// Which frame to map from is the front end's to say (`from_frame`,
+/// `clone_frame`), for the reason the ancestor is: deciding it means reading
+/// `screens_json`, which nothing in this file does. `sizes` is what each thing
+/// on the glass is drawn at, by kind and id (`"*"` for every id of a kind),
+/// since a thing that does not grow with the screen has to keep its edge.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn adopt_arrangement(
     app: tauri::AppHandle,
     key: String,
@@ -326,6 +343,10 @@ pub async fn adopt_arrangement(
     origin: [f64; 2],
     unit: Option<f64>,
     clone_from: Option<String>,
+    frame: Option<[f64; 2]>,
+    from_frame: Option<[f64; 2]>,
+    clone_frame: Option<[f64; 2]>,
+    sizes: Option<Sizes>,
 ) -> Result<Option<GlassSpots>, String> {
     /* The empty key is "the monitors have not answered yet" and is not an
        arrangement. Adopting it would make the pre-measurement state its own
@@ -341,7 +362,13 @@ pub async fn adopt_arrangement(
         let store = app.state::<Store>();
         let mut conn = store.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        adopt_in(&tx, &key, &screens, origin, unit, clone_from.as_deref())?;
+        let framing = Framing {
+            frame,
+            from: from_frame,
+            clone_from: clone_frame,
+            sizes: sizes.as_ref(),
+        };
+        adopt_framed(&tx, &key, &screens, origin, unit, clone_from.as_deref(), &framing)?;
         let spots = spots_in(&tx, &key)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(Some(spots))
@@ -349,8 +376,30 @@ pub async fn adopt_arrangement(
     .await?
 }
 
+/// What each thing on the glass is drawn at, by kind and then by id, with `"*"`
+/// standing for every id of a kind — a card is one size whichever card it is.
+pub(crate) type Sizes = HashMap<String, HashMap<String, [f64; 2]>>;
+
+/// How a one-screen room's spots are carried onto the pane in front of you.
+/// All `None` is "nothing to say", which is every spread room and every caller
+/// that predates frames.
+#[derive(Default)]
+pub(crate) struct Framing<'a> {
+    /// The pane this room is about to be drawn in, recorded against it. `None`
+    /// leaves whatever was recorded — a spread room has none and wants none.
+    pub frame: Option<[f64; 2]>,
+    /// The pane a known room's spots are laid out in now, when they are to be
+    /// carried onto `frame`. `None` when the screen under them did not change.
+    pub from: Option<[f64; 2]>,
+    /// The same, for the ancestor a fresh room is copied from.
+    pub clone_from: Option<[f64; 2]>,
+    pub sizes: Option<&'a Sizes>,
+}
+
 /// The work of `adopt_arrangement`, so the round trip can be tested without an
-/// app around it.
+/// app around it. With nothing to say about frames, which is what every test
+/// written before them means.
+#[cfg(test)]
 pub(crate) fn adopt_in(
     conn: &Connection,
     key: &str,
@@ -358,6 +407,18 @@ pub(crate) fn adopt_in(
     origin: [f64; 2],
     unit: Option<f64>,
     clone_from: Option<&str>,
+) -> Result<(), String> {
+    adopt_framed(conn, key, screens, origin, unit, clone_from, &Framing::default())
+}
+
+pub(crate) fn adopt_framed(
+    conn: &Connection,
+    key: &str,
+    screens: &str,
+    origin: [f64; 2],
+    unit: Option<f64>,
+    clone_from: Option<&str>,
+    framing: &Framing,
 ) -> Result<(), String> {
     /* **"No row" and "could not tell" are not the same answer**, and `is_err()`
        said they were. This gate decides whether a room is furnished from
@@ -385,12 +446,28 @@ pub(crate) fn adopt_in(
        upsert records the new one over it. */
     let was = if fresh { None } else { unit_of(conn, key) };
 
+    /* The frame is written only when there is one to write — `COALESCE`, for
+       once on purpose: `None` here is "no news", never "this room has no
+       frame", and a launch that settled before the pane was measured must not
+       erase what the spots are a share of. */
+    let frame = framing.frame.filter(|f| sane(*f));
     conn.execute(
-        "INSERT INTO arrangement (key, screens_json, seen_at, current, origin_x, origin_y, unit)
-         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
+        "INSERT INTO arrangement
+           (key, screens_json, seen_at, current, origin_x, origin_y, unit, frame_w, frame_h)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(key) DO UPDATE SET
-           screens_json = ?2, seen_at = ?3, origin_x = ?4, origin_y = ?5, unit = ?6",
-        params![key, screens, crate::store::now(), origin[0], origin[1], unit],
+           screens_json = ?2, seen_at = ?3, origin_x = ?4, origin_y = ?5, unit = ?6,
+           frame_w = COALESCE(?7, frame_w), frame_h = COALESCE(?8, frame_h)",
+        params![
+            key,
+            screens,
+            crate::store::now(),
+            origin[0],
+            origin[1],
+            unit,
+            frame.map(|f| f[0]),
+            frame.map(|f| f[1]),
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -406,6 +483,17 @@ pub(crate) fn adopt_in(
             params![key, k],
         )
         .map_err(|e| e.to_string())?;
+    }
+
+    /* The same room on a screen of another size: every spot carried from the
+       pane it was laid out in to the one it is about to be drawn in. Beside the
+       unit rather than instead of it, and never with it — a unit is a spread
+       room's and a frame a one-screen room's, so one adopt moves a room by at
+       most one of the two. */
+    if !fresh {
+        if let (Some(from), Some(to)) = (framing.from, frame) {
+            reframe(conn, key, from, to, framing.sizes)?;
+        }
     }
 
     if fresh {
@@ -431,6 +519,15 @@ pub(crate) fn adopt_in(
                     params![key, from, origin[0] - was[0], origin[1] - was[1]],
                 )
                 .map_err(|e| e.to_string())?;
+                /* And a copy of a room laid out on a screen of another size is
+                   that room *scaled to this one*: its pixels mean what they
+                   meant in its own frame, and writing them into this one
+                   unchanged would be saying they were laid out here. The front
+                   end names no frame when the ancestor was on this very screen,
+                   so flipping between the two modes moves nothing. */
+                if let (Some(from), Some(to)) = (framing.clone_from, frame) {
+                    reframe(conn, key, from, to, framing.sizes)?;
+                }
             }
             None => seed_from_columns(conn, key)?,
         }
@@ -499,6 +596,99 @@ pub(crate) fn rescale(was: Option<f64>, now: Option<f64>) -> Option<f64> {
     }
     let k = was / now;
     ((k - 1.0).abs() > 1e-6).then_some(k)
+}
+
+/// One axis of a spot, carried from a pane `from` long to one `to` long, for a
+/// thing `size` long that does not change size on the way.
+///
+/// **Proportional over the room the thing has to move in**, not over the pane:
+/// `at / (from - size)` is how far along its own travel the thing is, and that
+/// share is what is kept. So a widget flush against the right edge of the
+/// laptop is flush against the right edge of the monitor, one in the middle is
+/// in the middle, and anything that fitted on the first pane fits on the
+/// second without the clamp having to touch it. A share of the *pane* would
+/// keep the top-left corner's share instead, and everything near the far edges
+/// would drift inwards by its own size times the growth — the clock in the
+/// corner a few hundred pixels off it, which is exactly "not the same glass".
+///
+/// Nothing is done for a thing that does not fit one of the two panes: there is
+/// no travel to keep a share of, and the clamp in `glassAt` already puts the
+/// head of it on the pane, which is all the room there is. That keeps the map
+/// invertible — laptop to monitor and back gives back the pixels you left —
+/// which is the property every other choice here is in service of.
+pub(crate) fn travel(at: f64, size: f64, from: f64, to: f64) -> f64 {
+    let size = if size.is_finite() && size > 0.0 { size } else { 0.0 };
+    let (was, now) = (from - size, to - size);
+    if !(at.is_finite() && was.is_finite() && now.is_finite()) || was < 1.0 || now < 1.0 {
+        return at;
+    }
+    at * now / was
+}
+
+/// A frame anybody could have measured: two finite, positive lengths.
+fn sane(f: [f64; 2]) -> bool {
+    f.iter().all(|v| v.is_finite() && *v > 0.0)
+}
+
+/// Two nullable columns as one frame, or none — the `spotOf` bargain: half a
+/// frame is not a frame.
+fn pair(w: Option<f64>, h: Option<f64>) -> Option<[f64; 2]> {
+    let f = [w?, h?];
+    sane(f).then_some(f)
+}
+
+/// What one thing is drawn at, or nothing known — in which case it is carried
+/// as a point, which keeps its top-left's share of the pane.
+fn size_of(sizes: Option<&Sizes>, kind: &str, id: &str) -> [f64; 2] {
+    sizes
+        .and_then(|m| m.get(kind))
+        .and_then(|k| k.get(id).or_else(|| k.get("*")))
+        .copied()
+        .unwrap_or([0.0, 0.0])
+}
+
+/// Carry every spot of one room from the pane it was laid out in to another.
+///
+/// Over the table rather than over `KINDS`, so a card on another wall moves with
+/// everything else, as it does under `rescale`. Nothing at all for two frames
+/// no screen could tell apart — a pane measured a hair differently on the same
+/// screen must not creep every spot.
+fn reframe(
+    conn: &Connection,
+    key: &str,
+    from: [f64; 2],
+    to: [f64; 2],
+    sizes: Option<&Sizes>,
+) -> Result<(), String> {
+    if !sane(from) || !sane(to) || ((from[0] - to[0]).abs() < 0.5 && (from[1] - to[1]).abs() < 0.5) {
+        return Ok(());
+    }
+    let rows: Vec<(String, String, f64, f64)> = {
+        let mut q = conn
+            .prepare("SELECT kind, ref, x, y FROM glass_spot WHERE arrangement = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = q
+            .query_map(params![key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    let mut up = conn
+        .prepare(
+            "UPDATE glass_spot SET x = ?4, y = ?5 WHERE arrangement = ?1 AND kind = ?2 AND ref = ?3",
+        )
+        .map_err(|e| e.to_string())?;
+    for (kind, id, x, y) in rows {
+        let [w, h] = size_of(sizes, &kind, &id);
+        up.execute(params![
+            key,
+            kind,
+            id,
+            travel(x, w, from[0], to[0]),
+            travel(y, h, from[1], to[1])
+        ])
+        .map_err(|e| format!("reframe {kind} {id}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// The first arrangement ever identified inherits the glass as it stands.
@@ -591,7 +781,9 @@ mod tests {
                 current      INTEGER NOT NULL DEFAULT 0,
                 origin_x     REAL NOT NULL DEFAULT 0,
                 origin_y     REAL NOT NULL DEFAULT 0,
-                unit         REAL
+                unit         REAL,
+                frame_w      REAL,
+                frame_h      REAL
             );
             CREATE TABLE glass_spot (
                 arrangement TEXT NOT NULL,
@@ -889,6 +1081,229 @@ mod tests {
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.0), None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((50.0, 100.0)));
+    }
+
+    /// What `Canvas` hands over: a card is one size whichever card it is, and a
+    /// widget is its own.
+    fn book() -> Sizes {
+        let mut card = HashMap::new();
+        card.insert("*".to_string(), [300.0, 200.0]);
+        let mut widget = HashMap::new();
+        widget.insert("w".to_string(), [100.0, 50.0]);
+        let mut out = Sizes::new();
+        out.insert(CARD.to_string(), card);
+        out.insert(WIDGET.to_string(), widget);
+        out
+    }
+
+    fn framed<'a>(
+        frame: Option<[f64; 2]>,
+        from: Option<[f64; 2]>,
+        clone_from: Option<[f64; 2]>,
+        sizes: &'a Sizes,
+    ) -> Framing<'a> {
+        Framing { frame, from, clone_from, sizes: Some(sizes) }
+    }
+
+    fn frame_of(conn: &Connection, key: &str) -> Option<[f64; 2]> {
+        known_in(conn).unwrap().into_iter().find(|k| k.key == key).and_then(|k| k.frame)
+    }
+
+    const LAPTOP: [f64; 2] = [1280.0, 646.0];
+    const MONITOR: [f64; 2] = [2560.0, 1286.0];
+    const ROOM: &str = "one landscape screen";
+
+    #[test]
+    fn travel_keeps_the_share_of_the_room_a_thing_has_to_move_in() {
+        // Flush right on the laptop is flush right on the monitor.
+        assert_eq!(travel(1280.0 - 300.0, 300.0, 1280.0, 2560.0), 2560.0 - 300.0);
+        // Flush left stays flush left.
+        assert_eq!(travel(0.0, 300.0, 1280.0, 2560.0), 0.0);
+        // The middle stays the middle: its centre is the pane's centre.
+        let x = travel((1280.0 - 300.0) / 2.0, 300.0, 1280.0, 2560.0);
+        assert_eq!(x + 150.0, 1280.0);
+        // And it comes back to the pixel it left.
+        assert_eq!(travel(travel(437.0, 300.0, 1280.0, 2560.0), 300.0, 2560.0, 1280.0), 437.0);
+        // Nothing known about its size: a point, so the top-left's share.
+        assert_eq!(travel(640.0, 0.0, 1280.0, 2560.0), 1280.0);
+        // Too big for one of the two panes: no travel to keep, so left alone —
+        // and left alone both ways, which keeps the round trip whole.
+        assert_eq!(travel(10.0, 1400.0, 1280.0, 2560.0), 10.0);
+        assert_eq!(travel(10.0, 1400.0, 2560.0, 1280.0), 10.0);
+        assert_eq!(travel(f64::NAN, 0.0, 1280.0, 2560.0).is_nan(), true);
+        assert_eq!(travel(5.0, 0.0, 0.0, 2560.0), 5.0);
+    }
+
+    #[test]
+    fn the_laptop_glass_on_the_monitor_is_the_same_glass_scaled() {
+        /* Lyss, 2026-10-15: "it should be identical but scaled to match". A
+           card flush in the laptop's top-right corner and a widget in the
+           middle are still in the corner and the middle on a monitor twice the
+           size — and they are still the size they were. */
+        let conn = db();
+        let sizes = book();
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        conn.execute("INSERT INTO widget VALUES ('w', NULL, NULL)", []).unwrap();
+        adopt_framed(&conn, ROOM, "[]", [0.0, 0.0], None, None, &framed(Some(LAPTOP), None, None, &sizes))
+            .unwrap();
+        stick(&conn, "c1", Some(1280.0 - 300.0), Some(0.0));
+        conn.execute("UPDATE widget SET glass_x = 590.0, glass_y = 298.0", []).unwrap();
+        note(&conn, WIDGET, "w", Some(590.0), Some(298.0));
+
+        // The same room, on the monitor.
+        adopt_framed(
+            &conn,
+            ROOM,
+            "[]",
+            [0.0, 0.0],
+            None,
+            None,
+            &framed(Some(MONITOR), Some(LAPTOP), None, &sizes),
+        )
+        .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((2560.0 - 300.0, 0.0)));
+        let w = spots_in(&conn, ROOM).unwrap().widgets["w"];
+        assert_eq!([w[0] + 50.0, w[1] + 25.0], [1280.0, 643.0], "the middle is the middle");
+        assert_eq!(frame_of(&conn, ROOM), Some(MONITOR));
+
+        // And back on the laptop, exactly where it was left.
+        adopt_framed(
+            &conn,
+            ROOM,
+            "[]",
+            [0.0, 0.0],
+            None,
+            None,
+            &framed(Some(LAPTOP), Some(MONITOR), None, &sizes),
+        )
+        .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((980.0, 0.0)));
+        assert_eq!(spots_in(&conn, ROOM).unwrap().widgets["w"], [590.0, 298.0]);
+    }
+
+    #[test]
+    fn a_card_on_another_wall_is_carried_with_everything_else() {
+        let conn = db();
+        let sizes = book();
+        adopt_framed(&conn, ROOM, "[]", [0.0, 0.0], None, None, &framed(Some(LAPTOP), None, None, &sizes))
+            .unwrap();
+        remember(&conn, SHADOW, "elsewhere:lab:1", Some(640.0), Some(323.0)).unwrap();
+        adopt_framed(
+            &conn,
+            ROOM,
+            "[]",
+            [0.0, 0.0],
+            None,
+            None,
+            &framed(Some(MONITOR), Some(LAPTOP), None, &sizes),
+        )
+        .unwrap();
+        // No size in the book for a shadow here, so it travels as a point.
+        assert_eq!(spots_in(&conn, ROOM).unwrap().shadows["elsewhere:lab:1"], [1280.0, 643.0]);
+    }
+
+    #[test]
+    fn the_same_screen_moves_nothing_and_no_frame_erases_none() {
+        let conn = db();
+        let sizes = book();
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        adopt_framed(&conn, ROOM, "[]", [0.0, 0.0], None, None, &framed(Some(LAPTOP), None, None, &sizes))
+            .unwrap();
+        stick(&conn, "c1", Some(123.0), Some(45.0));
+        // Back on the same screen with the pane measured a little short (a
+        // draft open in the dock): no `from`, so nothing moves — and the frame
+        // the spots were laid out in is what is kept.
+        adopt_framed(&conn, ROOM, "[]", [0.0, 0.0], None, None, &framed(None, None, None, &sizes)).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((123.0, 45.0)));
+        assert_eq!(frame_of(&conn, ROOM), Some(LAPTOP));
+        // A frame a hair off the recorded one is not a different screen.
+        adopt_framed(
+            &conn,
+            ROOM,
+            "[]",
+            [0.0, 0.0],
+            None,
+            None,
+            &framed(Some([1280.2, 646.3]), Some(LAPTOP), None, &sizes),
+        )
+        .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((123.0, 45.0)));
+        // A nonsense frame is no frame.
+        adopt_framed(
+            &conn,
+            ROOM,
+            "[]",
+            [0.0, 0.0],
+            None,
+            None,
+            &framed(Some([0.0, 646.0]), Some(LAPTOP), None, &sizes),
+        )
+        .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((123.0, 45.0)));
+        assert_eq!(frame_of(&conn, ROOM), Some([1280.2, 646.3]));
+    }
+
+    #[test]
+    fn flipping_between_scaled_and_per_size_loses_neither() {
+        /* The toggle selects a room; it never converts one into the other. A
+           first flip copies the scaled room on this very screen, so nothing
+           moves; what is then arranged per size stays per size; and the scaled
+           glass is found as it was left. */
+        let conn = db();
+        let sizes = book();
+        let per_size = "one screen 1920x1200@1.50";
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        adopt_framed(&conn, ROOM, "[]", [0.0, 0.0], None, None, &framed(Some(LAPTOP), None, None, &sizes))
+            .unwrap();
+        stick(&conn, "c1", Some(100.0), Some(50.0));
+
+        // To per-size, on the same screen: copied, and not reframed.
+        adopt_framed(
+            &conn,
+            per_size,
+            "[]",
+            [0.0, 0.0],
+            None,
+            Some(ROOM),
+            &framed(Some([1280.0, 640.0]), None, None, &sizes),
+        )
+        .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((100.0, 50.0)));
+        stick(&conn, "c1", Some(700.0), Some(300.0));
+
+        // Back to scaled: as it was.
+        adopt_framed(&conn, ROOM, "[]", [0.0, 0.0], None, None, &framed(Some(LAPTOP), None, None, &sizes))
+            .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((100.0, 50.0)));
+        // And per-size again: what was arranged there.
+        adopt_framed(&conn, per_size, "[]", [0.0, 0.0], None, None, &framed(None, None, None, &sizes)).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((700.0, 300.0)));
+    }
+
+    #[test]
+    fn a_copy_of_a_room_from_another_screen_size_arrives_scaled() {
+        // Per-size, on a monitor never seen: the nearest room was laid out on
+        // the laptop, so the copy is that glass scaled to this screen.
+        let conn = db();
+        let sizes = book();
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        adopt_framed(&conn, "laptop", "[]", [0.0, 0.0], None, None, &framed(Some(LAPTOP), None, None, &sizes))
+            .unwrap();
+        stick(&conn, "c1", Some(980.0), Some(446.0));
+        adopt_framed(
+            &conn,
+            "monitor",
+            "[]",
+            [0.0, 0.0],
+            None,
+            Some("laptop"),
+            &framed(Some(MONITOR), None, Some(LAPTOP), &sizes),
+        )
+        .unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((2260.0, 1086.0)), "the bottom-right corner");
+        // And the laptop's own room is untouched by the copy.
+        adopt_framed(&conn, "laptop", "[]", [0.0, 0.0], None, None, &framed(None, None, None, &sizes)).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((980.0, 446.0)));
     }
 
     #[test]

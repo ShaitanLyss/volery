@@ -361,7 +361,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 52;
+const SCHEMA_VERSION: i64 = 53;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -419,6 +419,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (50, migrate_v50),
     (51, migrate_v51),
     (52, migrate_v52),
+    (53, migrate_v53),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2932,6 +2933,23 @@ fn migrate_v51(conn: &Connection) -> Result<(), String> {
 /// has no home to differ.
 fn migrate_v52(conn: &Connection) -> Result<(), String> {
     add_column(conn, "arrangement", "unit", "REAL")
+}
+
+/// The size of the pane each one-screen room's glass spots are laid out in, in
+/// CSS pixels — what a spot's pixels are a *share of*, which is what lets the
+/// same glass land in the same relative places on a screen of another size
+/// (`arrange::reframe`).
+///
+/// Nullable, and every existing row starts null, which the front end reads as
+/// "laid out on the screen this room was last seen on": the frame is then
+/// estimated off that screen at the first adopt (`arrange.ts::framePlan`)
+/// rather than here, because what a pane is short of its screen — the taskbar,
+/// the title bar, the dock — is a fact about the live window and nothing a
+/// migration can see. A spread room stays null for ever: its spots are about
+/// the desk, and `unit` is what carries them between homes.
+fn migrate_v53(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "arrangement", "frame_w", "REAL")?;
+    add_column(conn, "arrangement", "frame_h", "REAL")
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,

@@ -33,6 +33,8 @@ import { living, type EffectKind } from "./ambience";
 import { readingScale } from "./layout";
 import { pressed, type Kind } from "./pick";
 import { spotOf } from "./glass";
+import { arrangements } from "./arrange.svelte";
+import type { Screen } from "./arrange";
 import { hear, matchCards, spoke } from "./voice";
 import type { Voicing } from "./voicing.svelte";
 import type { Board } from "./images.svelte";
@@ -727,6 +729,21 @@ export class Control {
          or the title bar" — the pane is a box inside `main.wall`, so a test
          compares it with the header's and the dock's and sees them not meet.
          Null would mean the canvas is not up at all. */
+      /* Which room the glass is in, and what its spots are a share of. `screen`
+         is the one screen's size and scale (or the key while spread), `frame`
+         the pane the room's spots were last carried onto, and `pretend` says
+         the monitors are the `screens` op's rather than the desk's — so a run
+         that forgot to put them back is visible as one. */
+      arrangement: {
+        key: arrangements.key,
+        wanted: arrangements.wanted,
+        chromes: arrangements.chromes,
+        screen: arrangements.screen,
+        scale: arrangements.scale,
+        frame: arrangements.frame ? { ...arrangements.frame } : null,
+        pretend: arrangements.pretend !== null,
+        fault: arrangements.fault,
+      },
       glass: (() => {
         const el = document.querySelector(".glass");
         if (!el) return null;
@@ -2617,6 +2634,46 @@ export class Control {
           glass: spotOf(it),
           at: it ? { x: it.x, y: it.y } : null,
         };
+      },
+
+      /** Answer the monitors for the glass with these instead of the desk's, and
+       *  let the glass follow — the one input to `arrange.svelte.ts` a test on
+       *  one desk cannot otherwise reach, since nobody can plug a monitor in
+       *  from here. Everything after `look` is the app's own path: the room key,
+       *  the frame, the store's carry and the reconcile, and the holders told.
+       *  With no `screens`, the desk's own monitors again.
+       *
+       *  Each screen is `{ w, h, scale, work?: { w, h }, x?, y? }`, in physical
+       *  pixels as a monitor describes itself. Unspread, the first is the one
+       *  the window is on. Answers once the settle it asked for has landed —
+       *  or, with `settle: false`, at once, leaving the asking to whatever the
+       *  app itself asks on (a focus, the window moving or resizing), which is
+       *  how a test proves those triggers rather than this op. */
+      screens: async (op) => {
+        const list = Array.isArray(op.screens) ? (op.screens as Record<string, unknown>[]) : [];
+        arrangements.pretend = list.length
+          ? list.map(
+              (m): Screen => ({
+                x: Number(m.x ?? 0),
+                y: Number(m.y ?? 0),
+                w: Number(m.w),
+                h: Number(m.h),
+                scale: m.scale === undefined ? 1 : Number(m.scale),
+                work:
+                  m.work && typeof m.work === "object"
+                    ? { w: Number((m.work as any).w), h: Number((m.work as any).h) }
+                    : undefined,
+              }),
+            )
+          : null;
+        if (op.settle === false) return this.#snapshot().arrangement;
+        await arrangements.rerun?.();
+        const deadline = Date.now() + Number(op.timeoutMs ?? 8000);
+        while (arrangements.busy && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        await settle();
+        return this.#snapshot().arrangement;
       },
 
       /** Put a territory somewhere — the same call the drag makes when it lets
