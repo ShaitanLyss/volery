@@ -1,5 +1,7 @@
 import { expect, test, describe } from "bun:test";
-import { ANSI_PALETTE, parseAnsi, stripAnsi } from "../src/lib/ansi";
+import { readFileSync } from "node:fs";
+import { ANSI_PALETTE, ansiVar, parseAnsi, stripAnsi } from "../src/lib/ansi";
+import { contrast } from "../src/lib/palette";
 
 const E = "\x1b";
 
@@ -98,5 +100,50 @@ describe("parseAnsi", () => {
       const [s] = parseAnsi(`${E}[${code}mx`);
       expect(ANSI_PALETTE[s.color!]).toBeString();
     }
+  });
+});
+
+describe("the sixteen colours live in tokens.css", () => {
+  const css = readFileSync(new URL("../src/lib/tokens.css", import.meta.url), "utf8");
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const block = (head: RegExp) => {
+    const m = head.exec(stripped);
+    if (!m) throw new Error(`no ${head} block in tokens.css`);
+    const out = new Map<number, string>();
+    for (const d of m[1].matchAll(/--ansi-(\d+):\s*([^;]+);/g)) out.set(Number(d[1]), d[2].trim());
+    return out;
+  };
+  /* The grounds the light skins have used (meadow, sugar, the cooler cream) and
+     two from the brief that rebuilt them; the darkest is the one that binds. */
+  const WELLS = ["#e9e8de", "#ece6df", "#f0e3e9", "#efebe4", "#fffbfd"];
+  const dark = block(/:root\s*\{([^}]*--ansi-0:[^}]*)\}/);
+  const light = block(/:root\[data-ground="light"\]\s*\{([^}]*)\}/);
+
+  test("a span is drawn with the variable", () => {
+    expect(ansiVar(3)).toBe("var(--ansi-3)");
+  });
+
+  test("the dark set is exactly what ANSI_PALETTE says", () => {
+    expect(dark.size).toBe(16);
+    ANSI_PALETTE.forEach((hex, i) => expect(dark.get(i)).toBe(hex));
+  });
+
+  test("the light set names all sixteen", () => {
+    expect([...light.keys()].sort((a, b) => a - b)).toEqual(ANSI_PALETTE.map((_, i) => i));
+  });
+
+  test("every light colour is text against the light wells", () => {
+    let measured = 0;
+    for (const [i, v] of light) {
+      if (v.startsWith("var(")) continue; // the ink ramp, held by palette.test.ts
+      for (const well of WELLS) {
+        const c = contrast(v, well);
+        expect(c, `--ansi-${i} ${v} on ${well}`).not.toBeNull();
+        expect(c!).toBeGreaterThanOrEqual(4.5);
+        measured += 1;
+      }
+    }
+    // A skipped assertion reads as a satisfied one: twelve hex colours, every well.
+    expect(measured).toBe(12 * WELLS.length);
   });
 });

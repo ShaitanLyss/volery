@@ -19,7 +19,7 @@
    * are about a box that draws exactly what fits. Reaching further back is still
    * a panel's job, and panels scroll. */
 
-  import { ANSI_PALETTE, parseAnsi } from "./ansi";
+  import { ansiVar, parseAnsi } from "./ansi";
   import type { Row } from "./logface";
 
   let {
@@ -52,7 +52,7 @@
      is the one reading on the wall that owes it. -->
 <pre class="log" class:tint data-text>{#each rows as r, i (i)}<span class="ln" data-tone={r.tone}
     >{#if r.mark}<span class="src">{r.mark}</span> {/if}{#each parseAnsi(r.text) as s}<span
-      style:color={s.color === null ? null : ANSI_PALETTE[s.color]}
+      style:color={s.color === null ? null : ansiVar(s.color)}
       style:font-weight={s.bold ? "600" : null}
       style:opacity={s.dim ? 0.6 : null}>{s.text}</span
     >{/each}</span

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { ANSI_PALETTE, parseAnsi } from "./ansi";
+  import { ansiVar, parseAnsi } from "./ansi";
   import { stickToTail, snapToTail } from "./follow";
   import type { Shell } from "./shell.svelte";
 
@@ -121,7 +121,7 @@
         <div class="ln note">{l.text}</div>
       {:else}
         <div class="ln" class:err={l.kind === "err"}>{#each parseAnsi(l.text) as s}<span
-              style:color={s.color === null ? null : ANSI_PALETTE[s.color]}
+              style:color={s.color === null ? null : ansiVar(s.color)}
               style:font-weight={s.bold ? "600" : null}
               style:opacity={s.dim ? 0.6 : null}>{s.text}</span
             >{/each}</div>

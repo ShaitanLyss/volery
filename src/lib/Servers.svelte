@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Skein, GroupRuntime } from "./skein.svelte";
   import type { Actions } from "./actions.svelte";
-  import { ANSI_PALETTE, parseAnsi } from "./ansi";
+  import { ansiVar, parseAnsi } from "./ansi";
   import { parseSpecs } from "./specs";
   /* Both logs below follow their own tail: opened, they show the newest line,
      and they keep showing it while the group talks — unless you scroll back,
@@ -116,7 +116,7 @@
 
         {#if openRun === r.id}
           <pre class="log" {@attach stickToTail}>{#each r.log.slice(-200) as l}<span class="ln">{#each parseAnsi(l) as s}<span
-                  style:color={s.color === null ? null : ANSI_PALETTE[s.color]}
+                  style:color={s.color === null ? null : ansiVar(s.color)}
                   style:font-weight={s.bold ? "600" : null}
                   style:opacity={s.dim ? 0.6 : null}>{s.text}</span
                 >{/each}
@@ -156,7 +156,7 @@
                   class="src">{l.label}</span> │ {#each parseAnsi(l.line) as s}<span
                   style:color={s.color === null
                     ? null
-                    : ANSI_PALETTE[s.color]}
+                    : ansiVar(s.color)}
                   style:font-weight={s.bold ? "600" : null}
                   style:opacity={s.dim ? 0.6 : null}>{s.text}</span
                 >{/each}

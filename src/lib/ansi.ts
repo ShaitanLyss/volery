@@ -23,8 +23,22 @@ export type Span = {
   dim: boolean;
 };
 
-/** Warm-neutral takes on the standard 16, so terminal output still looks like
- *  it belongs on an ink wall rather than in somebody else's console. */
+/** The CSS a span's colour is drawn with: `var(--ansi-N)`, declared in
+ *  `tokens.css`. The sixteen are custom properties rather than hex values here
+ *  because the right set depends on the ground — pale celadon is 8.6:1 on the
+ *  dark wall and illegible on cream — and `data-ground="light"` swaps them. A
+ *  hex in this file could not follow the skin, and every consumer drew it as an
+ *  inline style that nothing could override. */
+export function ansiVar(index: number): string {
+  return `var(--ansi-${index})`;
+}
+
+/** The dark-ground values, kept for what cannot read a stylesheet and as the
+ *  statement of what `tokens.css` declares for `--ansi-0` … `--ansi-15` outside
+ *  a light ground (`test/ansi.test.ts` holds the two together). Warm-neutral
+ *  takes on the standard 16, so terminal output still looks like it belongs on an
+ *  ink wall rather than in somebody else's console. Nothing draws with this any
+ *  more — see `ansiVar`. */
 export const ANSI_PALETTE = [
   "#4b4340", // black
   "#c5603f", // red     — the same rust that means "broke"

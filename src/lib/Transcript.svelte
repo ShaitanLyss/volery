@@ -2,7 +2,7 @@
   /* A `!` run keeps its colour: the shell is spawned with FORCE_COLOR, so `cargo`
      and `git` answer in SGR sequences exactly as they do in the console panel,
      and this is the same parser reading them. */
-  import { ANSI_PALETTE, parseAnsi } from "./ansi";
+  import { ansiVar, parseAnsi } from "./ansi";
   import { untrack } from "svelte";
   import type { Line } from "./conversation.svelte";
   import Markdown from "./Markdown.svelte";
@@ -1321,7 +1321,7 @@
                conversation, and a build's output is not one of them. -->
           <div class="inside">
             <div class="line out">{#each parseAnsi(b.line.text) as sp}<span
-                  style:color={sp.color === null ? null : ANSI_PALETTE[sp.color]}
+                  style:color={sp.color === null ? null : ansiVar(sp.color)}
                   style:font-weight={sp.bold ? "600" : null}
                   style:opacity={sp.dim ? 0.6 : null}>{sp.text}</span
                 >{/each}</div>

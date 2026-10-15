@@ -52,7 +52,7 @@
 
   import { untrack as untracked } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { ANSI_PALETTE, parseAnsi } from "./ansi";
+  import { ansiVar, parseAnsi } from "./ansi";
   import { clock, type Job } from "./conversation.svelte";
   import type { Readable } from "./transcript";
   import { stickToTail } from "./follow";
@@ -245,7 +245,7 @@
           {#each rows as r, i (i)}
             <div class="log" class:warn={r.tone === "warn"} class:fail={r.tone === "fail"}
               >{#each parseAnsi(r.text) as sp}<span
-                  style:color={sp.color === null ? null : ANSI_PALETTE[sp.color]}
+                  style:color={sp.color === null ? null : ansiVar(sp.color)}
                   style:font-weight={sp.bold ? "600" : null}
                   style:opacity={sp.dim ? 0.6 : null}>{sp.text}</span
                 >{/each}</div>
@@ -337,10 +337,10 @@
   /* Status colour, which on this wall is the only colour there is. Amber for a
      warning and rust for a failure, the same two the cards use. */
   .log.warn {
-    color: var(--amber, var(--paper));
+    color: var(--st-ask);
   }
   .log.fail {
-    color: var(--rust, var(--paper));
+    color: var(--st-fail);
   }
 
   .quiet,
@@ -359,6 +359,6 @@
     color: var(--paper-faint);
   }
   .fault {
-    color: var(--rust, var(--paper));
+    color: var(--st-fail);
   }
 </style>

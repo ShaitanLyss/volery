@@ -1455,10 +1455,12 @@
   /* Colour on a shell line, which is the one place on this wall it is not
      status. The exemption is `ansi.ts`'s, already taken and for the same reason:
      a terminal register reads by hue — that is how every shell on earth is read
-     — and these are the same warm-neutral takes on the standard 16 that the
-     console panel renders output with, so a `!` line looks like it belongs on an
-     ink wall rather than in somebody else's editor. Amber is deliberately absent:
-     it means "wants you" here, and nothing in a line you are typing does. */
+     — and these are the same takes on the standard 16 that the console panel
+     renders output with (`--ansi-*`, the bright row: blue, green, magenta, cyan),
+     so a `!` line looks like it belongs on the wall rather than in somebody
+     else's editor, and follows the ground to a light set where there is one.
+     Amber is deliberately absent: it means "wants you" here, and nothing in a
+     line you are typing does. */
   .t-mark {
     color: var(--paper-mute);
   }
@@ -1467,16 +1469,16 @@
     font-weight: 600;
   }
   .t-param {
-    color: #9bb8d8;
+    color: var(--ansi-12);
   }
   .t-str {
-    color: #9bd4bf;
+    color: var(--ansi-10);
   }
   .t-var {
-    color: #c4a8d8;
+    color: var(--ansi-13);
   }
   .t-num {
-    color: #8fd0d0;
+    color: var(--ansi-14);
   }
   .t-op {
     color: var(--paper-mute);

@@ -21,7 +21,7 @@
    * (see `.claude/rules/servers.md`). That is the one place decorative-looking
    * colour on this wall is not ours to reserve: it is what the program said. */
 
-  import { ANSI_PALETTE, parseAnsi } from "./ansi";
+  import { ansiVar, parseAnsi } from "./ansi";
   import { emptyBecause, FOLLOW, linesFor, subjectOf, tail } from "./logface";
   import LogFace from "./LogFace.svelte";
   import LogTail from "./LogTail.svelte";
@@ -125,7 +125,7 @@
           {:else}
             <span class="said" class:err={l.stderr}>
               {#each parseAnsi(l.line) as s}<span
-                  style:color={s.color === null ? null : ANSI_PALETTE[s.color]}
+                  style:color={s.color === null ? null : ansiVar(s.color)}
                   style:font-weight={s.bold ? "600" : null}
                   style:opacity={s.dim ? 0.6 : null}>{s.text}</span
                 >{/each}

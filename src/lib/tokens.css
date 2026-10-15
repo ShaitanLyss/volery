@@ -52,6 +52,11 @@
      than in black. One token and no per-site numbers, which is the only way
      forty shadows stay in step. */
   --shade: #000;
+  /* What a modal sheet dims the wall with: `Drop`, `Sieve` and `Run`'s scrim.
+     Made of `--shade` like every other shadow, so a light skin's is a warm veil
+     and not a black one. Declared because it was read in three places and
+     declared in none — two of them drew nothing at all for months. */
+  --scrim: color-mix(in srgb, var(--shade) 38%, transparent);
 
   /* semantic status — the only colour in the product */
   --st-work: #7fb8a4; /* celadon — streaming, alive           */
@@ -171,6 +176,59 @@
      8% of the GPU per card, and the difference between the two is the whole
      reason one is free. */
   --ch-shadow: none;
+
+  /* ── the sixteen terminal colours (`ansi.ts`) ─────────────────────────
+     What a server, a job or a Bash result draws its SGR colours with. Warm
+     takes on the standard 16 for a dark ground, and not skin knobs: a program's
+     colour is what it said, and the ring has no business moving it. What does
+     move them is the ground — a pale green is 8.6:1 on this wall and nothing at
+     all on cream — so `data-ground="light"` below swaps the set, rather than
+     every skin having to state sixteen colours. The first four of each row are
+     the status families on purpose: red is the rust that means broke, green the
+     celadon that means alive, yellow the amber that wants you. */
+  --ansi-0: #4b4340; /* black */
+  --ansi-1: #c5603f; /* red     */
+  --ansi-2: #7fb8a4; /* green   */
+  --ansi-3: #e9a13b; /* yellow  */
+  --ansi-4: #7f9dc0; /* blue    */
+  --ansi-5: #a98cc0; /* magenta */
+  --ansi-6: #6fb5b5; /* cyan    */
+  --ansi-7: #b4a89c; /* white   */
+  --ansi-8: #6b6058; /* bright black   */
+  --ansi-9: #e07a55; /* bright red     */
+  --ansi-10: #9bd4bf; /* bright green   */
+  --ansi-11: #f5bc63; /* bright yellow  */
+  --ansi-12: #9bb8d8; /* bright blue    */
+  --ansi-13: #c4a8d8; /* bright magenta */
+  --ansi-14: #8fd0d0; /* bright cyan    */
+  --ansi-15: #ede4d8; /* bright white   */
+}
+
+/* The same sixteen for a light ground (`palette.svelte.ts` sets the attribute
+   when the skin's `--well` is light). A light terminal draws "white" as grey and
+   "black" as its darkest ink, so those four sit on the skin's own ink ramp and
+   follow it; the colours are the status families made deep enough to be text,
+   each at 4.5:1 or better against every light well a skin has used, down to
+   #e9e8de, and against #fffbfd. The bright row is the lighter of
+   each pair but is held to the same floor, because a colour that is only legible
+   as the plain one is a colour half of a build log cannot use. */
+:root[data-ground="light"] {
+  --ansi-0: var(--paper);
+  --ansi-1: #9c3a24;
+  --ansi-2: #256b57;
+  --ansi-3: #865800;
+  --ansi-4: #385c88;
+  --ansi-5: #7a4a94;
+  --ansi-6: #196a69;
+  --ansi-7: var(--paper-mute);
+  --ansi-8: var(--paper-mute);
+  --ansi-9: #b13c1a;
+  --ansi-10: #247052;
+  --ansi-11: #8d5d00;
+  --ansi-12: #3d68a0;
+  --ansi-13: #8650a4;
+  --ansi-14: #187373;
+  --ansi-15: var(--paper-dim);
 }
 
 *,
