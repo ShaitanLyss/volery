@@ -379,26 +379,26 @@
     font-family: var(--util);
     font-size: 0.64rem;
     letter-spacing: 0.08em;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
     flex: 1 1 auto;
   }
   .x {
     border: 0;
     background: none;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
     font-size: 1.1rem;
     line-height: 1;
     cursor: pointer;
     padding: 0 0.2rem;
   }
   .x:hover {
-    color: var(--ink-on-surface, var(--ink));
+    color: var(--paper);
   }
 
   .note {
     margin: 0;
     font-size: 0.74rem;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
   }
   .note.fault {
     color: var(--st-fail);
@@ -447,7 +447,7 @@
     font-family: var(--util);
     font-size: 0.6rem;
     letter-spacing: 0.08em;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
   }
 
   .asks {
@@ -484,7 +484,7 @@
     letter-spacing: 0.12em;
   }
   .verb {
-    color: var(--ink-on-surface, var(--ink));
+    color: var(--paper);
   }
   .asked {
     margin: 0;
@@ -495,13 +495,13 @@
     margin: 0;
     font-size: 0.74rem;
     line-height: 1.5;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
   }
   .caveat {
     font-family: var(--util);
     font-size: 0.56rem;
     letter-spacing: 0.08em;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
     text-align: right;
   }
   .go {
@@ -528,7 +528,7 @@
     font-family: var(--util);
     font-size: 0.6rem;
     letter-spacing: 0.08em;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
   }
   .grow {
     flex: 1 1 auto;
@@ -540,12 +540,12 @@
     border: 1px solid var(--edge);
     border-radius: 3px;
     background: none;
-    color: var(--faint);
+    color: var(--paper-note, var(--paper-faint));
     font: inherit;
     cursor: pointer;
     padding: 0.15rem 0.4rem;
   }
   .drop:hover {
-    color: var(--ink-on-surface, var(--ink));
+    color: var(--paper);
   }
 </style>

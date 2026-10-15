@@ -401,8 +401,12 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    /* The picture is the reading; nothing of the wall shows through it. */
-    background: var(--paper-deep, #000);
+    /* The picture is the reading; nothing of the wall shows through it. Black on
+       every skin, on purpose: this is the letterbox round a page that is drawn
+       with its own ground, and `--shade` is not opaque on a light skin, so it
+       cannot stand in. (`--paper-deep`, which this once asked for, was declared
+       nowhere and so was always the fallback.) */
+    background: #000;
     cursor: default;
   }
 
@@ -426,7 +430,7 @@
   .act {
     font: inherit;
     color: var(--paper-dim);
-    background: var(--ink-soft);
+    background: var(--raised);
     border: 1px solid var(--edge);
     border-radius: 3px;
     padding: 0 0.35em;

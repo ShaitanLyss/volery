@@ -502,8 +502,16 @@
     display: grid;
     place-items: center;
     background: var(--well);
+    --hit: #b0574a;
+    --near: #c9a227;
+    --near-ink: #e4c75a;
     animation: rise 420ms cubic-bezier(0.22, 0.68, 0.24, 1) both;
     transition: opacity 500ms ease;
+  }
+  :global(:root[data-ground="light"]) .gate {
+    --hit: #b0574a;
+    --near: #9a7a10;
+    --near-ink: #7a5d00;
   }
   .gate.won {
     opacity: 0;
@@ -550,7 +558,7 @@
     text-align: center;
   }
   .said.good {
-    color: var(--st-ok, var(--paper));
+    color: var(--st-work);
   }
   .said code {
     font-size: 0.62rem;
@@ -584,14 +592,23 @@
   /* The game's own marking, and the one place this file leans on colour. It is
      information rather than decoration — which square is where — and it is read
      on a screen that covers the wall entirely, so no status colour is beside
-     it. Same bargain `away.ts::hueAllowed` states. */
+     it. Same bargain `away.ts::hueAllowed` states.
+
+     The three colours are the game's own — a brick, a gold, and a lighter gold
+     to read the letter in — and are declared on `.gate` rather than inlined, so
+     the one place they are not the same on every skin is the one place they
+     are written. The surface fills with `--well`, so it follows the skin to a
+     light ground, and a pale gold letter on cream is 1.5:1, which is a square
+     you cannot read. `data-ground="light"` swaps them for a deeper brick and a
+     gold dark enough to be text; unlike the toy shelf's synth (`Plume.svelte`,
+     fixed-dark because it paints its own ground) nothing here brings its own. */
   .cell.here {
-    background: color-mix(in srgb, #b0574a 62%, var(--well));
+    background: color-mix(in srgb, var(--hit) 62%, var(--well));
     border-color: transparent;
   }
   .cell.there {
-    border-color: #c9a227;
-    color: #e4c75a;
+    border-color: var(--near);
+    color: var(--near-ink);
   }
 
   /* calculus */

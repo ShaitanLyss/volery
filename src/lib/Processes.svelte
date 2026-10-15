@@ -223,6 +223,6 @@
     color: var(--paper-faint);
   }
   .fault {
-    color: var(--rust, var(--paper));
+    color: var(--st-fail);
   }
 </style>

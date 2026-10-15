@@ -212,7 +212,7 @@
     position: fixed;
     inset: 0;
     z-index: 60;
-    background: var(--scrim, rgba(0, 0, 0, 0.38));
+    background: var(--scrim);
     border: 0;
     cursor: default;
   }

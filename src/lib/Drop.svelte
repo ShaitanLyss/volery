@@ -164,7 +164,7 @@
     flex-direction: column;
     gap: 0.6rem;
     padding: 1.1rem 1.3rem 1rem;
-    background: var(--paper-bg, var(--surface));
+    background: var(--surface);
     border: 1px solid var(--edge);
     border-radius: 6px;
   }

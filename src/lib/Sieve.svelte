@@ -173,7 +173,7 @@
     flex-direction: column;
     gap: 0.5rem;
     padding: 1rem 1.1rem 0.8rem;
-    background: var(--paper-bg, var(--surface));
+    background: var(--surface);
     border: 1px solid var(--edge);
     border-radius: 6px;
   }
