@@ -4724,7 +4724,7 @@
            no longer the only way one gets here: a question nobody got to in
            time is queued too, with the wall never having gone away at all. See
            `presence::Queued`. */
-        title: `${presence.waiting} ${presence.waiting === 1 ? "question" : "questions"} queued for you — read them (space then q)`,
+        title: `${presence.waiting} ${presence.waiting === 1 ? "question" : "questions"} queued for you — read them (space then p)`,
         on: presence.showing,
         press: () => presence.openPile(),
       },
