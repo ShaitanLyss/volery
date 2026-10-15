@@ -5466,7 +5466,7 @@
     height: 46%;
     background: radial-gradient(
       120% 100% at 50% 0%,
-      rgba(233, 161, 59, 0.05),
+      color-mix(in srgb, var(--st-ask) 5%, transparent),
       transparent 70%
     );
     pointer-events: none;
@@ -5484,7 +5484,7 @@
     height: 38%;
     background: linear-gradient(
       to top,
-      rgba(233, 161, 59, calc(0.16 * var(--burn, 0))),
+      color-mix(in srgb, var(--st-ask) calc(16% * var(--burn, 0)), transparent),
       transparent 78%
     );
     pointer-events: none;

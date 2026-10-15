@@ -657,7 +657,7 @@
     padding: 0.6rem 0.7rem;
     /* The one place in the app that genuinely blocks an agent, so it is also
        the one place that gets to glow. */
-    box-shadow: 0 8px 30px -16px rgba(233, 161, 59, 0.7);
+    box-shadow: 0 8px 30px -16px color-mix(in srgb, var(--st-ask) 70%, transparent);
     /* Nothing in the dock may grow without limit. The panel sits above the
        draft field and grows upward into the wall, so an agent that writes at
        length would otherwise push the field it is to be answered in off the

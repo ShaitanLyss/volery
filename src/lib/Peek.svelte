@@ -97,7 +97,7 @@
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--shade) 40%, transparent),
       0 18px 50px -18px color-mix(in srgb, var(--shade) 85%, transparent),
-      0 6px 40px -20px rgba(233, 161, 59, 0.9);
+      0 6px 40px -20px color-mix(in srgb, var(--st-ask) 90%, transparent);
 
     opacity: 0;
     transform: translateY(8px);
