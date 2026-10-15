@@ -72,7 +72,7 @@ export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance";
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" | "pile" | "flyway" }
+  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" }
   | { kind: "window"; act: "span" | "panel" | "dock" | "glass" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
@@ -292,10 +292,13 @@ export const CHORDS: readonly Chord[] = [
     label: "cards left awake come back awake: on / off",
     verb: { kind: "machine", act: "reawaken" },
   },
-  /* `v` is how the room is lit: the brightness of whichever skin is on, a
-     tenth at a press. `k` and `j` are up and down after nvim's, and `0` is
-     the skin as it is. Each is said back, since the change can be small enough
-     to doubt. See `brightness.ts`. */
+  /* `v` is how the wall looks. `vv` is the themes panel, the family's main
+     verb doubled after `ff` and `ss`; until it existed the panel had no key at
+     all, only the header button. The rest is the brightness of whichever skin
+     is on, a tenth at a press: `k` and `j` are up and down after nvim's, and
+     `0` is the skin as it is. Each is said back, since the change can be small
+     enough to doubt. See `brightness.ts`. */
+  { keys: "vv", label: "the themes panel", verb: { kind: "open", what: "themes" } },
   { keys: "vk", label: "the wall brighter", verb: { kind: "bright", act: "up" } },
   { keys: "vj", label: "the wall dimmer", verb: { kind: "bright", act: "down" } },
   { keys: "v0", label: "the wall as its skin is", verb: { kind: "bright", act: "reset" } },

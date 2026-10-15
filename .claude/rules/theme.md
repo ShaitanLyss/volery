@@ -344,7 +344,8 @@ drew.
   crowd it give way (`LADDER_STEP`), so muted text keeps AA. The first cut squeezed the whole
   ladder by one power instead, and that dragged muted text under 4.5.
 - **The keys are `space v k` / `v j` / `v 0`**, a tenth per press, said back with the
-  skin's name. There is also a slider under the wall tab's note in the themes panel.
+  skin's name. There is also a slider under the wall tab's note in the themes panel, which
+  `space v v` opens. `v` was picked because it was free; the user was asked and kept it.
 
 ## A knob is a contract between two files, and nothing in either half can see the other
 

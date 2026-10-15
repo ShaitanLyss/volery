@@ -213,6 +213,7 @@ describe("the which-key hint", () => {
       { keys: "v0", label: "the wall as its skin is" },
       { keys: "vj", label: "the wall dimmer" },
       { keys: "vk", label: "the wall brighter" },
+      { keys: "vv", label: "the themes panel" },
       { keys: "wd", label: "dock: bottom / top / floating" },
       { keys: "wg", label: "glass: scaled to any screen / one per screen size" },
       { keys: "wp", label: "panel: right / left / floating" },

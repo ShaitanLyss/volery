@@ -553,6 +553,7 @@
     else if (verb.kind === "open") {
       if (verb.what === "pile") presence.openPile();
       else if (verb.what === "flyway") showFlyway = true;
+      else if (verb.what === "themes") showThemes = !showThemes;
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -4773,7 +4774,7 @@
       {
         key: "themes",
         label: "themes",
-        title: "How the transcript is set — ctrl+shift+T cycles without opening this",
+        title: "How the wall looks and the transcript is set (space then v v) — ctrl+shift+T and ctrl+shift+Y cycle without opening this",
         on: showThemes,
         press: () => (showThemes = !showThemes),
       },
