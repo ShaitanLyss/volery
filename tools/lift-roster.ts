@@ -106,6 +106,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     ],
   },
   {
+    file: "src-tauri/src/show.rs",
+    items: ["const SHOW_TOOL", "fn show_schema"],
+  },
+  {
     file: "src-tauri/src/board.rs",
     items: [
       "const BOARD_TOOL",
@@ -512,6 +516,7 @@ const MODULES = [
   "load",
   "presence",
   "pin",
+  "show",
   "relay",
   "remove",
   "selector",

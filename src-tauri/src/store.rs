@@ -5708,7 +5708,7 @@ pub fn import_image(store: tauri::State<'_, Store>, src: String) -> Result<Strin
 /// serves a content type off that name, so a guess here would be served as a
 /// lie later. `None` means "nothing we can draw", which is the honest answer for
 /// the audio, the html and the shortcut that also live on a clipboard.
-fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     let head = |sig: &[u8]| bytes.starts_with(sig);
     if head(b"\x89PNG\r\n\x1a\n") {
         Some("png")

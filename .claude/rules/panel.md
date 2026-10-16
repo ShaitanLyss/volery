@@ -15,6 +15,8 @@ paths:
   - "src/lib/copy.ts"
   - "src/lib/compaction.ts"
   - "test/compaction.test.ts"
+  - "src/lib/InlinePicture.svelte"
+  - "src/lib/Figure.svelte"
 ---
 
 # The transcript panel: markdown, folding, size, rails, keys
@@ -258,6 +260,13 @@ it may be part of. `toolcall.ts` is pure and decides *what* is shown and in what
   The `[Image: original 3200x2000, displayed at 2000x1250. …]` note is a *different* record and
   stays dropped (`isImageNote`): it is coordinate arithmetic addressed to the model, it carries
   `isMeta` on disk, and it was being drawn as something the user had typed.
+
+  **A picture the agent means you to see is not this**, and since 2026-10-16 it is not in a
+  fold at all: `![alt](path)` in an answer is drawn where it was written, and a `show` call is
+  a figure of its own that breaks the run of machinery around it. Same validation (`pictureOf`
+  is this function's rules lifted out), a different bound — the viewport rather than a click —
+  and a `load` listener in `hearGrowth` so a picture decoding late re-pins the tail, which an
+  opened fold's picture never did either. `.claude/rules/showing.md` is the whole of it.
 ### Finding a word in what you are reading
 
 Ctrl+F used to reach the *webview's* own find bar, which is the wrong tool twice over: it

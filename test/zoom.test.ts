@@ -196,3 +196,26 @@ describe("what the chrome reads off it", () => {
     expect(canPan(fitView(WIDE, VP), WIDE, VP)).toBe(false);
   });
 });
+
+describe("a picture's own size caps the floor", () => {
+  const box = { w: 1000, h: 800 };
+  test("a small picture opens at its size, not blown up to fit", () => {
+    const vp = { w: 200, h: 100 };
+    const v = fitView(box, vp, 1);
+    expect(v.scale).toBe(1);
+    // centred
+    expect(v.x).toBe(400);
+    expect(v.y).toBe(350);
+    expect(isFit(v, box, vp, 1)).toBe(true);
+    // and can still be looked at closer
+    expect(zoomBy(v, 2, { x: 500, y: 400 }, box, vp, 1).scale).toBe(2);
+  });
+  test("a big one opens fitted, exactly as without it", () => {
+    const vp = { w: 4000, h: 2000 };
+    expect(fitView(box, vp, 1)).toEqual(fitView(box, vp));
+  });
+  test("without it nothing changes for the gallery", () => {
+    const vp = { w: 200, h: 100 };
+    expect(fitView(box, vp).scale).toBe(5);
+  });
+});

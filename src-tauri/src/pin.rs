@@ -59,6 +59,13 @@
 //! text it can already say in the transcript — where the panel renders it
 //! properly. What the transcript cannot do is show you a picture beside the card
 //! that made it. That is the gap, and it is the whole gap.
+//!
+//! **And it is a narrower gap than this tool was used for.** Until `show.rs`
+//! this was the only verb that put a picture in front of you, so it was the
+//! verb for every picture — including the chart that was simply the answer to
+//! the question just asked, which belongs in the conversation and went on the
+//! wall a screen away from the sentence describing it. The description now
+//! sends "look at this now" to `show` and keeps this for what should stay.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -128,16 +135,16 @@ pub fn pin_schema() -> Value {
     json!({
         "name": PIN_TOOL,
         "description":
-            "Put an image up on the Skein wall, beside this conversation's card, where the \
-             user can see it without opening anything. For something you *made* and want \
-             looked at: a diagram, a chart you rendered, a screenshot of the thing you just \
-             changed, a frame out of a render.\n\n\
-             **This is what to do instead of writing a path in the transcript.** A path \
-             costs the user four gestures — read the line, copy it, find something to open \
-             it with, come back — and at no point is the thing you made actually in front \
-             of them. Pin it and it is on the wall, at its own aspect ratio, next to the \
-             card that made it. Say in your reply that you have pinned it and what it \
-             shows.\n\n\
+            "Put an image up on the Skein wall, beside this conversation's card, where it \
+             stays in view after the conversation has moved on — a reference the user should \
+             keep looking at while work goes on: the design being matched, the diagram the \
+             next hour of work is about, a before shot to compare against.\n\n\
+             **To show the user something as part of what you are saying, `show` it \
+             instead** — that draws it in the conversation itself, in order, which is where \
+             most pictures belong: a chart answering the question just asked, a screenshot \
+             of what you just changed. Pin only what should still be on the wall when the \
+             conversation is somewhere else, and say in your reply that you pinned it and \
+             what it shows.\n\n\
              It answers with the image's id. **If you are about to put up a newer version \
              of something you have already pinned, `repin` that id instead** — a second \
              copy of the same picture is two rectangles the user has to tell apart, and a \
@@ -145,8 +152,8 @@ pub fn pin_schema() -> Value {
              Images only, and the file must already exist on disk — write it first, then \
              pin it. For anything you want to *say* rather than show, say it: the \
              transcript renders markdown properly and is the right place for words. The \
-             wall is the user's, so use this for the thing worth their eye and not for \
-             every intermediate output.",
+             wall is the user's, so pin the thing worth keeping in view and not every \
+             intermediate output.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -593,9 +600,12 @@ mod tests {
         let s = pin_schema();
         assert_eq!(s["name"], PIN_TOOL);
         let d = s["description"].as_str().unwrap();
-        /* The sentence that makes it worth having: an agent that does not know
-           this beats writing a path will go on writing paths. */
-        assert!(d.contains("instead of writing a path"), "{d}");
+        /* The sentence that keeps it from being used for everything: until
+           `show` existed this was the only way to hand over a picture, so every
+           picture went on the wall. It has to send "look at this now" to the
+           conversation, or the wall goes on filling with them. */
+        assert!(d.contains("`show` it"), "{d}");
+        assert!(d.contains("stays in view"), "{d}");
         /* And the boundary, or the wall fills with renderings of prose. */
         assert!(d.contains("Images only"), "{d}");
         assert!(d.contains("transcript"), "{d}");

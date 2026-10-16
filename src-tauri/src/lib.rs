@@ -67,6 +67,9 @@ mod servers;
 mod sessions;
 mod signin;
 mod shell;
+/// Showing a picture in the conversation itself — the other channel `pin` had
+/// been standing in for. See `.claude/rules/showing.md`.
+mod show;
 mod sketch;
 mod sink;
 pub mod sinksync;
@@ -1039,6 +1042,10 @@ pub fn run() {
             store::save_server_group,
             store::delete_server_group,
             attach::read_attachment,
+            show::read_picture,
+            show::read_shown,
+            show::measure_picture,
+            show::measure_picture_data,
             store::classify_drop,
             store::import_image,
             store::paste_image,

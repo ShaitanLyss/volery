@@ -9,9 +9,10 @@
      whitespace, so indenting the branches of this `{#each}` would insert a
      space between every word and the emphasis next to it. */
   import Self from "./Inlines.svelte";
-  import type { Inline } from "./markdown";
-  import { namedPath, pathsIn } from "./finding";
-  import { paths, symbolLine, useFiles, useLinks } from "./paths.svelte";
+  import InlinePicture, { type PictureSource } from "./InlinePicture.svelte";
+  import { isDataPicture, pictureMarkdown, type Inline } from "./markdown";
+  import { fullPath, namedPath, pathsIn } from "./finding";
+  import { paths, symbolLine, useFiles, useLinks, usePictureRoot } from "./paths.svelte";
 
   let { kids }: { kids: Inline[] } = $props();
 
@@ -123,6 +124,20 @@
     scope.go(path, at.line, how);
   }
 
+  /** Where a picture written in the prose is read from, or `null` where it
+   *  cannot be: a file needs a directory behind the prose to count from and a
+   *  surface allowed to reach the disk at all — the file scope a path link
+   *  needs, unless the surface said otherwise (`usePictureRoot`) — so a chat
+   *  card's `![…](C:\…)` stays words. A `data:` picture carries its own bytes
+   *  and needs neither. See `pictureSource`. */
+  const pictureRoot = usePictureRoot();
+  function pictureFrom(src: string): PictureSource | null {
+    if (isDataPicture(src)) return { kind: "data", url: src };
+    const root = pictureRoot();
+    if (!root) return null;
+    return { kind: "file", path: fullPath(root, src) };
+  }
+
   function hint(path: string, dir: boolean, symbol?: string[]): string {
     if (dir) return `Open ${path} in Explorer · ctrl-click to show it in Explorer`;
     const where = symbol ? ` at ${symbol.join("::")}` : "";
@@ -165,7 +180,13 @@
       ><Self kids={k.kids} /></strong
     >{:else if k.t === "em"}<em><Self kids={k.kids} /></em
     >{:else if k.t === "del"}<del><Self kids={k.kids} /></del
-    >{:else if k.t === "link"}<button
+    >{:else if k.t === "img"}{@const pic = pictureFrom(k.src)}{#if pic}<InlinePicture
+        source={pic}
+        alt={k.alt}
+        md={pictureMarkdown(k.alt, k.src)}
+      />{:else}<span class="unpictured" data-md={pictureMarkdown(k.alt, k.src)}
+        >{k.alt || k.src}</span
+      >{/if}{:else if k.t === "link"}<button
       type="button"
       class="link"
       title={k.href}
@@ -196,6 +217,14 @@
 
   del {
     text-decoration: line-through;
+    color: var(--paper-mute);
+  }
+
+  /* A picture this surface may not read — a chat card's prose names a file it
+     has no directory to read from. Its words, quietly, so the sentence around
+     it still says what was meant to be there. */
+  .unpictured {
+    font-style: italic;
     color: var(--paper-mute);
   }
 

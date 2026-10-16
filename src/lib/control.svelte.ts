@@ -21,6 +21,7 @@
  * There is no `eval` op, on purpose. A fixed vocabulary is a description of
  * what the app can be asked to do; an eval hole is a description of nothing. */
 
+import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { Conversation } from "./conversation.svelte";
@@ -700,6 +701,10 @@ export class Control {
        *  `linePx` is the size a line is actually drawn at. A `--read` that
        *  never reached a rule would leave the first one moving and the second
        *  one still. Null with no panel open, which is not the same as zero. */
+      /** What the window is holding for pictures drawn in transcripts — the
+       *  cache of kept copies, by characters. A budget nothing can see from
+       *  outside is a budget nobody can check (`showing.ts::CACHE_CHARS`). */
+      pictures: pictureHeld(),
       panel: {
         reading: readingScale(h.studio.readScale),
         linePx: (() => {

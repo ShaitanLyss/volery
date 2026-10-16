@@ -782,6 +782,12 @@ There is a wall, and it already draws images.
   widget kind, a config, a face and a rule of its own, and what an agent has to *say* it can
   already say in the transcript, where the panel renders it properly. What the transcript
   cannot do is show you a picture beside the card that made it.
+- **And it was used for every picture, which is narrower than what it is for.** It was the
+  only verb that put a picture in front of you, so the chart that simply answered the question
+  just asked went on the wall a screen away from the sentence about it. `show` draws a picture
+  in the conversation itself (`.claude/rules/showing.md`), and pin's description now sends
+  "look at this now" there and keeps the wall for what should still be up when the
+  conversation is somewhere else.
 
 ### And then the second one landed on the first
 

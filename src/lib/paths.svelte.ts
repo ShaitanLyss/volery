@@ -290,6 +290,60 @@ export function useFiles(): () => FileLinks | null {
   };
 }
 
+/* ── where a picture in prose counts from ─────────────────────────────────
+ *
+ * Nearly always where the surface's path links count from, and then nothing
+ * needs saying — `usePictureRoot` falls back to the file scope. Two surfaces
+ * differ, and each is a case of the same mistake the default root is `null`
+ * to prevent (a path resolved against the wrong directory reads a different
+ * file of the right name):
+ *
+ * - **A document in the viewer.** `docs/guide.md` writing `![x](img/a.png)`
+ *   means `docs/img/a.png`, while a path *link* in it is still asked about
+ *   against the project — so only the pictures are rooted at the document's
+ *   own folder (`Leaf.svelte`). Found in review.
+ * - **A card on another wall.** Its directory is the far machine's, and a
+ *   picture read from the same path here is a different picture drawn with
+ *   nothing to say so. `null`: nothing is read (`Transcript.svelte`). */
+const PICTURES = Symbol("volery:pictures");
+
+export function scopePictures(root: () => string | null): void {
+  setContext<() => string | null>(PICTURES, root);
+}
+
+/** The directory a picture written in prose counts from, or `null` for a
+ *  surface that may read none — which draws the picture's words instead. */
+export function usePictureRoot(): () => string | null {
+  const own = getContext<(() => string | null) | undefined>(PICTURES);
+  const files = useFiles();
+  return () => (own ? own() : (files()?.root ?? null));
+}
+
+/** Opening a file by its whole path, rooted at its own folder.
+ *
+ *  `useFiles` counts from the surface's directory, and the viewer refuses a
+ *  path that climbs out of the root it is given — which is right for a path
+ *  written in prose and wrong for a picture, which is as likely to be in
+ *  `%TEMP%` or under the studio's own `shown/` as in the project. Rooting the
+ *  one file at its own parent keeps the containment exactly as strong (one
+ *  file, reached by its own name) — the arrangement a question's attachment
+ *  already uses (`ask.rs::attach_files`).
+ *
+ *  Gated on the same scope, so a surface with no directory behind its prose —
+ *  a chat card — opens nothing, as it links nothing. */
+export function useOpener(): () => ((full: string, how: "open" | "reveal") => void) | null {
+  const scope = getContext<Scope | undefined>(FILES);
+  return () => {
+    const go = scope?.go;
+    if (!scope?.root() || !go) return null;
+    return (full, how) => {
+      const at = Math.max(full.lastIndexOf("/"), full.lastIndexOf("\\"));
+      if (at <= 0) return;
+      go(full.slice(0, at + 1), full.slice(at + 1), null, how);
+    };
+  };
+}
+
 /* ── and the link beside it ────────────────────────────────────────────────
  *
  * `onlink` is the same prop with the same hazard and *no* scope at all: every

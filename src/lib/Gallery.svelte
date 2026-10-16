@@ -57,6 +57,7 @@
     zoomTo,
     type View,
   } from "./zoom";
+  import { SANDBOX } from "./sandbox";
 
   let {
     panels,
@@ -529,7 +530,7 @@
               {#key docs[i]}
                 <iframe
                   title={p.label ?? header}
-                  sandbox="allow-scripts"
+                  sandbox={SANDBOX}
                   srcdoc={docs[i]}
                   style:width="{PREVIEW_VIEWPORT.w}px"
                   style:height="{PREVIEW_VIEWPORT.h}px"
@@ -732,7 +733,7 @@
           {#key bigDoc}
             <iframe
               title={bigPanel.label ?? header}
-              sandbox="allow-scripts"
+              sandbox={SANDBOX}
               srcdoc={bigDoc}
               style:width="{PREVIEW_VIEWPORT.w}px"
               style:height="{PREVIEW_VIEWPORT.h}px"

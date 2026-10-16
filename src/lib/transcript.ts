@@ -15,7 +15,13 @@
  * is type-only and erased at build, so nothing rune-bearing is pulled in here.
  */
 
-import { RESEND_CAP, clip, isResendMark, splitResendMark } from "./classify";
+import {
+  RESEND_CAP,
+  SKEIN_SHOW_TOOL,
+  clip,
+  isResendMark,
+  splitResendMark,
+} from "./classify";
 import type { Effort } from "./commands";
 import type { ConvKind, Job, Line } from "./conversation.svelte";
 import type { Gear } from "./gears";
@@ -136,7 +142,20 @@ export type Block =
    *  hides machinery you did not ask for; a run is the thing you asked for, and
    *  a `git status` you have to click to read is one you would rather have typed
    *  somewhere else. See `.claude/rules/bang.md`. */
-  | { kind: "shell"; key: string; line: Line };
+  | { kind: "shell"; key: string; line: Line }
+  /** A picture an agent showed with the `show` tool, drawn as itself where it
+   *  was shown. A tool call, and the one tool call that is never folded into a
+   *  run: the rule above is that only machinery folds, and a call whose whole
+   *  effect is a thing for you to look at is not machinery — it is the turn
+   *  saying something. Folded, the picture an agent showed you would be behind
+   *  a cap reading `3 tool calls`, which is `pin`'s old failure (the picture a
+   *  screen away from the sentence about it) arriving from the other side. See
+   *  `.claude/rules/showing.md`. */
+  | { kind: "shown"; key: string; line: Line };
+
+/** Whether a line is a picture an agent showed — see the `shown` block. */
+export const isShown = (line: Line): boolean =>
+  line.kind === "tool" && line.call?.name === SKEIN_SHOW_TOOL;
 
 /** The line kinds that fold on their own — see the `long` block above. A `you`
  *  line joins them when it is rousing's prompt, which is asked separately. */
@@ -262,8 +281,18 @@ export function blocksOf(lines: Line[], tag = "l", base = 0): Block[] {
       out.push({ kind: "line", key: `${tag}${base + i}`, line });
       continue;
     }
+    /* Keyed by position like an ordinary line, and for the ordinary line's
+       reason: it has a DOM node, and the absolute `base` is what keeps that
+       node — and the picture already decoded inside it — across the live
+       column sliding. */
+    if (isShown(line)) {
+      out.push({ kind: "shown", key: `${tag}${base + i}`, line });
+      continue;
+    }
     let end = i;
-    while (end < lines.length && lines[end].kind === "tool") end++;
+    /* A shown picture breaks a run the way speech does, so the calls either
+       side of it fold on their own and the picture stands between them. */
+    while (end < lines.length && lines[end].kind === "tool" && !isShown(lines[end])) end++;
     const run = lines.slice(i, end);
     if (run.length < MIN_FOLD) {
       out.push({ kind: "line", key: `${tag}${base + i}`, line });

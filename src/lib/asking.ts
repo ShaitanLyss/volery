@@ -25,6 +25,8 @@
  * call asked, where you are in answering it, and what the reply says.
  */
 
+import { neuter, sandboxDoc } from "./sandbox";
+
 /** A design that can be *looked at* rather than described.
  *
  *  Claude Code in a terminal can only spell a layout out in prose, so an agent
@@ -633,14 +635,6 @@ export function isScriptBuilt(p: AskPreview): boolean {
   return !!p.js && !drawsSomething(p.html);
 }
 
-/* A closing tag inside the text ends the element early. Neither of these is a
-   security boundary — the CSP below is, and the markup is the model's anyway —
-   but a design that silently loses its second half because a stylesheet
-   contained the string `</style` is a bug that would read as the model's. */
-function neuter(source: string): string {
-  return source.replace(/<\/(script|style)/gi, "<\\/$1");
-}
-
 /** The document a preview is rendered as.
  *
  *  Two things contain it, and only one of them is guaranteed:
@@ -672,30 +666,19 @@ export function previewDoc(
   preview: AskPreview,
   opts: { scripts: boolean; tokens?: string },
 ): string {
-  const policy = [
-    "default-src 'none'",
-    "img-src data:",
-    "font-src data:",
-    "style-src 'unsafe-inline'",
-    /* One gate for scripts wherever they are written, so a `<script>` typed
-       into `html` is refused on a chat card exactly as the `js` field is. */
-    opts.scripts ? "script-src 'unsafe-inline'" : "script-src 'none'",
-  ].join("; ");
-
   const frame = `html,body{margin:0;padding:0;width:${PREVIEW_VIEWPORT.w}px;height:${PREVIEW_VIEWPORT.h}px;overflow:hidden;background:var(--ink,#151210);color:var(--paper,#ede4d8);font-family:var(--body,Georgia,serif)}*{box-sizing:border-box}`;
 
-  const parts = [
-    "<!doctype html><html><head><meta charset=\"utf-8\">",
-    `<meta http-equiv="Content-Security-Policy" content="${policy}">`,
-    opts.tokens ? `<style>${neuter(opts.tokens)}</style>` : "",
-    `<style>${frame}</style>`,
-    preview.css ? `<style>${neuter(preview.css)}</style>` : "",
-    "</head><body>",
-    preview.html,
-    opts.scripts && preview.js ? `<script>${neuter(preview.js)}</script>` : "",
-    "</body></html>",
-  ];
-  return parts.join("");
+  /* The wall itself — the policy, and where it goes — is `sandbox.ts`'s, and is
+     shared with the diagrams an answer draws, so there is one place it lives. */
+  return sandboxDoc({
+    scripts: opts.scripts ? (preview.js ? [preview.js] : []) : false,
+    head: [
+      opts.tokens ? `<style>${neuter(opts.tokens)}</style>` : "",
+      `<style>${frame}</style>`,
+      preview.css ? `<style>${neuter(preview.css)}</style>` : "",
+    ].join(""),
+    body: preview.html,
+  });
 }
 
 /** A fresh sheet of answers. */

@@ -3925,6 +3925,7 @@ mod tests {
         ("limits.rs", include_str!("limits.rs")),
         ("load.rs", include_str!("load.rs")),
         ("pin.rs", include_str!("pin.rs")),
+        ("show.rs", include_str!("show.rs")),
         ("presence.rs", include_str!("presence.rs")),
         ("relay.rs", include_str!("relay.rs")),
         ("remove.rs", include_str!("remove.rs")),

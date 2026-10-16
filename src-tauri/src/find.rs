@@ -844,6 +844,14 @@ pub async fn classify_paths(
     crate::off_main(move || {
         let mut out = std::collections::HashMap::new();
         for raw in paths.into_iter().take(CLASSIFY_CAP) {
+            /* A path on a share is not asked about. Stat'ing `\\host\x` is
+               an SMB handshake carrying this user's credentials to whatever
+               host the prose named, and this runs on render, over an agent's
+               words — which may be words it read off a web page. Unanswered
+               is plain text, which is the right drawing for it anyway. */
+            if crate::show::is_remote(&raw) {
+                continue;
+            }
             let full = resolve(&root, &raw);
             /* `metadata`, which follows a link, rather than `symlink_metadata`:
                what somebody clicking a symlink to a folder means is the folder.

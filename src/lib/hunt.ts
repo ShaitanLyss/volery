@@ -26,6 +26,7 @@
  * erased at build.
  */
 
+import { nameOf, shownOf } from "./showing";
 import type { Block } from "./transcript";
 
 /** Where a match sits inside one string. Same shape as `finding.ts`'s, on
@@ -79,6 +80,13 @@ export function spansOf(text: string, query: string): Span[] {
  *  searched is what the column says: the line, and the lines inside a fold. */
 export function textOf(b: Block): string {
   if (b.kind === "tools") return b.lines.map((l) => l.text).join("\n");
+  /* A figure draws its file's name and its caption, and never the line's own
+     words (`showed chart.png`), so those two are what a find looks in — a
+     match on words that are not on the page is a find that lands on nothing. */
+  if (b.kind === "shown") {
+    const s = shownOf(b.line.call ?? { name: "", input: {} });
+    return [nameOf(s.path), s.caption].filter(Boolean).join("\n");
+  }
   return b.line.text;
 }
 

@@ -9,8 +9,9 @@
   import Jobs from "./Jobs.svelte";
   import Rail from "./Rail.svelte";
   import ToolCall from "./ToolCall.svelte";
+  import Figure from "./Figure.svelte";
   import { nudgeReading } from "./layout";
-  import { scopeFiles } from "./paths.svelte";
+  import { scopeFiles, scopePictures } from "./paths.svelte";
   import { readingOf } from "./gears";
   import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
@@ -100,6 +101,10 @@
      nowhere, and a link that resolves against nowhere is the dead link this
      whole path exists to avoid. */
   scopeFiles(() => (conv.kind === "project" ? conv.cwd : null) ?? null);
+  /* And its pictures, which are read off this machine's disk: a card on another
+     wall has its directory over there, and the same path here is a different
+     picture drawn with nothing to say so. See `scopePictures`. */
+  scopePictures(() => (conv.kind === "project" && !conv.elsewhere ? conv.cwd : null) ?? null);
 
   const stream = new StreamedMarkdown();
   const streamed = $derived(stream.read(conv.id, conv.streaming));
@@ -1295,6 +1300,11 @@
           </div>
         {/if}
       </div>
+    {:else if b.kind === "shown"}
+      <!-- A picture an agent showed, where it showed it — never inside a fold,
+           since it is the thing the turn wanted you to look at. See
+           `.claude/rules/showing.md`. -->
+      <Figure line={b.line} />
     {:else if b.kind === "shell"}
       <!-- A `!` run: a command you ran in this card's directory rather than
            something you said to its agent. Open unless you shut it, which is

@@ -239,6 +239,18 @@ const tails = new WeakMap<Element, Tail>();
  *  that point nothing is ever appended again, and a streaming answer rewrites
  *  the block it is in the middle of.
  *
+ *  **And a picture that finishes loading is the third way, which neither
+ *  observer hears.** The `<img>` is appended — heard — at no height, and grows
+ *  by its whole picture some milliseconds later when its bytes decode, with no
+ *  node added and no text changed; and the `ResizeObserver` is on the scroller,
+ *  whose own box does not move. So a picture at the foot of a live turn pushed
+ *  the newest line off the bottom with `following` still true: the signature
+ *  `panel.md` names as the tell of a follow that enumerates its causes. A
+ *  picture opened in a tool call's fold had always done it; one drawn in an
+ *  answer made it the ordinary case. `load` does not bubble, but it is
+ *  dispatched through the capture phase of every ancestor — so one listener on
+ *  the scroller hears every image under it, whoever drew it.
+ *
  *  Returns the teardown. `resized` is separate only because the two can cost
  *  different amounts to answer: a panel that re-measures every mark in itself on
  *  a resize cannot afford to do it once per token. */
@@ -252,10 +264,24 @@ export function hearGrowth(
   const sized =
     typeof ResizeObserver === "function" ? new ResizeObserver(resized) : null;
   sized?.observe(el);
+  const loaded = (e: Event) => {
+    if (decodedGrowth(e.target)) grew();
+  };
+  el.addEventListener("load", loaded, true);
   return () => {
     mutated.disconnect();
     sized?.disconnect();
+    el.removeEventListener("load", loaded, true);
   };
+}
+
+/** Whether a `load` heard in the capture phase is something that took up room
+ *  as it arrived — a picture. A frame's `load` is a document finishing, which
+ *  moves nothing in this column that the observers above had not already
+ *  heard. Asked of the tag rather than of the class, so it needs no DOM to be
+ *  asked. */
+export function decodedGrowth(target: EventTarget | null): boolean {
+  return (target as { tagName?: unknown } | null)?.tagName === "IMG";
 }
 
 /** Stick a scrolling element to its own tail: `{@attach stickToTail}`.

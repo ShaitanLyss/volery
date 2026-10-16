@@ -22,7 +22,8 @@
    * about. */
 
   import type { Sheet } from "./finder.svelte";
-  import { hasDocumentReading, viewLines } from "./finding";
+  import { fullPath, hasDocumentReading, viewLines } from "./finding";
+  import { scopePictures, useFiles } from "./paths.svelte";
   import { parseMarkdown } from "./markdown";
   import Folio from "./Folio.svelte";
   import Markdown from "./Markdown.svelte";
@@ -50,6 +51,18 @@
      *  that does nothing is worse than one that stays quiet. */
     outsideKey?: string | null;
   } = $props();
+
+  /* A picture a document writes counts from the document's own folder, not
+     the root the viewer was opened at — `docs/guide.md`'s `img/a.png` is
+     `docs/img/a.png`. Pictures only: a path *link* in it is still asked about
+     against the project, as it always was. See `scopePictures`. */
+  const files = useFiles();
+  scopePictures(() => {
+    const root = files()?.root;
+    if (!root) return null;
+    const at = Math.max(sheet.path.lastIndexOf("/"), sheet.path.lastIndexOf("\\"));
+    return at === -1 ? root : fullPath(root, sheet.path.slice(0, at));
+  });
 
   /** The reading, with the caller's answer preferred over the file's. */
   const asDoc = $derived(rendered ?? hasDocumentReading(sheet));

@@ -179,6 +179,10 @@ export const SKEIN_UNPOST_TOOL = "mcp__skein__unpost";
 export const SKEIN_RECALL_TOOL = "mcp__skein__recall";
 export const SKEIN_TOUCHED_TOOL = "mcp__skein__touched";
 export const SKEIN_PIN_TOOL = "mcp__skein__pin";
+/** A picture shown in the conversation itself. The one tool call the panel
+ *  does not fold away with the machinery, since what it did is the thing you
+ *  are meant to look at — see `transcript.ts`'s `shown` block. */
+export const SKEIN_SHOW_TOOL = "mcp__skein__show";
 export const SKEIN_PINNED_TOOL = "mcp__skein__pinned";
 export const SKEIN_REPIN_TOOL = "mcp__skein__repin";
 export const SKEIN_TIMELINE_TOOL = "mcp__skein__timeline";
@@ -422,18 +426,31 @@ export function picturesOf(content: unknown): Picture[] {
   for (const b of content as any[]) {
     const src = b?.type === "image" ? b.source : null;
     if (!src || src.type !== "base64") continue;
-    const media = typeof src.media_type === "string" ? src.media_type : "";
-    /* A short `image/<subtype>` and nothing else. This ends up inside an
-       attribute, so it is untrusted input rather than a field to pass along. */
-    if (!/^image\/[a-z0-9.+-]{1,20}$/.test(media)) continue;
-    const raw = typeof src.data === "string" ? src.data : "";
-    /* The base64 alphabet, exactly. A quote here would close the attribute. */
-    if (!raw || !/^[A-Za-z0-9+/=\s]+$/.test(raw)) continue;
-    const data = raw.replace(/\s+/g, "");
-    if (!data || data.length > MAX_IMAGE_CHARS) continue;
-    out.push({ url: `data:${media};base64,${data}`, chars: data.length });
+    const pic = pictureOf(src.media_type, src.data);
+    if (pic) out.push(pic);
   }
   return out;
+}
+
+/** One picture out of a media type and a base64 payload, or `null` for
+ *  anything that is not plainly one.
+ *
+ *  The whole of `picturesOf`'s care, lifted out so the transcript's other
+ *  source of pictures — a `data:` URI an agent wrote into its own markdown,
+ *  `markdown.ts::pictureSource` — is held to the same two rules rather than a
+ *  second spelling of them. Both fields end up inside `src=`, so both are
+ *  untrusted input, and both are refused rather than sanitised. */
+export function pictureOf(mediaType: unknown, payload: unknown): Picture | null {
+  const media = typeof mediaType === "string" ? mediaType : "";
+  /* A short `image/<subtype>` and nothing else. This ends up inside an
+     attribute, so it is untrusted input rather than a field to pass along. */
+  if (!/^image\/[a-z0-9.+-]{1,20}$/.test(media)) return null;
+  const raw = typeof payload === "string" ? payload : "";
+  /* The base64 alphabet, exactly. A quote here would close the attribute. */
+  if (!raw || !/^[A-Za-z0-9+/=\s]+$/.test(raw)) return null;
+  const data = raw.replace(/\s+/g, "");
+  if (!data || data.length > MAX_IMAGE_CHARS) return null;
+  return { url: `data:${media};base64,${data}`, chars: data.length };
 }
 
 export function clip(s: string, n: number): string {
@@ -626,6 +643,10 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_PINNED_TOOL:
       return "checked what it has pinned";
+    case SKEIN_SHOW_TOOL: {
+      const file = arg(input?.path);
+      return file ? `showed ${basename(file)}` : "showed something";
+    }
     case SKEIN_TIMELINE_TOOL:
       return arg(input?.card) ? `read ${clip(arg(input?.card)!, 24)}'s timeline` : "read its timeline";
     case SKEIN_TIMELINE_SET_TOOL: {

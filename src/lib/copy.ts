@@ -32,11 +32,19 @@ const isEl = (b: Bit): b is El => "tag" in b;
  *  inline bits between two blocks becomes a paragraph of its own — which is
  *  what a selection that starts mid-sentence looks like. */
 const BLOCK = new Set([
-  "P", "DIV", "PRE", "BLOCKQUOTE", "UL", "OL", "LI", "HR", "TABLE", "THEAD",
+  "P", "DIV", "FIGURE", "PRE", "BLOCKQUOTE", "UL", "OL", "LI", "HR", "TABLE", "THEAD",
   "TBODY", "TR", "SECTION", "NAV",
 ]);
 
 const cls = (el: El) => el.attr.class ?? "";
+
+/** What an element says it is in markdown, for the one kind of thing whose
+ *  drawing cannot be read back into source: a picture. Its `src` is a `data:`
+ *  URL the panel read off the disk, which is not what the agent wrote and is
+ *  megabytes long — so `InlinePicture` carries the `![alt](path)` it was drawn
+ *  from, and the walk writes that instead of descending. A figure a `show`
+ *  call drew carries one too, or a selection across it would copy as a gap. */
+const said = (el: El): string | undefined => el.attr["data-md"];
 
 /** The panel's own furniture, which is not part of what anybody said: the
  *  fence's copy button and language tag, the streaming caret, the rule that
@@ -47,6 +55,7 @@ const cls = (el: El) => el.attr.class ?? "";
  *  recursing into it would put an empty block between a fence and whatever
  *  follows it. Dropping the whole thing is what the bare button did. */
 function furniture(el: El): boolean {
+  if (said(el) !== undefined) return false;
   return (
     (el.tag === "BUTTON" && !cls(el).includes("link")) ||
     /\b(lang|caret|seam|perch)\b/.test(cls(el))
@@ -78,6 +87,8 @@ function blocks(kids: Bit[]): string[] {
 }
 
 function block(el: El): string[] {
+  const md = said(el);
+  if (md !== undefined) return md ? [md] : [];
   const kids = kidsOf(el);
 
   if (el.tag === "HR") return ["---"];
@@ -181,6 +192,11 @@ function inline(kids: Bit[]): string {
   for (const b of kids) {
     if (!isEl(b)) {
       out += b.text;
+      continue;
+    }
+    const md = said(b);
+    if (md !== undefined) {
+      out += md;
       continue;
     }
     if (furniture(b)) continue;

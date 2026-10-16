@@ -50,9 +50,26 @@ export function fitScale(box: Size, vp: Size): number {
  *  is bigger than the composed viewport, since a fit that is already 5× must
  *  not be clamped back down to 4 and leave the design unable to fit its own
  *  stage. */
-export function scaleBounds(box: Size, vp: Size): { min: number; max: number } {
+export function scaleBounds(
+  box: Size,
+  vp: Size,
+  native?: number,
+): { min: number; max: number } {
   const fit = fitScale(box, vp);
-  return { min: fit, max: Math.max(fit, MAX_SCALE) };
+  return { min: restScale(fit, native), max: Math.max(fit, MAX_SCALE) };
+}
+
+/** Where the floor is: fit — or, for content with a size of its own that fit
+ *  would blow up, that size.
+ *
+ *  A design is composed at the stage's viewport and fit is its natural
+ *  reading, so the gallery passes nothing and nothing changes for it. A
+ *  *picture* has pixels of its own (`Lightbox.svelte`): a 200-pixel icon fitted
+ *  to a window is a smear, and the honest smallest reading of it is the size it
+ *  is. So `native` — one picture pixel per screen pixel — caps the floor, and
+ *  a picture opens at whichever is smaller. */
+function restScale(fit: number, native?: number): number {
+  return native !== undefined && native > 0 ? Math.min(fit, native) : fit;
 }
 
 /** The invariant every other function in this file ends with.
@@ -63,8 +80,8 @@ export function scaleBounds(box: Size, vp: Size): { min: number; max: number } {
  * half that was easy to miss: it is what makes fit look composed rather than
  * pinned to the top-left corner, and it means the same rule serves both the
  * zoomed-in and zoomed-out cases with no branch anywhere else. */
-export function clampView(view: View, box: Size, vp: Size): View {
-  const { min, max } = scaleBounds(box, vp);
+export function clampView(view: View, box: Size, vp: Size, native?: number): View {
+  const { min, max } = scaleBounds(box, vp, native);
   const scale = Math.min(max, Math.max(min, view.scale || min));
   const axis = (boxLen: number, contentLen: number, v: number) =>
     contentLen <= boxLen
@@ -78,8 +95,8 @@ export function clampView(view: View, box: Size, vp: Size): View {
 }
 
 /** The whole design, centred. What the stage opens at and what `0` returns to. */
-export function fitView(box: Size, vp: Size): View {
-  return clampView({ scale: fitScale(box, vp), x: 0, y: 0 }, box, vp);
+export function fitView(box: Size, vp: Size, native?: number): View {
+  return clampView({ scale: restScale(fitScale(box, vp), native), x: 0, y: 0 }, box, vp, native);
 }
 
 /** Zoom so that whatever is under `anchor` is still under it afterwards.
@@ -99,19 +116,21 @@ export function zoomTo(
   anchor: Point,
   box: Size,
   vp: Size,
+  native?: number,
 ): View {
-  const { min, max } = scaleBounds(box, vp);
+  const { min, max } = scaleBounds(box, vp, native);
   const next = Math.min(max, Math.max(min, scale));
   /* A view with no scale cannot be anchored against — there is no content
      coordinate to preserve — so fall back to the middle rather than dividing by
      zero and translating the design to NaN, which is a frame that vanishes. */
-  if (!view.scale) return clampView({ scale: next, x: 0, y: 0 }, box, vp);
+  if (!view.scale) return clampView({ scale: next, x: 0, y: 0 }, box, vp, native);
   const cx = (anchor.x - view.x) / view.scale;
   const cy = (anchor.y - view.y) / view.scale;
   return clampView(
     { scale: next, x: anchor.x - cx * next, y: anchor.y - cy * next },
     box,
     vp,
+    native,
   );
 }
 
@@ -121,8 +140,9 @@ export function zoomBy(
   anchor: Point,
   box: Size,
   vp: Size,
+  native?: number,
 ): View {
-  return zoomTo(view, view.scale * factor, anchor, box, vp);
+  return zoomTo(view, view.scale * factor, anchor, box, vp, native);
 }
 
 /** The middle of the box — the anchor for a zoom that came from a button or a
@@ -138,8 +158,9 @@ export function panBy(
   dy: number,
   box: Size,
   vp: Size,
+  native?: number,
 ): View {
-  return clampView({ ...view, x: view.x + dx, y: view.y + dy }, box, vp);
+  return clampView({ ...view, x: view.x + dx, y: view.y + dy }, box, vp, native);
 }
 
 /** One wheel event → a zoom factor.
@@ -161,8 +182,8 @@ export const STEP = 1.25;
 /** Whether this view is the one `0` would return to, within a hair. Drawn as
  *  pressed rather than offered — an affordance that does nothing when you use
  *  it teaches you to stop trusting the row it is in. */
-export function isFit(view: View, box: Size, vp: Size): boolean {
-  return Math.abs(view.scale - fitScale(box, vp)) < EPSILON;
+export function isFit(view: View, box: Size, vp: Size, native?: number): boolean {
+  return Math.abs(view.scale - restScale(fitScale(box, vp), native)) < EPSILON;
 }
 
 /** Whether the design is drawn at the size it was composed at. */

@@ -8,12 +8,15 @@
      anybody chose to trust. */
   import Self from "./Markdown.svelte";
   import Inlines from "./Inlines.svelte";
+  import Diagram from "./Diagram.svelte";
   import { runIn, type Block } from "./markdown";
+  import { isDiagramFence } from "./diagram";
 
   let {
     blocks,
     caret = false,
     nav = true,
+    diagrams = true,
   }: {
     blocks: Block[];
     /** Draw the streaming caret at the very end of the last thing written.
@@ -28,6 +31,10 @@
      *  same double-counting `startText` exists to prevent. Inside a quote the
      *  words are somebody else's structure, not this answer's. */
     nav?: boolean;
+    /** Whether a closed ```mermaid fence is drawn as its diagram. Off only
+     *  where `Diagram` itself draws the fence as source — the toggle that reads
+     *  what a diagram was drawn from. */
+    diagrams?: boolean;
   } = $props();
 
   /* Copying is the one thing anybody does to a fence, and a column that is
@@ -71,6 +78,12 @@
       <Inlines kids={b.kids} />{#if tip}<span class="caret"></span
         >{/if}
     </div>
+  {:else if b.t === "code" && diagrams && !b.open && isDiagramFence(b.lang)}
+    <!-- A diagram, drawn — the way Claude writes one, expecting the client to
+         draw it. Closed fences only: one still being written is the dashed code
+         block below, growing a line at a time, and never a half-drawn diagram.
+         See `Diagram.svelte` and `.claude/rules/showing.md`. -->
+    <Diagram block={b} />
   {:else if b.t === "code"}
     <!-- No syntax highlighting, deliberately: colour on this wall is status,
          and a keyword is not a status. The mono face and the well do the work.
@@ -94,7 +107,7 @@
       </div>
     </div>
   {:else if b.t === "quote"}
-    <blockquote><Self blocks={b.kids} caret={tip} nav={false} /></blockquote>
+    <blockquote><Self blocks={b.kids} caret={tip} nav={false} {diagrams} /></blockquote>
   {:else if b.t === "hr"}
     <hr />
   {:else if b.t === "list"}
@@ -106,6 +119,7 @@
               blocks={item}
               caret={tip && j === b.items.length - 1}
               nav={false}
+              {diagrams}
             />
           </li>
         {/each}
@@ -120,6 +134,7 @@
               blocks={item}
               caret={tip && j === b.items.length - 1}
               nav={false}
+              {diagrams}
             />
           </li>
         {/each}

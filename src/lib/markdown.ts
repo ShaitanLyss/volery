@@ -10,10 +10,14 @@
  *
  * Deliberately not CommonMark-complete. What is here is what agent prose
  * contains; what is left out is either absent from it (reference links, setext
- * headings, HTML blocks, footnotes) or wrong for this surface (raw HTML, images
- * — the panel has no business fetching from the network).
+ * headings, HTML blocks, footnotes) or wrong for this surface (raw HTML, and an
+ * image on the network — the panel has no business fetching from it). An image
+ * that is a file on this machine, or a `data:` URI, *is* drawn: that is how an
+ * agent puts a chart in the middle of its answer. See `pictureSource`.
  *
  * Pure, so it is tested directly — see test/markdown.test.ts. */
+
+import { pictureOf } from "./classify";
 
 export type Inline =
   | { t: "text"; v: string }
@@ -21,7 +25,10 @@ export type Inline =
   | { t: "strong"; kids: Inline[] }
   | { t: "em"; kids: Inline[] }
   | { t: "del"; kids: Inline[] }
-  | { t: "link"; href: string; kids: Inline[] };
+  | { t: "link"; href: string; kids: Inline[] }
+  /** A picture: `src` is a local path or a validated `data:` URI, never a url
+   *  — see `pictureSource`. `alt` is the label's words with the marks off. */
+  | { t: "img"; alt: string; src: string };
 
 export type Align = "left" | "center" | "right" | null;
 
@@ -563,7 +570,8 @@ export class StreamedMarkdown {
 /** The words of an inline run, with every mark taken off. */
 export function inlineText(kids: Inline[]): string {
   let out = "";
-  for (const k of kids) out += k.t === "text" || k.t === "code" ? k.v : inlineText(k.kids);
+  for (const k of kids)
+    out += k.t === "text" || k.t === "code" ? k.v : k.t === "img" ? k.alt : inlineText(k.kids);
   return out;
 }
 
@@ -604,6 +612,118 @@ export function safeHref(raw: string): string | null {
   if (/^(https?:\/\/|mailto:)/i.test(href)) return href;
   if (/^www\./i.test(href)) return `https://${href}`;
   return null;
+}
+
+/** The extensions a picture in the transcript may have — the list a picture
+ *  you could pin may have (`show.rs::PICTURES`, which is `store::IMAGE_EXTS`).
+ *  `test/showing.test.ts` reads that list out of the Rust rather than this file
+ *  agreeing with it by hand. */
+export const PICTURE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "svg"];
+
+/** How long a path in a picture may be. Windows' own limit without the long
+ *  prefix is 260; this is generous and still refuses a paragraph. */
+const PATH_MOST = 1024;
+
+/** Where a `![…](…)` picture comes from, or `null` for one this does not draw.
+ *
+ *  Three answers, and the third is the one that matters:
+ *
+ *  - **a `data:` URI**, held to `classify.ts::pictureOf` — exactly the rules a
+ *    tool result's own picture is held to, because it ends up in the same
+ *    attribute: a short `image/<subtype>`, the base64 alphabet, and the size
+ *    cap. Refused rather than sanitised.
+ *  - **a file on this machine**, by its path as written — absolute, relative to
+ *    the card's directory, or a `file:///` url. Handed back as a path; reading
+ *    it is the drawing's business, and only for a surface that has a directory
+ *    behind its prose (`Inlines.svelte`, `useFiles`), so a chat card's markdown
+ *    never reaches the disk.
+ *  - **anything on the network is not a picture.** `http`, `https`, a `www.`,
+ *    a `file://` naming a host, and a Windows share in any spelling — the last
+ *    because *opening* a path on a share is an SMB handshake that carries this
+ *    user's credentials to whatever host the text named, and an agent's prose
+ *    is exactly where these paths come from. Rust refuses the same paths again
+ *    (`show::is_remote`); this is the half that keeps them from being asked
+ *    about at all. A url falls through to being drawn as the link it always
+ *    was. */
+export function pictureSource(dest: string): string | null {
+  let s = dest.trim();
+  /* `<…>` is how a destination holds spaces — a Windows path under `Program
+     Files`. Otherwise it is the first token, with any title after it dropped. */
+  if (s.startsWith("<")) {
+    const shut = s.indexOf(">");
+    if (shut === -1) return null;
+    s = s.slice(1, shut).trim();
+  } else {
+    /* The first token, as CommonMark reads it — and failing that, the whole
+       destination, because an agent writes `C:\Program Files\x.png` without the
+       brackets far more often than with them, and refusing it would draw the
+       alt text with nothing saying a picture was dropped. A title after the
+       path ends in a quote, which no picture's name does, so it still fails. */
+    const first = s.split(/\s+/)[0] ?? "";
+    if (!/^data:/i.test(first) && !localPicture(first) && localPicture(s)) return localPicture(s);
+    s = first;
+  }
+  if (!s) return null;
+
+  if (/^data:/i.test(s)) {
+    const m = /^data:(image\/[a-z0-9.+-]{1,20});base64,(.*)$/is.exec(s);
+    return m ? (pictureOf(m[1].toLowerCase(), m[2])?.url ?? null) : null;
+  }
+  return localPicture(s);
+}
+
+/** A share, in any spelling: two separators to open it, of either slant. Only
+ *  a drive's own verbatim prefix (`\\?\C:\`) is let through, and only with no
+ *  `..` in it — a verbatim path is not normalised. The device namespace
+ *  (`\\.\`) is never let through: Windows *does* normalise a `..` there, and the
+ *  root it climbs to is the device namespace, one segment from the network
+ *  redirector (`show::is_remote`, which refuses the same paths in Rust). */
+const SHARE = /^[\\/][\\/]/;
+const LONG_DRIVE = /^[\\/][\\/]\?[\\/][A-Za-z]:/;
+const CLIMB = /(^|[\\/])\.\.([\\/]|$)/;
+
+/** A path naming a picture on this machine, or `null`. See `pictureSource`. */
+export function localPicture(raw: string): string | null {
+  let s = raw.trim();
+  if (/^file:/i.test(s)) {
+    /* Three slashes and then the path; two and then a name is a host. */
+    const m = /^file:\/\/\/(.+)$/i.exec(s);
+    if (!m) return null;
+    try {
+      s = decodeURIComponent(m[1]);
+    } catch {
+      return null;
+    }
+    if (!/^[A-Za-z]:/.test(s)) s = "/" + s;
+  }
+  if (!s || s.length > PATH_MOST) return null;
+  // A control character in a path means it was never one.
+  if (s.split("").some((ch) => ch < " " || ch === "\u007f")) return null;
+  if (SHARE.test(s) && !(LONG_DRIVE.test(s) && !CLIMB.test(s))) return null;
+  /* Any other scheme is not a file — and a drive letter is the one thing that
+     looks like a scheme and is not, which the `+` (two or more) keeps out. */
+  if (/^[A-Za-z][A-Za-z0-9+.-]+:/.test(s)) return null;
+  if (/^www\./i.test(s)) return null;
+  const ext = /\.([A-Za-z0-9]+)$/.exec(s)?.[1]?.toLowerCase();
+  if (!ext || !PICTURE_EXTS.includes(ext)) return null;
+  return s;
+}
+
+/** Whether a picture's `src` carries its own bytes rather than naming a file. */
+export const isDataPicture = (src: string): boolean => src.startsWith("data:");
+
+/** A picture written back as markdown, for the clipboard. A `data:` URI is
+ *  elided rather than pasted whole — megabytes of base64 is not something
+ *  anybody selecting a paragraph meant to copy — and keeps its media type, so
+ *  what was there is still said. A path that a bare destination cannot hold is
+ *  put in `<…>`, which is how markdown holds one. */
+export function pictureMarkdown(alt: string, src: string): string {
+  const where = isDataPicture(src)
+    ? `${/^data:[^;,]*/.exec(src)?.[0] ?? "data:"};base64,…`
+    : /[\s()<>]/.test(src)
+      ? `<${src}>`
+      : src;
+  return `![${alt.replace(/[[\]]/g, "")}](${where})`;
 }
 
 function runAt(src: string, i: number, ch: string): number {
@@ -685,19 +805,43 @@ function matchLink(src: string, at: number): { nodes: Inline[]; end: number } | 
   if (end === -1) return null;
 
   const label = src.slice(open + 1, close);
+  const dest = src.slice(close + 2, end).trim();
   // `(url "title")` — the title is a tooltip nobody asked for; the url is all we take.
-  const href = safeHref(src.slice(close + 2, end).trim().split(/\s+/)[0] ?? "");
-  const kids = parseInline(label);
+  const href = safeHref(dest.split(/\s+/)[0] ?? "");
+  /* A picture inside a link's label is drawn as its words: the link is the
+     thing to press, and a picture is a button of its own — one inside the
+     other is a press that does two things (found in review). */
+  const kids = image ? parseInline(label) : unpictured(parseInline(label));
 
-  /* An image is rendered as a link to it. The panel does not fetch anything —
-     reference images are a deliberate, hand-placed thing on the wall (see
-     images.svelte.ts), and a transcript that quietly reached the network would
-     be a different app. */
+  /* A picture that is already on this machine — a file, or a `data:` URI
+     carrying its own bytes — is drawn where it was written. One on the network
+     is not, and falls through to being the link it always was: a transcript
+     that quietly reached the network on behalf of whatever an agent wrote
+     would be a different app, and a fetched image is also a request telling
+     somebody's server that you are reading. */
+  if (image) {
+    const pic = pictureSource(dest);
+    if (pic) {
+      const alt = inlineText(kids).replace(/\s+/g, " ").trim();
+      return { nodes: [{ t: "img", alt, src: pic }], end: end + 1 };
+    }
+  }
   if (!href) return { nodes: kids.length ? kids : [{ t: "text", v: label }], end: end + 1 };
   return {
     nodes: [{ t: "link", href, kids: kids.length ? kids : [{ t: "text", v: href }] }],
     end: end + 1,
   };
+}
+
+/** Pictures in a run, as their words. See `matchLink`. */
+function unpictured(kids: Inline[]): Inline[] {
+  return kids.map((k) =>
+    k.t === "img"
+      ? { t: "text", v: k.alt }
+      : k.t === "strong" || k.t === "em" || k.t === "del" || k.t === "link"
+        ? { ...k, kids: unpictured(k.kids) }
+        : k,
+  );
 }
 
 function matchEmphasis(src: string, at: number): { node: Inline; end: number } | null {

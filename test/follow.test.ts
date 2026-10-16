@@ -302,10 +302,47 @@ describe("hearing a column change shape", () => {
     };
   }
 
+  /* An element as far as `hearGrowth` touches one: something to observe, and
+     somewhere to hang the capture-phase `load` listener a decoding picture is
+     heard by. `fire` dispatches one at it the way the browser would. */
+  function column() {
+    const heard = new Map<string, { fn: (e: Event) => void; capture: unknown }>();
+    const el = {
+      addEventListener: (type: string, fn: (e: Event) => void, capture: unknown) =>
+        heard.set(type, { fn, capture }),
+      removeEventListener: (type: string) => heard.delete(type),
+    } as unknown as Element;
+    return {
+      el,
+      heard,
+      fire: (tagName: string) => heard.get("load")?.fn({ target: { tagName } } as unknown as Event),
+    };
+  }
+
+  test("a picture finishing its load is heard, which neither observer can", () => {
+    const s = stub(true);
+    try {
+      const c = column();
+      let grew = 0;
+      const stop = hearGrowth(c.el, () => grew++);
+      /* Capture, because `load` does not bubble — a listener on the column in
+         the bubble phase would hear nothing a picture inside it ever did. */
+      expect(c.heard.get("load")?.capture).toBe(true);
+      c.fire("IMG");
+      expect(grew).toBe(1);
+      c.fire("IFRAME");
+      expect(grew).toBe(1);
+      stop();
+      expect(c.heard.has("load")).toBe(false);
+    } finally {
+      s.restore();
+    }
+  });
+
   test("text rewritten in place is heard, not only lines appended", () => {
     const s = stub(true);
     try {
-      const el = {} as Element;
+      const el = column().el;
       hearGrowth(el, () => {});
       const mutations = s.watched[0];
       expect(mutations.target).toBe(el);
@@ -328,7 +365,7 @@ describe("hearing a column change shape", () => {
   test("both observers are let go of together", () => {
     const s = stub(true);
     try {
-      const stop = hearGrowth({} as Element, () => {});
+      const stop = hearGrowth(column().el, () => {});
       expect(s.seen()).toBe(0);
       stop();
       expect(s.seen()).toBe(2);
@@ -343,7 +380,7 @@ describe("hearing a column change shape", () => {
        that never follows anything at all. */
     const s = stub(false);
     try {
-      const stop = hearGrowth({} as Element, () => {});
+      const stop = hearGrowth(column().el, () => {});
       expect(s.watched.length).toBe(1);
       stop();
       expect(s.seen()).toBe(1);

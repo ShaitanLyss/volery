@@ -55,6 +55,7 @@ bun run tauri build      # bundle
 
 bun run test             # the pure suites: ansi, classify, adopt, layout, pick, wheel, glass, arrange, berth, specs, history, menu,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
+                         # showing,
                          # hunt,
                          # presets,
                          # commands, copy, widgets, naming, drafts, attach, rousing, quitting, timing,
@@ -250,6 +251,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `panel.md` | the transcript: markdown parsing, folding tool calls, opening one to see its arguments and result, panel width, reading size, the two rails, keyboard scrolling, following the tail, finding a word in it | `Transcript.svelte`, `Markdown.svelte`, `markdown.ts`, `outline.ts`, `follow.ts`, `transcript.ts`, `toolcall.ts`, `ToolCall.svelte`, `copy.ts`, `hunt.ts` |
 | `arrange.md` | one glass per room: what a screen arrangement is and why it is a shape rather than a set of monitors, the alignment search that replaced trusting the normalisation, the columns as a cache of the room you are in, why a copy is shifted by the pane's origin, a one-screen glass carried proportionally onto a screen of another size — position scales, size does not — and the scaled / per-size choice that keeps one glass per screen size instead | `arrange.ts`, `arrange.svelte.ts`, `arrange.rs` |
 | `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, the three pointer gestures, one selection over four kinds and the band that draws it, and an agent putting an image on the wall beside its card | `layout.ts`, `pick.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
+| `showing.md` | pictures and diagrams in the conversation itself, matched to what Claude Desktop renders: `![alt](path)` mid-answer, a mermaid fence drawn in a sandboxed frame, and the `show` tool's kept figure — what is never drawn and why each is a refusal (the network, a share by allow-list, a chat card's disk, a decompression bomb), the box that is the picture's before it decodes, one picture pixel per screen pixel, the full-size view, the one sandbox the gallery shares, and the `load` the tail-follow could not hear | `show.rs`, `showing.ts`, `InlinePicture.svelte`, `Figure.svelte`, `Lightbox.svelte`, `diagram.ts`, `drawing.svelte.ts`, `Diagram.svelte`, `sandbox.ts` |
 | `undo.md` | taking it back: one shape for four realms, the boundary that keeps prompts and the viewport off the stack, why a drag is one press, and the image file that is no longer deleted with its row | `undo.ts`, `undo.svelte.ts` |
 | `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the four logs over one substrate — including the app's own, and why it had none until 2026-08-28 — and a card's last message kept on the wall, the one widget whose life is tied to something else on it | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts`, `applog.ts`, `applog.rs`, `tether.ts`, `Saying.svelte` |
 | `usage.md` | what is left of the allowance and what it has cost — the account's own windows and their resets, then reading transcripts, the dedup, the five prices, and the day's figure the title bar and the horizon carry | `limits.ts`, `usage.ts`, `ledger.svelte.ts`, `limits.rs`, `usage.rs` |
@@ -391,6 +393,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `undo.ts`, `finding.ts`, `leader.ts`, `synth.ts`, `office.ts`, `integrations.ts`, `zoom.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `chronicle.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `hunt.ts`,
+`showing.ts`, `diagram.ts`, `sandbox.ts`,
 `applog.ts`,
 `nvim.ts`,
 `guidance.ts`,

@@ -2136,6 +2136,12 @@ pub(crate) fn roster() -> Vec<Value> {
         always(crate::relay::send_schema()),
         // ── loaded: reflex-shaped, where not looking is the failure ──
         always(crate::pin::pin_schema()),
+        /* Loaded beside `pin` and for the reflex `pin` was loaded to fight, one
+           step further on: an agent with a picture to hand over reached for the
+           wall because it was the only verb it could see, so the verb that
+           draws it in the conversation has to be as visible as the one that
+           does not. See `show.rs`. */
+        always(crate::show::show_schema()),
         always(crate::later::wake_schema()),
         always(reads_only(crate::limits::allowance_schema())),
         always(reads_only(crate::servers::servers_schema())),
@@ -3862,6 +3868,10 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 crate::presence::handle(&app, &conversation_id, &tool, &args)
                             })
                             .or_else(|| crate::pin::handle(&app, &conversation_id, &tool, &args))
+                            /* A file read and a copy of at most three megabytes,
+                               on this request's own thread like the rest of the
+                               chain — it parks nobody but its caller. */
+                            .or_else(|| crate::show::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| {
                                 crate::timeline::handle(&app, &conversation_id, &tool, &args)
                             })
