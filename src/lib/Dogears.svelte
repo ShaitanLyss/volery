@@ -194,10 +194,14 @@
   /* Sat on the dock's top edge, because the wall ends there. Left-aligned and
      never centred: a strip that re-centred itself every time a pill appeared
      would be a row of buttons that are never twice in the same place. */
+  /* `--beside-*` are set on the wall while the dock stands beside the panel at
+     the bottom (`berth.md`): the panel then runs on past the wall's foot, so a
+     strip the wall's whole width would sit over the newest lines of the
+     transcript rather than on the dock's top edge. Zero otherwise. */
   .strip {
     position: absolute;
-    left: 0.9rem;
-    right: 0.9rem;
+    left: calc(0.9rem + var(--beside-left, 0px));
+    right: calc(0.9rem + var(--beside-right, 0px));
     bottom: 0.5rem;
     /* Above `Canvas`'s `.glass` (4), which is the highest thing inside the wall
        and is where a stuck widget lives. Said out loud for the reason the glass

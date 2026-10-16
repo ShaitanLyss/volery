@@ -224,11 +224,13 @@
     MIN_W,
     dockExtentAt,
     dockExtentSaid,
+    besideOf,
     dockInsets,
     dockSiteAt,
     floatBox,
     moorings,
     panelSiteAt,
+    type DockExtent,
   } from "./lib/berth";
   import { homeInsets, spreadPan } from "./lib/span";
 
@@ -580,8 +582,6 @@
         /* Said back, because with nothing moored beside it the flip moves
            nothing you can see — the available width is then the whole room. */
         const extent = berths.cycleExtent();
-        const sided = card && showDetail && berths.panel.site !== "float";
-        const beside = dockInset.left + dockInset.right > 0 ? "beside" : sided ? "cramped" : "alone";
         leader.say(dockExtentSaid(extent, berths.dock.site, beside));
       }
       else berths.cycleDock();
@@ -1754,18 +1754,27 @@
      a surface ninety pixels tall unable to reach the bottom of the window. */
   const dockAt = $derived(floatBox({ ...berths.dock, h: dockH }, windowRoom, 0));
 
+  /** Whether there is a panel for an available-width dock to stand beside —
+   *  one drawn and moored to a side, leaving enough room (`berth.ts::besideOf`).
+   *  Read by the layout, the drag and the chord's say-back alike. */
+  const beside = $derived(besideOf(card && showDetail ? berths.panel.site : null, panelPx, roomW));
   /** How far in from each side a moored dock stops: the panel's column, when
-   *  the dock takes only the width the panel leaves and there is a panel moored
-   *  to a side to leave it (`berth.ts::dockInsets`). Zero otherwise — full
-   *  width, floating, or nothing beside it. */
+   *  the dock takes only the width the panel leaves and there is a panel to
+   *  stand beside (`berth.ts::dockInsets`). Zero otherwise — full width,
+   *  floating, or nothing beside it. */
   const dockInset = $derived(
     dockInsets(berths.dock, card && showDetail ? berths.panel.site : null, panelPx, roomW),
   );
-  /** The voice bar's height, measured for the one reason below — as the
-   *  border box, fractions and all, since a panel let out by a rounded number
-   *  stops a hairline short of the window's edge at 150%. */
+  /** The two other boxes in the band a panel is let out through, measured for
+   *  the one reason below — as border boxes, fractions and all, since a panel
+   *  let out by a rounded number stops a hairline short of the window's edge
+   *  at 150%. `hearBox` is the voice bar, between the wall and a bottom dock;
+   *  `bandBox` is the fault bar and the two drawers, between a top dock and the
+   *  wall. */
   let hearBox = $state<ResizeObserverSize[] | undefined>(undefined);
   const hearH = $derived(hearBox?.[0]?.blockSize ?? 0);
+  let bandBox = $state<ResizeObserverSize[] | undefined>(undefined);
+  const bandH = $derived(bandBox?.[0]?.blockSize ?? 0);
   /** How far the panel runs on past the wall to reach the window's edge beside
    *  a dock that has left it its column.
    *
@@ -1774,18 +1783,31 @@
    *  mooring and the strip of kept files, none of which should learn about
    *  this. So the wall is left exactly as it was and the panel alone is let out
    *  past it: a negative margin on a stretched flex item grows it by that much,
-   *  into the band the dock no longer covers on that side. The band is
-   *  everything between the wall and that edge: the dock, and at the bottom the
-   *  voice bar, which sits between the two and is narrowed with the dock. At the
-   *  top the fault bar is ordered *above* the dock instead, so it stays the full
-   *  width under the title bar and the band is the dock alone. */
+   *  into the band the dock no longer covers on that side.
+   *
+   *  **The band is everything between the wall and that edge**, and everything
+   *  in it steps aside with the dock or the panel lands on it. At the bottom
+   *  that is the voice bar as well as the dock. At the top it is the fault bar
+   *  and the servers and effects drawers, which are one box (`.band`) for
+   *  exactly this: measured once and narrowed once, rather than a sum of the
+   *  parts somebody remembered — the first cut counted the fault and not the
+   *  drawers, and the panel's head was drawn over an open drawer (red-team,
+   *  2026-10-16). The dock stays directly under the title bar, where it always
+   *  sat, because that is where the top band of `dockSiteAt` expects to find it:
+   *  ordering the fault above it put a top dock 77px down, past `EDGE`, and the
+   *  first pixel of dragging it along the edge floated it. Anything new that
+   *  stands in the column between the title bar and the wall goes in `.band`. */
   const panelReach = $derived(
     dockInset.left + dockInset.right === 0
       ? null
       : berths.dock.site === "top"
-        ? { top: dockH, bottom: 0 }
+        ? { top: dockH + bandH, bottom: 0 }
         : { top: 0, bottom: dockH + hearH },
   );
+  /** The bands' own margins: the top band beside a top dock, the voice bar and
+   *  the kept-files strip beside a bottom one. Zero everywhere else. */
+  const topInset = $derived(berths.dock.site === "top" ? dockInset : { left: 0, right: 0 });
+  const footInset = $derived(berths.dock.site === "bottom" ? dockInset : { left: 0, right: 0 });
 
   /** Which side the transcript's outline rails hang off.
    *
@@ -1815,6 +1837,9 @@
     fromX: number;
     fromY: number;
     moved: boolean;
+    /** The dock's width when the press landed, to go back to if the drag ends
+     *  floating — see `moorUp`. */
+    extent: DockExtent;
   } | null>(null);
 
   function moorDown(what: "panel" | "dock", e: PointerEvent) {
@@ -1837,6 +1862,7 @@
       fromX: e.clientX,
       fromY: e.clientY,
       moved: false,
+      extent: berths.dock.extent,
     };
     /* Captured for the reason `gripDown` captures: the cursor is not going to
        stay on an 18px handle, and the whole gesture is about leaving. */
@@ -1873,18 +1899,31 @@
       const site = dockSiteAt(box, chromeRoom);
       /* Moored, where along the edge it was aimed says how much of it it
          takes: the middle for all of it, anywhere else for what the panel
-         leaves. Floating keeps whatever it had, so a dock floated off a corner
-         and cycled back by the keyboard comes back that wide. */
-      berths.setDock(
-        site === "float" ? { site, ...at } : { site, extent: dockExtentAt(box, chromeRoom) },
-      );
+         leaves. **Only with a panel to stand beside**: without one both widths
+         draw the whole room and the handle sits in the middle, so a drag of any
+         kind would quietly store `full` over a width you had chosen, and the
+         dock would span the panel the moment one was moored (red-team,
+         2026-10-16). Floating keeps whatever it had — `moorUp` sees to the
+         widths a drag passed through on its way off the edge. */
+      if (site === "float") berths.setDock({ site, ...at });
+      else {
+        const extent = beside === "beside" ? dockExtentAt(box, chromeRoom) : berths.dock.extent;
+        berths.setDock({ site, extent });
+      }
     }
   }
 
   function moorUp() {
     if (!mooring) return;
-    const moved = mooring.moved;
+    const { moved, what, extent } = mooring;
     mooring = null;
+    /* A drag that ends floating passed along the edge on its way off it, and
+       every moored frame wrote a width: dragged up and to the left from the
+       middle of the bottom, it wrote `available` and then floated. The width
+       is a fact about the dock you put back, so it goes back to what it was
+       when the press landed — `w d` round to an edge then finds the dock the
+       width you left it. */
+    if (what === "dock" && berths.dock.site === "float") berths.setDock({ extent });
     /* A press that never travelled changed nothing, so there is nothing to
        write — and writing anyway would stamp this room's berths into the store
        on every stray click of the handle. */
@@ -5069,9 +5108,31 @@
     <span class="anchor" data-fixed><WindowControls /></span>
   </header>
 
-  {#if skein.fault}
-    <button class="fault" onclick={() => (skein.fault = null)}>{skein.fault}</button>
-  {/if}
+  <!-- Everything that stands in the column between the title bar and the wall,
+       in one box: the fault bar and the two drawers the bar's buttons open.
+       One box because it is one band — a dock moored at the top beside the
+       panel sits directly above it, and the panel is let out through the dock
+       *and* this to reach the title bar, so it has to be measured as one and
+       stepped aside as one (`panelReach`). Anything new that stands here goes
+       inside it, or the panel's head is drawn over it. -->
+  <div
+    class="band"
+    bind:borderBoxSize={bandBox}
+    style:margin-left={topInset.left ? `${topInset.left}px` : undefined}
+    style:margin-right={topInset.right ? `${topInset.right}px` : undefined}
+  >
+    {#if skein.fault}
+      <button class="fault" onclick={() => (skein.fault = null)}>{skein.fault}</button>
+    {/if}
+
+    {#if showServers}
+      <Servers {skein} {actions} />
+    {/if}
+
+    {#if showEffects}
+      <Effects {ambience} />
+    {/if}
+  </div>
 
   <Glance />
 
@@ -5156,10 +5217,6 @@
       onpick={adopt}
       onclose={() => (showImport = false)}
     />
-  {/if}
-
-  {#if showServers}
-    <Servers {skein} {actions} />
   {/if}
 
   {#if procsFor}
@@ -5256,10 +5313,6 @@
   {/if}
 
 
-  {#if showEffects}
-    <Effects {ambience} />
-  {/if}
-
   {#if shell.open}
     <Console {shell} />
   {/if}
@@ -5278,7 +5331,18 @@
     <Plume {synth} />
   {/if}
 
-  <main class="wall" class:sizing={!!grip}>
+  <!-- `--beside-*` is the dock's inset while it stands beside the panel at the
+       bottom, for the one thing anchored to the wall's foot that has to keep
+       to the dock's width: the kept-files strip (`Dogears.svelte`), which sits
+       on the dock's top edge — and beside an available-width dock, the panel
+       runs on past that edge, so a strip the wall's width was drawn over the
+       newest lines of the transcript. -->
+  <main
+    class="wall"
+    class:sizing={!!grip}
+    style:--beside-left={footInset.left ? `${footInset.left}px` : undefined}
+    style:--beside-right={footInset.right ? `${footInset.right}px` : undefined}
+  >
     <!-- A project with no cards is still a place on the wall, and the only
          place its "+" lives — so an empty territory keeps the canvas up. -->
     {#if skein.convs.length || skein.projects.length || board.images.length || widgets.items.length || elsewhere.shadows.length}
@@ -5487,8 +5551,8 @@
   <div
     class="heard"
     bind:borderBoxSize={hearBox}
-    style:margin-left={berths.dock.site === "bottom" && dockInset.left ? `${dockInset.left}px` : undefined}
-    style:margin-right={berths.dock.site === "bottom" && dockInset.right ? `${dockInset.right}px` : undefined}
+    style:margin-left={footInset.left ? `${footInset.left}px` : undefined}
+    style:margin-right={footInset.right ? `${footInset.right}px` : undefined}
   >
     <Hearing {voicing} />
   </div>
@@ -5770,14 +5834,20 @@
     border-color: var(--paper-faint);
   }
 
-  /* Directly under the title bar wherever the dock is moored. With the dock at
-     the bottom it is there anyway, by document order; with it at the top it
-     used to fall *under* the dock, between it and the wall — which is the band
-     a panel beside an available-width dock is let out through, so it would
-     have been half covered by the transcript. The bar is `-2`, and a tie with
-     a top dock's `-1` is settled by document order, which this wins. */
+  /* The column between the title bar and the wall: the fault bar and the two
+     drawers. A column itself, so what is in it stacks as it did when each was
+     the studio's own child, and positioned above the wall for the reason the
+     bar and the dock are — while spread the wall is `z-index: 0` with its
+     surface fixed over the whole window, and an unpositioned bar there was
+     painted underneath it. Empty, and so no height at all, most of the time. */
+  .band {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    z-index: 1;
+  }
   .fault {
-    order: -1;
     display: block;
     width: 100%;
     text-align: left;
@@ -5797,12 +5867,15 @@
     display: flex;
   }
   /* The voice bar's box: a column, so the bar inside it is centred as it was
-     when it was the studio's own child, and nothing else. Empty, and so no
-     height at all, while nothing is being heard. */
+     when it was the studio's own child, and positioned above the wall for the
+     reason `.band` is. Empty, and so no height at all, while nothing is being
+     heard. */
   .heard {
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
+    position: relative;
+    z-index: 1;
   }
   /* Width is set inline from `panelWidth` — see the note by `gripDown`. It must
      not be given one here as well, or a drag would fight a stylesheet. */

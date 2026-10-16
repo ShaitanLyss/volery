@@ -540,7 +540,6 @@
   class:dropping
   class:moored-top={berth.site === "top"}
   class:afloat={berth.site === "float"}
-  class:beside={berth.site !== "float" && berth.inset.left + berth.inset.right > 0}
   style:width={berth.site === "float" ? `${berth.w}px` : undefined}
   style:left={berth.site === "float" ? `calc(${berth.x}px - var(--span-x, 0px))` : undefined}
   style:top={berth.site === "float" ? `calc(${berth.y}px - var(--span-y, 0px))` : undefined}

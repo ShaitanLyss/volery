@@ -7,6 +7,7 @@ import {
   MIN_H,
   MIN_W,
   PANEL_SITES,
+  besideOf,
   dockExtentAt,
   dockExtentSaid,
   dockInsets,
@@ -187,6 +188,28 @@ describe("where an available-width dock stops", () => {
     expect(dockInsets(avail, "right", 0, 1600)).toEqual({ left: 0, right: 0 });
     expect(dockInsets(avail, "right", NaN, 1600)).toEqual({ left: 0, right: 0 });
   });
+
+  test("whether there is a panel to stand beside is one answer for the layout and the chord", () => {
+    expect(besideOf("right", 460, 1600)).toBe("beside");
+    expect(besideOf("left", 460, 1600)).toBe("beside");
+    expect(besideOf("float", 460, 1600)).toBe("alone");
+    expect(besideOf(null, 460, 1600)).toBe("alone");
+    // An unmeasured panel is not a cramped one: nothing has said it is wide.
+    expect(besideOf("right", 0, 1600)).toBe("alone");
+    expect(besideOf("right", NaN, 1600)).toBe("alone");
+    expect(besideOf("right", 460, 460 + MIN_W - 1)).toBe("cramped");
+    for (const [panel, w, room] of [
+      ["right", 460, 1600],
+      ["left", 300, 900],
+      ["float", 460, 1600],
+      [null, 460, 1600],
+      ["right", 460, 600],
+      ["right", 0, 1600],
+    ] as const) {
+      const inset = dockInsets(avail, panel, w, room);
+      expect(inset.left + inset.right > 0).toBe(besideOf(panel, w, room) === "beside");
+    }
+  });
 });
 
 describe("what the width chord says back", () => {
@@ -194,7 +217,7 @@ describe("what the width chord says back", () => {
     expect(dockExtentSaid("full", "bottom", "beside")).toBe("dock: full width");
     expect(dockExtentSaid("full", "bottom", "alone")).toBe("dock: full width");
     expect(dockExtentSaid("available", "bottom", "beside")).toBe("dock: the width the panel leaves");
-    expect(dockExtentSaid("available", "top", "alone")).toContain("until a panel is moored to a side");
+    expect(dockExtentSaid("available", "top", "alone")).toContain("while no panel is open beside it");
     expect(dockExtentSaid("available", "top", "cramped")).toContain("leaves too little room");
     expect(dockExtentSaid("available", "float", "beside")).toContain("once it is moored again");
     expect(dockExtentSaid("full", "float", "alone")).toContain("once it is moored again");

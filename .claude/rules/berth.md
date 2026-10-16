@@ -94,16 +94,54 @@ into the band beside the dock that the dock no longer covers. The dock steps asi
 of the panel's width on that side. Both are numbers this file computes (`dockInsets`) and
 `App.svelte` applies; neither is a second layout.
 
-- **The band is everything between the wall and that edge**, so everything in it has to step
-  aside too or be ordered out of it. At the bottom that is the voice bar, which sits between
-  the wall and the dock: it gets its own box (`.heard`), is narrowed with the dock and is
-  measured into the reach. At the top it was the fault bar, which fell *under* a top dock:
-  it is now `order: -1`, directly under the title bar wherever the dock is, so it stays the
-  full width and the band is the dock alone.
+- **The band is everything between the wall and that edge**, and everything in it steps aside
+  with the dock or the panel lands on it. At the bottom that is the voice bar, which sits
+  between the wall and the dock: its own box (`.heard`), narrowed with the dock and measured
+  into the reach. At the top it is the fault bar *and* the servers and effects drawers, which
+  are **one box, `.band`**, measured once and narrowed once. **Anything new that stands in the
+  column between the title bar and the wall goes inside `.band`**, or the panel's head is drawn
+  over it.
+- **That box is the second answer, and the first was wrong twice** (red-team, 2026-10-16). The
+  first cut ordered the fault bar *above* a top dock so the band would be the dock alone. It
+  counted the fault and forgot the drawers, so with one open the panel's head landed on the
+  drawer's rows. And moving the fault put a top dock 77px down, past `EDGE`, so the first
+  pixel of dragging it along the edge — this feature's own gesture — floated it. The dock
+  stays directly under the title bar, where `dockSiteAt`'s top band expects to find it, and the
+  band is a sum of one measured box rather than of the parts somebody remembered.
+- **Both boxes are positioned above the wall** (`z-index: 1`, like the bar and the dock). While
+  spread the wall is `z-index: 0` with its surface fixed over the whole window, and an
+  unpositioned fault bar or voice bar was painted underneath it — not introduced here, but the
+  boxes were new and it cost one line each.
+- **The kept-files strip keeps to the dock's width** (`--beside-left/right` on the wall,
+  `Dogears.svelte`). It is anchored to the wall's foot so it sits on the dock's top edge, and
+  beside an available-width dock the panel runs on past that edge, so a strip the wall's whole
+  width was drawn over the newest lines of the transcript. The transcript's own rails stop
+  where the wall stops for the same reason (`--reach-top/bottom` on the panel).
 - **Measured as border boxes, fractions and all** (`bind:borderBoxSize`). The dock reported
   `clientHeight`, which leaves out its border and rounds — harmless for clamping a floating
   dock, and a hairline short of the window's edge for a panel let out by exactly that much at
   150%.
+
+#### Two things the drag must not write
+
+- **No width with nothing to stand beside.** With no panel open and moored to a side (or one
+  leaving too little room — `besideOf`), both widths draw the whole room and the handle sits in
+  the middle. Recomputed on every drag, any drag at all stored `full` over the width you had
+  chosen, and the dock spanned the panel the moment one was moored. So the drag only decides
+  the width when there is a panel to be beside, and the keyboard is the way to set it otherwise.
+- **Not the widths it passed through on its way off the edge.** Every moored frame of a drag
+  writes a width, so a dock dragged up and to the left from the middle of the bottom wrote
+  `available` and then floated. The width at the press is kept, and put back if the drop
+  floats.
+
+`besideOf` is the one function that says whether there is a panel to stand beside, read by the
+layout, the drag and the chord's say-back, so the three cannot disagree about a panel nobody
+has measured yet.
+
+What is left, deliberately: while spread, `Canvas`'s `keepout` still treats the whole foot of
+the home screen as covered, so a widget sitting entirely in the strip beside a bottom
+available-width dock — over the panel's foot, where it is visible — is still moved out of it.
+Cosmetic, and fixing it would teach the canvas about the dock.
 
 ### Mooring is the room's, floating is the window's
 

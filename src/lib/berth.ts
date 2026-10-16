@@ -211,19 +211,34 @@ function inside(at: { x: number; y: number }, room: Box): boolean {
   );
 }
 
-/** How far in from each side of the room a moored dock stops.
+/** Whether there is a panel for an available-width dock to stand beside:
+ *  `beside` there is, `alone` no panel is both open and moored to a side, and
+ *  `cramped` there is one but it leaves too little room. */
+export type Beside = "beside" | "alone" | "cramped";
+
+/** The one place that decides it, so the layout (`dockInsets`), the drag (which
+ *  leaves the width alone when there is nothing to be beside) and the chord's
+ *  say-back cannot disagree about a panel nobody has measured yet.
  *
- *  Zero both sides unless all four hold: the dock is moored, it takes the
- *  available width, the panel is drawn, and the panel is moored to a side —
- *  a floating panel divides nothing, and neither does one that is not open,
- *  so there is nothing to be beside and "available" is the whole room.
+ *  `panel` is the panel's site *if it is drawn*, null if it is not: a floating
+ *  panel divides nothing, and neither does one that is not open.
  *
- *  **Too little left and it takes the full width instead**, rather than being
- *  drawn narrower than the floor a floating dock already has. A dock squeezed
- *  to a sliver beside a wide panel is a field you cannot write in; the full
- *  width under the panel is what it always was, and is readable. In practice
- *  the panel's own clamp (`layout.ts::panelWidth`, which keeps `WALL_MIN` of
- *  wall) means this only bites in a window narrower than about 540px. */
+ *  **Too little left is `cramped`, and a cramped dock takes the full width**,
+ *  rather than being drawn narrower than `MIN_W`, the floor a floating dock
+ *  already has. A dock squeezed to a sliver beside a wide panel is a field you
+ *  cannot write in; the full width under the panel is what it always was, and
+ *  is readable. The panel's own clamp (`layout.ts::panelWidth`, which keeps
+ *  `WALL_MIN` of wall) means this only bites in a window under about 540px. */
+export function besideOf(panel: PanelSite | null, panelW: number, roomW: number): Beside {
+  if (panel !== "left" && panel !== "right") return "alone";
+  if (!(panelW > 0)) return "alone";
+  return roomW - panelW < MIN_W ? "cramped" : "beside";
+}
+
+/** How far in from each side of the room a moored dock stops: the panel's
+ *  column, on the panel's side, when the dock takes the available width and
+ *  there is a panel to stand beside — and zero both sides otherwise, which is
+ *  the full width. */
 export function dockInsets(
   dock: { site: DockSite; extent: DockExtent },
   panel: PanelSite | null,
@@ -232,15 +247,9 @@ export function dockInsets(
 ): { left: number; right: number } {
   const none = { left: 0, right: 0 };
   if (dock.site === "float" || dock.extent !== "available") return none;
-  if (panel !== "left" && panel !== "right") return none;
-  if (!(panelW > 0) || roomW - panelW < MIN_W) return none;
+  if (besideOf(panel, panelW, roomW) !== "beside") return none;
   return panel === "left" ? { left: panelW, right: 0 } : { left: 0, right: panelW };
 }
-
-/** Whether there is a panel for an available-width dock to stand beside:
- *  `beside` it is, `alone` there is no panel moored to a side to stand beside,
- *  and `cramped` there is one but it leaves too little (`dockInsets`). */
-export type Beside = "beside" | "alone" | "cramped";
 
 /** What `<space>w a` says back, since the flip often moves nothing you can see
  *  — a dock with nothing beside it is the full width either way, and a
@@ -250,7 +259,7 @@ export function dockExtentSaid(extent: DockExtent, site: DockSite, beside: Besid
   const what = extent === "full" ? "dock: full width" : "dock: the width the panel leaves";
   if (site === "float") return `${what} — once it is moored again`;
   if (extent === "available" && beside === "alone") {
-    return `${what} — all of it, until a panel is moored to a side`;
+    return `${what} — all of it, while no panel is open beside it`;
   }
   if (extent === "available" && beside === "cramped") {
     return `${what} — all of it, while the panel leaves too little room`;
