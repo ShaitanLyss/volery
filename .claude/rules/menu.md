@@ -346,6 +346,15 @@ compaction in the middle of the work. `ask` is narrow now because **haiku 4.5 ha
 to ask for** — the only row without the wide window is the only row whose model has none, and
 `presets.test.ts` asserts it in exactly those terms rather than by naming ids.
 
+**There is one `opus` and one `sonnet` to choose, everywhere**, and that is now true of the
+`/model` palette too (`commands.md`): the presets above were already wide on every row but
+haiku's, and the palette was the last place offering the same model twice, at 200k and at 1M,
+as though they were different prices. Re-read 2026-10-16, with `usage.ts`'s table and
+`tools/probe-prices.ts` beside it: Opus and Sonnet 4.6 and later are billed at one rate across
+the whole window, no premium above 200k — the docs name **Haiku 5.5 as the exception**, with a
+higher rate above 100k, and that is not a window anyone can choose here. The `[1m]` the notes
+show is the alias that goes to `--model`, kept because the ring is sized from it.
+
 The model stored is an alias (`opus[1m]`, `sonnet`), not a full id, so a preset does not go
 stale the week a new model ships. Probed 2026-08-20 against claude 2.1.233: `opus[1m]` →
 `claude-opus-5[1m]`, `haiku` → `claude-haiku-4-5-20251001`, `fable` → `claude-fable-5`, each

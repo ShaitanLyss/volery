@@ -87,9 +87,7 @@ describe("a command that takes a value keeps the palette up", () => {
        a thing that can be run — so the choosing is not over at the space. */
     expect(values("/model ")).toEqual([
       "opus",
-      "opus[1m]",
       "sonnet",
-      "sonnet[1m]",
       "haiku",
       "fable",
       "opusplan",
@@ -98,18 +96,18 @@ describe("a command that takes a value keeps the palette up", () => {
   });
 
   test("typing narrows the values the way it narrows the names", () => {
-    expect(values("/model son")).toEqual(["sonnet", "sonnet[1m]"]);
+    expect(values("/model son")).toEqual(["sonnet"]);
     /* `max` contains an x, so it follows the one that starts with it. */
     expect(values("/effort x")).toEqual(["xhigh", "max"]);
     expect(values("/model zzz")).toEqual([]);
   });
 
   test("a prefix outranks a mere containing match", () => {
-    /* `[1m]` contains `1m`, and so would sort in on a contains-match; the
-       prefixes must still come first. `opusplan` is a third prefix match and
-       sits with them — it joined the list the day the wall got a second gear,
-       since it is the model pairing plan mode is for. */
-    expect(values("/model opus")).toEqual(["opus", "opus[1m]", "opusplan"]);
+    /* `opusplan` is a second prefix match and sits with `opus` — it joined the
+       list the day the wall got a second gear, since it is the model pairing
+       plan mode is for. The window is not a row of its own (see `MODELS`), so
+       there is no `opus[1m]` to sort between them. */
+    expect(values("/model opus")).toEqual(["opus", "opusplan"]);
   });
 
   test("the choosing really is over at the second space", () => {
@@ -269,10 +267,15 @@ describe("what the keys put in the field", () => {
 
   test("completing a value gives the whole line", () => {
     const model = named("model");
-    const opus1m = model.choices!.find((c) => c.value === "opus[1m]")!;
-    expect(completionForChoice(model, opus1m)).toBe("/model opus[1m]");
+    const opus = model.choices!.find((c) => c.value === "opus")!;
+    /* One `opus` is drawn and it is sent as the wide one: the tier is not a
+       price, so there is no second row to pick it from. */
+    expect(completionForChoice(model, opus)).toBe("/model opus[1m]");
     /* And what it gives has to be a thing the CLI will read as its own. */
-    expect(cliCommand(completionForChoice(model, opus1m))).toBe(model);
+    expect(cliCommand(completionForChoice(model, opus))).toBe(model);
+    /* A choice with no `sends` is sent as drawn. */
+    const haiku = model.choices!.find((c) => c.value === "haiku")!;
+    expect(completionForChoice(model, haiku)).toBe("/model haiku");
   });
 });
 

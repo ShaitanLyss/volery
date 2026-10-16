@@ -82,6 +82,11 @@ export type Choice = {
   value: string;
   /** One line, lowercase, in the dock's voice. */
   summary: string;
+  /** What goes after the command when it is picked, where that is not the word
+   *  drawn. `/model`'s `opus` is drawn once and sent as `opus[1m]`, because the
+   *  window is not a price (see `MODELS`) and so is not a second row to choose
+   *  between. Absent means `value`, which is every other choice. */
+  sends?: string;
 };
 
 export type Command = {
@@ -164,9 +169,23 @@ export type Command = {
 
 /* The models `--model` takes as aliases, read out of the 2.1.232 binary
    (`opus`, `opus[1m]`, `sonnet`, `sonnet[1m]`, `haiku`, `fable`, `opusplan`).
-   The `[1m]` pair earn their place on this wall in particular: the context ring
-   is drawn against the window tier, and switching to one is the gesture for a
-   card that is running out of room.
+
+   **The palette offers one `opus` and one `sonnet`, and each is sent as its
+   `[1m]` alias.** The two used to be rows of their own, on the reading that the
+   wide window was the dear tier and switching to it the gesture for a card
+   running out of room. It is not a tier you pay for: the pricing docs, re-read
+   2026-10-16 — "Claude 4.6 and later models (except Claude Haiku 5.5) … include
+   the full 1M token context window at standard pricing. (A 900k-token request is
+   billed at the same per-token rate as a 9k-token request.)" — and
+   `usage.ts::rateFor` already strips `[1m]` before pricing for the same reason.
+   A choice between two things that cost the same, one of which has more room, is
+   not a choice. `sends` is the whole mechanism: the row says what you picked and
+   the line carries the window. A `/model opus` typed whole and sent with the
+   palette dismissed (Escape keeps the text) still reaches the CLI as typed — a
+   200k opus — and so does `/model opus[1m]`; this changes what is *offered*, not
+   what the CLI accepts, and nothing here rewrites a line you wrote.
+
+   `haiku` has no wide tier to send and `fable` is left as the CLI knows it.
 
    `opusplan` earned its place the day the wall got a second gear. It used to be
    left off with the note "it is plan mode's upgrade model, and every card here
@@ -174,10 +193,16 @@ export type Command = {
    longer true of any: `/gear planning` is exactly the state it is for, and a
    card that plans on Opus and executes on Sonnet is the pairing it names. */
 const MODELS: Choice[] = [
-  { value: "opus", summary: "the most capable, 200k of room" },
-  { value: "opus[1m]", summary: "the same model with a million tokens of room" },
-  { value: "sonnet", summary: "quicker and cheaper, 200k of room" },
-  { value: "sonnet[1m]", summary: "quicker, with a million tokens of room" },
+  {
+    value: "opus",
+    sends: "opus[1m]",
+    summary: "the most capable, with a million tokens of room",
+  },
+  {
+    value: "sonnet",
+    sends: "sonnet[1m]",
+    summary: "quicker and cheaper, with a million tokens of room",
+  },
   { value: "haiku", summary: "fastest and cheapest — for small, mechanical work" },
   { value: "fable", summary: "the newest family" },
   { value: "opusplan", summary: "opus while planning, sonnet while making" },
@@ -820,7 +845,7 @@ export function completionFor(cmd: Command): string {
 /** The whole line, name and value — what Tab puts in the field at the second
  *  stage, and what Enter sends. */
 export function completionForChoice(cmd: Command, choice: Choice): string {
-  return `/${cmd.name} ${choice.value}`;
+  return `/${cmd.name} ${choice.sends ?? choice.value}`;
 }
 
 /** The effort a `/model` switch carries with it, or null to leave it alone.

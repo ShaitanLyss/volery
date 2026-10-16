@@ -253,11 +253,18 @@ union, read out of the binary: `set_permission_mode`, `set_max_thinking_tokens`,
   first thing you *say*, and `/model sonnet` is not said to the agent — so `#deliver` does
   not name a card from one, and the card face withholds the same draft while you type it.
   Those two must agree or the face previews a name the send never gives it.
-- **The values are the aliases the binary actually takes**, `opus[1m]` and `sonnet[1m]`
-  included — the ones that earn their place on this wall in particular, since the context
-  ring is drawn against the window tier and switching is the gesture for a card running out
-  of room. `opusplan` is left off: it is plan mode's upgrade model, and every card here
-  spawns with permissions bypassed.
+- **The values are the aliases the binary takes, with the window folded in.** `opus` and
+  `sonnet` are each *one* row, sent as `opus[1m]` / `sonnet[1m]` (`Choice.sends`, which
+  `completionForChoice` reads). They were four rows — the plain pair and the `[1m]` pair — on
+  the reading that the wide window was a dearer tier and switching to it the gesture for a card
+  running out of room. It is not a tier you pay for (pricing docs, re-read 2026-10-16: "Claude
+  4.6 and later models (except Claude Haiku 5.5) … include the full 1M token context window at
+  standard pricing"), so two rows differing only in room were a choice with no cost to weigh.
+  What this changes is what is *offered*: a line typed whole — `/model opus` sent with the
+  palette dismissed, or `/model opus[1m]` — still reaches the CLI exactly as written, because
+  nothing here rewrites what you wrote. The ring still reads the `[1m]` tier off the id
+  (`classify.ts::contextWindowFor`), which is why it is sent. `opusplan` was once left off as
+  plan mode's upgrade model; it is on now, since `/gear planning` is exactly the state it is for.
 - **A locally-answered turn has to be *drawn*, or the gesture looks like it failed.** The
   whole reply is one line in `result.result` and the only `assistant` message is a
   `<synthetic>` one with empty content, so the card showed the prompt, nothing after it, and
