@@ -27,152 +27,73 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
-/// How long a question waits before the agent is told to carry on without you.
+/// **A question has no clock.** It waits until it is answered, deferred, taken
+/// into the pile because nobody is there to ask, dismissed by its card closing,
+/// or abandoned by the client hanging up — and by nothing else.
 ///
-/// Blocking forever would be worse than it sounds: the turn holds its context,
-/// and a question you never noticed becomes an agent wedged until you quit. Ten
-/// minutes is long enough to be away from the desk and short enough that a
-/// forgotten card unsticks itself.
+/// It had one for most of this file's life, and the history is worth keeping
+/// short because every step of it was right at the time. First a flat ten
+/// minutes, on the argument that a forgotten card should unstick itself. Then a
+/// window that scaled with the reading (`answer_window`: ten minutes, three per
+/// further question, twenty seconds per option, capped at forty-five), because
+/// a five-question review expired with the user still reading it (sink
+/// `d2adbf74`). Then a touch that moved the deadline out (`stir_ask`), because
+/// the countdown ran down while she was typing into it (sink `7264177f`). Then
+/// an expiry that queued rather than told the agent to proceed, because running
+/// out of time is not a decision. Each was a patch on a clock that the person
+/// it was pointed at experienced as pressure: *"let's remove timers on prompts
+/// and ask tools, they're uselessly stressful"* (Lyss, 2026-10-16).
 ///
-/// **It is a floor rather than the deadline**, and it was the deadline for the
-/// whole of this feature's life. A flat ten minutes is generous for one yes/no
-/// and tight for a genuine review: a call carrying five questions, each with
-/// three or four options, context and pros and cons per option, expired with the
-/// user *still reading it* — "ah it timed out, ask again, I was almost done"
-/// (sink `d2adbf74`). They answered all five immediately when re-asked, which is
-/// the evidence the clock was the only thing wrong. A deadline that does not
-/// scale with the payload is a deadline that means two different things
-/// depending on what was asked.
-const ANSWER_BASE: Duration = Duration::from_secs(600);
-
-/// What each question past the first adds. Not each question: the first one is
-/// what `ANSWER_BASE` already pays for.
-const ANSWER_PER_QUESTION: Duration = Duration::from_secs(180);
-
-/// What each option adds, over every question in the call.
-///
-/// The reading load is not the question count, it is the options — one decision
-/// between eight described alternatives is a longer read than four plain
-/// yes/nos, and `option_schema` asks for a `detail` line on each precisely so
-/// they are worth reading. Twenty seconds apiece is what a `label` and a
-/// `detail` cost to take in.
-const ANSWER_PER_OPTION: Duration = Duration::from_secs(20);
-
-/// The ceiling, and the reason there has to be one is not patience.
-///
-/// `client_timeout_ms` is written into the `--mcp-config` **once, at spawn**, so
-/// the client's own deadline cannot scale with a call it has not received yet.
-/// It is therefore set from this, and every call's window has to fit under it
-/// or the client gives up first and writes its own sentence instead of ours.
-///
-/// It is also the whole of what bounds a long call now that the question count
-/// is not bounded: a twelve-question review saturates here rather than being
-/// cut down to something that fits. That is the right way round — forty-five
-/// minutes of reading is a long sitting, and the alternative was answering five
-/// of the twelve and letting the agent guess the rest.
-const ANSWER_MAX: Duration = Duration::from_secs(2700);
-
+/// What the clock was really for is the case where nobody is there, and that
+/// is now answered by presence rather than by time: a wall switched away, or a
+/// machine nobody has touched for longer than it takes to lock
+/// (`presence::nobody_to_ask`, `machine::idle_away`), files what is parked
+/// into the pile (`presence::defer_parked`) and files what is asked from then
+/// on without parking it. A person who is here and has not answered yet is
+/// simply not done, and the wall no longer says otherwise.
 const DISMISSED: &str =
     "The user dismissed the question. Proceed using your best judgement.";
 
-/// The opening of the timeout sentence, and the only part of it that is fixed.
-///
-/// `asking.ts::UNANSWERED` matches a reply back off disk on this prefix to tell
-/// Skein's own sentence from one the user wrote, so what follows it may vary and
-/// this may not. It changed once — it used to name ten minutes, which stopped
-/// being true the moment the deadline started scaling — and the old wording is
-/// kept over there beside this one, because a transcript already on disk carries
-/// it and will go on being folded.
-const TIMED_OUT_OPENING: &str = "The user did not answer in time.";
-
-fn timed_out(waited: Duration) -> String {
-    format!(
-        "{TIMED_OUT_OPENING} The question stood for {} minutes. Proceed using your best \
-         judgement, and say which way you went and why.",
-        waited.as_secs() / 60
-    )
-}
-
-/// How long *this* call waits, from what it is asking.
-///
-/// **Mirrored in `asking.ts::answerWindow`, and the duplication is deliberate
-/// and load-bearing.** `Ask.svelte` draws a live countdown, which is real
-/// information rather than decoration — it is what tells you whether to keep
-/// reading or answer now — and the number it counts down to has to be the number
-/// this thread gives up on. The panel has the *normalized* questions and this has
-/// the raw arguments, so neither can be handed the other's answer without a
-/// field on `ask:opened` and a matching read in `skein.svelte.ts`. What is shared
-/// instead is the arithmetic and the counting rules, with the same table of
-/// payloads asserted on both sides.
-///
-/// The counting mirrors `normalizeAsk`, and only the parts that change a count:
-/// a `questions[]` entry needs a non-empty `question` to be drawn, the
-/// single-question sugar is *appended* rather than preferred, an empty call
-/// still draws one placeholder question, and an option needs a non-empty
-/// `label`. Nothing is dropped for being late in the list — see `ANSWER_MAX`,
-/// which is what a long call runs into instead.
-fn answer_window(args: &Value) -> Duration {
-    let mut drawn: Vec<&Value> = Vec::new();
-    if let Some(list) = args.get("questions").and_then(|v| v.as_array()) {
-        drawn.extend(list.iter().filter(|q| said(q.get("question")).is_some()));
-    }
-    if said(args.get("question")).is_some() {
-        drawn.push(args);
-    }
-
-    let options: usize = drawn
-        .iter()
-        .map(|q| match q.get("options").and_then(|v| v.as_array()) {
-            Some(list) => list.iter().filter(|o| said(o.get("label")).is_some()).count(),
-            None => 0,
-        })
-        .sum();
-    /* One, never zero: a call with nothing answerable in it is still drawn, as
-       the "(no question given)" placeholder, and still parks a turn. */
-    let questions = drawn.len().max(1);
-
-    let want = ANSWER_BASE
-        + ANSWER_PER_QUESTION * (questions as u32 - 1)
-        + ANSWER_PER_OPTION * options as u32;
-    want.min(ANSWER_MAX)
-}
-
-/// A field that would survive `normalizeAsk`'s trim: a string with something in
-/// it. Nothing else counts, on either side of the boundary.
-fn said(v: Option<&Value>) -> Option<&str> {
-    v.and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty())
-}
-
-/// How long the *client* must be told to wait, in milliseconds.
+/// How long the *client* must be told to wait, in milliseconds: as long as it
+/// will let itself be told.
 ///
 /// The parking above is worth nothing unless the CLI is still listening when
 /// the answer arrives, and by default it is not. Probed against claude 2.1.232
-/// with `tools/probe-ask.ts`, which parks a call and answers it late: the CLI
-/// **aborts the HTTP request at 60.02s** and hands the model
-/// `is_error: true, "The operation timed out."`. So a question answered at any
-/// point past the first minute — which is most of them, since the whole reason
-/// to ask is that somebody has to think — reached a request nobody was reading,
-/// and the card went quiet having done everything right. `MCP_TOOL_TIMEOUT`
-/// lifts it; the same probe with this set parked 90s, was never aborted, and
-/// the answer resumed the turn in place.
+/// with `tools/probe-ask.ts`: the CLI **aborted the HTTP request at 60.02s** and
+/// handed the model `is_error: true, "The operation timed out."`. So the number
+/// is written into the card's `--mcp-config` and `MCP_TOOL_TIMEOUT` at spawn.
 ///
-/// The minute of headroom is the point rather than slack. Whichever side gives
-/// up first writes what the model reads, and ours is the sentence worth having
-/// — it says how long it waited and what to do about it, where the client's
-/// says only that something timed out. The heartbeats the CLI streams
-/// (`tool_progress` every 30s) do not extend its own deadline, so there is
-/// nothing to send that would substitute for this.
+/// **It is the client's own ceiling now, and that is the point.** While a
+/// question had a deadline here this was that deadline plus a minute, so ours
+/// fired first and wrote the better sentence. With no deadline here, any
+/// smaller number becomes the clock this file just removed — the client gives
+/// up, the question vanishes from the dock, and the agent reads a bare timeout.
+/// Read out of the installed CLI (2026-10-16): the per-server timeout resolves
+/// as `Math.min(Math.max(n, 1000), Mu)` with `var Mu=2147483647`, so anything
+/// larger is clamped to this anyway and nothing overflows. About 24.8 days,
+/// which no wall outlives without a restart that ends the turn regardless.
 ///
-/// It is `ANSWER_MAX` rather than the window a given call gets, because this is
-/// written into the `--mcp-config` at spawn and a card spawned this morning has
-/// no idea what it will be asked at four. So the ceiling travels and each call's
-/// own clock, which is always shorter, is the one that fires. Raising the
-/// client's number costs nothing: it is a bound on a request nobody is feeding,
-/// and a request nobody is feeding is already killed by Bun's 300s at
-/// `FEED_EVERY`.
+/// What actually keeps a parked call alive is not this number but the bytes:
+/// Bun's 300s fetch clock and the CLI's idle watchdog are both fed every
+/// `FEED_EVERY`. See there.
 pub fn client_timeout_ms() -> u64 {
-    ANSWER_MAX.as_millis() as u64 + 60_000
+    CLIENT_CEILING_MS
 }
+
+/// The largest deadline the CLI accepts, which is `setTimeout`'s own limit —
+/// see `client_timeout_ms`.
+const CLIENT_CEILING_MS: u64 = 2_147_483_647;
+
+/// `MCP_TOOL_TIMEOUT`, which reaches every MCP server a card has and not only
+/// this one: forty-six minutes, what it was while questions had a deadline.
+///
+/// It used to be `client_timeout_ms` written a second time. Raising that to the
+/// CLI's ceiling would have raised the hard limit on a call to the browser or a
+/// pooled server along with it — found in review (2026-10-16), read out of the
+/// installed CLI, which resolves a server's deadline as its own `timeout` when
+/// it has one and this variable only otherwise. Skein's entry carries its own,
+/// so this no longer needs to say anything about questions.
+pub const OTHER_SERVERS_TIMEOUT_MS: u64 = 2_760_000;
 
 /// The `--mcp-config` a card is spawned with: this server, addressed to it, and
 /// the wall's shared browser when there is one running.
@@ -306,7 +227,7 @@ struct Parked {
     ours: bool,
     /// The *request* behind a question Volery composed — the tool and the
     /// arguments the card gave — so that going away can file it as a deferred
-    /// act rather than leaving it to expire.
+    /// act rather than leaving it parked for nobody.
     ///
     /// `None` for `ask_user`, which has no request behind it beyond the
     /// question itself. The distinction is the one `presence.rs` draws between
@@ -318,20 +239,16 @@ struct Parked {
     /// under a [`Stay`]. `None` for everything else — an agent's question, and
     /// every confirmation that carries its evidence, which is the default.
     stays: Option<&'static str>,
-    /// When the user last touched the panel drawing this question.
-    ///
-    /// Shared with the parking thread, which is the only thing that reads it:
-    /// `stir_ask` writes from the IPC thread, the park reads once a tick, and
-    /// the deadline it computes moves with it. See `ANSWER_HOLD`.
-    ///
-    /// Seeded to the moment the question opened rather than to `None`, which
-    /// is what lets `held_window` need no arm for the never-touched case — a
-    /// stir at t=0 buys `ANSWER_HOLD`, and the floor is longer than that.
-    stirred: Arc<Mutex<Instant>>,
+    /// When it was parked, in the store's milliseconds — so a question drawn
+    /// late (`parked_asks`) says how long it has really stood.
+    opened_at: i64,
+    /// Parked by `park_and_wait` — the shell-delete hand-off, with no client
+    /// socket behind it — so the one kind `drop_handoffs` lets go of.
+    handoff: bool,
     /// What the user has answered so far of a sheet they have not sent. See
-    /// `Held`. Shared with the parking thread for the reason `stirred` is: the
-    /// thread is what has to know, at the moment the call closes some other
-    /// way, whether a reply it is handed carried those answers.
+    /// `Held`. Shared with the parking thread, which is what has to know, at
+    /// the moment the call closes some other way, whether a reply it is handed
+    /// carried those answers.
     held: Arc<Mutex<Option<Held>>>,
 }
 
@@ -343,9 +260,10 @@ struct Parked {
 /// five questions that expired with four answered went to the pile as five,
 /// and the user re-read and re-decided four things they had already decided
 /// (sink `fdc6954b`). So the panel pushes this on every answer it records
-/// (`hold_ask`), and both of the ways a call closes without a send — its
-/// deadline here, and the wall going away (`presence::defer_parked`) — hand
-/// the agent what was decided and queue only what was not.
+/// (`hold_ask`), and every way a call is filed without a send — the wall going
+/// away, a machine nobody is touching, a defer (`presence::convert`) — hands
+/// the agent what was decided and queues only what was not. The deadline that
+/// was the first of those went on 2026-10-16.
 ///
 /// **Composed in TS, the way every reply to `ask_user` is**, and for the same
 /// reason: `asking.ts` owns what a question *is* and Rust reads nothing out of
@@ -382,30 +300,6 @@ impl Held {
         }
         self
     }
-}
-
-/// How much time touching the panel buys, from the moment it is touched.
-///
-/// Mirrored in `asking.ts` as `ANSWER_HOLD`, under the same bargain as the
-/// four constants above and for a sharper reason: the countdown drawn in the
-/// panel and the deadline this thread gives up on have to be the same number,
-/// or the instrument is lying in the one direction that loses work.
-///
-/// "we need to improve the ask tool to not decrease time when i'm litterally
-/// active and typing in it, it's stressful and work losing for no reason" —
-/// sink `7264177f`. Note what could *not* be done about that: the panel cannot
-/// simply pause its own clock, because this thread would go on counting. The
-/// deadline itself has to move.
-const ANSWER_HOLD: Duration = Duration::from_secs(300);
-
-/// The deadline a call actually has, given when its panel was last touched.
-///
-/// `since_open` is measured from the same origin the window is. Clamped to
-/// `ANSWER_MAX` at the top because that ceiling is not patience — it is the
-/// client's own deadline, written into the `--mcp-config` at spawn, and
-/// nothing on this side may promise past it.
-fn held_window(base: Duration, since_open: Duration) -> Duration {
-    base.max(since_open + ANSWER_HOLD).min(ANSWER_MAX)
 }
 
 #[derive(Default)]
@@ -528,6 +422,67 @@ pub(crate) fn take_parked_questions(asks: &Asks, staying_only: bool) -> Vec<Take
         .collect()
 }
 
+/// Every question parked right now, as `ask:opened` carried it — for a front
+/// end that was not listening when one was.
+///
+/// `ask:opened` is a fire-and-forget emit, so a question asked while nothing
+/// was subscribed — before the wall's listeners were up, across a webview
+/// reload, across a remount in a dev build — reached nothing and was never
+/// drawn. While a question had a deadline that cost ten minutes with certainty;
+/// with none (2026-10-16) it would cost the card its turn until the machine
+/// went idle and filed it, with nothing on the wall saying a card was asking.
+/// Found in review. So the wall reads this once, after it has painted its cards
+/// and subscribed (`Skein.load`), and draws whatever it was not told about.
+#[derive(Serialize)]
+pub struct ParkedAsk {
+    conversation_id: String,
+    ask_id: String,
+    ask: Value,
+    ours: bool,
+    since: i64,
+}
+
+#[tauri::command]
+pub fn parked_asks(asks: State<'_, Asks>) -> Vec<ParkedAsk> {
+    asks.pending
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, p)| ParkedAsk {
+            conversation_id: p.conversation_id.clone(),
+            ask_id: id.clone(),
+            ask: p.args.clone(),
+            ours: p.ours,
+            since: p.opened_at,
+        })
+        .collect()
+}
+
+/// Let go of a card's shell-delete hand-offs, because the card is not waiting
+/// for them any more: its turn was stopped, or it was closed or cleared.
+///
+/// **This used to be the deadline's job.** Every other park is ended by its
+/// client hanging up — the CLI abandons an `ask_user` on Escape and the
+/// keep-alive finds out. The hand-off (`park_and_wait`) has no client behind
+/// it: the hook was answered `STILL_ASKING` long ago. So with questions waiting
+/// until answered (2026-10-16), Escape, `/clear` or closing the card left it
+/// parked for the life of the wall, to be filed into the pile hours later for a
+/// turn somebody had stopped on purpose.
+///
+/// Dropping the sender ends it **silently**: `park_and_wait` hears
+/// `Disconnected` and `hand_off` sends nothing — no settle, no late message.
+/// The first cut dropped every park and let the settle answer "nobody
+/// answered", which the review caught writing that message into the stdin of a
+/// card the user had just stopped, and starting a turn. Only the hand-off, and
+/// only on a stop, a close or a clear — never on a process merely being
+/// replaced (an account swap, a move), where the question is still on screen.
+pub(crate) fn drop_handoffs(asks: &Asks, conversation_id: &str) {
+    asks.pending
+        .lock()
+        .unwrap()
+        .retain(|_, p| !(p.handoff && p.conversation_id == conversation_id));
+}
+
 /// Take **one** parked question off the wall, so it can be filed in the pile —
 /// `take_parked_questions`' rule, for the one the user chose to defer.
 ///
@@ -540,11 +495,11 @@ pub(crate) fn take_parked_question(asks: &Asks, ask_id: &str) -> Result<Taken, S
     let mut pending = asks.pending.lock().unwrap();
     match pending.get(ask_id) {
         None => {
-            return Err("that question is no longer waiting — it was answered, or its time ran out".into())
+            return Err("that question is no longer waiting — it was answered, or filed into the pile".into())
         }
         Some(p) if p.ours && p.act.is_none() => {
             return Err("that confirmation writes to another service and cannot be put off — \
-                        answer it, or leave it to expire"
+                        it waits for your answer, with no deadline"
                 .into())
         }
         Some(_) => {}
@@ -593,33 +548,14 @@ pub async fn defer_ask(app: AppHandle, ask_id: String) -> Result<(), String> {
     crate::off_main(move || crate::presence::defer_one(&app, &ask_id)).await?
 }
 
-/// The user is working on this question, so move its deadline out.
-///
-/// The whole of the Rust half of sink `7264177f`. It writes one `Instant` and
-/// takes no decision: `held_window` is where the rule lives, and the parking
-/// thread applies it on its own next tick, so this cannot block on anything and
-/// does not need to be `async`.
-///
-/// Returning `Err` for a question that is no longer parked is deliberate even
-/// though the caller ignores it — `answer_ask` next door says the same thing
-/// the same way, and a command that silently succeeded at doing nothing is one
-/// the control surface could not test.
-#[tauri::command]
-pub fn stir_ask(asks: State<'_, Asks>, ask_id: String) -> Result<(), String> {
-    let pending = asks.pending.lock().unwrap();
-    let parked = pending.get(&ask_id).ok_or("that question is no longer waiting")?;
-    *parked.stirred.lock().unwrap() = Instant::now();
-    Ok(())
-}
-
 /// The user has answered some of this sheet: keep it, in case the call closes
 /// before the send.
 ///
 /// Called on every answer the panel records, with the whole of what has been
 /// said so far rather than a delta — so a lost call costs nothing but being one
 /// answer behind, and the last one to land is the truth. `None` clears it.
-/// Takes no decision and blocks on nothing, like `stir_ask` beside it; what a
-/// held sheet *means* is decided when the call closes. See `Held`.
+/// Takes no decision and blocks on nothing; what a held sheet *means* is
+/// decided when the call closes. See `Held`.
 #[tauri::command]
 pub fn hold_ask(asks: State<'_, Asks>, ask_id: String, held: Option<Held>) -> Result<(), String> {
     let pending = asks.pending.lock().unwrap();
@@ -667,7 +603,7 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
         match pending.get(ask_id) {
             None => {
                 return Err("that question is no longer waiting — it was answered on its own wall, or \
-                            its time ran out"
+                            filed into its pile"
                     .into())
             }
             Some(p) if p.conversation_id != card => {
@@ -1121,7 +1057,7 @@ pub(crate) fn args_for_afar(app: &AppHandle, card: &str, ask_id: &str) -> Result
     let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
     let pending = asks.pending.lock().map_err(|_| "this wall's questions are wedged".to_string())?;
     match pending.get(ask_id) {
-        None => Err("that question is no longer waiting — it was answered on its own wall, or its time ran out".into()),
+        None => Err("that question is no longer waiting — it was answered on its own wall, or filed into its pile".into()),
         Some(p) if p.conversation_id != card => Err("that question belongs to another card on this wall".into()),
         Some(p) if p.ours || p.act.is_some() => {
             Err("that question is this wall's own, and travels by its evidence rather than its arguments".into())
@@ -1246,10 +1182,9 @@ fn open_ask(
     ours: bool,
     stays: Option<&'static str>,
     act: Option<(String, Value)>,
-) -> (String, Receiver<String>, Arc<Mutex<Instant>>, Arc<Mutex<Option<Held>>>) {
+) -> (String, Receiver<String>, Arc<Mutex<Option<Held>>>) {
     let ask_id = crate::store::uuid_v4();
     let (tx, rx) = mpsc::channel::<String>();
-    let stirred = Arc::new(Mutex::new(Instant::now()));
     let held = Arc::new(Mutex::new(None));
     asks.pending.lock().unwrap().insert(
         ask_id.clone(),
@@ -1260,7 +1195,8 @@ fn open_ask(
             ours,
             act,
             stays,
-            stirred: Arc::clone(&stirred),
+            opened_at: crate::store::now(),
+            handoff: false,
             held: Arc::clone(&held),
         },
     );
@@ -1275,7 +1211,7 @@ fn open_ask(
         },
     );
 
-    (ask_id, rx, stirred, held)
+    (ask_id, rx, held)
 }
 
 /// One SSE event carrying one JSON-RPC message.
@@ -1300,8 +1236,8 @@ fn chunk(w: &mut dyn Write, body: &str) -> std::io::Result<()> {
 /// Park a call on an answer that comes from somewhere other than a person —
 /// another wall, over the flyway — and stream keep-alives while it waits.
 ///
-/// `park_and_stream` is the shape for a question: it draws a panel, scales its
-/// deadline to the reading, and can queue the question when nobody comes. None
+/// `park_and_stream` is the shape for a question: it draws a panel, waits with
+/// no deadline, and can queue the question when nobody is there. None
 /// of that applies to a remote spawn, which has no panel, no reader and a
 /// deadline set by the protocol (`fleet::ASK_TTL_MS`); what it shares is the
 /// part that took three sittings to get right — the stream rather than a held
@@ -1633,137 +1569,14 @@ impl Stay {
 
 /// Park a question on its own request until the UI answers, speaking every
 /// `FEED_EVERY` so the client is still listening when it does.
-/// What running out of time means, now that it no longer means "decide it
-/// yourself".
 ///
-/// **A deadline passing is not an answer**, and for most of this file's life it
-/// was treated as one: the agent read `timed_out` — "proceed using your best
-/// judgement" — and did. That is the same conflation `SKIPPED` was split out of
-/// one layer up, arriving by a different route. The user not getting to a
-/// question in forty-five minutes says nothing whatever about what she would
-/// have decided, and the cost of reading it as consent is asymmetric in the
-/// direction that pushes, deploys and deletes.
-///
-/// So the ordinary case now does what away mode already did with a question it
-/// could not put to anybody: it **queues** it. The question survives into the
-/// pile, the user can answer it whenever she gets there, the answer reaches the
-/// card as a message, and the agent is told all of that in the same words away
-/// mode uses — because what happened to the question is the same thing. Sink
-/// `7264177f`, and Lyss: "when the timer expires on a question, it shouldn't
-/// mean 'no answer in time, do it according to your best judgement', it should
-/// mean deferred, same as if I were away".
-///
-/// **Two cases keep the old behaviour, and both are Volery's own questions
-/// rather than an agent's.** The boundary is the one `defer_parked` already
-/// draws for the same reason:
-///
-///  - A question carrying a `Settle` — `close`, `unpost`, the `remove`
-///    hand-off. The settle lives on *this* thread and is the only thing that
-///    can perform it, so the question cannot be moved off into the pile at all.
-///    Its unanswered behaviour is the conservative one (`decide(app, None)`,
-///    below), which is the right answer to a deadline anyway: nothing happens.
-///  - A question carrying an `act` but no settle — `smith`, `docket`: writes to
-///    somebody else's service. `defer_act` is where one of those goes when the
-///    wall is away, and re-entering a write to an external service after an
-///    unattended forty-five minutes is a decision this function is not in a
-///    position to make. It times out, as it did.
-///
-/// Which leaves `ask_user` — the whole of what Lyss meant, and the only kind of
-/// question that is purely information flowing back to an agent.
-fn expired(
-    app: &AppHandle,
-    conversation_id: &str,
-    args: &Value,
-    settle: &Option<Settle>,
-    act: &Option<(String, Value)>,
-    window: Duration,
-    held: Option<Held>,
-) -> String {
-    if settle.is_some() || act.is_some() {
-        return timed_out(window);
-    }
-    /* A sheet the user was partway through. What they decided goes to the
-       agent now and only what they did not reach goes to the pile — the whole
-       of sink `fdc6954b`. The noise below is the same argument with a
-       different sentence, since "a question was queued" would undersell that
-       answers were sent. */
-    if let Some(held) = held {
-        let queued = held.rest.is_some();
-        let reply = crate::presence::defer_rest(
-            app,
-            conversation_id,
-            &held.said,
-            held.rest.as_ref(),
-            crate::presence::Queued::Unattended,
-        );
-        if !crate::presence::away(app) {
-            let (mark, detail) = if queued {
-                (
-                    "a question timed out partway through and the rest was queued for you",
-                    "the answers you had given were sent; nothing else was decided — \
-                     read the rest from the pile (space then q)",
-                )
-            } else {
-                (
-                    "a question timed out with every answer given but not sent",
-                    "your answers were sent as they stood, and the agent was told you \
-                     had not sent them yourself",
-                )
-            };
-            crate::chronicle::note(app, None, "volery", "note", mark, detail);
-        }
-        return reply;
-    }
-    /* A card's notice that asked to be waited on. Same move as a question —
-       queued rather than expired — into the queue a notice belongs in, which
-       is already the thing that rings, so there is no chronicle row to add. */
-    if crate::notice::is_notice(args) {
-        let text = args["notice"]["text"].as_str().unwrap_or_default();
-        return crate::notice::queue(
-            app,
-            conversation_id,
-            text,
-            crate::notice::Queued::Unattended,
-        );
-    }
-    let note = crate::presence::defer(
-        app,
-        conversation_id,
-        args,
-        crate::presence::Queued::Unattended,
-    );
-
-    /* **And it has to make a noise, which away mode does not have to.**
-       Coming back from away *opens* the pile, so a question queued then is
-       read within seconds of there being anybody to read it. A question
-       queued while the user is right here has no such moment: it was amber in
-       the dock, it vanishes, and all that is left is a count appearing in the
-       bar — which is quieter than what it replaced, on the one wall where the
-       user is actually present. Leaving it at that would be answering "the
-       agent decided without me" with "the question went away", which is a
-       different failure and not obviously a smaller one.
-
-       A chronicle row, which is the wall's existing answer to "something
-       happened that you were not looking at" — it is read as a wisp when it
-       lands and as a row for ever after, so it survives not being seen. Not
-       the attention ladder: the taskbar flash and the peek are for a card
-       that is *blocked*, and this card is not blocked any more. See
-       `.claude/rules/chronicle.md`.
-
-       Only when the wall is here. Away mode has its own, better moment. */
-    if !crate::presence::away(app) {
-        crate::chronicle::note(
-            app,
-            None,
-            "volery",
-            "note",
-            "a question timed out and was queued for you",
-            "nothing was decided — read it from the pile (space then q)",
-        );
-    }
-    note
-}
-
+/// **It has no deadline** — see `DISMISSED` for the history. It closes on an
+/// answer, a *defer*, the card closing, the client hanging up, or nobody being
+/// there to ask: each tick also asks presence (`presence::watch_idle`), so a
+/// machine that has gone untouched long enough files what is parked into the
+/// pile exactly as the away switch does. That tick is the one that was already
+/// here to feed the socket, so being watched costs no clock of its own, and it
+/// only runs while something is parked — which is the only time it matters.
 fn park_and_stream(
     app: &AppHandle,
     asks: &Asks,
@@ -1781,7 +1594,7 @@ fn park_and_stream(
     let mut stamped = args.clone();
     let stays = settle.as_ref().and_then(|s| s.stamp(&mut stamped));
     let args = &stamped;
-    let (ask_id, rx, stirred, held) =
+    let (ask_id, rx, held) =
         open_ask(app, asks, conversation_id, args, settle.is_some(), stays, act.clone());
     let forget = || {
         asks.pending.lock().unwrap().remove(&ask_id);
@@ -1817,18 +1630,7 @@ fn park_and_stream(
         return;
     }
 
-    let started = Instant::now();
-    /* Scaled to what was asked. The *arguments* are settled before the wait and
-       cannot change under a parked call — but the deadline itself now can, and
-       only in one direction and for one reason: the user touching the panel
-       moves it out (`held_window`, `stir_ask`). So the base is computed once
-       and the deadline is re-read each tick, which is the distinction the
-       earlier note here was drawing and is worth keeping sharp. */
-    let base = answer_window(args);
     let mut fed: u64 = 0;
-    /* Set when the reply carries a sheet the user was partway through: the
-       answers they gave, and whether anything was left over for the pile. */
-    let mut partial: Option<bool> = None;
     let answer = loop {
         match rx.recv_timeout(FEED_EVERY) {
             Ok(a) => break a,
@@ -1836,19 +1638,14 @@ fn park_and_stream(
                asking. */
             Err(RecvTimeoutError::Disconnected) => break DISMISSED.to_string(),
             Err(RecvTimeoutError::Timeout) => {
-                let since = stirred.lock().unwrap().saturating_duration_since(started);
-                let window = held_window(base, since);
-                if started.elapsed() >= window {
-                    /* Taken off the wall here. If it is already gone, something
-                       else claimed it this instant — the answer, or the wall
-                       going away — and what it sent is on the channel or about
-                       to be, so that goes out rather than a timeout racing it. */
-                    if asks.pending.lock().unwrap().remove(&ask_id).is_none() {
-                        break rx.recv().unwrap_or_else(|_| DISMISSED.to_string());
-                    }
-                    let kept = held.lock().unwrap().take();
-                    partial = kept.as_ref().map(|h| h.rest.is_some());
-                    break expired(app, conversation_id, args, &settle, &act, window, kept);
+                /* Nobody at the keyboard for long enough: file what is parked,
+                   this one included, and the note arrives on `rx` on the next
+                   pass. Before the feed, so a question being taken off the wall
+                   is not first told the user is still being waited for. */
+                if crate::presence::watch_idle(app)
+                    && !asks.pending.lock().unwrap().contains_key(&ask_id)
+                {
+                    continue;
                 }
                 fed += 1;
                 /* With a progress token this is a real notification, which
@@ -1884,12 +1681,12 @@ fn park_and_stream(
         }
     };
 
-    /* Three ways this is not an answer, and the third is the newest: away mode
-       converting a question that was already on the wall (`presence::flip`).
-       Matched on the opening rather than on a sentinel, which is the idiom this
-       loop already uses for the timeout — the string the agent reads and the
-       string this thread recognises are one thing, so there is no second
-       vocabulary to keep in step. */
+    /* Two ways this is not an answer: the card closing, and away mode (or an
+       idle machine) converting a question that was already on the wall
+       (`presence::defer_parked`). The conversion is matched on the opening
+       rather than on a sentinel — the string the agent reads and the string
+       this thread recognises are one thing, so there is no second vocabulary
+       to keep in step. */
     /* The other way a sheet partway through gets closed: the wall going away,
        which composed the reply in `presence::defer_parked` from the same hold.
        Recognised by the reply opening with exactly what this thread holds —
@@ -1898,20 +1695,19 @@ fn park_and_stream(
        hold always names what it is short of (`not reached`, or the unsent
        sheet) and a sent sheet never does. Only for `ask_user`: a question
        carrying a settle or an act is never converted with its hold. */
-    if partial.is_none() && settle.is_none() && act.is_none() {
-        partial = carried(held.lock().unwrap().as_ref(), &answer);
-    }
+    let partial = if settle.is_none() && act.is_none() {
+        carried(held.lock().unwrap().as_ref(), &answer)
+    } else {
+        None
+    };
     /* Neither is an answer the user sent, and the rest went to the pile if
        there was any. */
     let deferred = crate::presence::is_deferral(&answer) || partial == Some(true);
-    let real = partial.is_none()
-        && !deferred
-        && !answer.starts_with(TIMED_OUT_OPENING)
-        && answer != DISMISSED;
+    let real = partial.is_none() && !deferred && answer != DISMISSED;
     /* The settle runs *here*, on the parking thread, after the answer is in and
        before the reply goes out — which is what makes a `close` genuinely
        deferred rather than merely delayed. It is also the last moment at which
-       the wall is still current: ten minutes have passed, and the card the user
+       the wall is still current: hours may have passed, and the card the user
        was asked about may since have started a turn, been set aside, or gone.
        So `spawn::close` re-reads all of it rather than trusting what it saw
        when it composed the question. */
@@ -2014,7 +1810,7 @@ fn always(mut schema: Value) -> Value {
 /// `ask_user` is the judgement call and it is deliberate. Not because it changes
 /// nothing — it emits `ask:opened`, puts the card in the asking tier, opens the
 /// `peek` window, flashes the taskbar, may chime, and holds the call open for the
-/// whole answer window. The narrower claim is the one that survives: **it writes
+/// whole of the wait. The narrower claim is the one that survives: **it writes
 /// nothing another agent can trip over, and the only thing it spends is the
 /// user's attention — which is precisely what a planning card is *for*.** A card
 /// that cannot ask what it is planning for is not a gear, it is a broken card,
@@ -2979,7 +2775,7 @@ fn hand_off(app: &AppHandle, card: &str, command: &str, paths: Vec<String>) -> S
                         "deleting what your shell line named",
                     )
                 } else {
-                    park_and_wait(
+                    let waited = park_and_wait(
                         &app2,
                         &app2.state::<Asks>(),
                         &card2,
@@ -2989,7 +2785,16 @@ fn hand_off(app: &AppHandle, card: &str, command: &str, paths: Vec<String>) -> S
                             crate::presence::REMOVE_ACT.to_string(),
                             crate::remove::shell_args(&cmd2, &paths),
                         )),
-                    )
+                    );
+                    /* Let go of (`drop_handoffs`): the card was stopped, closed
+                       or cleared, so it is told nothing — a late message would
+                       start a turn on a card somebody had just stopped. The
+                       hook, if it is somehow still waiting, hears the sender
+                       drop and says something went wrong. */
+                    match waited {
+                        Some(said) => said,
+                        None => return,
+                    }
                 }
             }
         };
@@ -3020,13 +2825,14 @@ fn hand_off(app: &AppHandle, card: &str, command: &str, paths: Vec<String>) -> S
 }
 
 /// Park a question with no request behind it, and return what the settle made
-/// of the answer.
+/// of the answer — or `None` when it was let go of (`drop_handoffs`), which
+/// is nothing to tell anybody.
 ///
 /// `park_and_stream`'s lifecycle without its transport — `hand_off`'s thread is
 /// the only thing waiting, so there is no socket to keep alive and no client to
 /// notice hanging up. What is kept exactly is the part with consequences: the
-/// window, the dismissal, the `ask:closed` that takes the question down, and the
-/// settle running here after the answer.
+/// dismissal, filing when nobody is there, the `ask:closed` that takes the
+/// question down, and the settle running here after the answer.
 fn park_and_wait(
     app: &AppHandle,
     asks: &Asks,
@@ -3034,46 +2840,54 @@ fn park_and_wait(
     question: &Value,
     settle: Settle,
     act: Option<(String, Value)>,
-) -> String {
+) -> Option<String> {
     let mut stamped = question.clone();
     let stays = settle.stamp(&mut stamped);
     let question = &stamped;
-    let (ask_id, rx, stirred, _) = open_ask(app, asks, conversation_id, question, true, stays, act);
-    let base = answer_window(question);
-    /* A tick loop rather than one flat `recv_timeout(window)`, for the one
-       reason `park_and_stream` grew the same shape: the deadline moves while
-       the user is typing (`held_window`), so it has to be re-read rather than
-       decided once. There is nothing to feed on this path — the caller is
-       Volery itself and no socket is being held open — so the tick is only
-       how often the question is asked. See `ANSWER_HOLD`. */
-    let started = Instant::now();
+    let (ask_id, rx, _) = open_ask(app, asks, conversation_id, question, true, stays, act);
+    /* Marked as the kind `drop_handoffs` may let go of. Before anything could
+       answer it would not matter, and after it the entry is gone either way. */
+    if let Some(p) = asks.pending.lock().unwrap().get_mut(&ask_id) {
+        p.handoff = true;
+    }
+    /* No deadline, as in `park_and_stream`. The tick is not a feed here — the
+       caller is Volery itself and no socket is held open — only how often the
+       question asks whether anybody is still at the machine. */
     let answer = loop {
         match rx.recv_timeout(FEED_EVERY) {
-            Ok(a) => break Some(a),
-            Err(RecvTimeoutError::Disconnected) => break None,
+            Ok(a) => break a,
+            /* Let go of by `drop_handoffs` — the only thing that drops this
+               sender unsent. Taken down, and nothing said to anybody. */
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = app.emit(
+                    "ask:closed",
+                    AskClosed { ask_id, answered: false, deferred: false, said: None },
+                );
+                return None;
+            }
             Err(RecvTimeoutError::Timeout) => {
-                let since = stirred.lock().unwrap().saturating_duration_since(started);
-                if started.elapsed() >= held_window(base, since) {
-                    asks.pending.lock().unwrap().remove(&ask_id);
-                    break None;
-                }
+                crate::presence::watch_idle(app);
             }
         }
     };
-    let real = answer.as_deref().is_some_and(|a| a != DISMISSED);
-    let reply = settle.decide(app, if real { answer.as_deref() } else { None });
+    /* Filed into the act pile by going away, which this path used to miss: the
+       deferral note was handed to the settle as though it were an answer, and
+       the card was told no about a delete that was also sitting in the pile.
+       A settle never runs on a deferral — `park_and_stream`'s rule. */
+    if crate::presence::is_deferral(&answer) {
+        let _ = app.emit(
+            "ask:closed",
+            AskClosed { ask_id, answered: false, deferred: true, said: None },
+        );
+        return Some(answer);
+    }
+    let real = answer != DISMISSED;
+    let reply = settle.decide(app, if real { Some(answer.as_str()) } else { None });
     let _ = app.emit(
         "ask:closed",
-        AskClosed {
-            ask_id,
-            answered: real,
-            /* `park_and_wait` only ever carries a settle, and a question
-               carrying one is never converted. */
-            deferred: false,
-            said: None,
-        },
+        AskClosed { ask_id, answered: real, deferred: false, said: None },
     );
-    reply
+    Some(reply)
 }
 
 
@@ -3091,7 +2905,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
     std::thread::spawn(move || {
         for mut req in server.incoming_requests() {
             let app = app.clone();
-            /* A parked question blocks its request for up to ten minutes, so
+            /* A parked question blocks its request until it is answered, so
                every request gets its own thread — otherwise one card waiting on
                you would stall every other card's MCP traffic. */
             std::thread::spawn(move || {
@@ -3104,7 +2918,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                    because this one is neither. Blocking here for the length of
                    a Chrome start is exactly right and is why the thread-per-
                    request above exists — a parked question already holds one
-                   for up to ten minutes, so a browser coming up is the cheap
+                   until it is answered, so a browser coming up is the cheap
                    case. The reason travels in the body of a 503 so the hook can
                    put Volery's own words in front of the model rather than
                    playwright's `ECONNREFUSED`. */
@@ -3298,20 +3112,15 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 }
                             };
 
-                            /* Away mode, and the whole of what it changes here:
-                               the call does not park at all. Nobody is going to
-                               answer inside any of the three deadlines this
-                               file spends two thousand words on, so holding the
-                               request open buys nothing and costs the card its
-                               turn. The question goes in the pile and the agent
-                               is told what that means. */
+                            /* Away mode — or a machine nobody is touching —
+                               and the whole of what it changes here: the call
+                               does not park at all. Nobody is there to answer,
+                               so holding the request open buys nothing and costs
+                               the card its turn. The question goes in the pile
+                               and the agent is told what that means. */
                             if crate::presence::away(&app) {
-                                let note = crate::presence::defer(
-                                    &app,
-                                    &conversation_id,
-                                    &args,
-                                    crate::presence::Queued::Away,
-                                );
+                                let note =
+                                    crate::presence::defer_at_ask(&app, &conversation_id, &args);
                                 respond(
                                     req,
                                     json!({
@@ -3361,18 +3170,20 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 Err(why) => return reply(req, why, true),
                             };
                             if !crate::notice::waits(&args) || crate::presence::away(&app) {
-                                let why = if crate::notice::waits(&args) {
+                                let why = if !crate::notice::waits(&args) {
+                                    crate::notice::Queued::Sent
+                                } else if crate::presence::away_here(&app) {
                                     crate::notice::Queued::Away
                                 } else {
-                                    crate::notice::Queued::Sent
+                                    crate::notice::Queued::Unattended
                                 };
                                 let said =
                                     crate::notice::queue(&app, &conversation_id, &text, why);
                                 return reply(req, said, false);
                             }
                             /* Before parking, not on the way out: a full queue
-                               found when the wait expires would have nowhere to
-                               put the text. */
+                               found when it is filed later — the wall going away,
+                               or a defer — would have nowhere to put the text. */
                             if !crate::notice::has_room(&app, &conversation_id) {
                                 return reply(req, crate::notice::full_note(), false);
                             }
@@ -4910,157 +4721,16 @@ mod tests {
         );
     }
 
-    /// The client must outlast us, or it writes the timeout message instead of
-    /// the one above — and at the shipped default (60s, probed against 2.1.232)
-    /// it abandons the call long before anybody has finished reading it.
+    /// With no deadline on this side, the client's is the only one left, and
+    /// anything short of its own ceiling is the clock this file removed — the
+    /// client abandons the call and the question vanishes from the dock.
     #[test]
-    fn the_client_is_told_to_wait_longer_than_we_do() {
-        let ours = ANSWER_MAX.as_millis() as u64;
+    fn the_client_is_told_to_wait_as_long_as_it_can() {
+        assert_eq!(client_timeout_ms(), 2_147_483_647, "the CLI clamps to this itself");
         assert!(
-            client_timeout_ms() > ours,
-            "the client would give up first and the user's answer would land nowhere"
+            client_timeout_ms() >= 24 * 24 * 3_600_000,
+            "a question must be able to outlast any absence a wall can sit through"
         );
-        assert!(client_timeout_ms() >= ours + 30_000, "not enough headroom to be sure");
-    }
-
-    /* -- how long a call gets ---------------------------------------------
-     *
-     * THE TABLE BELOW IS ASSERTED TWICE. `test/asking.test.ts` runs the same
-     * payloads through `answerWindow` and expects the same seconds, because the
-     * panel's countdown and this thread's deadline have to be one number seen
-     * from two sides. Change a constant here and that suite goes red, which is
-     * the whole point of writing it out rather than deriving it.
-     */
-
-    /// A flat window meant one thing for a yes/no and another for a review, and
-    /// the review is the one that lost. Five questions with options is where it
-    /// actually bit (sink `d2adbf74`).
-    #[test]
-    fn the_window_grows_with_what_is_being_asked() {
-        /* One bare question is exactly what it always was. */
-        assert_eq!(
-            answer_window(&json!({ "question": "ship it?" })).as_secs(),
-            600
-        );
-        /* One question, three options: barely moved. Nobody spends a quarter of
-           an hour on a three-way. */
-        assert_eq!(
-            answer_window(&json!({
-                "question": "ship it?",
-                "options": [{"label":"a"},{"label":"b"},{"label":"c"}]
-            }))
-            .as_secs(),
-            660
-        );
-        /* The reported call: five questions, three or four options each,
-           seventeen options between them. Ten minutes expired with the user
-           still reading; this gives twenty-seven. */
-        let five = json!({ "questions": [
-            { "question": "one",   "options": [{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"}] },
-            { "question": "two",   "options": [{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"}] },
-            { "question": "three", "options": [{"label":"a"},{"label":"b"},{"label":"c"}] },
-            { "question": "four",  "options": [{"label":"a"},{"label":"b"},{"label":"c"}] },
-            { "question": "five",  "options": [{"label":"a"},{"label":"b"},{"label":"c"}] },
-        ]});
-        assert_eq!(answer_window(&five).as_secs(), 600 + 4 * 180 + 17 * 20);
-
-        /* Options are counted because the reading is in them: one decision
-           between eight described alternatives is a longer read than four
-           yes/nos. */
-        let eight: Vec<Value> = (0..8).map(|i| json!({ "label": format!("{i}") })).collect();
-        assert_eq!(
-            answer_window(&json!({ "question": "which?", "options": eight })).as_secs(),
-            760
-        );
-    }
-
-    /// The counting has to match `normalizeAsk`, or the panel counts down to a
-    /// different number from the one this waits for.
-    #[test]
-    fn the_window_counts_what_the_panel_will_actually_draw() {
-        /* An entry with no question is not drawn, so it buys no time — and
-           neither do its options. */
-        assert_eq!(
-            answer_window(&json!({ "questions": [
-                { "question": "real",  "options": [{"label":"a"}] },
-                { "header": "empty", "options": [{"label":"a"},{"label":"b"}] },
-                { "question": "   " }
-            ]}))
-            .as_secs(),
-            620
-        );
-        /* An option with no label is dropped the same way. */
-        assert_eq!(
-            answer_window(&json!({
-                "question": "which?",
-                "options": [{"label":"a"},{"detail":"no label"},{"label":""}]
-            }))
-            .as_secs(),
-            620
-        );
-        /* The sugar is appended, not preferred: sending both means both. */
-        assert_eq!(
-            answer_window(&json!({
-                "questions": [{ "question": "one" }],
-                "question": "two"
-            }))
-            .as_secs(),
-            780
-        );
-        /* Nothing answerable is still one placeholder question and still parks
-           a turn, so it still gets the floor rather than nothing. */
-        assert_eq!(answer_window(&json!({})).as_secs(), 600);
-        /* And a long list is paid for all the way down, because all of it is
-           drawn: nine questions used to buy the time for five (sink
-           `4b076830`). The ceiling is the only thing that shortens a call. */
-        let many: Vec<Value> = (0..9)
-            .map(|i| json!({ "question": format!("q{i}"), "options": [{"label":"a"}] }))
-            .collect();
-        assert_eq!(
-            answer_window(&json!({ "questions": many })).as_secs(),
-            600 + 8 * 180 + 9 * 20
-        );
-    }
-
-    /// The client's deadline is written at spawn and cannot scale with a call it
-    /// has not seen, so it is set from the ceiling — and the ceiling has to
-    /// actually hold.
-    #[test]
-    fn no_call_can_ask_for_longer_than_the_client_was_told_to_wait() {
-        let everything: Vec<Value> = (0..5)
-            .map(|i| {
-                let opts: Vec<Value> =
-                    (0..40).map(|j| json!({ "label": format!("{i}-{j}") })).collect();
-                json!({ "question": format!("q{i}"), "options": opts })
-            })
-            .collect();
-        let w = answer_window(&json!({ "questions": everything }));
-        assert_eq!(w, ANSWER_MAX, "the ceiling is reachable and holds");
-        assert!(
-            client_timeout_ms() > w.as_millis() as u64,
-            "ours must fire first, or the client writes the sentence"
-        );
-
-        /* And the count alone reaches it now that the count is unbounded, which
-           is the one thing that changed when `ANSWER_MAX_QUESTIONS` went: the
-           ceiling is what a long call runs into, rather than a truncation. */
-        let twenty: Vec<Value> =
-            (0..20).map(|i| json!({ "question": format!("q{i}") })).collect();
-        assert_eq!(answer_window(&json!({ "questions": twenty })), ANSWER_MAX);
-    }
-
-    /// `asking.ts::UNANSWERED` matches this prefix off disk to tell Skein's
-    /// sentence from one the user wrote. It may not drift, and what follows it
-    /// may — which is the only reason the duration can be in there at all.
-    #[test]
-    fn the_timeout_sentence_keeps_its_opening_whatever_it_waited() {
-        for secs in [600, 1200, 2700] {
-            let said = timed_out(Duration::from_secs(secs));
-            assert!(said.starts_with(TIMED_OUT_OPENING), "{said}");
-            assert!(said.contains(&format!("{} minutes", secs / 60)), "{said}");
-            assert!(said.contains("best judgement"), "{said}");
-        }
-        assert_eq!(TIMED_OUT_OPENING, "The user did not answer in time.");
     }
 
     /// The hard deadline is an environment variable and the idle one is not, so
@@ -5071,10 +4741,6 @@ mod tests {
         let server = &cfg["mcpServers"]["skein"];
         assert_eq!(server["url"], "http://127.0.0.1:51234/mcp/abc-123");
         assert_eq!(server["timeout"], client_timeout_ms());
-        assert!(
-            server["timeout"].as_u64().unwrap() > ANSWER_MAX.as_millis() as u64,
-            "the idle watchdog would abandon the call before we give up on it"
-        );
     }
 
     #[test]
@@ -5163,7 +4829,8 @@ mod tests {
                     ours,
                     act,
                     stays: None,
-                    stirred: Arc::new(Mutex::new(Instant::now())),
+                    opened_at: 0,
+                    handoff: false,
                     held: Arc::new(Mutex::new(None)),
                 },
             );
@@ -5194,6 +4861,44 @@ mod tests {
         assert!(err.contains("no longer waiting"), "{err}");
     }
 
+    /// A stopped, closed or cleared card lets go of its shell-delete hand-offs
+    /// and nothing else: with no deadline, a dropped sender is the one thing
+    /// that ends a park no client stands behind (`park_and_wait`), and every
+    /// other park is ended by its client hanging up.
+    #[test]
+    fn a_card_that_stops_lets_go_of_its_own_hand_offs_only() {
+        let asks = Asks::default();
+        let park = |id: &str, card: &str, handoff: bool| {
+            let (tx, rx) = mpsc::channel::<String>();
+            asks.pending.lock().unwrap().insert(
+                id.into(),
+                Parked {
+                    tx,
+                    conversation_id: card.into(),
+                    args: json!({ "question": id }),
+                    ours: false,
+                    act: None,
+                    stays: None,
+                    opened_at: 0,
+                    handoff,
+                    held: Arc::new(Mutex::new(None)),
+                },
+            );
+            rx
+        };
+        let delete = park("a", "stopped", true);
+        let question = park("b", "stopped", false);
+        let theirs = park("c", "other", true);
+        drop_handoffs(&asks, "stopped");
+        assert!(matches!(delete.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+        assert!(
+            matches!(question.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "its client ends an ask_user; dropping it here would race the interrupt"
+        );
+        assert!(matches!(theirs.try_recv(), Err(mpsc::TryRecvError::Empty)), "another card's waits on");
+        assert_eq!(asks.pending.lock().unwrap().len(), 2);
+    }
+
     /// Going away while she is at another wall (sink `f931e6ca`) files only
     /// what cannot reach her there — a question made under a `Stay` — and leaves
     /// everything that travels parked, where it reaches her.
@@ -5211,7 +4916,8 @@ mod tests {
                     ours,
                     act: ours.then(|| ("close".to_string(), json!({}))),
                     stays,
-                    stirred: Arc::new(Mutex::new(Instant::now())),
+                    opened_at: 0,
+                    handoff: false,
                     held: Arc::new(Mutex::new(None)),
                 },
             );
@@ -5247,7 +4953,8 @@ mod tests {
                 ours: false,
                 act: None,
                 stays: None,
-                stirred: Arc::new(Mutex::new(Instant::now())),
+                opened_at: 0,
+                handoff: false,
                 held: Arc::clone(&held),
             },
         );

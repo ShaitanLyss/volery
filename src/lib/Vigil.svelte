@@ -243,7 +243,6 @@
                   elsewhere={true}
                   onack={() => void skein.acknowledgeNotice(n)}
                   onfollow={(text) => skein.followUpNotice(n, text)}
-                  onstir={() => skein.stirNotice(n)}
                   onselect={() => {
                     const c = convOf(n.conversationId);
                     if (c) onselect?.(c);

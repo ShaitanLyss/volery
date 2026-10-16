@@ -18,8 +18,8 @@ paths:
 tool over a loopback HTTP MCP endpoint and injects it into every spawn via `--mcp-config`.
 The URL carries the conversation id (`/mcp/<id>`), so a call arrives already addressed to a
 card with no correlation logic. A `tools/call` **parks the HTTP request** until the UI
-answers (10 min timeout), which is what makes the agent genuinely stopped rather than idle,
-and what lets the turn resume in place. One thread per request, or one waiting card would
+answers — with no deadline, see *No clock on a question* below — which is what makes the agent
+genuinely stopped rather than idle, and what lets the turn resume in place. One thread per request, or one waiting card would
 stall every other card's MCP traffic.
 
 **Parking is worth nothing unless the client is still listening**, and by default it is not.
@@ -110,75 +110,92 @@ client is *built* out of before concluding it is configured wrong: everything ab
 `MCP_TOOL_TIMEOUT` and `timeout` is true, was necessary, and was not sufficient, because the
 process reading our answer is a Bun runtime with opinions of its own.
 
-- **The deadline scales with what is being asked**, and for most of this feature's life it did
-  not. A flat ten minutes is generous for one yes/no and tight for a real review: a call
-  carrying five questions, each with three or four options plus context and pros and cons,
-  expired **with the user still reading it** — *"ah it timed out, ask again, I was almost
-  done"* — and they answered all five immediately when re-asked, which is the evidence the
-  clock was the only thing wrong (sink `d2adbf74`). One number that means two different things
-  depending on the payload is a number that is wrong for one of them.
+#### No clock on a question (2026-10-16)
 
-  `answer_window` is `ANSWER_BASE` (10m, what one bare question still gets) plus
-  `ANSWER_PER_QUESTION` (3m) for each question past the first, plus `ANSWER_PER_OPTION` (20s)
-  for every option drawn — **the options are in there because the reading is in them.** One
-  decision between eight described alternatives is a longer read than four plain yes/nos, and
-  `option_schema` asks for a `detail` line on each precisely so they are worth reading. The
-  reported call comes out at 27 minutes; a three-way at 11, which is the point — nothing that
-  was already long enough got longer.
+*"let's remove timers on prompts and ask tools, they're uselessly stressful, now that we have
+auto 'I'm away' to identify an open volery with no one looking at it"* — Lyss. So a parked call
+has **no deadline**: not `ask_user`, not a `notice` that waits, not any of Volery's own
+confirmations (`close`, `unpost`, `remove` and its shell hand-off, `pull_request`, `task`,
+`credential`, `update_volery`). The panel shows when the question was asked (`stood`,
+minute-grained) where the countdown was. A parked call closes on exactly five things: an
+answer, a *defer*, the card closing (`DISMISSED`), the client hanging up (a keep-alive write
+fails), or presence filing it.
 
-  **`ANSWER_MAX` exists for a reason that is not patience.** `client_timeout_ms` is written
-  into the card's `--mcp-config` and `MCP_TOOL_TIMEOUT` **at spawn**, so the client's deadline
-  cannot scale with a call it has not received yet; it is set from the ceiling and every call
-  has to fit under it, or the client gives up first and writes its own sentence instead of
-  ours. Raising the client's number costs nothing on its own — a request nobody is feeding is
-  already killed by Bun's 300s clock at `FEED_EVERY`.
+The history, short, because every step of it was right when it was taken: a flat ten minutes,
+so a forgotten card would unstick itself; then a window scaled to the reading (`answer_window`,
+10m + 3m a question + 20s an option, capped at 45m — a five-question review had expired with the
+user still reading it, sink `d2adbf74`); then a touch that moved the deadline out (`stir_ask`,
+`ANSWER_HOLD` — the countdown ran down while she typed, sink `7264177f`); then an expiry that
+queued rather than told the agent to proceed. Each was a patch on a clock the person it pointed
+at experienced as pressure. All of it is gone, both halves of the mirror (`ask.rs`, `asking.ts`).
 
-  **And the timeout sentence now names its own duration, which is why `TIMED_OUT` is a
-  function.** `asking.ts::UNANSWERED` matches a reply back off disk on the *opening* alone
-  (`TIMED_OUT_OPENING`), so everything after it is free to vary; the wording it had while the
-  deadline was ten minutes is kept over there beside the new one, because a transcript already
-  on this disk carries it and will go on being folded.
+**What the clock was really for is the case where nobody is there, and that is now answered by
+presence rather than by time.** `presence::nobody_to_ask` counts a machine untouched for as long
+as it takes to lock (`machine::idle_away`, `machine.md`) as the away switch being on, so a
+question asked then is filed at once; and every parked call's existing 25s tick asks
+`presence::watch_idle`, which files whatever is parked when the machine goes idle — the same
+`defer_parked` the switch runs. No clock of its own: the tick was already there to feed the
+socket, and it only runs while something is parked. **Idleness was announcement-only until this
+change, on purpose** (it is in `machine.md`), and that is the premise to check before trusting
+the backstop: without the filing half, removing the deadline would have parked a forgotten
+laptop's questions for days.
 
-  **The arithmetic is written twice, on purpose, and both copies are tested against the same
-  table.** `Ask.svelte` draws a live countdown and it is real information rather than
-  decoration — it is what tells you whether to keep reading or answer now — so the number it
-  counts down to has to be the number the parking thread gives up on. Neither side can be
-  handed the other's answer without a field on `ask:opened` and a matching read in
-  `skein.svelte.ts`: the panel holds the *normalized* questions and `ask.rs` holds the raw
-  arguments. So `asking.ts::answerWindow` and `ask::answer_window` share the constants and the
-  counting rules, and `test/asking.test.ts` and `ask.rs`'s two window tests assert the same
-  payloads. One suite going red alone is the mirror saying it has drifted.
+- **The client's deadline is the CLI's own ceiling.** `client_timeout_ms` is written into the
+  card's `--mcp-config` and `MCP_TOOL_TIMEOUT` at spawn; while a question had a deadline here it
+  was that plus a minute, so ours fired first and wrote the better sentence. With none here any
+  smaller number *is* the removed clock — the client abandons the call, the question vanishes
+  from the dock and the agent reads a bare timeout. Read out of the installed CLI on 2026-10-16:
+  the per-server timeout resolves as `Math.min(Math.max(n, 1000), Mu)` with `var Mu=2147483647`
+  (and the default with nothing set is `1e8`, ~28h), so `CLIENT_CEILING_MS` is exactly that —
+  ~24.8 days, nothing overflows, nothing larger means anything.
+- **The confirmations that cannot be filed wait.** `pull_request`, `task`, `credential` and
+  `update_volery` carry a settle and no stored request, so the pile cannot re-enter them; while
+  nobody is there they stay parked, travel to any wall she is at, and her yes lands on an open
+  turn when she is back. Resolving them as "no" because she was out is the proceed-without-her
+  this change removes, and a blocked card is cheaper than a write that never happens.
+- **The holes, stated.** She is at the machine and simply has not answered: it waits — that is
+  the point. `AwayWhenIdle` switched off (`space m i`): an untouched machine's questions wait for
+  her, however long. Twenty minutes reading with no input at all: a question in front of her goes
+  to the pile mid-read, with a chronicle row; nothing is lost. Gone everywhere and back at the
+  *other* machine: the pile does not travel (sink `3368f78f`) — the same place the old deadline
+  put the question after at most forty-five minutes. Off Windows `idle_ms` reads nothing, so
+  there is no idle backstop there at all.
+- **And two that the review found and that are closed** (below): a question whose `ask:opened`
+  the front end missed, and the shell-delete hand-off after its turn was stopped. Both used to
+  be ended by the deadline and nothing else.
 
-  **And a deadline that expires no longer takes the answers already given with it** — see
-  "A sheet that closes before it is sent", below. For a while it did: the question went to
-  the pile whole, and the three answers given had to be given again.
-- **Ten minutes is also the floor when nobody is there**, and that is the answer
-  rather than a bug. Reported 2026-08-20 by a card driven non-interactively: `ask_user` timed
-  out on it twice, with no human anywhere near the wall. Both fired correctly. A tool whose
-  whole purpose is to stop until a person decides has nothing better to do when there is no
-  person, and guessing that there isn't one — because no window is focused, because the card
-  is off screen — would answer for somebody who had merely gone to make coffee, which is the
-  one wrong answer here. What it costs is the agent's window, which is the price of the
-  question being real — and note that a headless card asking five questions now waits nearly
-  half an hour for nobody, which is the one place the scaling is a cost rather than a fix.
-  **The exception, and it is unfixed:** `ask:opened` is a fire-and-forget `emit`, so an ask
-  raised before the front end has subscribed reaches nothing, cannot be drawn, and cannot be
-  answered — ten minutes lost with certainty rather than by bad luck. Nothing holds a pending
-  ask for a listener that arrives late. The window is small (`window::settle` shows `main`
-  before any card can spawn) and a card roused at launch is the case to suspect.
-- **The client is told to wait a minute longer than we do**, deliberately. Whichever side
-  gives up first writes what the model reads, and ours is the sentence worth having — it
-  says how long it waited and what to do next, where the client's says only that something
-  timed out. `answer_window` stays the real deadline, and the minute of headroom is measured
-  against `ANSWER_MAX` so it holds for the longest call anything can make.
-- **The heartbeats are not a way out.** The CLI streams `tool_progress` events every 30s for
+The bullets below are the transport, and all of it still holds: the keep-alive is what keeps
+Bun's 300s clock and the CLI's idle watchdog off a call that now parks for hours.
+
+- **The heartbeats are not a way out.**- **The heartbeats are not a way out.** The CLI streams `tool_progress` events every 30s for
   a call in flight, but they do not extend either of its deadlines — the abort landed on the
   same tick as the 60s heartbeat, and what the idle watchdog wants is a notification coming
   the *other* way, from the server, which needs an SSE stream this one does not open.
-- **Both numbers come from `client_timeout_ms`.** The env var and the config field are one
+- **The config's number is `client_timeout_ms`; the env var is not, any more.** They were one
   value written twice, and a test in `ask.rs` asserts the config carries it — the failure it
   guards is silent, since a card with only the hard deadline raised looks completely correct
-  for four and a half minutes.
+  for four and a half minutes. When the config's number went to the CLI's ceiling the review
+  caught that `MCP_TOOL_TIMEOUT` reaches *every* MCP server a card has, and the CLI reads a
+  server's own `timeout` ahead of it — so the variable stays at forty-six minutes
+  (`OTHER_SERVERS_TIMEOUT_MS`) and no longer says anything about questions.
+- **A question the front end missed is read back** (`parked_asks`). `ask:opened` is a
+  fire-and-forget emit, so a question asked before the listeners were up — a card roused at
+  launch, a webview reload, a remount in a dev build — reached nothing. That once cost ten
+  minutes; with no deadline it would cost the card its turn, undrawn, until the machine went
+  idle. `Skein.load` folds every parked question after it has painted its cards, through the
+  same `#opened` the event takes, idempotent on the ask id.
+- **A card that stops asking lets go of its hand-offs** (`drop_handoffs`). An `ask_user` is
+  ended by its client hanging up; the shell-delete hand-off (`park_and_wait`) has no client, and
+  with no deadline it would have stayed parked for the life of the wall — then been filed into
+  the pile hours later for a turn somebody had stopped on purpose. So a stop
+  (`interrupt_conversation`), a close (`close_conversation_record`) and a clear drop that card's
+  hand-offs, and the hand-off ends **silently**: no settle, no late message. The first cut dropped
+  every park on a stop *and on any process exit*, and the second review caught both halves: the
+  settle's "nobody answered" went into the stdin of the card just stopped and started a turn, and
+  an account swap — which closes a process and spawns another — dismissed a delete still on
+  screen. A process being replaced is not the card stopping asking.
+- **And the read-back skips what closed while it was being read** — an `ask:closed` that
+  overtook `parked_asks`' reply would otherwise leave a dead question drawn.
 - **The abort used to be invisible to the server, and now it is the thing that closes the
   question.** tiny_http's parked thread could not notice a dropped connection while it was
   doing nothing but wait; a thread that writes every 25s finds out by failing to.
@@ -205,8 +222,8 @@ a second set of keep-alive arithmetic, `park_and_stream` gained one parameter.
   a deferred close genuinely deferred rather than merely delayed, and it is also the last moment
   at which the wall is still current — see `spawn.md` for why `close` re-reads everything there
   rather than trusting what it saw ten minutes earlier.
-- **Unanswered is passed as `None`, not as the sentence.** The timeout and the dismissal each
-  have prose of their own (`timed_out`, `DISMISSED`), and a settle that had to match on Skein's
+- **Unanswered is passed as `None`, not as the sentence.** The dismissal has prose of its own
+  (`DISMISSED`; the timeout's `timed_out` went with the deadline), and a settle that had to match on Skein's
   own wording to find out whether a person decided anything would be the same duplicated-string
   bargain `answerNote` strikes with the CLI — worth it there, where there is no alternative, and
   gratuitous here, where a boolean crosses the same call.
@@ -697,10 +714,8 @@ So a call carries `questions[]` and the panel walks you through them one at a ti
   see is not a cap, it is data loss** — and batching decisions is the good use of one park, not
   the abuse of it. Nothing in the panel needed the cap either: questions are stepped through one
   at a time, the spine wraps, the panel scrolls. What a long call costs is reading time, and
-  that is bounded at `ANSWER_MAX`, which is a real constraint rather than a taste — the client's
-  own deadline is written into `--mcp-config` once at spawn, so a call that asked for longer
-  would be abandoned by the client with its own sentence. A twelve-question review saturates
-  there at forty-five minutes rather than being cut down to fit.
+  that is no longer bounded by anything — a question has no deadline, so a twelve-question
+  review is read at whatever pace it takes.
 - **The peek is named by headers, never by a truncated body** (`askHeadline`). That line is
   `white-space: nowrap` with an ellipsis, so a question body put there is a cut-off paragraph
   naming nothing — and a call carrying several would name only the first.
@@ -742,7 +757,9 @@ because neither is a thing the user said, but only one of them authorises anythi
   leave the first drawn in the transcript as a line the user typed, which is the whole thing
   the marker exists to prevent.
 
-**The deadline, which is the same bug arriving by a different route.** `timed_out` told the
+**The deadline, which is the same bug arriving by a different route** — and which has since
+gone altogether (*No clock on a question*, above); what follows is why expiry queued rather
+than proceeded while there still was one. `timed_out` told the
 agent to *"proceed using your best judgement"*, and it did. But the user not getting to a
 question in forty-five minutes says nothing whatever about what she would have decided — and
 the call that motivated the countdown work below was answered by Lyss skipping every
@@ -798,6 +815,10 @@ note has to say are the same four.
 
 #### The countdown does not run down while you are typing into it
 
+*Superseded 2026-10-16: there is no countdown, so there is nothing to hold open.* `stir_ask`,
+`ANSWER_HOLD` and the panel's capture listeners are gone; kept below as the reasoning that led
+to removing the clock rather than patching it a fifth time.
+
 *"we need to improve the ask tool to not decrease time when i'm litterally active and typing
 in it, it's stressful and work losing for no reason"* — and then every remaining question was
 skipped, which under the old meaning of a skip was the dangerous outcome as well as the
@@ -828,8 +849,8 @@ same event — the panel moves its own countdown immediately and tells Rust thro
   `recv_timeout(window)`, which is this bug on a second surface — exactly the "written three
   times to three standards" failure `follow.ts` was cut out of.
 
-A sheet three answers into five, when the clock runs out, used to go to the pile as the whole
-question again. It no longer does — the next section.
+A sheet three answers into five, when the call closed without a send, used to go to the pile as
+the whole question again. It no longer does — the next section.
 
 #### A sheet that closes before it is sent
 
@@ -870,24 +891,26 @@ was on the last; the pile handed back five.
   `AskClosed` learns to carry `said`, which the panel draws as your answer: `answerAsk` never
   ran to draw it, and off disk the same tool result folds into the same line. Rust's note is
   appended after the aside with no marker of its own, so `answerNote` keeps it off the page.
-- **The expiry claims the call before reading the hold.** If the `pending` entry is already
-  gone, the answer or the away flip took it that instant, and what it sent is on the channel —
-  so that goes out rather than a timeout racing it. That race existed before and was lost
-  silently in the timeout's favour.
-- **Only for `ask_user`.** A question carrying a settle or an act ignores any hold, in both
-  closing paths, for the reasons `expired` and `defer_parked` already give.
+- **Only the filing reads the hold now.** There were two closing paths without a send — the
+  deadline (`expired`) and the wall going away — and the deadline went on 2026-10-16. What
+  remains is `presence::convert`, reached by the switch, by an idle machine (`watch_idle`) and
+  by *defer*, which takes the call off `pending` before it reads the hold, so an answer racing
+  it either won (and is on the channel) or finds nothing to answer.
+- **Only for `ask_user`.** A question carrying a settle or an act ignores any hold, for the
+  reasons `defer_parked` gives.
 
 Still not done: the pile's envelope (`presence.ts::answerEnvelope`) says "while I was away" for
-a question queued by a deadline as well, which was true of the pile before this and is
-unchanged by it.
+a question put off with *defer* as well, which was true of the pile before this and is unchanged
+by it.
 
 #### Defer: putting a question off on purpose
 
 Sink `7805fa20`, Lyss: *"ability to defer a question to put it in the deferred queue and answer it
 later, it should be the same as not"*. A **defer** button (and `alt+D` anywhere in the panel) takes
-the question in front of you into the same pile a timeout does, and tells the asking card the same
+the question in front of you into the same pile away mode does, and tells the asking card the same
 four things. There is no second path: `presence::convert` is the body `defer_parked` always had, lifted
-out, and `defer_parked` (away mode), `expired` (a deadline) and `defer_one` (the button) all go through
+out, and `defer_parked` (away mode, and an idle machine through `watch_idle`) and `defer_one` (the
+button) go through
 it — a sheet partly answered sends what was answered and queues the rest, a close or a delete is filed as
 a request that re-enters the decision, and a notice goes to the notice queue.
 
@@ -968,7 +991,7 @@ held, the held item gone, or you moving the ring.
   field (`notice:<id>`, `ask:<id>:<step>`), each entry naming its item, what it was for and the
   card — written per keystroke to `localStorage`. The notice field is bound straight to the
   store with no copy, because the away pile and the dock can draw the same notice at once.
-- **Whatever is kept for an item no longer waiting is handed back** — a deadline, a turn taking
+- **Whatever is kept for an item no longer waiting is handed back** — the wall filing it, a turn taking
   a rest notice down, a follow-up refused or never answered (90s), a question you deferred
   (the pile gives it a new id), a parked one that died with the process. The dock says so
   above the panel — *not sent — the notice from … went before your reply did*, or the reason —
@@ -995,10 +1018,6 @@ an item goes.
 Two things follow from a card being able to hold several, and both are the kind that would
 otherwise be found by somebody losing an answer:
 
-- **A stir holds the card's whole queue open, not the question drawn.** A question waiting
-  behind another is one you have not been shown yet, so running its clock down while you work
-  through the one in front expires it for a wait you were never given the chance to end. Still
-  clamped to `ANSWER_MAX` on both sides, so it cannot stretch past the client's own deadline.
 - **The dock counts questions, not cards.** `skein.pendingAsks` rather than `blocked.length`
   — "2 more waiting on you" over three unanswered questions is an instrument that has
   miscounted the one you have not seen. `blocked` stays one entry per card, because that is
@@ -1355,8 +1374,8 @@ transcript under the call that asked, as a line kind of its own (`answer`).
   rule exists: every other one is machinery, and this is the only thing a *person* said that
   arrives on the wire as a tool result. A result carries no tool *name*, only the id of the
   call it answers, so the fold remembers which `tool_use` ids were `SKEIN_ASK_TOOL`.
-- **What `ask.rs` sends when nobody answers is not something you said.** The ten-minute
-  timeout and the dismissal are Skein's own sentences, and read off disk they are a
+- **What `ask.rs` sends when nobody answers is not something you said.** The dismissal — and,
+  in transcripts from before 2026-10-16, the timeout — are Skein's own sentences, and read off disk they are a
   `tool_result` like any other — drawn as an answer they put those words in your mouth,
   exactly the `isStopNote` hazard one layer over. `answerNote` returns them as `meta`, and
   the live path writes the same note off `ask:closed`'s `answered: false`, so a question that

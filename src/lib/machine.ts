@@ -36,6 +36,10 @@ export type MachineStatus = {
   armed: boolean;
   startupBlocked: boolean;
   arso: Arso;
+  /** The knob: whether a machine nobody has touched counts as away. */
+  idle: boolean;
+  /** Whether it does right now (`machine::idle_away`). */
+  idleAway: boolean;
 };
 
 /** What is drawn before Rust has answered, or off Windows. */
@@ -50,6 +54,8 @@ export const UNSUPPORTED: MachineStatus = {
   armed: false,
   startupBlocked: false,
   arso: { policyOff: false, user: null, managed: false },
+  idle: false,
+  idleAway: false,
 };
 
 const POWERS: readonly Power[] = ["mains", "battery", "unknown"];
@@ -76,6 +82,8 @@ export function normalize(raw: unknown): MachineStatus {
       user: typeof a.user === "boolean" ? a.user : null,
       managed: bool(a.managed),
     },
+    idle: bool(r.idle),
+    idleAway: bool(r.idleAway),
   };
 }
 
@@ -180,4 +188,38 @@ export function reopenLine(s: MachineStatus): string {
 /** The reopen toggle's sentence, as the chord says it. */
 export function reopenSaid(s: MachineStatus): string {
   return reopen(s, true);
+}
+
+/** How the away-when-idle setting reads, at either length.
+ *
+ *  Since questions stopped having a deadline (2026-10-16) this is the only
+ *  thing that moves a question off a machine nobody is at: untouched for as
+ *  long as it takes to lock, the wall files what is parked into the pile and
+ *  files what is asked from then on, as the away switch does. So the long form
+ *  says what turning it off costs — a question then waits for you however long
+ *  you are gone — rather than only naming the knob. */
+function idle(s: MachineStatus, long: boolean): string {
+  const name = "away when nobody is at the keyboard";
+  if (!s.supported) return long ? "noticing an untouched keyboard is windows only" : name;
+  if (!s.idle) {
+    return long
+      ? "never counting an untouched machine as away — a question waits until you answer it"
+      : name;
+  }
+  if (s.idleAway) {
+    return long ? `${name} — nobody has touched it for a while, so questions go to the pile` : `${name} — now`;
+  }
+  return long
+    ? `${name} — questions go to the pile once it sits untouched as long as it takes to lock`
+    : name;
+}
+
+/** The idle toggle's menu row. */
+export function idleLine(s: MachineStatus): string {
+  return idle(s, false);
+}
+
+/** The idle toggle's sentence, as the chord says it. */
+export function idleSaid(s: MachineStatus): string {
+  return idle(s, true);
 }

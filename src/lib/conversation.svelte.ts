@@ -3024,7 +3024,8 @@ export class Conversation {
              note arrived just above this event — so there is nothing to push. */
           this.activity = "stopped";
           /* A parked question cannot outlive the turn it was asked in. The
-             thread holding the MCP call in ask.rs times out on its own; what
+             thread holding the MCP call in ask.rs is let go on the same stop
+             (`ask::drop_card`, from `interrupt_conversation`); what
              matters on the wall is that the card stops claiming to be waiting
              on an answer that would now have nothing to resume. Every one of
              them: they were all asked inside the turn that just stopped. */

@@ -200,6 +200,7 @@ describe("the which-key hint", () => {
       { keys: "ll", label: "plan: the whole line / a window" },
       { keys: "ls", label: "plan back in the stack" },
       { keys: "ma", label: "cards left awake come back awake: on / off" },
+      { keys: "mi", label: "away when nobody is at the keyboard: on / off" },
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "p", label: "questions that piled up" },
@@ -289,9 +290,13 @@ describe("the which-key hint", () => {
   test("so is the machine the wall runs on", () => {
     expect(offers("m")).toEqual([
       { keys: "a", label: "cards left awake come back awake: on / off" },
+      { keys: "i", label: "away when nobody is at the keyboard: on / off" },
       { keys: "r", label: "reopen after a restart: on / off" },
       { keys: "w", label: "keep awake on mains: on / off" },
     ]);
+    /* The backstop for a question nobody is there to answer, now that a
+       question has no deadline: it has to be reachable without the mouse. */
+    expect(chord("m", "i")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "idle" } });
     expect(chord("m", "w")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "awake" } });
     expect(chord("m", "r")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "reopen" } });
     /* The other half of the same restart: whether the cards come back with it. */

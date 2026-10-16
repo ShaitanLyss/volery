@@ -1131,7 +1131,7 @@ pub fn run() {
             actions::close_process,
             actions::process_alive,
             ask::answer_ask,
-            ask::stir_ask,
+            ask::parked_asks,
             ask::defer_ask,
             ask::hold_ask,
             presence::presence_read,

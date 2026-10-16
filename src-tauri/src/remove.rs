@@ -173,9 +173,9 @@ pub(crate) fn approved(answer: &str) -> bool {
 
 /// What the caller is told when nobody answers.
 pub(crate) fn unanswered() -> String {
-    "nobody answered, so nothing was deleted. Either the question stood until it expired or \
-     the card was dismissed while it was up. Carry on with your own judgement, say that you \
-     offered, and do not simply try again."
+    "nobody answered, so nothing was deleted. The question was taken down unanswered: the \
+     card was dismissed while it was up, or the call was abandoned. Carry on with your own \
+     judgement, say that you offered, and do not simply try again."
         .to_string()
 }
 
@@ -1655,8 +1655,8 @@ pub(crate) fn deliver_late(app: &AppHandle, card: &str, command: &str, said: &st
 /// **The refusals are re-checked here and the survey is not**, and the asymmetry
 /// is the whole of what this function has to get right. `docket` does not re-read
 /// on approval because the only thing that can have changed is on Asana's side;
-/// here the ten minutes a question can stand are ten minutes in a working tree
-/// several cards are editing, so a directory that was clean when the question
+/// here the hours a question can now stand are hours in a working tree several
+/// cards are editing, so a directory that was clean when the question
 /// went up can be holding somebody's unwritten work by the time it is answered.
 /// `spawn::close` states the rule this borrows — the settle is the last moment
 /// at which the wall is still current.

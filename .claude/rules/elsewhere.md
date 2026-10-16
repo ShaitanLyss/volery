@@ -442,11 +442,10 @@ them from my work laptop" is simply not true while a question can strand a card.
   arriving. It stands ahead of a local question only when its card is the one in the ring
   (you went to it), and otherwise behind every local question and ahead of every notice: still
   an agent stopped on a clock, just on another machine.
-- **Held still** (`stirs={false}`). Locally a touch extends the countdown at once and tells
-  Rust within a minute, always erring towards *less* time shown. No touch travels, so here the
-  same gesture would show *more* time than the far call has — the unsafe direction. Held
-  still, it counts the question's base window from when it was asked, which a touch on its
-  own wall can only lengthen.
+- **No countdown, here or there.** It used to be held still (`stirs={false}`), counting the base
+  window from when it was asked, because no touch travels to lengthen the far call. Questions
+  have had no deadline since 2026-10-16 (`ask.md`), so the far panel draws when it was asked, as
+  a local one does, and there is no special case left.
 - **Hidden while its answer is on the way**, given back if the answer is refused (the sheet
   still filled in), and **not answerable at all once its wall is unheard** — the question may
   have been answered there or run out of time, and a question not confirmed as still waiting
@@ -516,8 +515,8 @@ to live on.
 - **Both walls need the build.** An owning wall from before this announces no `look` in
   `Facts::can`, and the question says it runs an older Volery.
 
-What still differs, by design: the countdown is held still (`stirs={false}`, above), because no
-touch travels.
+Nothing about the drawing differs any more: the held-still countdown was the last remote-only
+reading, and it went with the countdown.
 
 ### And it reaches you when you are not looking
 
@@ -1264,7 +1263,7 @@ menus are the glass and the close, as before.
 **`cards.svelte.ts` is the handle**, and the rest of the front end holds one. `CardHandle` is the
 brief's interface grown by what the surfaces turned out to ask: `can`/`do`, `face`/`readable`,
 `remote`, the project line a panel heads it with (`where`), whether its questions run scripts or
-take a touch (`scripts`, `stirs`), what the dock says beside it (`hints`), its right-click fields
+take a touch (`scripts`), what the dock says beside it (`hints`), its right-click fields
 (`menu()`), `carries(turn)`/`say` for a prompt, `stir`, `history`, `look`, and its questions and
 notices with the gestures that answer them. `LocalCard` is one-line delegates to `Skein`;
 `RemoteCard` sends one `act` (or the prompt wire, or `close_by_person`). `Cards` makes one handle

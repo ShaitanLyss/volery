@@ -1365,9 +1365,10 @@ fn update_evidence(
 /// What the caller is told when nobody answers.
 fn unanswered(what: &str) -> String {
     format!(
-        "nobody answered, so nothing was written — {what} did not happen. Either the question \
-         stood for ten minutes or the card was dismissed while it was up. Carry on with your \
-         own judgement, say that you offered, and do not simply try again."
+        "nobody answered, so nothing was written — {what} did not happen. The question was \
+         taken down unanswered: the card was dismissed while it was up, or the call was \
+         abandoned. Carry on with your own judgement, say that you offered, and do not \
+         simply try again."
     )
 }
 
@@ -1788,7 +1789,7 @@ mod tests {
 
     #[test]
     fn nobody_answering_is_not_read_as_a_yes() {
-        /* The ten minutes running out, or the card being dismissed. The one
+        /* The card being dismissed, or the call abandoned. The one
            thing this must never do is look like approval. */
         let said = unanswered("opening a pull request");
         assert!(said.contains("nobody answered"), "{said}");

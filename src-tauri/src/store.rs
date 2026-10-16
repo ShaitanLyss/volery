@@ -4454,6 +4454,11 @@ pub fn clear_conversation(
        `migrate_v18`. */
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    /* And a delete it handed the wall to ask about: the session that asked is
+       gone, and a question has no deadline to end it (`ask::drop_handoffs`). */
+    if let Some(asks) = tauri::Manager::try_state::<crate::ask::Asks>(&app) {
+        crate::ask::drop_handoffs(&asks, &id);
+    }
     /* Queued questions go the same way a wake does: an answer is worth nothing
        once there is nobody left to hand it to. The cascade on `deferred_ask`
        does not cover this — closing a card is a soft close, and clearing one
@@ -5159,6 +5164,11 @@ pub fn close_conversation_record(
            ever adopted onto the wall again. Deleted explicitly, in the same
            lock as the close. */
         drop_secret_grants(&conn, &id)?;
+    }
+    /* And any delete it handed the wall to ask about: the card is gone, and a
+       question has no deadline to end it any more (`ask::drop_handoffs`). */
+    if let Some(asks) = tauri::Manager::try_state::<crate::ask::Asks>(&app) {
+        crate::ask::drop_handoffs(&asks, &id);
     }
     /* Its notices go with it. A command rather than a query, which is why this
        reaches into `board` where nothing else in this file does: the billboard's

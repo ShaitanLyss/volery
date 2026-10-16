@@ -2369,6 +2369,22 @@ export class Control {
         return ledgerSnapshot(h);
       },
 
+      /** The machine under the wall, as far as a test can move it.
+       *
+       *  `pretendIdle` stands in for nobody having touched the keyboard for as
+       *  long as it takes to lock (`machine::idle_away`) — the backstop that
+       *  files a parked question now that questions have no deadline. A lab
+       *  shares its machine with a person, so twenty untouched minutes cannot be
+       *  waited for; Rust takes the name in debug builds only. The knob itself
+       *  is not set here: that is `space m i`, driven through `key`, so a run
+       *  proves the chord rather than the command. */
+      machine: async (op) => {
+        if (typeof op.pretendIdle === "boolean") {
+          await invoke("machine_set", { knob: "pretend-idle", on: op.pretendIdle });
+        }
+        return await invoke("machine_status");
+      },
+
       /** The music, driven through the same `deck` the widget drives — the
        *  singleton out of `deck.svelte.ts`, not a second path to `spotify.rs`.
        *  Rule one of this surface, and the reason this op is three lines of its

@@ -618,9 +618,8 @@
   >
     <!-- A question or a notice from a card here or on another wall, in the
          one panel each has. What differs is the card's, read off its handle:
-         its project line names the wall it is on, a question elsewhere is held
-         still (`stirs`, since no touch travels to lengthen its window), and
-         answering goes back down the prompt wire to the wall it came from. A
+         its project line names the wall it is on, and answering goes back down
+         the prompt wire to the wall it came from. A
          question that shows something is drawn from the call's own arguments
          either way (`flyway/look.rs`), scripts gated as here by the card's
          kind. -->
@@ -633,11 +632,9 @@
         project={target.where}
         title={target.face.title}
         scripts={target.scripts}
-        stirs={target.stirs}
         elsewhere={target.id !== ring}
         onanswer={() => target.answer(sheet)}
         ondefer={() => target.defer(sheet)}
-        onstir={() => target.stirAsk()}
         onheld={() => target.holdAsk()}
         onselect={() => onselect(target)}
       />
@@ -652,7 +649,6 @@
         onack={() => target.acknowledge(n, "")}
         onclosecard={() => void target.do("close")}
         onfollow={(text) => target.acknowledge(n, text)}
-        onstir={() => target.stirNotice(n)}
         onselect={() => onselect(target)}
       />
     {/if}

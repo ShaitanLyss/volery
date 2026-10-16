@@ -527,9 +527,9 @@ impl Link {
            and would have every wall vouching for every other. Not here if the
            switch says away, or if nobody has touched this machine for longer
            than Windows would take to decide they had gone (`machine::idle_away`)
-           — a laptop left open is not where she is. That second half changes
-           what is *announced* and nothing else: this wall's own questions are
-           still filed by its switch alone, for the reason `idle_away` gives. */
+           — a laptop left open is not where she is. The same reading also
+           decides this wall's own filing now (`presence::nobody_to_ask`),
+           since questions lost their deadline; `idle_away` has why. */
         f.present = !crate::presence::away_here(&self.app) && !crate::machine::idle_away();
         /* Outside the store lock: two vault reads, and the wall's cards do not
            wait on the credential manager. Names only — `creds::holdings`. */

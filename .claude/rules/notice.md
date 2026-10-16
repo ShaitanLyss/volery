@@ -24,7 +24,7 @@ want to miss a card being done or waiting on me because it's off-screen."*
 A notice stands in the dock exactly where a parked `ask_user` and a `close` / `unpost`
 confirmation stand, drawn one at a time with *"N more waiting on you"* under it, and the
 "more" steps through every item in the queue, this wall's and other walls' (`queue.ts`). Asks
-come first *when the dock chooses afresh*, because they hold an agent mid-turn on a clock and a
+come first *when the dock chooses afresh*, because they hold an agent mid-turn and a
 notice is a card that already stopped — but **never by displacing a notice you are already
 on**: one hold covers every kind, and nothing arriving moves it (ask.md, "Nor does the
 question itself change while you are answering it"). A reply typed here lives in
@@ -180,8 +180,9 @@ agents know it exists without it costing every turn, and carrying "sparingly" it
 exactly like a question — the payload is `{ notice: { text } }`, which `skein.svelte.ts`
 recognises on `ask:opened` and draws as a notice at the front of the queue, and the card
 wears amber (`waitingOnNotice`) since it is genuinely stopped. Acknowledge answers
-`NOTICE_ACK`; a follow-up answers the text. Away, or unanswered past its window, it is
-queued instead (`notice::Queued`), under its own opening `QUEUED_OPENING`, which
+`NOTICE_ACK`; a follow-up answers the text. It has no deadline (since 2026-10-16, `ask.md`):
+away, on a machine nobody is touching, or put off from the dock, it is queued instead
+(`notice::Queued`), under its own opening `QUEUED_OPENING`, which
 `presence::is_deferral` knows — a third opening rather than "Volery queued your question",
 which would be false. A follow-up to one of those then travels as a message naming it; an
 acknowledgement sends nothing, and the note it was queued with says so. `CARD_MAX` bounds

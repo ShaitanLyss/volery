@@ -81,7 +81,7 @@ export type Verb =
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" }
+  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" }
   | { kind: "bright"; act: "up" | "down" | "reset" };
 
 /** One sequence the leader opens onto.
@@ -300,6 +300,10 @@ export const CHORDS: readonly Chord[] = [
     label: "cards left awake come back awake: on / off",
     verb: { kind: "machine", act: "reawaken" },
   },
+  /* And whether a machine nobody is touching counts as away — which, since
+     questions stopped having a deadline, is the only thing that moves one off
+     a forgotten open laptop. `i` for idle, and on by default. */
+  { keys: "mi", label: "away when nobody is at the keyboard: on / off", verb: { kind: "machine", act: "idle" } },
   /* `v` is how the wall looks. `vv` is the themes panel, the family's main
      verb doubled after `ff` and `ss`; until it existed the panel had no key at
      all, only the header button. The rest is the brightness of whichever skin

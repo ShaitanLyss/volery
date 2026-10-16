@@ -1,14 +1,13 @@
 //! Being away from the wall, and the questions that wait for you.
 //!
-//! `ask_user` parks an HTTP request until you click, and every clock either
-//! side of that connection is measured in minutes — `ANSWER_MAX` is 45 of them
-//! and `ask.rs` spends two thousand words on the three watchdogs it took to get
-//! that far. Which is right for a question asked while you are at the wall and
-//! useless for one asked at seven in the evening when you have gone home: the
-//! card asks, nobody is there, and the question is gone by a quarter to eight.
-//! What the agent is handed is "nobody answered, carry on" — so it decides
-//! alone, or loses the question, and either way the morning starts with a
-//! decision already taken by something that did not want to take it.
+//! `ask_user` parks an HTTP request until you click. When away mode was built
+//! every clock either side of that connection was measured in minutes — a
+//! question asked at seven in the evening, with you gone home, was gone by a
+//! quarter to eight and the agent was handed "nobody answered, carry on". Since
+//! 2026-10-16 a question has no deadline at all, which makes the other half of
+//! this file load-bearing: a wall switched away, or a machine nobody is
+//! touching (`machine::idle_away`), is the only thing that stops a card from
+//! sitting parked on an empty room.
 //!
 //! Away mode's whole move is that **a deferred question is not parked at all**.
 //! The `tools/call` returns immediately with a note saying it was queued, the
@@ -45,7 +44,7 @@ const MAX_PER_CARD: usize = 8;
 /// The first words of what a deferred call is answered with.
 ///
 /// `park_and_stream` matches on this to tell a conversion from an answer, the
-/// way it already matches `TIMED_OUT_OPENING` — see `defer_parked`, which is
+/// way it once matched its timeout's opening — see `defer_parked`, which is
 /// the only thing that puts this string on a channel somebody is listening to.
 pub const DEFERRED_OPENING: &str = "Volery is in away mode.";
 
@@ -73,17 +72,19 @@ pub const UNATTENDED_OPENING: &str = "Volery queued your question.";
 pub enum Queued {
     /// The switch was on. The question was never drawn.
     Away,
-    /// It was drawn, it stood on the wall, and its deadline passed. Sink
-    /// `7264177f`: a timeout used to tell the agent to proceed on its own best
-    /// judgement, which is the same conflation `SKIPPED` was split out of one
-    /// layer up — running out of time is not a decision, and the cost of
-    /// reading it as one is asymmetric in the direction that pushes code.
+    /// Nobody has touched the machine for longer than it takes to lock
+    /// (`machine::idle_away`), with the switch off. It used to mean a deadline
+    /// passing, and why it queues rather than telling the agent to proceed is
+    /// unchanged (sink `7264177f`): nobody getting to a question is not a
+    /// decision, and reading it as one is asymmetric in the direction that
+    /// pushes code. Questions stopped having deadlines on 2026-10-16, and
+    /// absence is now noticed rather than timed.
     Unattended,
     /// The user pressed *defer* on a question standing in front of them (sink
     /// `7805fa20`: *"defer a question to put it in the deferred queue and answer
     /// it later, it should be the same as not"*). The same pile and the same
-    /// contract as a timeout — only the clause saying why is true of what
-    /// happened, since "did not get to it in time" is not.
+    /// contract as a question nobody got to — only the clause saying why is
+    /// true of what happened.
     Deferred,
 }
 
@@ -100,9 +101,9 @@ impl Queued {
         match self {
             Queued::Away => "The user is not at the wall, so your question was \
                              **queued** rather than put to them",
-            Queued::Unattended => "It stood on the wall and the user did not get to it \
-                                   in time, so rather than expiring it was **queued** \
-                                   for them to answer later",
+            Queued::Unattended => "Nobody has touched the user's machine for a while, \
+                                   so rather than waiting on them it was **queued** \
+                                   for them to answer when they are back",
             Queued::Deferred => "The user read it and chose to answer it later, so rather \
                                  than being decided now it was **queued** for them",
         }
@@ -113,8 +114,8 @@ impl Queued {
     fn partway(self) -> &'static str {
         match self {
             Queued::Away => "The user left the wall partway through answering.",
-            Queued::Unattended => "The user stopped partway through answering, and the \
-                                   call's time ran out.",
+            Queued::Unattended => "The user stopped partway through answering and has \
+                                   not been at the machine since.",
             Queued::Deferred => "The user answered part of the sheet and chose to leave the \
                                  rest for later.",
         }
@@ -304,17 +305,140 @@ pub fn away_here(app: &AppHandle) -> bool {
 /// answers exactly as it did before, and the new code only ever adds a reason
 /// to park. The rest — her away everywhere, the question filed in this wall's
 /// pile, which does not cross — is sink `3368f78f` and is untouched.
+///
+/// **Here also means at the keyboard** (`machine::idle_away`). Since questions
+/// stopped having a deadline (2026-10-16) the only thing between a forgotten
+/// open laptop and a card parked on it for days is noticing that nobody is
+/// touching it, so a machine idle past its lock timeout counts as switched away
+/// *for filing*. Only for filing: the away screen, the muted ladder and how a
+/// rest notice is marked still follow the switch alone ([`switched_away`]).
 pub fn away(app: &AppHandle) -> bool {
     nobody_to_ask(app, true)
 }
 
 /// [`away`] for a question that may not travel: one made under `ask::Stay`
-/// reaches nobody elsewhere, so only this wall's switch decides whether it is
-/// asked or filed — parking it here while she is at another wall would be a
+/// reaches nobody elsewhere, so only this wall's own absence decides whether it
+/// is asked or filed — parking it here while she is at another wall would be a
 /// question put to an empty room. `travels` is `Settle::travels`, so this keeps
 /// itself right when a `Stay` is retired.
 pub fn nobody_to_ask(app: &AppHandle, travels: bool) -> bool {
-    away_here(app) && !(travels && crate::flyway::link::present_elsewhere(app))
+    (away_here(app) || crate::machine::idle_away())
+        && !(travels && crate::flyway::link::present_elsewhere(app))
+}
+
+/// [`away`] as it was before idleness counted: the switch, and nobody present
+/// elsewhere. For what follows the person's *statement* — how a rest notice is
+/// marked, what the `away` tool reports — rather than whether to file.
+pub fn switched_away(app: &AppHandle) -> bool {
+    away_here(app) && !crate::flyway::link::present_elsewhere(app)
+}
+
+/// Why a question is being filed rather than asked, for the sentence the card
+/// reads: the switch when it is on, and otherwise the machine going untouched,
+/// since "Volery is in away mode" would be false of a wall nobody switched.
+pub fn absent_why(app: &AppHandle) -> Queued {
+    if away_here(app) {
+        Queued::Away
+    } else {
+        Queued::Unattended
+    }
+}
+
+/// Say on the wall that questions are going straight to the pile because
+/// nobody is at the keyboard — for ones filed at the moment they were asked,
+/// which never reach `watch_idle` and so never get its row. Nothing for the
+/// switch: coming back through it opens the pile.
+///
+/// **Once per stretch rather than once per question.** An orchestrator's
+/// workers asking overnight on a forgotten laptop would otherwise write a row
+/// apiece, and the chronicle is read as a history, not counted — the pile's
+/// button carries the count. Called only once something was actually filed:
+/// a full pile is not "went to the pile" (found in review).
+fn note_filed_at_ask(app: &AppHandle) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    const QUIET_MS: i64 = 30 * 60_000;
+    let now = crate::store::now();
+    if now - LAST.load(Ordering::Relaxed) < QUIET_MS {
+        return;
+    }
+    LAST.store(now, Ordering::Relaxed);
+    crate::chronicle::note(
+        app,
+        None,
+        "volery",
+        "note",
+        "questions are going to the pile while nobody is at the keyboard",
+        "nothing was decided — read them from the pile (space then p)",
+    );
+}
+
+/// File a question at the moment it was asked, because nobody is there to ask:
+/// [`defer`] with the reason read off presence, and the wall told when the
+/// reason is an untouched machine rather than the switch.
+pub fn defer_at_ask(app: &AppHandle, conversation_id: &str, args: &Value) -> String {
+    let why = absent_why(app);
+    match file(app, conversation_id, args) {
+        Some(queued) => {
+            if why == Queued::Unattended {
+                note_filed_at_ask(app);
+            }
+            deferred_note(queued, why)
+        }
+        None => pile_full(why),
+    }
+}
+
+/// Called on every tick of a parked question: if there is nobody to ask — the
+/// switch, or nobody having touched this machine for long enough — file
+/// everything parked that can be filed, as going away does. Returns whether
+/// anything was taken.
+///
+/// **This is the backstop the deadline used to be**, and it costs no clock of
+/// its own: the park loops already wake every `ask::FEED_EVERY` to feed the
+/// socket, and only while something is parked — the only time this matters. It
+/// is idempotent rather than edge-triggered on purpose. An edge needs to know
+/// when a stretch of idleness began, and a stretch that began while nothing was
+/// parked would leave a stale edge behind it; re-running the conversion finds
+/// nothing the second time, because what it takes is gone and what it leaves —
+/// a question that travels to a wall she is at, a confirmation that cannot be
+/// re-entered from the pile — it leaves on purpose.
+///
+/// **The switch counts too, and the first cut missed it.** Going away while she
+/// is present at another wall files nothing that travels — it reaches her
+/// there — so those questions stay parked. When she then leaves that wall
+/// as well, nothing re-ran the filing: the flip had already happened, and this
+/// returned early on the switch. Each tick asks again with `present_elsewhere`
+/// as it is *now*, which takes nothing while she is still elsewhere and
+/// everything once she is not. The chronicle row is only for idleness: coming
+/// back through the switch opens the pile already.
+pub fn watch_idle(app: &AppHandle) -> bool {
+    let switched = away_here(app);
+    if !switched && !crate::machine::idle_away() {
+        return false;
+    }
+    let elsewhere = crate::flyway::link::present_elsewhere(app);
+    let taken = defer_parked_why(app, elsewhere, absent_why(app));
+    if taken > 0 && !switched {
+        /* There is no coming back to open the pile — idleness ends with a key,
+           not a gesture this wall hears — so the chronicle is what says it
+           happened, which is its job: something happened you were not looking
+           at. The pile's button already carries the count. */
+        let mark = if taken == 1 {
+            "a question went to the pile while nobody was at the keyboard".to_string()
+        } else {
+            format!("{taken} questions went to the pile while nobody was at the keyboard")
+        };
+        crate::chronicle::note(
+            app,
+            None,
+            "volery",
+            "note",
+            &mark,
+            "nothing was decided — read them from the pile (space then p)",
+        );
+    }
+    taken > 0
 }
 
 #[derive(Clone, Serialize)]
@@ -493,19 +617,31 @@ fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<usize> {
 /// `defer_act`, which is where that whole argument lives.
 ///
 /// What is left parked after this is the third case: a question Volery composed
-/// with no request stored beside it, which is `smith` and `docket` — writes to
-/// somebody else's service, where re-entry could check nothing about what
-/// changed overnight. Those still time out, and their unanswered behaviour is
-/// the conservative one.
+/// with no request stored beside it, which is `smith`, `docket` and `update` —
+/// writes to somebody else's service, where re-entry could check nothing about
+/// what changed overnight. Those **wait**, parked, until she is back: they
+/// travel to any wall she is at, and her yes still lands on an open turn.
+/// Resolving them as "no" because she was out is the proceed-without-her that
+/// removing the deadline was for (2026-10-16), and a blocked card is cheaper
+/// than a write that never happens.
 ///
 /// `staying_only` is going away while she is at another wall: everything that
 /// travels stays parked and reaches her there, and only what cannot — a
 /// question made under `ask::Stay` — is filed (sink `f931e6ca`).
 fn defer_parked(app: &AppHandle, staying_only: bool) {
-    let Some(asks) = app.try_state::<crate::ask::Asks>() else { return };
-    for taken in crate::ask::take_parked_questions(&asks, staying_only) {
-        convert(app, taken, Queued::Away);
+    defer_parked_why(app, staying_only, Queued::Away);
+}
+
+/// [`defer_parked`] for a reason other than the switch, saying how many it
+/// took.
+fn defer_parked_why(app: &AppHandle, staying_only: bool, why: Queued) -> usize {
+    let Some(asks) = app.try_state::<crate::ask::Asks>() else { return 0 };
+    let taken = crate::ask::take_parked_questions(&asks, staying_only);
+    let n = taken.len();
+    for t in taken {
+        convert(app, t, why);
     }
+    n
 }
 
 /// Put one question that has been taken off the wall into the pile, and tell
@@ -690,7 +826,7 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
     if tool != AWAY_TOOL {
         return None;
     }
-    let was = away(app);
+    let was = switched_away(app);
     let handle = &conversation_id[..conversation_id.len().min(8)];
     let note = args
         .get("note")
@@ -806,7 +942,10 @@ fn reenter(app: &AppHandle, tool: &str, caller: &str, args: &Value) -> Reentry {
 fn act_note(what: &str, why: Queued) -> String {
     let (opening, because) = match why {
         Queued::Away => (DEFERRED_OPENING, "The user is not at the wall"),
-        _ => (why.opening(), "The user chose to deal with it later"),
+        Queued::Unattended => {
+            (why.opening(), "Nobody has touched the user's machine for a while")
+        }
+        Queued::Deferred => (why.opening(), "The user chose to deal with it later"),
     };
     format!(
         "{opening} {because}, so {what} was **queued** for them \
@@ -840,7 +979,8 @@ pub(crate) fn defer_act(
     question: &Value,
     what: &str,
 ) -> String {
-    defer_act_why(app, conversation_id, tool, args, question, what, Queued::Away)
+    let why = absent_why(app);
+    filed_act(app, conversation_id, tool, args, question, what, why, why == Queued::Unattended)
 }
 
 /// `defer_act`, for a reason other than the wall being away.
@@ -852,6 +992,23 @@ pub(crate) fn defer_act_why(
     question: &Value,
     what: &str,
     why: Queued,
+) -> String {
+    filed_act(app, conversation_id, tool, args, question, what, why, false)
+}
+
+/// The body of both, and `tell` is whether a successful filing is said on the
+/// wall (`note_filed_at_ask`) — only for one filed at ask time because nobody
+/// is at the keyboard.
+#[allow(clippy::too_many_arguments)]
+fn filed_act(
+    app: &AppHandle,
+    conversation_id: &str,
+    tool: &str,
+    args: &Value,
+    question: &Value,
+    what: &str,
+    why: Queued,
+    tell: bool,
 ) -> String {
     /* A tool `reenter` does not know would queue an act that can never be
        performed, and the user would read "the wall has moved on" about
@@ -910,6 +1067,9 @@ pub(crate) fn defer_act_why(
             asked_at: at,
         },
     );
+    if tell {
+        note_filed_at_ask(app);
+    }
     act_note(what, why)
 }
 
@@ -930,7 +1090,7 @@ fn queued_for(app: &AppHandle, card: &str, act: bool) -> usize {
 /// thing. Sink `7805fa20`.
 ///
 /// Refused — with a sentence the panel shows — for a question that cannot be
-/// moved: one gone already (answered, timed out or its card closed), or one
+/// moved: one gone already (answered, filed or its card closed), or one
 /// Volery composed with no request behind it (`docket`, `smith`), where re-entry
 /// after a wait could check nothing about the service it writes to.
 pub(crate) fn defer_one(app: &AppHandle, ask_id: &str) -> Result<(), String> {
@@ -1081,15 +1241,18 @@ mod tests {
         assert!(note.contains("decide it yourself"));
     }
 
-    /* Sink `7264177f`: a question nobody got to goes to the same pile an away
-       question goes to, and the agent is told the same four things about it.
-       What it must NOT be told is that the wall is away, which it is not. */
+    /* A question filed because nobody is at the keyboard goes to the same pile
+       an away question goes to, and the agent is told the same four things
+       about it. What it must NOT be told is that the wall is in away mode:
+       nobody switched it, and a card that later reads the switch is off would
+       be holding two stories. */
     #[test]
     fn an_unattended_question_is_queued_without_claiming_the_wall_is_away() {
         let note = deferred_note(1, Queued::Unattended);
         assert!(note.starts_with(UNATTENDED_OPENING));
-        assert!(!note.contains("away mode"), "the user is at the wall");
-        assert!(note.contains("did not get to it in time"));
+        assert!(!note.contains("away mode"), "nobody switched the wall away");
+        assert!(note.contains("Nobody has touched"));
+        assert!(!note.contains("in time"), "there is no deadline to have missed");
         /* The same contract, which is the whole argument for one note. */
         assert!(note.contains("Nothing has been decided"));
         assert!(note.contains("new message"));
@@ -1144,7 +1307,7 @@ mod tests {
             assert!(!note.contains("Nothing has been decided"));
         }
         assert!(rest_note(1, Queued::Away).contains("left the wall"));
-        assert!(rest_note(1, Queued::Unattended).contains("time ran out"));
+        assert!(rest_note(1, Queued::Unattended).contains("not been at the machine"));
     }
 
     #[test]
@@ -1156,10 +1319,10 @@ mod tests {
         assert!(note.contains(&MAX_PER_CARD.to_string()));
     }
 
-    /// Pressing *defer* (sink `7805fa20`) tells the card exactly what a timeout
-    /// does — same pile, same four things, same opening the parking thread
-    /// recognises — with only the clause saying why true of what happened: the
-    /// user read it and put it off, which is not "did not get to it in time".
+    /// Pressing *defer* (sink `7805fa20`) tells the card exactly what a question
+    /// nobody got to is told — same pile, same four things, same opening the
+    /// parking thread recognises — with only the clause saying why true of what
+    /// happened: the user read it and put it off.
     #[test]
     fn a_defer_is_told_as_a_timeout_is_with_its_own_reason() {
         let note = deferred_note(2, Queued::Deferred);

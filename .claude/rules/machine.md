@@ -172,19 +172,25 @@ longer than Windows itself would take to decide they had gone.
   minutes, so a long threshold serves it completely. With no lock set it is thirty minutes. Zero is
   Windows' *never* and is skipped. `idle_threshold_ms` is pure and tested, and the test holds the
   floor at fifteen minutes or more.
-- **No clock of its own.** It is read on demand in `link::facts`, which already runs on the
-  flyway's 30s tick. There is no state and nothing to clear: the next input makes it false again.
-- **Switchable off**: `AwayWhenIdle` beside the other two knobs, absent meaning on, written by
-  `machine_set("idle", …)`, reported in `Status.idle` and `Status.idle_away`. Nothing draws the
-  toggle yet, and nothing on another wall yet says "not at the keyboard for 40m" (sink `ae696b3a`).
-- **It changes what is announced and nothing else.** Counting an idle wall as away for *its own*
-  questions would file them into its pile, and the pile does not cross the flyway (sink
-  `3368f78f`). A question asked while she is gone everywhere would then be invisible if she came
-  back at the other machine, where today it stays parked and reachable for its whole window and is
-  filed only when that runs out. **An idle wall may change its own filing once the pile travels,
-  and not before** (sink `2ddb9ff2`). Without this at all nothing is lost either: the away wall
-  would park rather than file, and `ask::expired` files the question when its window runs out.
-  The same pile, ten minutes later. So this is an accuracy fix, not a rescue.
+- **No clock of its own.** It is read on demand — in `link::facts` on the flyway's 30s tick, in
+  `presence::nobody_to_ask` when a card asks, and in `presence::watch_idle` on the tick a parked
+  call already has. There is no state and nothing to clear: the next input makes it false again.
+- **Switchable off**: `AwayWhenIdle` beside the other two knobs, **absent meaning on**, written by
+  `machine_set("idle", …)`, reported in `Status.idle` and `Status.idle_away`, toggled from the
+  ground menu and `space m i`. Nothing on another wall yet says "not at the keyboard for 40m"
+  (sink `ae696b3a`).
+- **It decides this wall's filing too, since 2026-10-16** — and for a while it deliberately did
+  not. Counting an idle wall as away for its own questions files them into its pile, which does
+  not cross the flyway (sink `3368f78f`), and while a question had a deadline the alternative was
+  better: it stayed parked and reachable from the other machine until its window ran out *and
+  filed it anyway* — the same pile, at most forty-five minutes later, so holding back was an
+  accuracy fix and cost nothing. Questions then lost their deadline (`ask.md`, *No clock on a
+  question*), the "anyway" went with it, and holding back became a forgotten laptop's question
+  parked for days. So `presence::nobody_to_ask` reads it, and `watch_idle` files what was already
+  parked. What is left of `3368f78f` — gone everywhere, back at the other machine — is the same
+  outcome the deadline used to produce. It files and nothing else: no away screen, no muted
+  ladder (`away.md`, *Nobody at the keyboard*). Being on by default is what makes it a backstop at
+  all; with the knob off an untouched machine's questions wait for her.
 
 ## Not built, on purpose
 

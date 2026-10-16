@@ -25,17 +25,6 @@
  * spin or panic on a thread holding somebody's turn open — and "it compiles" is
  * no evidence at all about that.
  *
- * `answer_window` is here for a third reason, and it is the arithmetic rather
- * than the parsing. The table it is asserted against is written out twice — here
- * and in `test/asking.test.ts`, because the panel's countdown and this thread's
- * deadline have to be one number seen from two sides — and on a machine with no
- * MSVC only the TypeScript half ever ran. So the half that actually decides when
- * an agent is told to carry on without you was the unrun one, and a table
- * asserted twice with one side unrunnable is a table asserted once. It also
- * counts what the panel will draw, which is a mirror of `normalizeAsk` that
- * nothing type-checks: the cap that used to live here quietly made a call of
- * twelve questions buy the reading time for five (sink `4b076830`).
- *
  * `undescribed` is here on `swallowed`'s argument exactly: it is the server's
  * **second** refusal, it decides whether a person is interrupted at all, and
  * both of its directions are invisible to a typecheck. A false negative is the
@@ -70,12 +59,7 @@ const DEPS = depsDir();
  *  is quiet — where a lifted function reaching for what this list omits breaks
  *  the build loudly, which is the safer direction to fail in. */
 const ITEMS: string[] = [
-  "const ANSWER_BASE",
-  "const ANSWER_PER_QUESTION",
-  "const ANSWER_PER_OPTION",
-  "const ANSWER_MAX",
-  "fn said",
-  "fn answer_window",
+  "const CLIENT_CEILING_MS",
   "fn client_timeout_ms",
   "const DECLARATION",
   "struct Swallowed",
@@ -93,9 +77,6 @@ const ITEMS: string[] = [
 const TEST_ITEMS: string[] = ["const ASK_ARGS"];
 
 const TESTS: string[] = [
-  "the_window_grows_with_what_is_being_asked",
-  "the_window_counts_what_the_panel_will_actually_draw",
-  "no_call_can_ask_for_longer_than_the_client_was_told_to_wait",
   "an_argument_that_arrived_inside_another_one_is_found",
   "quoting_the_syntax_is_allowed_when_the_argument_is_also_passed",
   "a_tag_naming_no_argument_of_this_tool_is_left_alone",

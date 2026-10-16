@@ -1303,9 +1303,9 @@ fn declined(title: &str, answer: &str) -> String {
 /// What the caller is told when nobody ever answered.
 fn unanswered(title: &str) -> String {
     format!(
-        "nobody answered, so {title:?} stays on the wall. Either the question stood for ten \
-         minutes or this card was dismissed while it was up. Carry on with your own \
-         judgement, and mention that you would have closed it."
+        "nobody answered, so {title:?} stays on the wall. The question was taken down \
+         unanswered: this card was dismissed while it was up, or the call was abandoned. \
+         Carry on with your own judgement, and mention that you would have closed it."
     )
 }
 

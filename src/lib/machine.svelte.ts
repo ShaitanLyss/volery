@@ -37,8 +37,8 @@ export class Machine {
   }
 
   /** Flip one knob and hand back what is now true, for the chord to say. */
-  async toggle(knob: "awake" | "reopen"): Promise<MachineStatus> {
-    const on = knob === "awake" ? !this.status.awake : !this.status.reopen;
+  async toggle(knob: "awake" | "reopen" | "idle"): Promise<MachineStatus> {
+    const on = !this.status[knob];
     this.status = normalize(await invoke("machine_set", { knob, on }));
     return this.status;
   }

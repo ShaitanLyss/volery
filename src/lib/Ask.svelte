@@ -30,9 +30,7 @@
   import {
     NO_PREFERENCE,
     SKIPPED,
-    answerWindow,
     answeredCount,
-    heldWindow,
     isComplete,
     isUnsaid,
     lookLabel,
@@ -44,8 +42,8 @@
 
   /* It takes the *ask* rather than the card that is asking, and the second
      surface is why. A question that piled up while the user was away is the
-     same thing with no card blocked behind it — nothing is parked, nothing is
-     counting down, and the conversation it came from may have gone dormant
+     same thing with no card blocked behind it — nothing is parked, and the
+     conversation it came from may have gone dormant
      hours ago. Threading a `Conversation` through would have meant inventing
      one for the pile, so the four facts this panel actually read off the card
      are props instead: who asked, whether scripts may run in a preview, and
@@ -56,11 +54,9 @@
     title,
     scripts = true,
     parked = true,
-    stirs = true,
     elsewhere = false,
     onanswer,
     ondefer,
-    onstir,
     onheld,
     onselect,
     card = "",
@@ -73,17 +69,9 @@
      *  reads `kind_of` rather than taking a capability as an argument. */
     scripts?: boolean;
     /** Whether an agent is actually stopped on this. False for a question out
-     *  of the pile: the call returned hours ago, so there is no deadline to
-     *  count down to and counting one down would be an instrument reporting a
-     *  pressure that does not exist. */
+     *  of the pile: the call returned hours ago, so nothing is held open and
+     *  there is no call to keep a half-answered sheet against. */
     parked?: boolean;
-    /** Whether touching the panel can hold the deadline open. False for a
-     *  question parked on another wall (`shadows.svelte.ts`): no touch travels
-     *  there, so a countdown that a touch extended here would show *more* time
-     *  than the far call has — the unsafe direction, for an instrument whose job
-     *  is to say whether to hurry. Held still, it counts down the question's
-     *  base window, which a touch on its own wall can only lengthen. */
-    stirs?: boolean;
     /** Whether the card being asked is not the card in the ring — see the
      *  button in the head. */
     elsewhere?: boolean;
@@ -92,15 +80,11 @@
      *  was decided (sink `7805fa20`). Absent where there is nowhere to put it
      *  — a question already out of the pile. */
     ondefer?: () => void | Promise<void>;
-    /** The panel was touched, so the deadline should move. Throttled here, not
-     *  by the caller — see `stir`. Nothing to do for a question out of the
-     *  pile, which has no deadline at all, so this is only ever wired by the
-     *  dock. */
-    onstir?: () => void;
     /** An answer was recorded on a sheet not yet sent, so Rust should keep it
-     *  in case the call closes first (`Skein.holdAsk`, sink `fdc6954b`). Only
-     *  the dock wires it, for `onstir`'s reason: a question out of the pile is
-     *  parked on nothing, so there is no call to close under it. */
+     *  in case the call closes first — the wall going away, or a machine nobody
+     *  is touching (`Skein.holdAsk`, sink `fdc6954b`). Only the dock wires it:
+     *  a question out of the pile is parked on nothing, so there is no call to
+     *  close under it. */
     onheld?: () => void;
     /** Put the asking card in the ring. Only reachable while `elsewhere`. */
     onselect?: () => void;
@@ -157,7 +141,7 @@
      this is keys on this rather than on `ask.askId`: a derived string only
      wakes its readers when it changes, where `ask` is a prop the dock may hand
      over again on traffic that has nothing to do with this question. Read
-     directly, that reset the step, the stir and the gallery on an arrival
+     directly, that reset the step and the gallery on an arrival
      anywhere on the wall. `test/queue.test.ts` holds the line. */
   const id = $derived(ask.askId);
   const item = $derived(`ask:${id}`);
@@ -195,8 +179,6 @@
     void id;
     at = null;
     warned = null;
-    stirredAt = 0;
-    told = -STIR_EVERY;
   });
 
   /* The draft belongs to the question it was typed at, not to the panel — and
@@ -232,63 +214,12 @@
     onanswer();
   }
 
-  /* The agent gives up waiting and proceeds on its own judgement, so the
-     countdown is real information, not decoration. It is the whole call's clock:
-     several questions do not buy several deadlines — they buy one longer one.
-     `answerWindow` is the same arithmetic `ask.rs` parks on, mirrored rather
-     than sent, and the note there is why. */
-  const window = $derived(answerWindow(questions));
-
-  /** When the panel was last touched, in seconds from the call opening — the
-   *  same origin `heldWindow` measures against, and `0` until it is.
-   *
-   *  Reset by the `askId` effect above along with `at`, since a new call is a
-   *  new deadline and a stir belongs to the sheet it was made on. */
-  let stirredAt = $state(0);
-
-  /** How often a touch is worth telling Rust about.
-   *
-   *  A keystroke is not news; a *minute* of keystrokes is. `ANSWER_HOLD` is
-   *  five minutes, so telling it once a minute keeps the two deadlines within a
-   *  minute of each other at all times, which is inside the resolution of a
-   *  countdown drawn in whole seconds and read in glances. The alternative —
-   *  an invoke per character — is an IPC round trip per keystroke for a number
-   *  that moves in minutes. */
-  const STIR_EVERY = 60;
-
-  /** The panel was touched: hold the deadline open.
-   *
-   *  Both halves move or neither does. `stirredAt` is what the countdown reads,
-   *  so the local one is immediate and unconditional; `onstir` is what moves
-   *  the thread that will actually give up, and is throttled. They can drift by
-   *  up to `STIR_EVERY`, always in the direction of the panel showing *less*
-   *  time than there is, which is the safe direction for an instrument whose
-   *  job is to tell you whether to hurry.
-   *
-   *  Only while `parked`. A question out of the pile has nobody waiting on it
-   *  and nothing to extend. */
-  let told = -STIR_EVERY;
-  function stir() {
-    if (!parked || !stirs) return;
-    stirredAt = Math.max(0, Math.floor((Date.now() - ask.since) / 1000));
-    if (stirredAt - told < STIR_EVERY) return;
-    told = stirredAt;
-    onstir?.();
-  }
-
-  const left = $derived(
-    Math.max(
-      0,
-      heldWindow(window, stirredAt) - Math.floor((clock.t - ask.since) / 1000),
-    ),
-  );
-  const mins = $derived(Math.floor(left / 60));
-  const secs = $derived(String(left % 60).padStart(2, "0"));
-
-  /* What stands where the countdown does when nothing is parked. A question out
-     of the pile has no deadline, and the fact worth having in its place is how
-     long it has been waiting — which is the one thing that makes a pile of them
-     readable in any order. */
+  /* How long it has stood, where a countdown used to be. A question has no
+     deadline (2026-10-16): the countdown said whether to hurry, and the answer
+     to that is now always no — *"they're uselessly stressful"*. What is worth
+     knowing instead is when it was asked, which is also what makes a pile of
+     them readable in any order. Minute-grained on purpose, so it is a fact to
+     glance at rather than a number to watch. */
   const waited = $derived(stood(clock.t - ask.since));
 
   /** The sheet, answered, with nothing sent yet.
@@ -398,21 +329,11 @@
   }
 </script>
 
-<!-- Capturing, and on the root rather than on the field: "active" is not
-     only typing. Reading an option, stepping between questions, opening the
-     gallery and clicking a rung are all somebody working on this sheet, and a
-     clock that only hears the keyboard would run out on the longest kind of
-     decision — the one where you read four options before typing anything.
-     `stir` throttles what reaches Rust, so this firing on every key is fine.
-     svelte-ignore: it is the deadline that moves, not a control being
-     operated, so there is nothing here for a keyboard user to reach. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="ask"
   bind:this={root}
   data-ask={ask.askId}
-  onkeydowncapture={stir}
-  onpointerdowncapture={stir}
   onkeydown={(e) => {
     /* The keyboard path for `defer`, from anywhere in the panel including the
        field: alt+D, which nothing else on the wall binds. */
@@ -460,11 +381,12 @@
     {#if many}
       <span class="of">{reviewing ? "all answered" : `${step + 1} of ${questions.length}`}</span>
     {/if}
-    {#if parked}
-      <span class="clockleft" class:urgent={left < 120}>{mins}:{secs}</span>
-    {:else}
-      <span class="clockleft waited" title="This was asked while you were away">{waited}</span>
-    {/if}
+    <span
+      class="asked"
+      title={parked
+        ? "When this was asked. It waits until you answer or defer it — there is no deadline"
+        : "This was asked while you were away"}>{waited}</span
+    >
   </div>
 
   {#if many}
@@ -730,14 +652,11 @@
     color: var(--paper-faint);
     font-variant-numeric: tabular-nums;
   }
-  .clockleft {
+  .asked {
     font-family: var(--mono);
     font-size: 0.64rem;
     color: var(--paper-faint);
     font-variant-numeric: tabular-nums;
-  }
-  .clockleft.urgent {
-    color: var(--st-ask);
   }
 
   .spine {

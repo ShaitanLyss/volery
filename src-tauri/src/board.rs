@@ -1484,10 +1484,10 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
         settle: crate::ask::Settle::new(confirm, move |app, answer| {
             let Some(answer) = answer else {
                 return format!(
-                    "nobody answered, so {subject:?} stays up. Either the question stood \
-                     for ten minutes or this card was dismissed while it was up. Carry \
-                     on with your own judgement about the files it names, and say that \
-                     you offered to retire it."
+                    "nobody answered, so {subject:?} stays up. The question was taken \
+                     down unanswered: this card was dismissed while it was up, or the call \
+                     was abandoned. Carry on with your own judgement about the files it \
+                     names, and say that you offered to retire it."
                 );
             };
             if !agreed(answer) {
@@ -1506,7 +1506,7 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
                 );
             }
             /* Approved — and now read the wall again rather than acting on what
-               it said ten minutes ago. The card may have woken and be working
+               it said when the question went up. The card may have woken and be working
                under that claim by now, which is exactly the state the two
                conditions were checked against. */
             let Some(store) = app.try_state::<Store>() else {
@@ -1666,9 +1666,10 @@ fn unpost_far(app: &AppHandle, caller: &str, want: &str, mine: &[&Notice]) -> Un
         settle: crate::ask::Settle::new(confirm, move |app, answer| {
             let Some(answer) = answer else {
                 return format!(
-                    "nobody answered, so {subject:?} stays up on {host}. Either the question stood \
-                     for ten minutes or this card was dismissed while it was up. Carry on with your \
-                     own judgement, and say that you offered to retire it."
+                    "nobody answered, so {subject:?} stays up on {host}. The question was taken \
+                     down unanswered: this card was dismissed while it was up, or the call was \
+                     abandoned. Carry on with your own judgement, and say that you offered to \
+                     retire it."
                 );
             };
             if !agreed(answer) {
@@ -1688,7 +1689,7 @@ fn unpost_far(app: &AppHandle, caller: &str, want: &str, mine: &[&Notice]) -> Un
             }
             /* Approved — and the home wall reads its own board again before it
                acts: the card may have woken since, which is exactly what the two
-               conditions were checked against ten minutes ago. */
+               conditions were checked against when it was asked. */
             let Some(link) = crate::flyway::link::link(app) else {
                 return format!(
                     "the user approved it, but this wall is no longer on the flyway, so {host} could \

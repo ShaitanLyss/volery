@@ -86,9 +86,11 @@ const APPROVED_KEY: &str =
 
 const KNOB_AWAKE: &str = "KeepAwakeOnMains";
 const KNOB_REOPEN: &str = "ReopenAfterRestart";
-/// Whether a machine nobody has touched for a while stops saying she is at it.
-/// Absent means on, like the other two. No toggle draws it yet — that is the
-/// surface's half, filed with the far wall's heading (see `idle_away`).
+/// Whether a machine nobody has touched for a while counts as away: it stops
+/// saying she is at it, and it files its questions rather than parking them.
+/// Absent means on, like the other two, and it has to be: since questions lost
+/// their deadline (2026-10-16) this is the only thing that moves one off a
+/// forgotten open laptop. Toggled from the ground menu and `space m i`.
 const KNOB_IDLE: &str = "AwayWhenIdle";
 
 /* ── nobody at the keyboard ──────────────────────────────────────────────── */
@@ -142,30 +144,63 @@ pub(crate) fn idle_says_away(enabled: bool, idle_ms: Option<u64>, threshold_ms: 
 /// they had gone? `GetLastInputInfo`, system-wide — not the app's focus, since a
 /// forgotten laptop may well have Volery in front.
 ///
-/// **For what this wall announces, and nothing else.** A laptop left open with
-/// its switch off is heard and not away, so it used to count as somewhere she
-/// *is* — and another wall that she had switched away would park its questions
-/// for nobody instead of filing them (Lyss: *"if I haven't been touching a wall
-/// in a while, it should automatically go to I'm away … case of an open laptop
-/// that I forgot to set to i'm away"*). So `link::facts` folds this into
-/// `Facts.present`, read on demand on the flyway's existing tick: no new clock,
-/// no state, nothing to clear — the next input makes it false again.
+/// **Two readers, and the second arrived when questions lost their deadline.**
 ///
-/// **It deliberately does not change this wall's own filing**, and the next
-/// person to "finish the job" should read this first. Counting an idle wall as
-/// away for *its own* questions files them straight into its pile, and the pile
-/// does not cross the flyway (sink `3368f78f`): a question asked while she is
-/// gone everywhere would then be invisible if she came back at the *other*
-/// machine, where today it stays parked and reachable for its whole window and
-/// is filed only when that runs out. An idle wall may change its own filing
-/// once the pile travels, and not before.
+/// What this wall *announces*: a laptop left open with its switch off is heard
+/// and not away, so it used to count as somewhere she *is* — and another wall
+/// that she had switched away would park its questions for nobody instead of
+/// filing them (Lyss: *"if I haven't been touching a wall in a while, it should
+/// automatically go to I'm away … case of an open laptop that I forgot to set
+/// to i'm away"*). So `link::facts` folds this into `Facts.present`, read on
+/// demand on the flyway's existing tick.
+///
+/// And whether this wall *files*: `presence::nobody_to_ask` counts it as the
+/// switch being on, and `presence::watch_idle` — on the tick a parked question
+/// already has — files what is parked. This was held back on purpose while a
+/// question had a deadline, because the pile does not cross the flyway (sink
+/// `3368f78f`) and a parked question at least stayed reachable from the other
+/// machine *until its window ran out and filed it anyway*. With no window
+/// there is no "anyway": without this, a forgotten laptop's question waits
+/// for days. The comparison that made holding back right stopped existing, and
+/// what is left of `3368f78f` — she is gone everywhere and comes back at the
+/// other machine — is the same outcome the window used to produce.
+///
+/// Still no clock and no state of its own: both readers ask on demand, on ticks
+/// that were already there, and the next input makes it false again.
 pub fn idle_away() -> bool {
     let enabled = os::read_knob(identifier(), KNOB_IDLE).unwrap_or(true);
     if !enabled {
         return false;
     }
+    if pretending() {
+        return true;
+    }
     let threshold = idle_threshold_ms(&os::idle_timeouts());
     idle_says_away(enabled, os::idle_ms(), threshold)
+}
+
+/// A lab's stand-in for twenty untouched minutes, set by the control surface's
+/// `machine` op through `machine_set("pretend-idle", …)`.
+///
+/// **Debug builds only, and there is no other way to drive this.** Whether the
+/// wall files a parked question when nobody is at the keyboard is the whole of
+/// what keeps a card off an empty room now that questions have no deadline —
+/// and a lab cannot make the machine it shares with a person sit untouched for
+/// twenty minutes. It is consulted *after* the knob, so a lab can also show that
+/// switching `AwayWhenIdle` off wins over an idle machine. A release build has
+/// no static to set and `machine_set` refuses the name.
+#[cfg(debug_assertions)]
+static PRETEND_IDLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn pretending() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        PRETEND_IDLE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
 }
 
 /// What `powercfg /requests` prints beside the process. Written for the
@@ -467,9 +502,14 @@ fn set(knob: &str, on: bool) -> Result<Status, String> {
             st.enabled = on;
             settle(&mut st);
         }
+        #[cfg(debug_assertions)]
+        "pretend-idle" => {
+            PRETEND_IDLE.store(on, std::sync::atomic::Ordering::Relaxed);
+        }
         "idle" => {
             os::write_knob(id, KNOB_IDLE, on)?;
-            /* Read on the flyway's next tick; nothing is held to bring into line. */
+            /* Read on demand — the next ask, the next park tick, the flyway's
+               next tick; nothing is held to bring into line. */
         }
         "reopen" => {
             os::write_knob(id, KNOB_REOPEN, on)?;

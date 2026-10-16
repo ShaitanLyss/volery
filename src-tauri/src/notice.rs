@@ -187,7 +187,10 @@ fn raise(app: &AppHandle, conversation_id: String, kind: String, text: String) -
         return Ok(false);
     }
 
-    let away = crate::presence::away(app);
+    /* The switch, not idleness: a rest notice raised while nobody is at the
+       keyboard still stands in the dock, where coming back finds it. Idleness
+       only changes what is filed (`presence::away`). */
+    let away = crate::presence::switched_away(app);
     let notice = NoticeRow {
         id: crate::store::uuid_v4(),
         conversation_id: conversation_id.clone(),
@@ -298,8 +301,7 @@ pub fn went_away(app: &AppHandle) {
 /* ── the tool ─────────────────────────────────────────────────────────────── */
 
 /// What a parked notice is drawn from: the text under a key no question has, so
-/// `skein.svelte.ts` can tell it from an `ask_user` payload on sight, and
-/// `answer_window` — which counts questions and options — gives it the floor.
+/// `skein.svelte.ts` can tell it from an `ask_user` payload on sight.
 pub(crate) fn parked_payload(text: &str) -> Value {
     json!({ "notice": { "text": text } })
 }
@@ -329,7 +331,9 @@ pub(crate) enum Queued {
     Sent,
     /// It asked to wait, and the wall is away.
     Away,
-    /// It asked to wait, it stood on the wall, and nobody got to it in time.
+    /// It asked to wait, and nobody is at the keyboard (`machine::idle_away`)
+    /// — or the user put it off from the dock. It used to mean a deadline
+    /// passing; notices stopped having one on 2026-10-16.
     Unattended,
 }
 
@@ -340,7 +344,10 @@ pub(crate) fn queue(app: &AppHandle, conversation_id: &str, text: &str, why: Que
                 closing message instead."
             .into();
     };
-    let away = crate::presence::away(app);
+    /* The switch, not idleness, for `raise`'s reason: a notice filed because
+       nobody is at the keyboard stands in the dock, where coming back finds
+       it. A notice filed by the switch says so through `why`. */
+    let away = crate::presence::switched_away(app);
     let n = NoticeRow {
         id: crate::store::uuid_v4(),
         conversation_id: conversation_id.to_string(),
@@ -401,8 +408,8 @@ pub(crate) fn queued_note(why: Queued) -> String {
                     crate::presence::DEFERRED_OPENING
                 ),
                 _ => format!(
-                    "{QUEUED_OPENING} It stood on the wall and the user did not get to it \
-                     in time, so rather than expiring it was **queued**"
+                    "{QUEUED_OPENING} The user is not at the keyboard to see it now, so \
+                     rather than waiting on them it was **queued**"
                 ),
             };
             format!(

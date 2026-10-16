@@ -1522,11 +1522,13 @@ fn spawn_now(
             cfg["mcpServers"][name.as_str()] = crate::pool::entry(ask_port, &id, name);
         }
         cmd.args(["--mcp-config", &cfg.to_string()]);
-        /* Or the CLI abandons the parked call after one minute and the click
-           lands on a request nobody is reading. This moves the *hard* deadline
-           only; the config above carries the same number again for the idle
-           watchdog, which no variable here reaches — see ask::mcp_config. */
-        cmd.env("MCP_TOOL_TIMEOUT", crate::ask::client_timeout_ms().to_string());
+        /* The hard deadline for every *other* MCP server this card has — the
+           browser, the pooled ones. Skein's own carries a per-server `timeout`
+           in the config above, which the CLI reads ahead of this variable, so a
+           question parked for days is covered there; this stays at what it was
+           while questions had a deadline, so lifting theirs does not lift the
+           ceiling on a call to somebody else's server. See ask::mcp_config. */
+        cmd.env("MCP_TOOL_TIMEOUT", crate::ask::OTHER_SERVERS_TIMEOUT_MS.to_string());
     }
 
     /* **One flag, or one of them is silently thrown away.** This used to be two
@@ -2265,6 +2267,11 @@ pub async fn send_prompt(
 #[tauri::command]
 pub async fn interrupt_conversation(app: AppHandle, id: String) -> Result<(), String> {
     crate::off_main(move || {
+        /* A stopped turn asks nothing any more: the CLI abandons an `ask_user`
+           on its own, and the shell-delete hand-off — which no socket stands
+           behind — would otherwise be parked until the wall closes, now that a
+           question has no deadline. See `ask::drop_handoffs`. */
+        crate::ask::drop_handoffs(&app.state::<crate::ask::Asks>(), &id);
         let sup = app.state::<Supervisor>();
         let mut map = sup.0.lock().unwrap();
         let conv = map

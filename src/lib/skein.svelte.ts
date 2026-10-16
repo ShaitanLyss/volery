@@ -272,6 +272,16 @@ const MAX_LOG = 400;
  *  usually answered out of the cache without touching the network. */
 const HOLD_SWEEP_MS = 60_000;
 
+/** What `ask:opened` carries, and what `parked_asks` reads back. `since` is
+ *  only on the second: when Rust parked it, for one drawn late. */
+type AskOpenedPayload = {
+  conversation_id: string;
+  ask_id: string;
+  ask: { question?: unknown; options?: unknown; questions?: unknown };
+  ours?: boolean;
+  since?: number;
+};
+
 export class Skein {
   projects = $state<Project[]>([]);
 
@@ -705,6 +715,62 @@ export class Skein {
     return this.#listeners.size;
   }
 
+  /** A question parked in `ask.rs`, put on its card — from `ask:opened`, or
+   *  read back by `parked_asks` for one this window was not listening for.
+   *  Idempotent on the ask id, because the two can both arrive. */
+  /** Asks that closed while `parked_asks` was being read — see `load`. */
+  #reading: Set<string> | null = null;
+
+  #opened(p: AskOpenedPayload) {
+    const c = this.#byId.get(p.conversation_id);
+    if (!c) return;
+    if (c.asks.some((a) => a.askId === p.ask_id)) return;
+    const since = typeof p.since === "number" ? p.since : Date.now();
+    const raw = p.ask ?? {};
+    /* A card's notice that is holding its turn open. Same park, same
+       channel, a different panel: it joins the notice queue at the front
+       rather than becoming a question with no question in it. See
+       `notice.rs::parked_payload`. */
+    const parked = (raw as { notice?: { text?: unknown } }).notice;
+    if (parked && typeof parked.text === "string") {
+      this.notices = [
+        ...this.notices.filter((n) => n.askId !== p.ask_id),
+        {
+          id: p.ask_id,
+          askId: p.ask_id,
+          conversationId: c.id,
+          kind: "card",
+          text: parked.text,
+          raisedAt: since,
+          away: false,
+          waited: true,
+        },
+      ];
+      c.waitingOnNotice = true;
+      c.activity = "sent you a notice";
+      return;
+    }
+    const questions = normalizeAsk(raw);
+    /* Appended, never substituted — `Conversation.asks` is why. */
+    c.openAsk({
+      askId: p.ask_id,
+      questions,
+      answers: blankAnswers(questions),
+      ours: p.ours === true,
+      since,
+      /* A removal's evidence, which is what lets it be answered from
+         another wall (`afar.ts`). Only on Volery's own: an agent's
+         question carrying the same block is still an agent's question. */
+      remove: p.ours === true ? readRemoval((raw as { remove?: unknown }).remove) : null,
+      close: p.ours === true ? readClosing((raw as { close?: unknown }).close) : null,
+      /* The block every one of Volery's own carries unless it stays
+         (`ask::Settle`), which is what puts it in the digest's `confirms`
+         — the field a confirmation added next month crosses in. */
+      confirm: p.ours === true ? readConfirm((raw as { confirm?: unknown }).confirm) : null,
+    });
+    c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
+  }
+
   #wire() {
     const keep = this.#listeners.keep.bind(this.#listeners);
 
@@ -747,63 +813,12 @@ export class Skein {
          Rust reads nothing out of them (see `AskOpened`). Normalizing here is
          what lets a question shape change without touching Rust, and what
          keeps a malformed payload from parking a card with nothing to click. */
-      listen<{
-        conversation_id: string;
-        ask_id: string;
-        ask: { question?: unknown; options?: unknown; questions?: unknown };
-        ours?: boolean;
-      }>("ask:opened", (e) => {
-        const c = this.#byId.get(e.payload.conversation_id);
-        if (!c) return;
-        const raw = e.payload.ask ?? {};
-        /* A card's notice that is holding its turn open. Same park, same
-           channel, a different panel: it joins the notice queue at the front
-           rather than becoming a question with no question in it. See
-           `notice.rs::parked_payload`. */
-        const parked = (raw as { notice?: { text?: unknown } }).notice;
-        if (parked && typeof parked.text === "string") {
-          this.notices = [
-            ...this.notices.filter((n) => n.askId !== e.payload.ask_id),
-            {
-              id: e.payload.ask_id,
-              askId: e.payload.ask_id,
-              conversationId: c.id,
-              kind: "card",
-              text: parked.text,
-              raisedAt: Date.now(),
-              away: false,
-              waited: true,
-            },
-          ];
-          c.waitingOnNotice = true;
-          c.activity = "sent you a notice";
-          return;
-        }
-        const questions = normalizeAsk(raw);
-        /* Appended, never substituted — `Conversation.asks` is why. */
-        c.openAsk({
-          askId: e.payload.ask_id,
-          questions,
-          answers: blankAnswers(questions),
-          ours: e.payload.ours === true,
-          since: Date.now(),
-          /* A removal's evidence, which is what lets it be answered from
-             another wall (`afar.ts`). Only on Volery's own: an agent's
-             question carrying the same block is still an agent's question. */
-          remove: e.payload.ours === true ? readRemoval((raw as { remove?: unknown }).remove) : null,
-          close: e.payload.ours === true ? readClosing((raw as { close?: unknown }).close) : null,
-          /* The block every one of Volery's own carries unless it stays
-             (`ask::Settle`), which is what puts it in the digest's `confirms`
-             — the field a confirmation added next month crosses in. */
-          confirm: e.payload.ours === true ? readConfirm((raw as { confirm?: unknown }).confirm) : null,
-        });
-        c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
-      }),
+      listen<AskOpenedPayload>("ask:opened", (e) => this.#opened(e.payload)),
     );
 
     keep(
       /* `answered` is false when ask.rs gave up rather than when you replied —
-         the ten minutes ran out, or the card was closed mid-question. A card
+         the card was closed or stopped mid-question. A card
          that finds its own ask still parked here is one that never answered, so
          the transcript says so: the agent went on regardless, and a panel that
          showed the question and then nothing at all leaves that unaccounted
@@ -829,6 +844,7 @@ export class Skein {
       listen<{ ask_id: string; answered: boolean; deferred?: boolean; said?: string | null }>(
         "ask:closed",
         (e) => {
+          this.#reading?.add(e.payload.ask_id);
           /* A parked notice coming down — answered, queued because the wall went
              away or nobody got to it, or its card hung up. Its tool result says
              which, so there is no note to write. */
@@ -1308,6 +1324,26 @@ export class Skein {
 
       this.groups = s.server_groups.map((g) => new GroupRuntime(g));
       this.loaded = true;
+
+      /* Questions parked before this window was listening — a webview reload,
+         a remount, a card roused at launch asking before the listeners were
+         up. `ask:opened` is fire-and-forget, and since a question has no
+         deadline (2026-10-16) one that was missed would otherwise hold its card
+         undrawn until the machine went idle. After the cards and the listeners,
+         so every one has a card to land on; `#opened` skips what `ask:opened`
+         already drew. */
+      /* And anything that closed while the read was in flight is skipped:
+         Rust answered with a snapshot, and an `ask:closed` that overtook the
+         reply would otherwise find nothing to close and then watch a dead
+         question be drawn after it (found in review). */
+      this.#reading = new Set();
+      void invoke<AskOpenedPayload[]>("parked_asks")
+        .then((all) => {
+          const closed = this.#reading ?? new Set<string>();
+          all.filter((p) => !closed.has(p.ask_id)).forEach((p) => this.#opened(p));
+        })
+        .catch(() => {})
+        .finally(() => (this.#reading = null));
 
       /* And ask what each of the wall's directories answers to under a slash,
          spaced out and awaited by nobody. This is the difference between a
@@ -3976,41 +4012,15 @@ export class Skein {
    *  `answer` overrides the sheet — the one-question case still sends exactly
    *  the text of the option you clicked, unchanged from before questions were
    *  plural. */
-  /** The user is working on this question, so the deadline should move.
-   *
-   *  Fire-and-forget, and deliberately silent on failure: the one way this
-   *  fails is the question no longer being parked, which means it has just
-   *  been answered or has just expired — and neither is worth a fault banner
-   *  over a keystroke. The panel has already moved its own countdown by the
-   *  time this is called (`Ask.svelte`'s `stir`), so a lost one costs at most
-   *  the two deadlines disagreeing until the next.
-   *
-   *  See `ANSWER_HOLD` for why the deadline moves at all rather than the
-   *  countdown simply pausing. */
-  async stirAsk(conv: Conversation) {
-    /* Every question this card is parked on, not only the one drawn. A question
-       waiting behind another is one you have not been shown yet, and letting it
-       run its clock down while you work through the card's queue would expire it
-       for a wait you were never given the chance to end. Bounded by
-       `ANSWER_MAX` on both sides like any other hold, so this cannot stretch
-       past the client's own deadline. */
-    for (const ask of conv.asks) {
-      try {
-        await invoke("stir_ask", { askId: ask.askId });
-      } catch {
-        /* No longer waiting. Nothing to hold open. */
-      }
-    }
-  }
-
   /** Keep what has been answered of the sheet in front of you, in case the
    *  call closes before you send it.
    *
    *  Called on every answer recorded, with the whole sheet as it stands rather
    *  than the change — so one that is lost costs nothing but being one answer
-   *  behind, and the last to land is the truth. Silent on failure for
-   *  `stirAsk`'s reason: the one way it fails is the question no longer being
-   *  parked. See `heldAnswer` for what is kept and `ask.rs::Held` for what
+   *  behind, and the last to land is the truth. Silent on failure, because the
+   *  one way it fails is the question no longer being parked — just answered,
+   *  or just filed — and neither is worth a fault banner over a click. See
+   *  `heldAnswer` for what is kept and `ask.rs::Held` for what
    *  becomes of it. */
   async holdAsk(conv: Conversation) {
     const ask = conv.pendingAsk;
@@ -4185,12 +4195,6 @@ export class Skein {
         }).catch(() => {});
       }, delay),
     );
-  }
-
-  /** You are typing a follow-up to a notice that is holding its card's turn
-   *  open — move its deadline out, `stirAsk`'s reason. */
-  stirNotice(n: Notice) {
-    if (n.askId) void invoke("stir_ask", { askId: n.askId }).catch(() => {});
   }
 
   /** Take a notice down without a word.

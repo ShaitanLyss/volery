@@ -1045,9 +1045,10 @@ fn clip(s: &str, max: usize) -> String {
 /// What the caller is told when nobody answers.
 fn unanswered(what: &str) -> String {
     format!(
-        "nobody answered, so nothing was written — {what} did not happen. Either the question \
-         stood until it expired or the card was dismissed while it was up. Carry on with your \
-         own judgement, say that you offered, and do not simply try again."
+        "nobody answered, so nothing was written — {what} did not happen. The question was \
+         taken down unanswered: the card was dismissed while it was up, or the call was \
+         abandoned. Carry on with your own judgement, say that you offered, and do not \
+         simply try again."
     )
 }
 

@@ -83,7 +83,7 @@
   import { REAWAKEN_LABEL, reawakenSaid } from "./lib/rousing";
   import { Motion } from "./lib/motion.svelte";
   import { Machine } from "./lib/machine.svelte";
-  import { awakeLine, awakeSaid, reopenLine, reopenSaid } from "./lib/machine";
+  import { awakeLine, awakeSaid, idleLine, idleSaid, reopenLine, reopenSaid } from "./lib/machine";
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
   import { Control, type ControlHost } from "./lib/control.svelte";
   import { Voicing } from "./lib/voicing.svelte";
@@ -938,10 +938,10 @@
 
   /** A machine toggle from the keyboard says what is now true, since nothing
    *  on the wall moves when it flips. */
-  async function flipMachine(knob: "awake" | "reopen") {
+  async function flipMachine(knob: "awake" | "reopen" | "idle") {
     try {
       const now = await machine.toggle(knob);
-      leader.say(knob === "awake" ? awakeSaid(now) : reopenSaid(now));
+      leader.say(knob === "awake" ? awakeSaid(now) : knob === "idle" ? idleSaid(now) : reopenSaid(now));
     } catch (e) {
       skein.fault = String(e);
     }
@@ -2491,6 +2491,7 @@
             ? [
                 { id: "machine:awake", label: awakeLine(machine.status), on: machine.status.awake },
                 { id: "machine:reopen", label: reopenLine(machine.status), on: machine.status.reopen },
+                { id: "machine:idle", label: idleLine(machine.status), on: machine.status.idle },
               ]
             : [],
           /* And how the glass follows the screen under it: one layout scaled
@@ -2532,8 +2533,10 @@
         else if (id.startsWith("rest:")) skein.setResting(id.slice(5));
         else if (id === "reawaken") skein.setReawaken(!skein.reawaken);
         else if (id.startsWith("glass-scale:")) arrangements.setScale(glassScaleFor(id.slice(12)));
-        else if (id === "machine:awake" || id === "machine:reopen")
-          void machine.toggle(id.slice(8) as "awake" | "reopen").catch((e) => (skein.fault = String(e)));
+        else if (id === "machine:awake" || id === "machine:reopen" || id === "machine:idle")
+          void machine
+            .toggle(id.slice(8) as "awake" | "reopen" | "idle")
+            .catch((e) => (skein.fault = String(e)));
         /* And what the wall tells every card standing on it, one scope out from
            the territory menu's own. */
         else if (id === "guidance") guiding = { focus: null };

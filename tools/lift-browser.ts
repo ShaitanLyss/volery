@@ -93,7 +93,7 @@ const HOOKS_ITEMS = [
  *  the whole point of `the_wake_prefix_is_the_server_the_config_registers` is
  *  that the *real* `mcp_config` and the *real* constant agree, and a stub that
  *  named the server "browser" by hand would assert nothing at all. */
-const ASK_ITEMS = ["const ANSWER_MAX", "fn client_timeout_ms", "fn mcp_config"];
+const ASK_ITEMS = ["const CLIENT_CEILING_MS", "fn client_timeout_ms", "fn mcp_config"];
 
 /** `mcp_config` reaches for this, so it comes too. It is four lines and it is
  *  also where the `--cdp-endpoint` argument is actually written, which is the

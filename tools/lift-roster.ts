@@ -300,7 +300,7 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
   {
     file: "src-tauri/src/ask.rs",
     items: [
-      "const ANSWER_MAX",
+      "const CLIENT_CEILING_MS",
       "fn client_timeout_ms",
       "fn preview_schema",
       /* `file_schema` is `preview_schema`'s sibling and `tool_schema` calls both. */

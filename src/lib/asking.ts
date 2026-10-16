@@ -215,101 +215,6 @@ export function isUnsaid(answer: string | null): boolean {
   return answer === NO_PREFERENCE || answer === SKIPPED;
 }
 
-/* -- how long the whole call gets -----------------------------------------
- *
- * Mirrored in `ask.rs` — `ANSWER_BASE`, `ANSWER_PER_QUESTION`,
- * `ANSWER_PER_OPTION`, `ANSWER_MAX`, `answer_window` — and the duplication is
- * deliberate. `Ask.svelte` draws a live countdown, which is real information
- * rather than decoration: it is what tells you whether to keep reading or answer
- * now. The number it counts down to must be the number the parking thread gives
- * up on, and neither side can be handed the other's answer without a field on
- * `ask:opened` and a matching read in `skein.svelte.ts` — the panel holds the
- * *normalized* questions and Rust holds the raw arguments. So what is shared is
- * the arithmetic, and `ask.rs`'s tests assert the same table of payloads these
- * do.
- *
- * It was a flat ten minutes, which meant two different things depending on what
- * was asked. A call carrying five questions with three or four options each,
- * context and pros and cons per option, expired with the user still reading it —
- * "I was almost done, the answer time should scale with number of questions" —
- * and they answered all five immediately when re-asked, which is the evidence
- * the clock was the only thing wrong (sink `d2adbf74`). */
-
-/** The floor: what one bare question gets, and what every call used to get. */
-export const ANSWER_BASE = 600;
-
-/** What each question past the first adds. The first is what the floor pays
- *  for. */
-export const ANSWER_PER_QUESTION = 180;
-
-/** What each drawn option adds, over every question in the call.
- *
- *  The reading load is in the options rather than the question count — one
- *  decision between eight described alternatives is a longer read than four
- *  plain yes/nos, and an option carries a `detail` line precisely so it is worth
- *  reading. */
-export const ANSWER_PER_OPTION = 20;
-
-/** The ceiling, and it is not about patience. `ask.rs::client_timeout_ms` is
- *  written into the card's `--mcp-config` at spawn, so the *client's* deadline
- *  cannot scale with a call it has not received yet. It is set from this, and
- *  every call has to fit under it or the client gives up first and writes its own
- *  sentence instead of Skein's.
- *
- *  It is also the only thing that bounds a long call, now that the question
- *  count is not bounded: a twelve-question review saturates here rather than
- *  being cut down to fit. */
-export const ANSWER_MAX = 2700;
-
-/** How long this call waits, in seconds, from what it is asking.
- *
- *  Takes the questions the panel will actually draw — so the dropped empties and
- *  the placeholder are already applied by `normalizeAsk`, which is why this is
- *  the shorter half of the mirror. */
-export function answerWindow(questions: AskQuestion[]): number {
-  const n = Math.max(1, questions.length);
-  const options = questions.reduce((t, q) => t + q.options.length, 0);
-  return Math.min(
-    ANSWER_MAX,
-    ANSWER_BASE + ANSWER_PER_QUESTION * (n - 1) + ANSWER_PER_OPTION * options,
-  );
-}
-
-/** How much time touching the panel buys, from the moment you touch it.
- *
- *  "we need to improve the ask tool to not decrease time when i'm litterally
- *  active and typing in it, it's stressful and work losing for no reason" —
- *  and then every remaining question was skipped, which under the old meaning
- *  of a skip (see `NO_PREFERENCE`) was the dangerous outcome as well as the
- *  rushed one. Sink `7264177f`.
- *
- *  **The panel cannot simply pause its own clock**, and that is why this is
- *  arithmetic rather than a boolean. The countdown is not decoration: it mirrors
- *  the deadline `ask.rs`'s parking thread gives up on, and a display frozen over
- *  a thread that is still counting would be an instrument lying in the one
- *  direction that loses work. So the *deadline itself* moves, on both sides, by
- *  the same rule — the panel tells Rust it was touched (`stir_ask`) and each
- *  half applies this to the same event.
- *
- *  Five minutes because it has to outlast reading the next question, not merely
- *  the keystroke. Shorter and a pause to think reads as inactivity; longer and
- *  a panel brushed on the way past holds the agent for no reason. It is under
- *  `ANSWER_BASE`, which is what makes the never-touched case need no special
- *  arm — the floor already beats it. */
-export const ANSWER_HOLD = 300;
-
-/** The deadline this call actually has, in seconds from when it opened.
- *
- *  `stirredAt` is when the panel was last touched, in seconds from the same
- *  origin; `0` is "not since it opened", which the floor absorbs. Clamped to
- *  `ANSWER_MAX` at the top, because that ceiling is not patience — it is the
- *  client's own deadline, written into the card's `--mcp-config` at spawn, and
- *  the one number here that nothing on this side may exceed. Typing past it
- *  buys nothing, and the honest thing is for the countdown to say so. */
-export function heldWindow(base: number, stirredAt: number): number {
-  return Math.min(ANSWER_MAX, Math.max(base, stirredAt + ANSWER_HOLD));
-}
-
 /** Enough of a question to name it, when the agent named nothing. */
 function headerFrom(question: string): string {
   const flat = question.replace(/\s+/g, " ").trim();
@@ -488,9 +393,8 @@ export function normalizeAsk(raw: {
    *
    * Nothing about the panel needed one: questions are asked one at a time, the
    * spine wraps, and the whole thing scrolls. What a long call costs is reading
-   * time, and that is bounded where it belongs — `ANSWER_MAX`, which is a real
-   * constraint rather than a taste, since the client's deadline is written once
-   * at spawn. */
+   * time, and since 2026-10-16 nothing bounds that at all: a question has no
+   * deadline, so a long sheet is read at the pace it takes. */
   return out;
 }
 
@@ -861,8 +765,9 @@ export function heldAnswer(questions: AskQuestion[], answers: Answers): Held | n
   return { said, rest: rest.length ? { questions: rest } : null };
 }
 
-/* What `ask.rs` sends the agent when the question is never answered: the
-   deadline running out, and the card being closed while it was still asking.
+/* What `ask.rs` sends the agent when the question is never answered: the card
+   being closed while it was still asking — and, until questions stopped having
+   a deadline on 2026-10-16, the deadline running out.
    Duplicated across the language boundary on purpose — the same bargain
    `isStopNote` strikes with the CLI's own wording, and for the same reason.
    The transcript fold reads a reply back off disk with nothing but its text to
@@ -870,11 +775,10 @@ export function heldAnswer(questions: AskQuestion[], answers: Answers): Held | n
    drawn as a sentence you said. Matched on the opening, since both go on to
    tell the agent what to do instead.
 
-   Which is also what let the timeout sentence start naming its own duration:
-   `ask.rs::TIMED_OUT_OPENING` is fixed and everything after it is free. The
-   wording it had while the deadline was a flat ten minutes stays here beside the
-   new one — a transcript on disk carries it and will go on being folded, and
-   dropping it would draw Skein's line as a sentence the user typed. */
+   The two timeout wordings are no longer written by anything — the flat
+   ten minutes, then the scaled deadline that named its own length — and both
+   stay: a transcript on disk carries them and will go on being folded, and
+   dropping them would draw Skein's line as a sentence the user typed. */
 const UNANSWERED = [
   "The user did not answer in time.",
   "The user did not answer within ten minutes.",
@@ -894,8 +798,9 @@ const UNANSWERED = [
    Which is the precise seam `UNANSWERED` exists to close, one case short.
 
    Found while making a timeout queue the question instead of expiring it
-   (sink `7264177f`), which turns this from a rare case into the ordinary one:
-   every ask that runs out of time now lands here. */
+   (sink `7264177f`). The timeout has gone since; what lands here now is a
+   question filed by the away switch, by a machine nobody is touching, or by
+   a defer. */
 const QUEUED = ["Volery is in away mode.", "Volery queued your question."];
 
 /** What the panel says about a question that went to the pile.

@@ -59,9 +59,6 @@ export interface CardHandle {
   /** May a panel drawn for one of its questions run scripts — the card's
    *  kind, as it is for a question asked here. */
   readonly scripts: boolean;
-  /** Whether a touch on one of its questions extends the question's clock.
-   *  No touch travels, so a question elsewhere is held still. */
-  readonly stirs: boolean;
   /** What the dock says beside its name. */
   readonly hints: Said[];
   /** The fields its right-click reads (`menu.ts::cardRows`). */
@@ -95,14 +92,12 @@ export interface CardHandle {
   readonly notices: readonly Notice[];
   answer(ask: PendingAsk): void;
   defer(ask: PendingAsk): Promise<void> | void;
-  /** A touch on its question (`stirs`) and the question going back into the
-   *  pile while you answer something else. */
-  stirAsk(): void;
+  /** What has been answered of the sheet in front of you, kept in case the
+   *  call closes before you send it. */
   holdAsk(): void;
   /** Take a notice down: an empty reply acknowledges it, anything else is a
    *  follow-up sent to the card. */
   acknowledge(n: Notice, reply: string): void | boolean | Promise<boolean | void>;
-  stirNotice(n: Notice): void;
 }
 
 /** What `App.svelte` lends the handles: the gestures whose state is the
@@ -143,7 +138,6 @@ function refused(skein: Skein, c: Can): Can {
  *  arms in `App.svelte` were. */
 export class LocalCard implements CardHandle {
   readonly remote = null;
-  readonly stirs = true;
   readonly #skein: Skein;
   readonly #hands: Hands;
   constructor(
@@ -302,17 +296,11 @@ export class LocalCard implements CardHandle {
   defer() {
     return this.#skein.deferAsk(this.conv);
   }
-  stirAsk() {
-    void this.#skein.stirAsk(this.conv);
-  }
   holdAsk() {
     void this.#skein.holdAsk(this.conv);
   }
   acknowledge(n: Notice, reply: string) {
     return reply ? this.#skein.followUpNotice(n, reply) : this.#skein.acknowledgeNotice(n);
-  }
-  stirNotice(n: Notice) {
-    this.#skein.stirNotice(n);
   }
 }
 
@@ -321,7 +309,6 @@ export class LocalCard implements CardHandle {
  *  the glass — is done here. Everything else says why it cannot. */
 export class RemoteCard implements CardHandle {
   readonly conv = null;
-  readonly stirs = false;
   readonly #skein: Skein;
   readonly #walls: Elsewhere;
   readonly #hands: Hands;
@@ -437,12 +424,10 @@ export class RemoteCard implements CardHandle {
   defer(ask: PendingAsk) {
     return this.#walls.defer(this.shadow, ask);
   }
-  stirAsk() {}
   holdAsk() {}
   acknowledge(n: Notice, reply: string) {
     return this.#walls.answerNotice(this.shadow, n, reply);
   }
-  stirNotice() {}
 }
 
 /** Every card a gesture can reach, here and on every other wall, as handles.

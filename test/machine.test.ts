@@ -4,6 +4,8 @@ import {
   awakeLine,
   awakeSaid,
   comeback,
+  idleLine,
+  idleSaid,
   normalize,
   reopenLine,
   reopenSaid,
@@ -21,6 +23,8 @@ const laptop: MachineStatus = {
   armed: true,
   startupBlocked: false,
   arso: { policyOff: false, user: true, managed: false },
+  idle: true,
+  idleAway: false,
 };
 
 describe("how far a wall comes back by itself", () => {
@@ -119,12 +123,15 @@ describe("the menu rows stay short", () => {
         for (const startupBlocked of [true, false])
           for (const ownsEntry of [true, false])
             states.push({ ...laptop, startupBlocked, ownsEntry, arso: { policyOff, user, managed } });
+  for (const idle of [true, false])
+    for (const idleAway of [true, false]) states.push({ ...laptop, idle, idleAway });
   states.push(UNSUPPORTED);
 
   test("no row is longer than a short phrase", () => {
     for (const s of states) {
       expect(awakeLine(s).length).toBeLessThanOrEqual(48);
       expect(reopenLine(s).length).toBeLessThanOrEqual(48);
+      expect(idleLine(s).length).toBeLessThanOrEqual(48);
     }
   });
 
@@ -132,6 +139,29 @@ describe("the menu rows stay short", () => {
     expect(awakeLine({ ...laptop, lid: "sleep" })).toContain("lid");
     expect(reopenLine({ ...laptop, arso: { ...laptop.arso, managed: true } })).toContain("update restarts only");
     expect(reopenLine({ ...laptop, arso: { ...laptop.arso, policyOff: true } })).toContain("policy");
+  });
+});
+
+describe("the idle sentence says what turning it off costs", () => {
+  /* Questions have no deadline (2026-10-16), so this knob is the whole of
+     what moves one off a machine nobody is at — off has to say so. */
+  test("on and untouched-for-a-while says the questions are going to the pile", () => {
+    expect(idleSaid({ ...laptop, idleAway: true })).toContain("go to the pile");
+    expect(idleLine({ ...laptop, idleAway: true })).toContain("now");
+  });
+
+  test("on and in use says when it would", () => {
+    expect(idleSaid(laptop)).toContain("as long as it takes to lock");
+  });
+
+  test("off says a question then waits for you", () => {
+    expect(idleSaid({ ...laptop, idle: false })).toContain("waits until you answer");
+  });
+
+  test("an older wall that sends no knob reads as off, not as on", () => {
+    /* The Rust default is on; what is drawn before it answers must not claim
+       a backstop it has not confirmed. */
+    expect(normalize({ supported: true }).idle).toBe(false);
   });
 });
 

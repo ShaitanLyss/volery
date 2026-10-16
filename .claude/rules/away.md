@@ -28,9 +28,10 @@ paths:
 ### The failure this exists for
 
 `ask_user` parks an HTTP request until you click. `.claude/rules/ask.md` spends two thousand
-words on the three watchdogs it took to make that survive ten minutes, and the longest a call
-can possibly wait is `ANSWER_MAX` — 45 minutes, and only for a call carrying a dozen
-questions. That is the right shape for a question asked while you are at the wall.
+words on the three watchdogs it took to make that survive ten minutes, and when this was built
+the longest a call could wait was `ANSWER_MAX` — 45 minutes, and only for a call carrying a dozen
+questions. (A question has no deadline at all since 2026-10-16, which makes this file the only
+thing standing between a card and an empty room — see *Nobody at the keyboard* below.)
 
 It is the wrong shape for the evening of 2026-10-01. Lyss went home having handed direction to
 an orchestrator card running several workers, each told to batch its product questions as
@@ -279,11 +280,9 @@ launch anyway, so only its row in the peek's list is affected.
   and the free-text field would be a second place for a design to arrive unrenderable. That is
   what `Ask.svelte` taking `ask`/`project`/`title` props instead of a `Conversation` bought:
   the pile has no card blocked behind it and could not have invented one.
-- **`parked={false}` replaces the countdown with how long it waited.** The countdown is real
-  information for a live ask — it is what tells you whether to keep reading or answer now —
-  and for a question out of the pile it would be an instrument reporting a pressure that does
-  not exist. What is worth knowing instead is how long it has stood, which is what makes a
-  pile readable in any order.
+- **How long it has stood, not a countdown.** It was `parked={false}` that swapped one for the
+  other, back when a live ask had a countdown; since 2026-10-16 neither has one, and both draw
+  when the question was asked — which is what makes a pile readable in any order.
 
 ### The pile had no door of its own, and that is a class of bug
 
@@ -385,9 +384,26 @@ since they travel too (`take_parked_questions(…, staying_only)`).
 
 What is **not** done, and should not be mistaken for done: she is away everywhere, the question is
 filed, and she comes back on the *other* machine. The pile does not cross the flyway; that is sink
-`3368f78f`. And a wall nobody has touched in a while stops *announcing* `present`
-(`machine::idle_away`, `machine.md`) but does not change its own filing, for the reason that
-section gives — sink `2ddb9ff2` is the stage after it, blocked on `3368f78f`.
+`3368f78f`.
+
+### Nobody at the keyboard (2026-10-16)
+
+A wall nobody has touched for as long as it takes to lock (`machine::idle_away`, `machine.md`)
+counts as switched away **for filing**: `nobody_to_ask` is `(away_here || idle) && !(travels &&
+present_elsewhere)`, and `watch_idle` — called on the 25s tick every parked call already has —
+files what is parked through the same `defer_parked` the switch runs, with a chronicle row since
+nothing opens the pile on the way back. It was announcement-only until questions lost their
+deadline; with a deadline a forgotten laptop's question was filed within forty-five minutes
+anyway, and without one it would have waited for days. That is why it changed, and why the
+`AwayWhenIdle` knob is on by default with a chord (`space m i`).
+
+What it deliberately does **not** do: draw the away screen, mute the ladder, or mark a rest notice
+`away` — those follow the switch alone (`switched_away`), because they are about a person having
+said where she is, and an inference from an untouched mouse should not silence anything. The
+filing reason is `Queued::Unattended`, whose opening (`UNATTENDED_OPENING`) does not claim the wall
+is in away mode, since nobody switched it. And it is idempotent rather than edge-triggered: an
+edge needs the start of a stretch of idleness, and a stretch that began with nothing parked
+would leave a stale one behind.
 
 Demonstrated 2026-10-14 on two labs of one build (`cfa`, `cfb` on one private flyway key): with
 cfb switched away by its card's own `away` tool and cfa present, a card on cfb called `ask_user`.
@@ -729,8 +745,10 @@ Three consequences worth knowing before touching it:
   generalised, under `RELAY_MARK`'s *from the wall —*, which is honest here in a way it is not
   for an answer you composed yourself.
 
-`smith` and `docket` still time out, and that is the line: they write to somebody else's
-service, where re-entry can check nothing about what changed while you were out.
+`smith` and `docket` (and `update_volery`) cannot be filed, and that is the line: they write to
+somebody else's service, where re-entry can check nothing about what changed while you were out.
+Since 2026-10-16 they no longer time out either — they **wait**, parked, travel to any wall she is
+at, and her yes still lands on an open turn when she is back.
 
 The panel says so rather than implying a decision is simply carried out — *"checked again
 before anything happens — if the reason has gone, it won't"* — and it keeps the sentence that
@@ -739,10 +757,9 @@ would leave you believing a card was closed that is still open.
 
 ### What was deliberately left out
 
-- **Partial answers are still lost on a live timeout.** That is `ask.md`'s own open item and a
-  different piece of work.
-- **Volery's own parked questions keep timing out** — see the asymmetry above.
-- **Nothing goes away by itself.** No idle timer, no "you have not touched the wall in two
-  hours". `ask.md` already settled the general case: guessing that nobody is there would
-  answer for somebody who had merely gone to make coffee, and that is the one wrong answer.
-  Away mode is a thing you say.
+- **Away mode is still a thing you say.** The screen, the silence and the morning pile come
+  only from the switch. What changed on 2026-10-16 is narrower: an untouched machine *files*
+  questions as the switch would (*Nobody at the keyboard*, above), because once a question has
+  no deadline the alternative is a card parked on an empty room. It files and decides nothing —
+  a question in the pile is still answered by her — which is why it does not run into the old
+  objection that guessing nobody is there answers for somebody gone to make coffee.

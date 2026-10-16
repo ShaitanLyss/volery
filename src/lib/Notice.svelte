@@ -25,7 +25,6 @@
     onclosecard,
     onfollow,
     onselect,
-    onstir,
   }: {
     notice: Notice;
     project: string;
@@ -40,8 +39,6 @@
      *  a reply that did not is kept rather than dropped (`replies.svelte.ts`). */
     onfollow: (text: string) => void | boolean | Promise<boolean | void>;
     onselect?: () => void;
-    /** Typing into a notice that is holding a turn open — see `stirNotice`. */
-    onstir?: () => void;
   } = $props();
 
   /* The reply lives in `replies`, keyed by the notice, and this field is only
@@ -168,7 +165,6 @@
           closeCard();
           return;
         }
-        onstir?.();
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           send();

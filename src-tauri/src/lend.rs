@@ -362,9 +362,10 @@ pub(crate) fn question(l: &Lending, reason: &str, who: &str) -> Value {
 /// What the card is told when nobody answered.
 pub(crate) fn unanswered(l: &Lending) -> String {
     format!(
-        "nobody answered, so nothing was lent — you do not have the {}. Either the question \
-         stood until it expired or the card was dismissed while it was up. Carry on with your \
-         own judgement, say that you asked, and do not simply ask again.",
+        "nobody answered, so nothing was lent — you do not have the {}. The question was \
+         taken down unanswered: the card was dismissed while it was up, or the call was \
+         abandoned. Carry on with your own judgement, say that you asked, and do not simply \
+         ask again.",
         l.label
     )
 }
