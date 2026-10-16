@@ -10,6 +10,7 @@
   import Drop from "./lib/Drop.svelte";
   import Sieve from "./lib/Sieve.svelte";
   import { Attention } from "./lib/attention.svelte";
+  import { causeOf } from "./lib/peeking";
   import { Presence } from "./lib/presence.svelte";
   import { lasted } from "./lib/presence";
   import Vigil from "./lib/Vigil.svelte";
@@ -754,6 +755,15 @@
               key: n.id,
               detail: `${noticeWords(n).mark.toLowerCase()} — ${noticeLine(n.text)}`,
               waitedSeconds: Math.floor((clock.t - n.raisedAt) / 1000),
+              /* A rest notice is raised at least `SETTLE_MS` after the rest it
+                 is about, and the rest was on the wall from its first moment —
+                 so a card that finished while you were looking is seen, even
+                 if its notice went up after you looked away. */
+              since:
+                n.kind === "card" ? n.raisedAt : Math.min(n.raisedAt, clock.t - c.idleSeconds * 1000),
+              /* An error notice about an allowance is the account's news, and
+                 is folded with every other card it caught. */
+              cause: n.kind === "error" ? causeOf(c.lastFault, c.accountLabel) : undefined,
             },
           ];
         }),

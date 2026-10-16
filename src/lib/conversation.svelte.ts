@@ -1147,6 +1147,17 @@ export class Conversation {
   costUsd = $state(0);
   turns = $state(0);
   lastError = $state<string | null>(null);
+  /** Which of the failures a card may heal the last turn broke on, or null —
+   *  for a turn that did not break, or broke some other way. Read by the
+   *  attention ladder, which folds every card an allowance ran out under into
+   *  one row per account (`peeking.ts::coalesce`); `lastError` is the CLI's
+   *  sentence, and the sentence alone cannot say it was a 429. */
+  lastFault = $state<HealKind | null>(null);
+  /** When this card's process died under it, in epoch ms, or null. The moment
+   *  the failure became visible on the wall — which `idleSeconds` cannot say,
+   *  since a card that dies at rest is still counting from its last turn, and
+   *  the attention ladder would read a crash after you left as one you saw. */
+  diedAt = $state<number | null>(null);
 
   /* ── healing a turn that broke on the way out ───────────────────────────
    *
@@ -2810,6 +2821,7 @@ export class Conversation {
           .trim();
         const { ending, detail } = endingFor(ev, this.lastWords, this.#sawAskTool);
         this.ending = ending;
+        this.lastFault = null;
         /* A turn that reached a model at all clears the budget, whatever it
            then did with it — a stop, a question, an error of some other kind.
            The two attempts are for one broken send and not for a card's whole
@@ -2848,6 +2860,7 @@ export class Conversation {
              find. Skein adds the note saying it is trying again, when it
              actually does. */
           const kind = healKindOf(ev);
+          this.lastFault = kind;
           /* Before any decision about re-sending, and outside every branch
              below — see `pendingSpent`. The server refusing this account is
              news whatever is then done about the prompt. */
@@ -3306,6 +3319,8 @@ export class Conversation {
     this.died = false;
     this.working = false;
     this.lastError = null;
+    this.lastFault = null;
+    this.diedAt = null;
     /* A cleared card is a new session with no turn behind it, so a heal queued
        against the old one would re-send your last prompt into a conversation
        that has never heard it — the one case where repeating a prompt is not
@@ -3429,6 +3444,8 @@ export class Conversation {
       this.died = true;
       this.ending = "error";
       this.lastError = `process exited ${code}`;
+      this.lastFault = null;
+      this.diedAt = Date.now();
       this.activity = `exited ${code}`;
       this.#push("error", `process exited with code ${code}`);
     } else {

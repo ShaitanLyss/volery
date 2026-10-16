@@ -28,27 +28,21 @@ import { clock } from "./conversation.svelte";
 import { Listeners } from "./listeners";
 import { nameBesideProject } from "./naming";
 import { ring } from "./timing";
+import {
+  causeOf,
+  coalesce,
+  look,
+  LOOKING,
+  peekKey,
+  toAnnounce,
+  unseen,
+  type PeekItem,
+  type Sight,
+} from "./peeking";
 
-export type PeekItem = {
-  id: string;
-  project: string;
-  /** Empty for a card nothing has named yet — the peek prints the project
-   *  beside it, which is the more useful of the two facts anyway. Resolved here
-   *  rather than in `Peek.svelte`, since that is a second window and the item is
-   *  the whole of what crosses to it. */
-  title: string;
-  /** `rang` is the one that is not a conversation. A countdown that has run out
-   *  is waiting to be noticed, which is the entire job of this ladder — and
-   *  building it a notification path of its own would mean a second answer to
-   *  "how does Skein get your attention", with a Windows toast at the end of it.
-   *  See the note at the top of the file for why there isn't one. */
-  kind: "blocked" | "notice" | "overdue" | "failed" | "rang";
-  /** What makes this item news, when that is not the card — a notice's own
-   *  id, since a card's second notice is news its first one already rang for. */
-  key?: string;
-  detail: string;
-  waitedSeconds: number;
-};
+/* The item's shape and the two decisions about it — what you have already
+   seen, and an account's swarm folded to one row — are pure, in `peeking.ts`. */
+export type { PeekItem } from "./peeking";
 
 /** Margin from the screen edge, in logical pixels. */
 const EDGE = 18;
@@ -88,7 +82,19 @@ export class Attention {
   #listeners = new Listeners();
   #peek: Window | null = null;
   #shown = false;
-  #lastSignature = "";
+  /** Where you have been looking, folded on every pass — `peeking.ts::look`.
+   *  What the peek may say is only what this says you have not seen. */
+  #sight: Sight = LOOKING;
+  /** What the peek has already announced since you last looked, by key — a
+   *  window, a flash and a chime are spent once per piece of news, and a
+   *  dismissal is that spending too. */
+  #announced = new Set<string>();
+  /** When the window last lost focus — `look` dates the leaving from the blur,
+   *  not from whichever pass noticed it. */
+  #blurredAt: number | null = null;
+  /** What the latest unfocused pass would show, so a pass that awaited its way
+   *  to `show()` can see that a later one found nothing and take it down again. */
+  #latest: PeekItem[] = [];
   #placed = false;
   /** Which alarms have already sounded — see `#alarm`. */
   #sounded: string[] = [];
@@ -154,6 +160,7 @@ export class Attention {
     keep(
       main.onFocusChanged(({ payload }) => {
         this.focused = payload;
+        this.#blurredAt = payload ? null : Date.now();
         /* Coming back to the studio is itself the acknowledgement. */
         if (payload) void this.hide();
       }),
@@ -172,9 +179,9 @@ export class Attention {
 
     keep(
       listen("peek:dismiss", () => {
+        /* Nothing to write down: everything the peek was showing is already
+           in `#announced`, so it stays away until something new arrives. */
         this.#shown = false;
-        /* Don't re-show for the same set — it was dismissed on purpose. */
-        this.#lastSignature = this.#signature(this.items);
       }),
     );
 
@@ -199,6 +206,11 @@ export class Attention {
          worth a window: that is news, and nothing else reports it. */
       if (c.dormant && !c.died) continue;
       if (c.pendingAsk) {
+        /* Keyed and dated by the *newest* ask, not the one drawn: a card can
+           hold several (a subagent asking behind its parent's question), and a
+           second question arriving after you left is news even though the card
+           was already blocked on one you had seen. */
+        const newest = c.asks[c.asks.length - 1] ?? c.pendingAsk;
         out.push({
           id: c.id,
           project: c.project,
@@ -210,6 +222,8 @@ export class Attention {
              its own words and several the headers that exist for this. */
           detail: askHeadline(c.pendingAsk.questions),
           waitedSeconds: Math.floor((clock.t - c.pendingAsk.since) / 1000),
+          key: newest.askId,
+          since: newest.since,
         });
       } else if (told.has(c.id)) {
         continue;
@@ -221,6 +235,12 @@ export class Attention {
           kind: "failed",
           detail: c.lastError ?? "stopped",
           waitedSeconds: c.idleSeconds,
+          /* A card that died at rest is still counting idle from its last
+             turn, so its death is dated by itself. */
+          since: c.died && c.diedAt !== null ? c.diedAt : clock.t - c.idleSeconds * 1000,
+          /* An allowance that ran out, which `coalesce` folds with every other
+             card it caught on the same account. */
+          cause: causeOf(c.lastFault, c.accountLabel),
         });
       } else if (c.tier === "ask" && c.idleSeconds >= GRACE_S) {
         out.push({
@@ -230,6 +250,9 @@ export class Attention {
           kind: "overdue",
           detail: c.activity,
           waitedSeconds: c.idleSeconds,
+          /* The rest it reports was on the wall `GRACE_S` before this row was
+             on the ladder — which is the whole reason `since` exists. */
+          since: clock.t - c.idleSeconds * 1000,
         });
       }
     }
@@ -244,16 +267,10 @@ export class Attention {
     /* A crash is news and a rung timer is an appointment, so `failed` outranks
        it; a blocked agent outranks both, being genuinely stopped. */
     const rank = { blocked: 0, notice: 1, failed: 2, rang: 3, overdue: 4 } as const;
-    return out.sort(
+    return coalesce(out).sort(
       (a, b) => rank[a.kind] - rank[b.kind] || b.waitedSeconds - a.waitedSeconds,
     );
   });
-
-  /** Identity of *what* is waiting, so a card ageing by a second doesn't
-   *  count as something new to announce. */
-  #signature(items: PeekItem[]): string {
-    return items.map((i) => `${i.kind}:${i.key ?? i.id}`).join("|");
-  }
 
   async #peekWindow(): Promise<Window | null> {
     if (this.#peek) return this.#peek;
@@ -329,9 +346,16 @@ export class Attention {
 
   /** Called on a tick from the studio. Idempotent — it only acts on change. */
   async sync() {
-    if (!this.enabled) return;
-
     const items = this.items;
+
+    /* Where you have been looking, folded before anything can return early —
+       ahead of `enabled` and of away mode both. `look` forgets a key the moment
+       it leaves the ladder, and a pass that did not run would miss the leaving:
+       a card answered and asking again would read as the question you saw
+       before you left. See `peeking.ts`. */
+    this.#sight = look(this.#sight, items, this.focused, Date.now(), this.#blurredAt);
+
+    if (!this.enabled) return;
 
     /* Away mode, and it silences the whole ladder rather than one rung of it.
        `enabled` is a preference about whether Skein may interrupt you; this is
@@ -359,8 +383,8 @@ export class Attention {
        question parked or a notice raised. Kept current while away for
        `#alarm`'s reason: a pass that skipped the bookkeeping would come back
        to a pile of things that all look fresh, and ring them together. */
-    const urgent = items.filter((i) => i.kind === "blocked" || i.kind === "notice");
-    const keyOf = (i: PeekItem) => `${i.kind}:${i.key ?? i.id}`;
+    const urgent = items.filter((i) => i.kind === "blocked" || i.kind === "notice" || i.rings);
+    const keyOf = peekKey;
     /* And only what arrived since this ladder started watching: a notice that
        stood across a restart is not news on launch, and ringing for every one
        of them each time the wall opens is the bell crying wolf. */
@@ -372,17 +396,17 @@ export class Attention {
       /* Hidden rather than merely not shown: going away with a peek on screen
          must take it down, or away mode begins with the exact thing it exists
          to prevent still sitting in the corner. */
+      this.#latest = [];
       if (this.#shown) await this.hide();
-      this.#lastSignature = "";
+      this.#announced = new Set();
       return;
     }
 
-    const sig = this.#signature(items);
-
     // Focused, or nothing wants you: make sure the peek is away.
     if (this.focused || items.length === 0) {
+      this.#latest = [];
       if (this.#shown) await this.hide();
-      if (items.length === 0) this.#lastSignature = "";
+      this.#announced = new Set();
       /* **The chime is not a peek, and focus is not presence.** The window is
          in front on the desk you walked away from — that is the ordinary way
          to leave it — so a bell that only rang when another app had focus
@@ -396,19 +420,27 @@ export class Attention {
       return;
     }
 
-    void emit("peek:set", { items });
+    /* **Only what you have not seen.** This used to be every item on the
+       ladder, so going to another window threw the peek up at once with the
+       wall's whole standing state in it — questions, failures and finished
+       cards you had been looking at a moment before. Lyss: "nonsensical
+       because I was already on the wall so I know what was going on". What it
+       shows now is what arrived after you left, and only that; everything you
+       left behind is still on the wall, which is where you will see it. */
+    const shown = unseen(items, this.#sight);
+    const { news, announced } = toAnnounce(shown, this.#announced);
+    this.#announced = announced;
+    this.#latest = shown;
+    if (shown.length === 0) {
+      if (this.#shown) await this.hide();
+      return;
+    }
 
-    if (sig === this.#lastSignature) return;
-    const prior = new Set(this.#lastSignature.split("|"));
-    this.#lastSignature = sig;
-    /* What this showing adds that has not already rung. A question or notice
-       rung while the window was in front is not news again because you then
-       looked away from it. */
-    const freshKeys = new Set(fresh.map(keyOf));
-    const news = items.filter((i) => {
-      if (i.kind === "blocked" || i.kind === "notice") return freshKeys.has(keyOf(i));
-      return !prior.has(`${i.kind}:${i.id}`);
-    });
+    /* Kept current while it is up, so a row answered elsewhere leaves it. */
+    void emit("peek:set", { items: shown });
+    /* A window, a flash and a chime once per piece of news. What is already
+       announced, or was dismissed, stays down until something new arrives. */
+    if (!news.length) return;
 
     const w = await this.#peekWindow();
     if (!w) return;
@@ -416,15 +448,28 @@ export class Attention {
     await w.show().catch(() => {});
     /* Never steal focus — the peek is a glance, not an interruption. */
     this.#shown = true;
+    /* A later pass may have run while this one awaited — the window came back
+       to the front, or the row was answered — and found nothing to show. It
+       could not hide a peek that was not up yet, so this pass does. */
+    if (this.#latest.length === 0) {
+      await this.hide();
+      return;
+    }
 
     await getCurrentWindow()
       .requestUserAttention(UserAttentionType.Informational)
       .catch(() => {});
 
     /* Not when the alarm has just rung this same tick: a countdown that ran out
-       while you were away is one piece of news, and it has already been said. */
-    if (this.chime && !rang && news.length) {
-      sound(news.some((i) => i.kind === "blocked") ? "blocked" : "overdue");
+       while you were away is one piece of news, and it has already been said.
+       And a question or notice only if it is fresh on the bell's own books,
+       which is what keeps one that stood across a restart from ringing. */
+    const freshKeys = new Set(fresh.map(keyOf));
+    const rings = news.filter(
+      (i) => (i.kind !== "blocked" && i.kind !== "notice" && !i.rings) || freshKeys.has(keyOf(i)),
+    );
+    if (this.chime && !rang && rings.length) {
+      sound(rings.some((i) => i.kind === "blocked") ? "blocked" : "overdue");
     }
   }
 }

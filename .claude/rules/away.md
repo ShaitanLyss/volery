@@ -5,6 +5,8 @@ paths:
   - "src/lib/presence.svelte.ts"
   - "src/lib/Vigil.svelte"
   - "src/lib/attention.svelte.ts"
+  - "src/lib/peeking.ts"
+  - "src/lib/Peek.svelte"
   - "src/lib/away.ts"
   - "src/lib/pieces.ts"
   - "src/lib/Away.svelte"
@@ -159,6 +161,109 @@ ringing in an empty room. Muting keeps the bookkeeping and drops only the sound.
 
 The peek is **hidden**, not merely not shown: going away with one on screen must take it down,
 or away mode begins with the exact thing it exists to prevent still sitting in the corner.
+
+### The peek says only what you have not seen
+
+Lyss, 2026-10-16: *"they show up when I go to another window, which is nonsensical because I
+was already on the wall so I know what was going on"*. She was right about the mechanism, not
+just the feel. `Attention.sync` showed the peek whenever the window was not in front and the
+ladder held anything. So alt-tab threw up the wall's whole standing state at once: questions she
+had been reading, a failure she had just seen go rust, a card that finished in front of her.
+The signature check underneath only governed the chime. The window, and the taskbar flash with
+it, came up for everything.
+
+**Seen means it was there while the window was in front, and it has stood without a break
+since.** "It" is the item itself, *or the state it reports*. `peeking.ts` is the whole rule,
+pure and asserted:
+
+- `look` folds every pass into a `Sight`: `leftAt`, when the window stopped being in front, and
+  `heard`, when each key now on the ladder was first on it. A key that leaves is **forgotten**.
+  So a card whose question was answered elsewhere and that then asks a second one is heard
+  afresh. Without the forgetting, `blocked:<card>` would read as the question you left behind.
+  `look` runs ahead of `enabled` and of away mode for the same reason: a pass that does not run
+  misses the leaving.
+- `since` is the state's own start, where that is earlier than its row. An `overdue` row reaches
+  the ladder `GRACE_S` after the rest it reports, and a rest notice `SETTLE_MS` or more after
+  its rest. Both rests were on the wall from their first moment. So a card that finished while
+  you were looking is seen even when its row arrives after you left. Another wall's question has
+  no `since`. Only this wall's hearing of it is known, and a question that reaches this wall
+  while you are away is news even if it was asked earlier.
+- `unseen` is what the peek shows: `min(heard, since) > leftAt`. The peek lists **only** those
+  rows, not the ladder. What you left behind is still on the wall, where you will see it.
+- `toAnnounce` spends the window, the flash and the chime once per key, pruned to what is still
+  showing. So a dismissal holds until something new arrives, and a row that resolves does not
+  bring the peek back for whatever is left. A dismissal used to be undone by any row leaving,
+  because it was recorded as the whole list's signature.
+
+Two consequences, both deliberate:
+
+- **Focus stands in for looking, in the quiet direction.** If the window is in front and you have
+  walked away, whatever happens is "seen" as far as the peek is concerned. Coming back, you are
+  looking at the wall first, and the chime covers the walk (*the chime is not a peek, and focus
+  is not presence*). The peek is for a window you cannot see, and this does not change that.
+- **A wall opened behind another window** counts its own launch as the leaving. A notice or a
+  rung timer from before then is not news. That is the rule the bell already kept (`#watching`).
+
+Three places the inputs had to be right, each found by the red-team pass:
+
+- **A blocked row is keyed and dated by the card's newest ask**, not by the one drawn. A card
+  can hold several (a subagent asking behind its parent's question). A second question arriving
+  while you were away would otherwise ride the first one's key, already seen, for as long as
+  you were gone.
+- **A crash is dated by itself** (`Conversation.diedAt`). A card that dies at rest is still
+  counting `idleSeconds` from its last turn. So a death after you left read as one you saw, and
+  the one failure this ladder calls "the one case worth a window" was silenced.
+- **The leaving is dated from the blur** (`onFocusChanged`), not from the pass that noticed it.
+  The race, where something lands between the two, comes out as news.
+
+Left on purpose. Another wall's rows carry no `since`, so a question you saw that drops off
+while its wall is quiet and then comes back is announced again. Giving it the remote ask's own
+time would fix that and would also silence a question asked while its wall was unreachable,
+which you never saw: a repeat is cheaper than a miss. And a failure that turns into a notice
+`SETTLE_MS` later is announced twice, because the two rows have different keys. That was true
+before this change, and an allowance is exempt because both fold to the account's key.
+
+### An account running out is one piece of news
+
+Same day: *"when my account runs out of allowance, I'm swarmed with one notification per card
+… at most I should get one notification saying an account ran out of allowance"*. An allowance
+running out stops every card on that account within seconds, and each card stood on the ladder
+as its own `failed` row, or as its own error notice once a heal had given up. The result was a
+peek reading *"6 things want you"*, all six carrying the same CLI sentence.
+
+`Conversation.lastFault` is `healKindOf` of the turn that last broke. It has to be separate from
+`lastError` because the sentence alone cannot say it was a 429: the status rides in
+`api_error_status`. `coalesce` folds every `failed` or `notice` row whose cause is `limited`
+into **one row per account** (`accountLabel`; one row with no name when no account is managed).
+The row is keyed `limited:<account>`, reads `ran out of allowance — N cards stopped on it`, and
+lands you on the first card it caught.
+
+- **Folded from the first card, not the second.** The key is the account's, so the second card
+  joins a row already announced. Folding only from two would change the key and announce the
+  same account twice.
+- **Only `limited`.** An overload is weather, and two cards that broke for different reasons
+  are two pieces of news. A blocked card on that account stays blocked: a parked question is
+  not an allowance.
+- **The folded row rings once, as a notice, if it swallowed one** (`rings`). The first cut drew
+  it as `failed` and nothing more, so with the window in front an allowance running out rang
+  nothing at all, where it used to ring once per card. The red-team pass caught that: *"they
+  asked for one, and get zero"*. Its key is the account's, so the bell's own books give one
+  ring per account. A row made only of `failed` cards (held on a reset, no notice yet) rings
+  only as a failure would, which is not at all while you are at the wall.
+- **The dock is not folded.** Each card's error notice is still its own item there, with its
+  own reply box and its own close. That queue is per card on purpose (`notice.md`). The folding
+  is about being interrupted, and the dock does not interrupt.
+
+Demonstrated 2026-10-16 in a lab: four fresh cards. Three were fed a 429 `result`
+(`api_error_status: 429`, *You've hit your session limit*) and one a 529. The ladder read two
+rows: one `ran out of allowance — 3 cards stopped on it`, with the three error notices folded
+into it, and the 529 card's own notice. **The peek window itself cannot be shown in a lab**:
+`isDriven` mutes the ladder whenever the control surface is armed (2026-10-08's reason), and
+focus is not something a control op can move. So *what is seen* is asserted in
+`test/peeking.test.ts` and reasoned in `sync`, not demonstrated. A card on another wall carries
+no cause in its digest, so another wall's allowance failures are not folded. Nor is a notice
+that stood across a restart: `lastFault` lives in memory, and such a notice is seen at
+launch anyway, so only its row in the peek's list is affected.
 
 ### The morning pile
 

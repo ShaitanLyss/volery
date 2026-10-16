@@ -14,6 +14,7 @@
     project: string;
     title: string;
     kind: "blocked" | "notice" | "overdue" | "failed" | "rang";
+    key?: string;
     detail: string;
     waitedSeconds: number;
   };
@@ -66,7 +67,7 @@
   </header>
 
   <div class="list">
-    {#each items.slice(0, 3) as item (item.id)}
+    {#each items.slice(0, 3) as item (`${item.kind}:${item.key ?? item.id}`)}
       <button class="row" data-kind={item.kind} onclick={() => go(item)}>
         <span class="dot"></span>
         <span class="body">

@@ -195,6 +195,11 @@ it. So a **new** question or notice now rings whatever has focus (`Attention.syn
 set), while the peek and the flash stay for a window you cannot see. And the chime setting is
 remembered (`skein.chime` in localStorage) — it came back off on every launch.
 
+Two exceptions, both in `away.md`. The peek shows only notices raised after you looked away:
+a rest you watched happen is seen, even if its notice went up a moment after you left. And an
+error notice about an allowance is folded into its account's one row, which neither shows per
+card nor rings as a notice.
+
 ### The register
 
 One row per notice except `error` (the turn already wrote one with the CLI's sentence). With
