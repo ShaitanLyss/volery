@@ -19,6 +19,14 @@
  * column of three-character lines. Offering a site that cannot be read is not
  * the same as offering a choice.
  *
+ * A dock moored along an edge has one more thing to say: how much of that edge
+ * it takes (`DockExtent`). The whole of it, under the panel as well — which is
+ * what it always did — or only the width the panel leaves, so a transcript
+ * moored to a side keeps its whole column from the title bar to the bottom of
+ * the window. That is not a fourth site: it is the same edge, and everything
+ * that asks *which* edge (the chrome's memory in `arrange.ts`, the stylesheet's
+ * `order`) has the same answer either way.
+ *
  * Pure — no runes, no DOM — so all of it is tested directly. Where a floating
  * one is *drawn* is `App.svelte`, and it owes `--span-*` like everything else
  * placed at viewport coordinates: the studio root is the containing block for
@@ -35,6 +43,25 @@ export type DockSite = "bottom" | "top" | "float";
 export const PANEL_SITES: readonly PanelSite[] = ["right", "left", "float"];
 export const DOCK_SITES: readonly DockSite[] = ["bottom", "top", "float"];
 
+/** How much of its edge a moored dock takes.
+ *
+ *  `full` is the whole width of the room, under the panel as well, which is
+ *  what the dock always did. `available` is what the panel leaves: the dock
+ *  stops at the panel's border and the panel runs on past it to the edge of
+ *  the window, so the transcript keeps the column it was moored in rather than
+ *  giving its foot to a line of text.
+ *
+ *  Kept apart from the site rather than multiplying it, because it is not a
+ *  place. A dock taking the available width at the bottom is still *at the
+ *  bottom*, and every reader that asks where the dock is — the chrome
+ *  remembered per mooring, the bar's `order`, the handle's title — has the
+ *  same answer either way and has no business learning a second spelling of
+ *  it. And because an older build reading a berth written by this one drops a
+ *  field it does not know and keeps the edge, where a site it did not know
+ *  would have sent the dock back to the bottom. */
+export type DockExtent = "full" | "available";
+export const DOCK_EXTENTS: readonly DockExtent[] = ["full", "available"];
+
 /** Where one surface is moored, and how big it is when it is floating.
  *
  *  `x`/`y` are **window** coordinates — the whole window, every screen
@@ -49,8 +76,13 @@ export type Berth<S extends string> = {
   h: number;
 };
 
+/** The dock's berth, which also says how much of its edge it takes. Means
+ *  nothing while floating, and is kept anyway: a dock floated off a corner and
+ *  put back by the keyboard comes back the width it was. */
+export type DockBerth = Berth<DockSite> & { extent: DockExtent };
+
 /** Both of them, which is what one room remembers. */
-export type Moorings = { panel: Berth<PanelSite>; dock: Berth<DockSite> };
+export type Moorings = { panel: Berth<PanelSite>; dock: DockBerth };
 
 /** A floating panel is a column, so it is taller than it is wide and there is
  *  a floor under both. A floating dock is a line, so it has a width and takes
@@ -73,10 +105,28 @@ export const MIN_H = 160;
  *  rather than like a position you chose. */
 export const EDGE = 72;
 
+/** How near the middle of its edge a dock has to be aimed to take the whole of
+ *  it, either side of the room's centre.
+ *
+ *  The middle is the special target and everything else along the edge is a
+ *  corner, which is the request in its own words: aim at the bottom centre or
+ *  the top centre and it is full width, otherwise it is not. So this is the
+ *  narrow band and the corners are generous.
+ *
+ *  **And it has to be narrower than half the narrowest panel**, which is the
+ *  number that actually decides it. A dock taking the available width is
+ *  centred on what the panel leaves, so its handle sits half a panel off the
+ *  room's centre — `PANEL_MIN / 2`, 150px, at the least. Wider than that and
+ *  the first pixel of dragging that dock would find its own handle in the
+ *  middle band and throw it across the whole window, which is the bug `EDGE`'s
+ *  box-not-cursor note records, one axis over. `test/berth.test.ts` holds the
+ *  two numbers against each other. */
+export const CENTRE = 112;
+
 export function moorings(): Moorings {
   return {
     panel: { site: "right", x: 0, y: 0, w: 420, h: 520 },
-    dock: { site: "bottom", x: 0, y: 0, w: 720, h: 0 },
+    dock: { site: "bottom", extent: "full", x: 0, y: 0, w: 720, h: 0 },
   };
 }
 
@@ -97,35 +147,115 @@ export type Box = { x: number; y: number; w: number; h: number };
  *  dock-height above the bottom of the window: further than `EDGE`, so the
  *  first pixel of a drag un-moored it and it floated. */
 export function panelSiteAt(box: Box, room: Box): PanelSite {
-  if (!inside(box, room)) return "float";
+  if (!inside({ x: box.x, y: box.y }, room)) return "float";
   if (box.x - room.x < EDGE) return "left";
   if (room.x + room.w - (box.x + box.w) < EDGE) return "right";
   return "float";
 }
 
+/** The dock's, which differs from the panel's in the one point it is carried
+ *  by: its handle is centred on its top edge, so that is the point asked
+ *  whether it is in the room. The top-left would have answered for a corner of
+ *  the dock nobody is holding — and on a window not much wider than the dock,
+ *  the left-hand corner of the room could not be reached at all without that
+ *  corner leaving the room first and the drop floating. */
 export function dockSiteAt(box: Box, room: Box): DockSite {
-  if (!inside(box, room)) return "float";
+  if (!inside(carried(box), room)) return "float";
   if (box.y - room.y < EDGE) return "top";
   if (room.y + room.h - (box.y + box.h) < EDGE) return "bottom";
   return "float";
 }
 
-/** Whether the surface is even in the room the chrome lives in.
+/** How much of its edge a dock dropped here takes: the whole of it when aimed
+ *  at the middle, what the panel leaves when aimed anywhere else.
+ *
+ *  Asked of the point the dock is carried by, which is also where the hand is
+ *  — the handle is in the middle of the dock's top edge, and `App.svelte`
+ *  keeps the grip at the same share of the box as it was taken at, so this is
+ *  the cursor to within the handle's own width. Only meaningful for a dock that
+ *  `dockSiteAt` moors; a float is a float whatever this says.
+ *
+ *  **Which corner is not kept**, and that is a decision rather than a gap. An
+ *  available-width dock fills what the panel leaves, so it is always in the
+ *  corner away from the panel and the side you aimed at could only ever matter
+ *  to a dock narrower than the room's free width — which nothing draws. Aimed
+ *  at the corner *under* the panel it still means "not across the panel", and
+ *  the panel's own side decides where that is. So it follows the panel from
+ *  one side to the other without being told, which is what "keep the chat's
+ *  column" means. */
+export function dockExtentAt(box: Box, room: Box): DockExtent {
+  const aim = carried(box).x;
+  return Math.abs(aim - (room.x + room.w / 2)) <= CENTRE ? "full" : "available";
+}
+
+/** The point a dock is carried by: the middle of its top edge. */
+function carried(box: Box): { x: number; y: number } {
+  return { x: box.x + box.w / 2, y: box.y };
+}
+
+/** Whether a surface is even in the room the chrome lives in, asked of the
+ *  point the drag is carrying.
  *
  *  Asked first, and it is not a tidying-up: the nearness tests are distances
  *  with no far side, so a surface dragged onto the monitor *above* the home
  *  screen is negative pixels from its top edge and would moor there — which is
  *  the one drop that most obviously meant "put it over there, on that screen".
  *  Outside the room is always a float, and the edges are only edges from
- *  within. The box's own top-left answers it, since that is the corner the
- *  drag is carrying. */
-function inside(box: Box, room: Box): boolean {
+ *  within. */
+function inside(at: { x: number; y: number }, room: Box): boolean {
   return (
-    box.x >= room.x &&
-    box.x <= room.x + room.w &&
-    box.y >= room.y &&
-    box.y <= room.y + room.h
+    at.x >= room.x &&
+    at.x <= room.x + room.w &&
+    at.y >= room.y &&
+    at.y <= room.y + room.h
   );
+}
+
+/** How far in from each side of the room a moored dock stops.
+ *
+ *  Zero both sides unless all four hold: the dock is moored, it takes the
+ *  available width, the panel is drawn, and the panel is moored to a side —
+ *  a floating panel divides nothing, and neither does one that is not open,
+ *  so there is nothing to be beside and "available" is the whole room.
+ *
+ *  **Too little left and it takes the full width instead**, rather than being
+ *  drawn narrower than the floor a floating dock already has. A dock squeezed
+ *  to a sliver beside a wide panel is a field you cannot write in; the full
+ *  width under the panel is what it always was, and is readable. In practice
+ *  the panel's own clamp (`layout.ts::panelWidth`, which keeps `WALL_MIN` of
+ *  wall) means this only bites in a window narrower than about 540px. */
+export function dockInsets(
+  dock: { site: DockSite; extent: DockExtent },
+  panel: PanelSite | null,
+  panelW: number,
+  roomW: number,
+): { left: number; right: number } {
+  const none = { left: 0, right: 0 };
+  if (dock.site === "float" || dock.extent !== "available") return none;
+  if (panel !== "left" && panel !== "right") return none;
+  if (!(panelW > 0) || roomW - panelW < MIN_W) return none;
+  return panel === "left" ? { left: panelW, right: 0 } : { left: 0, right: panelW };
+}
+
+/** Whether there is a panel for an available-width dock to stand beside:
+ *  `beside` it is, `alone` there is no panel moored to a side to stand beside,
+ *  and `cramped` there is one but it leaves too little (`dockInsets`). */
+export type Beside = "beside" | "alone" | "cramped";
+
+/** What `<space>w a` says back, since the flip often moves nothing you can see
+ *  — a dock with nothing beside it is the full width either way, and a
+ *  floating one is neither until it is moored. Said so the chord is not taken
+ *  for having failed. */
+export function dockExtentSaid(extent: DockExtent, site: DockSite, beside: Beside): string {
+  const what = extent === "full" ? "dock: full width" : "dock: the width the panel leaves";
+  if (site === "float") return `${what} — once it is moored again`;
+  if (extent === "available" && beside === "alone") {
+    return `${what} — all of it, until a panel is moored to a side`;
+  }
+  if (extent === "available" && beside === "cramped") {
+    return `${what} — all of it, while the panel leaves too little room`;
+  }
+  return what;
 }
 
 /** The next site round, which is the keyboard's whole vocabulary here.
@@ -185,9 +315,15 @@ function num(v: unknown, fallback: number): number {
 export function mooringsOf(v: unknown): Moorings {
   const o = (v ?? {}) as Record<string, unknown>;
   const d = moorings();
+  const dock = (o.dock ?? {}) as Record<string, unknown>;
   return {
     panel: berthOf(o.panel, PANEL_SITES, d.panel),
-    dock: berthOf(o.dock, DOCK_SITES, d.dock),
+    /* `extent` is read on its own: every berth stored before it existed has
+       none, and those are full-width docks — which is what they were drawn as. */
+    dock: {
+      ...berthOf(o.dock, DOCK_SITES, d.dock),
+      extent: DOCK_EXTENTS.find((e) => e === dock.extent) ?? d.dock.extent,
+    },
   };
 }
 

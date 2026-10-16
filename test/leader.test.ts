@@ -214,6 +214,7 @@ describe("the which-key hint", () => {
       { keys: "vj", label: "the wall dimmer" },
       { keys: "vk", label: "the wall brighter" },
       { keys: "vv", label: "the themes panel" },
+      { keys: "wa", label: "dock: full width / the width the panel leaves" },
       { keys: "wd", label: "dock: bottom / top / floating" },
       { keys: "wg", label: "glass: scaled to any screen / one per screen size" },
       { keys: "wp", label: "panel: right / left / floating" },
@@ -275,12 +276,14 @@ describe("the which-key hint", () => {
        several verbs and they want to sit together in the hint — and this is it
        being taken. */
     expect(offers("w")).toEqual([
+      { keys: "a", label: "dock: full width / the width the panel leaves" },
       { keys: "d", label: "dock: bottom / top / floating" },
       { keys: "g", label: "glass: scaled to any screen / one per screen size" },
       { keys: "p", label: "panel: right / left / floating" },
       { keys: "s", label: "every screen / one screen" },
     ]);
     expect(chord("w", "g")).toMatchObject({ kind: "fire", verb: { kind: "window", act: "glass" } });
+    expect(chord("w", "a")).toMatchObject({ kind: "fire", verb: { kind: "window", act: "extent" } });
   });
 
   test("so is the machine the wall runs on", () => {

@@ -73,7 +73,7 @@ export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
   | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" }
-  | { kind: "window"; act: "span" | "panel" | "dock" | "glass" }
+  | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" }
@@ -207,6 +207,14 @@ export const CHORDS: readonly Chord[] = [
   { keys: "la", label: "archive the plan", verb: { kind: "plan", act: "archive" } },
   { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
   { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
+  /* `wa`: how much of its edge the dock takes — all of it, or the width the
+     panel leaves so the transcript keeps its column. A second ring rather than
+     two more stops on `wd`'s, because it is a second question: where the dock
+     is, and how wide it is there. One ring of five would have to be counted
+     round, and pressing it to get from the bottom to the top would pass
+     through a width you did not ask for. `a` for *available*, the user's own
+     word for it. */
+  { keys: "wa", label: "dock: full width / the width the panel leaves", verb: { kind: "window", act: "extent" } },
   /* `wg`: how the glass follows the one screen it is on — one layout scaled to
      any screen, or a layout of its own per screen size. In the window family
      beside `ws`, which decides how many screens the glass is on at all. It

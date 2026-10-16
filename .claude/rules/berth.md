@@ -24,6 +24,87 @@ transcript is a column and the dock is a line of text; a panel lying along the b
 letterbox and a dock standing up the side is a column of three-character lines. Offering a site
 that cannot be read is not the same as offering a choice.
 
+### A dock along an edge takes all of it, or what the panel leaves
+
+Lyss, 2026-10-16: *"it's literally impossible to dock chat to a side, and dock the dock to top
+or bottom but more focused to a corner, so that instead of taking the full width and taking
+space away from the chat, it takes the available width … if i'm aiming at the bottom center of
+the screen or top center then it's full width, otherwise it's not."*
+
+The three sites were right and the argument above still holds — but a moored dock took **the
+whole edge**, under the panel as well, so a transcript moored to a side lost its foot (or its
+head) to a line of text that had no reason to be over there. So a dock moored top or bottom has
+one more thing to say, `extent`: `full`, the whole width (what it always did), or
+`available`, the width the panel leaves — the dock stops at the panel's border and the panel
+runs on from the title bar to the bottom of the window.
+
+- **A field beside the site, not three more sites**, and this is the reasoning the "not six
+  sites" paragraph above had to be re-read against. Six sites would be the *same* mistake that
+  paragraph refuses, from the other side: a site is where a surface is, and an
+  available-width dock at the bottom is *at the bottom*. Every reader that asks where the dock
+  is — the chrome `arrange.ts` remembers per mooring, the bar's `order`, the handle — has the
+  same answer either way and has no business learning a second spelling of it. The chrome in
+  particular is untouched for a reason, not by luck: `main.wall` still ends where the dock
+  begins (below), so the pane is the same height at either width. And a field degrades
+  better than a site: an older build reading this one's berth drops a key it does not know and
+  keeps the edge, where an unknown *site* would have sent the dock back to the bottom.
+- **The middle is the narrow target, and the corners are everything else.** Her own words make
+  the centre the special case, so `CENTRE` is a band of ±112px about the room's middle and the
+  rest of the edge is a corner. Asked of the point the dock is *carried by* — the middle of its
+  top edge, where the handle is — rather than its top-left, which also became the dock's
+  `inside` test: carried by its top-left, a dock barely narrower than the window could not
+  reach the left-hand corner without that corner leaving the room and the drop floating.
+- **`CENTRE` is bounded by the narrowest panel, and that is the number that decides it.** An
+  available-width dock is centred on what the panel leaves, so its handle sits half a panel off
+  the room's centre — at least `PANEL_MIN / 2`, 150px. A band wider than that, less the
+  handle's half-width and the drag's slop, and the first pixel of dragging that dock finds its
+  own handle in the middle and throws it across the window: `EDGE`'s box-not-cursor bug, one
+  axis over. `test/berth.test.ts` holds the numbers against each other.
+- **The grip is kept at its share of the box, not its pixel offset.** The dock is carried as a
+  box `dockAt.w` wide (its floating width) whatever it is drawn at, and a moored dock is far
+  wider. Keeping the grip's pixel offset — what the drag did for the panel and still does —
+  put the carried box's middle hundreds of pixels left of the hand, which made the extent
+  depend on where the dock *used* to be, and dropped a floated dock with its handle nowhere
+  near the cursor (that second half was a bug before any of this).
+- **Which corner is not kept.** An available-width dock fills what the panel leaves, so it is
+  always in the corner away from the panel, and the side you aimed at could only matter to a
+  dock narrower than the room's free width — which nothing draws. Aimed at the corner *under*
+  the panel it still means "not across the panel", and the panel's own side says where that is.
+  So it follows the panel from one side to the other untold, which is what "keep the chat's
+  column" means. Filling the free width rather than having a width of its own is the same
+  decision: a corner dock you could also resize would be a second floating dock with an edge
+  stuck to it, and the floating one already exists.
+- **With nothing beside it, available is the whole room.** A floating panel divides nothing,
+  and neither does one that is not open (no card focused), so the dock is drawn full width and
+  remembered as available — moor the panel and the dock steps aside without being asked.
+- **Too little left and it takes the full width instead** (`dockInsets`), rather than a field
+  narrower than `MIN_W`, the floor a floating dock already has. `panelWidth` keeps `WALL_MIN` of
+  wall, so this only bites in a window under about 540px.
+- **Double-click puts back both**: the bottom, at the full width, which is where the dock has
+  always been.
+
+#### How the panel gets past the wall without the wall moving
+
+The panel is a child of `main.wall`, and the wall ending exactly where the dock begins is
+load-bearing for three things that should not learn about this: the glass (`a box cannot
+escape its parent` is how it never covers the dock), the chrome `arrange.ts` remembers, and the
+strip of kept files that sits on the dock's top edge. So the wall is left as it was and only
+the panel is let out: **a negative margin on a stretched flex item grows it by that much**,
+into the band beside the dock that the dock no longer covers. The dock steps aside by a margin
+of the panel's width on that side. Both are numbers this file computes (`dockInsets`) and
+`App.svelte` applies; neither is a second layout.
+
+- **The band is everything between the wall and that edge**, so everything in it has to step
+  aside too or be ordered out of it. At the bottom that is the voice bar, which sits between
+  the wall and the dock: it gets its own box (`.heard`), is narrowed with the dock and is
+  measured into the reach. At the top it was the fault bar, which fell *under* a top dock:
+  it is now `order: -1`, directly under the title bar wherever the dock is, so it stays the
+  full width and the band is the dock alone.
+- **Measured as border boxes, fractions and all** (`bind:borderBoxSize`). The dock reported
+  `clientHeight`, which leaves out its border and rounds — harmless for clamping a floating
+  dock, and a hairline short of the window's edge for a panel let out by exactly that much at
+  150%.
+
 ### Mooring is the room's, floating is the window's
 
 `panelSiteAt` and `dockSiteAt` take the **chrome's** room — the window, or the home screen's
@@ -100,6 +181,13 @@ because there are two enums and a rectangle here rather than a wall's worth of a
   so going round the ring puts you back without having to remember which way it goes. `w` was
   already the window family, and its own note says placing a window is several verbs that want
   to sit together in the hint; this is that being taken up.
+- **And `<space>w a` is the dock's width, a ring of its own.** Not two more stops on `wd`'s:
+  where the dock is and how wide it is there are two questions, and one ring of five would
+  have to be counted round — getting from the bottom to the top would pass through a width you
+  did not ask for. So `wd` keeps the width as it moves (a dock beside the panel at the bottom is
+  beside it at the top) and `wa` flips it where it is. `a` for *available*, her word. It says
+  back what is now true (`dockExtentSaid`), because with nothing moored beside it, or the dock
+  floating, the flip moves nothing you can see and would otherwise read as a chord that failed.
 - **The write is split from the save.** A mooring drag sets a berth on every pointer move, and
   serialising every room's moorings to `localStorage` sixty times a second to record a gesture
   that is not finished makes a drag feel heavy for no reason anybody asked for. `save()` is

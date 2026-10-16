@@ -1638,10 +1638,16 @@
      (`berth.md`): moored left, the wall is on the right, and rails left would
      be off the edge of the window entirely. Floating, there is wall on both
      sides and the caller picks the roomier one. */
+  /* Top and bottom are the wall's, not the panel's, and those differ beside a
+     dock that has left the panel its column: the panel runs on past the wall
+     into the band beside the dock (`berth.md`), and rails hung its whole height
+     were drawn over the dock's own text. `App.svelte` sets the two variables on
+     the panel to how far it runs past the wall each way, and they are zero
+     everywhere else. */
   .rails {
     position: absolute;
-    top: 0;
-    bottom: 0;
+    top: var(--reach-top, 0px);
+    bottom: var(--reach-bottom, 0px);
     right: calc(100% + 0.7rem);
     width: clamp(9rem, 13vw, 15rem);
     display: flex;

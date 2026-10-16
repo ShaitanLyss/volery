@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CENTRE,
+  DOCK_EXTENTS,
   DOCK_SITES,
   EDGE,
   MIN_H,
   MIN_W,
   PANEL_SITES,
+  dockExtentAt,
+  dockExtentSaid,
+  dockInsets,
   dockSiteAt,
   panelSiteAt,
   floatBox,
@@ -13,6 +18,7 @@ import {
   nextSite,
   roomsOf,
 } from "../src/lib/berth";
+import { DRAG_SLOP, PANEL_MIN, PANEL_REST } from "../src/lib/layout";
 
 const ROOM = { x: 0, y: 0, w: 1600, h: 900 };
 /* The home screen's share of a window spread over a desk: the chrome's room
@@ -76,6 +82,125 @@ describe("where a drop moors", () => {
   });
 });
 
+describe("how much of its edge a dock takes", () => {
+  /* A dock box carried by the middle of its top edge, as `App.svelte` carries
+     it: the handle is centred, and the grip is kept at the share of the box it
+     was taken at. `aim` is where that handle is. */
+  const carriedAt = (aim: number, y: number, w = 720) => ({ x: aim - w / 2, y, w, h: 90 });
+  const mid = ROOM.x + ROOM.w / 2;
+
+  test("aimed at the middle of the bottom or the top, it takes the whole edge", () => {
+    expect(dockExtentAt(carriedAt(mid, ROOM.h - 90), ROOM)).toBe("full");
+    expect(dockExtentAt(carriedAt(mid, 0), ROOM)).toBe("full");
+    expect(dockExtentAt(carriedAt(mid - CENTRE, 0), ROOM)).toBe("full");
+    expect(dockExtentAt(carriedAt(mid + CENTRE, ROOM.h - 90), ROOM)).toBe("full");
+  });
+
+  test("aimed anywhere else along the edge, it takes what the panel leaves", () => {
+    for (const aim of [0, 200, mid - CENTRE - 1, mid + CENTRE + 1, 1400, ROOM.w]) {
+      expect(dockExtentAt(carriedAt(aim, ROOM.h - 90), ROOM)).toBe("available");
+      expect(dockExtentAt(carriedAt(aim, 0), ROOM)).toBe("available");
+    }
+  });
+
+  test("the middle is the room's, not the window's", () => {
+    // Spread, the chrome's room is the home screen, 1080 across.
+    const homeMid = HOME.x + HOME.w / 2;
+    expect(dockExtentAt(carriedAt(homeMid, HOME.y), HOME)).toBe("full");
+    expect(dockExtentAt(carriedAt(ROOM.w / 2, HOME.y), HOME)).toBe("available");
+  });
+
+  test("a dock sitting where it is moored reads as moored that wide", () => {
+    /* The twitch test, one axis over from `EDGE`'s. A dock taking the
+       available width is centred on what the panel leaves, so its handle is
+       half a panel off the room's centre — and if that were inside the middle
+       band, the first pixel of dragging it would throw it across the window. */
+    for (const panel of [PANEL_MIN, PANEL_REST, 700]) {
+      const leftOver = ROOM.w - panel;
+      // Panel on the right: the dock runs from the left edge to the panel.
+      const right = leftOver / 2;
+      // Panel on the left: the dock runs from the panel to the right edge.
+      const left = panel + leftOver / 2;
+      for (const handle of [right, left]) {
+        for (const nudge of [-DRAG_SLOP, DRAG_SLOP]) {
+          expect(dockExtentAt(carriedAt(handle + nudge, ROOM.h - 90), ROOM)).toBe("available");
+        }
+      }
+    }
+    // And a full-width one, whose handle is the room's centre.
+    expect(dockExtentAt(carriedAt(mid + DRAG_SLOP, ROOM.h - 90), ROOM)).toBe("full");
+  });
+
+  test("the middle band is narrower than half the narrowest panel", () => {
+    /* What the test above rests on, stated as the numbers: the handle is 34px
+       wide, so a grip can sit 17px off its centre, and the drag has to travel
+       its slop before it is a drag at all. */
+    expect(CENTRE + 17 + DRAG_SLOP).toBeLessThan(PANEL_MIN / 2);
+  });
+
+  test("the left-hand corner can be reached on a window barely wider than the dock", () => {
+    /* Carried by its top-left, a 720px dock on an 800px room could not get
+       its middle further left than 360 without that corner leaving the room
+       and the drop floating. Carried by its handle, it can. */
+    const narrow = { x: 0, y: 0, w: 800, h: 700 };
+    const box = carriedAt(60, narrow.h - 90);
+    expect(box.x).toBeLessThan(0);
+    expect(dockSiteAt(box, narrow)).toBe("bottom");
+    expect(dockExtentAt(box, narrow)).toBe("available");
+  });
+
+  test("and a handle carried off the room still floats", () => {
+    expect(dockSiteAt(carriedAt(-10, ROOM.h - 90), ROOM)).toBe("float");
+    expect(dockSiteAt(carriedAt(ROOM.w + 10, ROOM.h - 90), ROOM)).toBe("float");
+  });
+});
+
+describe("where an available-width dock stops", () => {
+  const avail = { site: "bottom" as const, extent: "available" as const };
+
+  test("beside a panel moored right, it stops at the panel", () => {
+    expect(dockInsets(avail, "right", 460, 1600)).toEqual({ left: 0, right: 460 });
+    expect(dockInsets({ ...avail, site: "top" }, "right", 460, 1600)).toEqual({ left: 0, right: 460 });
+  });
+
+  test("beside a panel moored left, it starts after it", () => {
+    expect(dockInsets(avail, "left", 460, 1600)).toEqual({ left: 460, right: 0 });
+  });
+
+  test("a full-width dock and a floating one are never inset", () => {
+    expect(dockInsets({ site: "bottom", extent: "full" }, "right", 460, 1600)).toEqual({ left: 0, right: 0 });
+    expect(dockInsets({ site: "float", extent: "available" }, "right", 460, 1600)).toEqual({ left: 0, right: 0 });
+  });
+
+  test("with nothing beside it, the available width is the whole room", () => {
+    // A floating panel divides nothing, and neither does one that is not open.
+    expect(dockInsets(avail, "float", 460, 1600)).toEqual({ left: 0, right: 0 });
+    expect(dockInsets(avail, null, 460, 1600)).toEqual({ left: 0, right: 0 });
+  });
+
+  test("too little left beside the panel and it takes the full width instead", () => {
+    expect(dockInsets(avail, "right", 460, 460 + MIN_W)).toEqual({ left: 0, right: 460 });
+    expect(dockInsets(avail, "right", 460, 460 + MIN_W - 1)).toEqual({ left: 0, right: 0 });
+  });
+
+  test("an unmeasured panel insets nothing", () => {
+    expect(dockInsets(avail, "right", 0, 1600)).toEqual({ left: 0, right: 0 });
+    expect(dockInsets(avail, "right", NaN, 1600)).toEqual({ left: 0, right: 0 });
+  });
+});
+
+describe("what the width chord says back", () => {
+  test("it says what is now true, and why nothing moved when nothing did", () => {
+    expect(dockExtentSaid("full", "bottom", "beside")).toBe("dock: full width");
+    expect(dockExtentSaid("full", "bottom", "alone")).toBe("dock: full width");
+    expect(dockExtentSaid("available", "bottom", "beside")).toBe("dock: the width the panel leaves");
+    expect(dockExtentSaid("available", "top", "alone")).toContain("until a panel is moored to a side");
+    expect(dockExtentSaid("available", "top", "cramped")).toContain("leaves too little room");
+    expect(dockExtentSaid("available", "float", "beside")).toContain("once it is moored again");
+    expect(dockExtentSaid("full", "float", "alone")).toContain("once it is moored again");
+  });
+});
+
 describe("cycling round the ring", () => {
   test("every site is reachable and it comes back round", () => {
     let s = PANEL_SITES[0];
@@ -95,6 +220,13 @@ describe("cycling round the ring", () => {
     expect(DOCK_SITES[0]).toBe("bottom");
     expect(moorings().panel.site).toBe("right");
     expect(moorings().dock.site).toBe("bottom");
+  });
+
+  test("the width has its own ring, starting where the dock has always been", () => {
+    expect(DOCK_EXTENTS[0]).toBe("full");
+    expect(moorings().dock.extent).toBe("full");
+    expect(nextSite(DOCK_EXTENTS, "full")).toBe("available");
+    expect(nextSite(DOCK_EXTENTS, "available")).toBe("full");
   });
 
   test("a site nothing recognises still moves on", () => {
@@ -167,6 +299,27 @@ describe("reading back what was stored", () => {
     expect(Number.isFinite(m.dock.y)).toBe(true);
     expect(Number.isFinite(m.dock.w)).toBe(true);
     expect(m.dock.site).toBe("float");
+  });
+
+  test("a dock stored before it had a width is the full width it was drawn at", () => {
+    const m = mooringsOf({ dock: { site: "top", x: 10, y: 20, w: 600, h: 0 } });
+    expect(m.dock.site).toBe("top");
+    expect(m.dock.extent).toBe("full");
+  });
+
+  test("a width it does not know is the full one, and the edge is kept", () => {
+    const m = mooringsOf({ dock: { site: "top", extent: "diagonal" } });
+    expect(m.dock.site).toBe("top");
+    expect(m.dock.extent).toBe("full");
+    expect(mooringsOf({ dock: 7 }).dock).toEqual(moorings().dock);
+    expect(mooringsOf({ dock: "bottom" }).dock).toEqual(moorings().dock);
+  });
+
+  test("the available width survives the store", () => {
+    const m = mooringsOf({ dock: { site: "bottom", extent: "available" } });
+    expect(m.dock.extent).toBe("available");
+    const back = roomsOf(JSON.parse(JSON.stringify({ desk: m })));
+    expect(back.desk.dock.extent).toBe("available");
   });
 
   test("every room is normalised, and a broken one does not take the others", () => {

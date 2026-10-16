@@ -219,7 +219,17 @@
     provideFileNavigation,
     provideLinkOpener,
   } from "./lib/paths.svelte";
-  import { MIN_H, MIN_W, dockSiteAt, floatBox, moorings, panelSiteAt } from "./lib/berth";
+  import {
+    MIN_H,
+    MIN_W,
+    dockExtentAt,
+    dockExtentSaid,
+    dockInsets,
+    dockSiteAt,
+    floatBox,
+    moorings,
+    panelSiteAt,
+  } from "./lib/berth";
   import { homeInsets, spreadPan } from "./lib/span";
 
   const studio = new Studio();
@@ -565,6 +575,14 @@
            may move nothing at all. */
         arrangements.setScale(arrangements.scale === "scaled" ? "per-size" : "scaled");
         leader.say(glassScaleSaid(arrangements.scale));
+      }
+      else if (verb.act === "extent") {
+        /* Said back, because with nothing moored beside it the flip moves
+           nothing you can see — the available width is then the whole room. */
+        const extent = berths.cycleExtent();
+        const sided = card && showDetail && berths.panel.site !== "float";
+        const beside = dockInset.left + dockInset.right > 0 ? "beside" : sided ? "cramped" : "alone";
+        leader.say(dockExtentSaid(extent, berths.dock.site, beside));
       }
       else berths.cycleDock();
     }
@@ -1736,6 +1754,39 @@
      a surface ninety pixels tall unable to reach the bottom of the window. */
   const dockAt = $derived(floatBox({ ...berths.dock, h: dockH }, windowRoom, 0));
 
+  /** How far in from each side a moored dock stops: the panel's column, when
+   *  the dock takes only the width the panel leaves and there is a panel moored
+   *  to a side to leave it (`berth.ts::dockInsets`). Zero otherwise — full
+   *  width, floating, or nothing beside it. */
+  const dockInset = $derived(
+    dockInsets(berths.dock, card && showDetail ? berths.panel.site : null, panelPx, roomW),
+  );
+  /** The voice bar's height, measured for the one reason below — as the
+   *  border box, fractions and all, since a panel let out by a rounded number
+   *  stops a hairline short of the window's edge at 150%. */
+  let hearBox = $state<ResizeObserverSize[] | undefined>(undefined);
+  const hearH = $derived(hearBox?.[0]?.blockSize ?? 0);
+  /** How far the panel runs on past the wall to reach the window's edge beside
+   *  a dock that has left it its column.
+   *
+   *  The panel is a child of `main.wall`, and the wall ends where the dock
+   *  begins — which is load-bearing for the glass, the chrome remembered per
+   *  mooring and the strip of kept files, none of which should learn about
+   *  this. So the wall is left exactly as it was and the panel alone is let out
+   *  past it: a negative margin on a stretched flex item grows it by that much,
+   *  into the band the dock no longer covers on that side. The band is
+   *  everything between the wall and that edge: the dock, and at the bottom the
+   *  voice bar, which sits between the two and is narrowed with the dock. At the
+   *  top the fault bar is ordered *above* the dock instead, so it stays the full
+   *  width under the title bar and the band is the dock alone. */
+  const panelReach = $derived(
+    dockInset.left + dockInset.right === 0
+      ? null
+      : berths.dock.site === "top"
+        ? { top: dockH, bottom: 0 }
+        : { top: 0, bottom: dockH + hearH },
+  );
+
   /** Which side the transcript's outline rails hang off.
    *
    *  They hang *toward the wall* — that is why they are outside the panel at
@@ -1770,9 +1821,18 @@
     if (e.button !== 0) return;
     const grab = e.currentTarget as HTMLElement;
     const r = grab.closest(what === "panel" ? "aside" : "footer")?.getBoundingClientRect();
+    /* The dock is carried as a box `dockAt.w` wide whatever it is drawn at, so
+       the grip is kept at the same *share* of that box as it was taken at. A
+       moored dock is far wider than its floating box, and keeping the grip's
+       pixel offset instead put the box's middle — which is what decides how
+       much of the edge it takes (`dockExtentAt`) — hundreds of pixels left of
+       the hand, and dropped a floated dock with the handle nowhere near the
+       cursor. The handle is centred, so this is the box's middle under it. */
+    const dx = e.clientX - (r?.left ?? 0);
+    const share = what === "dock" && r && r.width > 0 ? dockAt.w / r.width : 1;
     mooring = {
       what,
-      dx: e.clientX - (r?.left ?? 0),
+      dx: dx * share,
       dy: e.clientY - (r?.top ?? 0),
       fromX: e.clientX,
       fromY: e.clientY,
@@ -1811,7 +1871,13 @@
     } else {
       const box = { ...at, w: dockAt.w, h: dockH };
       const site = dockSiteAt(box, chromeRoom);
-      berths.setDock(site === "float" ? { site, ...at } : { site });
+      /* Moored, where along the edge it was aimed says how much of it it
+         takes: the middle for all of it, anywhere else for what the panel
+         leaves. Floating keeps whatever it had, so a dock floated off a corner
+         and cycled back by the keyboard comes back that wide. */
+      berths.setDock(
+        site === "float" ? { site, ...at } : { site, extent: dockExtentAt(box, chromeRoom) },
+      );
     }
   }
 
@@ -1830,7 +1896,7 @@
    *  screen you no longer have is otherwise something you fix by eye. */
   function moorReset(what: "panel" | "dock") {
     if (what === "panel") berths.setPanel({ site: "right" });
-    else berths.setDock({ site: "bottom" });
+    else berths.setDock({ site: "bottom", extent: "full" });
     berths.save();
   }
 
@@ -5326,6 +5392,10 @@
             ? `calc(${panelAt.x}px - var(--span-x, 0px))`
             : undefined}
           style:top={panelAfloat ? `calc(${panelAt.y}px - var(--span-y, 0px))` : undefined}
+          style:margin-top={panelReach?.top ? `${-panelReach.top}px` : undefined}
+          style:margin-bottom={panelReach?.bottom ? `${-panelReach.bottom}px` : undefined}
+          style:--reach-top={panelReach?.top ? `${panelReach.top}px` : undefined}
+          style:--reach-bottom={panelReach?.bottom ? `${panelReach.bottom}px` : undefined}
         >
           <!-- The border, made draggable. `role="presentation"` for the same
                reason the studio root has one: this is a gesture surface, not a
@@ -5411,7 +5481,17 @@
     <Dogears {finder} />
   </main>
 
-  <Hearing {voicing} />
+  <!-- In a box of its own only so it can be measured and narrowed with the
+       dock: at the bottom it is between the wall and the dock, which is the
+       band a panel beside an available-width dock runs on through. -->
+  <div
+    class="heard"
+    bind:borderBoxSize={hearBox}
+    style:margin-left={berths.dock.site === "bottom" && dockInset.left ? `${dockInset.left}px` : undefined}
+    style:margin-right={berths.dock.site === "bottom" && dockInset.right ? `${dockInset.right}px` : undefined}
+  >
+    <Hearing {voicing} />
+  </div>
 
   <Dock
     bind:this={dock}
@@ -5425,7 +5505,7 @@
     {clashing}
     {bangCard}
     dropping={dropOn === "prompt"}
-    berth={{ site: berths.dock.site, x: dockAt.x, y: dockAt.y, w: dockAt.w }}
+    berth={{ site: berths.dock.site, x: dockAt.x, y: dockAt.y, w: dockAt.w, inset: dockInset }}
     grabbing={mooring?.what === "dock"}
     onmoor={{
       down: (e) => moorDown("dock", e),
@@ -5690,7 +5770,14 @@
     border-color: var(--paper-faint);
   }
 
+  /* Directly under the title bar wherever the dock is moored. With the dock at
+     the bottom it is there anyway, by document order; with it at the top it
+     used to fall *under* the dock, between it and the wall — which is the band
+     a panel beside an available-width dock is let out through, so it would
+     have been half covered by the transcript. The bar is `-2`, and a tie with
+     a top dock's `-1` is settled by document order, which this wins. */
   .fault {
+    order: -1;
     display: block;
     width: 100%;
     text-align: left;
@@ -5708,6 +5795,14 @@
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
+  }
+  /* The voice bar's box: a column, so the bar inside it is centred as it was
+     when it was the studio's own child, and nothing else. Empty, and so no
+     height at all, while nothing is being heard. */
+  .heard {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
   }
   /* Width is set inline from `panelWidth` — see the note by `gripDown`. It must
      not be given one here as well, or a drag would fight a stylesheet. */

@@ -1,6 +1,7 @@
 import { arrangements } from "./arrange.svelte";
 import { NO_ARRANGEMENT } from "./arrange";
 import {
+  DOCK_EXTENTS,
   DOCK_SITES,
   PANEL_SITES,
   moorings,
@@ -8,6 +9,8 @@ import {
   nextSite,
   roomsOf,
   type Berth,
+  type DockBerth,
+  type DockExtent,
   type DockSite,
   type Moorings,
   type PanelSite,
@@ -74,7 +77,7 @@ class Berths {
     return this.now.panel;
   }
 
-  get dock(): Berth<DockSite> {
+  get dock(): DockBerth {
     return this.now.dock;
   }
 
@@ -130,7 +133,7 @@ class Berths {
     this.#write({ ...m, panel: { ...m.panel, ...patch } });
   }
 
-  setDock(patch: Partial<Berth<DockSite>>) {
+  setDock(patch: Partial<DockBerth>) {
     const m = this.now;
     this.#write({ ...m, dock: { ...m.dock, ...patch } });
   }
@@ -143,11 +146,23 @@ class Berths {
     return site;
   }
 
+  /** Round the sites, keeping how much of the edge it takes: a dock beside
+   *  the panel at the bottom is beside it at the top. The width is the other
+   *  chord's, so each ring stays three or two long rather than one ring of
+   *  five that has to be counted round. */
   cycleDock(): DockSite {
     const site = nextSite(DOCK_SITES, this.dock.site);
     this.setDock({ site });
     this.save();
     return site;
+  }
+
+  /** The whole edge, or what the panel leaves. See `berth.ts::DockExtent`. */
+  cycleExtent(): DockExtent {
+    const extent = nextSite(DOCK_EXTENTS, this.dock.extent);
+    this.setDock({ extent });
+    this.save();
+    return extent;
   }
 }
 

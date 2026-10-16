@@ -96,8 +96,12 @@
      *  put in, in window coordinates. The dock has always been a strip along
      *  the bottom; over three screens that is a line of text pinned to the
      *  corner of one of them, so it can go to the top or come off both edges.
-     *  See `berth.ts`, which owns the sites and the drop rule. */
-    berth: { site: DockSite; x: number; y: number; w: number };
+     *  See `berth.ts`, which owns the sites and the drop rule.
+     *
+     *  `inset` is how far in from each side a moored dock stops — the
+     *  panel's column, when the dock takes only the width the panel leaves
+     *  (`berth.ts::dockInsets`), and zero both sides otherwise. */
+    berth: { site: DockSite; x: number; y: number; w: number; inset: { left: number; right: number } };
     /** The mooring handle is being dragged, so it says so under the cursor. */
     grabbing: boolean;
     /** The three halves of that drag, which live in `App.svelte` beside the
@@ -374,7 +378,12 @@
     return null;
   }
 
-  let height = $state(0);
+  /* The border box, fractions and all. It was `clientHeight`, which leaves out
+     the border and rounds — harmless for clamping a floating dock, and not for
+     the panel beside an available-width dock, which is let out past the wall by
+     exactly this much and would stop a hairline short of the window's edge. */
+  let box = $state<ResizeObserverSize[] | undefined>(undefined);
+  const height = $derived(box?.[0]?.blockSize ?? 0);
   /* Braced, not an arrow expression: an effect that *returns* a value is an
      effect Svelte reads as handing back a teardown, and `(h) => (dockH = h)`
      answers the number it assigned. */
@@ -520,25 +529,34 @@
   });
 </script>
 
+<!-- Moored beside a panel it stops at the panel's border: a margin on a
+     stretched item in the studio's column is the whole of "the width the panel
+     leaves", and the panel runs on past the wall into the room it frees. Never
+     on a floating dock, which is fixed and placed by `left` — a margin there
+     would move it off the spot it was dropped on. -->
 <footer
-  bind:clientHeight={height}
+  bind:borderBoxSize={box}
   class="dock"
   class:dropping
   class:moored-top={berth.site === "top"}
   class:afloat={berth.site === "float"}
+  class:beside={berth.site !== "float" && berth.inset.left + berth.inset.right > 0}
   style:width={berth.site === "float" ? `${berth.w}px` : undefined}
   style:left={berth.site === "float" ? `calc(${berth.x}px - var(--span-x, 0px))` : undefined}
   style:top={berth.site === "float" ? `calc(${berth.y}px - var(--span-y, 0px))` : undefined}
+  style:margin-left={berth.site !== "float" && berth.inset.left ? `${berth.inset.left}px` : undefined}
+  style:margin-right={berth.site !== "float" && berth.inset.right ? `${berth.inset.right}px` : undefined}
 >
-  <!-- The handle that moves the whole dock: to the top, or off both edges.
-       Faint until asked for, in the dock's own padding so it is never over
-       anything you are reading. The keyboard path is the chord in the title —
-       a chord cannot point at a place, so it cycles the three sites. -->
+  <!-- The handle that moves the whole dock: to the top, or off both edges, and
+       along an edge to say how much of it to take. Faint until asked for, in
+       the dock's own padding so it is never over anything you are reading. The
+       keyboard path is the two chords in the title — a chord cannot point at a
+       place, so one cycles the three sites and the other the two widths. -->
   <div
     class="moor"
     class:on={grabbing}
     role="presentation"
-    title="drag to move the dock — top, bottom, or floating · double-click to put it back (space then w d)"
+    title="drag to move the dock — top, bottom, or floating; the middle of an edge for its whole width, a corner for the width the panel leaves · double-click to put it back (space then w d, space then w a)"
     onpointerdown={onmoor.down}
     onpointermove={onmoor.move}
     onpointerup={onmoor.up}
