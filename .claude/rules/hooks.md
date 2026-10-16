@@ -544,6 +544,15 @@ this arm existed and still works alone.
 shortcut: it is what makes a fourth event cost one line, and what stops the three drifting
 apart in the way the copy of a tool name did.
 
+### The delete guard looks through `cmd /c`
+
+`wipes` and `routable` unwrap `cmd /c <command>` and judge the command that follows, so
+`cmd /c rmdir /s /q C:\` is a wipe and `cmd /c rmdir <junction>` is handed to `remove` instead
+of meeting the CLI's own "Remove-Item on system path '/c' is blocked" (sink `180e4764`). The
+reasoning, and what a hook's `allow` cannot do about that refusal, is in `remove.md`, *`cmd /c
+…` is looked through*. It is one more arm of the same `PreToolUse` body, and like the rest it
+lives in `reply` where `bun tools/lift-remove.ts` can run its decisions.
+
 ### The fourth guard: the tree cards share, not only the index
 
 The section above about the index has a hole in it, and on 2026-08-27 somebody fell through.

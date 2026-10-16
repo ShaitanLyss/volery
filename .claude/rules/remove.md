@@ -365,6 +365,65 @@ with `/` as a cmd switch, so `rm -rf /tmp/rv1` — any absolute POSIX path — "
 was not a wipe. `is_cmd_switch` now asks for cmd's actual shape, one letter after the slash, and
 only for cmd's own verbs (`cmd_verb`): to `rm`, `/c` is Git Bash's whole C: drive.
 
+### `cmd /c …` is looked through, because the refusal that used to cover it was an accident
+
+Sink `180e4764`, 2026-10-16. A card dropping a `node_modules` directory junction ran
+`cmd /c rmdir <path>` and was told *"Remove-Item on system path '/c' is blocked."* —
+which is **not Volery's sentence**. It is in `claude.exe` itself (the PowerShell permission
+analyzer, next to "Removal targets a protected system path"), and nothing in this repo
+emits it. The analyzer reads `rmdir` anywhere in the text as `Remove-Item` and takes cmd's
+own `/c` switch for its target. Probed against the installed CLI the same day, on a junction
+in a card's scratch: `cmd /c rmdir X`, `cmd.exe /c "rmdir X"`, `cmd /d /c rmdir X` and
+`cmd /c del X` were all refused with `/c` (or `/d`) named as the path. Refusing the one safe
+way to drop a junction — `rmdir` without `/s` removes the link and nothing behind it — is the
+cost.
+
+Two things about it that decided the fix, both measured with a throwaway hook on a real card
+(`PreToolUse` deny / allow / silent, pinned to Haiku):
+
+- **A hook's `deny` reaches the card instead of that refusal; a hook's `allow` does not
+  override it.** So there is no way for Volery to simply *let* `cmd /c rmdir X` run. The only
+  thing it can do is what it does for every other delete: take the line over, hand the path to
+  `remove`, and deny the shell call with what happened. For a scratch junction that is the
+  no-click tier or one click.
+- **Volery never saw the line at all.** `wipes_in` took `cmd` as the verb, so `cmd /c rd /s /q
+  C:\x` was *not a wipe* to this file — the analyzer's misread was the only thing standing in
+  front of a cmd-wrapped recursive delete, and it would have stopped protecting the day the
+  CLI fixed its `/c` handling. A guard that holds by somebody else's bug is the failure this
+  whole file is about.
+
+So `cmd_inner` unwraps `cmd [/d /q …] /c <command>` (also `/k`, `cmd.exe`, a path to it, and
+Git Bash's `//c`) and **both halves read the line the same way**: `wipes` judges the inner
+command as it would judge it bare (`wipes_through`, three levels deep), and `routable` hands
+on the inner command's operands — never `/c`, which `resolve` would have read as Git Bash's
+whole C: drive, the very sentence `is_cmd_switch` was written against. A non-recursive
+`cmd /c rd|rmdir <path>` is no wipe but is handed on too (`cmd_unlinks`, `is_unlink`), only
+from *inside* the wrapper: a bare `rmdir X` is still an ordinary one-directory delete and
+none of this guard's. `cmd /c rmdir /s /q C:\` is a wipe, routes, and `remove` refuses a
+filesystem root before anything is asked.
+
+**Read exactly or not at all.** `cmd_inner` reports whether it read the command line as words
+without guessing; a quote *inside* the command line, a word that had whitespace in it, a
+`%VAR%` or a `^` escape (cmd expands both and the tokens cannot say how) make it `false`, and
+`routable` hands nothing on. The guard still *sees* the command, which is the side that has
+to be generous: an unreadable wipe is refused naming the tool as before, and an unreadable
+`cmd /c rmdir` — no wipe — falls through to the CLI's own refusal rather than being denied
+with a sentence claiming it deletes a tree.
+
+What this deliberately does **not** do, and what was found:
+
+- **Other wrappers.** `bash -c`, `sh -c` and `pwsh -c` hide a delete from `wipes` the same
+  way (the verb is the shell), but they carry no cmd switch for the analyzer to misread and are
+  not what the sink item reports. Widening to them is a new denial every card is subject to, so
+  it is left as a decision rather than made alongside this fix. Filed.
+- **`cmd /c del <file>`** gets the same bogus `/c` refusal from the CLI. A file delete is not
+  this guard's, and routing a one-file delete through a click-shaped tool is a different
+  decision; `Remove-Item <file>` works and so does `[System.IO.File]::Delete`.
+- **An unquoted full path to cmd.exe in PowerShell** (`C:\Windows\System32\cmd.exe /c …`) is
+  tokenised POSIX-style by `wipes`, which eats the backslashes, so the verb is no longer
+  `cmd.exe`. The same limitation `C:\tools\rm.exe` always had; `/c/Windows/…` and a bare `cmd`
+  are read.
+
 ### A shell delete is handed over, not refused
 
 Refusing with the tool's name in the reason cost a turn every time and relied on the card

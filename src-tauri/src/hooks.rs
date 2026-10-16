@@ -710,7 +710,13 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
        is the longest -- and because `displaced` above must get first refusal on
        a `mv`, which this one does not match anyway but which reads better
        stated than relied on. */
-    if let Some(w) = wipes(command) {
+    let wipe = wipes(command);
+    /* A `cmd /c rmdir <path>` is no wipe and is stopped by the CLI regardless
+       (sink `180e4764`), so it is handed over like one; if it cannot be read
+       exactly it is left to that refusal rather than denied here. */
+    let unlink = wipe.is_none() && cmd_unlinks(command);
+    if wipe.is_some() || unlink {
+        let w = wipe.unwrap_or_else(|| Wipe { verb: "cmd /c rmdir".into() });
         let tool = payload.get("tool_name").and_then(serde_json::Value::as_str);
         let powershell = tool == Some("PowerShell");
         let cwd = payload.get("cwd").and_then(serde_json::Value::as_str).unwrap_or("");
@@ -737,7 +743,12 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
                 ),
             }));
         }
-        return Some(deny(wipe_reason(&w)));
+        /* A wipe that could not be read exactly is refused naming the tool. An
+           unlink that could not is no wipe, so nothing here claims it deletes a
+           tree: it falls through, and the CLI's own refusal stands as before. */
+        if !unlink {
+            return Some(deny(wipe_reason(&w)));
+        }
     }
 
     /* The fifth arm, and the only one that is not a refusal or a rewrite: a
@@ -2059,7 +2070,100 @@ const RECURSIVE: [&str; 8] = ["r", "recurse", "recursive", "rf", "fr", "rfv", "s
 pub fn wipes(command: &str) -> Option<Wipe> {
     commands(&strip_heredocs(command))
         .iter()
-        .find_map(|words| wipes_in(words))
+        .find_map(|words| wipes_through(words, true, 3))
+}
+
+/// [`wipes_in`], looking through a `cmd /c …` wrapper to the command it runs.
+///
+/// `depth` bounds `cmd /c cmd /c …`; each unwrapping is the same act as typing
+/// the inner command, so what is found inside is judged exactly as it would be
+/// outside and nothing about the verdict is new.
+fn wipes_through(words: &[String], posix: bool, depth: u8) -> Option<Wipe> {
+    if let Some(w) = wipes_in(words) {
+        return Some(w);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let (inner, _) = cmd_inner(words, posix)?;
+    inner.iter().find_map(|i| wipes_through(i, posix, depth - 1))
+}
+
+/// The commands a `cmd /c …` line runs, and whether they were read *exactly*.
+///
+/// Sink `180e4764`. Until 2026-10-16 `cmd` was the verb of such a line, so
+/// `wipes_in` saw no remover and **`cmd /c rd /s /q C:\x` was not a wipe at all**
+/// to this file. What stopped it was Claude Code's own PowerShell analyzer,
+/// which reads `rmdir` anywhere in the text as `Remove-Item` and takes cmd's
+/// `/c` switch for its target: "Remove-Item on system path '/c' is blocked."
+/// (probed 2026-10-16 against the installed `claude.exe`: `cmd /c rmdir X`,
+/// `cmd.exe /c "rmdir X"` and `cmd /d /c rmdir X` all refused, on a directory
+/// junction in a card's own scratch). That is a refusal by accident, not a
+/// guard: it names no route, and it also stops the one safe way of dropping a
+/// junction — `rmdir` without `/s` removes the link and nothing behind it.
+/// The same probe shows a hook's `deny` reaching the card *instead of* that
+/// message and a hook's `allow` not overriding it, so the only thing Volery can
+/// do for a `cmd /c rmdir <path>` is take it over (`cmd_unlinks`, `routable`).
+///
+/// `cmd [/d /q …] /c <command…>`: everything after the first `/c` (or `/k`, and
+/// Git Bash's `//c`) is the command. A single word with a space in it is a
+/// quoted command line and is split the way a shell line is; otherwise the
+/// words are the command as given. The flag is `false` where reading it as
+/// words would be a guess — a quote inside the command line, a word that had
+/// whitespace in it, a `%VAR%` or a `^` escape that cmd expands — and
+/// [`routable`] hands nothing on in that case; the guard still *sees* the
+/// command, which is the side that must be generous.
+///
+/// Only `cmd`. `sh -c`, `bash -c` and `pwsh -c` hide a delete from this file the
+/// same way (the verb is the shell) but do not trip the analyzer's `/c` and are
+/// not what the sink item reports: noted in `.claude/rules/hooks.md`, not widened
+/// here, since each is a new denial for every card on the wall.
+fn cmd_inner(words: &[String], posix: bool) -> Option<(Vec<Vec<String>>, bool)> {
+    let verb = words.first()?.to_ascii_lowercase();
+    let name = verb.rsplit(['/', MS_SEP]).next().unwrap_or("");
+    if name != "cmd" && name != "cmd.exe" {
+        return None;
+    }
+    let at = 1 + words.iter().skip(1).position(|w| {
+        matches!(w.to_ascii_lowercase().as_str(), "/c" | "/k" | "//c" | "//k")
+    })?;
+    let rest = &words[at + 1..];
+    let (inner, exact) = if rest.first()?.contains(char::is_whitespace) {
+        let src = rest.join(" ");
+        let exact = rest.len() == 1 && !src.contains(['"', '\'']);
+        (commands_as(&src, posix), exact)
+    } else {
+        (
+            vec![rest.to_vec()],
+            rest.iter().all(|w| !w.contains(char::is_whitespace)),
+        )
+    };
+    let exact = exact && inner.iter().flatten().all(|w| !w.contains(['%', '^']));
+    Some((inner, exact))
+}
+
+/// Is this `rd`/`rmdir` naming something to remove? Not a wipe — no `/s` — and
+/// only ever asked of a command found inside a `cmd /c`, where the analyzer
+/// above refuses it whatever it names.
+fn is_unlink(words: &[String]) -> bool {
+    let verb = words.first().map(|w| w.to_ascii_lowercase()).unwrap_or_default();
+    let name = verb.rsplit(['/', MS_SEP]).next().unwrap_or("");
+    matches!(name, "rd" | "rmdir")
+        && words
+            .iter()
+            .skip(1)
+            .any(|w| !w.starts_with('-') && !is_cmd_switch(w))
+}
+
+/// Does this line contain a `cmd /c rmdir <something>` that is not a wipe?
+///
+/// The hook asks this beside [`wipes`]: such a line is let nowhere by the CLI,
+/// so it is either handed to `remove` like any other delete or left to the CLI's
+/// own refusal — never a bare allow that does nothing.
+pub fn cmd_unlinks(command: &str) -> bool {
+    commands(&strip_heredocs(command)).iter().any(|words| {
+        cmd_inner(words, true).is_some_and(|(inner, _)| inner.iter().any(|i| is_unlink(i)))
+    })
 }
 
 fn wipes_in(words: &[String]) -> Option<Wipe> {
@@ -2182,8 +2286,25 @@ pub fn routable(command: &str, powershell: bool) -> Option<Routed> {
     }
     let all = commands_as(command, !powershell);
     let (first, rest) = all.split_first()?;
-    let words = first;
-    wipes_in(words)?;
+    /* A `cmd /c …` wrapper is read the way `wipes` reads it — the command that
+       follows the switch is the delete — so the two halves cannot disagree
+       about what a line is (sink `180e4764`: `/c` was being handed on as a
+       path). Only when it was read exactly, and only the first inner command,
+       for the reason only the first outer one is. A `rd`/`rmdir` with no `/s`
+       is not a wipe and is handed on only from inside the wrapper, where the
+       CLI refuses it whatever it names; bare, it stays an ordinary delete. */
+    let wrapped = cmd_inner(first, !powershell);
+    let (words, inner_chained) = match &wrapped {
+        Some((_, false)) => return None,
+        Some((inner, true)) => {
+            let (head, tail) = inner.split_first()?;
+            (head, !tail.is_empty())
+        }
+        None => (first, false),
+    };
+    if wipes_in(words).is_none() && !(wrapped.is_some() && is_unlink(words)) {
+        return None;
+    }
     let verb = words[0].to_ascii_lowercase();
     let verb = verb.rsplit(['/', MS_SEP]).next().unwrap_or(&verb).to_string();
     if verb == "find" {
@@ -2238,7 +2359,7 @@ pub fn routable(command: &str, powershell: bool) -> Option<Routed> {
     }
     Some(Routed {
         operands,
-        chained: !rest.is_empty(),
+        chained: inner_chained || !rest.is_empty(),
     })
 }
 
@@ -3229,6 +3350,95 @@ mod tests {
            a one-letter `/c` is Git Bash's whole C: drive. */
         assert!(wipes("rmdir /s /q").is_none());
         assert!(wipes("rm -rf /c").is_some());
+    }
+
+    /// Sink `180e4764`. `cmd` was the verb of `cmd /c rd /s /q X`, so this file
+    /// saw no wipe in it at all and the only thing between a card and that
+    /// delete was the CLI's analyzer reading `/c` as the target. The command
+    /// *after* the switch is what runs, and it is judged as it would be bare.
+    #[test]
+    fn a_cmd_wrapper_is_looked_through_to_the_delete_it_runs() {
+        assert!(wipes(r"cmd /c rmdir /s /q C:\").is_some());
+        assert!(wipes(r"cmd /c rd /s /q build").is_some());
+        assert!(wipes(r"cmd.exe /c rd /s /q build").is_some());
+        assert!(wipes(r"cmd /d /c rd /s /q build").is_some());
+        assert!(wipes(r"CMD /C RD /S /Q build").is_some());
+        assert!(wipes(r"cmd //c rd /s /q build").is_some(), "Git Bash's spelling");
+        /* One quoted word is a whole command line. */
+        assert!(wipes(r#"cmd /c "rd /s /q build""#).is_some());
+        assert!(wipes(r#"cmd.exe /c "dir && rd /s /q build""#).is_some());
+        assert!(wipes(r"cmd /c cmd /c rd /s /q build").is_some());
+        assert!(wipes("/c/Windows/System32/cmd.exe /c rd /s /q build").is_some());
+
+        /* A wrapper is no more a delete than what it wraps. */
+        assert!(wipes(r"cmd /c rmdir C:\work\x\node_modules").is_none());
+        assert!(wipes(r"cmd /c del notes.txt").is_none());
+        assert!(wipes(r"cmd /c dir").is_none());
+        assert!(wipes(r"cmd /c echo rd /s /q build").is_none());
+        assert!(wipes(r"cmd /c rd /s /q").is_none(), "names nothing");
+        assert!(wipes(r"cmd /c").is_none());
+        assert!(wipes(r"cmd /? rd /s /q build").is_none(), "no /c, no command");
+    }
+
+    /// The same line read by the other half. `routable` handed `/c` on as a
+    /// path before it looked through the wrapper, and `resolve` would have read
+    /// it as Git Bash's C: drive.
+    #[test]
+    fn a_cmd_wrapper_is_read_the_same_way_by_the_hand_off() {
+        let junction = r"C:\atelier\skein\.scratch-c6b3ba01\wt\node_modules";
+
+        /* The reported line: a non-recursive rmdir, which removes a junction as
+           a link. Not a wipe, and handed on all the same, because the CLI
+           refuses it whatever it names. */
+        assert!(wipes(&format!(r"cmd /c rmdir {junction}")).is_none());
+        assert!(cmd_unlinks(&format!(r"cmd /c rmdir {junction}")));
+        assert_eq!(
+            routable(&format!(r"cmd /c rmdir {junction}"), true),
+            routed(&[junction], false)
+        );
+        assert_eq!(
+            routable(&format!(r#"cmd.exe /c "rmdir {junction}""#), true),
+            routed(&[junction], false)
+        );
+        assert_eq!(
+            routable(&format!(r"cmd /d /c rd {junction}"), true),
+            routed(&[junction], false)
+        );
+
+        /* The recursive form is a wipe *and* routes — to `remove`, which
+           refuses a filesystem root before anything is asked. */
+        assert!(wipes(r"cmd /c rmdir /s /q C:\").is_some());
+        assert_eq!(routable(r"cmd /c rmdir /s /q C:\", true), routed(&[r"C:\"], false));
+        let root = routable(r"cmd /c rmdir /s /q C:\", true).unwrap();
+        assert!(!root.operands.iter().any(|o| o == "/c" || o == "/s" || o == "/q"));
+        assert_eq!(
+            routable(r"cmd /c rd /s /q C:\work\build & echo done", true),
+            routed(&[r"C:\work\build"], true)
+        );
+        assert_eq!(
+            routable(r#"cmd /c "rd /s /q C:\work\build && echo done""#, true),
+            routed(&[r"C:\work\build"], true)
+        );
+
+        /* Whatever is not read exactly is not handed on: a quote or a `%VAR%`
+           inside the command line, a glob, a flag nobody has heard of. */
+        for no in [
+            r"cmd /c rmdir %TEMP%\x",
+            r#"cmd /c "rmdir "C:\a b""#,
+            r"cmd /c rmdir C:\x*",
+            r"cmd /c rmdir /x C:\x",
+            r"cmd /c rmdir ^C:\x",
+            r"cmd /c dir",
+            r"cmd /c",
+        ] {
+            assert_eq!(routable(no, true), None, "{no}");
+        }
+        /* A bare rmdir stays what it was: an ordinary one-directory delete, in
+           no way this guard's. */
+        assert_eq!(routable(r"rmdir C:\x", true), None);
+        assert!(!cmd_unlinks(r"rmdir C:\x"));
+        assert!(!cmd_unlinks(r"cmd /c dir"));
+        assert!(!cmd_unlinks(r"cmd /c rmdir /s"));
     }
 
     fn routed(ops: &[&str], chained: bool) -> Option<Routed> {
