@@ -41,6 +41,10 @@ import {
   healNote,
   carryNote,
   isCarryOn,
+  isPickUp,
+  pickUpNote,
+  lapsesOnAnswer,
+  QUEUED_BEHIND_NOTE,
   HOLD_LINE,
   HOLD_REFUSED_LINE,
   holdSlotFor,
@@ -721,6 +725,7 @@ export class Skein {
            the same reason: `choose` must have stopped offering the refused
            account by the time anything re-sends. */
         this.#spend(c, e.payload.event);
+        this.#lapseHeld(c);
         this.#heal(c);
         this.#nudge(c);
         this.#settleRepair(c);
@@ -2758,7 +2763,11 @@ export class Skein {
    *  the thing the heal re-sends is the resume prompt. The first attempt is
    *  already in the session file, because the CLI records a prompt when it takes
    *  it rather than when it answers it, so the retry lands beside its own failed
-   *  copy and `--resume` hands the model both.
+   *  copy and `--resume` hands the model both. (`#lastSent` is gone since
+   *  2026-10-16: it named the last thing this window drew rather than the turn
+   *  that broke, and a relay that met a spent allowance re-sent a prompt answered
+   *  twenty-five minutes earlier. What a heal sends is now `healTextFor` over the
+   *  card's `Opener`.)
    *
    *  Confirmed against this machine's own transcripts, 2026-09-05: every doubled
    *  app-composed prompt on it — six of them across four cards — follows a
@@ -2784,7 +2793,16 @@ export class Skein {
        joining it meant overwriting the prompt being held. Belt as well as
        braces: the slot is safe now either way, and a heal that cannot help is
        still a heal not worth arming. */
-    if (conv.held) return;
+    /* And dropped, not kept for later: left armed, the next event after the
+       hold released would schedule it, and a card at rest when the timer fired
+       would get this prompt a second time behind the one the hold just sent.
+       Only the card's `working` check stood in the way. The held text is the
+       turn this card is owed; a heal of a turn that broke while it waited has
+       nothing to add to it. */
+    if (conv.held) {
+      conv.pendingHeal = null;
+      return;
+    }
     conv.pendingHeal = null;
     /* One in flight per card. The map is keyed by id, so a second would
        overwrite the handle and leak the first — and there is no path that wants
@@ -2810,10 +2828,20 @@ export class Skein {
       this.#heals.delete(conv.id);
       if (this.#gone) return;
       if (conv.working) return;
+      /* A prompt of yours still in the CLI's queue is the turn this card is
+         owed, and sending now would move the card off the process holding it
+         — see `queuedBehind`. Its replay opens a turn; if that meets the same
+         limit, it heals itself. */
+      if (conv.queuedBehind(heal.text)) {
+        conv.note(QUEUED_BEHIND_NOTE);
+        return;
+      }
       conv.note(
         heal.carry
           ? carryNote(heal.attempt, wait)
-          : healNote(heal.kind, heal.attempt, wait),
+          : heal.pickUp
+            ? pickUpNote(heal.kind, heal.attempt, wait)
+            : healNote(heal.kind, heal.attempt, wait),
       );
       /* Look before re-sending, and only on the first attempt.
          `wasMalformedRequest` cannot tell the two causes apart — a body cut
@@ -2827,7 +2855,7 @@ export class Skein {
       }
       /* Marked, so the agent can account for the copy already in its context.
          `withResendMark` strips any earlier attempt's mark before adding this
-         one — `heal.text` is `#lastSent`, which `echo` wrote from the last send,
+         one — `heal.text` is what opened the failed turn (`healTextFor`),
          which on attempt three is attempt two's marked text. The mark is a
          *suffix* for a reason worth knowing before moving it: every recogniser
          here anchors on a prompt's first words, so a prefix would stop the
@@ -2837,12 +2865,21 @@ export class Skein {
          explains a duplicate, and there is none — and a re-send of one (a card
          whose carry-on met an overload before reaching a model) must not gain
          "attempt 2 of 4 at this prompt" over words that were never your prompt. */
-      void this.send(
-        conv,
-        heal.carry || isCarryOn(heal.text)
+      /* A pick-up likewise: it points at a message the CLI already recorded
+         rather than copying one, so there is no duplicate for a mark to
+         explain. */
+      const out =
+        heal.carry || isCarryOn(heal.text) || isPickUp(heal.text)
           ? heal.text
-          : withResendMark(heal.text, heal.kind, heal.attempt),
-      );
+          : withResendMark(heal.text, heal.kind, heal.attempt);
+      /* Told to `#hold`, so a hold of this text is known to be Skein's own
+         rather than read off its wording — your prompt quoting a resend mark
+         must never lapse. `send` reaches `#hold` before its first await
+         returns control to anything that could change the slot. */
+      this.#composing.set(conv.id, out);
+      void this.send(conv, out).finally(() => {
+        if (this.#composing.get(conv.id) === out) this.#composing.delete(conv.id);
+      });
     }, wait);
     this.#heals.set(conv.id, t);
   }
@@ -3131,6 +3168,11 @@ export class Skein {
    *  and leak the first, which is the trap `#heals` is keyed to avoid. */
   #holds = new Map<string, ReturnType<typeof setTimeout>>();
 
+  /** The text a heal is sending right now, per card, so `#hold` can tell a
+   *  prompt Skein composed from one you typed. Set and cleared around the one
+   *  `send` in `#heal`'s timer. */
+  #composing = new Map<string, string>();
+
   /** Whether the wall is managing accounts at all.
    *
    *  An empty registry is not a failure and must not behave like one: it is
@@ -3391,10 +3433,16 @@ export class Skein {
       mine?.state === "blocked"
         ? mine
         : choice.standings.find((st) => st.state === "blocked");
+    /* Whether a heal composed this text, carried across `releaseHeld` putting
+       the same text back. See `held.composed`. */
+    const composed =
+      this.#composing.get(conv.id) === text ||
+      (conv.held?.text === text && conv.held.composed === true);
     conv.held = {
       text,
       why: blocked?.state === "blocked" ? sayBlocked(blocked.blockers) : HOLD_LINE,
       until: choice.until,
+      ...(composed ? { composed: true as const } : {}),
     };
     conv.activity = conv.held.why;
     /* Written here, at the edge where the hold begins, rather than at shutdown.
@@ -3469,7 +3517,7 @@ export class Skein {
       /* The turn `echoHeld` gave back is taken again here rather than at the
          `echo` that never happens on this path — the line was drawn when you
          typed it, minutes or hours ago, and only the sending is new. */
-      conv.echoResumed();
+      conv.echoResumed(held.text);
       await this.#deliver(conv, held.text);
     }
   }
@@ -3534,6 +3582,25 @@ export class Skein {
     const abandoned = conv.held?.text;
     conv.held = null;
     if (abandoned !== undefined) conv.echoFailed(abandoned, "left it");
+    this.#writeHold(conv);
+  }
+
+  /** Drop a held retry the card has since moved past — see `lapsesOnAnswer`.
+   *
+   *  `#dropHold`'s shape, for a different reason: that one is you saying "don't",
+   *  this is a model having already read what the held text was standing in for.
+   *  The card closes the line and says so (`Conversation.lapseHeld`); this takes
+   *  the timer down and the row out, or a restart would bring the copy back and
+   *  send it. Re-checked here rather than trusted, since a release can have taken
+   *  the slot between the event that set the flag and this. */
+  #lapseHeld(conv: Conversation) {
+    if (!conv.pendingHeldLapse) return;
+    conv.pendingHeldLapse = false;
+    if (!conv.held?.composed || !lapsesOnAnswer(conv.held.text)) return;
+    const t = this.#holds.get(conv.id);
+    if (t !== undefined) clearTimeout(t);
+    this.#holds.delete(conv.id);
+    conv.lapseHeld();
     this.#writeHold(conv);
   }
 

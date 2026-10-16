@@ -2871,27 +2871,31 @@ export function healNote(kind: HealKind, attempt: number, waitMs: number): strin
  *  that admits it is describing the usual case. Same bargain
  *  `NUDGE_PROMPT_TEXT` strikes. */
 export function resendMark(kind: HealKind, attempt: number): string {
-  const why =
-    kind === "limited"
-      ? "the account was out of allowance"
-      : kind === "dropped"
-        ? "the connection dropped"
-        : kind === "malformed"
-          ? "the request was cut short on the way out"
-          : "the api was overloaded";
   return (
     `skein: attempt ${attempt} of ${HEAL_BUDGET[kind]} at this prompt. ` +
-    `the one before it failed before reaching a model — ${why} — so if you ` +
+    `the one before it failed before reaching a model — ${failedBecause(kind)} — so if you ` +
     `can see these words twice, that is this attempt beside that one, not two ` +
     `things being asked of you.`
   );
 }
 
+/** What broke, in the clause `resendMark` and `pickUpText` both say it in. */
+function failedBecause(kind: HealKind): string {
+  return kind === "limited"
+    ? "the account was out of allowance"
+    : kind === "dropped"
+      ? "the connection dropped"
+      : kind === "malformed"
+        ? "the request was cut short on the way out"
+        : "the api was overloaded";
+}
+
 /** The shape `resendMark` writes, so a second attempt can take the first one's
  *  mark off before adding its own.
  *
- *  It has to, because `#lastSent` is whatever `echo` last drew and `echo` draws
- *  the marked text — so without this, attempt three would carry attempt two's
+ *  It has to, because a heal re-sends the text that opened the failed turn
+ *  (`healTextFor`), and on a second attempt that is the first attempt's marked
+ *  text, as `echo` drew it — so without this, attempt three would carry attempt two's
  *  sentence underneath its own and the count would be the only true thing left
  *  in either. Matched on the whole shape rather than on the two opening words,
  *  which is the difference between stripping a mark and stripping a paragraph
@@ -3236,6 +3240,204 @@ export function isCarryOn(text: string): boolean {
  *  does on its own initiative may be invisible afterwards. */
 export function carryNote(attempt: number, waitMs: number): string {
   return `the allowance ran out part-way through — carrying on from another account in ${saySoon(waitMs)} (${attempt} of ${CARRY_BUDGET})`;
+}
+
+/** Who put in front of the model the prompt a turn is answering — which is the
+ *  only thing that decides what a heal of that turn may send.
+ *
+ *  **The heal used to ask a different question, and the answer was a prompt
+ *  delivered twice.** It re-sent `#lastSent`: the last prompt *this window*
+ *  drew, which is not the prompt the failing turn was answering whenever the
+ *  wall itself opened that turn. Relays, `wake_me` wakes and inbox posts are
+ *  written into stdin by Rust (`relay.rs`, `later.rs`) and never pass through
+ *  `echo`, so `#lastSent` stays on whatever you last typed — answered and done
+ *  with, possibly hours ago. Reported 2026-10-16 (Lyss: *"I could see this
+ *  duplicate queued up when the allowance ran out and you received it when it
+ *  freed up"*), and read straight out of card `34b07397`'s session `0547c1d1`:
+ *
+ *  ```text
+ *  01:36:25  you    "yes spawn a follow up to widen it"   answered, card spawned
+ *  02:00:01  relay  "[skein relay] from the wall — A card you opened has stopped"
+ *  02:00:02         "You've hit your session limit · resets 1:40pm"  (no output)
+ *  02:39:58  relay  … answered at 02:40 on the live process
+ *  02:42:55  queued "yes spawn a follow up to widen it\n\nskein: attempt 1 of 4
+ *                    at this prompt. the one before it failed before reaching a
+ *                    model — the account was out of allowance — …"
+ *  ```
+ *
+ *  The relay's turn failed before a model, so `mayHeal` let it through — and
+ *  `mayHeal` was right about *that* turn. The text it then sent belonged to the
+ *  turn before, which had reached a model and acted. The mark made it worse
+ *  rather than better: it told the agent, falsely, that the copy above it had
+ *  never been answered.
+ *
+ *  - `you` — a line this window drew and the wire then took up (or that went
+ *    straight into an idle card). The one text a heal may repeat.
+ *  - `wall` — a relay, a wake, or a turn the CLI began by itself on a
+ *    background job's report: Volery's process, but no words of this window's.
+ *    A heal may ask the agent to pick it up (`pickUpText`) and never re-send it.
+ *  - `null` — a prompt this window did not draw at all (a terminal appending to
+ *    the session) or no turn yet. Nothing may be sent on its behalf, which is
+ *    what a terminal-driven card always got. */
+export type Opener = { by: "you"; text: string } | { by: "wall" } | null;
+
+/** What the fold saw that says who opened the turn now running.
+ *
+ *  - `sent` — `echo` drew a line, or a hold released one. It opens the turn
+ *    only if nothing is running: written into a busy card, the CLI queues it,
+ *    and the turn that fails next is still the one in front of it.
+ *  - `claimed` — the wire replayed a line we drew. The CLI takes prompts in
+ *    order, so the replay *is* the moment that prompt became the one being
+ *    answered, busy card or not.
+ *  - `relay` — a `[skein relay]` / `[skein wake]` replay.
+ *  - `unclaimed` — a prompt with no line of ours waiting for it.
+ *  - `began` — a turn opened by model output alone, with no prompt in front of
+ *    it: the CLI waking itself on a `task_notification`. */
+export type OpenerCue =
+  | { cue: "sent"; text: string; working: boolean }
+  | { cue: "claimed"; text: string }
+  | { cue: "relay" }
+  | { cue: "unclaimed" }
+  | { cue: "began" };
+
+export function openerAfter(prev: Opener, c: OpenerCue): Opener {
+  switch (c.cue) {
+    case "sent":
+      return c.working ? prev : { by: "you", text: c.text };
+    case "claimed":
+      return { by: "you", text: c.text };
+    case "relay":
+    case "began":
+      return { by: "wall" };
+    case "unclaimed":
+      return null;
+  }
+}
+
+/** The text a heal of the failed turn may send, or null for none.
+ *
+ *  Your own words back for a turn you opened — the original licence, unchanged
+ *  — and for a turn the wall opened, a request to pick up what is already in
+ *  the conversation. Not the relay's text again: the CLI recorded it when it
+ *  took it, so it is there to be read, and a copy would be the duplicate in
+ *  another coat. And not nothing, which the first cut of this considered: a
+ *  `wake_me` lost to a 429 is a card that asked to be woken and never is, and
+ *  the stale re-send this replaces was, by accident, the only thing that ever
+ *  woke one.
+ *
+ *  **And a pick-up only for a turn that produced nothing.** `mayHeal` lets a
+ *  `dropped` turn through whatever it yielded, because re-sending *your* prompt
+ *  resumes a session holding the partial; a pick-up saying the turn "never
+ *  reached a model" would be false there, so a wall-opened turn that spoke
+ *  first gets no text and the card says it is not being repeated. */
+export function healTextFor(
+  opener: Opener,
+  kind: HealKind,
+  producedOutput = false,
+): string | null {
+  if (opener === null) return null;
+  if (opener.by === "you") return opener.text;
+  return producedOutput ? null : pickUpText(kind);
+}
+
+/** The words every `pickUpText` opens with, which is how it is known again. */
+const PICK_UP_HEAD = "skein: the turn before this one never reached a model";
+
+/** What a card is sent when a turn the *wall* opened — a message from another
+ *  card, a wake it asked for, a background job reporting in — failed before a
+ *  model saw it.
+ *
+ *  `CARRY_ON_TEXT`'s sibling and for its reason: it is not a copy of anything,
+ *  so it carries no resend mark, and it says whose words it is. It points at
+ *  what is above rather than restating it, because the CLI recorded that
+ *  message on receipt and the agent will read it there; and it says it is not a
+ *  request of its own, or an agent with nothing pending would invent one. */
+export function pickUpText(kind: HealKind): string {
+  return (
+    `${PICK_UP_HEAD} — ${failedBecause(kind)} — so whatever opened it (a message ` +
+    `from another card, a wake you asked for, or a background job reporting in) ` +
+    `has not been answered or acted on yet. It is above this in the conversation: ` +
+    `read it and act on it now. This line is not a request of its own.`
+  );
+}
+
+export function isPickUp(text: string): boolean {
+  return stripResendMark(text).trimStart().startsWith(PICK_UP_HEAD);
+}
+
+/** The person's half of a pick-up, said before it goes — `carryNote`'s rule. */
+export function pickUpNote(kind: HealKind, attempt: number, waitMs: number): string {
+  return `${failedBecause(kind)} before that turn reached a model, and it was not one of yours to send again — asking the card to pick it up in ${saySoon(waitMs)} (${attempt} of ${HEAL_BUDGET[kind]})`;
+}
+
+/** Whether a prompt waiting for an account stops being worth sending the moment
+ *  any other turn reaches a model.
+ *
+ *  **The second way one prompt arrived twice, and it is the same incident's
+ *  second half.** A heal that meets a spent account is *held*, and a held card
+ *  still has a live process: Rust goes on writing relays and wakes into its
+ *  stdin, and the account frees on the server's clock rather than on the hold
+ *  timer's. So a relay arrived at 02:39:58, was answered at 02:40 — by a model
+ *  reading a context that already held everything the failed turns had been
+ *  sent — and the held retry went out three minutes later on top of it.
+ *
+ *  True for exactly the texts a heal composes as stand-ins for something
+ *  already in the session: a resend-marked copy (the original is above it,
+ *  recorded on receipt) and a pick-up (its whole purpose is a turn, which has
+ *  now happened). False for your own words held before they were ever written
+ *  — they are in no session, and a turn elsewhere has not seen them — and for
+ *  the carry-on, which repeats nothing and asks for work an intervening relay
+ *  turn need not have done. */
+export function lapsesOnAnswer(heldText: string): boolean {
+  return RESEND_MARK_RE.test(heldText) || isPickUp(heldText);
+}
+
+/** Whether a prompt of yours is still in the CLI's queue behind the turn a heal
+ *  is about to answer for — in which case the heal must not go.
+ *
+ *  Found in review of the `Opener` change, and it is the reason that change
+ *  could not stand alone. Type into a busy card and the CLI queues your words;
+ *  if the running turn then meets a spent allowance, the heal fires a second
+ *  later (`healDelayMs`) and the queue drains about 1.5s after the `result`
+ *  (`tools/probe-queue.ts`) — so the heal usually lands first. Its send moves
+ *  the card to another account, which ends the process, and the queued prompt
+ *  goes with it: its line was already settled by the failed `result`, so the
+ *  retirement's `#forgetEchoes` let it go, and it was drawn as delivered with
+ *  nothing ever answering it. `#lastSent` used to cover this by accident,
+ *  because the last thing typed *was* the queued prompt.
+ *
+ *  So the heal stands down instead, and the queued prompt is the turn: it is
+ *  taken up on its own, and if it meets the same limit it heals itself, with
+ *  the earlier failure in front of the model where the CLI recorded it.
+ *
+ *  `sent` is every line still owed its echo with the moment it was drawn;
+ *  `skip` is what is not evidence of a queue — the held text, which is Skein's
+ *  and not on the wire, and the heal's own text, whose line is the failed
+ *  turn's when its replay never arrived. Bounded by `UNQUEUED_AFTER_S`: a line
+ *  unechoed for a minute was never in a queue (the retirement of the prompt
+ *  nudge is the measurement), and must not stop every heal for the life of the
+ *  card. */
+export function queuedBehind(
+  sent: readonly { text: string; at: number }[],
+  now: number,
+  skip: readonly (string | null | undefined)[],
+): boolean {
+  const skipped = new Set(skip.filter((s): s is string => !!s).map((s) => s.trim()));
+  return sent.some(
+    (s) => now - s.at < UNQUEUED_AFTER_S * 1000 && !skipped.has(s.text.trim()),
+  );
+}
+
+export const QUEUED_BEHIND_NOTE =
+  "not trying that turn again — a prompt of yours is queued behind it and is taken up next";
+
+/** Why a held retry was dropped, in the transcript. Says what the person may
+ *  still want to do, because the turn that superseded it may have answered
+ *  something else. */
+export function heldLapsedNote(text: string): string {
+  return isPickUp(text)
+    ? "not sending the held pick-up — the card has taken a turn since, which read what it was for"
+    : "not sending the held retry — the card has taken a turn since, which had your prompt in front of it; send it again yourself if it went unanswered";
 }
 
 export function healHeldNote(kind: HealKind): string {

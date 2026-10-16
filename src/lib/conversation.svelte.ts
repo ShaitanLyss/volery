@@ -33,6 +33,14 @@ import {
   refusalResetOf,
   CARRY_ON_TEXT,
   CARRY_BUDGET,
+  type Opener,
+  openerAfter,
+  healTextFor,
+  isPickUp,
+  lapsesOnAnswer,
+  heldLapsedNote,
+  queuedBehind,
+  stripResendMark,
   isImageNote,
   isRetryNudge,
   isPromptNudge,
@@ -926,7 +934,15 @@ export class Conversation {
    *  would vanish the moment anything re-rendered. `until` is when the first
    *  account is expected back, or null when no window named a reset and only
    *  the next allowance poll can say. */
-  held = $state<{ text: string; why: string; until: number | null } | null>(null);
+  held = $state<{
+    text: string;
+    why: string;
+    until: number | null;
+    /** Composed by a heal rather than typed by you — the only kind that may
+     *  lapse (`lapsesOnAnswer`). Not persisted: a hold read back off disk is
+     *  treated as yours, which errs towards sending it. */
+    composed?: true;
+  } | null>(null);
 
   /** A side question that is out, if one is — see `aside.rs`.
    *
@@ -1167,9 +1183,39 @@ export class Conversation {
    * folds events and never talks to Rust, so a class that re-sent its own
    * prompts would be reaching straight through that boundary. */
 
-  /** The last prompt *this window* sent, and so the only text a heal may
-   *  repeat. Null on a card being driven from a terminal. */
-  #lastSent: string | null = null;
+  /** Who opened the turn now running or just ended — and so what a heal of it
+   *  may send. `openerAfter` is the fold and `healTextFor` the reading.
+   *
+   *  This was `#lastSent`, the last prompt *this window* drew, and the heal
+   *  re-sent it for whatever turn broke. A relay or a wake opens a turn without
+   *  ever passing through `echo`, so when one of those met a spent allowance the
+   *  heal sent your previous prompt — answered, done with, sometimes hours old —
+   *  marked as a retry of a turn it had nothing to do with (2026-10-16, see
+   *  `Opener`). The licence was always "only what this window sent"; what was
+   *  missing was "for the turn that broke". */
+  #opener: Opener = null;
+
+  /** When each line `echo` drew was drawn — the one fact `queuedBehind` needs
+   *  that a `Line` does not carry. Weak, so a line sliced off the front of
+   *  `lines` takes its entry with it. */
+  #drawnAt = new WeakMap<Line, number>();
+
+  /** Whether a prompt of yours is still queued in the CLI behind the turn a
+   *  heal is about to answer for. See `classify.ts::queuedBehind`. */
+  queuedBehind(healText: string): boolean {
+    const sent: { text: string; at: number }[] = [];
+    for (const l of this.lines) {
+      if (l.kind !== "you" || l.awaited !== true) continue;
+      const at = this.#drawnAt.get(l);
+      if (at !== undefined) sent.push({ text: l.text, at });
+    }
+    return queuedBehind(sent, Date.now(), [this.held?.text, healText, stripResendMark(healText)]);
+  }
+
+  /** A prompt being held for an account has stopped being worth sending, read
+   *  and cleared by Skein — which owns the hold's timer and its row. Set when a
+   *  model answers while a heal is held (`lapsesOnAnswer`). */
+  pendingHeldLapse = $state(false);
 
   /** Attempts spent healing the turn in hand. Reset by any turn that ends some
    *  other way, so the budget is per-turn and not per-card — a card that healed
@@ -1188,6 +1234,9 @@ export class Conversation {
     /** A carry-on rather than a re-send: the text is `CARRY_ON_TEXT`, and the
      *  `attempt` counts `carryAttempts` rather than `healAttempts`. */
     carry?: boolean;
+    /** A pick-up rather than a re-send: the turn was the wall's, and the text
+     *  is `pickUpText` — not a copy of anything, so it goes out unmarked. */
+    pickUp?: boolean;
   } | null>(null);
   /** Carry-ons since a turn last finished cleanly — see `CARRY_BUDGET`. Counted
    *  apart from `healAttempts` because the two answer different questions: that
@@ -1981,17 +2030,11 @@ export class Conversation {
    *  `Line.echo`; passing nothing is the ordinary case and keeps the two one
    *  string. */
   echo(text: string, wire?: { echo: string; shots?: { name: string; thumb: string }[] }) {
-    /* Kept for the heal, and only ever set here — which is the whole of what
-       makes a heal safe to offer. A prompt this window sent is one it can send
-       again; a `user` event with no line waiting for it came from a terminal
-       appending to the same session (see the `user` arm below), and re-sending
-       *that* would be Skein putting words into a conversation it is not
-       holding. So a card driven from somewhere else fails rust, as it always
-       did, and only what you typed here is ever repeated. */
-    this.#lastSent = text;
+    const idle = !this.working;
     this.#push("you", text, "pending");
     const line = this.lines[this.lines.length - 1]!;
     line.awaited = true;
+    this.#drawnAt.set(line, Date.now());
     /* Only when it differs, so the ordinary prompt keeps one string and
        `#echoOf`'s fallback is never reading a copy that could drift. */
     if (wire && wire.echo !== text) line.echo = wire.echo;
@@ -2000,7 +2043,13 @@ export class Conversation {
     /* The turn starts when you send, which is the same rule the echo used to
        apply — only now it applies from the gesture rather than from the
        acknowledgement. `echoFailed` takes it back if nothing ever left. */
-    if (!this.working) this.#beginTurn();
+    if (idle) this.#beginTurn();
+    /* This text is what a heal of the turn may repeat — but only if it opens
+       one. Written into a busy card it is queued behind the running turn, and
+       if *that* turn breaks the heal must not answer for it with these words:
+       the CLI still holds them and will take them up on its own, so a re-send
+       would be the second copy. Its replay claims the turn when it comes. */
+    this.#opener = openerAfter(this.#opener, { cue: "sent", text, working: !idle });
     this.activity = this.dormant ? "waking…" : "sending…";
   }
 
@@ -2030,9 +2079,9 @@ export class Conversation {
 
   /** The process has our words — the line stands as an ordinary one, and the
    *  books are closed on it. */
-  #claimEcho(text: string): boolean {
+  #claimEcho(text: string): Line | null {
     const line = this.#echoOf(text, (l) => l.awaited === true);
-    if (!line) return false;
+    if (!line) return null;
     line.state = undefined;
     line.awaited = undefined;
     this.awaiting = Math.max(0, this.awaiting - 1);
@@ -2064,7 +2113,7 @@ export class Conversation {
        on doing that. An unbounded loop of real turns, on a card that is failing
        in precisely the way the loop was built for. */
     if (this.awaiting === 0) this.saidUnqueued = false;
-    return true;
+    return line;
   }
 
   /** Close the books on a prompt the CLI answered itself.
@@ -2079,7 +2128,7 @@ export class Conversation {
       .filter((l) => l.kind === "you" && l.awaited === true)
       .map((l) => l.text);
     const hit = localCommandAwaiting(awaited);
-    return hit === null ? false : this.#claimEcho(hit);
+    return hit === null ? false : this.#claimEcho(hit) !== null;
   }
 
   /** Anything still pending when the process speaks has plainly arrived, even
@@ -2185,9 +2234,38 @@ export class Conversation {
    *  from the gesture. Without it the card sat at rest with a prompt on the wire
    *  until the first event answered, and `unacknowledged` would have started
    *  counting against it. */
-  echoResumed() {
-    if (!this.working) this.#beginTurn();
+  echoResumed(text: string) {
+    const idle = !this.working;
+    if (idle) this.#beginTurn();
+    /* `echo`'s rule: the held text opens the turn it is sent into only if
+       nothing else is running. A hold can release into a card a relay is
+       already answering, and the prompt then queues behind that turn. */
+    this.#opener = openerAfter(this.#opener, { cue: "sent", text, working: !idle });
     this.activity = "sending…";
+  }
+
+  /** A held retry or pick-up has been overtaken: a model has answered on this
+   *  card since it was held, reading a context that already holds what it was
+   *  standing in for. See `lapsesOnAnswer` for why only those two lapse.
+   *
+   *  The line `echo` drew for it is closed the way every abandoned prompt is —
+   *  marked, and taken out of `awaiting` in the same breath, because a held
+   *  line keeps `awaited` on purpose and nothing would ever claim it now. Not
+   *  through `echoFailed`, which also gives the turn back: this is called from
+   *  inside a live turn somebody else's prompt opened, and that turn is real.
+   *  Skein clears the timer and the row (`#lapseHeld`); this is only the
+   *  card's half. */
+  lapseHeld() {
+    const held = this.held;
+    if (!held) return;
+    this.held = null;
+    const line = this.#echoOf(held.text, (l) => l.state === "pending" || l.awaited === true);
+    if (line) {
+      line.state = "failed";
+      if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
+      line.awaited = undefined;
+    }
+    this.#push("meta", heldLapsedNote(held.text));
   }
 
   /** A side question has gone out.
@@ -2310,6 +2388,10 @@ export class Conversation {
     this.#closingText = [];
     this.#sawAskTool = false;
     this.#producedOutput = false;
+    /* Opened by output alone until something says otherwise — every arm that
+       knows better (`echo`, a replay, a relay) says so straight after calling
+       this. A turn nothing opened is the CLI waking itself on a job's report. */
+    this.#opener = openerAfter(this.#opener, { cue: "began" });
     this.saidNoAllowance = false;
     this.streaming = "";
     this.restingSince = null;
@@ -2550,7 +2632,16 @@ export class Conversation {
            guard that already makes that distinction for context occupancy sits
            twelve lines further down, which is too late to borrow. See
            `producedModelOutput`. */
-        if (producedModelOutput(ev.message)) this.#producedOutput = true;
+        if (producedModelOutput(ev.message)) {
+          this.#producedOutput = true;
+          /* A model is answering while a heal waits for an account — a relay
+             or a wake written into this live process, on an account that freed
+             before the hold's timer did. It is reading the failed prompt where
+             the CLI recorded it, so the held copy would be the duplicate. Seen
+             2026-10-16: a relay answered at 02:40, the held retry sent at
+             02:42:55 on top of it. Skein does the dropping (`#lapseHeld`). */
+          if (this.held?.composed && lapsesOnAnswer(this.held.text)) this.pendingHeldLapse = true;
+        }
 
         /* The prose between tool calls arrives as thinking blocks the server
            tagged narration, and the CLI names which ones beside the message.
@@ -2875,9 +2966,18 @@ export class Conversation {
              a model is one whose prompt must not be sent again, whatever broke
              it. See `mayHeal`; it is checked before the budget so that holding
              a resend spends none of it. */
+          /* Two questions, which `#lastSent !== null` used to answer as one.
+             Whether this window may speak into the turn at all — it opened it,
+             or the wall did — gates the carry-on, which repeats nothing. What a
+             re-send of *this* turn would be is `again`: your words if you opened
+             it, a pick-up if the wall did. It used to be the last thing this
+             window drew, whatever turn broke. See `Opener`. */
+          const ours = this.#opener !== null;
+          const again =
+            kind === null ? null : healTextFor(this.#opener, kind, this.#producedOutput);
           if (
             kind !== null &&
-            this.#lastSent !== null &&
+            ours &&
             !mayHeal(kind, this.#producedOutput)
           ) {
             if (kind === "limited" && this.accountLabel && this.carryAttempts < CARRY_BUDGET) {
@@ -2899,9 +2999,19 @@ export class Conversation {
                  reads as a card that gave up for no reason. */
               this.#push("meta", healHeldNote(kind));
             }
-          } else if (kind && this.#lastSent !== null && this.healAttempts < HEAL_BUDGET[kind]) {
+          } else if (kind && again !== null && this.healAttempts < HEAL_BUDGET[kind]) {
             this.healAttempts += 1;
-            this.pendingHeal = { text: this.#lastSent, attempt: this.healAttempts, kind };
+            this.pendingHeal = {
+              text: again,
+              attempt: this.healAttempts,
+              kind,
+              ...(isPickUp(again) ? { pickUp: true } : {}),
+            };
+          } else if (kind && ours && again === null) {
+            /* A turn the wall opened that spoke before it broke — a dropped
+               stream under a relay. Neither a copy nor a pick-up is true of it,
+               so it is held, and says so like any other held turn. */
+            this.#push("meta", healHeldNote(kind));
           } else if (kind && this.healAttempts >= HEAL_BUDGET[kind]) {
             /* Only where the budget is what stopped it. A card with nothing to
                re-send — one a terminal is driving — has not given up on
@@ -3100,7 +3210,17 @@ export class Conversation {
                either way. */
             if (isRelayPrompt(said)) {
               this.#push("relay", said, undefined, relayCap(said));
+              /* Only where it opens the turn. A relay folded into a turn
+                 already running (the CLI attaches queued input between tool
+                 calls) does not make the turn somebody else's: what opened it
+                 is still what a heal of it answers for. "Running" is a turn that
+                 has produced something, not `working` — `echo` opens a turn
+                 from the gesture, so a prompt you sent a moment before Rust
+                 wrote this relay ahead of it reads `working` while the CLI is
+                 in fact taking the relay up first. See `Opener`. */
+              const opens = !this.working || !this.#producedOutput;
               if (!this.working) this.#beginTurn();
+              if (opens) this.#opener = openerAfter(this.#opener, { cue: "relay" });
               /* The one reading on the card where the five shapes are not
                  interchangeable. A wake came from nobody — the card asked the
                  wall for it — so "reading a message" would name a sender that
@@ -3111,10 +3231,26 @@ export class Conversation {
                 : "reading a message";
               break;
             }
-            if (!this.#claimEcho(said)) this.#push("you", said);
+            const claimed = this.#claimEcho(said);
+            if (!claimed) this.#push("you", said);
             /* The turn starts the moment your words land, not seconds later
                when the first token comes back. */
+            /* `opens` by the relay arm's reading, for its reason. */
+            const opens = !this.working || !this.#producedOutput;
             if (!this.working) this.#beginTurn();
+            /* The drawn text rather than `said`, since that is what `echo` was
+               handed and what a re-send would draw again. A claim always
+               counts — the CLI taking our prompt up is the strongest evidence
+               there is of which prompt is being answered. A prompt with no line
+               of ours counts only where it opened the turn: mid-turn it is some
+               shape no guard above knew (the image note and the retry nudge
+               were both found that way), and letting it null the opener would
+               take your own turn's carry-on away. */
+            if (claimed) {
+              this.#opener = openerAfter(this.#opener, { cue: "claimed", text: claimed.text });
+            } else if (opens) {
+              this.#opener = openerAfter(this.#opener, { cue: "unclaimed" });
+            }
             this.activity = "thinking";
             break;
           }
@@ -3328,6 +3464,9 @@ export class Conversation {
     this.pendingHeal = null;
     this.healAttempts = 0;
     this.carryAttempts = 0;
+    /* And the turn it would have answered for went with the old session. */
+    this.#opener = null;
+    this.pendingHeldLapse = false;
     /* Same argument one job over: the notification that stalled this card
        belonged to a session it no longer has, so nudging would be Skein asking
        a fresh conversation to pick up work it has never heard of. */

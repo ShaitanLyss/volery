@@ -85,6 +85,18 @@ import {
   windowForObserved,
   isNarrationSignature,
   narrationOf,
+  openerAfter,
+  healTextFor,
+  pickUpText,
+  isPickUp,
+  pickUpNote,
+  lapsesOnAnswer,
+  heldLapsedNote,
+  queuedBehind,
+  stripResendMark,
+  isCarryOn,
+  type Opener,
+  type OpenerCue,
 } from "../src/lib/classify";
 
 describe("urgency decays with neglect", () => {
@@ -2567,6 +2579,229 @@ describe("healHeldNote", () => {
      looking at. */
   test("is not the line for a budget that ran out", () => {
     for (const k of KINDS) expect(healHeldNote(k)).not.toBe(healGaveUpNote(k));
+  });
+});
+
+describe("a heal answers for the turn that broke, not the last thing typed", () => {
+  const fold = (cues: OpenerCue[], from: Opener = null): Opener =>
+    cues.reduce(openerAfter, from);
+  const P = "yes spawn a follow up to widen it";
+  const RELAY = { cue: "relay" } as const;
+  const BEGAN = { cue: "began" } as const;
+
+  /* Card 34b07397, session 0547c1d1, 2026-10-16 — the report this was written
+     from, as the cues the live fold sees. P is typed into an idle card and
+     answered. Twenty-five minutes later a relay opens the next turn and meets
+     the session limit before any output. The old heal re-sent `#lastSent`,
+     which was P, marked "the one before it failed before reaching a model":
+     a prompt that had been answered, with a false sentence under it. */
+  test("the incident: a relay that broke is not healed with your previous prompt", () => {
+    const answered = fold([
+      { cue: "sent", text: P, working: false },
+      { cue: "claimed", text: P },
+    ]);
+    expect(answered).toEqual({ by: "you", text: P });
+    /* The relay opens the next turn: `#beginTurn` (began), then the relay arm. */
+    const relayTurn = fold([BEGAN, RELAY], answered);
+    const lastSent = P; // what the old code re-sent, whatever turn broke
+    const again = healTextFor(relayTurn, "limited");
+    expect(again).not.toBeNull();
+    expect(again).not.toBe(lastSent);
+    expect(stripResendMark(again!)).not.toContain(P);
+    expect(isPickUp(again!)).toBe(true);
+  });
+
+  /* The licence the feature was built on, unchanged: your own prompt that
+     failed before a model gets its one retry, and gets it as your words. */
+  test("your own prompt that broke before a model is still retried, as itself", () => {
+    const o = fold([
+      { cue: "sent", text: P, working: false },
+      { cue: "claimed", text: P },
+    ]);
+    for (const k of ["limited", "overloaded", "malformed", "dropped"] as const) {
+      expect(healTextFor(o, k)).toBe(P);
+    }
+    /* And when the replay never arrives before the failure, the gesture alone
+       opened the turn, so the answer is the same. */
+    expect(healTextFor(fold([{ cue: "sent", text: P, working: false }]), "limited")).toBe(P);
+  });
+
+  /* A prompt written into a busy card is queued, and the CLI takes it up by
+     itself after the running turn ends. A heal of the running turn that sent it
+     as well would be the duplicate from the other direction. */
+  test("a prompt queued behind the turn that broke is not the one re-sent", () => {
+    const o = fold([BEGAN, RELAY, { cue: "sent", text: P, working: true }]);
+    expect(healTextFor(o, "limited")).not.toBe(P);
+    expect(isPickUp(healTextFor(o, "limited")!)).toBe(true);
+    /* Its replay is the CLI taking it up: from then on it is the turn's. */
+    const taken = fold([BEGAN, { cue: "claimed", text: P }], o);
+    expect(healTextFor(taken, "overloaded")).toBe(P);
+  });
+
+  test("a released hold opens the turn only if the card is idle", () => {
+    expect(fold([{ cue: "sent", text: P, working: false }], { by: "wall" })).toEqual({
+      by: "you",
+      text: P,
+    });
+    expect(fold([{ cue: "sent", text: P, working: true }], { by: "wall" })).toEqual({
+      by: "wall",
+    });
+  });
+
+  /* A prompt with no line of ours waiting for it came from somewhere else, and
+     what a terminal-driven card always got is nothing re-sent at all. */
+  test("a prompt this window never drew is answered for by nobody", () => {
+    const o = fold([{ cue: "sent", text: P, working: false }, BEGAN, { cue: "unclaimed" }]);
+    expect(o).toBeNull();
+    expect(healTextFor(o, "overloaded")).toBeNull();
+    expect(healTextFor(null, "limited")).toBeNull();
+  });
+
+  /* The CLI waking itself on a job's report opens a turn with no prompt in it,
+     on a process Volery holds: the agent is owed a pick-up, not anybody's
+     words. */
+  test("a turn the CLI began by itself is the wall's", () => {
+    expect(fold([BEGAN], { by: "you", text: P })).toEqual({ by: "wall" });
+  });
+
+  /* `mayHeal` lets a dropped stream through whatever it yielded, which is right
+     for your prompt and would make a pick-up say something false. */
+  test("a wall turn that spoke before it broke gets no pick-up", () => {
+    expect(healTextFor({ by: "wall" }, "dropped", true)).toBeNull();
+    expect(isPickUp(healTextFor({ by: "wall" }, "dropped", false)!)).toBe(true);
+    expect(healTextFor({ by: "you", text: P }, "dropped", true)).toBe(P);
+  });
+});
+
+describe("a heal stands down while a prompt of yours is queued behind it", () => {
+  const P = "yes spawn a follow up to widen it";
+  const Y = "and then commit it";
+  const now = 1_000_000;
+
+  /* Found in review: Y typed into a busy card is queued by the CLI; the
+     running turn meets the limit; the heal fires at 1s, the queue drains at
+     ~1.5s — and the heal's send moved the card to another account, ending the
+     process that was holding Y. The old `#lastSent` re-sent Y by accident. */
+  test("a fresh unechoed prompt of yours stops the heal", () => {
+    expect(queuedBehind([{ text: Y, at: now - 1_000 }], now, [pickUpText("limited")])).toBe(true);
+  });
+
+  /* The failed turn's own line, when its replay never arrived, is not a queue:
+     it is the very thing being retried. Nor is the held text, which Skein is
+     keeping off the wire on purpose. */
+  test("the heal's own text and the held text are not evidence of a queue", () => {
+    expect(queuedBehind([{ text: P, at: now - 500 }], now, [P])).toBe(false);
+    const marked = withResendMark(P, "limited", 1);
+    expect(queuedBehind([{ text: marked, at: now - 500 }], now, [null, marked])).toBe(false);
+    expect(queuedBehind([{ text: Y, at: now - 500 }], now, [Y, P])).toBe(false);
+  });
+
+  /* A line unechoed for a minute was never in a queue — the measurement the
+     prompt nudge was retired on — and must not stop every heal for good. */
+  test("an old unechoed line is a ghost, not a queue", () => {
+    expect(queuedBehind([{ text: Y, at: now - 61_000 }], now, [P])).toBe(false);
+    expect(queuedBehind([], now, [P])).toBe(false);
+  });
+});
+
+describe("the pick-up a wall-opened turn gets instead of a copy", () => {
+  const KINDS = ["malformed", "overloaded", "limited", "dropped"] as const;
+
+  test("says whose words, what broke, and that it asks nothing new", () => {
+    for (const k of KINDS) {
+      const t = pickUpText(k);
+      expect(t.startsWith("skein:")).toBe(true);
+      expect(t).toMatch(/never reached a model/);
+      expect(t).toMatch(/not a request of its own/);
+      expect(isPickUp(t)).toBe(true);
+    }
+    expect(pickUpText("limited")).toMatch(/allowance/);
+    expect(pickUpText("overloaded")).toMatch(/overloaded/);
+  });
+
+  /* It is known again through a mark, so a re-send of one — which goes out
+     unmarked, but a stale build could have marked it — is still a pick-up. */
+  test("is recognised however it went out, and nothing else is", () => {
+    expect(isPickUp(withResendMark(pickUpText("limited"), "limited", 2))).toBe(true);
+    expect(isPickUp("yes spawn a follow up to widen it")).toBe(false);
+    expect(isPickUp(CARRY_ON_TEXT)).toBe(false);
+    expect(isCarryOn(pickUpText("limited"))).toBe(false);
+    /* Prose that merely mentions the phrase is not one. */
+    expect(isPickUp(`why does ${pickUpText("limited").slice(7, 40)} keep appearing`)).toBe(false);
+  });
+
+  test("tells the person it is a pick-up, not a retry of their words", () => {
+    const n = pickUpNote("limited", 1, 1_000);
+    expect(n).toMatch(/pick it up/);
+    expect(n).toMatch(/1 of 4/);
+    expect(n).not.toBe(healNote("limited", 1, 1_000));
+  });
+});
+
+describe("a held retry lapses once the card has been answered", () => {
+  const P = "yes spawn a follow up to widen it";
+
+  /* The incident's second half: the heal met a spent account and was held, a
+     relay reached the live process once the account freed, a model answered it
+     at 02:40 reading the failed prompts where the CLI recorded them — and the
+     held retry went out at 02:42:55 on top. One delivery, not two. */
+  test("a marked copy and a pick-up both lapse", () => {
+    expect(lapsesOnAnswer(withResendMark(P, "limited", 1))).toBe(true);
+    expect(lapsesOnAnswer(pickUpText("limited"))).toBe(true);
+  });
+
+  /* Your own words held before they were ever written are in no session, so a
+     turn elsewhere has not seen them; and the carry-on repeats nothing. */
+  test("your own unsent prompt and the carry-on do not", () => {
+    expect(lapsesOnAnswer(P)).toBe(false);
+    expect(lapsesOnAnswer(CARRY_ON_TEXT)).toBe(false);
+    expect(lapsesOnAnswer("/compact")).toBe(false);
+  });
+
+  /* The whole run, end to end, counting what reaches the CLI. Old rule: the
+     relay's heal text is `#lastSent`, it is held, nothing lapses, and the
+     release sends it — P twice. New rule: a pick-up, held, lapsed by the answer
+     — P once. */
+  test("P is delivered exactly once across the allowance running out and freeing", () => {
+    type Rule = "old" | "new";
+    const run = (rule: Rule): string[] => {
+      const delivered: string[] = [];
+      let opener: Opener = null;
+      let lastSent: string | null = null;
+      const send = (text: string, working: boolean) => {
+        lastSent = text;
+        opener = openerAfter(opener, { cue: "sent", text, working });
+      };
+      /* 01:36 P is typed and answered. */
+      send(P, false);
+      delivered.push(P);
+      opener = openerAfter(opener, { cue: "claimed", text: P });
+      /* 02:00 a relay opens a turn; 429 before any output. */
+      opener = openerAfter(opener, { cue: "began" });
+      opener = openerAfter(opener, { cue: "relay" });
+      const again = rule === "old" ? lastSent : healTextFor(opener, "limited");
+      expect(again).not.toBeNull();
+      const out = isPickUp(again!) ? again! : withResendMark(again!, "limited", 1);
+      /* The heal's send echoes and is held: every account is spent. */
+      send(out, false);
+      let held: string | null = out;
+      /* 02:40 another relay is answered on the live process. */
+      opener = openerAfter(opener, { cue: "began" });
+      opener = openerAfter(opener, { cue: "relay" });
+      if (rule === "new" && held && lapsesOnAnswer(held)) held = null;
+      /* 02:42 the hold releases whatever is still in it. */
+      if (held) delivered.push(held);
+      return delivered;
+    };
+    const copiesOfP = (d: string[]) => d.filter((t) => stripResendMark(t) === P).length;
+    expect(copiesOfP(run("old"))).toBe(2);
+    expect(copiesOfP(run("new"))).toBe(1);
+    expect(run("new")).toEqual([P]);
+  });
+
+  test("says which it dropped, and hands a retry of your words back to you", () => {
+    expect(heldLapsedNote(pickUpText("limited"))).toMatch(/pick-up/);
+    expect(heldLapsedNote(withResendMark(P, "limited", 1))).toMatch(/send it again yourself/);
   });
 });
 

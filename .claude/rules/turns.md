@@ -994,9 +994,10 @@ it, so a card that healed this morning starts the afternoon with its full allowa
 
 Three separations make it safe, and each was a way of getting it wrong:
 
-- **Only what this window sent.** `#lastSent` is set in `echo` and nowhere else. A `user` event
-  with no line waiting for it is a terminal appending to the same session, and re-sending
-  *that* would be Skein putting words into a conversation it is not holding.
+- **Only what this window sent, and only for the turn it opened.** The second half was
+  missing until 2026-10-16 and is the section below. A `user` event with no line waiting for
+  it is a terminal appending to the same session, and re-sending *that* would be Skein putting
+  words into a conversation it is not holding.
 - **The card decides, Skein does.** `Conversation.pendingHeal` is a field and not a callback,
   because the card must be able to come to rest holding one: the wall's tick, the ledger and
   the persistence all run off the same `result`, and a re-send fired from inside `ingest` would
@@ -1011,6 +1012,63 @@ gone still for five minutes should not need the reader to guess whether it is th
 waiting — and `healGaveUpNote` accounts for the rust when the budget is spent. That last line
 is written only where the *budget* is what stopped it: a card with nothing to re-send has not
 given up on anything, and saying it had would describe a decision nobody made.
+
+#### The heal answered for the wrong turn, and a held copy outlived its turn
+
+Lyss, 2026-10-16: *"why do we still have this duplicate query when autoresuming when allowance
+frees up, I could see this duplicate queued up when the allowance ran out and you received it
+when it freed up."* Read out of the receiving card's own session (`0547c1d1`), and it was
+neither of the meetings this file already records between the hold and the heal:
+
+```text
+01:36:25  you    "yes spawn a follow up to widen it"        answered, card spawned
+02:00:01  relay  "[skein relay] … A card you opened has stopped"
+02:00:02         "You've hit your session limit"             no output → mayHeal
+02:39:58  relay  … answered at 02:40 on the live process
+02:42:55  sent   "yes spawn a follow up to widen it\n\nskein: attempt 1 of 4 …"
+```
+
+**The heal re-sent `#lastSent`, the last prompt this window drew, for whatever turn broke.**
+Relays, wakes and inbox posts are written into stdin by Rust and never pass through `echo`,
+so when a relay's turn met the limit, the "retry" was a prompt answered twenty-five minutes
+earlier — under a mark saying, falsely, that the copy above it had never reached a model.
+`mayHeal` was right about the turn; the text belonged to a different one. The heal text is
+now a fold over who opened the turn (`classify.ts::Opener`, `openerAfter`, `healTextFor`):
+
+- **`you`** — a line this window drew, opened when the card was idle or claimed by its
+  replay. Your words back, as before; the licence is unchanged.
+- **`wall`** — a relay, a wake, or a turn the CLI began on a job's report. Never a copy:
+  the CLI recorded that message when it took it, so the heal sends `pickUpText`, which
+  points at it, carries no resend mark and says it is not a request of its own. Not
+  *nothing*, deliberately — a `wake_me` lost to a 429 is a card that asked to be woken, and
+  the stale re-send was by accident the only thing that ever woke one. A wall turn that had
+  already spoken (a dropped stream under a relay) gets no text, since "never reached a
+  model" would be false, and says it is held.
+- **`null`** — a prompt with no line of ours. Nothing is sent, which is what a
+  terminal-driven card always got.
+- **A prompt written into a busy card does not take the turn over.** It is queued and the CLI
+  takes it up by itself; a heal of the running turn that sent it too is the duplicate from
+  the other side. Its replay is what makes it the turn's.
+
+**The second half: a held heal lapses when a model answers.** A held card still has a live
+process, Rust goes on writing relays into it, and the account frees on the server's clock
+rather than the hold timer's — so the 02:39 relay was answered by a model reading every
+failed prompt where the CLI had recorded it, and the held copy went out three minutes later
+on top. `lapsesOnAnswer` is true for exactly the texts a heal composes as stand-ins for
+something already in the session — a resend-marked copy and a pick-up — and `#lapseHeld`
+drops the hold, closes its line out of `awaiting` and says so (`heldLapsedNote`, which hands
+a retry of your words back to you in case the intervening turn answered something else).
+Your own words held before they were ever written do **not** lapse: they are in no session,
+so a turn elsewhere has not seen them. Nor does the carry-on, which repeats nothing.
+
+And `#heal` now **drops** a heal it finds on a held card rather than leaving it armed. Left
+armed, the first event after the hold released scheduled it, and only the card's `working`
+check stood between a card at rest and the same prompt a second time behind the release.
+
+`test/classify.test.ts` replays the incident's cues under both rules and counts the copies of
+the prompt that reach the CLI: two under the old one, one under this. That is a replay of
+the fold, not of the wire — a session limit is not something a test can summon on demand,
+and nothing here was driven live.
 
 **Escape cancels a heal, and that check sits ahead of `stop`'s `working` guard.** A card waiting
 to try again is not working — that is the whole state — so without the early branch the one
