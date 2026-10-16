@@ -2073,11 +2073,14 @@ pub fn wipes(command: &str) -> Option<Wipe> {
         .find_map(|words| wipes_through(words, true, 3))
 }
 
-/// [`wipes_in`], looking through a `cmd /c …` wrapper to the command it runs.
+/// [`wipes_in`], looking through a wrapper — `cmd /c …`, or a shell's `-c` /
+/// `-Command` — to the command it runs.
 ///
-/// `depth` bounds `cmd /c cmd /c …`; each unwrapping is the same act as typing
+/// `depth` bounds `cmd /c bash -c …`; each unwrapping is the same act as typing
 /// the inner command, so what is found inside is judged exactly as it would be
-/// outside and nothing about the verdict is new.
+/// outside and nothing about the verdict is new. `posix` is how *this* level was
+/// tokenised, and what a nested `cmd` is read with; a shell wrapper brings its
+/// own, since `bash -c` and `pwsh -c` read their argument differently.
 fn wipes_through(words: &[String], posix: bool, depth: u8) -> Option<Wipe> {
     if let Some(w) = wipes_in(words) {
         return Some(w);
@@ -2085,8 +2088,140 @@ fn wipes_through(words: &[String], posix: bool, depth: u8) -> Option<Wipe> {
     if depth == 0 {
         return None;
     }
-    let (inner, _) = cmd_inner(words, posix)?;
-    inner.iter().find_map(|i| wipes_through(i, posix, depth - 1))
+    let looked = look_through(words, posix)?;
+    looked.inner.iter().find_map(|i| wipes_through(i, looked.posix, depth - 1))
+}
+
+/// What a wrapper runs: its commands, whether they were read *exactly*, how they
+/// were tokenised, and whether the wrapper was `cmd` (the only one whose
+/// non-recursive `rd`/`rmdir` is handed on, see [`is_unlink`]).
+struct Looked {
+    inner: Vec<Vec<String>>,
+    exact: bool,
+    posix: bool,
+    cmd: bool,
+}
+
+/// [`cmd_inner`] or [`shell_inner`], whichever the verb is.
+fn look_through(words: &[String], posix: bool) -> Option<Looked> {
+    if let Some((inner, exact)) = cmd_inner(words, posix) {
+        return Some(Looked { inner, exact, posix, cmd: true });
+    }
+    shell_inner(words)
+}
+
+/// Is this command word the program `base`? Lowercase in, a path or a bare name,
+/// with or without `.exe`.
+///
+/// `wipes` tokenises POSIX-style whatever shell the line is for, which eats the
+/// backslashes of an unquoted `C:\Windows\System32\cmd.exe` and leaves
+/// `c:windowssystem32cmd.exe`. A drive letter followed by a name that still ends
+/// in the program is therefore taken for it: looking inside a wrapper is judging
+/// the inner command as it would be bare, so being generous here costs a look and
+/// never a denial the inner command would not have earned.
+fn exe_is(verb: &str, base: &str) -> bool {
+    let name = verb.rsplit(['/', MS_SEP]).next().unwrap_or("");
+    let exe = format!("{base}.exe");
+    if name == base || name == exe {
+        return true;
+    }
+    let b = name.as_bytes();
+    b.len() > 2
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (name.ends_with(base) || name.ends_with(&exe))
+}
+
+/// The commands a `bash -c "…"`, `sh -c`, `pwsh -c` or `powershell -Command "…"`
+/// line runs, read the way [`cmd_inner`] reads `cmd /c`.
+///
+/// Sink `2101054d`: the wrappers `cmd_inner` was written to leave for a decision,
+/// which the user took on 2026-10-16. The verb of such a line is the shell, so
+/// `bash -c "rm -rf x"` was not a wipe to this file and reached neither the
+/// user's click nor a refusal. Three things differ from `cmd`:
+///
+/// - **The command is one argument.** `bash -c "rm -rf x"` hands the shell a
+///   single string, which is tokenised again here — **POSIX for `bash`/`sh`,
+///   PowerShell for `pwsh`/`powershell`**, where a backslash is a separator and
+///   not an escape. `bash -c rm -rf x` runs `rm` with no operand (`-rf` and `x`
+///   become `$0` and `$1`), so only the first argument is read; PowerShell joins
+///   every argument after the flag with spaces, so there the rest is the command,
+///   as in `cmd`.
+/// - **The flag.** `-c`, and any short cluster with a `c` in it (`-lc`, `-ec`),
+///   for the POSIX shells; `-c` or any prefix of `-Command` for PowerShell.
+///   `-EncodedCommand` is a prefix of nothing here and is not read at all.
+/// - **A script block** is not a separator, so `{`/`}` are taken off the ends of
+///   a command: `pwsh -c "& { Remove-Item -Recurse x }"` is `Remove-Item`.
+///
+/// It is *exact* only where nothing was guessed: nothing but flags before the
+/// `-c` (and `-ExecutionPolicy x`, whose value is not a path), a command with no
+/// `$` or backtick (the outer shell may have expanded one, the inner will, and the
+/// tokens cannot say which was which), no `{}` block, no `''` under PowerShell
+/// and no backslash under POSIX, where the outer shell may have kept one that the
+/// inner reads as an escape. As for `cmd`, [`routable`] hands nothing on when it
+/// is not, and the guard still *sees* the command: an unreadable wipe is refused
+/// naming the tool.
+fn shell_inner(words: &[String]) -> Option<Looked> {
+    let verb = words.first()?.to_ascii_lowercase();
+    let posix = if exe_is(&verb, "pwsh") || exe_is(&verb, "powershell") {
+        false
+    } else if ["bash", "sh", "zsh", "dash"].iter().any(|s| exe_is(&verb, s)) {
+        true
+    } else {
+        return None;
+    };
+    let is_flag = |w: &str| {
+        if posix {
+            let l = w.strip_prefix('-').unwrap_or("");
+            !w.starts_with("--") && l.chars().all(|c| c.is_ascii_alphabetic()) && l.contains('c')
+        } else {
+            let body = w.strip_prefix(['-', '/']).unwrap_or("").to_ascii_lowercase();
+            !body.is_empty() && "command".starts_with(&body)
+        }
+    };
+    let at = 1 + words.iter().skip(1).position(|w| is_flag(w))?;
+    let mut exact = true;
+    let mut skip = false;
+    for w in &words[1..at] {
+        if skip {
+            skip = false;
+        } else if !w.starts_with('-') {
+            exact = false;
+        } else if !posix && matches!(w.to_ascii_lowercase().as_str(), "-executionpolicy" | "-ep" | "-ex") {
+            skip = true;
+        }
+    }
+    let rest = &words[at + 1..];
+    let src = if posix {
+        rest.first()?.clone()
+    } else if rest.len() == 1 {
+        rest[0].clone()
+    } else {
+        /* Joined with spaces, the way PowerShell does; a word that had
+           whitespace in it lost its quotes in the join. */
+        exact &= rest.iter().all(|w| !w.contains(char::is_whitespace));
+        rest.join(" ")
+    };
+    if src.is_empty() {
+        return None;
+    }
+    exact &= !src.contains(['$', '`', '{', '}'])
+        && !(posix && src.contains('\\'))
+        && !(!posix && src.contains("''"));
+    let inner = commands_as(&src, posix)
+        .into_iter()
+        .map(|mut c| {
+            while c.first().is_some_and(|w| w == "{") {
+                c.remove(0);
+            }
+            while c.last().is_some_and(|w| w == "}") {
+                c.pop();
+            }
+            c
+        })
+        .filter(|c| !c.is_empty())
+        .collect();
+    Some(Looked { inner, exact, posix, cmd: false })
 }
 
 /// The commands a `cmd /c …` line runs, and whether they were read *exactly*.
@@ -2114,14 +2249,12 @@ fn wipes_through(words: &[String], posix: bool, depth: u8) -> Option<Wipe> {
 /// [`routable`] hands nothing on in that case; the guard still *sees* the
 /// command, which is the side that must be generous.
 ///
-/// Only `cmd`. `sh -c`, `bash -c` and `pwsh -c` hide a delete from this file the
-/// same way (the verb is the shell) but do not trip the analyzer's `/c` and are
-/// not what the sink item reports: noted in `.claude/rules/hooks.md`, not widened
-/// here, since each is a new denial for every card on the wall.
+/// Only `cmd`. The shells' `-c` / `-Command` are [`shell_inner`], which reads
+/// the same way and was added once the user had agreed to the new denial
+/// (sink `2101054d`).
 fn cmd_inner(words: &[String], posix: bool) -> Option<(Vec<Vec<String>>, bool)> {
     let verb = words.first()?.to_ascii_lowercase();
-    let name = verb.rsplit(['/', MS_SEP]).next().unwrap_or("");
-    if name != "cmd" && name != "cmd.exe" {
+    if !exe_is(&verb, "cmd") {
         return None;
     }
     let at = 1 + words.iter().skip(1).position(|w| {
@@ -2293,18 +2426,25 @@ pub fn routable(command: &str, powershell: bool) -> Option<Routed> {
        for the reason only the first outer one is. A `rd`/`rmdir` with no `/s`
        is not a wipe and is handed on only from inside the wrapper, where the
        CLI refuses it whatever it names; bare, it stays an ordinary delete. */
-    let wrapped = cmd_inner(first, !powershell);
+    let wrapped = look_through(first, !powershell);
     let (words, inner_chained) = match &wrapped {
-        Some((_, false)) => return None,
-        Some((inner, true)) => {
-            let (head, tail) = inner.split_first()?;
+        Some(Looked { exact: false, .. }) => return None,
+        Some(l) => {
+            let (head, tail) = l.inner.split_first()?;
             (head, !tail.is_empty())
         }
         None => (first, false),
     };
-    if wipes_in(words).is_none() && !(wrapped.is_some() && is_unlink(words)) {
+    let unlink = wrapped.as_ref().is_some_and(|l| l.cmd) && is_unlink(words);
+    if wipes_in(words).is_none() && !unlink {
         return None;
     }
+    /* A shell wrapper may be the *other* shell: `bash -c` under the PowerShell
+       tool, `pwsh -c` under Bash. `resolve` reads an operand the way the tool's
+       shell does, and `/tmp/x`, `~/x` or a relative path means something else to
+       the other one — so only a drive-absolute path, which both read alike, is
+       handed on from there. */
+    let other_shell = wrapped.as_ref().is_some_and(|l| !l.cmd && l.posix == powershell);
     let verb = words[0].to_ascii_lowercase();
     let verb = verb.rsplit(['/', MS_SEP]).next().unwrap_or(&verb).to_string();
     if verb == "find" {
@@ -2349,6 +2489,13 @@ pub fn routable(command: &str, powershell: bool) -> Option<Routed> {
         !o.is_empty() && !o.contains(['*', '?', '[', ']', '{', '}', ','])
     };
     if operands.is_empty() || !operands.iter().all(literal) {
+        return None;
+    }
+    let drive_absolute = |o: &String| {
+        let b = o.as_bytes();
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == MS_SEP as u8)
+    };
+    if other_shell && !operands.iter().all(drive_absolute) {
         return None;
     }
     /* Quoting is lost in the tokens, and it decides whether a variable is one:
@@ -3439,6 +3586,171 @@ mod tests {
         assert!(!cmd_unlinks(r"rmdir C:\x"));
         assert!(!cmd_unlinks(r"cmd /c dir"));
         assert!(!cmd_unlinks(r"cmd /c rmdir /s"));
+    }
+
+    /// Sink `2101054d`. The verb of `bash -c "rm -rf x"` is the shell, so the
+    /// delete inside it reached neither the user's click nor a refusal. A
+    /// recursive delete in any shell's `-c` / `-Command` is judged as it would be
+    /// bare, whichever shell it is and however the program is spelled.
+    #[test]
+    fn a_shell_wrapper_is_looked_through_to_the_delete_it_runs() {
+        for yes in [
+            r#"bash -c "rm -rf build""#,
+            "sh -c 'rm -rf build'",
+            r#"bash -lc "rm -rf build""#,
+            r#"bash -l -c "rm -rf build""#,
+            r#"zsh -c "rm -rf build""#,
+            r#"/bin/bash -c "rm -rf build""#,
+            r#"bash.exe -c "rm -rf build""#,
+            r#"'C:/Program Files/Git/bin/bash.exe' -c "rm -rf build""#,
+            r#"pwsh -c "Remove-Item -Recurse build""#,
+            r#"pwsh -Command "Remove-Item -Recurse -Force build""#,
+            r#"powershell -Command "Remove-Item -Recurse build""#,
+            r#"powershell.exe -NoProfile -Command "rm -r build""#,
+            r#"powershell -ExecutionPolicy Bypass -Command "rm -r build""#,
+            r#"pwsh -com "rd /s /q build""#,
+            "pwsh -Command Remove-Item -Recurse build",
+            r#"pwsh -c "& { Remove-Item -Recurse build }""#,
+            r#"pwsh -c "Get-Item x; Remove-Item -Recurse build""#,
+            r#"bash -c "cd x && rm -rf build""#,
+            r#"bash -c "bash -c 'rm -rf build'""#,
+            r#"cmd /c bash -c "rm -rf build""#,
+            r#"bash -c "cmd /c rd /s /q build""#,
+            r#"bash -c "find . -name x -delete""#,
+            /* An unquoted full path in PowerShell loses its backslashes to the
+               POSIX tokenizer; the program is still recognised by what is left. */
+            r"C:\Windows\System32\cmd.exe /c rd /s /q build",
+            r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command "Remove-Item -Recurse build""#,
+            r#"C:\tools\bash.exe -c "rm -rf build""#,
+        ] {
+            assert!(wipes(yes).is_some(), "{yes}");
+        }
+        /* And the line a cmd wrapper was already refused on. */
+        assert!(wipes(r"cmd /c rmdir /s /q C:\").is_some());
+
+        /* A wrapper is no more a delete than what it wraps, and a line that
+           names no command is not read as one. */
+        for no in [
+            r#"bash -c "ls""#,
+            r#"bash -c "rm notes.txt""#,
+            r#"bash -c "rm -f notes.txt""#,
+            r#"bash -c "echo rm -rf build""#,
+            r#"bash -c "rm -rf""#,
+            "bash -c rm -rf build",
+            r#"pwsh -c "Remove-Item notes.txt""#,
+            r#"pwsh -c "Write-Host 'Remove-Item -Recurse build'""#,
+            "pwsh -EncodedCommand cm0gLXJmIHg=",
+            "pwsh -File clean.ps1 -Recurse",
+            "bash clean.sh",
+            "bash -c",
+            "pwsh -c",
+            "bash -c ''",
+            r#"ssh host -c "rm -rf build""#,
+            r#"git commit -m "bash -c 'rm -rf build'""#,
+        ] {
+            assert!(wipes(no).is_none(), "{no}");
+        }
+    }
+
+    /// The same lines read by the other half: a wrapped delete routes to `remove`
+    /// with the inner operands, in the inner shell's own reading, or hands
+    /// nothing on — never `-c`, never a path the other shell would not mean.
+    #[test]
+    fn a_shell_wrapper_is_read_the_same_way_by_the_hand_off() {
+        /* Bash tool, bash inside: the Bash tool's own reading. */
+        assert_eq!(routable(r#"bash -c "rm -rf /tmp/rv1""#, false), routed(&["/tmp/rv1"], false));
+        assert_eq!(routable("sh -c 'rm -rf C:/work/build'", false), routed(&["C:/work/build"], false));
+        assert_eq!(routable(r#"bash -lc "rm -rf build""#, false), routed(&["build"], false));
+        assert_eq!(
+            routable(r#"bash -c "rm -rf C:/work/build && echo done""#, false),
+            routed(&["C:/work/build"], true)
+        );
+        assert_eq!(
+            routable(r#"bash -c "rm -rf 'C:/a b/build'""#, false),
+            routed(&["C:/a b/build"], false)
+        );
+
+        /* PowerShell tool, PowerShell inside: backslashes are separators, and
+           survive. */
+        assert_eq!(
+            routable(r#"pwsh -c "Remove-Item -Recurse C:\work\build""#, true),
+            routed(&[r"C:\work\build"], false)
+        );
+        assert_eq!(
+            routable(r#"powershell -NoProfile -Command "Remove-Item -Recurse -Force C:\work\build""#, true),
+            routed(&[r"C:\work\build"], false)
+        );
+        assert_eq!(
+            routable(r#"powershell -ExecutionPolicy Bypass -Command "rm -r C:\work\build""#, true),
+            routed(&[r"C:\work\build"], false)
+        );
+        assert_eq!(
+            routable(r"powershell -Command Remove-Item -Recurse C:\work\build", true),
+            routed(&[r"C:\work\build"], false)
+        );
+        assert_eq!(
+            routable(r#"pwsh -c "Remove-Item -Recurse C:\work\a; echo done""#, true),
+            routed(&[r"C:\work\a"], true)
+        );
+        /* A full backslash path to the program, which `wipes` sees only through
+           the drive letter, is read exactly here: this half tokenises PowerShell's
+           way. */
+        assert_eq!(
+            routable(
+                r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command "Remove-Item -Recurse C:\work\build""#,
+                true
+            ),
+            routed(&[r"C:\work\build"], false)
+        );
+        assert_eq!(
+            routable(r"C:\Windows\System32\cmd.exe /c rd /s /q C:\work\build", true),
+            routed(&[r"C:\work\build"], false)
+        );
+        assert_eq!(
+            routable(r#"& 'C:\Program Files\PowerShell\7\pwsh.exe' -c "Remove-Item -Recurse C:\work\build""#, true),
+            routed(&[r"C:\work\build"], false)
+        );
+
+        /* The other shell: a drive-absolute path means the same to both, and
+           `/tmp`, `~` and a relative path do not. */
+        assert_eq!(routable(r#"pwsh -c "Remove-Item -Recurse C:/work/x""#, false), routed(&["C:/work/x"], false));
+        assert_eq!(routable(r#"bash -c "rm -rf C:/work/x""#, true), routed(&["C:/work/x"], false));
+        for no in [
+            (r#"pwsh -c "Remove-Item -Recurse /tmp/x""#, false),
+            (r#"pwsh -c "Remove-Item -Recurse x""#, false),
+            (r#"pwsh -c "Remove-Item -Recurse ~/x""#, false),
+            (r#"bash -c "rm -rf /tmp/x""#, true),
+            (r#"bash -c "rm -rf x""#, true),
+        ] {
+            assert_eq!(routable(no.0, no.1), None, "{}", no.0);
+        }
+
+        /* Whatever is not read exactly is not handed on, though the guard still
+           sees it above: a variable either shell may have expanded, a script
+           block, a glob, an unknown flag before `-c`, a backslash under POSIX,
+           an option that moves the ground. */
+        for (no, ps) in [
+            (r#"bash -c "rm -rf $X""#, false),
+            (r#"bash -c 'rm -rf "$HOME/x"'"#, false),
+            (r#"bash -c "rm -rf $(pwd)/x""#, false),
+            (r#"pwsh -c "Remove-Item -Recurse $env:TEMP\x""#, true),
+            (r#"bash -c "rm -rf C:/x*""#, false),
+            (r#"pwsh -c "& { Remove-Item -Recurse C:\x }""#, true),
+            (r#"pwsh -c "Remove-Item -Recurse C:\x\{a,b}""#, true),
+            (r#"pwsh -wd C:\x -c "Remove-Item -Recurse y""#, true),
+            (r#"bash -o pipefail -c "rm -rf C:/x""#, false),
+            (r#"bash -c "rm -rf C:\\x""#, true),
+            (r#"pwsh -c "Remove-Item -Recurse 'it''s'""#, true),
+            (r#"bash -c "rm -rf --no-preserve-root C:/x""#, false),
+            (r#"bash -c "ls""#, false),
+            (r#"bash -c "rmdir C:/x""#, false),
+        ] {
+            assert_eq!(routable(no, ps), None, "{no}");
+        }
+        /* A rmdir inside a shell is an ordinary delete, in no way this guard's;
+           only cmd's is handed on, for the reason in `cmd_unlinks`. */
+        assert!(!cmd_unlinks(r#"bash -c "rmdir C:/x""#));
+        assert!(!cmd_unlinks(r#"pwsh -c "rmdir C:\x""#));
     }
 
     fn routed(ops: &[&str], chained: bool) -> Option<Routed> {

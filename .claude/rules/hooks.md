@@ -544,9 +544,11 @@ this arm existed and still works alone.
 shortcut: it is what makes a fourth event cost one line, and what stops the three drifting
 apart in the way the copy of a tool name did.
 
-### The delete guard looks through `cmd /c`
+### The delete guard looks through `cmd /c`, and `bash -c` and `pwsh -c`
 
-`wipes` and `routable` unwrap `cmd /c <command>` and judge the command that follows, so
+`wipes` and `routable` unwrap `cmd /c <command>` and judge the command that follows — and, since
+sink `2101054d`, a shell's `-c` / `-Command` the same way (`remove.md`, *`bash -c`, `sh -c`,
+`pwsh -c` and `powershell -Command` are looked through too*) — so
 `cmd /c rmdir /s /q C:\` is a wipe and `cmd /c rmdir <junction>` is handed to `remove` instead
 of meeting the CLI's own "Remove-Item on system path '/c' is blocked" (sink `180e4764`). The
 reasoning, and what a hook's `allow` cannot do about that refusal, is in `remove.md`, *`cmd /c

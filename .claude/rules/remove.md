@@ -412,17 +412,63 @@ with a sentence claiming it deletes a tree.
 
 What this deliberately does **not** do, and what was found:
 
-- **Other wrappers.** `bash -c`, `sh -c` and `pwsh -c` hide a delete from `wipes` the same
-  way (the verb is the shell), but they carry no cmd switch for the analyzer to misread and are
-  not what the sink item reports. Widening to them is a new denial every card is subject to, so
-  it is left as a decision rather than made alongside this fix. Filed.
 - **`cmd /c del <file>`** gets the same bogus `/c` refusal from the CLI. A file delete is not
   this guard's, and routing a one-file delete through a click-shaped tool is a different
-  decision; `Remove-Item <file>` works and so does `[System.IO.File]::Delete`.
-- **An unquoted full path to cmd.exe in PowerShell** (`C:\Windows\System32\cmd.exe /c …`) is
-  tokenised POSIX-style by `wipes`, which eats the backslashes, so the verb is no longer
-  `cmd.exe`. The same limitation `C:\tools\rm.exe` always had; `/c/Windows/…` and a bare `cmd`
-  are read.
+  decision (a bare `del <file>` / `rm <file>` is let through for the same reason, so routing the
+  wrapped one would make `cmd /c del x` stricter than `del x`); `Remove-Item <file>` works and so
+  does `[System.IO.File]::Delete`. Left as that workaround, not fixed.
+- **An unquoted full path to cmd.exe in PowerShell** was the third: see the next section, where
+  it is read.
+
+### `bash -c`, `sh -c`, `pwsh -c` and `powershell -Command` are looked through too
+
+Sink `2101054d`, 2026-10-16, with Lyss's say — it is a new denial every card is subject to, which
+is why it waited. The verb of `bash -c "rm -rf x"` is the shell, so a recursive delete inside any
+shell's `-c` / `-Command` reached neither her click nor a refusal: not a wipe to `wipes`, nothing
+for `routable` to hand on, and — unlike `cmd /c` — no analyzer misreading to stop it by accident.
+`shell_inner` is `cmd_inner`'s sibling (`look_through` tries the two, and `wipes_through` and
+`routable` go through that one door so the halves cannot read a line differently):
+
+- **The command is one argument, tokenised again in the inner shell's own flavour.** POSIX for
+  `bash`/`sh`/`zsh`/`dash`, PowerShell for `pwsh`/`powershell` — a backslash is a separator there
+  and not an escape, which is `routable`'s existing distinction reused rather than a parallel
+  tokenizer. `bash -c rm -rf x` runs `rm` with no operand (`-rf` and `x` are `$0` and `$1`), so
+  only the first argument is read; PowerShell joins everything after the flag, so there the rest
+  is the command, as in `cmd`. The flag is `-c` or a short cluster containing one (`-lc`) for the
+  POSIX shells and any prefix of `-Command` for PowerShell; `-EncodedCommand` is read as nothing.
+  `{ … }` script blocks are not separators, so the braces are taken off a command's ends
+  (`pwsh -c "& { Remove-Item -Recurse x }"`).
+- **Read exactly or not at all, narrower than `cmd`.** Nothing but flags before `-c` (and
+  `-ExecutionPolicy x`), no `$` or backtick (the outer shell may have expanded one and the inner
+  will, and the tokens cannot say which was which), no `{}`, no `''` under PowerShell, and no
+  backslash under POSIX. An inexact wrapper is still *seen* — an unreadable wipe is refused
+  naming `mcp__skein__remove`, one turn slower — and routes nothing. Which means
+  `pwsh -c "Remove-Item -Recurse $env:TEMP\x"` is refused rather than handed over; that is the
+  price of not guessing, and the temp tier is one `remove` call away.
+- **The other shell.** `bash -c` under the PowerShell tool, or `pwsh -c` under Bash, is the case
+  `resolve` cannot be trusted with: it reads `/tmp/x`, `~/x` and a relative path as the *tool's*
+  shell would, and the inner one means something else (`/tmp` is `C:\tmp` to PowerShell, and the
+  temp tier would have deleted `%TEMP%\x` instead). So only a drive-absolute path, which both read
+  alike, is handed on from there.
+- **Only `cmd` has an unlink.** `bash -c "rmdir x"` is an ordinary one-directory delete, in no
+  way this guard's, exactly as a bare one is.
+- **The depth bound is the same three levels** (`cmd /c bash -c "pwsh -c …"`). A fourth is not
+  seen; nothing is nested that deep on purpose.
+
+**The backslash path to the program is read where `wipes` could not.** `wipes` tokenises
+POSIX-style whatever the line is for, so an unquoted `C:\Windows\System32\cmd.exe` arrives as
+`c:windowssystem32cmd.exe`. `exe_is` takes a drive letter followed by a name that still ends in
+the program for it, for `cmd` as well as the shells. It is deliberately generous, and that is safe
+for the reason a wrapper is: looking inside is judging the inner command as it would be bare, so
+a false positive costs a look, never a denial the inner command would not have earned.
+`routable` never had the problem under the PowerShell tool — it tokenises PowerShell's way and
+keeps the backslashes — so those lines hand on whole. **Still not read:** a *non-wrapper* program
+by an unquoted backslash path (`C:\tools\rm.exe -rf x` is `c:toolsrm.exe` to `wipes`), which would
+want the tokenizer itself to know PowerShell, a rewrite and not a table.
+
+**Still not seen, and older than any wrapper:** a delete behind shell control flow —
+`if x; then rm -rf y; fi`, `for …; do rm -rf …; done`, bash `{ rm -rf x; }` — because `then` and
+`do` are the verb. Bare or wrapped, same gap. Brace blocks are handled inside a wrapper only.
 
 ### A shell delete is handed over, not refused
 
