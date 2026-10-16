@@ -44,7 +44,7 @@ describe("what a token costs", () => {
        2026-09-01 increase was cancelled and the introductory rate became the
        standard one. See the note above `RATES`. */
     expect(rateFor("claude-sonnet-5")).toEqual({ input: 2, output: 10 });
-    expect(rateFor("claude-sonnet-5-5")).toEqual({ input: 2, output: 10 });
+    expect(rateFor("claude-sonnet-5-5")).toEqual({ input: 2, output: 10, cacheRead: 0.05 });
     expect(rateFor("claude-opus-5-5")).toEqual({ input: 4, output: 20, cacheRead: 0.05 });
     expect(rateFor("claude-opus-4-1")).toEqual({ input: 15, output: 75 });
     expect(rateFor("claude-fable-5-1")).toEqual({ input: 10, output: 50, cacheRead: 0.025 });
@@ -85,6 +85,8 @@ describe("what a token costs", () => {
       return (1e6 * r.input * (r.cacheRead ?? 0.1)) / 1e6;
     };
     expect(cr("claude-opus-5-5")).toBeCloseTo(0.2, 10);
+    /* Sonnet 5.5 is the same 0.05x (docs footnote 2): $0.10/MTok, not $0.20. */
+    expect(cr("claude-sonnet-5-5")).toBeCloseTo(0.1, 10);
     expect(cr("claude-fable-5-1")).toBeCloseTo(0.25, 10);
     /* Everything else is the standard 0.1x the docs name. */
     expect(cr("claude-opus-5")).toBeCloseTo(0.5, 10);

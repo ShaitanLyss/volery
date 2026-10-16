@@ -103,7 +103,11 @@ export const RATES: Record<string, Rate> = {
   "claude-opus-4-5": { input: 5, output: 25 },
   "claude-opus-4-1": { input: 15, output: 75 },
   "claude-opus-4": { input: 15, output: 75 },
-  "claude-sonnet-5-5": { input: 2, output: 10 },
+  /* 0.05x, like Opus 5.5: the pricing docs' footnote 2, read 2026-10-16 — "Cache
+     hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at
+     0.05x the base input price" ($0.10/MTok here). The entry carried no override,
+     so every Sonnet 5.5 cache read was priced at the standard 0.1x, double. */
+  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.05 },
   "claude-sonnet-5": { input: 2, output: 10 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-sonnet-4-5": { input: 3, output: 15 },

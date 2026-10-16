@@ -300,6 +300,15 @@ stays right when the account you were watching stops being the one being spent.
   haiku rates are listed as expected absences with their reasons — without that the
   probe is red in its correct state, and a check that is always red is one nobody runs
   twice.
+- **Sonnet 5.5 was the one 0.05x model with no override, and the installed CLI could not
+  have said so.** Docs footnote 2, read 2026-10-16: cache hits on Opus 5.5 *and Sonnet 5.5* are
+  0.05x. `claude-sonnet-5-5` carried none, so its cache reads — the biggest term in the bill —
+  were priced at double. The probe's tier list (2.1.288) has `tier_4_20_cache_read_0_20` for
+  Opus 5.5 and no `$2/$10` tier with a read override at all, so the CLI's own table and the
+  published rate disagree here; the docs are the authority for what is *billed*, and
+  `probe-prices.ts` says it cannot catch a right rate on the wrong model. It also reads
+  **0 tiers on 2.1.301** — the binary's encoding moved — so it cannot vouch for anything
+  until it is re-pointed.
 - **The cache *read* is the one multiplier allowed to vary, and it had to become one.**
   The note above `RATES` said in as many words that reads and both write TTLs were
   multiples of input across every model; then Fable 5.1 and Mythos 5.1 arrived at
