@@ -683,7 +683,15 @@ mod bump_tests {
 
     impl Repo {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("skein-bump-{name}"));
+            /* Unique to this process and this instance, never just the name.
+               A fixed `skein-bump-<name>` was shared by every `cargo test` on
+               the machine, and on a wall where two cards run `bun run gate` at
+               once each one's `remove_dir_all` deleted the other's repo
+               mid-rebase — `a_half_done_operation_refuses` then failed with
+               "HEAD is not on a branch", which reads as a bug in `bump`. */
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("skein-bump-{name}-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let repo = Repo(dir);
@@ -899,6 +907,16 @@ mod bump_tests {
         /* The package.json it *could* have written is untouched. */
         assert!(repo.read("package.json").contains("0.7.0"));
         assert!(repo.log().starts_with("first"));
+    }
+
+    /// Two repos made under one name are two directories, so concurrent test
+    /// runs — two cards gating at once — cannot delete each other's.
+    #[test]
+    fn a_scratch_repo_is_its_own_directory() {
+        let a = Repo::new("twin");
+        let b = Repo::new("twin");
+        assert_ne!(a.at(), b.at());
+        assert!(a.at().contains(&std::process::id().to_string()));
     }
 
     /// A rebase stopped part-way can have a perfectly clean tree, so
