@@ -37,6 +37,7 @@ paths:
   - "src/lib/PlanStrip.svelte"
   - "src/lib/PlanDoc.svelte"
   - "src/lib/others.svelte.ts"
+  - "src/lib/Welcome.svelte"
 ---
 
 # Chat view: one conversation's column, read in two rooms
@@ -326,6 +327,29 @@ everything else synthetic keys and the app's own ops. The signed-out arm, 5/5, r
 launch with `CLAUDE_SECURESTORAGE_CONFIG_DIR` pointed at an empty directory, since **a lab
 inherits the launching shell's credential** — launched from a card on a managed account, every
 lab card is signed in, and the signed-out state cannot be reached without that.
+
+### The first launch and the finish (phase 6)
+
+**The welcome is asked of `opening`, once two things have answered.** The store (`skein.loaded`)
+and the control surface (`control.asked`): before the first, *never held a conversation* and
+*not read yet* are one reading and an existing wall would see the question flash; before the
+second, a lab is undriven for the moment its endpoint takes to arrive. Its choice is stored
+whichever way it goes, and `view.stored` is reactive so storing it is what takes the screen
+down. Enter is handled by the welcome itself off `document.activeElement` — a synthetic key
+does not click a focused button, and with nothing chosen Enter must do nothing.
+
+**Narrow is decided by width in the view, and by media query everywhere else.** ChatView reads
+the window width for the two things that change behaviour — the sidebar becomes a drawer, the
+pane a sheet — and Ctrl+Shift+S asks the view (`toggleSidebar`) rather than flipping
+`view.sidebar`, which a drawer does not use. Everything that only changes how it looks (the
+strip's step, the chip's family, the hint line, stacked options) is a `max-width` query in its
+own file, since it has nothing to decide.
+
+**An endless animation answers to all four motion readings, and a test says so.** `spare`
+steps it, `still` and reduced motion stop it; `styles.test.ts` reads every chat-view component
+and fails one that forgot an arm. **And a screen reader hears the paragraph, not the token**:
+the polite region announces each answer as it settles and *finished* at the turn's end, only
+for the conversation in front of you, and never on merely selecting one.
 
 ### A capture of a lab is DPI-aware or it is cropped
 

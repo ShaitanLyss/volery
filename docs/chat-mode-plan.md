@@ -353,6 +353,24 @@ just-chat conversation), everything else the app's own ops. Deviations:
 
 ## Phase 6 · first launch, and the finish — M
 
+**Done** (`c5b92e6`). Lab `chat`, frozen: the first launch 5/5 on a fresh lab, the rest 15/15,
+4b and 4c re-run green. Deviations:
+
+- **The decision waits on the control surface as well as the store** (`control.asked`): the
+  endpoint arrives by an invoke after the page loads, and without the wait a driven lab would
+  meet the welcome for that moment. A lab asks with `view` `to: "welcome"`; a lab left up with a
+  choice already stored never sees it again, which is correct and cost one confusing re-run.
+- **The screens were compared with the mockups by eye** from the lab's own captures (studio,
+  vellum, sugar, meadow; 860 and 560 wide), not in the Volery browser.
+- **The motion pass found one gap** — the thread's pip had no `spare` arm — and left a guard
+  rather than a list: `styles.test.ts` fails any chat-view component whose endless animation is
+  missing an arm. Chat view's working dots still hold the present rate up while cards work
+  (phase 4's measurement); that is the wall's own rule applied the same way, not a regression.
+- **Narrow** keeps the switch as icons and hides the place chip and the context ring below
+  600px, which the spec did not say; the update offer is held to one line.
+- **Accessibility** added only the paragraph announcer; landmarks, row names and the question's
+  group were already in place from earlier phases.
+
 - **Files.** `Welcome.svelte` as approved (spec §6.9) and `viewmode.ts`'s first-launch arm; the motion
   pass (spec §9: every `[data-motion]` arm beside its block, reduced motion); the light skins (vellum,
   sugar, meadow — the pool and washes under `--ch-bloom`); the narrow layout (spec §6.8); the
