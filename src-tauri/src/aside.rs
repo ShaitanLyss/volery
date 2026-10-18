@@ -175,18 +175,19 @@ pub async fn ask_aside(
     app: AppHandle,
     id: String,
     question: String,
+    content: Option<Vec<crate::supervisor::Block>>,
 ) -> Result<(), String> {
     let asked = question.trim().to_string();
     if asked.is_empty() {
         return Err("a side question with no question in it".into());
     }
-    crate::off_main(move || run(&app, &id, &asked)).await?
+    crate::off_main(move || run(&app, &id, &asked, content)).await?
 }
 
-fn run(app: &AppHandle, id: &str, question: &str) -> Result<(), String> {
+fn run(app: &AppHandle, id: &str, question: &str, content: Option<Vec<crate::supervisor::Block>>) -> Result<(), String> {
     let gen = app.state::<Asides>().claim(id);
 
-    let out = match ask(app, id, question) {
+    let out = match ask(app, id, question, content) {
         Ok((answer, clipped)) => Answered {
             id: id.to_string(),
             question: question.to_string(),
@@ -215,7 +216,17 @@ fn run(app: &AppHandle, id: &str, question: &str) -> Result<(), String> {
 }
 
 /// The request itself: a forked, one-shot `claude --print`.
-fn ask(app: &AppHandle, id: &str, question: &str) -> Result<(String, bool), String> {
+fn ask(
+    app: &AppHandle,
+    id: &str,
+    question: &str,
+    content: Option<Vec<crate::supervisor::Block>>,
+) -> Result<(String, bool), String> {
+    /* A question with a picture in it goes as blocks (sink fd7ef025), which
+       plain text on stdin cannot carry: so the fork reads and answers in
+       stream-json, the shape every card's own turn takes, and the answer is the
+       `result` event's text. Words alone keep the plain path they always had. */
+    let streaming = content.is_some();
     let store = app.state::<crate::store::Store>();
     /* `session_of` answers with the directory the card's *child* runs in and the
        session id, which is exactly the pair a fork needs — and for a worktree
@@ -250,10 +261,12 @@ fn ask(app: &AppHandle, id: &str, question: &str) -> Result<(String, bool), Stri
 
     let mut cmd = Command::new(&program);
     cmd.current_dir(&cwd);
+    if streaming {
+        cmd.args(["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]);
+    } else {
+        cmd.args(["--print", "--output-format", "text"]);
+    }
     cmd.args([
-        "--print",
-        "--output-format",
-        "text",
         "--resume",
         &session,
         /* The whole point. Without it the aside becomes a turn in the card's own
@@ -300,10 +313,20 @@ fn ask(app: &AppHandle, id: &str, question: &str) -> Result<(String, bool), Stri
     }
 
     if let Some(mut w) = child.stdin.take() {
-        let _ = w.write_all(FRAME.as_bytes());
-        let _ = w.write_all(b"\n\n");
-        let _ = w.write_all(question.as_bytes());
-        let _ = w.write_all(b"\n");
+        match &content {
+            Some(blocks) => {
+                /* The frame first and closed, the question after it — the same
+                   order the plain path writes — then one envelope, one line. */
+                let _ = w.write_all(envelope_of(blocks).as_bytes());
+                let _ = w.write_all(b"\n");
+            }
+            None => {
+                let _ = w.write_all(FRAME.as_bytes());
+                let _ = w.write_all(b"\n\n");
+                let _ = w.write_all(question.as_bytes());
+                let _ = w.write_all(b"\n");
+            }
+        }
         let _ = w.flush();
         /* And EOF, which is what makes `--print` answer and exit. */
     }
@@ -332,6 +355,13 @@ fn ask(app: &AppHandle, id: &str, question: &str) -> Result<(String, bool), Stri
         let mut clipped = false;
         if let Some(r) = stdout {
             for line in BufReader::new(r).lines().map_while(Result::ok) {
+                if streaming {
+                    if let Some(said) = answer_of(&line) {
+                        clipped = said.len() > ASIDE_CAP;
+                        out = said.chars().take(ASIDE_CAP).collect();
+                    }
+                    continue;
+                }
                 if out.len() >= ASIDE_CAP {
                     clipped = true;
                     break;
@@ -382,9 +412,44 @@ fn ask(app: &AppHandle, id: &str, question: &str) -> Result<(String, bool), Stri
     Ok((answer, clipped))
 }
 
+/// The stdin line of a side question that carries pictures: the frame, then
+/// the question's own blocks in the order its sentence put them.
+fn envelope_of(blocks: &[crate::supervisor::Block]) -> String {
+    let mut all = vec![crate::supervisor::Block::Text { text: format!("{FRAME}\n\n") }];
+    all.extend(blocks.iter().cloned());
+    crate::supervisor::user_envelope(&all)
+}
+
+/// The answer out of one line of stream-json: the `result` event's text.
+fn answer_of(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    (v.get("type")?.as_str()? == "result").then(|| v.get("result")?.as_str().map(str::to_string))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A side question with a picture goes as one envelope: the frame closed
+    /// first, then the question's blocks in order — and the answer is read off
+    /// the `result` event, the only line of stream-json that is the answer.
+    #[test]
+    fn a_side_question_with_a_picture_goes_as_blocks_after_the_frame() {
+        use crate::supervisor::{Block, ImageSource};
+        let env = envelope_of(&[
+            Block::Text { text: "is this ".into() },
+            Block::Image { source: ImageSource { media_type: "image/png".into(), data: "AAAA".into() } },
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&env).unwrap();
+        let c = v["message"]["content"].as_array().unwrap();
+        assert!(c[0]["text"].as_str().unwrap().starts_with("<system-reminder>"));
+        assert!(c[0]["text"].as_str().unwrap().trim_end().ends_with("</system-reminder>"));
+        assert_eq!(c[1]["text"], "is this ");
+        assert_eq!(c[2]["type"], "image");
+        assert_eq!(answer_of(r#"{"type":"result","subtype":"success","result":"blue"}"#).as_deref(), Some("blue"));
+        assert_eq!(answer_of(r#"{"type":"assistant","message":{}}"#), None);
+        assert_eq!(answer_of("not json"), None);
+    }
 
     /// The framing is quoted from the CLI, and the constraints are why.
     ///

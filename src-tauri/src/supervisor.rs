@@ -2122,7 +2122,7 @@ impl Block {
 /// one" mean anything. Probed before it was built — `tools/probe-image.ts` sent
 /// two generated images interleaved with three text blocks and got all seven of
 /// their colours back in the right two groups. See `.claude/rules/attach.md`.
-fn user_envelope(content: &[Block]) -> String {
+pub(crate) fn user_envelope(content: &[Block]) -> String {
     serde_json::json!({
         "type": "user",
         "message": {

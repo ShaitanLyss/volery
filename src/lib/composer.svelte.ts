@@ -358,6 +358,21 @@ export class Composer {
       skein.fault = no;
       return field.refuse();
     }
+    /* A side question carries what is attached to it, as a prompt does —
+       cut per card before the field is cleared, since clearing prunes them,
+       and refused with the draft kept when one cannot go (`aside.rs` reads
+       the blocks). */
+    const asides = new Map<string, Turn>();
+    if (cmd.name === "btw" && field.shots.any) {
+      for (const c of this.targets) {
+        const t = await field.shots.turnFor(arg, { chat: c.kind === "chat", afar: false }, c.id);
+        if ("refused" in t) {
+          field.shots.refused = t.refused;
+          return field.refuse();
+        }
+        asides.set(c.id, t);
+      }
+    }
     field.put("");
     field.at = 0;
     /* Forced open rather than toggled: typing the name is a request for the
@@ -379,7 +394,7 @@ export class Composer {
     } else if (cmd.name === "btw") {
       /* The same question put to five cards at once, each answered against its
          own conversation — a request per card, behind the same modifier. */
-      for (const c of on) await skein.askAside(c, arg);
+      for (const c of on) await skein.askAside(c, arg, asides.get(c.id));
     } else if (cmd.name === "plan") {
       /* The one direction; coming back is `/gear making`. */
       for (const c of on) await skein.setGear(c, "planning");

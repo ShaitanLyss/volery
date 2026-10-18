@@ -3851,8 +3851,8 @@ export class Skein {
    *  here — the request is out on another thread by then, and a card that said
    *  nothing about a side question that never arrived is the silent failure this
    *  wall keeps finding. */
-  async askAside(conv: Conversation, question: string) {
-    const asked = question.trim();
+  async askAside(conv: Conversation, question: string, turn?: Turn) {
+    const asked = (turn?.text ?? question).trim();
     if (!asked) return;
     /* Said before it goes, and said again if it replaces one — `aside.rs` keeps
        one per card, and a second question dropping the first silently would be a
@@ -3860,7 +3860,10 @@ export class Skein {
     if (conv.asking) conv.note("that side question was replaced by this one");
     conv.sideAsked(asked);
     try {
-      await invoke("ask_aside", { id: conv.id, question: asked });
+      /* With pictures in it the question goes as blocks, where they sit in
+         the sentence; a file is already its path in the words. */
+      const content = turn?.content.some((b) => b.type !== "text") ? turn.content : undefined;
+      await invoke("ask_aside", { id: conv.id, question: asked, content });
     } catch (err) {
       conv.sideAnswered("", String(err));
     }
