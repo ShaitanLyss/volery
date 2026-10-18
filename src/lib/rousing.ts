@@ -213,15 +213,7 @@ export function returnBudget(available: number | null): number {
   return Math.max(0, Math.floor((available - AMPLE_BYTES) / CARD_BYTES));
 }
 
-/** Said on a card the pass gave its process back. `meta`, like `restNote` —
- *  the counterpart of that line, and for the same reason: a card holding a
- *  gigabyte that nobody has spoken to since launch owes you a sentence saying
- *  why, and that nothing was sent to it. */
-export const CAME_BACK_NOTE =
-  "skein gave this card its process back — it had one when the wall last " +
-  "closed. nothing was sent to it; it is waiting for you, as it was.";
-
-/** Said instead, on a card that had a process and is left at rest because
+/** Said on a card that had a process and is left at rest because
  *  waking it would hand it post (`store::holds_post`). Said rather than done
  *  silently, `ALREADY_ROUSED_NOTE`'s reason: a card the queue left alone on
  *  purpose must not read as one it forgot. */

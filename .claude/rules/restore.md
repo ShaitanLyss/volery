@@ -256,9 +256,11 @@ The rest of it:
   `REST_KEY`'s reason, and on unless turned off.
 - **It does not look interrupted.** A spawn touches no turn mark, so nothing is written to
   `interrupted` and nothing earns a resume prompt next time. `activity` is set to `ready` over
-  the `waking…` the spawn left, since a resumed process emits no event until spoken to, and
-  `CAME_BACK_NOTE` says in `meta` that nothing was sent — `restNote`'s counterpart. One
-  chronicle row per pass names who came back and counts who was left, and why.
+  the `waking…` the spawn left, since a resumed process emits no event until spoken to. It
+  writes **nothing into the transcript**: a `meta` note saying the card had its process back
+  and nothing was sent used to, and it was removed (2026-10-16) — it was never cleared, so it
+  stacked on every launch, and it narrated a state the card already draws. One chronicle row
+  per pass names who came back and counts who was left, and why.
 - **`leftAwake` is spent on the card's first spawn this launch**, so a card woken and then
   rested today is not brought back by a second run of the pass (the control surface's `rouse`
   op is one).

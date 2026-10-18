@@ -8,7 +8,6 @@ import {
   isResumePrompt,
   unansweredRousePrompt,
   ALREADY_ROUSED_NOTE,
-  CAME_BACK_NOTE,
   CARD_BYTES,
   POST_WAITING_NOTE,
   REAWAKEN_LABEL,
@@ -240,10 +239,6 @@ describe("returnBudget", () => {
 });
 
 describe("what the pass says", () => {
-  test("a card brought back is told nothing was sent", () => {
-    expect(CAME_BACK_NOTE).toContain("nothing was sent");
-  });
-
   test("a card left at rest says why, and how it wakes", () => {
     for (const note of [POST_WAITING_NOTE, SHORT_OF_MEMORY_NOTE]) {
       expect(note.startsWith("left at rest by skein")).toBe(true);
