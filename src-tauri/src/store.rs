@@ -5028,13 +5028,28 @@ pub struct Trail {
 /// run once per handoff against a table SQLite walks in milliseconds —
 /// `overlapping_conversations` next door does a self-join over the same table
 /// with the same gap. Worth revisiting together if either ever reads slow.
+///
+/// **`async` and `off_main` since chat view's side pane reads it live**, once a
+/// turn, where it had been read once per hand-off (`docs/chat-mode.md` §7.6):
+/// a full scan on the main thread is a freeze of every card for as long as it
+/// takes, which is the rule `crate::off_main` exists for.
 #[tauri::command]
-pub fn files_handled_by(
-    store: tauri::State<'_, Store>,
+pub async fn files_handled_by(
+    app: tauri::AppHandle,
     conversation_id: String,
     limit: i64,
 ) -> Result<Trail, String> {
-    let conn = store.0.lock().unwrap();
+    crate::off_main(move || {
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        trail_of(&conn, &conversation_id, limit)
+    })
+    .await?
+}
+
+/// What `files_handled_by` answers, on a connection — apart, so a test can
+/// read it without an app.
+fn trail_of(conn: &Connection, conversation_id: &str, limit: i64) -> Result<Trail, String> {
     /* Where the child actually ran, which for a worktree card is not the row's
        `cwd` — see `Trail`, and `worktree::run_dir`'s own note about the year
        this app spent asking the wrong one. */
@@ -9186,6 +9201,37 @@ mod tests {
     }
 
     use super::*;
+
+    /// The trail a card has left, off the thread now: most-handled first, one
+    /// file however it was spelled, and a write wins over a read.
+    #[test]
+    fn a_trail_folds_spellings_and_counts_handling() {
+        let conn = db();
+        seed_project(&conn, "p", "C:/p");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at, kind) VALUES ('k', 'p', 'C:/p', 0, 'project')",
+            [],
+        )
+        .unwrap();
+        for (path, op, at) in [
+            ("C:\\p\\a.ts", "read", 1),
+            ("c:/p/A.ts", "write", 2),
+            ("C:/p/a.ts", "read", 3),
+            ("C:/p/b.ts", "read", 4),
+        ] {
+            conn.execute(
+                "INSERT INTO file_touch (conversation_id, path, op, at) VALUES ('k', ?1, ?2, ?3)",
+                params![path, op, at],
+            )
+            .unwrap();
+        }
+        let t = trail_of(&conn, "k", 10).unwrap();
+        assert_eq!(t.root, "C:/p");
+        assert_eq!(t.files.len(), 2);
+        assert_eq!(t.files[0].count, 3);
+        assert_eq!(t.files[0].op, "write");
+        assert_eq!(t.files[1].count, 1);
+    }
 
     /// A card's last activity is its newest turn, or its birth with none — what
     /// chat view's sidebar sorts a restored card's history by.
