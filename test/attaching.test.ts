@@ -101,4 +101,19 @@ describe("every input that speaks to an agent can be handed a file", () => {
     expect(app).not.toContain("field.shots.fromPaths");
     expect(app).not.toContain("field.shots.fromFiles");
   });
+
+  /* The control surface's `paste` aims at the prompt by its name. It aimed at
+     the dock's first box, which is a question's or a notice's reply box
+     whenever one is in front — a test pasting "into the dock" then attached
+     into the reply (sink 811b674a). */
+  test("a paste with no target lands in the box named prompt, which the dock's field is", () => {
+    const control = readFileSync(join(SRC, "lib/control.svelte.ts"), "utf8");
+    expect(control).toContain(`export const PROMPT_BOX = '[data-attach-name="prompt"]';`);
+    expect(control).toContain("op.into ?? PROMPT_BOX");
+    expect(control).not.toContain('op.into ?? ".dock [data-attach]"');
+    const box = readFileSync(join(SRC, "lib/PromptBox.svelte"), "utf8");
+    expect(box).toContain("data-attach-name={name ?? null}");
+    const dock = readFileSync(join(SRC, "lib/Dock.svelte"), "utf8");
+    expect(dock).toMatch(/<PromptBox[\s\S]*?name="prompt"/);
+  });
 });

@@ -510,6 +510,11 @@ function pomodoroSnapshot(h: ControlHost) {
   };
 }
 
+/** The selector the `paste` op aims at by default: the box named `prompt` —
+ *  the dock's field, or chat view's message box, which are never on screen
+ *  together. `test/attaching.test.ts` holds it to that name. */
+export const PROMPT_BOX = '[data-attach-name="prompt"]';
+
 export class Control {
   endpoint = $state<Endpoint | null>(null);
 
@@ -2265,7 +2270,11 @@ export class Control {
        *  `image.paste` it cannot put anything on the OS clipboard, so what an
        *  Explorer copy does there (`CF_HDROP`, a path) needs a hand on ctrl+V. */
       paste: async (op) => {
-        const box = document.querySelector(String(op.into ?? ".dock [data-attach]"));
+        /* The default is the field by name, not the dock's first box: a
+           question or a notice in front is drawn above the field, so "the first
+           box in the dock" was its reply box whenever one was showing, and a
+           paste meant for the prompt landed in the reply (sink 811b674a). */
+        const box = document.querySelector(String(op.into ?? PROMPT_BOX));
         const area = box?.querySelector("textarea");
         if (!area) throw new Error(`no input under ${String(op.into ?? "the dock")}`);
         const dt = new DataTransfer();

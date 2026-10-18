@@ -38,7 +38,10 @@
    *       shots={attachments}        this draft's `Attachments`
    *       bind:el                    the textarea, for focus
    *       name="prompt"              optional: a box a surface can stand for
-   *                                  (`data-attach-to`), the dock's field
+   *                                  (`data-attach-to`), the dock's field —
+   *                                  and written on the box as
+   *                                  `data-attach-name`, so a test can find
+   *                                  *that* box rather than whichever is first
    *       accepts={() => bool}       optional: whether a drop means anything now
    *       oncaret={(c) => …}         optional: told where the caret went after an
    *                                  insert the box made itself
@@ -158,7 +161,7 @@
   }
 </script>
 
-<div class="box" data-attach class:dropping={dropping.over !== null && dropping.over === boxEl} bind:this={boxEl} {@attach register}>
+<div class="box" data-attach data-attach-name={name ?? null} class:dropping={dropping.over !== null && dropping.over === boxEl} bind:this={boxEl} {@attach register}>
   <!-- Above the field, so the pictures sit between whatever heads the surface
        and the sentence that refers to them, and the field never moves as you
        type. Drawn only when there is something in it. -->
