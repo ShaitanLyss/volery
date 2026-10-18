@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="en" data-motion="full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280">
+<title>volery · chat view · a project</title>
+<!-- Generated mockup: docs/chat-mode.md describes what it shows. Studio tokens from src/lib/tokens.css. -->
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   volery · chat view · mockup stylesheet
+   The studio tokens are copied verbatim from src/lib/tokens.css so the
+   mockups are drawn in the wall's own ink. Everything prefixed --cv-, --dur-
+   and --ease- is new, and is what docs/chat-mode.md proposes to add.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* studio — src/lib/tokens.css */
+  --ink: #151210;
+  --well: #0f0d0c;
+  --surface: #1e1a18;
+  --raised: #272220;
+  --edge: #332c29;
+  --rule: #3d3532;
+  --paper: #ede4d8;
+  --paper-dim: #b4a89c;
+  --paper-mute: #8a7e74;
+  --paper-faint: #615850;
+  --shade: #000;
+  --st-work: #7fb8a4;
+  --st-ask: #e9a13b;
+  --st-soft: #a8823f;
+  --st-rest: #6b6058;
+  --st-fail: #c5603f;
+  --display: "Sitka Display", "Sitka Heading", Sitka, Constantia, Georgia, serif;
+  --body: "Sitka Text", Sitka, Constantia, Georgia, serif;
+  --util: Corbel, "Segoe UI", Candara, system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  --tx-size: 0.86rem;
+  --tx-leading: 1.55;
+  --ch-bloom: 1;
+  --ch-wash: 0%;
+
+  /* ── chat view: new tokens ──────────────────────────────────────────── */
+
+  /* faces. The chrome is the system's own variable face, the agent's prose
+     stays the studio's serif. */
+  --cv-ui: "Segoe UI Variable Text", "Segoe UI", var(--util);
+  --cv-ui-display: "Segoe UI Variable Display", "Segoe UI", var(--util);
+
+  /* the reading. A centred column has room the panel does not, so the panel's
+     own knob is scaled rather than replaced — a reading theme still applies. */
+  --cv-read: calc(var(--tx-size) * 1.2);
+  --cv-measure: 44rem;
+  --cv-prose: color-mix(in oklab, var(--paper-dim) 45%, var(--paper));
+  /* Small text that is a note — an age, a count, a hint. `--paper-mute`
+     (4.9:1), never `--paper-faint` (2.8:1): theme.md keeps faint for marks,
+     and a newcomer's view is not the place to read a 2.8 line. */
+  --cv-note: var(--paper-mute);
+
+  /* surfaces, each a relationship to the studio ramp rather than a literal */
+  --cv-ground: var(--well);
+  --cv-sheet: var(--ink);
+  --cv-lift: color-mix(in oklab, var(--surface) 82%, var(--paper) 3%);
+  --cv-hair: color-mix(in oklab, var(--edge) 80%, transparent);
+
+  /* light. The lamp is luminance only; the pool takes the status colour of the
+     conversation in front of you, at a strength scaled by the skin's bloom. */
+  --cv-lamp: color-mix(in oklab, var(--paper) 6%, transparent);
+  --cv-pool-work: color-mix(in oklab, var(--st-work) calc(24% * var(--ch-bloom)), transparent);
+  --cv-pool-ask: color-mix(in oklab, var(--st-ask) calc(26% * var(--ch-bloom)), transparent);
+  --cv-pool-fail: color-mix(in oklab, var(--st-fail) calc(22% * var(--ch-bloom)), transparent);
+
+  /* shape */
+  --cv-r-s: 7px;
+  --cv-r-m: 12px;
+  --cv-r-l: 20px;
+  --cv-r-xl: 26px;
+
+  /* motion — one vocabulary for every transition the view makes */
+  --dur-tap: 90ms;     /* hover, press, colour */
+  --dur-quick: 160ms;  /* menus, chips, tooltips, a row's state */
+  --dur-step: 240ms;   /* a message arriving, a pane opening, a row moving */
+  --dur-scene: 360ms;  /* switching conversation, the composer settling */
+  --dur-stage: 520ms;  /* switching between the wall and the chat view */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.3, 1);      /* = --ch-ease: arrivals */
+  --ease-in: cubic-bezier(0.55, 0, 0.75, 0.2);     /* departures */
+  --ease-move: cubic-bezier(0.65, 0, 0.35, 1);     /* things that travel */
+  --ease-pop: cubic-bezier(0.34, 1.36, 0.64, 1);   /* small confirmations */
+
+  /* dither, so a gradient on a dark ground does not band */
+  --cv-grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.45  0 0 0 0 0.4  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+/* vellum — src/lib/palette.ts, and the chat view's light relationships */
+:root[data-skin="vellum"] {
+  --ink: #ddd8d1;
+  --well: #ece6df;
+  --surface: #f6f0e9;
+  --raised: #e6e1da;
+  --edge: #c1b9ae;
+  --rule: #b1a89c;
+  --shade: rgb(62 48 36 / 0.24);
+  --paper: #352c25;
+  --paper-dim: #514740;
+  --paper-mute: #655a53;
+  --paper-faint: #958a82;
+  --st-work: #22876b;
+  --st-ask: #ca7f10;
+  --st-soft: #a17740;
+  --st-rest: #8b857f;
+  --st-fail: #b63d29;
+  --ch-bloom: 0.3;
+  --ch-wash: 7%;
+  /* On paper the sheet is the brightest surface and the ground sits under it:
+     the polarity theme.md's light ladder asks for. Never white. */
+  --cv-ground: var(--ink);
+  --cv-sheet: var(--well);
+  --cv-lift: var(--surface);
+  --cv-prose: var(--paper-dim);
+  --cv-lamp: color-mix(in oklab, var(--surface) 70%, transparent);
+  --cv-pool-work: color-mix(in oklab, var(--st-work) 9%, transparent);
+  --cv-pool-ask: color-mix(in oklab, var(--st-ask) 12%, transparent);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  width: 1280px;
+  height: 800px;
+  overflow: hidden;
+  background: var(--cv-ground);
+  color: var(--paper);
+  font-family: var(--cv-ui);
+  font-size: 13.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.s { width: 14px; height: 14px; }
+kbd {
+  font-family: var(--cv-ui);
+  font-size: 11px;
+  color: var(--paper-mute);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--cv-hair);
+  background: color-mix(in oklab, var(--surface) 60%, transparent);
+}
+:focus-visible { outline: 2px solid var(--st-ask); outline-offset: 2px; border-radius: 6px; }
+
+/* ── the window ───────────────────────────────────────────────────────── */
+
+.app {
+  position: relative;
+  display: grid;
+  grid-template-columns: 264px 1fr;
+  grid-template-rows: 44px 1fr;
+  height: 100%;
+}
+
+/* the title bar is the window's drag region; the sidebar's head sits in it */
+.bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 0 14px;
+}
+.brand { display: flex; align-items: center; gap: 9px; width: 238px; }
+.mark { width: 20px; height: 20px; }
+.word { font-family: var(--display); font-size: 17px; letter-spacing: 0.01em; color: var(--paper); }
+.brand .iconbtn { margin-left: auto; }
+.iconbtn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--paper-mute);
+  transition: background var(--dur-tap) var(--ease-out), color var(--dur-tap) var(--ease-out);
+}
+.iconbtn:hover { background: color-mix(in oklab, var(--surface) 80%, transparent); color: var(--paper); }
+
+.where { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 14px; }
+.where .title { font-size: 14px; color: var(--paper); white-space: nowrap; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--paper-dim);
+  border: 1px solid var(--cv-hair);
+  background: color-mix(in oklab, var(--surface) 55%, transparent);
+  white-space: nowrap;
+}
+.chip svg.i { width: 13px; height: 13px; color: var(--paper-mute); }
+.chip.plan { border-style: dashed; }
+.grow { flex: 1; }
+.ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--paper-mute); }
+.ring {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: conic-gradient(var(--paper-dim) calc(var(--p) * 1%), color-mix(in oklab, var(--edge) 90%, transparent) 0);
+  -webkit-mask: radial-gradient(circle, transparent 4.2px, #000 4.6px);
+          mask: radial-gradient(circle, transparent 4.2px, #000 4.6px);
+}
+
+.views {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface) 70%, transparent);
+  border: 1px solid var(--cv-hair);
+}
+.views button { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 7px; font-size: 12px; color: var(--paper-mute); }
+.views button.on { background: var(--raised); color: var(--paper); box-shadow: 0 1px 2px color-mix(in srgb, var(--shade) 40%, transparent); }
+.winctl { display: flex; height: 44px; }
+.winctl span { width: 46px; display: grid; place-items: center; color: var(--paper-mute); }
+
+/* ── the sidebar ──────────────────────────────────────────────────────── */
+
+.side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 2px 10px 10px 10px;
+}
+.new {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 36px;
+  padding: 0 10px 0 11px;
+  border-radius: 10px;
+  color: var(--paper);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 5%), var(--raised));
+  border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 8%);
+  box-shadow: 0 1px 0 color-mix(in oklab, var(--paper) 6%, transparent) inset, 0 4px 12px -6px color-mix(in srgb, var(--shade) 70%, transparent);
+}
+.new kbd, .find kbd { margin-left: auto; }
+.find {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  margin-top: 6px;
+  padding: 0 10px 0 11px;
+  border-radius: 10px;
+  color: var(--paper-mute);
+}
+.find:hover { background: color-mix(in oklab, var(--surface) 70%, transparent); }
+
+.list { flex: 1; min-height: 0; overflow: hidden; margin-top: 10px; display: flex; flex-direction: column; gap: 14px; }
+.group h6 {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  font: 500 11.5px/1.2 var(--cv-ui);
+  color: var(--paper-mute);
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.group h6 .n { color: var(--cv-note); font-weight: 400; }
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  column-gap: 9px;
+  min-height: 32px;
+  padding: 5px 9px 5px 10px;
+  border-radius: 9px;
+  color: var(--paper-dim);
+  transition: background var(--dur-quick) var(--ease-out);
+}
+.row:hover { background: color-mix(in oklab, var(--surface) 70%, transparent); }
+.row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+.row .sub { grid-column: 2 / 4; font-size: 12px; color: var(--paper-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.row .age { font-size: 11.5px; color: var(--cv-note); }
+.row .proj { font-size: 11.5px; color: var(--cv-note); }
+.row.on {
+  background: linear-gradient(90deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 3%), color-mix(in oklab, var(--surface) 90%, transparent));
+  color: var(--paper);
+  box-shadow: 0 0 0 1px var(--cv-hair) inset;
+}
+.row.ask { background: linear-gradient(90deg, color-mix(in oklab, var(--st-ask) 15%, transparent), transparent 80%); color: var(--paper); }
+.row.ask .sub { color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim)); }
+.row.fail .sub { color: color-mix(in oklab, var(--st-fail) 60%, var(--paper-dim)); }
+
+/* status: a dot carries the colour, and a working one breathes. The breath is
+   opacity on a pseudo — the compositor's own — and stops under `still`. */
+.st { position: relative; width: 14px; height: 14px; display: grid; place-items: center; }
+.st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--st-rest); }
+.st.work::before { background: var(--st-work); }
+.st.ask::before { background: var(--st-ask); }
+.st.fail::before { background: var(--st-fail); }
+.st.done::before { background: transparent; box-shadow: 0 0 0 1.5px var(--paper-mute) inset; }
+.st.chat::before { width: 6px; height: 6px; background: transparent; box-shadow: 0 0 0 1.3px var(--paper-faint) inset; }
+.st.work::after, .st.ask::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in oklab, var(--st-work) 55%, transparent), transparent 70%);
+  animation: breathe 2.4s var(--ease-move) infinite alternate;
+}
+.st.ask::after { background: radial-gradient(circle, color-mix(in oklab, var(--st-ask) 60%, transparent), transparent 70%); animation: none; opacity: 0.9; }
+@keyframes breathe { from { opacity: 0.25; } to { opacity: 1; } }
+
+.kid { padding-left: 26px; }
+.kid::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: -6px;
+  bottom: 50%;
+  width: 9px;
+  border-left: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  border-bottom-left-radius: 6px;
+}
+
+.folder { grid-template-columns: 14px 1fr auto; }
+.folder .dots { display: inline-flex; gap: 3px; }
+.folder .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--st-work); }
+.folder .dots i.a { background: var(--st-ask); }
+.folder .count { font-size: 11.5px; color: var(--cv-note); margin-left: 6px; }
+
+.me {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 0 8px;
+  border-top: 1px solid var(--cv-hair);
+}
+.avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: grid; place-items: center;
+  font: 600 12px var(--cv-ui);
+  color: var(--paper);
+  background: radial-gradient(circle at 30% 25%, color-mix(in oklab, var(--raised) 100%, var(--paper) 10%), var(--raised));
+  box-shadow: 0 0 0 2px var(--cv-ground), 0 0 0 3.5px var(--edge);
+}
+.me .who { display: flex; flex-direction: column; line-height: 1.25; }
+.me .who b { font-weight: 500; font-size: 13px; }
+.me .who span { font-size: 11.5px; color: var(--paper-mute); }
+.me .iconbtn { margin-left: auto; }
+
+/* ── the sheet ────────────────────────────────────────────────────────── */
+
+.sheet {
+  position: relative;
+  margin: 0 8px 8px 0;
+  min-height: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    var(--cv-grain),
+    radial-gradient(90% 55% at 50% -8%, var(--cv-lamp), transparent 72%),
+    linear-gradient(180deg, color-mix(in oklab, var(--cv-sheet) 100%, var(--paper) 1.5%), var(--cv-sheet) 40%);
+  background-blend-mode: soft-light, normal, normal;
+  border: 1px solid var(--cv-hair);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--shade) 30%, transparent), 0 18px 40px -24px color-mix(in srgb, var(--shade) 90%, transparent);
+  display: grid;
+  grid-template-columns: 1fr auto;
+}
+/* the pool: the status of the conversation in front of you, as light at the
+   foot of the thread. Static once drawn; only its opacity moves between states. */
+.thread::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 340px;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(52% 78% at 50% 104%, var(--pool, transparent), transparent 74%);
+  transition: opacity var(--dur-scene) var(--ease-out);
+}
+.sheet[data-tier="work"] { --pool: var(--cv-pool-work); }
+.sheet[data-tier="ask"] { --pool: var(--cv-pool-ask); }
+.sheet[data-tier="fail"] { --pool: var(--cv-pool-fail); }
+
+.thread { position: relative; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.scroll { flex: 1; min-height: 0; overflow: hidden; padding: 34px 0 26px; display: flex; flex-direction: column; justify-content: flex-end; }
+.scroll.top { justify-content: flex-start; }
+.col { width: min(var(--cv-measure), calc(100% - 64px)); margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+
+/* fade the column out under the composer, so it reads as passing beneath */
+.scroll { -webkit-mask: linear-gradient(180deg, transparent 0, #000 26px, #000 calc(100% - 18px), transparent); mask: linear-gradient(180deg, transparent 0, #000 26px, #000 calc(100% - 18px), transparent); }
+
+/* ── messages ─────────────────────────────────────────────────────────── */
+
+.you {
+  align-self: flex-end;
+  max-width: 78%;
+  padding: 10px 15px 11px;
+  border-radius: 19px 19px 6px 19px;
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--paper);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 4%), var(--raised));
+  border: 1px solid color-mix(in oklab, var(--edge) 80%, var(--paper) 5%);
+}
+.you .shots { display: flex; gap: 6px; margin: 2px 0 8px; justify-content: flex-end; }
+.you .shots img, .you .shots .pic { width: 92px; height: 64px; border-radius: 9px; object-fit: cover; }
+.tok {
+  padding: 0 5px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--paper) 10%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.you.held {
+  border-style: dashed;
+  background: transparent;
+  color: var(--paper-dim);
+}
+.heldnote { align-self: flex-end; margin-top: -16px; font-size: 12px; color: var(--paper-mute); display: flex; gap: 8px; align-items: center; }
+.heldnote button { color: var(--paper-dim); text-decoration: underline; text-decoration-color: var(--paper-faint); text-underline-offset: 3px; }
+
+.agent { font-family: var(--body); font-size: var(--cv-read); line-height: 1.62; color: var(--cv-prose); }
+.agent p { margin: 0 0 0.75em; text-wrap: pretty; }
+.agent p:last-child { margin-bottom: 0; }
+.agent strong { color: var(--paper); font-weight: 600; }
+.agent ol, .agent ul { margin: 0 0 0.75em; padding-left: 1.3em; }
+.agent li { margin: 0.2em 0; }
+.agent li::marker { color: var(--paper-faint); }
+.agent code {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--surface) 90%, var(--paper) 3%);
+  border: 1px solid var(--cv-hair);
+  color: color-mix(in oklab, var(--paper) 80%, var(--paper-dim));
+  font-weight: 350;
+}
+.agent h3 { font-family: var(--display); font-weight: 500; font-size: 1.12em; color: var(--paper); margin: 0.2em 0 0.5em; }
+
+.thought { display: inline-flex; align-items: center; gap: 7px; font: italic 13px var(--body); color: var(--paper-mute); }
+.thought svg.i { width: 12px; height: 12px; }
+
+/* a turn's machinery, folded */
+.work {
+  border-radius: var(--cv-r-m);
+  border: 1px solid var(--cv-hair);
+  background: color-mix(in oklab, var(--surface) 55%, transparent);
+  font-size: 13px;
+  color: var(--paper-dim);
+  overflow: hidden;
+}
+.work .cap { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
+.work .cap .glyphs { display: inline-flex; gap: 2px; color: var(--paper-mute); }
+.work .cap .sum { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.work .cap .sum b { font-weight: 500; color: var(--paper); }
+.work .cap .time { font-size: 12px; color: var(--cv-note); font-variant-numeric: tabular-nums; }
+.work .cap .chev { color: var(--paper-faint); }
+.work.live { border-color: color-mix(in oklab, var(--st-work) 30%, var(--edge)); }
+.work.live .cap { position: relative; }
+.steps { border-top: 1px solid var(--cv-hair); padding: 6px 0; }
+.step { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; padding: 4px 12px; }
+.step .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step .what code { font-family: var(--mono); font-size: 12px; font-weight: 350; color: var(--paper-dim); background: none; border: 0; padding: 0; }
+.step .delta { font-family: var(--mono); font-size: 11.5px; color: var(--paper-mute); }
+.step .delta .add { color: var(--paper-dim); }
+.step .ok { color: var(--paper-mute); }
+.step.now { color: var(--paper); }
+.step.now .what { position: relative; }
+/* the shimmer: a band of the sheet's own ink moving across the words, by
+   transform only. Only while a step is live; `spare` steps it, `still` stops it. */
+.shimmer { position: relative; overflow: hidden; display: inline-block; vertical-align: bottom; }
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0 -60%;
+  background: linear-gradient(100deg, transparent 35%, color-mix(in oklab, var(--cv-sheet) 70%, transparent) 50%, transparent 65%);
+  animation: sweep 1.8s var(--ease-move) infinite;
+}
+@keyframes sweep { from { transform: translateX(-45%); } to { transform: translateX(45%); } }
+
+.diff {
+  margin: 4px 12px 10px 38px;
+  border-radius: 9px;
+  border: 1px solid var(--cv-hair);
+  background: color-mix(in oklab, var(--cv-sheet) 80%, var(--well));
+  font: 350 11.5px/1.65 var(--mono);
+  padding: 8px 0;
+  color: var(--paper-mute);
+}
+.diff div { padding: 0 12px; white-space: pre; }
+.diff .p { color: var(--paper); background: color-mix(in oklab, var(--paper) 5%, transparent); }
+.diff .p::before { content: "+ "; color: var(--paper-mute); }
+.diff .m { text-decoration: line-through; text-decoration-color: var(--paper-faint); }
+.diff .m::before { content: "− "; }
+
+.actions { display: flex; gap: 2px; margin-top: -10px; color: var(--cv-note); }
+.actions .iconbtn { width: 28px; height: 28px; }
+
+/* a figure in the answer */
+.fig {
+  border-radius: var(--cv-r-m);
+  border: 1px solid var(--cv-hair);
+  overflow: hidden;
+  background: color-mix(in oklab, var(--surface) 70%, transparent);
+}
+.fig .cap2 { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; color: var(--paper-mute); border-top: 1px solid var(--cv-hair); }
+.fig .cap2 .grow { flex: 1; }
+
+/* a conversation this one started */
+.linked {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--cv-r-m);
+  border: 1px solid var(--cv-hair);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--st-work) calc(10% * var(--ch-bloom)), transparent), transparent 60%), color-mix(in oklab, var(--surface) 50%, transparent);
+  font-size: 13px;
+}
+.linked .t { color: var(--paper); }
+.linked .sub { font-size: 12px; color: var(--paper-mute); }
+.linked .go { font-size: 12px; color: var(--paper-dim); display: inline-flex; gap: 6px; align-items: center; }
+
+/* the live edge of a turn */
+.tail { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--paper-mute); }
+.caret { width: 8px; height: 8px; border-radius: 50%; background: var(--st-work); box-shadow: 0 0 0 4px color-mix(in oklab, var(--st-work) 18%, transparent); }
+
+/* ── the composer ─────────────────────────────────────────────────────── */
+
+.foot { position: relative; z-index: 1; padding: 0 0 18px; }
+.scroll { position: relative; z-index: 1; }
+.above { width: min(calc(var(--cv-measure) + 2rem), calc(100% - 48px)); margin: 0 auto 8px; display: flex; gap: 8px; align-items: center; justify-content: center; }
+.planstrip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--paper-dim);
+  border: 1px solid var(--cv-hair);
+  background: color-mix(in oklab, var(--surface) 75%, transparent);
+}
+.segs { display: inline-flex; gap: 3px; }
+.segs i { width: 16px; height: 4px; border-radius: 2px; background: var(--edge); }
+.segs i.d { background: var(--paper-mute); }
+.segs i.a { background: var(--st-work); }
+.planstrip b { font-weight: 500; color: var(--paper); }
+
+.composer {
+  position: relative;
+  width: min(calc(var(--cv-measure) + 2rem), calc(100% - 48px));
+  margin: 0 auto;
+  border-radius: var(--cv-r-l);
+  padding: 12px 12px 10px 16px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--cv-lift) 100%, var(--paper) 3%), var(--cv-lift));
+  border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 9%);
+  box-shadow:
+    0 1px 0 color-mix(in oklab, var(--paper) 7%, transparent) inset,
+    0 14px 34px -18px color-mix(in srgb, var(--shade) 95%, transparent),
+    0 2px 6px -2px color-mix(in srgb, var(--shade) 40%, transparent);
+  transition: border-color var(--dur-quick) var(--ease-out);
+}
+.composer .text {
+  min-height: 46px;
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--paper);
+  padding: 2px 0 8px;
+}
+.composer .text .ph { color: var(--cv-note); }
+.composer .row2 { display: flex; align-items: center; gap: 6px; }
+.round {
+  display: inline-grid;
+  place-items: center;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  color: var(--paper-dim);
+  border: 1px solid var(--cv-hair);
+  transition: background var(--dur-tap) var(--ease-out);
+}
+.round:hover { background: color-mix(in oklab, var(--raised) 80%, transparent); }
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--paper-mute);
+  border: 1px dashed var(--cv-hair);
+}
+.toggle.on { color: var(--paper); border-color: var(--paper-mute); background: color-mix(in oklab, var(--paper) 5%, transparent); }
+.model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--paper-dim);
+}
+.model:hover { background: color-mix(in oklab, var(--raised) 70%, transparent); }
+.model .eff { color: var(--paper-mute); }
+.send {
+  display: inline-grid;
+  place-items: center;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  color: var(--cv-sheet);
+  background: radial-gradient(circle at 35% 25%, color-mix(in oklab, var(--paper) 100%, white 10%), var(--paper) 60%, color-mix(in oklab, var(--paper) 85%, var(--shade)));
+  box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--shade) 80%, transparent);
+  transition: transform var(--dur-quick) var(--ease-pop);
+}
+.send:active { transform: scale(0.92); }
+.send.idle { background: color-mix(in oklab, var(--raised) 100%, var(--paper) 6%); color: var(--paper-faint); box-shadow: none; }
+.send.stop svg.i { width: 12px; height: 12px; fill: currentColor; stroke: none; }
+.hint { text-align: center; font-size: 11.5px; color: var(--cv-note); margin-top: 8px; }
+
+/* ── the pane beside the thread ───────────────────────────────────────── */
+
+.pane {
+  width: 300px;
+  border-left: 1px solid var(--cv-hair);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--cv-sheet) 92%, var(--well)), var(--cv-sheet));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.tabs { display: flex; gap: 2px; padding: 10px 10px 0; border-bottom: 1px solid var(--cv-hair); }
+.tabs button { height: 32px; padding: 0 10px; font-size: 12.5px; color: var(--paper-mute); border-bottom: 2px solid transparent; }
+.tabs button.on { color: var(--paper); border-bottom-color: var(--paper-dim); }
+.tabs .n { color: var(--cv-note); margin-left: 4px; }
+.pbody { padding: 16px 16px; overflow: hidden; flex: 1; }
+.pbody h5 { margin: 0 0 2px; font: 500 14px var(--cv-ui); color: var(--paper); }
+.pbody .meta { font-size: 12px; color: var(--paper-mute); margin-bottom: 16px; }
+
+/* the timeline, stood on its end */
+.vt { position: relative; display: flex; flex-direction: column; }
+.vt .ms { position: relative; display: grid; grid-template-columns: 22px 1fr; column-gap: 10px; padding-bottom: 14px; }
+.vt .ms::before { content: ""; position: absolute; left: 10.5px; top: 18px; bottom: -2px; width: 1px; background: var(--rule); }
+.vt .ms:last-child::before { display: none; }
+.vt .node { width: 22px; height: 22px; display: grid; place-items: center; }
+.vt .node i { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--paper-faint); background: var(--cv-sheet); }
+.vt .ms.d .node i { border-color: var(--paper-mute); background: var(--paper-mute); }
+.vt .ms.a .node i { border-color: var(--st-work); background: var(--st-work); box-shadow: 0 0 0 4px color-mix(in oklab, var(--st-work) 20%, transparent); }
+.vt .lbl { font-size: 13px; color: var(--paper-dim); padding-top: 2px; }
+.vt .ms.d .lbl { color: var(--paper-mute); }
+.vt .ms.a .lbl { color: var(--paper); font-weight: 500; }
+.vt .subs { grid-column: 2; display: flex; flex-direction: column; gap: 3px; margin-top: 6px; font-size: 12.5px; color: var(--paper-mute); }
+.vt .subs span { display: flex; gap: 7px; align-items: center; }
+.vt .subs span::before { content: ""; width: 5px; height: 5px; border-radius: 50%; border: 1px solid var(--paper-faint); }
+.vt .subs span.d::before { background: var(--paper-faint); }
+.vt .subs span.a { color: var(--paper); }
+.vt .subs span.a::before { border-color: var(--st-work); background: var(--st-work); }
+
+.files { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.files div { display: flex; align-items: center; gap: 8px; font: 350 11.5px var(--mono); color: var(--paper-dim); padding: 3px 0; }
+.files div span:last-child { margin-left: auto; color: var(--cv-note); }
+.pbody h6 { margin: 18px 0 6px; font: 500 11.5px var(--cv-ui); color: var(--paper-mute); }
+
+/* ── a toast from another conversation ────────────────────────────────── */
+
+.toast {
+  position: absolute;
+  top: 56px;
+  right: 22px;
+  width: 330px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklab, var(--st-ask) 30%, var(--edge));
+  background:
+    linear-gradient(110deg, color-mix(in oklab, var(--st-ask) calc(14% * var(--ch-bloom)), transparent), transparent 55%),
+    color-mix(in oklab, var(--raised) 96%, transparent);
+  box-shadow: 0 18px 40px -16px color-mix(in srgb, var(--shade) 95%, transparent);
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  column-gap: 10px;
+  z-index: 5;
+}
+.toast .t { font-size: 13px; color: var(--paper); }
+.toast .q { grid-column: 2; font-family: var(--body); font-size: 13.5px; color: var(--paper-dim); margin: 3px 0 8px; }
+.toast .act { grid-column: 2; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--paper-mute); }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--paper);
+  border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 9%);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 5%), var(--raised));
+}
+.btn.ghost { background: transparent; color: var(--paper-dim); border-color: transparent; }
+.btn.primary { color: var(--cv-sheet); background: var(--paper); border-color: transparent; font-weight: 500; }
+
+/* motion settings — the wall's three, and the system's request */
+:root[data-motion="spare"] .st::after { animation-timing-function: steps(6, end); }
+:root[data-motion="spare"] .shimmer::after { animation-timing-function: steps(8, end); }
+:root[data-motion="still"] .st::after,
+:root[data-motion="still"] .shimmer::after { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .st::after, .shimmer::after { animation: none; }
+}
+
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="markg" x1="0.15" y1="0.95" x2="0.9" y2="0.1">
+      <stop offset="0" stop-color="var(--st-work)"/>
+      <stop offset="1" stop-color="var(--st-ask)"/>
+    </linearGradient>
+  </defs>
+  <symbol id="mark" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.2" fill="none" stroke="var(--edge)" stroke-width="3.4"/><path d="M12 3.8a8.2 8.2 0 1 1-8 6.4" fill="none" stroke="url(#markg)" stroke-width="3.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2v9.6M3.2 8h9.6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="m10.2 10.2 3.3 3.3"/></symbol>
+  <symbol id="i-side" viewBox="0 0 16 16"><rect x="2.3" y="3" width="11.4" height="10" rx="2"/><path d="M6.3 3v10"/></symbol>
+  <symbol id="i-pane" viewBox="0 0 16 16"><rect x="2.3" y="3" width="11.4" height="10" rx="2"/><path d="M9.7 3v10"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2.4 4.6c0-.6.5-1.1 1.1-1.1h2.9l1.5 1.5h4.6c.6 0 1.1.5 1.1 1.1v5.8c0 .6-.5 1.1-1.1 1.1H3.5c-.6 0-1.1-.5-1.1-1.1z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><ellipse cx="8" cy="8" rx="2.3" ry="5.6"/><path d="M2.6 8h10.8"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 16 16"><path d="m6.2 4 4 4-4 4"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 16 16"><path d="m4 6.2 4 4 4-4"/></symbol>
+  <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 12.8V3.4M4.2 7.2 8 3.4l3.8 3.8"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="2"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 16 16"><rect x="6" y="2.4" width="4" height="7.2" rx="2"/><path d="M3.8 7.9a4.2 4.2 0 0 0 8.4 0M8 12.2v1.6"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 16 16"><path d="m10.6 5.4-4.7 4.7a1.3 1.3 0 0 0 1.9 1.9l4.8-4.8a2.7 2.7 0 0 0-3.8-3.8L3.9 8.3a4 4 0 0 0 5.7 5.7l3.3-3.3"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.8 8S4.1 4 8 4s6.2 4 6.2 4-2.3 4-6.2 4S1.8 8 1.8 8z"/><circle cx="8" cy="8" r="1.8"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 16 16"><path d="m10.4 3.1 2.5 2.5-7 7H3.4v-2.5z"/></symbol>
+  <symbol id="i-term" viewBox="0 0 16 16"><rect x="2.2" y="3" width="11.6" height="10" rx="2"/><path d="m5 6.8 2 1.5-2 1.5M8.6 10.1h2.6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.6 8.4 2.9 2.9 5.9-6.6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 5.5V4c0-.8-.7-1.5-1.5-1.5H4c-.8 0-1.5.7-1.5 1.5v5c0 .8.7 1.5 1.5 1.5h1.5"/></symbol>
+  <symbol id="i-quote" viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h6M3 11.5h8"/><path d="M11.5 7.2v4.3"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 16 16"><path d="M8 13.8V10M4.8 10h6.4l-1.2-2.2V4.4h.9V2.8H5.1v1.6H6v3.4z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 16 16"><circle cx="3.6" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="12.4" cy="8" r=".6"/></symbol>
+  <symbol id="i-wall" viewBox="0 0 16 16"><rect x="2.3" y="2.8" width="4.8" height="4.2" rx="1.1"/><rect x="8.9" y="2.8" width="4.8" height="4.2" rx="1.1"/><rect x="2.3" y="9" width="4.8" height="4.2" rx="1.1"/><rect x="8.9" y="9" width="4.8" height="4.2" rx="1.1"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 16 16"><path d="M2.6 4.6c0-1.1.9-2 2-2h6.8c1.1 0 2 .9 2 2v4.6c0 1.1-.9 2-2 2H7.2l-3 2.4v-2.5c-.9-.2-1.6-1-1.6-1.9z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.9v1.7M8 12.4v1.7M14.1 8h-1.7M3.6 8H1.9M12.3 3.7l-1.2 1.2M4.9 11.1l-1.2 1.2M12.3 12.3l-1.2-1.2M4.9 4.9 3.7 3.7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="m4.2 4.2 7.6 7.6M11.8 4.2l-7.6 7.6"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 16 16"><circle cx="4.6" cy="3.9" r="1.5"/><circle cx="4.6" cy="12.1" r="1.5"/><circle cx="11.4" cy="5.6" r="1.5"/><path d="M4.6 5.4v5.2M11.4 7.1c0 2.6-2.8 2.6-6.4 3.6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 16 16"><rect x="2.3" y="3" width="11.4" height="10" rx="2"/><circle cx="6" cy="6.6" r="1.2"/><path d="m2.8 11.9 3.4-3.3 2.6 2.4 1.9-1.8 2.6 2.4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 16 16"><path d="M4.2 2.4h4.9l3 3v7.9c0 .6-.5 1.1-1.1 1.1H4.2c-.6 0-1.1-.5-1.1-1.1V3.5c0-.6.5-1.1 1.1-1.1z"/><path d="M9 2.5v3h3"/></symbol>
+  <symbol id="i-list" viewBox="0 0 16 16"><path d="M6.2 4.5h6.8M6.2 8h6.8M6.2 11.5h6.8"/><circle cx="3.4" cy="4.5" r=".5"/><circle cx="3.4" cy="8" r=".5"/><circle cx="3.4" cy="11.5" r=".5"/></symbol>
+  <symbol id="i-arrow-r" viewBox="0 0 16 16"><path d="M3 8h9.6M8.8 4.2 12.6 8l-3.8 3.8"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.1 1.4"/></symbol>
+  <symbol id="i-min" viewBox="0 0 16 16"><path d="M3.5 8h9"/></symbol>
+  <symbol id="i-max" viewBox="0 0 16 16"><rect x="3.6" y="3.6" width="8.8" height="8.8" rx="1"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 16 16"><path d="M4.2 10.8V7.4a3.8 3.8 0 0 1 7.6 0v3.4l1 1.3H3.2zM6.6 13.4a1.5 1.5 0 0 0 2.8 0"/></symbol>
+  <symbol id="i-plan" viewBox="0 0 16 16"><path d="M3 3.5h10v9H3z" stroke-dasharray="2 1.6"/><path d="M5.5 6.5h5M5.5 9.5h3.2"/></symbol>
+  <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 3.2v9.4M4.2 8.8 8 12.6l3.8-3.8"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M13 8H3.4M7.2 4.2 3.4 8l3.8 3.8"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.8 4.5h10.4M2.8 8h10.4M2.8 11.5h10.4"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 16 16"><path d="M2.5 8h1M5 5.5v5M7.5 3.5v9M10 5.5v5M12.5 7v2"/></symbol>
+  <symbol id="i-brain" viewBox="0 0 16 16"><path d="M8 3.2v9.6M5.6 3.4A2.2 2.2 0 0 0 3.5 6a2.3 2.3 0 0 0 .2 4.3A2.3 2.3 0 0 0 8 12.6M10.4 3.4A2.2 2.2 0 0 1 12.5 6a2.3 2.3 0 0 1-.2 4.3A2.3 2.3 0 0 1 8 12.6"/></symbol>
+</svg>
+
+<!-- root: data-motion="full" -->
+<!-- title: a project -->
+<style>
+  .projpage { position: relative; z-index: 1; flex: 1; min-height: 0; overflow: hidden; padding: 34px 44px 0; display: grid; grid-template-columns: 1fr 300px; grid-template-rows: auto 1fr; column-gap: 34px; }
+  .phead { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 16px; margin-bottom: 26px; }
+  .pglyph { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; color: var(--paper-dim); background: linear-gradient(160deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 8%), var(--raised)); border: 1px solid var(--cv-hair); box-shadow: 0 10px 24px -14px color-mix(in srgb, var(--shade) 90%, transparent); }
+  .pglyph svg.i { width: 22px; height: 22px; stroke-width: 1.3; }
+  .phead h1 { margin: 0; font: 400 30px/1.1 var(--display); color: var(--paper); }
+  .phead .path { margin-top: 6px; font-size: 12.5px; color: var(--paper-mute); display: flex; gap: 10px; align-items: center; }
+  .phead .path code { font: 350 12px var(--mono); color: var(--paper-dim); }
+  .phead .grow { flex: 1; }
+  .filters { display: flex; gap: 6px; margin-bottom: 12px; }
+  .filters button { height: 28px; padding: 0 11px; border-radius: 999px; font-size: 12.5px; color: var(--paper-mute); border: 1px solid var(--cv-hair); display: inline-flex; align-items: center; gap: 6px; }
+  .filters button.on { color: var(--paper); background: color-mix(in oklab, var(--paper) 7%, transparent); border-color: var(--paper-faint); }
+  .filters i.st { width: 10px; height: 10px; }
+  .convs { display: flex; flex-direction: column; border-top: 1px solid var(--cv-hair); }
+  .conv { display: grid; grid-template-columns: 16px 1fr auto; column-gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--cv-hair); align-items: start; }
+  .conv .st { margin-top: 3px; }
+  .conv b { font-weight: 500; font-size: 14px; color: var(--paper); }
+  .conv p { grid-column: 2; margin: 3px 0 0; font: 13.5px/1.5 var(--body); color: var(--paper-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv .when { font-size: 12px; color: var(--cv-note); text-align: right; }
+  .conv.ask b { color: var(--paper); }
+  .conv.ask p { color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim)); }
+  .card2 { border-radius: 14px; border: 1px solid var(--cv-hair); background: color-mix(in oklab, var(--surface) 60%, transparent); padding: 14px 15px; margin-bottom: 14px; }
+  .card2 h4 { margin: 0 0 4px; font: 500 13px var(--cv-ui); color: var(--paper); display: flex; align-items: center; gap: 8px; }
+  .card2 h4 .grow { flex: 1; }
+  .card2 h4 button { font-size: 12px; font-weight: 400; color: var(--paper-mute); }
+  .card2 .sub { font-size: 12px; color: var(--paper-mute); margin-bottom: 10px; }
+  .card2 .instr { font: 13.5px/1.55 var(--body); color: var(--paper-dim); }
+  .radio { display: grid; grid-template-columns: 16px 1fr; column-gap: 9px; padding: 7px 0; font-size: 13px; color: var(--paper-dim); }
+  .radio i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--paper-faint); margin-top: 2px; }
+  .radio.on i { border-color: var(--paper); box-shadow: 0 0 0 3px var(--cv-sheet) inset, 0 0 0 7px var(--paper) inset; }
+  .radio.on { color: var(--paper); }
+  .radio small { grid-column: 2; font-size: 11.5px; color: var(--paper-mute); }
+  .links { display: flex; flex-direction: column; gap: 2px; }
+  .links button { display: flex; align-items: center; gap: 9px; height: 30px; font-size: 13px; color: var(--paper-dim); }
+  .links button svg.i { color: var(--paper-mute); }
+  .links button kbd { margin-left: auto; }
+</style>
+<div class="app">
+  <header class="bar">
+    <div class="brand"><svg class="mark"><use href="#mark"/></svg><span class="word">volery</span><button class="iconbtn"><svg class="i"><use href="#i-side"/></svg></button></div>
+    <div class="where"><span class="title">portfolio</span><span class="chip">project</span></div>
+    <div class="grow"></div>
+    <div class="views"><button><svg class="i s"><use href="#i-wall"/></svg>wall</button><button class="on"><svg class="i s"><use href="#i-chat"/></svg>chat</button></div>
+    <div class="winctl"><span><svg class="i s"><use href="#i-min"/></svg></span><span><svg class="i s"><use href="#i-max"/></svg></span><span><svg class="i s"><use href="#i-x"/></svg></span></div>
+  </header>
+
+  <nav class="side">
+    <button class="new"><svg class="i"><use href="#i-plus"/></svg>new conversation<kbd>ctrl shift O</kbd></button>
+    <button class="find"><svg class="i"><use href="#i-search"/></svg>search<kbd>ctrl K</kbd></button>
+    <div class="list">
+      <section class="group">
+        <h6>needs you <span class="n">1</span></h6>
+        <div class="row ask"><i class="st ask"></i><span class="t">a new about page</span><span class="proj">portfolio</span><span class="sub">asks: what goes in the first line? · 2 of 2</span></div>
+      </section>
+      <section class="group">
+        <h6>working <span class="n">2</span></h6>
+        <div class="row"><i class="st work"></i><span class="t">tidy the tax receipts</span><span class="age">9m</span><span class="sub">adding the conference trip · paperwork</span></div>
+        <div class="row"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">7m</span><span class="sub">sending one real message · portfolio</span></div>
+      </section>
+      <section class="group">
+        <h6>projects</h6>
+        <div class="row folder on"><svg class="i s" style="color:var(--paper-dim)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i class="a"></i><i></i></span><span class="count">8</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="dots"><i></i></span><span class="count">4</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">recipes</span><span><span class="count">2</span></span></div>
+      </section>
+      <section class="group">
+        <h6>today</h6>
+        <div class="row"><i class="st done"></i><span class="t">dark mode for the site</span><span class="proj">portfolio</span></div>
+        <div class="row"><i class="st chat"></i><span class="t">flights to lisbon</span><span class="proj">chat</span></div>
+      </section>
+    </div>
+    <div class="me"><span class="avatar">L</span><span class="who"><b>lyss</b><span>max · 63% of this session</span></span><button class="iconbtn"><svg class="i"><use href="#i-gear"/></svg></button></div>
+  </nav>
+
+  <main class="sheet" data-tier="rest">
+    <section class="thread">
+      <div class="projpage">
+        <div class="phead">
+          <span class="pglyph"><svg class="i"><use href="#i-folder"/></svg></span>
+          <div>
+            <h1>portfolio</h1>
+            <div class="path"><code>C:\Users\lyss\sites\portfolio</code><span>· main</span><span>· changed 6m ago</span></div>
+          </div>
+          <span class="grow"></span>
+          <button class="btn primary" style="height:34px;padding:0 14px"><svg class="i s"><use href="#i-plus"/></svg>new conversation here</button>
+        </div>
+
+        <div>
+          <div class="filters">
+            <button class="on">all 8</button>
+            <button><i class="st ask"></i>needs you 1</button>
+            <button><i class="st work"></i>working 1</button>
+            <button>finished 6</button>
+          </div>
+          <div class="convs">
+            <div class="conv ask"><i class="st ask"></i><b>a new about page</b><span class="when">2m</span><p>asks: what should the first line say about you?</p></div>
+            <div class="conv"><i class="st work"></i><b>fix the contact form</b><span class="when">now</span><p>Sending one real message through the form to make sure it arrives…</p></div>
+            <div class="conv"><i class="st done"></i><b>dark mode for the site</b><span class="when">40m</span><p>Done — the site now has a dark mode. It follows the system setting by default…</p></div>
+            <div class="conv"><i class="st done"></i><b>check the spam filter</b><span class="when">1h</span><p>Nothing has been caught since the 9th; the filter rules look fine.</p></div>
+            <div class="conv"><i class="st done"></i><b>why is the build slow</b><span class="when">yesterday</span><p>The image plugin re-encodes every photo on each build. Caching them cut it from 94s to 11s.</p></div>
+            <div class="conv"><i class="st done"></i><b>move the blog to its own page</b><span class="when">tue</span><p>The blog now lives at /writing, and the old links redirect there.</p></div>
+          </div>
+        </div>
+
+        <aside>
+          <div class="card2">
+            <h4>instructions<span class="grow"></span><button>edit</button></h4>
+            <div class="sub">every conversation in this project is told this</div>
+            <div class="instr">This is my portfolio, built with Eleventy. Keep pages readable for screen readers. Never touch the <code style="font:350 12px var(--mono)">drafts</code> folder, and ask before deleting anything.</div>
+          </div>
+          <div class="card2">
+            <h4>what conversations here may do</h4>
+            <div class="radio on"><i></i>change files and run commands<small>what every project does: the agent acts, then tells you what it did</small></div>
+            <div class="radio"><i></i>read only<small>its file-editing tools are switched off here, and it is told not to change anything</small></div>
+          </div>
+          <div class="card2">
+            <h4>the folder</h4>
+            <div class="links">
+              <button><svg class="i"><use href="#i-folder"/></svg>open in explorer</button>
+              <button><svg class="i"><use href="#i-pen"/></svg>open in your editor</button>
+              <button><svg class="i"><use href="#i-term"/></svg>start the dev server</button>
+              <button><svg class="i"><use href="#i-wall"/></svg>show it on the wall</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+</div>
+
+</body>
+</html>

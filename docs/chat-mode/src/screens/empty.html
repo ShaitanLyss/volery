@@ -1,0 +1,108 @@
+<!-- root: data-motion="full" -->
+<!-- title: a new conversation -->
+<style>
+  .hello { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-bottom: 40px; }
+  .hello .big { width: 46px; height: 46px; margin-bottom: 18px; filter: drop-shadow(0 6px 18px color-mix(in oklab, var(--st-ask) 25%, transparent)); }
+  .hello h1 { margin: 0 0 26px; font: 400 36px/1.15 var(--display); color: var(--paper); letter-spacing: -0.005em; }
+  .hello .composer { width: 700px; }
+  .hello .composer .text { min-height: 64px; font-size: 15px; }
+  .place { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px 0 11px; border-radius: 999px; font-size: 12.5px; color: var(--paper); border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 9%); background: color-mix(in oklab, var(--raised) 70%, transparent); }
+  .place svg.i { width: 13px; height: 13px; color: var(--paper-mute); }
+  .menu {
+    position: absolute; left: 52px; top: 106px; width: 270px; z-index: 4;
+    border-radius: 14px; padding: 6px;
+    border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 9%);
+    background: color-mix(in oklab, var(--raised) 97%, transparent);
+    box-shadow: 0 24px 50px -20px color-mix(in srgb, var(--shade) 95%, transparent);
+    font-size: 13px;
+  }
+  .menu .mi { display: grid; grid-template-columns: 18px 1fr auto; gap: 9px; align-items: center; padding: 7px 9px; border-radius: 9px; color: var(--paper-dim); }
+  .menu .mi.on { background: color-mix(in oklab, var(--paper) 7%, transparent); color: var(--paper); }
+  .menu .mi small { grid-column: 2 / 4; font-size: 11.5px; color: var(--paper-mute); margin-top: -2px; }
+  .menu .mi svg.i { color: var(--paper-mute); }
+  .menu hr { border: 0; border-top: 1px solid var(--cv-hair); margin: 5px 4px; }
+  .menu .k { font-size: 11px; color: var(--cv-note); }
+  .ideas { display: flex; gap: 8px; margin-top: 16px; }
+  .idea { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 13px; border-radius: 999px; font-size: 12.5px; color: var(--paper-dim); border: 1px solid var(--cv-hair); background: color-mix(in oklab, var(--surface) 55%, transparent); transition: border-color var(--dur-quick) var(--ease-out), transform var(--dur-quick) var(--ease-out); }
+  .idea:hover { border-color: var(--paper-faint); transform: translateY(-1px); }
+  .idea svg.i { width: 13px; height: 13px; color: var(--paper-mute); }
+  .flock { position: absolute; bottom: 18px; left: 0; right: 0; z-index: 1; display: flex; justify-content: center; gap: 16px; font-size: 12px; color: var(--paper-mute); }
+  .flock span { display: inline-flex; align-items: center; gap: 6px; }
+  .flock i.st { width: 12px; height: 12px; }
+</style>
+<div class="app">
+  <header class="bar">
+    <div class="brand"><svg class="mark"><use href="#mark"/></svg><span class="word">volery</span><button class="iconbtn"><svg class="i"><use href="#i-side"/></svg></button></div>
+    <div class="where"><span class="title" style="color:var(--paper-mute)">new conversation</span></div>
+    <div class="grow"></div>
+    <div class="views"><button><svg class="i s"><use href="#i-wall"/></svg>wall</button><button class="on"><svg class="i s"><use href="#i-chat"/></svg>chat</button></div>
+    <div class="winctl"><span><svg class="i s"><use href="#i-min"/></svg></span><span><svg class="i s"><use href="#i-max"/></svg></span><span><svg class="i s"><use href="#i-x"/></svg></span></div>
+  </header>
+
+  <nav class="side">
+    <button class="new" style="box-shadow:0 0 0 1px var(--paper-faint) inset"><svg class="i"><use href="#i-plus"/></svg>new conversation<kbd>ctrl shift O</kbd></button>
+    <button class="find"><svg class="i"><use href="#i-search"/></svg>search<kbd>ctrl K</kbd></button>
+    <div class="list">
+      <section class="group">
+        <h6>needs you <span class="n">1</span></h6>
+        <div class="row ask"><i class="st ask"></i><span class="t">flights to lisbon</span><span class="proj">chat</span><span class="sub">asks: which dates work for you?</span></div>
+      </section>
+      <section class="group">
+        <h6>working <span class="n">2</span></h6>
+        <div class="row"><i class="st work"></i><span class="t">tidy the tax receipts</span><span class="age">4m</span><span class="sub">reading 14 pdfs · paperwork</span></div>
+        <div class="row"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">1m</span><span class="sub">running the tests · portfolio</span></div>
+      </section>
+      <section class="group">
+        <h6>projects</h6>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i></i></span><span class="count">7</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="dots"><i></i></span><span class="count">4</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">recipes</span><span><span class="count">2</span></span></div>
+      </section>
+      <section class="group">
+        <h6>today</h6>
+        <div class="row"><i class="st done"></i><span class="t">dark mode for the site</span><span class="proj">portfolio</span></div>
+        <div class="row"><i class="st chat"></i><span class="t">a name for the bakery</span><span class="proj">chat</span></div>
+      </section>
+    </div>
+    <div class="me"><span class="avatar">L</span><span class="who"><b>lyss</b><span>max · 47% of this session</span></span><button class="iconbtn"><svg class="i"><use href="#i-gear"/></svg></button></div>
+  </nav>
+
+  <main class="sheet" data-tier="rest">
+    <section class="thread">
+      <div class="hello">
+        <svg class="big"><use href="#mark"/></svg>
+        <h1>what are we working on?</h1>
+        <div class="composer" style="position:relative">
+          <div class="text"><span class="ph">describe it the way you'd tell a person — drop files or pictures anywhere</span></div>
+          <div class="row2">
+            <button class="round"><svg class="i"><use href="#i-plus"/></svg></button>
+            <button class="place" title="where this conversation works (ctrl+shift+p)"><svg class="i"><use href="#i-folder"/></svg>portfolio<svg class="i s"><use href="#i-chev-d"/></svg></button>
+            <button class="toggle"><svg class="i s"><use href="#i-plan"/></svg>plan first</button>
+            <span class="grow"></span>
+            <button class="model">sonnet 5.5 <span class="eff">· medium</span><svg class="i s"><use href="#i-chev-d"/></svg></button>
+            <button class="round" style="border-color:transparent"><svg class="i"><use href="#i-mic"/></svg></button>
+            <button class="send idle"><svg class="i"><use href="#i-up"/></svg></button>
+          </div>
+          <div class="menu">
+            <div class="mi on"><svg class="i s"><use href="#i-folder"/></svg>portfolio<span class="k">7</span><small>C:\Users\lyss\sites\portfolio</small></div>
+            <div class="mi"><svg class="i s"><use href="#i-folder"/></svg>paperwork<span class="k">4</span></div>
+            <div class="mi"><svg class="i s"><use href="#i-folder"/></svg>recipes<span class="k">2</span></div>
+            <hr>
+            <div class="mi"><svg class="i s"><use href="#i-globe"/></svg>just chat<span></span><small>no folder — it can search the web, and nothing on this computer</small></div>
+            <div class="mi"><svg class="i s"><use href="#i-plus"/></svg>open a folder…<span class="k">ctrl O</span></div>
+          </div>
+        </div>
+        <div class="ideas">
+          <button class="idea"><svg class="i"><use href="#i-eye"/></svg>explain how this site fits together</button>
+          <button class="idea"><svg class="i"><use href="#i-clock"/></svg>find what slows the home page</button>
+          <button class="idea"><svg class="i"><use href="#i-check"/></svg>add tests for the contact form</button>
+        </div>
+      </div>
+      <div class="flock">
+        <span><i class="st work"></i>2 working</span>
+        <span><i class="st ask"></i>1 needs you</span>
+        <span style="color:var(--cv-note)">— they keep going while you start this one</span>
+      </div>
+    </section>
+  </main>
+</div>

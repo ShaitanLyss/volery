@@ -1,0 +1,131 @@
+<!-- root: data-motion="full" -->
+<!-- title: a project -->
+<style>
+  .projpage { position: relative; z-index: 1; flex: 1; min-height: 0; overflow: hidden; padding: 34px 44px 0; display: grid; grid-template-columns: 1fr 300px; grid-template-rows: auto 1fr; column-gap: 34px; }
+  .phead { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 16px; margin-bottom: 26px; }
+  .pglyph { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; color: var(--paper-dim); background: linear-gradient(160deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 8%), var(--raised)); border: 1px solid var(--cv-hair); box-shadow: 0 10px 24px -14px color-mix(in srgb, var(--shade) 90%, transparent); }
+  .pglyph svg.i { width: 22px; height: 22px; stroke-width: 1.3; }
+  .phead h1 { margin: 0; font: 400 30px/1.1 var(--display); color: var(--paper); }
+  .phead .path { margin-top: 6px; font-size: 12.5px; color: var(--paper-mute); display: flex; gap: 10px; align-items: center; }
+  .phead .path code { font: 350 12px var(--mono); color: var(--paper-dim); }
+  .phead .grow { flex: 1; }
+  .filters { display: flex; gap: 6px; margin-bottom: 12px; }
+  .filters button { height: 28px; padding: 0 11px; border-radius: 999px; font-size: 12.5px; color: var(--paper-mute); border: 1px solid var(--cv-hair); display: inline-flex; align-items: center; gap: 6px; }
+  .filters button.on { color: var(--paper); background: color-mix(in oklab, var(--paper) 7%, transparent); border-color: var(--paper-faint); }
+  .filters i.st { width: 10px; height: 10px; }
+  .convs { display: flex; flex-direction: column; border-top: 1px solid var(--cv-hair); }
+  .conv { display: grid; grid-template-columns: 16px 1fr auto; column-gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--cv-hair); align-items: start; }
+  .conv .st { margin-top: 3px; }
+  .conv b { font-weight: 500; font-size: 14px; color: var(--paper); }
+  .conv p { grid-column: 2; margin: 3px 0 0; font: 13.5px/1.5 var(--body); color: var(--paper-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv .when { font-size: 12px; color: var(--cv-note); text-align: right; }
+  .conv.ask b { color: var(--paper); }
+  .conv.ask p { color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim)); }
+  .card2 { border-radius: 14px; border: 1px solid var(--cv-hair); background: color-mix(in oklab, var(--surface) 60%, transparent); padding: 14px 15px; margin-bottom: 14px; }
+  .card2 h4 { margin: 0 0 4px; font: 500 13px var(--cv-ui); color: var(--paper); display: flex; align-items: center; gap: 8px; }
+  .card2 h4 .grow { flex: 1; }
+  .card2 h4 button { font-size: 12px; font-weight: 400; color: var(--paper-mute); }
+  .card2 .sub { font-size: 12px; color: var(--paper-mute); margin-bottom: 10px; }
+  .card2 .instr { font: 13.5px/1.55 var(--body); color: var(--paper-dim); }
+  .radio { display: grid; grid-template-columns: 16px 1fr; column-gap: 9px; padding: 7px 0; font-size: 13px; color: var(--paper-dim); }
+  .radio i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--paper-faint); margin-top: 2px; }
+  .radio.on i { border-color: var(--paper); box-shadow: 0 0 0 3px var(--cv-sheet) inset, 0 0 0 7px var(--paper) inset; }
+  .radio.on { color: var(--paper); }
+  .radio small { grid-column: 2; font-size: 11.5px; color: var(--paper-mute); }
+  .links { display: flex; flex-direction: column; gap: 2px; }
+  .links button { display: flex; align-items: center; gap: 9px; height: 30px; font-size: 13px; color: var(--paper-dim); }
+  .links button svg.i { color: var(--paper-mute); }
+  .links button kbd { margin-left: auto; }
+</style>
+<div class="app">
+  <header class="bar">
+    <div class="brand"><svg class="mark"><use href="#mark"/></svg><span class="word">volery</span><button class="iconbtn"><svg class="i"><use href="#i-side"/></svg></button></div>
+    <div class="where"><span class="title">portfolio</span><span class="chip">project</span></div>
+    <div class="grow"></div>
+    <div class="views"><button><svg class="i s"><use href="#i-wall"/></svg>wall</button><button class="on"><svg class="i s"><use href="#i-chat"/></svg>chat</button></div>
+    <div class="winctl"><span><svg class="i s"><use href="#i-min"/></svg></span><span><svg class="i s"><use href="#i-max"/></svg></span><span><svg class="i s"><use href="#i-x"/></svg></span></div>
+  </header>
+
+  <nav class="side">
+    <button class="new"><svg class="i"><use href="#i-plus"/></svg>new conversation<kbd>ctrl shift O</kbd></button>
+    <button class="find"><svg class="i"><use href="#i-search"/></svg>search<kbd>ctrl K</kbd></button>
+    <div class="list">
+      <section class="group">
+        <h6>needs you <span class="n">1</span></h6>
+        <div class="row ask"><i class="st ask"></i><span class="t">a new about page</span><span class="proj">portfolio</span><span class="sub">asks: what goes in the first line? · 2 of 2</span></div>
+      </section>
+      <section class="group">
+        <h6>working <span class="n">2</span></h6>
+        <div class="row"><i class="st work"></i><span class="t">tidy the tax receipts</span><span class="age">9m</span><span class="sub">adding the conference trip · paperwork</span></div>
+        <div class="row"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">7m</span><span class="sub">sending one real message · portfolio</span></div>
+      </section>
+      <section class="group">
+        <h6>projects</h6>
+        <div class="row folder on"><svg class="i s" style="color:var(--paper-dim)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i class="a"></i><i></i></span><span class="count">8</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="dots"><i></i></span><span class="count">4</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">recipes</span><span><span class="count">2</span></span></div>
+      </section>
+      <section class="group">
+        <h6>today</h6>
+        <div class="row"><i class="st done"></i><span class="t">dark mode for the site</span><span class="proj">portfolio</span></div>
+        <div class="row"><i class="st chat"></i><span class="t">flights to lisbon</span><span class="proj">chat</span></div>
+      </section>
+    </div>
+    <div class="me"><span class="avatar">L</span><span class="who"><b>lyss</b><span>max · 63% of this session</span></span><button class="iconbtn"><svg class="i"><use href="#i-gear"/></svg></button></div>
+  </nav>
+
+  <main class="sheet" data-tier="rest">
+    <section class="thread">
+      <div class="projpage">
+        <div class="phead">
+          <span class="pglyph"><svg class="i"><use href="#i-folder"/></svg></span>
+          <div>
+            <h1>portfolio</h1>
+            <div class="path"><code>C:\Users\lyss\sites\portfolio</code><span>· main</span><span>· changed 6m ago</span></div>
+          </div>
+          <span class="grow"></span>
+          <button class="btn primary" style="height:34px;padding:0 14px"><svg class="i s"><use href="#i-plus"/></svg>new conversation here</button>
+        </div>
+
+        <div>
+          <div class="filters">
+            <button class="on">all 8</button>
+            <button><i class="st ask"></i>needs you 1</button>
+            <button><i class="st work"></i>working 1</button>
+            <button>finished 6</button>
+          </div>
+          <div class="convs">
+            <div class="conv ask"><i class="st ask"></i><b>a new about page</b><span class="when">2m</span><p>asks: what should the first line say about you?</p></div>
+            <div class="conv"><i class="st work"></i><b>fix the contact form</b><span class="when">now</span><p>Sending one real message through the form to make sure it arrives…</p></div>
+            <div class="conv"><i class="st done"></i><b>dark mode for the site</b><span class="when">40m</span><p>Done — the site now has a dark mode. It follows the system setting by default…</p></div>
+            <div class="conv"><i class="st done"></i><b>check the spam filter</b><span class="when">1h</span><p>Nothing has been caught since the 9th; the filter rules look fine.</p></div>
+            <div class="conv"><i class="st done"></i><b>why is the build slow</b><span class="when">yesterday</span><p>The image plugin re-encodes every photo on each build. Caching them cut it from 94s to 11s.</p></div>
+            <div class="conv"><i class="st done"></i><b>move the blog to its own page</b><span class="when">tue</span><p>The blog now lives at /writing, and the old links redirect there.</p></div>
+          </div>
+        </div>
+
+        <aside>
+          <div class="card2">
+            <h4>instructions<span class="grow"></span><button>edit</button></h4>
+            <div class="sub">every conversation in this project is told this</div>
+            <div class="instr">This is my portfolio, built with Eleventy. Keep pages readable for screen readers. Never touch the <code style="font:350 12px var(--mono)">drafts</code> folder, and ask before deleting anything.</div>
+          </div>
+          <div class="card2">
+            <h4>what conversations here may do</h4>
+            <div class="radio on"><i></i>change files and run commands<small>what every project does: the agent acts, then tells you what it did</small></div>
+            <div class="radio"><i></i>read only<small>its file-editing tools are switched off here, and it is told not to change anything</small></div>
+          </div>
+          <div class="card2">
+            <h4>the folder</h4>
+            <div class="links">
+              <button><svg class="i"><use href="#i-folder"/></svg>open in explorer</button>
+              <button><svg class="i"><use href="#i-pen"/></svg>open in your editor</button>
+              <button><svg class="i"><use href="#i-term"/></svg>start the dev server</button>
+              <button><svg class="i"><use href="#i-wall"/></svg>show it on the wall</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+</div>

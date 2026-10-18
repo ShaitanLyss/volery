@@ -1,0 +1,155 @@
+<!-- root: data-motion="full" -->
+<!-- title: an agent asking -->
+<style>
+  .question {
+    position: relative;
+    border-radius: 16px;
+    padding: 16px 16px 12px;
+    border: 1px solid color-mix(in oklab, var(--st-ask) 34%, var(--edge));
+    background:
+      radial-gradient(70% 120% at 0% 0%, color-mix(in oklab, var(--st-ask) calc(13% * var(--ch-bloom)), transparent), transparent 70%),
+      color-mix(in oklab, var(--surface) 88%, transparent);
+    box-shadow: 0 20px 44px -26px color-mix(in srgb, var(--shade) 95%, transparent);
+  }
+  .question .head { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--paper-mute); }
+  .question .head b { font-weight: 500; color: color-mix(in oklab, var(--st-ask) 70%, var(--paper)); }
+  .question .head .of { display: inline-flex; gap: 4px; margin-left: 4px; }
+  .question .head .of i { width: 18px; height: 3px; border-radius: 2px; background: var(--edge); }
+  .question .head .of i.on { background: var(--st-ask); }
+  .question .head .grow { flex: 1; }
+  .question .head button { font-size: 12px; color: var(--paper-mute); display: inline-flex; gap: 6px; align-items: center; }
+  .question h2 { margin: 10px 0 4px; font: 500 19px/1.35 var(--display); color: var(--paper); }
+  .question .why { font: 14px/1.5 var(--body); color: var(--paper-dim); margin: 0 0 14px; }
+  .opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .opt {
+    position: relative;
+    border-radius: 12px;
+    border: 1px solid var(--cv-hair);
+    background: color-mix(in oklab, var(--cv-sheet) 70%, transparent);
+    overflow: hidden;
+    transition: transform var(--dur-quick) var(--ease-out), border-color var(--dur-quick) var(--ease-out);
+  }
+  .opt:hover { transform: translateY(-2px); }
+  .opt.on { border-color: color-mix(in oklab, var(--st-ask) 70%, var(--edge)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--st-ask) 50%, transparent); }
+  .pv { height: 104px; background: #efe9df; position: relative; border-bottom: 1px solid var(--cv-hair); padding: 10px; display: grid; gap: 5px; }
+  .pv i { display: block; background: #d8cfc1; border-radius: 3px; }
+  .pv .h { height: 6px; width: 45%; background: #3a332d; opacity: .8; }
+  .pv .l { height: 4px; background: #bfb5a6; }
+  .pv1 { grid-template-columns: 38% 1fr; grid-template-rows: auto; align-items: start; }
+  .pv1 .ph { height: 74px; background: linear-gradient(160deg, #b9a58c, #8e7a63); }
+  .pv1 .tx { display: grid; gap: 5px; }
+  .pv2 { grid-template-rows: 46px auto auto auto; }
+  .pv2 .ph { background: linear-gradient(160deg, #b9a58c, #8e7a63); }
+  .pv3 { grid-template-columns: 8px 1fr; column-gap: 8px; align-content: start; }
+  .pv3 .rail { grid-row: 1 / 6; background: none; border-left: 2px solid #bfb5a6; border-radius: 0; margin-left: 3px; }
+  .pv3 .y { display: flex; gap: 5px; align-items: center; }
+  .pv3 .y b { width: 6px; height: 6px; border-radius: 50%; background: #8e7a63; flex: none; margin-left: -12px; }
+  .opt .lab { padding: 9px 11px 10px; display: grid; grid-template-columns: auto 1fr; column-gap: 8px; }
+  .opt .n { font: 11px var(--cv-ui); color: var(--paper-faint); border: 1px solid var(--cv-hair); border-radius: 5px; width: 18px; height: 18px; display: grid; place-items: center; margin-top: 1px; }
+  .opt .lab b { font-weight: 500; font-size: 13px; color: var(--paper); }
+  .opt .lab span.d { grid-column: 2; font-size: 12px; color: var(--paper-mute); line-height: 1.4; margin-top: 2px; }
+  .opt .zoom { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; background: color-mix(in oklab, var(--raised) 80%, transparent); color: var(--paper-dim); opacity: 0; transition: opacity var(--dur-quick); }
+  .opt:hover .zoom, .opt.on .zoom { opacity: 1; }
+  .else { margin-top: 10px; display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--cv-hair); background: color-mix(in oklab, var(--cv-sheet) 60%, transparent); color: var(--paper-faint); font-size: 13px; }
+  .question .foot2 { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11.5px; color: var(--cv-note); }
+  .question .foot2 .grow { flex: 1; }
+  .composer.waiting { opacity: .72; }
+</style>
+<div class="app">
+  <header class="bar">
+    <div class="brand"><svg class="mark"><use href="#mark"/></svg><span class="word">volery</span><button class="iconbtn"><svg class="i"><use href="#i-side"/></svg></button></div>
+    <div class="where"><span class="title">a new about page</span><span class="chip"><svg class="i"><use href="#i-folder"/></svg>portfolio</span></div>
+    <div class="grow"></div>
+    <span class="ctx"><i class="ring" style="--p:12"></i>12%</span>
+    <button class="iconbtn"><svg class="i"><use href="#i-pane"/></svg></button>
+    <div class="views"><button><svg class="i s"><use href="#i-wall"/></svg>wall</button><button class="on"><svg class="i s"><use href="#i-chat"/></svg>chat</button></div>
+    <div class="winctl"><span><svg class="i s"><use href="#i-min"/></svg></span><span><svg class="i s"><use href="#i-max"/></svg></span><span><svg class="i s"><use href="#i-x"/></svg></span></div>
+  </header>
+
+  <nav class="side">
+    <button class="new"><svg class="i"><use href="#i-plus"/></svg>new conversation<kbd>ctrl shift O</kbd></button>
+    <button class="find"><svg class="i"><use href="#i-search"/></svg>search<kbd>ctrl K</kbd></button>
+    <div class="list">
+      <section class="group">
+        <h6>needs you <span class="n">2</span></h6>
+        <div class="row ask on"><i class="st ask"></i><span class="t">a new about page</span><span class="proj">portfolio</span><span class="sub">asks: which layout? · 1 of 2</span></div>
+        <div class="row ask"><i class="st ask"></i><span class="t">flights to lisbon</span><span class="proj">chat</span><span class="sub">asks: which dates work for you?</span></div>
+      </section>
+      <section class="group">
+        <h6>working <span class="n">2</span></h6>
+        <div class="row"><i class="st work"></i><span class="t">tidy the tax receipts</span><span class="age">6m</span><span class="sub">reading 14 pdfs · paperwork</span></div>
+        <div class="row"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">3m</span><span class="sub">sending one real message · portfolio</span></div>
+      </section>
+      <section class="group">
+        <h6>projects</h6>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i class="a"></i><i></i></span><span class="count">8</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="dots"><i></i></span><span class="count">4</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">recipes</span><span><span class="count">2</span></span></div>
+      </section>
+      <section class="group">
+        <h6>today</h6>
+        <div class="row"><i class="st done"></i><span class="t">dark mode for the site</span><span class="proj">portfolio</span></div>
+        <div class="row"><i class="st chat"></i><span class="t">a name for the bakery</span><span class="proj">chat</span></div>
+      </section>
+    </div>
+    <div class="me"><span class="avatar">L</span><span class="who"><b>lyss</b><span>max · 52% of this session</span></span><button class="iconbtn"><svg class="i"><use href="#i-gear"/></svg></button></div>
+  </nav>
+
+  <main class="sheet" data-tier="ask">
+    <section class="thread">
+      <div class="scroll">
+        <div class="col">
+          <div class="you">the about page is just a wall of text. can you redo it so it feels more like the rest of the site? use my bio from the old cv</div>
+          <div class="work"><div class="cap"><span class="glyphs"><svg class="i s"><use href="#i-eye"/></svg></span><span class="sum"><b>looked for 21s</b> — read the old cv and 4 pages of the site</span><svg class="i s chev"><use href="#i-chev-r"/></svg></div></div>
+          <div class="agent"><p>Your other pages lead with the work and keep text short, so the about page should too. Two decisions before I build it:</p></div>
+
+          <div class="question" data-ask>
+            <div class="head"><i class="st ask"></i><b>asking you</b><span class="of"><i class="on"></i><i></i></span><span>1 of 2</span><span class="grow"></span><button title="answer later — it waits in needs you (alt+d)"><svg class="i s"><use href="#i-clock"/></svg>later</button></div>
+            <h2>Which layout should the about page use?</h2>
+            <p class="why">All three keep your bio to three short paragraphs. Open one to see it full size.</p>
+            <div class="opts">
+              <div class="opt on">
+                <div class="pv pv1"><i class="ph"></i><span class="tx"><i class="h"></i><i class="l"></i><i class="l"></i><i class="l" style="width:70%"></i><i class="l"></i><i class="l" style="width:60%"></i></span></div>
+                <span class="zoom"><svg class="i s"><use href="#i-search"/></svg></span>
+                <div class="lab"><span class="n">1</span><b>portrait beside the story</b><span class="d">recommended — matches the case-study pages</span></div>
+              </div>
+              <div class="opt">
+                <div class="pv pv2"><i class="ph"></i><i class="h"></i><i class="l"></i><i class="l" style="width:80%"></i></div>
+                <span class="zoom"><svg class="i s"><use href="#i-search"/></svg></span>
+                <div class="lab"><span class="n">2</span><b>a wide photo, story below</b><span class="d">bolder; needs a landscape photo</span></div>
+              </div>
+              <div class="opt">
+                <div class="pv pv3"><i class="rail"></i><span class="y"><b></b><i class="l" style="width:40%"></i></span><span class="y"><b></b><i class="l" style="width:70%"></i></span><span class="y"><b></b><i class="l" style="width:55%"></i></span><span class="y"><b></b><i class="l" style="width:65%"></i></span></div>
+                <span class="zoom"><svg class="i s"><use href="#i-search"/></svg></span>
+                <div class="lab"><span class="n">3</span><b>a timeline of the work</b><span class="d">longest; good if the history matters</span></div>
+              </div>
+            </div>
+            <div class="else"><svg class="i s"><use href="#i-pen"/></svg>something else — say it in your own words</div>
+            <div class="foot2"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> choose <kbd>enter</kbd> next question <kbd>←</kbd><kbd>→</kbd> move between them<span class="grow"></span>what it said before asking <kbd>alt R</kbd></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <div class="composer waiting">
+          <div class="text"><span class="ph">it's waiting on your answer above — a message here waits too</span></div>
+          <div class="row2">
+            <button class="round"><svg class="i"><use href="#i-plus"/></svg></button>
+            <button class="toggle"><svg class="i s"><use href="#i-plan"/></svg>plan first</button>
+            <span class="grow"></span>
+            <button class="model">sonnet 5.5 <span class="eff">· medium</span><svg class="i s"><use href="#i-chev-d"/></svg></button>
+            <button class="round" style="border-color:transparent"><svg class="i"><use href="#i-mic"/></svg></button>
+            <button class="send idle"><svg class="i"><use href="#i-up"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="toast" role="status">
+      <i class="st ask"></i>
+      <span class="t">flights to lisbon is asking</span>
+      <span class="q">Which dates work for you? The cheapest week is 9–16 May.</span>
+      <span class="act"><button class="btn">answer</button><button class="btn ghost">later</button><span style="margin-left:auto">alt ↓</span></span>
+    </div>
+  </main>
+</div>

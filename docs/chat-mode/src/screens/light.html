@@ -1,0 +1,140 @@
+<!-- root: data-skin="vellum" data-motion="full" -->
+<!-- title: a working agent, vellum -->
+<div class="app">
+  <header class="bar">
+    <div class="brand">
+      <svg class="mark"><use href="#mark"/></svg>
+      <span class="word">volery</span>
+      <button class="iconbtn"><svg class="i"><use href="#i-side"/></svg></button>
+    </div>
+    <div class="where">
+      <span class="title">fix the contact form</span>
+      <span class="chip"><svg class="i"><use href="#i-folder"/></svg>portfolio</span>
+    </div>
+    <div class="grow"></div>
+    <span class="ctx"><i class="ring" style="--p:31"></i>31%</span>
+    <button class="iconbtn" style="color:var(--paper);background:color-mix(in oklab,var(--surface) 80%,transparent)"><svg class="i"><use href="#i-pane"/></svg></button>
+    <div class="views"><button><svg class="i s"><use href="#i-wall"/></svg>wall</button><button class="on"><svg class="i s"><use href="#i-chat"/></svg>chat</button></div>
+    <div class="winctl"><span><svg class="i s"><use href="#i-min"/></svg></span><span><svg class="i s"><use href="#i-max"/></svg></span><span><svg class="i s"><use href="#i-x"/></svg></span></div>
+  </header>
+
+  <nav class="side">
+    <button class="new"><svg class="i"><use href="#i-plus"/></svg>new conversation<kbd>ctrl shift O</kbd></button>
+    <button class="find"><svg class="i"><use href="#i-search"/></svg>search<kbd>ctrl K</kbd></button>
+    <div class="list">
+      <section class="group">
+        <h6>needs you <span class="n">1</span></h6>
+        <div class="row ask"><i class="st ask"></i><span class="t">flights to lisbon</span><span class="proj">chat</span><span class="sub">asks: which dates work for you?</span></div>
+      </section>
+      <section class="group">
+        <h6>working <span class="n">3</span></h6>
+        <div class="row"><i class="st work"></i><span class="t">tidy the tax receipts</span><span class="age">4m</span><span class="sub">reading 14 pdfs · paperwork</span></div>
+        <div class="row on"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">1m</span><span class="sub">running the tests · portfolio</span></div>
+        <div class="row kid"><i class="st work"></i><span class="t">check the spam filter</span><span class="age">40s</span></div>
+      </section>
+      <section class="group">
+        <h6>projects</h6>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i></i><i></i></span><span class="count">7</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="dots"><i></i></span><span class="count">4</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">recipes</span><span><span class="count">2</span></span></div>
+      </section>
+      <section class="group">
+        <h6>today</h6>
+        <div class="row"><i class="st done"></i><span class="t">dark mode for the site</span><span class="proj">portfolio</span></div>
+        <div class="row"><i class="st chat"></i><span class="t">a name for the bakery</span><span class="proj">chat</span></div>
+      </section>
+    </div>
+    <div class="me">
+      <span class="avatar">L</span>
+      <span class="who"><b>lyss</b><span>max · 47% of this session</span></span>
+      <button class="iconbtn"><svg class="i"><use href="#i-gear"/></svg></button>
+    </div>
+  </nav>
+
+  <main class="sheet" data-tier="work">
+    <section class="thread">
+      <div class="scroll">
+        <div class="col">
+          <div class="you">the contact form on my site stopped sending emails sometime last week — can you find out why and fix it?</div>
+
+          <div class="work">
+            <div class="cap">
+              <span class="glyphs"><svg class="i s"><use href="#i-eye"/></svg><svg class="i s"><use href="#i-search"/></svg></span>
+              <span class="sum"><b>looked for 38s</b> — read 5 files, searched the server log</span>
+              <svg class="i s chev"><use href="#i-chev-r"/></svg>
+            </div>
+          </div>
+
+          <div class="agent">
+            <p>Found it. Last week's update to the mail library renamed <code>sendMail</code> to <code>send</code>, so every message since the 9th has failed — quietly, because the error was caught and only written to the server log.</p>
+            <p>I'm fixing the call, making a failure visible to the visitor, and I've asked a second conversation to check that real messages aren't landing in the spam filter.</p>
+          </div>
+
+          <div class="linked">
+            <svg class="i" style="color:var(--paper-mute)"><use href="#i-branch"/></svg>
+            <div><div class="t">check the spam filter</div><div class="sub">started by this conversation · reading the filter rules</div></div>
+            <span class="go"><i class="st work" style="display:inline-grid"></i>open<svg class="i s"><use href="#i-arrow-r"/></svg></span>
+          </div>
+
+          <div class="work live">
+            <div class="cap">
+              <span class="glyphs"><svg class="i s"><use href="#i-pen"/></svg><svg class="i s"><use href="#i-term"/></svg></span>
+              <span class="sum"><b>working</b> — edited 2 files, running the tests</span>
+              <span class="time">1:02</span>
+              <svg class="i s chev"><use href="#i-chev-d"/></svg>
+            </div>
+            <div class="steps">
+              <div class="step"><svg class="i s ok"><use href="#i-check"/></svg><span class="what">edited <code>api/contact.js</code></span><span class="delta"><span class="add">+6</span> −2</span></div>
+              <div class="diff"><div class="m">  await mailer.sendMail({ to, subject, text })</div><div class="p">  await mailer.send({ to, subject, text })</div></div>
+              <div class="step"><svg class="i s ok"><use href="#i-check"/></svg><span class="what">edited <code>components/ContactForm.jsx</code></span><span class="delta"><span class="add">+14</span> −1</span></div>
+              <div class="step now"><svg class="i s" style="color:var(--st-work)"><use href="#i-term"/></svg><span class="what"><span class="shimmer">running <code>npm test -- contact</code></span></span><span class="delta">12s</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <div class="above">
+          <span class="planstrip"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-list"/></svg>plan<span class="segs"><i class="d"></i><i class="d"></i><i class="a"></i><i></i></span><b>make a failure visible</b><span style="color:var(--cv-note)">3 of 4</span></span>
+        </div>
+        <div class="composer">
+          <div class="text"><span class="ph">send another message — it's read when this step ends</span></div>
+          <div class="row2">
+            <button class="round"><svg class="i"><use href="#i-plus"/></svg></button>
+            <button class="toggle"><svg class="i s"><use href="#i-plan"/></svg>plan first</button>
+            <span class="grow"></span>
+            <button class="model">opus 5.5 <span class="eff">· high</span><svg class="i s"><use href="#i-chev-d"/></svg></button>
+            <button class="round" style="border-color:transparent"><svg class="i"><use href="#i-mic"/></svg></button>
+            <button class="send stop" title="stop (esc)"><svg class="i"><use href="#i-stop"/></svg></button>
+          </div>
+        </div>
+        <div class="hint">esc stops the agent · enter sends</div>
+      </div>
+    </section>
+
+    <aside class="pane">
+      <div class="tabs"><button class="on">plan</button><button>files<span class="n">4</span></button><button>linked<span class="n">1</span></button></div>
+      <div class="pbody">
+        <h5>fix the contact form</h5>
+        <div class="meta">3 of 4 steps · drawn by the agent</div>
+        <div class="vt">
+          <div class="ms d"><span class="node"><i></i></span><span class="lbl">find the cause</span></div>
+          <div class="ms d"><span class="node"><i></i></span><span class="lbl">fix the mail call</span></div>
+          <div class="ms a"><span class="node"><i></i></span><span class="lbl">make a failure visible</span>
+            <div class="subs"><span class="d">show the visitor an error</span><span class="a">run the form's tests</span><span>send one real message</span></div>
+          </div>
+          <div class="ms"><span class="node"><i></i></span><span class="lbl">rule out the spam filter</span>
+            <div class="subs"><span>check the spam filter (linked)</span></div>
+          </div>
+        </div>
+        <h6>files touched</h6>
+        <div class="files">
+          <div><svg class="i s"><use href="#i-pen"/></svg><span>api/contact.js</span><span>+6 −2</span></div>
+          <div><svg class="i s"><use href="#i-pen"/></svg><span>ContactForm.jsx</span><span>+14 −1</span></div>
+          <div><svg class="i s"><use href="#i-eye"/></svg><span>package.json</span><span>read</span></div>
+          <div><svg class="i s"><use href="#i-eye"/></svg><span>logs/server.log</span><span>read</span></div>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>

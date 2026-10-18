@@ -1,0 +1,125 @@
+<!-- root: data-motion="full" -->
+<!-- title: attaching files -->
+<style>
+  .strip { display: flex; gap: 8px; padding: 2px 0 10px; }
+  .thumb { position: relative; width: 58px; height: 58px; border-radius: 11px; overflow: hidden; border: 1px solid var(--cv-hair); }
+  .thumb .img { position: absolute; inset: 0; }
+  .r1 { background: linear-gradient(170deg, #f2eee6 0 55%, #e3dccf 55%); }
+  .r1::before { content: ""; position: absolute; left: 12px; right: 14px; top: 10px; height: 34px; background: repeating-linear-gradient(180deg, #8b8278 0 2px, transparent 2px 6px); opacity: .55; transform: rotate(-4deg); }
+  .r2 { background: linear-gradient(200deg, #e9e2d4, #d2c6b2); }
+  .r2::before { content: ""; position: absolute; left: 14px; right: 10px; top: 8px; height: 38px; background: repeating-linear-gradient(180deg, #7d7468 0 2px, transparent 2px 5px); opacity: .5; transform: rotate(3deg); }
+  .thumb .x { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in oklab, var(--ink) 80%, transparent); color: var(--paper); }
+  .thumb .x svg.i { width: 10px; height: 10px; stroke-width: 2; }
+  .thumb .nm { position: absolute; left: 0; right: 0; bottom: 0; font-size: 10px; padding: 2px 5px; color: var(--paper); background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--ink) 85%, transparent)); }
+  .doc { display: grid; grid-template-columns: 36px 1fr; column-gap: 10px; align-items: center; height: 58px; padding: 0 14px 0 10px; border-radius: 11px; border: 1px solid var(--cv-hair); background: color-mix(in oklab, var(--cv-sheet) 60%, transparent); }
+  .doc .ico { width: 36px; height: 40px; border-radius: 6px; display: grid; place-items: center; background: color-mix(in oklab, var(--raised) 90%, transparent); color: var(--paper-mute); font: 600 9px var(--cv-ui); letter-spacing: .04em; }
+  .doc b { font-weight: 500; font-size: 12.5px; color: var(--paper); display: block; }
+  .doc span { font-size: 11.5px; color: var(--paper-mute); }
+  .foot { z-index: 3; }
+  .composer.target { border-color: var(--paper-mute); box-shadow: 0 0 0 4px color-mix(in oklab, var(--paper) 6%, transparent), 0 14px 34px -18px color-mix(in srgb, var(--shade) 95%, transparent); }
+  .drop {
+    position: absolute; inset: 18px 22px 210px; z-index: 2;
+    border-radius: 18px;
+    border: 1.5px dashed color-mix(in oklab, var(--paper-mute) 80%, transparent);
+    background: color-mix(in oklab, var(--cv-sheet) 97%, transparent);
+    display: grid; place-items: center;
+  }
+  .drop .card { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+  .drop .stack { position: relative; width: 120px; height: 86px; margin-bottom: 4px; }
+  .drop .stack i { position: absolute; width: 64px; height: 80px; border-radius: 8px; border: 1px solid var(--cv-hair); background: linear-gradient(180deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 6%), var(--raised)); box-shadow: 0 10px 22px -12px color-mix(in srgb, var(--shade) 90%, transparent); }
+  .drop .stack i:nth-child(1) { left: 6px; top: 6px; transform: rotate(-9deg); }
+  .drop .stack i:nth-child(2) { left: 28px; top: 0; transform: rotate(2deg); }
+  .drop .stack i:nth-child(3) { left: 50px; top: 6px; transform: rotate(10deg); }
+  .drop h3 { margin: 0; font: 400 22px var(--display); color: var(--paper); }
+  .drop p { margin: 0; font-size: 13px; color: var(--paper-mute); max-width: 380px; }
+  .tbl { width: 100%; border-collapse: collapse; font-family: var(--cv-ui); font-size: 13px; margin: 2px 0 10px; }
+  .tbl th { text-align: left; font-weight: 500; color: var(--paper-mute); padding: 6px 10px; border-bottom: 1px solid var(--cv-hair); }
+  .tbl td { padding: 6px 10px; color: var(--paper-dim); border-bottom: 1px solid color-mix(in oklab, var(--cv-hair) 60%, transparent); }
+  .tbl td.n { text-align: right; font-variant-numeric: tabular-nums; color: var(--paper); }
+</style>
+<div class="app">
+  <header class="bar">
+    <div class="brand"><svg class="mark"><use href="#mark"/></svg><span class="word">volery</span><button class="iconbtn"><svg class="i"><use href="#i-side"/></svg></button></div>
+    <div class="where"><span class="title">tidy the tax receipts</span><span class="chip"><svg class="i"><use href="#i-folder"/></svg>paperwork</span></div>
+    <div class="grow"></div>
+    <span class="ctx"><i class="ring" style="--p:44"></i>44%</span>
+    <button class="iconbtn"><svg class="i"><use href="#i-pane"/></svg></button>
+    <div class="views"><button><svg class="i s"><use href="#i-wall"/></svg>wall</button><button class="on"><svg class="i s"><use href="#i-chat"/></svg>chat</button></div>
+    <div class="winctl"><span><svg class="i s"><use href="#i-min"/></svg></span><span><svg class="i s"><use href="#i-max"/></svg></span><span><svg class="i s"><use href="#i-x"/></svg></span></div>
+  </header>
+
+  <nav class="side">
+    <button class="new"><svg class="i"><use href="#i-plus"/></svg>new conversation<kbd>ctrl shift O</kbd></button>
+    <button class="find"><svg class="i"><use href="#i-search"/></svg>search<kbd>ctrl K</kbd></button>
+    <div class="list">
+      <section class="group">
+        <h6>working <span class="n">1</span></h6>
+        <div class="row"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">6m</span><span class="sub">sending one real message · portfolio</span></div>
+      </section>
+      <section class="group">
+        <h6>finished <span class="n">1</span></h6>
+        <div class="row" style="color:var(--paper)"><i class="st done" style="--x:1"></i><span class="t" style="font-weight:500">check the spam filter</span><span class="age">2m</span><span class="sub">nothing caught since the 9th · portfolio</span></div>
+      </section>
+      <section class="group">
+        <h6>projects</h6>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i></i></span><span class="count">8</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="count">4</span></span></div>
+        <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">recipes</span><span><span class="count">2</span></span></div>
+      </section>
+      <section class="group">
+        <h6>today</h6>
+        <div class="row on"><i class="st done"></i><span class="t">tidy the tax receipts</span><span class="proj">paperwork</span></div>
+        <div class="row"><i class="st done"></i><span class="t">a new about page</span><span class="proj">portfolio</span></div>
+        <div class="row"><i class="st chat"></i><span class="t">flights to lisbon</span><span class="proj">chat</span></div>
+      </section>
+    </div>
+    <div class="me"><span class="avatar">L</span><span class="who"><b>lyss</b><span>max · 61% of this session</span></span><button class="iconbtn"><svg class="i"><use href="#i-gear"/></svg></button></div>
+  </nav>
+
+  <main class="sheet" data-tier="rest">
+    <section class="thread">
+      <div class="scroll">
+        <div class="col">
+          <div class="agent">
+            <p>I've read all fourteen. Twelve are deductible; the two from the hardware shop are personal and I've left them out.</p>
+            <table class="tbl">
+              <tr><th>category</th><th>receipts</th><th style="text-align:right">total</th></tr>
+              <tr><td>software and subscriptions</td><td>5</td><td class="n">€ 412.60</td></tr>
+              <tr><td>equipment</td><td>3</td><td class="n">€ 1,248.00</td></tr>
+              <tr><td>travel</td><td>4</td><td class="n">€ 386.15</td></tr>
+            </table>
+            <p>The spreadsheet is in <code>2026/receipts.xlsx</code>. If you have the receipts from the conference trip, send them and I'll add them.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="drop">
+        <div class="card">
+          <div class="stack"><i></i><i></i><i></i></div>
+          <h3>drop to add them to this conversation</h3>
+          <p>3 files — they go on the end of your message. Drop on the message box to put them where the cursor is.</p>
+        </div>
+      </div>
+
+      <div class="foot">
+        <div class="composer target">
+          <div class="strip">
+            <div class="thumb"><span class="img r1"></span><span class="x"><svg class="i"><use href="#i-x"/></svg></span><span class="nm">hotel 1</span></div>
+            <div class="thumb"><span class="img r2"></span><span class="x"><svg class="i"><use href="#i-x"/></svg></span><span class="nm">taxi 2</span></div>
+            <div class="doc"><span class="ico">PDF</span><span><b>conference-invoice.pdf</b><span>3 pages · 180 kB</span></span></div>
+          </div>
+          <div class="text">here's the hotel <span class="tok">[hotel 1]</span> and the airport taxi <span class="tok">[taxi 2]</span> — the registration fee is on <span class="tok">[conference-invoice.pdf]</span>, page 2</div>
+          <div class="row2">
+            <button class="round"><svg class="i"><use href="#i-plus"/></svg></button>
+            <button class="toggle"><svg class="i s"><use href="#i-plan"/></svg>plan first</button>
+            <span class="grow"></span>
+            <button class="model">sonnet 5.5 <span class="eff">· medium</span><svg class="i s"><use href="#i-chev-d"/></svg></button>
+            <button class="round" style="border-color:transparent"><svg class="i"><use href="#i-mic"/></svg></button>
+            <button class="send"><svg class="i"><use href="#i-up"/></svg></button>
+          </div>
+        </div>
+        <div class="hint">pictures go to the agent as they are · other files go as their place on this computer, so it opens them itself</div>
+      </div>
+    </section>
+  </main>
+</div>

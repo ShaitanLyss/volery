@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>volery · chat view · motion</title>
+<!-- Generated mockup: docs/chat-mode.md, "motion". Press the button to play the sequence. -->
+</head>
+<body>
+<style>
+:root{--ink:#151210;--well:#0f0d0c;--surface:#1e1a18;--raised:#272220;--edge:#332c29;--rule:#3d3532;--paper:#ede4d8;--paper-dim:#b4a89c;--paper-mute:#8a7e74;--paper-faint:#615850;--st-work:#7fb8a4;--st-ask:#e9a13b;
+--ui:"Segoe UI Variable Text","Segoe UI",Corbel,sans-serif;--body:"Sitka Text",Sitka,Constantia,Georgia,serif;--mono:"Cascadia Mono",Consolas,monospace;
+--dur-tap:90ms;--dur-quick:160ms;--dur-step:240ms;--dur-scene:360ms;--ease-out:cubic-bezier(.2,.8,.3,1);--ease-in:cubic-bezier(.55,0,.75,.2);--ease-move:cubic-bezier(.65,0,.35,1);--ease-pop:cubic-bezier(.34,1.36,.64,1)}
+*{box-sizing:border-box}body{margin:0;width:1280px;height:800px;overflow:hidden;background:var(--well);color:var(--paper);font:13.5px/1.45 var(--ui)}
+.app{display:grid;grid-template-columns:264px 1fr;height:100%;padding:0 8px 8px 0}
+.side{padding:56px 10px 10px}
+h6{margin:14px 10px 4px;font:500 11.5px var(--ui);color:var(--paper-mute)}
+.row{position:relative;display:grid;grid-template-columns:14px 1fr auto;column-gap:9px;align-items:center;padding:6px 9px 6px 10px;border-radius:9px;color:var(--paper-dim);transition:background var(--dur-quick) var(--ease-out),color var(--dur-quick) var(--ease-out)}
+.row:hover{background:color-mix(in oklab,var(--surface) 75%,transparent);color:var(--paper)}
+.row .sub{grid-column:2/4;font-size:12px;color:var(--paper-mute);transition:color var(--dur-step) var(--ease-out)}
+.row .age{font-size:11.5px;color:var(--paper-faint)}
+.row.on{background:var(--raised);color:var(--paper)}
+.row::before{content:"";position:absolute;inset:0;border-radius:9px;background:linear-gradient(90deg,color-mix(in oklab,var(--st-ask) 16%,transparent),transparent 80%);opacity:0;transition:opacity var(--dur-scene) var(--ease-out)}
+.row.ask::before{opacity:1}.row.ask .sub{color:color-mix(in oklab,var(--st-ask) 55%,var(--paper-dim))}
+.st{position:relative;width:14px;height:14px;display:grid;place-items:center}
+.st::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--st-rest,#6b6058);transition:background var(--dur-step) var(--ease-out)}
+.st.work::before{background:var(--st-work)}.st.ask::before{background:var(--st-ask)}
+.st.work::after{content:"";position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,color-mix(in oklab,var(--st-work) 55%,transparent),transparent 70%);animation:breathe 2.4s var(--ease-move) infinite alternate}
+@keyframes breathe{from{opacity:.25}to{opacity:1}}
+.sheet{position:relative;margin-top:44px;border-radius:14px;overflow:hidden;border:1px solid color-mix(in oklab,var(--edge) 80%,transparent);background:radial-gradient(90% 55% at 50% -8%,color-mix(in oklab,var(--paper) 6%,transparent),transparent 72%),var(--ink);display:flex;flex-direction:column}
+.pool{position:absolute;left:0;right:0;bottom:0;height:340px;pointer-events:none;opacity:0;transition:opacity 600ms var(--ease-out)}
+.pool.tw{background:radial-gradient(52% 78% at 50% 104%,color-mix(in oklab,var(--st-work) 24%,transparent),transparent 74%)}
+.pool.ta{background:radial-gradient(52% 78% at 50% 104%,color-mix(in oklab,var(--st-ask) 26%,transparent),transparent 74%)}
+.pool.lit{opacity:1}
+.col{position:relative;z-index:1;flex:1;width:640px;margin:0 auto;display:flex;flex-direction:column;justify-content:flex-end;gap:18px;padding:30px 0 22px}
+.you{align-self:flex-end;max-width:78%;padding:10px 15px 11px;border-radius:19px 19px 6px 19px;font-size:14.5px;background:linear-gradient(180deg,color-mix(in oklab,var(--raised) 100%,var(--paper) 4%),var(--raised));border:1px solid color-mix(in oklab,var(--edge) 80%,var(--paper) 5%)}
+.agent{font:16.5px/1.62 var(--body);color:color-mix(in oklab,var(--paper-dim) 45%,var(--paper))}.agent p{margin:0}
+code{font:350 .82em var(--mono);padding:1px 5px;border-radius:5px;border:1px solid color-mix(in oklab,var(--edge) 80%,transparent);background:var(--surface)}
+.thought{font:italic 13px var(--body);color:var(--paper-mute)}
+.work{border-radius:12px;border:1px solid color-mix(in oklab,var(--st-work) 30%,var(--edge));background:color-mix(in oklab,var(--surface) 55%,transparent);font-size:13px;color:var(--paper-dim)}
+.work .cap{display:flex;gap:10px;padding:9px 12px}.work .cap b{font-weight:500;color:var(--paper)}.work .cap .t{margin-left:auto;color:var(--paper-faint);font-variant-numeric:tabular-nums}
+.work .step{display:flex;gap:9px;padding:7px 12px 9px;border-top:1px solid color-mix(in oklab,var(--edge) 80%,transparent)}
+.shimmer{position:relative;overflow:hidden;display:inline-block}
+.shimmer::after{content:"";position:absolute;inset:0 -60%;background:linear-gradient(100deg,transparent 35%,color-mix(in oklab,var(--ink) 70%,transparent) 50%,transparent 65%);animation:sweep 1.8s var(--ease-move) infinite}
+@keyframes sweep{from{transform:translateX(-45%)}to{transform:translateX(45%)}}
+.foot{position:relative;z-index:2;padding:0 0 18px}
+.composer{width:672px;margin:0 auto;border-radius:20px;padding:12px 12px 10px 16px;background:linear-gradient(180deg,color-mix(in oklab,var(--surface) 82%,var(--paper) 5%),color-mix(in oklab,var(--surface) 82%,var(--paper) 3%));border:1px solid color-mix(in oklab,var(--edge) 70%,var(--paper) 9%);box-shadow:0 14px 34px -18px #000;display:flex;align-items:flex-end;gap:10px}
+.composer .text{flex:1;min-height:44px;font-size:14.5px;color:var(--paper);padding:3px 0}
+.composer .ph{color:var(--paper-faint)}
+.send{position:relative;width:34px;height:34px;border-radius:50%;border:0;background:var(--paper);color:var(--ink);display:grid;place-items:center;cursor:pointer;transition:transform var(--dur-quick) var(--ease-pop)}
+.send:active{transform:scale(.92)}
+.send i{position:absolute;transition:opacity var(--dur-quick) var(--ease-out),transform var(--dur-quick) var(--ease-out)}
+.send .up{width:2px;height:12px;background:currentColor;border-radius:1px}.send .up::before{content:"";position:absolute;left:-4px;top:-1px;width:7px;height:7px;border-left:2px solid currentColor;border-top:2px solid currentColor;transform:rotate(45deg)}
+.send .sq{width:11px;height:11px;border-radius:3px;background:currentColor;opacity:0;transform:scale(.6)}
+.send.stop .up{opacity:0;transform:translateY(-4px)}.send.stop .sq{opacity:1;transform:none}
+.toast{position:absolute;top:58px;right:22px;width:320px;z-index:5;padding:12px 14px;border-radius:14px;border:1px solid color-mix(in oklab,var(--st-ask) 30%,var(--edge));background:linear-gradient(110deg,color-mix(in oklab,var(--st-ask) 14%,transparent),transparent 55%),var(--raised);box-shadow:0 18px 40px -16px #000;font-size:13px}
+.toast span{display:block;font:13.5px var(--body);color:var(--paper-dim);margin-top:3px}
+.play{position:absolute;left:20px;bottom:18px;z-index:9;font:12.5px var(--ui);color:var(--paper);background:var(--raised);border:1px solid var(--rule);border-radius:999px;height:32px;padding:0 14px;cursor:pointer;transition:background var(--dur-tap) var(--ease-out)}
+.play:hover{background:color-mix(in oklab,var(--raised) 80%,var(--paper) 8%)}
+.note{position:absolute;left:20px;bottom:58px;width:220px;font-size:12px;color:var(--paper-mute)}
+@media (prefers-reduced-motion:reduce){.st.work::after,.shimmer::after{animation:none}}
+</style>
+<div class="app">
+  <nav class="side">
+    <h6 id="hneed">needs you</h6>
+    <div id="need"><div class="row ask" id="lis"><i class="st ask"></i><span>flights to lisbon</span><span class="age">chat</span><span class="sub">asks: which dates work for you?</span></div></div>
+    <h6>working</h6>
+    <div id="workg">
+      <div class="row on"><i class="st work"></i><span>fix the contact form</span><span class="age">1m</span><span class="sub">running the tests · portfolio</span></div>
+      <div class="row"><i class="st work"></i><span>tidy the tax receipts</span><span class="age">4m</span><span class="sub">reading 14 pdfs · paperwork</span></div>
+    </div>
+    <h6>today</h6>
+    <div class="row"><i class="st"></i><span>dark mode for the site</span><span class="age">portfolio</span></div>
+  </nav>
+  <main class="sheet">
+    <div class="pool tw lit" id="pool"></div>
+    <div class="col" id="col">
+      <div class="agent" id="a1"><p>Found it. The mail library renamed <code>sendMail</code> to <code>send</code>, so every message since the 9th failed quietly.</p></div>
+      <div class="you" id="you">can you also check nothing went to the spam folder?</div>
+      <div class="agent" id="th"><p>I'll read the filter rules first.</p></div>
+      <div class="work" id="tool"><div class="cap"><b>working</b> — reading the filter rules<span class="t" id="clock">0:04</span></div><div class="step"><span class="shimmer">searching <code>mail/filters.json</code></span></div></div>
+    </div>
+    <div class="foot"><div class="composer"><div class="text" id="txt"><span class="ph">send another message</span></div><button class="send stop" id="send" aria-label="send"><i class="up"></i><i class="sq"></i></button></div></div>
+    <div class="toast" id="toast">flights to lisbon is asking<span>Which dates work for you? The cheapest week is 9–16 May.</span></div>
+  </main>
+</div>
+<div class="note">every move here is transform or opacity, and ends. the only things that keep moving are the working dot and the shimmer, and only while an agent works.</div>
+<button class="play" id="play">play the sequence</button>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const out = "cubic-bezier(.2,.8,.3,1)", inn = "cubic-bezier(.55,0,.75,.2)", move = "cubic-bezier(.65,0,.35,1)";
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const rise = (el, ms = 240, d = 8) => { el.style.visibility = ""; return el.animate([{ opacity: 0, transform: `translateY(${d}px)` }, { opacity: 1, transform: "none" }], { duration: ms, easing: out, fill: "backwards" }).finished; };
+function flip(el, mutate) { const a = el.getBoundingClientRect(); mutate(); const b = el.getBoundingClientRect(); return el.animate([{ transform: `translate(${a.left - b.left}px, ${a.top - b.top}px)` }, { transform: "none" }], { duration: 360, easing: move }).finished; }
+async function play() {
+  const btn = $("play"); btn.disabled = true;
+  // reset to the moment before sending
+  const lis = $("lis"); $("workg").append(lis); lis.classList.remove("ask"); lis.querySelector(".st").className = "st work"; lis.querySelector(".sub").textContent = "comparing fares · chat";
+  for (const id of ["you", "th", "tool", "toast"]) $(id).style.visibility = "hidden";
+  $("pool").classList.remove("lit"); $("send").classList.remove("stop");
+  $("txt").textContent = "can you also check nothing went to the spam folder?";
+  await wait(700);
+  // send: the line leaves the composer and lands as a bubble
+  const you = $("you"), comp = document.querySelector(".composer").getBoundingClientRect();
+  you.style.visibility = ""; const y = you.getBoundingClientRect();
+  $("txt").innerHTML = '<span class="ph">send another message</span>';
+  await you.animate([{ opacity: 0, transform: `translate(${comp.left + 16 - y.left}px, ${comp.top - y.top}px) scale(.97)` }, { opacity: 1, transform: "none" }], { duration: 360, easing: out }).finished;
+  $("send").classList.add("stop");
+  $("pool").classList.add("lit");
+  await wait(300); await rise($("th"), 200, 4);
+  await wait(250); await rise($("tool"));
+  await wait(1300);
+  // another conversation starts asking: its row travels, its tint arrives, a toast slides in
+  await flip(lis, () => { $("need").append(lis); });
+  lis.classList.add("ask"); lis.querySelector(".st").className = "st ask"; lis.querySelector(".sub").textContent = "asks: which dates work for you?";
+  const t = $("toast"); t.style.visibility = "";
+  await t.animate([{ opacity: 0, transform: "translateY(-10px) scale(.98)" }, { opacity: 1, transform: "none" }], { duration: 360, easing: out }).finished;
+  btn.disabled = false; btn.textContent = "play it again";
+}
+$("play").addEventListener("click", play);
+</script>
+</body>
+</html>

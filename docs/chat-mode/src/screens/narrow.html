@@ -1,0 +1,128 @@
+<!-- root: data-motion="full" -->
+<!-- title: narrow windows -->
+<style>
+  body { background: radial-gradient(80% 70% at 50% 0%, color-mix(in oklab, var(--paper) 4%, transparent), transparent 70%), var(--well); }
+  .stage { display: flex; gap: 34px; justify-content: center; align-items: flex-start; padding: 22px 0 0; }
+  .frame { position: relative; width: 372px; height: 716px; border-radius: 24px; overflow: hidden; border: 1px solid var(--cv-hair); background: var(--cv-ground); box-shadow: 0 30px 60px -30px color-mix(in srgb, var(--shade) 95%, transparent); display: flex; flex-direction: column; }
+  .label { text-align: center; margin-top: 12px; font-size: 12.5px; color: var(--paper-mute); }
+  .nbar { height: 50px; display: flex; align-items: center; gap: 6px; padding: 0 8px; }
+  .nbar .tt { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+  .nbar .tt b { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nbar .tt span { font-size: 11.5px; color: var(--paper-mute); display: inline-flex; gap: 6px; align-items: center; }
+  .nbar .tt i.st { width: 10px; height: 10px; display: inline-grid; }
+  .badge { position: relative; }
+  .badge::after { content: "2"; position: absolute; top: -1px; right: -3px; min-width: 15px; height: 15px; box-shadow: 0 0 0 2px var(--cv-ground); border-radius: 8px; font: 600 9.5px/15px var(--cv-ui); text-align: center; color: var(--ink); background: var(--st-ask); }
+  .nsheet { flex: 1; min-height: 0; margin: 0 6px 6px; border-radius: 18px; position: relative; overflow: hidden; border: 1px solid var(--cv-hair); background: radial-gradient(90% 40% at 50% -5%, var(--cv-lamp), transparent 72%), var(--cv-sheet); display: flex; flex-direction: column; }
+  .nsheet .thread { flex: 1; }
+  .nsheet .scroll { padding: 18px 0 12px; }
+  .nsheet .col { width: calc(100% - 30px); gap: 16px; }
+  .nsheet .agent { font-size: 15px; }
+  .nsheet .you { max-width: 88%; font-size: 14px; }
+  .nsheet .foot { padding: 0 0 10px; }
+  .nsheet .composer { width: calc(100% - 20px); padding: 10px 10px 8px 14px; border-radius: 18px; }
+  .nsheet .composer .text { min-height: 26px; }
+  .scrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--shade) 55%, transparent); z-index: 5; }
+  .drawer { position: absolute; top: 0; bottom: 0; left: 0; width: 304px; z-index: 6; background: var(--cv-ground); border-right: 1px solid var(--cv-hair); padding: 10px; display: flex; flex-direction: column; box-shadow: 20px 0 50px -20px color-mix(in srgb, var(--shade) 95%, transparent); }
+  .drawer .brand { width: auto; padding: 6px 4px 12px; }
+  .drawer .list { margin-top: 12px; }
+  .banner { display: grid; grid-template-columns: 16px 1fr; column-gap: 10px; margin: 0 10px 8px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--cv-hair); background: linear-gradient(180deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 3%), var(--raised)); font-size: 12.5px; color: var(--paper-dim); }
+  .banner b { font-weight: 500; color: var(--paper); }
+  .banner .acts { grid-column: 2; display: flex; gap: 6px; margin-top: 8px; }
+  .banner svg.i { color: var(--paper-mute); margin-top: 1px; }
+</style>
+<div class="stage">
+  <!-- 1 · the thread at phone width -->
+  <div>
+    <div class="frame">
+      <div class="nbar">
+        <button class="iconbtn badge"><svg class="i"><use href="#i-menu"/></svg></button>
+        <span class="tt"><b>fix the contact form</b><span><i class="st work"></i>running the tests · portfolio</span></span>
+        <button class="iconbtn"><svg class="i"><use href="#i-list"/></svg></button>
+        <button class="iconbtn"><svg class="i"><use href="#i-plus"/></svg></button>
+      </div>
+      <div class="nsheet" data-tier="work">
+        <section class="thread">
+          <div class="scroll">
+            <div class="col">
+              <div class="you">the contact form on my site stopped sending emails last week — can you find out why and fix it?</div>
+              <div class="work"><div class="cap"><span class="sum"><b>looked for 38s</b> — read 5 files</span><svg class="i s chev"><use href="#i-chev-r"/></svg></div></div>
+              <div class="agent"><p>Found it. Last week's update to the mail library renamed <code>sendMail</code> to <code>send</code>, so every message since the 9th has failed quietly.</p></div>
+              <div class="work live">
+                <div class="cap"><span class="sum"><b>working</b> — edited 2 files</span><span class="time">1:02</span><svg class="i s chev"><use href="#i-chev-r"/></svg></div>
+                <div class="steps"><div class="step now"><svg class="i s" style="color:var(--st-work)"><use href="#i-term"/></svg><span class="what"><span class="shimmer">running <code>npm test</code></span></span><span class="delta">12s</span></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="foot">
+            <div class="above"><span class="planstrip"><span class="segs"><i class="d"></i><i class="d"></i><i class="a"></i><i></i></span><b>make a failure visible</b></span></div>
+            <div class="composer">
+              <div class="text"><span class="ph">send another message</span></div>
+              <div class="row2"><button class="round"><svg class="i"><use href="#i-plus"/></svg></button><span class="grow"></span><button class="model">opus · high<svg class="i s"><use href="#i-chev-d"/></svg></button><button class="send stop"><svg class="i"><use href="#i-stop"/></svg></button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div class="label">the thread — the plan shrinks to its current step</div>
+  </div>
+
+  <!-- 2 · the drawer -->
+  <div>
+    <div class="frame">
+      <div class="nbar"><button class="iconbtn"><svg class="i"><use href="#i-menu"/></svg></button><span class="tt"><b>fix the contact form</b></span></div>
+      <div class="nsheet"></div>
+      <div class="scrim"></div>
+      <nav class="drawer side">
+        <div class="brand"><svg class="mark"><use href="#mark"/></svg><span class="word">volery</span><button class="iconbtn"><svg class="i"><use href="#i-x"/></svg></button></div>
+        <button class="new"><svg class="i"><use href="#i-plus"/></svg>new conversation</button>
+        <button class="find"><svg class="i"><use href="#i-search"/></svg>search</button>
+        <div class="list">
+          <section class="group">
+            <h6>needs you <span class="n">2</span></h6>
+            <div class="row ask"><i class="st ask"></i><span class="t">a new about page</span><span class="proj">portfolio</span><span class="sub">asks: which layout?</span></div>
+            <div class="row ask"><i class="st ask"></i><span class="t">flights to lisbon</span><span class="proj">chat</span><span class="sub">asks: which dates work for you?</span></div>
+          </section>
+          <section class="group">
+            <h6>working <span class="n">2</span></h6>
+            <div class="row on"><i class="st work"></i><span class="t">fix the contact form</span><span class="age">1m</span><span class="sub">running the tests · portfolio</span></div>
+            <div class="row"><i class="st work"></i><span class="t">tidy the tax receipts</span><span class="age">4m</span><span class="sub">reading 14 pdfs · paperwork</span></div>
+          </section>
+          <section class="group">
+            <h6>projects</h6>
+            <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">portfolio</span><span><span class="dots"><i class="a"></i><i></i></span><span class="count">8</span></span></div>
+            <div class="row folder"><svg class="i s" style="color:var(--paper-mute)"><use href="#i-folder"/></svg><span class="t">paperwork</span><span><span class="dots"><i></i></span><span class="count">4</span></span></div>
+          </section>
+        </div>
+        <div class="me"><span class="avatar">L</span><span class="who"><b>lyss</b><span>max · 47% of this session</span></span></div>
+      </nav>
+    </div>
+    <div class="label">the sidebar becomes a drawer — its badge counts what needs you</div>
+  </div>
+
+  <!-- 3 · out of allowance: held, not lost -->
+  <div>
+    <div class="frame">
+      <div class="nbar"><button class="iconbtn"><svg class="i"><use href="#i-menu"/></svg></button><span class="tt"><b>tidy the tax receipts</b><span>paperwork</span></span><button class="iconbtn"><svg class="i"><use href="#i-plus"/></svg></button></div>
+      <div class="nsheet">
+        <section class="thread">
+          <div class="scroll">
+            <div class="col">
+              <div class="agent"><p>I've read all fourteen. Twelve are deductible; the two from the hardware shop are personal and I've left them out.</p></div>
+              <div class="agent"><p>The spreadsheet is in <code>2026/receipts.xlsx</code>. If you have the receipts from the conference trip, send them and I'll add them.</p></div>
+              <div class="you held">here are the hotel and the taxi from the conference — add them under travel</div>
+              <div class="heldnote"><svg class="i s"><use href="#i-clock"/></svg>waiting — goes by itself at 15:40<button>edit</button><button>take back</button></div>
+            </div>
+          </div>
+          <div class="foot">
+            <div class="banner"><svg class="i"><use href="#i-clock"/></svg><span><b>this session's allowance is used up.</b> It comes back at 15:40. Anything you send waits and goes by itself — nothing is lost.</span><span class="acts"><button class="btn">use another account</button><button class="btn ghost">see usage</button></span></div>
+            <div class="composer">
+              <div class="text"><span class="ph">write now, it sends at 15:40</span></div>
+              <div class="row2"><button class="round"><svg class="i"><use href="#i-plus"/></svg></button><span class="grow"></span><button class="model">sonnet · medium<svg class="i s"><use href="#i-chev-d"/></svg></button><button class="send idle"><svg class="i"><use href="#i-up"/></svg></button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div class="label">out of allowance — what you send is held, never lost</div>
+  </div>
+</div>
