@@ -1335,7 +1335,7 @@
   /** What a drop is currently hovering, so the thing it would land on can say
    *  so. `null` is the wall, which needs no highlight — it is the default and
    *  the whole window. */
-  let dropOn = $state<"prompt" | null>(null);
+  let dropOn = $state<"dock" | "panel" | null>(null);
 
   /** Where a drop at these window coordinates would land.
    *
@@ -1350,11 +1350,17 @@
    *  "give this to the card I am talking to" — the panel *is* that card's
    *  conversation — and splitting them would be two answers to a question with
    *  one, plus an edge along the middle of the screen you would have to aim
-   *  either side of. */
-  function dropTargetAt(x: number, y: number): "prompt" | null {
+   *  either side of. They differ only in *where in the sentence* the picture
+   *  goes: on the dock you are aiming at the field, so it lands at the caret;
+   *  on the transcript you are not aiming at any word, so it goes on the end —
+   *  the caret of a field you have not touched is the start, and a picture
+   *  dropped on the conversation arriving *before* what you had typed reads as
+   *  the drop having gone wrong (Lyss, 2026-10-18). */
+  function dropTargetAt(x: number, y: number): "dock" | "panel" | null {
     const el = document.elementFromPoint(x, y);
     if (!el) return null;
-    return el.closest(".dock") || el.closest(".side") ? "prompt" : null;
+    if (el.closest(".dock")) return "dock";
+    return el.closest(".side") ? "panel" : null;
   }
 
   /* Throw things at the wall and it works out what you meant: a folder becomes
@@ -1403,9 +1409,9 @@
          it is, and a picture now travels to a card on another wall
          (`elsewhere.md`) — asking `targets`, which is this wall's alone, pinned
          a picture dropped for a far card to the wall instead. */
-      if (onto === "prompt" && reach.length) {
+      if (onto && reach.length) {
         for (const token of await field.shots.fromPaths(sorted.images)) {
-          typeIntoDraft(token);
+          typeIntoDraft(token, onto === "panel" ? "end" : "caret");
         }
         return;
       }
@@ -2939,8 +2945,8 @@
    *  were writing" and both have to leave you able to carry on writing. The
    *  textarea's own selection is set after a tick, since the value it is being
    *  set against has not been rendered yet. */
-  function typeIntoDraft(put: string) {
-    const { text, caret } = insertAt(field.text, field.caret, put);
+  function typeIntoDraft(put: string, where: "caret" | "end" = "caret") {
+    const { text, caret } = insertAt(field.text, where === "end" ? null : field.caret, put);
     field.text = text;
     field.caret = caret;
     void tick().then(() => {
@@ -5623,7 +5629,7 @@
     {waiting}
     {clashing}
     {bangCard}
-    dropping={dropOn === "prompt"}
+    dropping={dropOn !== null}
     berth={{ site: berths.dock.site, x: dockAt.x, y: dockAt.y, w: dockAt.w, inset: dockInset }}
     grabbing={mooring?.what === "dock"}
     onmoor={{

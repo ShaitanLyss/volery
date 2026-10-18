@@ -231,7 +231,8 @@ Escape you pressed over it a second ago still applies).
 |---|---|---|
 | paste, caret in the dock | the field | attaches, token at the caret; text on the clipboard is inserted too |
 | paste, anywhere else | the wall | pins, exactly as before |
-| drop on the dock or the panel | the field | attaches |
+| drop on the dock | the field | attaches, token at the caret |
+| drop on the panel (the transcript) | the field | attaches, token **appended at the end** |
 | drop on the wall | the wall | pins, exactly as before |
 | drop of a folder | anywhere | opens a conversation, wherever it landed |
 
@@ -246,6 +247,13 @@ The dock and the panel are one target between them, not two. Both mean "give thi
 I am talking to" — the panel *is* that card's conversation — and splitting them would be two
 answers to a question with one, plus an edge down the middle of the screen you would have to
 aim either side of.
+
+They differ in one thing only: **where in the sentence the token goes.** On the dock you are
+aiming at the field, so it lands at the caret. On the transcript you are aiming at no word at
+all, so it goes on the end. The caret of a field you have not touched is the *start*, and a
+picture dropped on the conversation arriving before what you had typed reads as the drop having
+gone wrong (Lyss, 2026-10-18). `dropTargetAt` answers `"dock" | "panel"` for exactly this, and
+`typeIntoDraft(token, "end")` is `insertAt` with a null caret.
 
 ## An unsent line outlives the window, and the pictures in it do not
 
