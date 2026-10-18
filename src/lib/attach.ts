@@ -115,8 +115,38 @@ export const CARRY_MOST = 7 * 1024 * 1024;
    into the store and takes them out again in the same write that takes the
    message out (`store::migrate_v54`, `holding.ts`). Nothing else is written. */
 
-/** One image attached to a draft. */
-export type Attachment = {
+/** The one kind of document the API reads inline, which is what a chat card —
+ *  no filesystem, no `Read` — can be given beside a picture. Probed with
+ *  `tools/probe-document.ts`: a `document` block on stdin reaches the model and
+ *  the replay keeps it, so the echo is still its text blocks. */
+export const DOCUMENT = "application/pdf";
+
+/** The most one file may be when its bytes have to be *held* rather than
+ *  pointed at: a browser drag or a pasted blob, written into the card's folder
+ *  at send, or a PDF read inline for a chat card, or a file crossing to another
+ *  wall. `look.rs`'s `FILE_MOST` is the same number, since the flyway is what
+ *  carries one across, and `attachments.rs` holds it too. */
+export const MAX_FILE_BYTES = 24 * 1024 * 1024;
+
+/** The most a PDF may be when it goes inline. Below `MAX_FILE_BYTES` because
+ *  base64 is a third larger than what it encodes and the API takes 32 MB of
+ *  request — a 24 MB PDF would be refused on the wire with a 400 that names
+ *  nothing. */
+export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+
+/** Where the draft is going — the one thing about a target that decides what
+ *  an attachment becomes on the wire.
+ *
+ *  `chat`: a chat card has no filesystem (`chat.md`), so a path means nothing
+ *  to it, and pictures and PDFs go inline while everything else is refused.
+ *  `afar`: a card on another wall, which is handed the bytes and writes them on
+ *  its own disk, so nothing is written or read here. */
+export type Reach = { chat: boolean; afar: boolean };
+
+/** One image attached to a draft. Sent inline, as an `image` block, to any
+ *  card — this is the attachment the dock had from the start. */
+export type Picture = {
+  kind: "picture";
   /** Identity for the list — never shown, never on the wire. */
   id: string;
   /** What it is called in the draft, and therefore what the token spells. Unique
@@ -137,12 +167,55 @@ export type Attachment = {
   scaled: boolean;
 };
 
+/** A file or folder on this machine, attached by its path.
+ *
+ *  **Passed as the path, as it is** (Lyss, 2026-10-16): the agent reads it with
+ *  its own tools, which is what Claude Code does when a file is dragged into a
+ *  terminal, so nothing is copied and nothing is spent up front whatever the
+ *  file is. The token in the draft is replaced by the path itself when the turn
+ *  is cut (`resolveFiles`) — so to everything past the cut, a file is words. */
+export type FileRef = {
+  kind: "file";
+  id: string;
+  name: string;
+  path: string;
+  /** True for a folder, which is attached the same way (decided 2026-10-18:
+   *  a folder dropped *into* an input is its path; on the wall it opens a
+   *  card). */
+  dir: boolean;
+  /** Bytes on disk, when known — drawn under the tile. */
+  size: number | null;
+};
+
+/** Bytes with no path behind them: a browser drag, a pasted file that is not a
+ *  picture. They have to be *written* somewhere before a project card can read
+ *  them, and that happens at the send, into the card's own folder
+ *  (`attachments.rs`) — so an unsent draft never touches the disk. A PDF among
+ *  them goes inline to a chat card instead. */
+export type Bytes = {
+  kind: "bytes";
+  id: string;
+  name: string;
+  /** What the file says it is; empty when nothing said. */
+  mediaType: string;
+  /** base64, no data-URL preamble. */
+  data: string;
+  bytes: number;
+};
+
+/** Anything attached to a draft. */
+export type Attachment = Picture | FileRef | Bytes;
+
 /** One block of a user turn, exactly as `supervisor::user_envelope` writes it. */
 export type Block =
   | { type: "text"; text: string }
   | {
       type: "image";
       source: { type: "base64"; media_type: MediaType; data: string };
+    }
+  | {
+      type: "document";
+      source: { type: "base64"; media_type: typeof DOCUMENT; data: string };
     };
 
 /** One user turn, ready to send: what goes on the wire, what the wire will
@@ -162,14 +235,28 @@ export type Turn = {
    *  with `turnOf` exactly as this one did. Not kept past the send: a `Line`
    *  takes `shots`, never this. */
   carried: Carried[];
-  /** The sentence as typed, tokens and all — what another wall is handed, and
-   *  so what `carriedCost` measures. */
+  /** The sentence as it goes: picture tokens kept (another wall cuts at them,
+   *  and a held message is re-cut at them), and every file token already
+   *  replaced by its path — so past this point a file is words, and nothing
+   *  downstream (the hold, a combined round, the echo) has to know files
+   *  exist. For another wall the file tokens stay, and `files` says what they
+   *  are, because a path here means nothing there. */
   text: string;
+  /** Files the sentence still names that were *not* resolved to a path: only
+   *  ever non-empty for a card on another wall, whose wall is handed their
+   *  bytes and writes them on its own disk (`elsewhere.md`). */
+  files: (FileRef | Bytes)[];
 };
 
 /** One picture as another wall is handed it — `fleet::Picture` in Rust, field
  *  for field. */
 export type Carried = { name: string; mediaType: MediaType; data: string };
+
+/** Something that goes on the wire inline, beside the words: a picture, or a
+ *  PDF for a card that cannot be given a path. */
+type Inline = { name: string; mediaType: string; data: string };
+
+const inline = (a: Attachment): a is Picture | Bytes => a.kind !== "file";
 
 /** The turn a sentence and its attachments make: cut once at the tokens, and
  *  every reading of the cut taken from that one cut.
@@ -179,19 +266,115 @@ export type Carried = { name: string; mediaType: MediaType; data: string };
  *  the wall that sends it exactly as it would have been on the wall it went
  *  to. A second split would be a second thing to get wrong, and its failure is
  *  silent: the line is never claimed, the card reads *sent, not picked up*, and
- *  the nudge budget goes. See the header. */
-export function turnOf(text: string, list: readonly Attachment[]): Turn {
-  const content = compose(text, list);
+ *  the nudge budget goes. See the header.
+ *
+ *  `planFor` comes first for anything but pictures: it says which bytes must
+ *  be written and which files read before this list is one a target can take.
+ *  What reaches here is cut as it stands. */
+export function turnOf(
+  text: string,
+  list: readonly Attachment[],
+  reach: Reach = { chat: false, afar: false },
+): Turn {
+  const said = reach.afar ? text : resolveFiles(text, list);
+  const content = compose(said, list.filter(inline));
   /* Only the ones the sentence still mentions — a picture whose token was
      typed over is one you plainly did not mean to send. */
-  const kept = stillIn(text, list);
+  const kept = stillIn(said, list.filter((a): a is Picture => a.kind === "picture"));
   return {
     content,
     echo: echoOf(content),
     shots: kept.map((a) => ({ name: a.name, thumb: a.thumb })),
     carried: kept.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data })),
-    text,
+    text: said,
+    files: reach.afar
+      ? stillIn(said, list.filter((a): a is FileRef | Bytes => a.kind !== "picture"))
+      : [],
   };
+}
+
+/** A path as it is written into a sentence for an agent to read.
+ *
+ *  As Claude Code writes one it was handed by a drag: bare, and quoted only
+ *  when a space in it would otherwise make it two words. */
+export function pathText(path: string): string {
+  return /\s/.test(path) ? `"${path}"` : path;
+}
+
+/** The sentence with every attached file's token replaced by its path.
+ *
+ *  This is the whole of how a file reaches a project card, and it is done to
+ *  the *text*, so the turn, the echo, a held message and a combined round all
+ *  carry a file as the words it now is. */
+export function resolveFiles(text: string, list: readonly Attachment[]): string {
+  let out = text;
+  for (const a of stillIn(text, list)) {
+    if (a.kind === "file") out = out.split(tokenFor(a.name)).join(pathText(a.path));
+  }
+  return out;
+}
+
+/** What has to happen to a draft's attachments before it can go to this
+ *  target, or why it cannot.
+ *
+ *  - `write`: bytes for a project card here, written into the card's folder at
+ *    the send and then attached by the path that gives them;
+ *  - `read`: PDFs on disk for a chat card, read in to go inline;
+ *  - `refused`: the first reason any of it cannot go, naming the file — said
+ *    with the draft kept, never after the words have gone.
+ *
+ *  A card on another wall needs nothing done here: its own wall is handed the
+ *  bytes and does this on its side of the link. */
+export function planFor(
+  text: string,
+  list: readonly Attachment[],
+  reach: Reach,
+): { write: Bytes[]; read: FileRef[]; refused: string | null } {
+  const write: Bytes[] = [];
+  const read: FileRef[] = [];
+  const used = stillIn(text, list);
+  for (const a of used) {
+    if (a.kind === "picture") continue;
+    if (a.kind === "bytes" && a.bytes > MAX_FILE_BYTES) {
+      return { write, read, refused: `${a.name} is ${mb(a.bytes)} — the most one attachment may be is ${mb(MAX_FILE_BYTES)}` };
+    }
+  }
+  if (reach.afar) return { write, read, refused: null };
+  for (const a of used) {
+    if (a.kind === "picture") continue;
+    if (!reach.chat) {
+      if (a.kind === "bytes") write.push(a);
+      continue;
+    }
+    /* A chat card: no filesystem, so a path is nothing to it. */
+    const pdf = a.kind === "bytes" ? isDocument(a.mediaType, a.name) : !a.dir && isDocument("", a.name);
+    if (!pdf) {
+      return {
+        write: [],
+        read: [],
+        refused: a.kind === "file" && a.dir
+          ? `${a.name} is a folder, and a chat card has no files to open it with — only pictures and PDFs can be given to one`
+          : `${a.name} cannot be given to a chat card — it has no files to open it with, and only pictures and PDFs go to one inline`,
+      };
+    }
+    if (a.kind === "bytes" && a.bytes > MAX_DOCUMENT_BYTES) {
+      return { write: [], read: [], refused: `${a.name} is ${mb(a.bytes)} — a PDF given inline may be at most ${mb(MAX_DOCUMENT_BYTES)}` };
+    }
+    if (a.kind === "file") read.push(a);
+  }
+  return { write, read, refused: null };
+}
+
+/** Is this a PDF? The type when one was given, the extension otherwise —
+ *  `mediaTypeOf`'s order, for its reason. */
+export function isDocument(type: string, name = ""): boolean {
+  const t = type.toLowerCase().trim();
+  if (t) return t === DOCUMENT;
+  return /\.pdf$/i.test(name);
+}
+
+function mb(n: number): string {
+  return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
 /** What a turn would cost on the wire to another wall, measured exactly as
@@ -336,22 +519,27 @@ export function stillIn<T extends { name: string }>(text: string, list: readonly
  *  between two tokens goes the same way, which is why `echoOf` is derived from
  *  what comes out of here rather than from the draft — the two differ, and only
  *  one of them is what the wire will replay. */
-export function compose(
-  text: string,
-  list: readonly Pick<Attachment, "name" | "mediaType" | "data">[],
-): Block[] {
+export function compose(text: string, list: readonly Inline[]): Block[] {
   const attached = stillIn(text, list);
-  const image = (a: Pick<Attachment, "mediaType" | "data">): Block => ({
-    type: "image",
-    source: { type: "base64", media_type: a.mediaType, data: a.data },
-  });
+  /* A picture is an `image` block and a PDF a `document` one. Anything else
+     has no inline form: `planFor` refuses it before a turn is cut, and should
+     one reach here anyway its token stays in the words — a draft that says
+     `[notes.zip]` to the agent is wrong in a way the agent can see, where a
+     block quietly left off is wrong in a way nobody can. */
+  const block = (a: Inline): Block | null =>
+    (MEDIA as readonly string[]).includes(a.mediaType)
+      ? { type: "image", source: { type: "base64", media_type: a.mediaType as MediaType, data: a.data } }
+      : a.mediaType === DOCUMENT
+        ? { type: "document", source: { type: "base64", media_type: DOCUMENT, data: a.data } }
+        : null;
+  const sendable = attached.filter((a) => block(a) !== null);
   const words = (s: string): Block[] => (s.trim() ? [{ type: "text", text: s }] : []);
 
-  if (!attached.length) return words(text);
+  if (!sendable.length) return words(text);
 
   /* Longest first, so a name that is a prefix of another one cannot claim the
      longer one's token — `[shot]` must not match inside `[shot 2]`. */
-  const byToken = new Map(attached.map((a) => [tokenFor(a.name), a]));
+  const byToken = new Map(sendable.map((a) => [tokenFor(a.name), a]));
   const re = new RegExp(
     [...byToken.keys()]
       .sort((a, b) => b.length - a.length)
@@ -364,7 +552,7 @@ export function compose(
   let at = 0;
   for (const m of text.matchAll(re)) {
     out.push(...words(text.slice(at, m.index)));
-    out.push(image(byToken.get(m[0])!));
+    out.push(block(byToken.get(m[0])!)!);
     at = m.index + m[0].length;
   }
   out.push(...words(text.slice(at)));
@@ -388,7 +576,7 @@ export type Run = { text: string; chip: boolean };
  *  so `[not an image]` typed by hand is prose and stays prose. Which also means
  *  the drawing cannot disagree with `compose`: both ask `stillIn` the same
  *  question and match the same tokens the same way. */
-export function runsOf(text: string, list: readonly Attachment[]): Run[] {
+export function runsOf(text: string, list: readonly { name: string }[]): Run[] {
   const attached = stillIn(text, list);
   if (!attached.length) return text ? [{ text, chip: false }] : [];
 
@@ -467,6 +655,11 @@ export function encodeAs(source: MediaType): MediaType {
 
 /** The reading under a chip: what it is, and whether we changed it. */
 export function sizeNote(a: Attachment): string {
+  if (a.kind === "file") {
+    if (a.dir) return "folder · sent as its path";
+    return a.size === null ? "sent as its path" : `${mb(a.size)} · sent as its path`;
+  }
+  if (a.kind === "bytes") return `${mb(a.bytes)}${isDocument(a.mediaType, a.name) ? " · pdf" : ""}`;
   const kb = a.bytes < 1024 * 1024
     ? `${Math.max(1, Math.round(a.bytes / 1024))} KB`
     : `${(a.bytes / (1024 * 1024)).toFixed(1)} MB`;

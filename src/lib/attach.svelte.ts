@@ -14,6 +14,7 @@ import {
   uniqueName,
   type Attachment,
   type Carried,
+  type Picture,
   type MediaType,
 } from "./attach";
 
@@ -251,7 +252,8 @@ export class Attachments {
         this.names,
         suggested || pastedName(this.names),
       );
-      const attachment: Attachment = {
+      const attachment: Picture = {
+        kind: "picture",
         id: `a${++this.#seq}`,
         name,
         mediaType: fit ? out : media,

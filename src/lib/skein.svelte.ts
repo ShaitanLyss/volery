@@ -3781,7 +3781,7 @@ export class Skein {
       await this.#deliver(
         conv,
         echo,
-        { content, echo, shots: [], carried: [], text: echo },
+        { content, echo, shots: [], carried: [], text: echo, files: [] },
         {
           settled: true,
           title: whole[0]!.item.text,

@@ -18,6 +18,7 @@ const words = (text: string): Draft => ({ text, shots: [] });
  *  the subject: what is being asserted is that a picture goes where its sentence
  *  goes. */
 const shot = (name: string): Attachment => ({
+  kind: "picture",
   id: name,
   name,
   mediaType: "image/png",

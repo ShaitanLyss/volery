@@ -883,7 +883,7 @@
           title="{a.name} — {sizeNote(a)}. Click to take it out of the prompt."
           onclick={() => detach(a.name)}
         >
-          <img src={a.thumb} alt="" />
+          {#if a.kind === "picture"}<img src={a.thumb} alt="" />{/if}
           <span class="what">
             <span class="who">{a.name}</span>
             <span class="how">{sizeNote(a)}</span>

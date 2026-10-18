@@ -2064,6 +2064,12 @@ pub enum Block {
     Image {
         source: ImageSource,
     },
+    /// A PDF, inline — what a chat card is given in place of a path it could
+    /// not open (`tools/probe-document.ts`: the CLI takes it on stdin and the
+    /// model reads it).
+    Document {
+        source: ImageSource,
+    },
 }
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
@@ -2082,6 +2088,14 @@ impl Block {
             Block::Text { text } => serde_json::json!({ "type": "text", "text": text }),
             Block::Image { source } => serde_json::json!({
                 "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": source.media_type,
+                    "data": source.data,
+                },
+            }),
+            Block::Document { source } => serde_json::json!({
+                "type": "document",
                 "source": {
                     "type": "base64",
                     "media_type": source.media_type,
@@ -3826,6 +3840,24 @@ mod tests {
                 source: ImageSource { media_type: "image/jpeg".into(), data: "Zm8=".into() }
             }
         );
+    }
+
+    /// A PDF for a chat card is a `document` block, in the place it was written.
+    /// The shape `tools/probe-document.ts` sent and the model read.
+    #[test]
+    fn a_pdf_goes_on_the_wire_as_a_document_block() {
+        let sent = r#"[
+            {"type":"text","text":"read "},
+            {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERg=="}}
+        ]"#;
+        let blocks: Vec<Block> = serde_json::from_str(sent).expect("the front end's shape");
+        let v: serde_json::Value =
+            serde_json::from_str(&user_envelope(&blocks)).expect("valid JSON");
+        let doc = &v["message"]["content"][1];
+        assert_eq!(doc["type"], "document");
+        assert_eq!(doc["source"]["type"], "base64");
+        assert_eq!(doc["source"]["media_type"], "application/pdf");
+        assert_eq!(doc["source"]["data"], "JVBERg==");
     }
 
     /// NDJSON is a line format, and the line is the half a reader can be left

@@ -25,12 +25,44 @@ import {
   tokenFor,
   turnOf,
   uniqueName,
-  type Attachment,
+  planFor,
+  pathText,
+  resolveFiles,
+  MAX_FILE_BYTES,
+  MAX_DOCUMENT_BYTES,
+  type Bytes,
+  type FileRef,
+  type Picture,
 } from "../src/lib/attach";
+
+const file = (name: string, path: string, over: Partial<FileRef> = {}): FileRef => ({
+  kind: "file",
+  id: name,
+  name,
+  path,
+  dir: false,
+  size: 1000,
+  ...over,
+});
+
+const bytes = (name: string, mediaType: string, over: Partial<Bytes> = {}): Bytes => ({
+  kind: "bytes",
+  id: name,
+  name,
+  mediaType,
+  data: `<${name}>`,
+  bytes: 1000,
+  ...over,
+});
+
+const HERE = { chat: false, afar: false };
+const CHAT = { chat: true, afar: false };
+const AFAR = { chat: false, afar: true };
 
 /** An attachment with the fields these tests care about; the bytes stand in for
  *  themselves so a block can be traced back to the picture it came from. */
-const shot = (name: string, over: Partial<Attachment> = {}): Attachment => ({
+const shot = (name: string, over: Partial<Picture> = {}): Picture => ({
+  kind: "picture",
   id: name,
   name,
   mediaType: "image/png",
@@ -423,5 +455,115 @@ describe("a turn, for here and for another wall", () => {
     expect(read("MAX_ATTACHED")).toBe(MAX_ATTACHED);
     expect(read("MAX_BYTES")).toBe(MAX_BYTES);
     expect(read("CARRY_MOST")).toBe(CARRY_MOST);
+  });
+});
+
+/* A file reaches a project card as its path, the way Claude Code writes one it
+   was handed by a drag (Lyss, 2026-10-16). The token is replaced in the words,
+   so past the cut a file is text and nothing downstream knows files exist. */
+describe("a file, by its path", () => {
+  test("the token becomes the path, in the sentence, and no block is added", () => {
+    const list = [file("report.pdf", "C:\\docs\\report.pdf")];
+    const turn = turnOf("read [report.pdf] and summarise", list);
+    expect(turn.content).toEqual([{ type: "text", text: "read C:\\docs\\report.pdf and summarise" }]);
+    expect(turn.text).toBe("read C:\\docs\\report.pdf and summarise");
+    expect(turn.echo).toBe("read C:\\docs\\report.pdf and summarise");
+    expect(turn.carried).toEqual([]);
+    expect(turn.files).toEqual([]);
+  });
+
+  test("a path with a space is quoted, as a terminal would write it", () => {
+    expect(pathText("C:\\My Docs\\a.txt")).toBe('"C:\\My Docs\\a.txt"');
+    expect(pathText("C:\\docs\\a.txt")).toBe("C:\\docs\\a.txt");
+  });
+
+  test("a folder is attached the same way", () => {
+    const list = [file("src", "C:\\repo\\src", { dir: true, size: null })];
+    expect(resolveFiles("look in [src]", list)).toBe("look in C:\\repo\\src");
+  });
+
+  test("pictures and paths sit in one sentence, each where it was written", () => {
+    const list = [shot("a"), file("b.txt", "C:\\b.txt")];
+    const turn = turnOf("see [a] beside [b.txt]", list);
+    expect(turn.content.map((b) => b.type)).toEqual(["text", "image", "text"]);
+    expect(turn.content[2]).toEqual({ type: "text", text: " beside C:\\b.txt" });
+    /* The held message and the far wall re-cut at picture tokens, so those
+       stay; the file is already words. */
+    expect(turn.text).toBe("see [a] beside C:\\b.txt");
+  });
+
+  test("a file whose token was typed over is not sent", () => {
+    expect(resolveFiles("nothing here", [file("x", "C:\\x")])).toBe("nothing here");
+  });
+
+  test("for another wall the token stays and the file is named for the crossing", () => {
+    const f = file("r.pdf", "C:\\r.pdf");
+    const turn = turnOf("read [r.pdf]", [f], AFAR);
+    expect(turn.text).toBe("read [r.pdf]");
+    expect(turn.files).toEqual([f]);
+  });
+});
+
+/* A chat card has no filesystem: pictures and PDFs go inline, the rest is
+   refused with the draft kept. */
+describe("what each target needs done first", () => {
+  test("a project card here writes held bytes and reads nothing", () => {
+    const b = bytes("drag.zip", "application/zip");
+    const plan = planFor("take [drag.zip]", [b, file("f", "C:\\f")], HERE);
+    expect(plan).toEqual({ write: [b], read: [], refused: null });
+  });
+
+  test("a chat card reads a PDF on disk to send it inline", () => {
+    const f = file("r.pdf", "C:\\r.pdf");
+    expect(planFor("[r.pdf]", [f], CHAT)).toEqual({ write: [], read: [f], refused: null });
+  });
+
+  test("a chat card refuses any other file, naming it", () => {
+    expect(planFor("[n.docx]", [file("n.docx", "C:\\n.docx")], CHAT).refused).toContain("n.docx");
+    expect(planFor("[src]", [file("src", "C:\\src", { dir: true })], CHAT).refused).toContain("folder");
+    expect(planFor("[z]", [bytes("z", "application/zip")], CHAT).refused).toContain("cannot be given to a chat card");
+  });
+
+  test("a PDF held as bytes goes inline to a chat card as a document block", () => {
+    const b = bytes("d.pdf", "application/pdf");
+    expect(planFor("[d.pdf]", [b], CHAT)).toEqual({ write: [], read: [], refused: null });
+    const turn = turnOf("read [d.pdf] now", [b], CHAT);
+    expect(turn.content).toEqual([
+      { type: "text", text: "read " },
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: "<d.pdf>" } },
+      { type: "text", text: " now" },
+    ]);
+    expect(turn.echo).toBe("read \n now");
+  });
+
+  test("a PDF too large to go inline is refused before anything goes", () => {
+    const b = bytes("big.pdf", "application/pdf", { bytes: MAX_DOCUMENT_BYTES + 1 });
+    expect(planFor("[big.pdf]", [b], CHAT).refused).toContain("at most");
+  });
+
+  test("bytes past the file cap are refused for every target", () => {
+    const b = bytes("huge.bin", "", { bytes: MAX_FILE_BYTES + 1 });
+    for (const reach of [HERE, CHAT, AFAR]) expect(planFor("[huge.bin]", [b], reach).refused).toContain("huge.bin");
+  });
+
+  test("only what the sentence still names is planned", () => {
+    expect(planFor("nothing", [bytes("z", "application/zip")], CHAT).refused).toBeNull();
+  });
+
+  test("a card on another wall needs nothing done here", () => {
+    expect(planFor("[z]", [bytes("z", "application/zip")], AFAR)).toEqual({ write: [], read: [], refused: null });
+  });
+
+  test("bytes that cannot go inline keep their token in the words rather than vanish", () => {
+    expect(compose("x [z] y", [{ name: "z", mediaType: "application/zip", data: "" }])).toEqual([
+      { type: "text", text: "x [z] y" },
+    ]);
+  });
+});
+
+describe("the reading under a tile", () => {
+  test("a file says it goes as its path", () => {
+    expect(sizeNote(file("a", "C:\\a", { size: 2048 }))).toBe("2 KB · sent as its path");
+    expect(sizeNote(file("d", "C:\\d", { dir: true, size: null }))).toBe("folder · sent as its path");
   });
 });
