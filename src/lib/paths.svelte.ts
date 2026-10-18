@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { definitionLine, fullPath, insideRoot, isBareName, soleMatch } from "./finding";
+import { chunks, keyOf, negatives, onDiskMayHaveChanged, rootsToReask, settle } from "./known";
 
 /* What the paths an agent named in prose actually are.
  *
@@ -41,11 +42,19 @@ const GATHER_MS = 120;
  *  thousand paths is a panel nobody is looking at. */
 const KEEP = 4000;
 
-/** Key the answer by the root as well, because the same relative path means
- *  different files in two cards. */
-function keyOf(root: string, path: string): string {
-  return `${root}\u0000${path}`;
-}
+/** Ask Rust about at most this many paths at once — `CLASSIFY_CAP` in
+ *  `find.rs`, which answers a path past it with nothing, and nothing reads as
+ *  absent. */
+const ASK_CHUNK = 400;
+
+/** Evidence of a change is usually a burst (a shell call, then an edit, then
+ *  another), so the re-ask waits for it to settle and is one pass. */
+const REASK_MS = 700;
+
+/** A failed ask is tried again after this, a few times, and then left as it is
+ *  until the next piece of evidence. */
+const RETRY_MS = 5000;
+const RETRIES = 3;
 
 class Paths {
   /** What each asked-about path turned out to be. `null` is a real answer —
@@ -55,6 +64,73 @@ class Paths {
   /** Queued, keyed by root, because the command takes one root and a list. */
   #waiting = new Map<string, Set<string>>();
   #timer: ReturnType<typeof setTimeout> | null = null;
+  #reaskTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Failed batches waiting out their retry, by key, so a render in the
+   *  meantime does not queue them again and spin against a dead command. */
+  #cooling = new Map<string, number>();
+  /** Roots a change was heard about, and whether the evidence named a place. */
+  #dirty = new Set<string>();
+  #everywhere = false;
+
+  constructor() {
+    onDiskMayHaveChanged((cwd) => this.refresh(cwd));
+  }
+
+  /** The disk may have changed: re-ask what it was last said not to have.
+   *
+   *  **An absence is a reading of a moment, not a fact** (`known.ts`). Only the
+   *  `null`s are re-asked — a kind stays cached — and only under roots the
+   *  evidence concerns, `cwd` being where a tool just ran, or every root when it
+   *  is `null` (the window regaining focus, which says nothing about where).
+   *  Called from events that already exist: a tool result landing in a card,
+   *  and focus. Coalesced, so a burst of writes is one pass; an answer that
+   *  comes back the same writes nothing, so nothing redraws for it. */
+  refresh(cwd: string | null = null) {
+    if (cwd === null) this.#everywhere = true;
+    else this.#dirty.add(cwd);
+    if (this.#reaskTimer !== null) return;
+    this.#reaskTimer = setTimeout(() => this.#sweep(), REASK_MS);
+  }
+
+  #sweep() {
+    this.#reaskTimer = null;
+    const places = this.#everywhere ? [null] : [...this.#dirty];
+    this.#everywhere = false;
+    this.#dirty.clear();
+    const roots = new Set<string>();
+    for (const at of places) {
+      for (const r of rootsToReask([this.#known, this.#found], at)) roots.add(r);
+    }
+    for (const root of roots) {
+      for (const p of negatives(this.#known, root)) this.#queue(this.#waiting, root, p);
+      for (const n of negatives(this.#found, root)) this.#queue(this.#seeking, root, n);
+    }
+    this.#arm();
+  }
+
+  #queue(into: Map<string, Set<string>>, root: string, item: string) {
+    let set = into.get(root);
+    if (!set) {
+      set = new Set();
+      into.set(root, set);
+    }
+    set.add(item);
+  }
+
+  #arm() {
+    if (this.#timer === null && (this.#waiting.size || this.#seeking.size)) {
+      this.#timer = setTimeout(() => void this.#drain(), GATHER_MS);
+    }
+  }
+
+  /** Whether a failed ask is still cooling off. */
+  #cold(key: string): boolean {
+    const until = this.#cooling.get(key);
+    if (until === undefined) return false;
+    if (Date.now() < until) return true;
+    this.#cooling.delete(key);
+    return false;
+  }
 
   /** What this path is, or `undefined` while nobody has been told yet.
    *
@@ -71,7 +147,7 @@ class Paths {
    *  sixty map lookups and one round trip, not sixty round trips. */
   ask(root: string, path: string) {
     if (!root || !path) return;
-    if (keyOf(root, path) in this.#known) return;
+    if (keyOf(root, path) in this.#known || this.#cold(keyOf(root, path))) return;
     let set = this.#waiting.get(root);
     if (!set) {
       set = new Set();
@@ -108,7 +184,7 @@ class Paths {
 
   seek(root: string, name: string) {
     if (!root || !name) return;
-    if (keyOf(root, name) in this.#found) return;
+    if (keyOf(root, name) in this.#found || this.#cold(keyOf(root, name))) return;
     let set = this.#seeking.get(root);
     if (!set) {
       set = new Set();
@@ -149,39 +225,84 @@ class Paths {
     const named = [...this.#seeking.entries()];
     this.#seeking.clear();
     for (const [root, set] of named) {
-      const names = [...set];
-      let answer: Record<string, string[]> = {};
-      try {
-        answer = await invoke<Record<string, string[]>>("find_names", { root, names });
-      } catch {
-        /* No ripgrep, or the walk failed: every name stays text, recorded so
-           it is not asked again on the next repaint. */
+      for (const names of chunks([...set], ASK_CHUNK)) {
+        let answer: Record<string, string[]> | null = null;
+        try {
+          answer = await invoke<Record<string, string[]>>("find_names", { root, names });
+        } catch {
+          /* No ripgrep, or the walk failed. That is not an answer: the names
+             are left as they were (unknown, or whatever was last said) and
+             tried again shortly, never recorded as absent. */
+        }
+        if (!answer) {
+          this.#retry(root, names, this.#seeking);
+          continue;
+        }
+        const next = { ...this.#found };
+        let changed = false;
+        for (const n of names) {
+          const was = next[keyOf(root, n)];
+          const now = soleMatch(n, answer[n] ?? []);
+          if (was !== now) changed = true;
+          next[keyOf(root, n)] = now;
+        }
+        if (changed) this.#found = trim(next);
       }
-      const next = { ...this.#found };
-      for (const n of names) next[keyOf(root, n)] = soleMatch(n, answer[n] ?? []);
-      this.#found = trim(next);
     }
 
     const batches = [...this.#waiting.entries()];
     this.#waiting.clear();
     for (const [root, set] of batches) {
-      const paths = [...set];
-      let answer: Record<string, string> = {};
-      try {
-        answer = await invoke<Record<string, string>>("classify_paths", { root, paths });
-      } catch {
-        /* The disk refused to be asked. Every candidate in this batch is
-           recorded as absent rather than left unanswered, so the render does
-           not queue them all again on its next pass and spin. They stay text,
-           which is what they already were. */
+      for (const paths of chunks([...set], ASK_CHUNK)) {
+        let answer: Record<string, string> | null = null;
+        try {
+          answer = await invoke<Record<string, string>>("classify_paths", { root, paths });
+        } catch {
+          /* The disk refused to be asked. Said nothing, so recorded as
+             nothing: `settle` leaves these alone and they are retried. */
+        }
+        if (!answer) {
+          this.#retry(root, paths, this.#waiting);
+          continue;
+        }
+        const next = { ...this.#known };
+        let changed = false;
+        for (const p of paths) {
+          const now = settle(answer, p);
+          if (now === undefined) continue;
+          if (next[keyOf(root, p)] !== now) changed = true;
+          next[keyOf(root, p)] = now;
+        }
+        if (changed) this.#known = trim(next);
       }
-      const next = { ...this.#known };
-      for (const p of paths) {
-        const kind = answer[p];
-        next[keyOf(root, p)] = kind === "dir" || kind === "file" ? kind : null;
-      }
-      this.#known = trim(next);
     }
+  }
+
+  #attempts = new Map<string, number>();
+
+  /** Put a failed batch back after a pause, a few times. While it waits the
+   *  render path finds the keys cooling and does not queue them again. */
+  #retry(root: string, items: string[], into: Map<string, Set<string>>) {
+    for (const it of items) {
+      const key = keyOf(root, it);
+      const n = (this.#attempts.get(key) ?? 0) + 1;
+      if (n > RETRIES) {
+        this.#attempts.delete(key);
+        this.#cooling.delete(key);
+        continue;
+      }
+      this.#attempts.set(key, n);
+      this.#cooling.set(key, Date.now() + RETRY_MS);
+    }
+    setTimeout(() => {
+      for (const it of items) {
+        const key = keyOf(root, it);
+        if (!this.#attempts.has(key)) continue;
+        this.#cooling.delete(key);
+        this.#queue(into, root, it);
+      }
+      this.#arm();
+    }, RETRY_MS);
   }
 }
 

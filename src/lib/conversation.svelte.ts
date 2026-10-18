@@ -100,6 +100,7 @@ import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
 import type { Closing, Confirm, Removal } from "./afar";
 import { capInput, landed, type ToolCall } from "./toolcall";
+import { diskMayHaveChanged, mayWriteDisk } from "./known";
 import {
   afterAck,
   afterExit,
@@ -2018,14 +2019,15 @@ export class Conversation {
    *
    *  A call whose line has already been sliced away simply never lands, and
    *  nothing says so: the line it would have said it on is not on the page. */
-  #land(toolId: string, text: string, failed: boolean, pictures: Picture[] = []) {
+  #land(toolId: string, text: string, failed: boolean, pictures: Picture[] = []): string | undefined {
     for (let i = this.lines.length - 1; i >= 0; i--) {
       const call = this.lines[i].call;
       if (call?.id === toolId) {
         call.result = landed(text, failed, pictures);
-        return;
+        return call.name;
       }
     }
+    return undefined;
   }
 
   /** What the last `compact_boundary` said it cost, waiting for the summary it
@@ -3417,7 +3419,13 @@ export class Conversation {
              so a result read for prose alone was a call that had plainly done
              something and appeared to have returned nothing. See `picturesOf`
              and sink 28cb1c5d. */
-          this.#land(b.tool_use_id, said, b.is_error === true, picturesOf(b.content));
+          const tool = this.#land(b.tool_use_id, said, b.is_error === true, picturesOf(b.content));
+          /* A tool that may have written something is the one event this card
+             emits that says the disk changed, and a path an agent named before
+             it existed was asked about — and answered *absent* — before that.
+             `known.ts` says why an absence must be re-asked. Said even for a
+             failed call: a shell that errored may still have written. */
+          if (mayWriteDisk(tool)) diskMayHaveChanged(this.cwd);
 
           const timed = this.#timerCalls.get(b.tool_use_id);
           if (timed) {

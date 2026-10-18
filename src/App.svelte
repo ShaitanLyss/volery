@@ -970,6 +970,14 @@
     if (attention.focused) void machine.refresh();
   });
 
+  /* A path an agent named is cached as absent until the disk says otherwise,
+     and a file made while you were looking elsewhere (a terminal, an editor)
+     emits nothing this window hears. Coming back is the event; `known.ts` has
+     why an absence is re-asked rather than kept. */
+  $effect(() => {
+    if (attention.focused) paths.refresh();
+  });
+
   /** A machine toggle from the keyboard says what is now true, since nothing
    *  on the wall moves when it flips. */
   async function flipMachine(knob: "awake" | "reopen" | "idle") {

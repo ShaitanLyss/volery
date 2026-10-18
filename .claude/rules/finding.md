@@ -21,6 +21,7 @@ paths:
   - "src/lib/ToolCall.svelte"
   - "src/lib/paths.svelte.ts"
   - "src/lib/Inlines.svelte"
+  - "src/lib/known.ts"
 ---
 
 # The finder, and the file viewer
@@ -790,8 +791,51 @@ is, which is not the same as the guard having been torn out.
   lookup and a set insert, and `GATHER_MS` collects a turn's worth into one call. The queueing
   happens in an `$effect` rather than inside the `$derived` that finds the candidates — a
   derived that reaches out and queues work is a side effect wearing a value's clothes.
-- **A batch that fails is recorded as absent**, not left unanswered. Otherwise the next render
-  queues the whole batch again and the two spin against each other.
+- **A batch that fails is not an answer, and is recorded as nothing.** It used to be recorded as
+  absent so the next render did not queue it again and spin; the spin is now stopped by a
+  cooling-off (`#cooling`, 5s, three tries) rather than by lying, and `settle` in `known.ts`
+  returns `undefined` for a failed ask so no caller can write an absence from one.
+
+#### An absence is a reading of a moment, not a fact
+
+Reported 2026-10-18 (card `15555efd`, `C:\Users\flori\codes\rise`): an agent wrote "the spec
+is written at `docs/ui-direction.md`" and the path was plain text in the open transcript, though
+the file existed. Parsing, scope and the file all checked out. The cause was the cache: `#known`
+was never invalidated, so a string rendered **before the file existed** — "I'll write
+docs/ui-direction.md", a plan, an earlier turn — was asked once, answered `null`, and stayed
+`null` for the life of the window. Agents name a file before they create it constantly. Two
+sibling holes fed the same pin: a failed `classify_paths` batch recorded as absent, and paths
+past `CLASSIFY_CAP` (400), which Rust answers with nothing and nothing reads as absent.
+
+The rule: **a presence may be cached, an absence is a reading of a moment.** Files that exist
+rarely stop existing inside a session; a file that does not exist yet is exactly what is about
+to. So a negative is re-asked whenever there is evidence the disk changed, and the evidence is
+two events that already exist rather than a timer:
+
+- **A tool result that may have written** (`mayWriteDisk`: Write, Edit, MultiEdit, NotebookEdit,
+  Bash, PowerShell — a shell counts even on an error) landing in a card. `Conversation` says
+  `diskMayHaveChanged(cwd)` on `known.ts`'s bus and `paths` listens; a bus rather than a field
+  because a card is built at two sites, and `conversation.svelte.ts` does not talk to Rust.
+- **The window regaining focus** (`paths.refresh()` from `App.svelte`), for the file made in a
+  terminal or an editor while you were looking elsewhere, which emits nothing this window hears.
+
+Bounded three ways: only the `null`s are re-asked, only under roots *related* to where the tool
+ran (containment in either direction — the viewer's root may be a subfolder of a card's), and
+the pass is coalesced (`REASK_MS`) so a burst of writes is one ask. A re-ask answering the same
+writes nothing, so `#known` is not replaced and nothing redraws for it; a changed answer is a
+fresh object, which is what lets `kind()` readers — `$state` — see it (the "version number *and*
+a fresh value" rule: here the identity is the new record, and the old one is never mutated).
+Asks are chunked at `ASK_CHUNK` = `CLASSIFY_CAP`, so nothing is cut and read as absent.
+
+The cached `null` is also what `ask`'s early return keys on, so the re-ask queues straight into
+`#waiting`/`#seeking` rather than through `ask`. `test/known.test.ts` holds the pure half; the
+`paths.svelte.ts` class itself runs only in the app, so the guard was checked by making
+`negatives` return positives too and watching the positives-kept test fail.
+
+Every surface that renders agent markdown shares the `paths` singleton, so the fix covers all of
+them with nothing per-surface: transcript, dock Ask and Notice, Vigil, Glance, Saying and the
+viewer all sit under a `scopeFiles`/`FileScope`. The peek window and the card face render no
+markdown and have no links.
 
 On the Rust side the split is about what each command is allowed to do. `classify_paths` stats
 and nothing else, so it deliberately does **not** use `safe_join` — an agent legitimately names
