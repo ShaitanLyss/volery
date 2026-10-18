@@ -1197,6 +1197,7 @@
     <div
       class="line {line.kind}"
       class:pending={line.state === "pending"}
+      class:held={line.state === "held"}
       class:failed={line.state === "failed"}
       data-nav={line.kind === "you" ? "you" : null}
     >{line.text}</div>
@@ -2007,6 +2008,21 @@
        keeps the step whatever the theme does with the ramp. */
     color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
     border-left-style: dashed;
+  }
+  /* Kept for an allowance to come back (`holding.ts`). Sits back like a
+     prompt on its way, and says what it is waiting for in the face `· not
+     sent` uses — but achromatic, because nothing has gone wrong: the card has
+     your words and will send them itself. Rust is kept for the one state of
+     the four that means they did not go. */
+  .line.you.held {
+    color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
+    border-left-style: dashed;
+  }
+  .line.you.held::after {
+    content: " · held — will send when allowance returns";
+    font-family: var(--util);
+    font-size: calc(0.7rem * var(--read, 1));
+    color: var(--paper-faint);
   }
   /* It never left. Rust, which is what failure is everywhere else here, and it
      says which failure rather than leaving a colour to be interpreted. The words

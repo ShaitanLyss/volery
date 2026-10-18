@@ -106,13 +106,14 @@ export const THUMB_SIDE = 160;
  *  ceiling — the one difference a picture to another wall has. */
 export const CARRY_MOST = 7 * 1024 * 1024;
 
-/** What a prompt with pictures says when every account is at its limit. The
- *  hold keeps one prompt's *text*, in the store, to send when an account frees
- *  up; a picture can be neither written there (see `drafts.ts`, and the
- *  section on disk above) nor dropped from the sentence that names it. So it is
- *  not held, and says so — `Skein.#deliver`. */
-export const PICTURES_NOT_HELD =
-  "not sent — every account is at its limit, and a prompt with pictures is not held; send it again when one frees up";
+/* A prompt with pictures is held like any other when every account is at its
+   limit, pictures and all — and that is the one place a picture is ever
+   written to disk. Until 2026-10-16 it was refused instead (`PICTURES_NOT_HELD`,
+   "a prompt with pictures is not held"), because the hold kept text alone and
+   the rule here is that an attachment never touches the disk. Lyss's call:
+   a held message has to survive a restart, so the hold carries its pictures
+   into the store and takes them out again in the same write that takes the
+   message out (`store::migrate_v54`, `holding.ts`). Nothing else is written. */
 
 /** One image attached to a draft. */
 export type Attachment = {
@@ -324,7 +325,7 @@ function escapeRe(s: string): string {
  *  gesture to remember, and an image whose token you typed over is one you
  *  plainly did not mean to send. The dock prunes on this after every keystroke,
  *  so the strip of chips and the sentence can never disagree. */
-export function stillIn(text: string, list: readonly Attachment[]): Attachment[] {
+export function stillIn<T extends { name: string }>(text: string, list: readonly T[]): T[] {
   return list.filter((a) => text.includes(tokenFor(a.name)));
 }
 
@@ -335,9 +336,12 @@ export function stillIn(text: string, list: readonly Attachment[]): Attachment[]
  *  between two tokens goes the same way, which is why `echoOf` is derived from
  *  what comes out of here rather than from the draft — the two differ, and only
  *  one of them is what the wire will replay. */
-export function compose(text: string, list: readonly Attachment[]): Block[] {
+export function compose(
+  text: string,
+  list: readonly Pick<Attachment, "name" | "mediaType" | "data">[],
+): Block[] {
   const attached = stillIn(text, list);
-  const image = (a: Attachment): Block => ({
+  const image = (a: Pick<Attachment, "mediaType" | "data">): Block => ({
     type: "image",
     source: { type: "base64", media_type: a.mediaType, data: a.data },
   });

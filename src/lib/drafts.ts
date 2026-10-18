@@ -1,4 +1,4 @@
-import { dropToken, type Attachment } from "./attach";
+import { dropToken, tokenFor, uniqueName, type Attachment } from "./attach";
 
 /** What you have typed and not yet sent, per card — the words and the pictures.
  *
@@ -67,6 +67,33 @@ export const NOTHING: Draft = { text: "", shots: [] };
  *  property read. */
 function empty(d: Draft): boolean {
   return !d.text && d.shots.length === 0;
+}
+
+/** Put words the wall could not send back in front of whatever is already
+ *  in a draft — held messages handed back by Escape, a clear, or a send that
+ *  failed (`holding.ts::handedBack`).
+ *
+ *  First rather than after, because they were written first: what is in the
+ *  draft now was typed since. A blank line between, so the two read as two.
+ *  A picture coming back under a name the draft is already using is renamed,
+ *  token and all, since two attachments called `shot 1` would be one token
+ *  meaning two pictures (`uniqueName`'s whole job). */
+export function mergeDraft(back: Draft, into: Draft): Draft {
+  if (empty(back)) return into;
+  if (empty(into)) return back;
+  const taken = into.shots.map((a) => a.name);
+  let text = back.text;
+  const shots: Attachment[] = [];
+  for (const a of back.shots) {
+    const name = uniqueName(taken, a.name);
+    taken.push(name);
+    if (name !== a.name) text = text.split(tokenFor(a.name)).join(tokenFor(name));
+    shots.push(name === a.name ? a : { ...a, name });
+  }
+  return {
+    text: into.text ? `${text}\n\n${into.text}` : text,
+    shots: [...shots, ...into.shots],
+  };
 }
 
 /** The bucket for "no card in hand". Not an id and cannot collide with one:
@@ -251,6 +278,16 @@ export class Drafts {
       if (id !== this.#holding) out.push([id, d]);
     }
     return out;
+  }
+
+  /** Hand words back to a card's draft without the field — `mergeDraft` into
+   *  whatever it has parked. For a card whose draft is *in* the field, the
+   *  caller merges into the field instead (`holds` says which), since parking
+   *  under the bucket the field is holding would be overwritten by the next
+   *  switch. `null` is the wall's own. */
+  give(id: string | null, back: Draft): void {
+    const key = id ?? WALL;
+    this.#park(key, mergeDraft(back, this.peek(id)));
   }
 
   /** Put a keeping back. Startup only.

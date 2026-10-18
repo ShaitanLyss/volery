@@ -156,8 +156,10 @@
     KEPT_KEY,
     decodeKept,
     encodeKept,
+    mergeDraft,
     type Draft,
   } from "./lib/drafts";
+  import { Attachments } from "./lib/attach.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
   import {
@@ -303,6 +305,38 @@
   skein.onClosed = (id) => {
     widgets.untether(id);
     undo.dropWhere((e) => pinOfGone(e, (c) => c === id));
+  };
+  /* Words the wall could not send, back where they were written: held
+     messages you cancelled, cleared or closed, and a send that failed outright
+     (`Skein.#handBack`). Into the field if that card's draft is the one in it,
+     since parking under the bucket the field holds would be overwritten by the
+     next switch; otherwise into what the card has parked — or the wall's own,
+     for a card that has just been closed and has no draft any more. Each
+     message's pictures are decoded back into attachments, so a picture comes
+     back as a chip and not as a dangling token. */
+  skein.onHandBack = async (id, parts) => {
+    const back: Draft[] = [];
+    for (const p of parts) {
+      const shots = new Attachments();
+      const why = p.pictures.length ? await shots.fromCarried(p.pictures).catch(String) : null;
+      if (why) skein.fault = `a held picture could not be put back in the draft: ${why}`;
+      back.push({ text: p.text, shots: shots.take() });
+    }
+    /* Oldest first, ahead of whatever is in the draft now: folded from the
+       last, since `mergeDraft` puts what it is handed in front. */
+    const target = skein.convs.some((c) => c.id === id) ? id : null;
+    if (drafts.holds(target)) {
+      field.take(back.reduceRight((into, b) => mergeDraft(b, into), field.draft));
+    } else {
+      drafts.give(target, back.reduceRight((into, b) => mergeDraft(b, into), { text: "", shots: [] }));
+    }
+    /* Kept now, not at the next keystroke: the keeping is debounced off the
+       field, and words parked under a bucket the field is not showing would
+       otherwise wait on a keystroke that may never come — while the store has
+       already let them go (found in review). The pictures do not travel this
+       far (`withoutShots`): a picture handed back lives as long as the window,
+       as every attachment in a draft does. */
+    keep(field.draft);
   };
   /* A timeline's plate is a widget too (`plates.ts`), and asks the wall two
      things a widget never had to: whether its plan is still on the glass, and
@@ -1455,7 +1489,7 @@
     const status = actions.status[cwd];
     if (!status?.conflicts) return;
     const conv = await openIn(cwd);
-    if (conv) await skein.send(conv, conflictPrompt(status));
+    if (conv) await skein.send(conv, conflictPrompt(status), undefined, { own: true });
   }
 
   /* Adoption: conversations that already exist on disk, from the CLI or from a
@@ -4078,7 +4112,7 @@
       /* Only where it can be stopped: a card on a wall too old to be asked
          falls through to letting go, rather than Escape becoming a key that
          says no for ever. The dock's stop button is where the reason is said. */
-      else if (card?.face.working && card.can("stop") === "yes") void card.do("stop");
+      else if (card && card.can("stop") === "yes") void card.do("stop");
       /* Escape backs out one kind at a time, innermost first, which is what it
          did while images and widgets each held a selection of their own. There
          is one selection now, spanning all four kinds, so these ask it rather

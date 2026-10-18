@@ -239,6 +239,9 @@ describe("whether a verb has anything to act on", () => {
     expect(canDo(null, "wake", face)).toEqual({ no: "it is not dormant" });
     expect(canDo(null, "stop", face)).toEqual({ no: "it is not working" });
     expect(canDo(null, "stop", { ...face, working: true })).toBe("yes");
+    /* A card holding messages, or about to heal, is at rest by design and
+       about to act on its own — Escape aimed at it means don't (sink 864ccaae). */
+    expect(canDo(null, "stop", { ...face, pending: true })).toBe("yes");
     expect(canDo(null, "clear", { ...face, spoken: false })).toEqual({ no: "nothing to clear yet" });
     expect(canDo(null, "clear", { ...face, spoken: false, working: true })).toBe("yes");
     expect(canDo(lab({ acts: new Set(["stop"]) }), "stop", { ...face, working: true })).toBe("yes");

@@ -173,7 +173,17 @@ export const whyNot = (c: Can): string | null => (c === "yes" ? null : c.no);
 /** What a card's face says, as far as whether a verb has anything to act on.
  *  The same for a card here and one elsewhere: a dormant card has no turn to
  *  stop, wherever it is. */
-export type VerbFace = { dormant: boolean; working: boolean; spoken: boolean };
+export type VerbFace = {
+  dormant: boolean;
+  working: boolean;
+  spoken: boolean;
+  /** About to act on its own with no turn running — holding messages for an
+   *  account, or waiting to heal or to be nudged. Escape aimed at one means
+   *  *don't* (`Skein.stop`), and gating stop on `working` alone made that
+   *  unreachable from the key and the button: a held card is at rest by
+   *  design (found in review, sink 864ccaae). */
+  pending?: boolean;
+};
 
 /** Whether `verb` may be asked of a card that looks like `face`, standing
  *  where `remote` says. Where it stands is asked first, since a reason about
@@ -185,7 +195,7 @@ export function canDo(remote: Remote | null, verb: Verb, face: VerbFace): Can {
     case "wake":
       return face.dormant ? "yes" : { no: "it is not dormant" };
     case "stop":
-      return face.working ? "yes" : { no: "it is not working" };
+      return face.working || face.pending ? "yes" : { no: "it is not working" };
     /* Something to clear means a turn taken or one under way — not a line on
        screen, which a cleared card still has. See the menu's own note. */
     case "clear":

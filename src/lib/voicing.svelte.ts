@@ -617,7 +617,7 @@ export class Voicing {
          typed one are the same act, drawn the same way, echoed the same way, and
          a card that is dormant is woken by either. */
       send: async (id, text) => {
-        await h.skein.send(card(id), text);
+        await h.skein.send(card(id), text, undefined, { yours: true });
       },
       broadcast: async (ids, text) => {
         await h.skein.broadcast(ids.map(card), text);

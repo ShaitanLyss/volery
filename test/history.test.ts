@@ -599,6 +599,16 @@ describe("history read while the card is speaking", () => {
     expect(trimOverlap(history, live)).toEqual([]);
   });
 
+  test("a held message drawn on restore is not the anchor either", () => {
+    /* Sink 864ccaae. A restored card draws what it is holding before its
+       history is read, and those words are in no session file. Anchoring on a
+       held "continue" would match the last time you said it and cut everything
+       after that out of the history. */
+    const history = [h("you", "continue"), h("text", "an answer worth keeping")];
+    const live = [{ kind: "you", text: "continue", state: "held" }];
+    expect(trimOverlap(history, live as any)).toEqual(history);
+  });
+
   test("a repeated line cuts at the last one, not the first", () => {
     // "continue" gets typed a lot; cutting at the first would eat the session.
     const history = [h("you", "continue"), h("text", "ok"), h("you", "continue")];

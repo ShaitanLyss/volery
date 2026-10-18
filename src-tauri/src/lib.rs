@@ -942,6 +942,7 @@ pub fn run() {
             store::set_conversation_account,
             store::set_conversation_bypass,
             store::set_conversation_hold,
+            store::held_pictures,
             relay::relay_roster,
             relay::relay_send,
             relay::relay_inboxes,

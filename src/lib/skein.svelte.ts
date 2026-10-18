@@ -46,8 +46,6 @@ import {
   lapsesOnAnswer,
   QUEUED_BEHIND_NOTE,
   HOLD_LINE,
-  HOLD_REFUSED_LINE,
-  holdSlotFor,
   NUDGE_BUDGET,
   ghostNote,
   nudgeSkipFor,
@@ -76,7 +74,18 @@ import {
   sayRepair,
   type RepairReport,
 } from "./repair";
-import { PICTURES_NOT_HELD, type Block, type Turn } from "./attach";
+import { type Block, type Carried, type Turn } from "./attach";
+import {
+  NO_ACCOUNT_HELD,
+  QUEUED_LINE,
+  admit,
+  composeRound,
+  handedBackNote,
+  nextRound,
+  withoutMissing,
+  type Held,
+  type HeldItem,
+} from "./holding";
 import { Conversation, type ConvKind } from "./conversation.svelte";
 import { foldTranscript, trimOverlap } from "./history";
 import { LEAVE_MS, layout, type Placement, type Territory } from "./layout";
@@ -101,7 +110,6 @@ import {
   unansweredRousePrompt,
   ALREADY_ROUSED_NOTE,
   NOTHING_TO_RESUME_NOTE,
-  CAME_BACK_NOTE,
   POST_WAITING_NOTE,
   REAWAKEN_KEY,
   SHORT_OF_MEMORY_NOTE,
@@ -606,6 +614,14 @@ export class Skein {
    *  widgets live in `App.svelte`, and this class may not reach for them. */
   onClosed: (id: string) => void = () => {};
 
+  /** Words the wall could not send, going back to a card's draft — held
+   *  messages you cancelled, cleared or closed, or a send that failed outright
+   *  (`#handBack`). Oldest first, each with the pictures it still has. A hook
+   *  for `onClosed`'s reason: the drafts live in `App.svelte`. A card that has
+   *  just been closed has no draft left, so the hook is told an id the wall no
+   *  longer has and gives the words to the wall's own. */
+  onHandBack: (id: string, parts: { text: string; pictures: Carried[] }[]) => void = () => {};
+
   /** And an agent changing one it already pinned. Separate from `onPin` because
    *  the two do different things to the same list: one adds a row, the other
    *  edits, moves or removes one that is already there. */
@@ -794,6 +810,7 @@ export class Skein {
         this.#lapseHeld(c);
         this.#heal(c);
         this.#nudge(c);
+        this.#drain(c);
         this.#settleRepair(c);
       }),
     );
@@ -1372,7 +1389,17 @@ export class Skein {
           const until = c.held!.until;
           if (until !== null && until > now) this.#rearmHold(c, until);
         }
-        if (due) void this.releaseHeld();
+        /* After each held card's history is read, not before. A restored
+           card draws what it is holding ahead of the read, and the read trims
+           its overlap with the live lines by their first line that is not
+           held (`trimOverlap`) — a release flips those lines to pending, so
+           releasing first made a held "continue" the anchor again and cut the
+           scrollback at the last time you said it (found in review). */
+        if (due) {
+          void Promise.all(heldNow.map((c) => this.loadHistory(c).catch(() => {}))).then(() =>
+            this.releaseHeld(),
+          );
+        }
       }
 
       /* What each card was told while the app was shut. Behind the painted
@@ -1575,6 +1602,8 @@ export class Skein {
           cwd: trail.root || conv.cwd,
           planner: handleOf(conv.id),
         }),
+        undefined,
+        { own: true },
       );
       return maker;
     } finally {
@@ -1708,7 +1737,7 @@ export class Skein {
        sends no brief (`flyway/opening.rs`): the card waits for its first
        message, as one opened by this wall's own `+` does. Only that ask may
        arrive empty — `link.rs` refuses an agent's before it gets here. */
-    if (prompt.trim()) await this.send(conv, prompt);
+    if (prompt.trim()) await this.send(conv, prompt, undefined, { own: true });
   }
 
   /** A card that moved here from another wall: born through `#openIn` like
@@ -1748,7 +1777,7 @@ export class Skein {
        words, which is what `#deliver` would otherwise name an untitled card
        after. */
     conv.title = m.title && m.title !== "untitled" ? m.title : `moved from ${m.fromHost}`;
-    await this.send(conv, m.prompt);
+    await this.send(conv, m.prompt, undefined, { own: true });
   }
 
   /** Move a card to another wall. `null` when the move is under way — how it
@@ -2488,11 +2517,13 @@ export class Skein {
              nothing for it keeps saying so, since a process changes nothing
              about what was lost.
              Unless you got there first and shared the flight, as the arm below
-             has it: then the turn owns the line, and a note claiming nothing
-             was sent would sit on top of what you just said. */
+             has it: then the turn owns the activity.
+             No note in the transcript: it used to say in `meta` that the card
+             had its process back and nothing was sent, and it never went away —
+             a line repeated on every launch about something the card already
+             shows. The chronicle row below is the one record of the pass. */
           if (!conv.working) {
             conv.activity = conv.interrupted ? "interrupted" : "ready";
-            conv.note(CAME_BACK_NOTE);
             cameBack.push(conv.title || conv.project || "a card");
           }
         } else if (conv.working) {
@@ -2518,11 +2549,14 @@ export class Skein {
              looking for damage that was never done. There is no third arm to
              this any more, and there cannot be: `needsRousing` is exactly
              `lost || jobs.length`, so one of the two always applies. */
-          await this.send(
-            conv,
-            owed === "resume" ? resumePrompt(jobs, Date.now()) : jobsPrompt(jobs, Date.now()),
-          );
-          await this.#toldAboutJobs(conv, jobs);
+          const owedText =
+            owed === "resume" ? resumePrompt(jobs, Date.now()) : jobsPrompt(jobs, Date.now());
+          await this.send(conv, owedText, undefined, { own: true });
+          /* Only once the news has actually gone. Held instead — the card's
+             own queue was restored ahead of it — the jobs stay unmarked, so
+             a hold dropped before it is sent still leaves the next launch to
+             tell (found in review). */
+          if (!conv.held?.queue.some((h) => h.text === owedText)) await this.#toldAboutJobs(conv, jobs);
         }
         /* Paced only for the cards this queue actually spawned — every skip
            above `continue`s past it, so a wall of a hundred cards at rest is
@@ -2835,7 +2869,11 @@ export class Skein {
        Only the card's `working` check stood in the way. The held text is the
        turn this card is owed; a heal of a turn that broke while it waited has
        nothing to add to it. */
-    if (conv.held) {
+    /* Only a card held *for the allowance*. One whose queue is merely waiting
+       behind a round that went out is a card whose round just broke, and that
+       round is the turn a heal is for: re-asked first, ahead of the rest, which
+       `#releaseCard` holds back while the heal is due. */
+    if (conv.held?.waiting === "allowance") {
       conv.pendingHeal = null;
       return;
     }
@@ -3150,7 +3188,7 @@ export class Skein {
       }
       conv.nudgeAttempts = nudge.attempt;
       conv.note(nudgeNote(nudge.attempt, nudge.kind));
-      await this.send(conv, NUDGE_TEXT);
+      await this.send(conv, NUDGE_TEXT, undefined, { own: true });
       /* The timer is the job grace, except on the prompt side, where the wait
          stopped costing anything the moment it stopped being a turn and could
          therefore be set from what the CLI really does. See
@@ -3204,6 +3242,27 @@ export class Skein {
    *  and leak the first, which is the trap `#heals` is keyed to avoid. */
   #holds = new Map<string, ReturnType<typeof setTimeout>>();
 
+  /** The pictures of held messages, by `HeldItem.key`, while this window is
+   *  up — the store has them too, and is where a restarted wall reads them back
+   *  (`held_pictures`). */
+  #heldPictures = new Map<string, Carried[]>();
+
+  /** Each card's latest hold write, so the next one goes after it. */
+  #holdWrites = new Map<string, Promise<void>>();
+
+  /** Cards with a round of held messages on its way out. A message typed into
+   *  one goes behind the round rather than past it, even in the moment the
+   *  queue itself is empty. */
+  #releasing = new Set<string>();
+
+  /** A round taken out of a card's queue and not yet sent — still written to
+   *  the store, ahead of the queue, until it is (`#writeHold`). */
+  #inFlight = new Map<string, HeldItem[]>();
+
+  /** Moved by every `#dropHold`, so a release waiting on an await can tell
+   *  its round was cancelled under it. */
+  #holdGen = new Map<string, number>();
+
   /** The text a heal is sending right now, per card, so `#hold` can tell a
    *  prompt Skein composed from one you typed. Set and cleared around the one
    *  `send` in `#heal`'s timer. */
@@ -3228,7 +3287,12 @@ export class Skein {
    *  `limits.rs`'s own floor, another machine may be spending the same account,
    *  and a five-hour window can cross a cap inside that minute. `#heal`'s
    *  `limited` arm is the reactive half that catches those. */
-  async #settleAccount(conv: Conversation, text: string | null): Promise<boolean> {
+  async #settleAccount(
+    conv: Conversation,
+    text: string | null,
+    turn?: Turn,
+    own = false,
+  ): Promise<boolean> {
     if (!this.#managing) return true;
 
     const choice: Choice = waterfall.next({
@@ -3244,37 +3308,29 @@ export class Skein {
     }
 
     if (choice.kind === "hold") {
-      const kept = text === null ? null : this.#hold(conv, text, choice);
+      const why = this.#holdWhy(conv, choice);
+      const item = text !== null ? this.#hold(conv, text, turn, why, choice.until, own) : null;
       if (text === null) conv.activity = HOLD_LINE;
-      /* A prompt the slot refused is a prompt nothing will ever send, so its
-         line cannot stay pending and awaited as `echoHeld` would leave it —
-         `awaiting` would stand at one for the life of the process and the card
-         read "sent, not picked up" once the hold released. `echoFailed` is the
-         one place that marks the line and brings the count down together.
-         The first prompt is untouched: it is the one `held` still names. */
-      if (text !== null && kept === false) conv.echoFailed(text, HOLD_REFUSED_LINE);
-      /* The turn `echo` opened is given back. A prompt that never left is not a
-         turn beginning, and a card left `working` through a hold read celadon
-         for as long as the window took to turn over — up to five hours of the
-         wall claiming it was burning tokens while it sat doing nothing. It also
-         locked out `#heal` and `#nudge`, both of which refuse a working card.
-         The line itself stays pending and awaited: `releaseHeld` sends this very
-         text, and the replay needs a line to claim. */
-      conv.echoHeld(conv.held?.why ?? HOLD_LINE);
+      /* The turn `echo` opened is given back, and the line is marked held.
+         A prompt that never left is not a turn beginning, and a card left
+         `working` through a hold read celadon for as long as the window took
+         to turn over — up to five hours of the wall claiming it was burning
+         tokens while it sat doing nothing. It also locked out `#heal` and
+         `#nudge`, both of which refuse a working card. The line stays
+         awaited: a release sends these very words, and the replay needs a
+         line to claim. */
+      conv.echoHeld(item, conv.held?.why ?? HOLD_LINE);
       return false;
     }
 
     /* Nothing usable and no clock to watch: every account switched off, or none
-       signed in. A fault rather than a hold, because a hold that can never end
-       is a card that has quietly stopped working.
-       And a fault has to be *marked* as one. This used to set the face and
-       nothing else: the prompt was abandoned with no hold to release it and no
-       timer to try again, while the turn `echo` opened stayed open — so the card
-       sat celadon and working over a prompt that no longer existed anywhere but
-       in a line drawn as though it had been sent. `echoFailed` is what says a
-       send never left, and it is what this always meant. */
-    if (text !== null) conv.echoFailed(text, "no account available");
-    else conv.activity = "no account available";
+       signed in. Still a fault, since it is something to go and fix, and said
+       as one. But **held**, not failed, which it was until 2026-10-16: a
+       failure here marked your line and kept your words nowhere else, so a
+       restart lost them — and this does end, when an account is signed in or
+       switched on, which the minute's sweep notices (`releaseHeld`). */
+    const item = text !== null ? this.#hold(conv, text, turn, NO_ACCOUNT_HELD, null, own) : null;
+    conv.echoHeld(item, item !== null ? NO_ACCOUNT_HELD : "no account available");
     this.fault = choice.why;
     return false;
   }
@@ -3418,88 +3474,145 @@ export class Skein {
     }
   }
 
-  /** Keep a prompt until an account can take it.
+  /** What a hold says it is waiting for, in this card's own account's words.
    *
-   *  Nothing is lost and nothing is silently dropped: the card says what it is
-   *  waiting for and until when, and goes the moment one frees up. There are
-   *  two ways out and it needs neither of them to be reliable — a timer aimed
-   *  at the first door to open, and the allowance poll, which sweeps every held
-   *  card whenever it learns anything. A blocker that named no reset makes
-   *  `until` null and leaves the poll as the only way out, which is right:
-   *  there is nothing to aim a timer at.
-   *
-   *  False means the slot refused: it already holds different words, and the
-   *  caller owes the refused prompt's line a failure (`#settleAccount`). */
-  #hold(conv: Conversation, text: string, choice: Extract<Choice, { kind: "hold" }>): boolean {
-    /* One slot, and everything that reaches here wants to write it — so the
-       refusal belongs here rather than at each caller, where it is one `if`
-       somebody has to remember and the cost of forgetting is a prompt of yours
-       that no longer exists anywhere.
-       `#nudge` and `#heal` both send on their own initiative, and both can fall
-       due on a card that is *already* holding your words: a held card is
-       deliberately not `working`, which is what lets them through. Their text
-       then landed in this slot on top of yours, `#writeHold` persisted it, and
-       `releaseHeld` spent the account that finally freed up on Volery's own
-       sentence — with your line still `awaited`, so `awaiting` never came down
-       and the next nudge was armed by that. Found in review against sink
-       `4ac63054`, which reports both offenders in one breath: "two nudges and
-       four heal attempts".
-       The same text is allowed through, since that is `releaseHeld` putting a
-       prompt back after a door turned out to be shut, and it needs the timer
-       re-armed. */
-    if (holdSlotFor(conv.held, text) === "refuse") return false;
-    /* **This card's own account first, and that is the whole of the fix.** It
-       was `standings.find(st => st.state === "blocked")` — the first blocked
-       account in `ordered`, i.e. priority then rank then label — which is a
-       different account from the one the card is on for every card not sitting
-       on the lowest-ranked row. So a card genuinely running on the second
-       account, with room on it, held and then said "the 5 hours is spent" in
-       the *first* account's words: a reading taken from a subscription this
-       card has never touched, on the face of one that had. Reported as cards
-       "on the free account suddenly reporting out of allowance", which is
-       exactly what it looks like from outside. Sink `bee98f47`.
-       The fall-back is kept and is not a lesser answer: a card whose own
-       account is blocked says why *it* stopped, and one whose account is not in
-       the registry at all — unlabelled, or pointing at a row since removed —
-       falls to the first blocked account, which is the nearest true thing there
-       is to say about a wall where everything is blocked. `HOLD_LINE` covers
-       the rest. */
+   *  **This card's own account first, and that is the whole of the fix.** It
+   *  was `standings.find(st => st.state === "blocked")` — the first blocked
+   *  account in `ordered`, i.e. priority then rank then label — which is a
+   *  different account from the one the card is on for every card not sitting
+   *  on the lowest-ranked row. So a card genuinely running on the second
+   *  account, with room on it, held and then said "the 5 hours is spent" in
+   *  the *first* account's words: a reading taken from a subscription this
+   *  card has never touched, on the face of one that had. Reported as cards
+   *  "on the free account suddenly reporting out of allowance", which is
+   *  exactly what it looks like from outside. Sink `bee98f47`.
+   *  The fall-back is kept and is not a lesser answer: a card whose own
+   *  account is blocked says why *it* stopped, and one whose account is not in
+   *  the registry at all — unlabelled, or pointing at a row since removed —
+   *  falls to the first blocked account, which is the nearest true thing there
+   *  is to say about a wall where everything is blocked. `HOLD_LINE` covers
+   *  the rest. */
+  #holdWhy(conv: Conversation, choice: Extract<Choice, { kind: "hold" }>): string {
     const mine = choice.standings.find((st) => st.label === conv.accountLabel);
     const blocked =
       mine?.state === "blocked"
         ? mine
         : choice.standings.find((st) => st.state === "blocked");
-    /* Whether a heal composed this text, carried across `releaseHeld` putting
-       the same text back. See `held.composed`. */
-    const composed =
-      this.#composing.get(conv.id) === text ||
-      (conv.held?.text === text && conv.held.composed === true);
+    return blocked?.state === "blocked" ? sayBlocked(blocked.blockers) : HOLD_LINE;
+  }
+
+  /** Keep a message until an account can take it.
+   *
+   *  Nothing is lost and nothing is turned away: the message joins the card's
+   *  queue (`holding.ts`) — at the back if you typed it, at the front if a heal
+   *  composed it — and the card says what it is waiting for and until when.
+   *  There are two ways out and it needs neither of them to be reliable — a
+   *  timer aimed at the first door to open, and the allowance poll, which
+   *  sweeps every held card whenever it learns anything. A blocker that named
+   *  no reset makes `until` null and leaves the poll as the only way out,
+   *  which is right: there is nothing to aim a timer at.
+   *
+   *  **It used to be one slot, and refused a second message** (sink
+   *  `864ccaae`). The refusal was right about one thing — a nudge or a heal
+   *  must never overwrite your words (sink `4ac63054`) — and a queue keeps that
+   *  for nothing: nothing is overwritten, because nothing is ever replaced.
+   *  What the slot cost was the second thing you typed into a held card,
+   *  marked failed and kept nowhere, so a restart took it.
+   *
+   *  Its pictures, if it has any, are kept beside it — in memory, and in the
+   *  store, which is the one place a picture is ever written to disk
+   *  (`store::migrate_v54`, Lyss's call): a held message has to survive a
+   *  restart, and one that came back without its pictures would be a sentence
+   *  about nothing. */
+  #hold(
+    conv: Conversation,
+    text: string,
+    turn: Turn | undefined,
+    why: string,
+    until: number | null,
+    own: boolean,
+  ): HeldItem {
+    const item = this.#heldItem(conv, text, turn, own);
     conv.held = {
-      text,
-      why: blocked?.state === "blocked" ? sayBlocked(blocked.blockers) : HOLD_LINE,
-      until: choice.until,
-      ...(composed ? { composed: true as const } : {}),
+      queue: admit(conv.held?.queue ?? [], item),
+      why,
+      until,
+      waiting: "allowance",
     };
-    conv.activity = conv.held.why;
+    conv.activity = why;
     /* Written here, at the edge where the hold begins, rather than at shutdown.
        That is the lesson `store::set_mid_turn` paid for: bookkeeping that records
        how far something got must not be deferred to after the getting there,
        because code that runs at exit is exactly the code a crash skips. A hold
        saved only on a clean quit is a hold lost by the one exit that loses work.
        See `store::migrate_v27`. */
-    this.#writeHold(conv);
+    this.#writeHold(conv, item);
+    this.#aimHold(conv, until);
+    return item;
+  }
 
-    if (choice.until === null) {
-      /* Nothing to aim at, so nothing to arm — and the old timer has to go
-         anyway, or a re-arm against an unknown reset leaves the previous
-         countdown running against a time this hold no longer claims. */
-      const existing = this.#holds.get(conv.id);
-      if (existing !== undefined) clearTimeout(existing);
-      this.#holds.delete(conv.id);
-      return true;
+  /** A message typed into a card that is already holding — or has a round of
+   *  held messages on its way out — goes behind them, whatever the accounts
+   *  say. Asking the waterfall would be asking the wrong question: an account
+   *  may well be free, and sending now would put these words in front of ones
+   *  you wrote before them. */
+  #append(conv: Conversation, text: string, turn: Turn | undefined, own: boolean) {
+    const item = this.#heldItem(conv, text, turn, own);
+    const held: Held = conv.held ?? { queue: [], why: QUEUED_LINE, until: null, waiting: "turn" };
+    conv.held = { ...held, queue: admit(held.queue, item) };
+    this.#writeHold(conv, item);
+    /* The turn `echo` opened is given back only on a card held for the
+       allowance. Behind a round that is out, the card is in a real turn —
+       waking, or answering — and giving it back would let the next round be
+       written into it before its `result`, where the CLI would merge the two
+       (found in review). */
+    conv.echoHeld(
+      item,
+      conv.held.why,
+      conv.held.waiting === "allowance" && !this.#releasing.has(conv.id),
+    );
+  }
+
+  /** One held message, and its pictures put somewhere they will be found. */
+  #heldItem(conv: Conversation, text: string, turn: Turn | undefined, own: boolean): HeldItem {
+    const carried = turn?.carried ?? [];
+    const item: HeldItem = {
+      key: crypto.randomUUID(),
+      text,
+      pictures: carried.map((c) => c.name),
+      /* Whether a heal composed this text, so it is the kind that may lapse
+         and the kind that goes to the front. See `HeldItem.composed`. */
+      ...(this.#composing.get(conv.id) === text ? { composed: true as const } : {}),
+      /* Skein's own words, which go alone and are never handed back to you.
+         See `HeldItem.own`. */
+      ...(own ? { own: true as const } : {}),
+    };
+    if (carried.length) this.#heldPictures.set(item.key, [...carried]);
+    return item;
+  }
+
+  /** Still held, for a new reason or a new time: the queue stays exactly as it
+   *  is, and the timer is aimed again. A held card whose countdown had stopped
+   *  would read as one that had been forgotten. */
+  #reHold(conv: Conversation, why: string, until: number | null) {
+    if (!conv.held) return;
+    conv.held = { ...conv.held, why, until, waiting: "allowance" };
+    conv.activity = why;
+    this.#writeHold(conv);
+    this.#aimHold(conv, until);
+  }
+
+  /** Aim the release timer, or take it down when there is nothing to aim at —
+   *  a re-arm against an unknown reset must not leave the previous countdown
+   *  running against a time this hold no longer claims. */
+  #aimHold(conv: Conversation, until: number | null) {
+    if (until !== null) {
+      this.#rearmHold(conv, until);
+      return;
     }
-    this.#rearmHold(conv, choice.until);
-    return true;
+    const existing = this.#holds.get(conv.id);
+    if (existing !== undefined) clearTimeout(existing);
+    this.#holds.delete(conv.id);
   }
 
   /** Point a card's release timer at an instant, replacing whatever it had.
@@ -3535,27 +3648,184 @@ export class Skein {
        cheap when it has just been asked. */
     await waterfall.poll();
     for (const conv of this.convs) {
-      const held = conv.held;
-      if (!held) continue;
       if (this.#gone) return;
-      const choice = waterfall.next({ bypass: conv.bypassCaps, stickTo: conv.accountLabel });
-      if (choice.kind !== "use") {
-        /* Still nothing. Re-armed against the new time rather than left with a
-           dead timer: the poll would reach it anyway, but a held card whose
-           countdown has stopped reads as one that has been forgotten. */
-        if (choice.kind === "hold") this.#hold(conv, held.text, choice);
-        continue;
-      }
-      conv.held = null;
-      this.#holds.delete(conv.id);
-      this.#writeHold(conv);
-      conv.note("an account freed up — sending what was held");
-      /* The turn `echoHeld` gave back is taken again here rather than at the
-         `echo` that never happens on this path — the line was drawn when you
-         typed it, minutes or hours ago, and only the sending is new. */
-      conv.echoResumed(held.text);
-      await this.#deliver(conv, held.text);
+      if (conv.held) await this.#releaseCard(conv);
     }
+  }
+
+  /** What is left of a queue goes when the round ahead of it has finished its
+   *  turn. Read after every event, like `#heal` and `#nudge`; `#releaseCard`
+   *  owns every reason not to. */
+  #drain(conv: Conversation) {
+    if (conv.held?.waiting === "turn") void this.#releaseCard(conv);
+  }
+
+  /** Send the next round of what a card is holding, if anything will take it.
+   *
+   *  **One round, one turn** (`holding.ts`): every held message up to the next
+   *  slash command, combined into one prompt, each verbatim under its own
+   *  divider. Their lines settle together on the one replay (`Line.batch`).
+   *  Whatever is left — the command and anything after it — waits for this
+   *  round's turn to finish and goes then (`#drain`).
+   *
+   *  Not while the card is working or about to heal: a round written into a
+   *  running turn would be queued by the CLI and merged with whatever else is
+   *  waiting there, and one written ahead of a heal would put new words before
+   *  a re-ask of older ones. Each of those ends in an event, and the event is
+   *  what asks again. */
+  async #releaseCard(conv: Conversation) {
+    if (!conv.held || this.#releasing.has(conv.id)) return;
+    if (conv.working || conv.pendingHeal || this.#heals.has(conv.id)) return;
+    if (this.#managing) {
+      const choice = waterfall.next({ bypass: conv.bypassCaps, stickTo: conv.accountLabel });
+      if (choice.kind === "hold") {
+        this.#reHold(conv, this.#holdWhy(conv, choice), choice.until);
+        return;
+      }
+      if (choice.kind === "none") {
+        if (conv.held.why !== NO_ACCOUNT_HELD) this.#reHold(conv, NO_ACCOUNT_HELD, null);
+        return;
+      }
+    }
+    const { round } = nextRound(conv.held.queue);
+    if (!round.length) return;
+    /* Everything below awaits, and Escape, a clear or a close can land in any
+       of those gaps (`#dropHold` bumps this). Each await is followed by asking
+       whether the round is still wanted; a release that carried on regardless
+       sent words you had just cancelled and handed back (found in review). */
+    const gen = this.#holdGen.get(conv.id) ?? 0;
+    const cancelled = () => (this.#holdGen.get(conv.id) ?? 0) !== gen || this.#gone;
+    this.#releasing.add(conv.id);
+    try {
+      /* The pictures, from memory where the window that held them is still
+         up, and from the store after a restart. A message whose pictures are
+         not all there cannot go as you wrote it, and is handed back to you
+         instead — with what pictures there are, and the tokens of the ones
+         that are not taken out of the sentence. A read that *failed* is not a
+         picture found missing: the round stays held, and is asked again. */
+      const parts: { item: HeldItem; pictures: Carried[]; missing: string[] }[] = [];
+      for (const item of round) {
+        const pictures = await this.#picturesOf(conv, item);
+        if (cancelled()) return;
+        if (pictures === null) {
+          this.fault = "a held message's pictures could not be read back — it stays held";
+          return;
+        }
+        const have = new Set(pictures.map((p) => p.name));
+        parts.push({ item, pictures, missing: item.pictures.filter((n) => !have.has(n)) });
+      }
+      const whole = parts.filter((p) => p.missing.length === 0);
+      const broken = parts.filter((p) => p.missing.length > 0);
+
+      /* Out of the queue, and onto the books as in flight: still written to the
+         store ahead of what is left (`#writeHold`) until the send is done, so
+         a crash in the middle of it restarts holding the round rather than
+         having lost it — a copy is recoverable where a loss is not. Out of the
+         queue *as it stands now*: a message typed meanwhile joined the back. */
+      const gone = new Set(round.map((h) => h.key));
+      const left = (conv.held?.queue ?? []).filter((h) => !gone.has(h.key));
+      conv.held = left.length
+        ? { queue: left, why: QUEUED_LINE, until: null, waiting: "turn" }
+        : null;
+      this.#inFlight.set(conv.id, whole.map((p) => p.item));
+      this.#aimHold(conv, null);
+
+      if (broken.length) {
+        conv.failHeld(broken.map((p) => p.item.key), "its pictures were not kept");
+        this.#handBack(conv, broken.filter((p) => !p.item.own && !p.item.composed), "its pictures could not be found again");
+      }
+      if (!whole.length) {
+        this.#inFlight.delete(conv.id);
+        this.#writeHold(conv);
+        for (const p of broken) this.#heldPictures.delete(p.item.key);
+        return;
+      }
+
+      /* The account, now: moved if this card is on the wrong one, which ends
+         its process, and so ahead of the wake `#deliver` does. A door that
+         shut since the reading above puts the round back at the front, where
+         it was. */
+      const settled = await this.#settleAccount(conv, null);
+      if (cancelled()) {
+        this.#abandonRound(conv, whole);
+        return;
+      }
+      if (!settled) {
+        this.#inFlight.delete(conv.id);
+        const now = conv.held?.queue ?? [];
+        conv.held = {
+          queue: [...whole.map((p) => p.item), ...now],
+          why: conv.held?.waiting === "allowance" ? conv.held.why : HOLD_LINE,
+          until: conv.held?.waiting === "allowance" ? conv.held.until : null,
+          waiting: "allowance",
+        };
+        this.#writeHold(conv);
+        return;
+      }
+
+      conv.note(
+        whole.length === 1
+          ? "an account freed up — sending what was held"
+          : `an account freed up — sending the ${whole.length} held messages together, as one turn`,
+      );
+      const { content, echo } = composeRound(
+        whole.map((p) => ({ text: p.item.text, pictures: p.pictures })),
+      );
+      /* The turn `echoHeld` gave back is taken again here rather than at the
+         `echo` that never happens on this path — the lines were drawn when you
+         typed them, minutes or hours ago, and only the sending is new. */
+      conv.echoResumed(
+        whole.map((p) => p.item),
+        echo,
+      );
+      await this.#deliver(
+        conv,
+        echo,
+        { content, echo, shots: [], carried: [], text: echo },
+        {
+          settled: true,
+          title: whole[0]!.item.text,
+          /* What goes back to your draft if the send fails: your words, not
+             a heal's or Skein's. */
+          giveBack: whole.filter((p) => !p.item.composed && !p.item.own),
+        },
+      );
+      /* Only now out of the store, and their pictures with them. */
+      this.#inFlight.delete(conv.id);
+      for (const p of parts) this.#heldPictures.delete(p.item.key);
+      this.#writeHold(conv);
+    } finally {
+      this.#releasing.delete(conv.id);
+    }
+  }
+
+  /** A round taken out of the queue and then cancelled before it went: its
+   *  lines closed and your words handed back, exactly as `#dropHold` does for
+   *  what was still queued — which had already gone when this round was out of
+   *  its reach. */
+  #abandonRound(conv: Conversation, parts: readonly { item: HeldItem; pictures: Carried[]; missing: string[] }[]) {
+    this.#inFlight.delete(conv.id);
+    conv.failHeld(parts.map((p) => p.item.key), "left it");
+    this.#handBack(conv, parts.filter((p) => !p.item.own && !p.item.composed), "left it");
+    for (const p of parts) this.#heldPictures.delete(p.item.key);
+    this.#writeHold(conv);
+  }
+
+  /** A held message's pictures: from memory while the window that held them is
+   *  up, else from the store. `null` when the store could not be read — which
+   *  is not the same answer as "none there", and must not be treated as it. */
+  async #picturesOf(conv: Conversation, item: HeldItem): Promise<Carried[] | null> {
+    if (!item.pictures.length) return [];
+    const kept = this.#heldPictures.get(item.key);
+    if (kept) return kept;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await invoke<Carried[]>("held_pictures", { id: conv.id, key: item.key });
+      } catch {
+        /* Once more: "the store is wedged" is a lock, not a verdict. */
+      }
+    }
+    return null;
   }
 
   /** Ask a card a question beside its conversation, without interrupting it.
@@ -3590,77 +3860,145 @@ export class Skein {
     }
   }
 
-  /** Drop a hold and the prompt with it.
+  /** Drop a hold and the messages with it — and give them back.
    *
-   *  **And close the books on the prompt, which is the half this was missing.**
-   *  `echo` drew the line, counted it in `awaiting` and marked it `awaited`; a
-   *  held line keeps both on purpose, because `releaseHeld` sends that very text
-   *  and the replay needs a line to claim. Cancel the hold and nothing ever
-   *  sends it — so the count stood at one forever, `unacknowledged` went true
-   *  the moment `held` came off, and the card read `sent, not picked up` over a
-   *  prompt it had been told to forget. Worse than a wrong face: the next turn
-   *  to end spent the card's whole `NUDGE_BUDGET` asking an agent to look for a
-   *  message queued behind nothing, twice, at a real turn and a real allowance
-   *  each. Reported from nova `17f25bae` on 2026-09-11, where the hold came from
-   *  a session limit at 08:06 and the two nudges landed six hours later against
-   *  a card that had long since been answered.
+   *  Escape on a held card means *don't*: a card waiting on your account's
+   *  clock is about to act on its own, and a hold you cancelled that fired
+   *  anyway two hours later would be the worst of both. A clear and a close
+   *  mean the same about a conversation that is going. None of them is a
+   *  reason to lose what you wrote, so the words go back to this card's draft
+   *  (`onHandBack`), with their pictures, and the transcript says so. A heal's
+   *  re-ask and Skein's own words are not handed back: they were never yours.
    *
-   *  `echoFailed` rather than a clear of `awaited` here, because that is what
-   *  this always meant and it is already the one place that says so: the line
-   *  stays where it was written with your words still in it to copy out, and the
-   *  count comes down in the same breath. It is the same correction
-   *  `#settleAccount`'s no-account arm took — **a prompt abandoned has to be
-   *  marked as one**, and the two paths that abandon one must not disagree. */
-  #dropHold(conv: Conversation) {
+   *  **And the books are closed on every line**, the half this was missing
+   *  until 2026-09-11 (nova `17f25bae`). `echo` drew each, counted it in
+   *  `awaiting` and marked it `awaited`; a held line keeps both on purpose,
+   *  because a release sends those very words and the replay needs a line to
+   *  claim. Cancel the hold and nothing ever sends them — so the count stood
+   *  at one forever, `unacknowledged` went true the moment `held` came off,
+   *  and the next turn to end spent the card's whole `NUDGE_BUDGET` asking an
+   *  agent about a message queued behind nothing. `failHeld` marks each line
+   *  — by its key, never by its words — and brings the count down.
+   *
+   *  The generation moves first, so a release in the middle of an await
+   *  (`#releaseCard`) knows on waking that its round was cancelled too. The
+   *  pictures are read back *before* the store is told the queue is empty,
+   *  since that write is what deletes them. Returns once they are handed back,
+   *  for `close`, which must not let the card's row go first. */
+  async #dropHold(conv: Conversation, why: string): Promise<void> {
+    this.#holdGen.set(conv.id, (this.#holdGen.get(conv.id) ?? 0) + 1);
     const t = this.#holds.get(conv.id);
     if (t !== undefined) clearTimeout(t);
     this.#holds.delete(conv.id);
-    const abandoned = conv.held?.text;
+    const held = conv.held;
     conv.held = null;
-    if (abandoned !== undefined) conv.echoFailed(abandoned, "left it");
+    if (!held) return;
+    conv.failHeld(held.queue.map((h) => h.key), why);
+    const parts: { item: HeldItem; pictures: Carried[]; missing: string[] }[] = [];
+    let unread = 0;
+    for (const item of held.queue) {
+      if (item.composed || item.own) continue;
+      const pictures = (await this.#picturesOf(conv, item)) ?? [];
+      if (item.pictures.length && !pictures.length) unread += 1;
+      const have = new Set(pictures.map((p) => p.name));
+      parts.push({ item, pictures, missing: item.pictures.filter((n) => !have.has(n)) });
+    }
+    if (unread) this.fault = "a held message's pictures could not be read back — its words are in the draft without them";
+    for (const item of held.queue) this.#heldPictures.delete(item.key);
     this.#writeHold(conv);
+    this.#handBack(conv, parts, why);
   }
 
-  /** Drop a held retry the card has since moved past — see `lapsesOnAnswer`.
+  /** Give words back to you, in this card's draft, with whatever pictures they
+   *  still have. The one way a message the wall could not send survives the
+   *  wall closing: the draft is kept on disk (`drafts.ts`), where a line marked
+   *  `not sent` lives only as long as the window does. */
+  #handBack(
+    conv: Conversation,
+    parts: readonly { item: { text: string }; pictures: readonly Carried[]; missing: readonly string[] }[],
+    why: string,
+  ) {
+    if (!parts.length) return;
+    const lost = parts.reduce((n, p) => n + p.missing.length, 0);
+    conv.note(handedBackNote(parts.length, why, lost));
+    try {
+      this.onHandBack(
+        conv.id,
+        parts.map((p) => ({ text: withoutMissing(p.item.text, p.missing), pictures: [...p.pictures] })),
+      );
+    } catch (err) {
+      this.fault = String(err);
+    }
+  }
+
+  /** Drop the held retries the card has since moved past — see `lapsesOnAnswer`.
    *
    *  `#dropHold`'s shape, for a different reason: that one is you saying "don't",
    *  this is a model having already read what the held text was standing in for.
-   *  The card closes the line and says so (`Conversation.lapseHeld`); this takes
-   *  the timer down and the row out, or a restart would bring the copy back and
-   *  send it. Re-checked here rather than trusted, since a release can have taken
-   *  the slot between the event that set the flag and this. */
+   *  Only a heal's own composed text lapses; your words in the same queue stay
+   *  exactly where they are. The card closes the lines and says so
+   *  (`Conversation.lapseHeld`); this takes the timer down if nothing is left
+   *  and rewrites the store, or a restart would bring the copy back and send
+   *  it. Re-checked here rather than trusted, since a release can have taken
+   *  the queue between the event that set the flag and this. */
   #lapseHeld(conv: Conversation) {
     if (!conv.pendingHeldLapse) return;
     conv.pendingHeldLapse = false;
-    if (!conv.held?.composed || !lapsesOnAnswer(conv.held.text)) return;
-    const t = this.#holds.get(conv.id);
-    if (t !== undefined) clearTimeout(t);
-    this.#holds.delete(conv.id);
-    conv.lapseHeld();
+    const lapsed = conv.held?.queue.filter((h) => h.composed && lapsesOnAnswer(h.text)) ?? [];
+    if (!lapsed.length) return;
+    conv.lapseHeld(lapsed);
+    if (!conv.held) this.#aimHold(conv, null);
     this.#writeHold(conv);
   }
 
   /** Put the hold in the store, or take it out — whichever `conv.held` says.
    *
-   *  One function for both edges so there is no way to write half of it, and it
+   *  One function for every edge so there is no way to write half of it, and it
    *  reads the card rather than taking arguments for the same reason: a caller
    *  that has already cleared `conv.held` and then passes the old text is the
-   *  bug this shape makes unsayable.
+   *  bug this shape makes unsayable. `fresh` is the one message just held, the
+   *  only write that carries pictures.
+   *
+   *  **Chained per card**, because the command is off the main thread now (the
+   *  pictures are the one heavy thing it carries) and two writes racing on the
+   *  blocking pool could land an older queue last. The value is read here, at
+   *  the call, and only the sending waits.
    *
    *  Fire-and-forget with the fault surfaced. A hold that failed to persist is
-   *  worth saying — it is a prompt that will be lost if the wall closes — but it
-   *  must not stop the hold itself, which is working perfectly well in memory
-   *  and is the thing the user's prompt is currently living in. */
-  #writeHold(conv: Conversation) {
+   *  worth saying — it is a message that will be lost if the wall closes — but
+   *  it must not stop the hold itself, which is working perfectly well in
+   *  memory and is the thing your words are currently living in. And if it was
+   *  the pictures that were refused, the words are written again without them,
+   *  so a restart still has the message to hand back to you. */
+  #writeHold(conv: Conversation, fresh?: HeldItem) {
     const held = conv.held;
-    void invoke("set_conversation_hold", {
+    const args = {
       id: conv.id,
-      text: held?.text ?? null,
-      why: held?.why ?? null,
+      queue: [...(this.#inFlight.get(conv.id) ?? []), ...(held?.queue ?? [])].map((h) => ({
+        text: h.text,
+        key: h.key,
+        pictures: [...h.pictures],
+        origin: h.composed ? "heal" : h.own ? "skein" : null,
+      })),
+      why: held?.why ?? (this.#inFlight.get(conv.id)?.length ? QUEUED_LINE : null),
       until: held?.until ?? null,
-    }).catch((err) => {
-      this.fault = String(err);
-    });
+    };
+    const list = fresh && fresh.pictures.length ? this.#heldPictures.get(fresh.key) : undefined;
+    const pictures = fresh && list ? { key: fresh.key, list } : null;
+    const prior = this.#holdWrites.get(conv.id) ?? Promise.resolve();
+    const next = prior
+      .then(() => invoke<void>("set_conversation_hold", { ...args, pictures }))
+      .catch(async (err) => {
+        if (!pictures) {
+          this.fault = String(err);
+          return;
+        }
+        this.fault = `the held message's pictures could not be kept: ${err}`;
+        await invoke("set_conversation_hold", { ...args, pictures: null }).catch((e) => {
+          this.fault = String(e);
+        });
+      });
+    this.#holdWrites.set(conv.id, next);
   }
 
   /** Turn your caps off for one card, or back on.
@@ -3693,52 +4031,95 @@ export class Skein {
    *  held for an account to free up, which keeps it rather than losing it. False
    *  only when the send failed and the line says so. Read by a prompt that came
    *  from another wall, which has to tell the asker which (`shadows.svelte.ts`);
-   *  every caller here ignores it. */
-  async send(conv: Conversation, text: string, turn?: Turn): Promise<boolean> {
+   *  every caller here ignores it.
+   *
+   *  `yours` marks words a person wrote here — the dock, the voice, a
+   *  broadcast — which are handed back to the draft if the send fails
+   *  outright, so a failure is never the last place they exist. `own` marks
+   *  Skein's own words — a resume prompt, the news of lost jobs, a brief, a
+   *  nudge — which, if they have to be held, are held as Skein's: alone, and
+   *  never handed back to you (`HeldItem.own`). Neither is a remote prompt or
+   *  a reply, which are held as yours and not handed back here. */
+  async send(
+    conv: Conversation,
+    text: string,
+    turn?: Turn,
+    opts: { yours?: boolean; own?: boolean } = {},
+  ): Promise<boolean> {
     conv.echo(text, turn && { echo: turn.echo, shots: turn.shots });
-    const sent = await this.#deliver(conv, text, turn);
+    const sent = await this.#route(conv, text, turn, opts);
     /* A model switch carries its usual effort with it — see `effortForModel`.
        Sent as a second prompt of its own because `/effort` is the CLI's and the
        wire has no other way to set it (`set_effort` is refused); the transcript
-       then says what happened rather than the level changing silently. Skipped
-       when the `/model` is being held for an account, since the follow-up would
-       only collide with it in the one held slot. */
+       then says what happened rather than the level changing silently. Held
+       behind the `/model` when that is held — a queue keeps both, in order,
+       where the one slot used to mean skipping it. */
     const effort = effortForModel(text);
-    if (effort && !conv.held) {
+    if (effort) {
       const line = `/effort ${effort}`;
       conv.echo(line);
-      await this.#deliver(conv, line);
+      await this.#route(conv, line, undefined, {});
     }
     return sent;
   }
 
-  async #deliver(conv: Conversation, text: string, turn?: Turn): Promise<boolean> {
+  /** Where a prompt already drawn goes: behind whatever the card is holding,
+   *  or out. Shared by `send` and `broadcast`, so a broadcast cannot put words
+   *  ahead of ones a card is holding — the first cut had it call `#deliver`
+   *  directly, and it did (found in review). */
+  async #route(
+    conv: Conversation,
+    text: string,
+    turn: Turn | undefined,
+    opts: { yours?: boolean; own?: boolean },
+  ): Promise<boolean> {
+    /* Behind whatever is already held, without asking the accounts — see
+       `#append`. A heal's own re-send is the exception: it re-asks the turn
+       that broke, which came before anything queued, so it goes the ordinary
+       way and, if it is held, to the front (`holding.ts::admit`). */
+    if ((conv.held || this.#releasing.has(conv.id)) && this.#composing.get(conv.id) !== text) {
+      this.#append(conv, text, turn, opts.own ?? false);
+      return true;
+    }
+    return this.#deliver(conv, text, turn, {
+      own: opts.own ?? false,
+      giveBack: opts.yours ? [{ item: { text }, pictures: turn?.carried ?? [], missing: [] }] : [],
+    });
+  }
+
+  async #deliver(
+    conv: Conversation,
+    text: string,
+    turn?: Turn,
+    opts: {
+      /** The account is already settled — a release did it, and settling again
+       *  here would hold the round's combined text as a message of its own. */
+      settled?: boolean;
+      /** What names an unnamed card, where `text` is not what you typed — a
+       *  combined round names it after its first message, not its header. */
+      title?: string;
+      /** Handed back to the draft if the send fails outright. */
+      giveBack?: readonly { item: { text: string }; pictures: readonly Carried[]; missing: readonly string[] }[];
+      /** Skein's own words, held as such if they have to be held. */
+      own?: boolean;
+    } = {},
+  ): Promise<boolean> {
     /* Ahead of the wake, and it has to be. `#moveTo` ends the card's process to
        change the account, so settling first means the wake below spawns once,
        already on the right subscription — where settling after would spawn on
        the old account and immediately kill what it had just started.
 
-       A false answer means the prompt is held (or the wall has no usable
-       account) and `#settleAccount` has already said so on the card, so there
-       is nothing to fail here: the text is kept, not lost. The echoed line is
-       left standing to be sent when an account frees up. */
-    /* Kept only if *this* text is what the slot now holds. `#hold` refuses to
-       overwrite a different prompt already waiting there, so a card already
-       holding one drops the second — and answering "kept" off `held` alone
-       told another wall a prompt had arrived that nothing would ever send. */
-    /* A prompt with pictures in it is never held. The slot keeps text and is
-       written to the store, so holding one would either put screenshots on
-       disk (`attach.md`) or release, hours later, the sentence without its
-       pictures — `[image 1]` sent about nothing. Failed with the reason
-       instead; from another wall that is a refusal the sender reads. */
-    const pictured = !!turn?.content.some((b) => b.type === "image");
-    if (!(await this.#settleAccount(conv, pictured ? null : text))) {
-      if (!pictured) return conv.held?.text === text;
-      conv.echoFailed(text, PICTURES_NOT_HELD);
-      return false;
+       A false answer means the prompt is held and `#settleAccount` has already
+       said so on the card, so there is nothing to fail here: the words are
+       kept, not lost — pictures and all, since 2026-10-16 (`attach.md`
+       has the carve-out that made that possible). Answered "kept" for
+       another wall that asked. */
+    if (!opts.settled && !(await this.#settleAccount(conv, text, turn, opts.own ?? false))) {
+      return conv.held?.queue.some((h) => h.text === text) ?? false;
     }
     if (conv.dormant && !(await this.wake(conv))) {
       conv.echoFailed(text, "could not wake");
+      this.#handBack(conv, opts.giveBack ?? [], "could not wake the card");
       return false;
     }
     /* The card face has been wearing this name since you started typing it, cut
@@ -3749,8 +4130,9 @@ export class Skein {
        this card is set up, and a card called `model sonnet` would be wearing
        its settings where its subject belongs. The face withholds the same draft
        while you type it, for the same reason. */
-    if (!isNamed(conv.title) && !cliCommand(text)) {
-      conv.title = titleFromPrompt(text);
+    const said = opts.title ?? text;
+    if (!isNamed(conv.title) && !cliCommand(said)) {
+      conv.title = titleFromPrompt(said);
       void invoke("update_conversation", { id: conv.id, title: conv.title });
     }
     try {
@@ -3785,6 +4167,7 @@ export class Skein {
     } catch (err) {
       this.fault = String(err);
       conv.echoFailed(text, "not sent");
+      this.#handBack(conv, opts.giveBack ?? [], "not sent");
       return false;
     }
   }
@@ -3847,9 +4230,13 @@ export class Skein {
        don't, and it takes the held prompt with it: a hold you cancelled that
        fired anyway two hours later would be the worst of both. */
     if (conv.held) {
-      this.#dropHold(conv);
-      conv.activity = "left it";
-      return;
+      void this.#dropHold(conv, "left it");
+      /* A queue waiting behind a round that is out: the round's turn is
+         running, and Escape means that too. */
+      if (!conv.working || conv.dormant) {
+        conv.activity = "left it";
+        return;
+      }
     }
     /* And the same for a card about to be nudged, by the same argument: it is
        not working, it is visibly about to act on its own, and Escape aimed at
@@ -3946,6 +4333,12 @@ export class Skein {
     }
     this.#dropHeal(conv);
     this.#dropNudge(conv);
+    /* A cleared card is a new session with nothing owed to it, so held
+       messages are for a conversation that is going — and are still yours, so
+       they go back to the draft rather than with the session. Before any await
+       below, so no release can wake the card on the old session in the gap
+       (found in review). */
+    const dropping = this.#dropHold(conv, "cleared");
     try {
       await this.#waking.get(conv.id)?.catch(() => {});
       if (!conv.dormant) {
@@ -3958,6 +4351,7 @@ export class Skein {
          about the old one would be reported at the next launch against a
          session that never ran it. */
       await invoke("forget_jobs", { conversationId: conv.id }).catch(() => {});
+      await dropping;
       conv.clear(sessionId);
       return null;
     } catch (err) {
@@ -4335,7 +4729,7 @@ export class Skein {
        no difference in what arrives. */
     for (const c of convs) c.echo(text, turn && { echo: turn.echo, shots: turn.shots });
     for (const c of convs) {
-      await this.#deliver(c, text, turn);
+      await this.#route(c, text, turn, { yours: true });
     }
   }
 
@@ -4539,7 +4933,6 @@ export class Skein {
        process for a conversation this call has just closed. */
     this.#dropHeal(conv);
     this.#dropNudge(conv);
-
     /* Ahead of the removal, and that is the whole of the timing: the canvas
        reconciles its keyed block a microtask after `convs` changes and asks this
        list then, so an id written afterwards would arrive to find the outro
@@ -4549,6 +4942,11 @@ export class Skein {
     this.#byId.delete(conv.id);
     this.convs = this.convs.filter((c) => c.id !== conv.id);
     this.#studio.forget(conv.id);
+    /* Anything it was holding goes back to a draft — the wall's, since the
+       card's own went with it (`App.closeConv`) and the hook is told an id no
+       longer on the wall. After the removal for exactly that, and read out of
+       the store before the record below takes it. */
+    const handing = this.#dropHold(conv, "closed");
     /* And whatever on the wall is a view of this card goes with it, on the
        same run — a pin of its last message (`Widgets.untether`). Not by an
        effect noticing the card is gone a frame later: for that frame it would
@@ -4564,6 +4962,7 @@ export class Skein {
 
     try {
       await invoke("close_conversation", { id: conv.id });
+      await handing;
       await invoke("close_conversation_record", { id: conv.id });
       /* Closing sets `closed_at` and deletes no row, so the foreign key never
          fires — see `migrate_v17`. Same bargain the billboard's sweep strikes. */

@@ -201,15 +201,16 @@ pub struct StoredConversation {
     /// about a conversation, and one that quietly reverted on restart is one you
     /// would have to remember to make again.
     pub bypass_caps: bool,
-    /// A prompt this card is holding because every account was out, and what to
-    /// say about it. `held_until` is when the earliest blocker rolls, or `None`
-    /// where no blocker named a reset and only a fresh poll can say.
+    /// The prompts this card is holding because every account was out, oldest
+    /// first, and what to say about them. `held_until` is when the earliest
+    /// blocker rolls, or `None` where no blocker named a reset and only a fresh
+    /// poll can say.
     ///
-    /// Restored so the hold survives the wall closing — see `migrate_v27`. All
-    /// three or none: a hold with no text is not a hold, it is a card that looks
-    /// held and has nothing to send, so the front end rebuilds one only when the
-    /// text is there.
-    pub held_text: Option<String>,
+    /// Restored so the hold survives the wall closing — see `migrate_v27`, and
+    /// `migrate_v54` for why it is a queue rather than one text. Empty means
+    /// nothing is held, and then `why` and `until` are empty too: a hold with no
+    /// text is not a hold, it is a card that looks held and has nothing to send.
+    pub held: Vec<HeldPrompt>,
     pub held_why: Option<String>,
     #[serde(rename = "heldUntil")]
     pub held_until: Option<i64>,
@@ -361,7 +362,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 53;
+const SCHEMA_VERSION: i64 = 54;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -420,6 +421,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (51, migrate_v51),
     (52, migrate_v52),
     (53, migrate_v53),
+    (54, migrate_v54),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2952,6 +2954,67 @@ fn migrate_v53(conn: &Connection) -> Result<(), String> {
     add_column(conn, "arrangement", "frame_h", "REAL")
 }
 
+/// A held prompt is a queue, not a slot (sink `864ccaae`).
+///
+/// `held_text` was one column, so a card could keep one prompt for an account to
+/// come back and no more: a second message typed into a card already holding was
+/// refused, marked failed and kept nowhere — gone at the next restart. Lyss,
+/// 2026-10-16: "something typed or done by the user should never be lost."
+/// One row per held message now, in the order they were written; `held_why` and
+/// `held_until` stay on `conversation`, because they describe the *hold* (what
+/// it is waiting for and until when) rather than any one message in it.
+///
+/// A table rather than a JSON array in `held_text`, for the reason `migrate_v27`
+/// gave against a blob here: the front end's normalizer degrading a malformed
+/// value degrades it to "nothing held", which is exactly the loss.
+///
+/// **And a held message's pictures are written down too**, which is a
+/// deliberate carve-out from attachments never touching the disk
+/// (`attach.md`), Lyss's decision on 2026-10-16: a held message has to survive
+/// a restart, and one whose pictures did not would come back as a sentence
+/// about nothing. Scoped as narrowly as the reason — `held_picture` holds the
+/// pictures of messages still queued and nothing else, and `write_hold` takes
+/// them away in the same transaction that takes their message out. In the
+/// database rather than as files beside it for exactly that transaction: a
+/// file has no way to go *with* the row, and a crash between the two would
+/// leave a screenshot in app data for ever.
+///
+/// The one prompt an existing row may hold moves across as the first of its
+/// queue, and the column is emptied rather than dropped — nothing reads it after
+/// this, and a rung that rebuilds `conversation` to drop a column is a rung with
+/// a great deal more to get wrong than one `UPDATE`. Re-runnable: the copy skips
+/// a card that already has rows.
+fn migrate_v54(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS held_prompt (
+            conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            seq             INTEGER NOT NULL,
+            key             TEXT NOT NULL,
+            text            TEXT NOT NULL,
+            pictures        TEXT,
+            origin          TEXT,
+            PRIMARY KEY (conversation_id, seq)
+        );
+        CREATE TABLE IF NOT EXISTS held_picture (
+            conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            key             TEXT NOT NULL,
+            ord             INTEGER NOT NULL,
+            name            TEXT NOT NULL,
+            media_type      TEXT NOT NULL,
+            data            TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, key, ord)
+        );
+        INSERT INTO held_prompt (conversation_id, seq, key, text)
+             SELECT id, 0, 'v27', held_text FROM conversation
+              WHERE held_text IS NOT NULL AND trim(held_text) <> ''
+                AND id NOT IN (SELECT conversation_id FROM held_prompt);
+        UPDATE conversation SET held_text = NULL WHERE held_text IS NOT NULL;
+        "#,
+    )
+    .map_err(|e| format!("migrate v54: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -3133,58 +3196,265 @@ pub fn account_of(conn: &Connection, id: &str) -> Option<String> {
     .filter(|l| !l.trim().is_empty())
 }
 
-/// Write down the prompt a card is holding, or clear it.
+/// One message a card is holding, as `held_prompt` keeps it.
 ///
-/// Called at both edges by `Skein` — `#hold` writes and `#dropHold` /
-/// `releaseHeld` clear — rather than at shutdown, which is the whole point. A
-/// hold recorded only on a clean quit is a hold lost by the one exit that loses
-/// work; see `migrate_v27` and, one file over, `set_mid_turn`, which learned the
-/// same lesson from the same direction.
+/// `key` names the message for as long as it is held, which its place in the
+/// queue cannot: a message ahead of it going moves it up. It is what its
+/// pictures are filed under in `held_picture`.
 ///
-/// `text: None` clears all three, so there is one call and no way to leave a
-/// half-written hold behind. A row with a `why` and no `text` would draw a card
-/// as holding something it cannot send.
+/// `pictures` is the names of the pictures it carries — the bytes are in
+/// `held_picture` and come back only when asked for (`held_pictures`), since a
+/// wall restored holding a dozen screenshots has no business pushing them all
+/// through the load. One column, newline-separated, since a picture's name is a
+/// file name or `shot 2`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeldPrompt {
+    pub text: String,
+    pub key: String,
+    #[serde(default)]
+    pub pictures: Vec<String>,
+    /// Who wrote it, when it was not you: `heal` for a heal's re-ask, `skein`
+    /// for the wall's own words (a resume prompt, a brief). Kept because a
+    /// restart that forgot would combine Skein's words with yours under a
+    /// header saying each was typed, and hand them back to your draft.
+    #[serde(default)]
+    pub origin: Option<String>,
+}
+
+/// The pictures of one message being held, written once, when it is.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HeldPictures {
+    pub key: String,
+    pub list: Vec<crate::flyway::fleet::Picture>,
+}
+
+/// Write down the prompts a card is holding, or clear them.
+///
+/// Called at every edge by `Skein` — `#hold` appends, `#dropHold` and
+/// `releaseHeld` take away — rather than at shutdown, which is the whole point.
+/// A hold recorded only on a clean quit is a hold lost by the one exit that
+/// loses work; see `migrate_v27` and, one file over, `set_mid_turn`, which
+/// learned the same lesson from the same direction.
+///
+/// The whole queue every time, in one transaction, so there is one call and no
+/// way to leave a half-written hold behind: an empty `queue` clears the reason
+/// and the time with it. A row with a `why` and nothing to send would draw a
+/// card as holding something it cannot send. A handful of short strings, so
+/// rewriting the lot is not worth being cleverer than.
+///
+/// `pictures` comes with the write that first holds a pictured message, and
+/// only then — they are the one heavy thing here, and every later write leaves
+/// them where they are. `async` on `off_main` because of them: twenty pictures
+/// at the API's limit is a hundred megabytes into SQLite, which on the main
+/// thread is the whole wall frozen for as long as it takes. Ordered by the
+/// caller, which chains its writes per card (`Skein.#writeHold`) — two of
+/// these racing on the blocking pool could otherwise land an older queue last.
 #[tauri::command]
-pub fn set_conversation_hold(
-    store: tauri::State<'_, Store>,
+pub async fn set_conversation_hold(
+    app: tauri::AppHandle,
     id: String,
-    text: Option<String>,
+    queue: Vec<HeldPrompt>,
     why: Option<String>,
     until: Option<i64>,
+    pictures: Option<HeldPictures>,
 ) -> Result<(), String> {
-    let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-    write_hold(&conn, &id, text, why, until)
+    crate::off_main(move || {
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        write_hold(&conn, &id, queue, why, until, pictures)
+    })
+    .await?
 }
 
 /// The whole of the above that can be tested, which is all of it but the lock.
 ///
 /// Split out because a `tauri::State` cannot be built in a unit test, and the
-/// rule this enforces — all three columns or none — is exactly the kind that
-/// looks obviously true while being written and is wrong six months later.
+/// rule this enforces — the queue and its reason together or neither, and no
+/// picture kept for a message no longer queued — is exactly the kind that looks
+/// obviously true while being written and is wrong six months later.
 fn write_hold(
     conn: &Connection,
     id: &str,
-    text: Option<String>,
+    queue: Vec<HeldPrompt>,
     why: Option<String>,
     until: Option<i64>,
+    pictures: Option<HeldPictures>,
 ) -> Result<(), String> {
-    /* Whitespace is not a prompt. `filter` rather than a check on the caller,
-       because the front end reads this out of a `$state` that has been through a
-       restore, and "held with nothing to send" is the one shape that draws a card
-       as waiting forever on a prompt that does not exist. */
-    let held = text.filter(|t| !t.trim().is_empty());
-    let (why, until) = match held {
-        Some(_) => (why, until),
-        /* Cleared together. See above. */
-        None => (None, None),
-    };
-    conn.execute(
-        "UPDATE conversation SET held_text = ?1, held_why = ?2, held_until = ?3 \
-         WHERE id = ?4",
-        params![held, why, until, id],
+    let fail = |e: rusqlite::Error| format!("set hold: {e}");
+    /* Whitespace is not a prompt. Filtered here rather than trusted from the
+       caller, because the front end reads this out of a `$state` that has been
+       through a restore, and "held with nothing to send" is the one shape that
+       draws a card as waiting forever on a prompt that does not exist. */
+    let queue: Vec<HeldPrompt> = queue.into_iter().filter(|h| !h.text.trim().is_empty()).collect();
+    let (why, until) = if queue.is_empty() { (None, None) } else { (why, until) };
+    /* Checked before anything is written, with the scrutiny bytes from another
+       wall get: these are read back hours from now straight into a request, and
+       a picture the API refuses then is a held message that cannot go. Refused
+       whole, never mended (`attach.md`) — and refused *as a write*, so the
+       queue below is not written either and the caller hears the reason. */
+    if let Some(p) = &pictures {
+        let Some(held) = queue.iter().find(|h| h.key == p.key) else {
+            return Err("those pictures belong to no message being held".into());
+        };
+        crate::attach::pictures_fit(&p.list, &held.text)?;
+    }
+    let tx = conn.unchecked_transaction().map_err(fail)?;
+    tx.execute("DELETE FROM held_prompt WHERE conversation_id = ?1", params![id])
+        .map_err(fail)?;
+    for (seq, h) in queue.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO held_prompt (conversation_id, seq, key, text, pictures, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                seq as i64,
+                h.key,
+                h.text,
+                (!h.pictures.is_empty()).then(|| h.pictures.join("\n")),
+                h.origin
+            ],
+        )
+        .map_err(fail)?;
+    }
+    if let Some(p) = pictures {
+        tx.execute(
+            "DELETE FROM held_picture WHERE conversation_id = ?1 AND key = ?2",
+            params![id, p.key],
+        )
+        .map_err(fail)?;
+        for (ord, pic) in p.list.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO held_picture (conversation_id, key, ord, name, media_type, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, p.key, ord as i64, pic.name, pic.media_type, pic.data],
+            )
+            .map_err(fail)?;
+        }
+    }
+    /* A message that has gone — sent, handed back, cancelled — takes its
+       pictures with it, in the same transaction that took it out of the queue.
+       This is the only place a held message stops being held, so it is the one
+       place that has to say so to the pictures; nothing is left for a sweep to
+       find. */
+    tx.execute(
+        "DELETE FROM held_picture
+          WHERE conversation_id = ?1
+            AND key NOT IN (SELECT key FROM held_prompt WHERE conversation_id = ?1)",
+        params![id],
     )
-    .map_err(|e| format!("set hold: {e}"))?;
-    Ok(())
+    .map_err(fail)?;
+    tx.execute(
+        "UPDATE conversation SET held_why = ?1, held_until = ?2 WHERE id = ?3",
+        params![why, until, id],
+    )
+    .map_err(fail)?;
+    tx.commit().map_err(fail)
+}
+
+/// Every open card's held prompts, oldest first, by card.
+///
+/// Read apart from the conversation query rather than folded into it: a card
+/// holding three messages is one conversation, and a join would make it three.
+pub(crate) fn held_queues(conn: &Connection) -> Result<HashMap<String, Vec<HeldPrompt>>, String> {
+    let mut st = conn
+        .prepare(
+            "SELECT h.conversation_id, h.key, h.text, h.pictures, h.origin FROM held_prompt h
+               JOIN conversation c ON c.id = h.conversation_id
+              WHERE c.closed_at IS NULL
+              ORDER BY h.conversation_id, h.seq",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                HeldPrompt {
+                    key: r.get(1)?,
+                    text: r.get(2)?,
+                    pictures: r
+                        .get::<_, Option<String>>(3)?
+                        .map(|p| p.split('\n').filter(|n| !n.is_empty()).map(str::to_owned).collect())
+                        .unwrap_or_default(),
+                    origin: r.get(4)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out: HashMap<String, Vec<HeldPrompt>> = HashMap::new();
+    for row in rows {
+        let (id, held) = row.map_err(|e| e.to_string())?;
+        out.entry(id).or_default().push(held);
+    }
+    Ok(out)
+}
+
+/// The pictures of one held message, in the order they were attached — read
+/// when the message is finally sent, or handed back to the draft.
+pub(crate) fn read_held_pictures(
+    conn: &Connection,
+    id: &str,
+    key: &str,
+) -> Result<Vec<crate::flyway::fleet::Picture>, String> {
+    let mut st = conn
+        .prepare(
+            "SELECT name, media_type, data FROM held_picture
+              WHERE conversation_id = ?1 AND key = ?2 ORDER BY ord",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map(params![id, key], |r| {
+            Ok(crate::flyway::fleet::Picture {
+                name: r.get(0)?,
+                media_type: r.get(1)?,
+                data: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// `read_held_pictures`, for the front end. Off the main thread for the
+/// reason the write is.
+#[tauri::command]
+pub async fn held_pictures(
+    app: tauri::AppHandle,
+    id: String,
+    key: String,
+) -> Result<Vec<crate::flyway::fleet::Picture>, String> {
+    crate::off_main(move || {
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        read_held_pictures(&conn, &id, &key)
+    })
+    .await?
+}
+
+/// Take a card's held messages, and their pictures, out of the store.
+///
+/// For a card leaving the wall. Closing is a *soft* close, so the cascade on
+/// both tables does not fire, and a closed card's queue is not queued for
+/// anything: nothing will ever send it. The pictures in particular are the one
+/// carve-out from attachments never touching the disk (`attach.md`), and the
+/// carve-out is only honest if the store never holds one that is not still on
+/// its way somewhere.
+pub(crate) fn forget_held(conn: &Connection, id: &str) -> Result<(), String> {
+    write_hold(conn, id, Vec::new(), None, None, None)
+}
+
+/// Whatever a crash or an older build left behind: held rows of cards no
+/// longer on the wall, and pictures whose message is not held. Nothing should
+/// reach here — `write_hold` and `forget_held` take both away as they go — and
+/// this is the backstop that makes "should" into "does", run at the one moment
+/// every wall passes through.
+pub(crate) fn sweep_held(conn: &Connection) {
+    let _ = conn.execute_batch(
+        "DELETE FROM held_prompt
+          WHERE conversation_id IN (SELECT id FROM conversation WHERE closed_at IS NOT NULL);
+         DELETE FROM held_picture
+          WHERE NOT EXISTS (SELECT 1 FROM held_prompt h
+                             WHERE h.conversation_id = held_picture.conversation_id
+                               AND h.key = held_picture.key);",
+    );
 }
 
 /// Remember that a card is ignoring your caps.
@@ -5164,6 +5434,10 @@ pub fn close_conversation_record(
            ever adopted onto the wall again. Deleted explicitly, in the same
            lock as the close. */
         drop_secret_grants(&conn, &id)?;
+        /* And what it was holding, with its pictures. Not a loss the close
+           causes: the front end hands the words back before it gets here
+           (`Skein.close`). */
+        forget_held(&conn, &id)?;
     }
     /* And any delete it handed the wall to ask about: the card is gone, and a
        question has no deadline to end it any more (`ask::drop_handoffs`). */
@@ -5429,7 +5703,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
-                    c.permission_mode, c.held_text, c.held_why, c.held_until,
+                    c.permission_mode, c.held_why, c.held_until,
                     c.rest_seen, c.awake
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
@@ -5463,16 +5737,25 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 glass_y: r.get(20)?,
                 effort: r.get(21)?,
                 permission_mode: r.get(22)?,
-                held_text: r.get(23)?,
-                held_why: r.get(24)?,
-                held_until: r.get(25)?,
-                rest_seen: r.get::<_, i64>(26)? != 0,
-                awake: r.get::<_, i64>(27)? != 0,
+                held: Vec::new(),
+                held_why: r.get(23)?,
+                held_until: r.get(24)?,
+                rest_seen: r.get::<_, i64>(25)? != 0,
+                awake: r.get::<_, i64>(26)? != 0,
             })
         })
         .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
+        .collect::<Result<Vec<StoredConversation>, _>>()
         .map_err(|e| e.to_string())?;
+    sweep_held(&conn);
+    let mut held = held_queues(&conn)?;
+    let conversations: Vec<StoredConversation> = conversations
+        .into_iter()
+        .map(|mut c| {
+            c.held = held.remove(&c.id).unwrap_or_default();
+            c
+        })
+        .collect();
 
     let mut gs = conn
         .prepare(
@@ -11198,61 +11481,212 @@ mod tests {
         assert!(read_window_frame(&conn).is_none());
     }
 
-    /// A hold is three columns and they move together, which is the whole of the
-    /// invariant and the only thing here that can go wrong quietly.
-    ///
-    /// Sink fad16c9c. `conv.held` was `$state` with nothing behind it, so closing
-    /// the wall while cards were holding lost the prompt; they came back **idle**
-    /// rather than held, and the hold sweep is guarded by `convs.some(c =>
-    /// c.held)`, so nothing ever retried them. No fault and no note — the card
-    /// looked completely ordinary.
-    ///
-    /// The half-written row is the failure to guard against now: a `why` with no
-    /// `text` restores as a card drawn as holding something it has nothing to
-    /// send, which is the same loss wearing a face that looks like a feature.
-    #[test]
-    fn a_hold_is_written_and_cleared_as_one_thing() {
-        let conn = db();
-        seed_project(&conn, "p1", "C:/x");
+    fn seed_held_card(conn: &Connection) {
+        seed_project(conn, "p1", "C:/x");
         conn.execute(
             "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
             [],
         )
         .unwrap();
+    }
 
-        let read = || -> (Option<String>, Option<String>, Option<i64>) {
-            conn.query_row(
-                "SELECT held_text, held_why, held_until FROM conversation WHERE id='c1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+    fn plain(texts: &[&str]) -> Vec<HeldPrompt> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| HeldPrompt { text: t.to_string(), key: format!("k{i}"), pictures: vec![], origin: None })
+            .collect()
+    }
+
+    fn read_hold(conn: &Connection) -> (Vec<String>, Option<String>, Option<i64>) {
+        let queue = held_queues(conn)
             .unwrap()
-        };
+            .remove("c1")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|h| h.text)
+            .collect();
+        let (why, until) = conn
+            .query_row(
+                "SELECT held_why, held_until FROM conversation WHERE id='c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        (queue, why, until)
+    }
 
-        /* Nothing held is the state every existing row starts in — v27 backfills
-           nothing, because nothing was recorded. */
-        assert_eq!(read(), (None, None, None));
+    /// A hold is a queue and a reason, and they move together, which is the
+    /// whole of the invariant and the only thing here that can go wrong quietly.
+    ///
+    /// Sink fad16c9c first: `conv.held` was `$state` with nothing behind it, so
+    /// closing the wall while cards were holding lost the prompt. Then sink
+    /// 864ccaae: the hold was one slot, so the *second* message typed into a
+    /// held card was refused and kept nowhere. Three messages written here and
+    /// read back in the order they were typed is the restart the second one
+    /// lost.
+    #[test]
+    fn a_held_queue_is_written_and_read_back_in_order() {
+        let conn = db();
+        seed_held_card(&conn);
 
+        /* Nothing held is the state every existing row starts in. */
+        assert_eq!(read_hold(&conn), (vec![], None, None));
+
+        let why = "holding — every account is at its limit".to_string();
         write_hold(
             &conn,
             "c1",
-            Some("rebase onto main and push".into()),
-            Some("holding — every account is at its limit".into()),
+            plain(&["rebase onto main", "and push", "actually, don't push"]),
+            Some(why.clone()),
             Some(1_787_000_000_000),
+            None,
         )
         .unwrap();
         assert_eq!(
-            read(),
+            read_hold(&conn),
             (
-                Some("rebase onto main and push".into()),
-                Some("holding — every account is at its limit".into()),
+                vec!["rebase onto main".into(), "and push".into(), "actually, don't push".into()],
+                Some(why.clone()),
                 Some(1_787_000_000_000)
             )
         );
 
-        /* Released. All three go, so nothing is left drawing a hold. */
-        write_hold(&conn, "c1", None, None, None).unwrap();
-        assert_eq!(read(), (None, None, None));
+        /* Rewritten shorter — a message taken off — leaves no stale tail. */
+        write_hold(&conn, "c1", plain(&["and push"]), Some(why.clone()), None, None).unwrap();
+        assert_eq!(read_hold(&conn), (vec!["and push".into()], Some(why), None));
+
+        /* Released. Everything goes, so nothing is left drawing a hold. */
+        write_hold(&conn, "c1", vec![], None, None, None).unwrap();
+        assert_eq!(read_hold(&conn), (vec![], None, None));
+    }
+
+    /// Whether a message had pictures comes back with it — the pictures do
+    /// not, and the flag is the only way a restart can know that.
+    #[test]
+    fn a_pictured_message_comes_back_marked() {
+        let conn = db();
+        seed_held_card(&conn);
+        let queue = vec![
+            HeldPrompt {
+                text: "look at [shot 1] beside [photo.png]".into(),
+                key: "a".into(),
+                pictures: vec!["shot 1".into(), "photo.png".into()],
+                origin: None,
+            },
+            HeldPrompt { text: "and fix it".into(), key: "b".into(), pictures: vec![], origin: Some("heal".into()) },
+        ];
+        let pics = HeldPictures {
+            key: "a".into(),
+            list: vec![png("shot 1"), png("photo.png")],
+        };
+        write_hold(&conn, "c1", queue.clone(), Some("w".into()), None, Some(pics)).unwrap();
+        assert_eq!(held_queues(&conn).unwrap().remove("c1").unwrap(), queue);
+        assert_eq!(
+            read_held_pictures(&conn, "c1", "a").unwrap(),
+            vec![png("shot 1"), png("photo.png")]
+        );
+
+        /* A later write — another message appended — carries no pictures and
+           must leave the ones already kept exactly where they are. */
+        let mut longer = queue.clone();
+        longer.push(HeldPrompt { text: "thanks".into(), key: "c".into(), pictures: vec![], origin: None });
+        write_hold(&conn, "c1", longer, Some("w".into()), None, None).unwrap();
+        assert_eq!(read_held_pictures(&conn, "c1", "a").unwrap().len(), 2);
+
+        /* The pictured message sent: its pictures go in the same write. */
+        write_hold(&conn, "c1", queue[1..].to_vec(), Some("w".into()), None, None).unwrap();
+        assert!(read_held_pictures(&conn, "c1", "a").unwrap().is_empty());
+        let left: i64 = conn
+            .query_row("SELECT count(*) FROM held_picture", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "nothing in the store that is not still queued");
+    }
+
+    fn png(name: &str) -> crate::flyway::fleet::Picture {
+        crate::flyway::fleet::Picture {
+            name: name.into(),
+            media_type: "image/png".into(),
+            /* The eight-byte PNG signature and four more, base64. */
+            data: "iVBORw0KGgoAAAAA".into(),
+        }
+    }
+
+    /// A picture the API would refuse is refused at the hold, and the write
+    /// is refused whole — the queue is not written without it.
+    #[test]
+    fn a_picture_that_is_not_what_it_says_is_not_held() {
+        let conn = db();
+        seed_held_card(&conn);
+        let queue = vec![HeldPrompt {
+            text: "see [shot 1]".into(),
+            key: "a".into(),
+            pictures: vec!["shot 1".into()],
+            origin: None,
+        }];
+        let mut liar = png("shot 1");
+        liar.media_type = "image/jpeg".into();
+        let r = write_hold(
+            &conn,
+            "c1",
+            queue,
+            Some("w".into()),
+            None,
+            Some(HeldPictures { key: "a".into(), list: vec![liar] }),
+        );
+        assert!(r.is_err());
+        assert!(held_queues(&conn).unwrap().is_empty());
+    }
+
+    /// Closing a card is a soft close, so no cascade fires; `forget_held`
+    /// takes its queue and pictures, and the sweep at load takes anything a
+    /// crash or an older build left.
+    #[test]
+    fn nothing_held_outlives_its_card_or_its_message() {
+        let conn = db();
+        seed_held_card(&conn);
+        let queue = vec![HeldPrompt {
+            text: "see [s]".into(),
+            key: "a".into(),
+            pictures: vec!["s".into()],
+            origin: Some("skein".into()),
+        }];
+        write_hold(
+            &conn,
+            "c1",
+            queue.clone(),
+            None,
+            None,
+            Some(HeldPictures { key: "a".into(), list: vec![png("s")] }),
+        )
+        .unwrap();
+        forget_held(&conn, "c1").unwrap();
+        let count = |t: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!((count("held_prompt"), count("held_picture")), (0, 0));
+
+        /* What a crash could leave: a closed card's rows, and an orphan picture. */
+        write_hold(
+            &conn,
+            "c1",
+            queue,
+            None,
+            None,
+            Some(HeldPictures { key: "a".into(), list: vec![png("s")] }),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO held_picture (conversation_id, key, ord, name, media_type, data)
+             VALUES ('c1', 'gone', 0, 's', 'image/png', 'x')",
+            [],
+        )
+        .unwrap();
+        sweep_held(&conn);
+        assert_eq!((count("held_prompt"), count("held_picture")), (1, 1));
+        conn.execute("UPDATE conversation SET closed_at = 1 WHERE id = 'c1'", []).unwrap();
+        sweep_held(&conn);
+        assert_eq!((count("held_prompt"), count("held_picture")), (0, 0));
     }
 
     /// A blocker that named no reset is a real and common case — `availableAt`
@@ -11261,24 +11695,9 @@ mod tests {
     #[test]
     fn a_hold_with_no_reset_to_aim_at_is_still_a_hold() {
         let conn = db();
-        seed_project(&conn, "p1", "C:/x");
-        conn.execute(
-            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
-            [],
-        )
-        .unwrap();
-
-        write_hold(&conn, "c1", Some("go".into()), Some("no reset given".into()), None).unwrap();
-        let (text, why, until): (Option<String>, Option<String>, Option<i64>) = conn
-            .query_row(
-                "SELECT held_text, held_why, held_until FROM conversation WHERE id='c1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(text.as_deref(), Some("go"));
-        assert_eq!(why.as_deref(), Some("no reset given"));
-        assert_eq!(until, None);
+        seed_held_card(&conn);
+        write_hold(&conn, "c1", plain(&["go"]), Some("no reset given".into()), None, None).unwrap();
+        assert_eq!(read_hold(&conn), (vec!["go".into()], Some("no reset given".into()), None));
     }
 
     /// Whitespace is not a prompt, and a `why` without one would draw a card as
@@ -11287,26 +11706,69 @@ mod tests {
     #[test]
     fn a_hold_with_nothing_to_send_is_not_written_at_all() {
         let conn = db();
-        seed_project(&conn, "p1", "C:/x");
-        conn.execute(
-            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
-            [],
-        )
-        .unwrap();
-
-        for empty in [Some("   ".to_string()), Some(String::new()), None] {
-            write_hold(&conn, "c1", empty, Some("looks held".into()), Some(1)).unwrap();
-            let (text, why, until): (Option<String>, Option<String>, Option<i64>) = conn
-                .query_row(
-                    "SELECT held_text, held_why, held_until FROM conversation WHERE id='c1'",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .unwrap();
-            assert_eq!(text, None);
+        seed_held_card(&conn);
+        for empty in [plain(&["   "]), plain(&[""]), vec![]] {
+            write_hold(&conn, "c1", empty, Some("looks held".into()), Some(1), None).unwrap();
+            let (queue, why, until) = read_hold(&conn);
+            assert!(queue.is_empty());
             assert_eq!(why, None, "a why with no prompt draws a hold that cannot end");
             assert_eq!(until, None);
         }
+        /* And blank entries among real ones are dropped, not kept as gaps. */
+        write_hold(&conn, "c1", plain(&["a", " ", "b"]), Some("w".into()), None, None)
+            .unwrap();
+        assert_eq!(read_hold(&conn).0, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// A closed card's queue is not restored onto the wall, whatever is left
+    /// of it in the table.
+    #[test]
+    fn a_closed_cards_queue_is_not_loaded() {
+        let conn = db();
+        seed_held_card(&conn);
+        write_hold(&conn, "c1", plain(&["go"]), Some("w".into()), None, None).unwrap();
+        conn.execute("UPDATE conversation SET closed_at = 1 WHERE id = 'c1'", []).unwrap();
+        assert!(held_queues(&conn).unwrap().is_empty());
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM held_prompt WHERE conversation_id='c1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    /// The prompt a v53 wall was holding in its one slot comes across as the
+    /// first of a queue, and the slot is emptied so nothing reads it twice.
+    /// Run twice, since a rung must be safe to re-run.
+    #[test]
+    fn v54_moves_the_one_held_prompt_into_the_queue() {
+        let conn = db();
+        seed_held_card(&conn);
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c2','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversation SET held_text = 'rebase and push', held_why = 'spent', held_until = 5
+              WHERE id = 'c1'",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE conversation SET held_text = '   ' WHERE id = 'c2'", []).unwrap();
+        migrate_v54(&conn).unwrap();
+        migrate_v54(&conn).unwrap();
+        assert_eq!(
+            read_hold(&conn),
+            (vec!["rebase and push".into()], Some("spent".into()), Some(5))
+        );
+        assert!(!held_queues(&conn).unwrap().contains_key("c2"));
+        let left: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM conversation WHERE held_text IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]

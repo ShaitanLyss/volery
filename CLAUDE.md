@@ -58,7 +58,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # showing,
                          # hunt,
                          # presets,
-                         # commands, copy, widgets, naming, drafts, attach, rousing, quitting, timing,
+                         # commands, copy, widgets, naming, drafts, holding, attach, rousing, quitting, timing,
                          # gears,
                          # sink, chronicle, gates, logface, serverlog, buildlog, unreallog,
                          # applog,
@@ -386,7 +386,7 @@ own vocabulary of class names wants its own file rather than a prefix;
 
 Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` files in
 `src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `wheel.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
-`transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `attach.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
+`transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `holding.ts`, `attach.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `adopt.ts`,
 `presence.ts`, `away.ts`, `pieces.ts`, `gate.ts`, `sketch.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,

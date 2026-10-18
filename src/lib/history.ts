@@ -106,7 +106,11 @@ export type History = {
  * along the wall — and rousing's own prompt is an ordinary `you` line on both
  * sides, which is what lets this cut it. */
 export function trimOverlap(history: Line[], live: Line[]): Line[] {
-  const first = live.find((l) => l.kind !== "meta");
+  /* Not a held line: a restored card draws what it is holding before its
+     history is read (`Conversation.restore`), and those words are in no
+     session file — so a held "carry on" would otherwise match the last time
+     you said it and cut every line after it out of the history. */
+  const first = live.find((l) => l.kind !== "meta" && l.state !== "held");
   if (!first) return history;
   for (let i = history.length - 1; i >= 0; i--) {
     if (history[i].kind === first.kind && history[i].text === first.text) {

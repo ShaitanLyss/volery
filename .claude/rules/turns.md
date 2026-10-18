@@ -624,6 +624,18 @@ notification the CLI delivered that nothing acted on, which a turn genuinely can
   each other; the bullet above has the 08:06-to-13:03 case, which is the other order of the
   same meeting.
 
+  **And then the slot went, 2026-10-16** (sink `864ccaae`). The refusal kept a nudge off your
+  words and, by the same rule, kept *your second message* off them too: marked failed, kept
+  nowhere, gone at the next restart. The hold is a queue now (`holding.ts`, `accounts.md`'s
+  "A queue, not a slot"), so nothing is refused and nothing overwritten — `HOLD_REFUSED_LINE`
+  and `holdSlotFor` are gone with the slot. What this bullet's rule became: a *held* line is
+  marked `held` rather than left `pending`, `#forgetEchoes` keeps lines by that state rather
+  than by matching one text, and a round of several held messages is settled by its one replay
+  through a shared `batch` — every line it carried closed out of `awaiting` together, which is
+  the exact-text claim per message, on the round's text. `#heal` still drops on a card held
+  for the *allowance*; one whose queue only waits behind a round that went out heals that round
+  first, and `#releaseCard` holds the rest back until it has.
+
 `WAKE_GRACE_S` is twelve seconds, which is just past the median wake delay of ten — long
 enough that a card taking the ordinary path is never accused, short enough that the reading
 still concerns the job you are waiting on. It is the **job** arm's grace; the prompt arm waits

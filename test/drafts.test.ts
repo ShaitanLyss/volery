@@ -6,6 +6,7 @@ import {
   KEEP_BUDGET,
   decodeKept,
   encodeKept,
+  mergeDraft,
   type Draft,
 } from "../src/lib/drafts";
 
@@ -268,5 +269,45 @@ describe("what survives the window", () => {
     expect(d.peek("gone").text).toBe("");
     expect(d.peek("here").text).toBe("still a card");
     expect(d.peek(null).text).toBe("the wall's");
+  });
+});
+
+describe("words the wall could not send, handed back to the draft", () => {
+  /* Sink 864ccaae: held messages cancelled, cleared or closed, and a send that
+     failed outright, go back where they were written rather than nowhere. */
+  test("they go in front of what is there, since they were written first", () => {
+    expect(mergeDraft(words("held one"), words("typing now"))).toEqual(
+      words("held one\n\ntyping now"),
+    );
+    expect(mergeDraft(words("held one"), words(""))).toEqual(words("held one"));
+    expect(mergeDraft(words(""), words("typing now"))).toEqual(words("typing now"));
+  });
+
+  test("a picture coming back under a name already in use is renamed, token and all", () => {
+    const back: Draft = { text: "look at [shot 1]", shots: [shot("shot 1")] };
+    const into: Draft = { text: "and [shot 1] too", shots: [shot("shot 1")] };
+    const out = mergeDraft(back, into);
+    expect(out.text).toBe("look at [shot 1 2]\n\nand [shot 1] too");
+    expect(out.shots.map((a) => a.name)).toEqual(["shot 1 2", "shot 1"]);
+  });
+
+  test("two held messages folded back keep their order and both their pictures", () => {
+    const first: Draft = { text: "see [shot 1]", shots: [shot("shot 1")] };
+    const second: Draft = { text: "and [shot 1]", shots: [shot("shot 1")] };
+    const folded = [first, second].reduceRight((into, b) => mergeDraft(b, into), words(""));
+    expect(folded.text).toBe("see [shot 1 2]\n\nand [shot 1]");
+    expect(new Set(folded.shots.map((a) => a.name)).size).toBe(2);
+  });
+
+  test("give parks them under a card the field is not holding, ahead of its draft", () => {
+    const d = new Drafts();
+    d.switchTo("b", words(""));
+    /* Leaving b for a parks what was in the field under b. */
+    d.switchTo("a", words("half a thought"));
+    d.give("b", words("held one"));
+    expect(d.peek("b").text).toBe("held one\n\nhalf a thought");
+    /* And the wall's own bucket, for a card that has just been closed. */
+    d.give(null, words("from a closed card"));
+    expect(d.peek(null).text).toBe("from a closed card");
   });
 });

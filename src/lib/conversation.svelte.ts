@@ -92,6 +92,7 @@ import {
 import { costStep } from "./usage";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
+import type { Held, HeldItem } from "./holding";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
@@ -196,14 +197,22 @@ export type Line = {
   note?: string;
   /** On a `you` line, whether the process has it yet: `pending` is drawn but
    *  not yet acknowledged, `failed` never reached one, and absent is the normal
-   *  case — the wire echoed it back.
+   *  case — the wire echoed it back. `held` is the card keeping it until an
+   *  account will take it (`holding.ts`): nothing has gone wrong, nothing has
+   *  left, and it is drawn quietly, unlike `failed`, which is the one of the
+   *  four that alarms.
    *
    *  On a `shell` line the same two words mean the run rather than the send:
    *  `pending` while it is going, `failed` for a non-zero exit. A run that was
    *  *stopped* is neither — killing it is something you did on purpose, and the
    *  cap says so in words rather than the line wearing a fault. Same
    *  distinction `wasStopped` draws for a turn. */
-  state?: "pending" | "failed";
+  state?: "pending" | "failed" | "held";
+  /** The held messages sent together as one round share a number, so the one
+   *  replay that comes back for them settles every line it carried
+   *  (`#claimEcho`) and a round that failed fails them all (`echoFailed`).
+   *  Absent on everything else. */
+  batch?: number;
   /** What became of this line on **another machine**, in words — "queeris has
    *  it", "left this wall · queeris has not said it has it". Only ever set on a
    *  card that lives on another wall (`shadow.ts::weave`); a local card's own
@@ -925,24 +934,17 @@ export class Conversation {
     this.unwoken !== null && !this.aside && this.unwokenSeconds >= WAKE_GRACE_S,
   );
 
-  /** A prompt that could not be sent because no account was allowed to take it,
-   *  kept until one is.
+  /** The messages that could not be sent because no account was allowed to
+   *  take them, kept until one is — a queue, oldest first (`holding.ts`).
    *
    *  A field on the card rather than a queue in `Skein` for the same reason
    *  `pendingHeal` is one: the card has to be able to sit here holding it, be
    *  drawn holding it, and be restored — and a hold that lived in the sender
    *  would vanish the moment anything re-rendered. `until` is when the first
    *  account is expected back, or null when no window named a reset and only
-   *  the next allowance poll can say. */
-  held = $state<{
-    text: string;
-    why: string;
-    until: number | null;
-    /** Composed by a heal rather than typed by you — the only kind that may
-     *  lapse (`lapsesOnAnswer`). Not persisted: a hold read back off disk is
-     *  treated as yours, which errs towards sending it. */
-    composed?: true;
-  } | null>(null);
+   *  the next allowance poll can say. Never an empty queue: no messages is
+   *  `null`. */
+  held = $state<Held | null>(null);
 
   /** A side question that is out, if one is — see `aside.rs`.
    *
@@ -1205,11 +1207,13 @@ export class Conversation {
   queuedBehind(healText: string): boolean {
     const sent: { text: string; at: number }[] = [];
     for (const l of this.lines) {
-      if (l.kind !== "you" || l.awaited !== true) continue;
+      /* A held line is Skein's, not the CLI's: it is on no wire, so it is no
+         evidence of a queue there. */
+      if (l.kind !== "you" || l.awaited !== true || l.state === "held") continue;
       const at = this.#drawnAt.get(l);
       if (at !== undefined) sent.push({ text: l.text, at });
     }
-    return queuedBehind(sent, Date.now(), [this.held?.text, healText, stripResendMark(healText)]);
+    return queuedBehind(sent, Date.now(), [healText, stripResendMark(healText)]);
   }
 
   /** A prompt being held for an account has stopped being worth sending, read
@@ -1518,7 +1522,8 @@ export class Conversation {
     /** Optional because a row written before schema v16 has neither. */
     account_label?: string | null;
     bypass_caps?: boolean;
-    held_text?: string | null;
+    /** Optional because a row written before schema v54 has none. */
+    held?: { text: string; key: string; pictures?: string[]; origin?: string | null }[];
     held_why?: string | null;
     heldUntil?: number | null;
     effort?: string | null;
@@ -1595,13 +1600,32 @@ export class Conversation {
        the other face. `until` is left exactly as it was stored, including a time
        already past — `Skein.load` releases those at once rather than letting the
        card wait out a sweep for a door that is already open. */
-    if (row.held_text) {
+    const queue: HeldItem[] = (row.held ?? [])
+      .filter((h) => h.text?.trim())
+      .map((h) => ({
+        key: h.key,
+        text: h.text,
+        pictures: h.pictures ?? [],
+        ...(h.origin === "heal" ? { composed: true as const } : {}),
+        ...(h.origin === "skein" ? { own: true as const } : {}),
+      }));
+    if (queue.length) {
       c.held = {
-        text: row.held_text,
+        queue,
         why: row.held_why ?? HOLD_LINE,
         until: row.heldUntil ?? null,
+        /* Whatever it was waiting on when the wall closed, it is the
+           allowance's question now: `Skein.load` asks it straight away, and a
+           round that was in flight then is a turn this process never had. */
+        waiting: "allowance",
       };
       c.activity = c.held.why;
+      /* And drawn again. A held message is in no session file, so the history
+         read finds nothing of it, and for its whole life before this a restored
+         hold had no line in the transcript at all — the words existed only as a
+         countdown on the face, which is exactly what reads as lost. Each comes
+         back held and awaited, so its release settles it like any other. */
+      for (const h of queue) c.drawHeld(h.key, h.text);
     }
     /* A dormant card emits no `system/init`, so the gear cannot be folded — the
        whole wall would come back drawn as making until each card was woken.
@@ -1650,7 +1674,9 @@ export class Conversation {
        when it will stop. `until` null is a blocker that named no reset, which
        the allowance poll is the only way out of — so the line says the state
        and stops rather than inventing a time. */
-    if (this.held) {
+    /* A queue waiting behind a round that is out is a card *working* on that
+       round, and says what the work is; only a card held at rest says why. */
+    if (this.held && !(this.held.waiting === "turn" && this.working)) {
       const when = this.held.until === null ? null : until(this.held.until - clock.t);
       return when ? `${this.held.why} · ${when}` : this.held.why;
     }
@@ -2080,11 +2106,17 @@ export class Conversation {
   /** The process has our words — the line stands as an ordinary one, and the
    *  books are closed on it. */
   #claimEcho(text: string): Line | null {
-    const line = this.#echoOf(text, (l) => l.awaited === true);
+    const line = this.#echoOf(text, (l) => l.awaited === true && l.state !== "held");
     if (!line) return null;
     line.state = undefined;
     line.awaited = undefined;
     this.awaiting = Math.max(0, this.awaiting - 1);
+    /* A round of held messages went out as one prompt and comes back as one
+       replay, so the claim that finds the first of its lines is the claim for
+       all of them — each was drawn when you typed it, and each is owed exactly
+       one acknowledgement, which is this one. Still an exact-text claim: the
+       replay matched the round's echo, which every line in it carries. */
+    if (line.batch !== undefined) this.#closeRound(line.batch, false);
     /* The nudge coming home is evidence about everything in front of it, and
        it is the only evidence there will ever be — see `ghostedByNudge`, which
        has the measurement and the reason this could not stop on its own.
@@ -2179,11 +2211,12 @@ export class Conversation {
    *  and is owed only its echo, which will never come now. A line still pending
    *  when *we* pulled the process is one nothing carried. */
   #forgetEchoes(keepUnsent = false) {
-    const holding = this.held?.text.trim();
     let kept = 0;
     for (const l of this.lines) {
       if (!l.awaited) continue;
-      if (holding !== undefined && l.text.trim() === holding) {
+      /* By what the line says it is rather than by matching the held text,
+         which was one string for one slot and is a queue now. */
+      if (l.state === "held") {
         kept += 1;
         continue;
       }
@@ -2194,6 +2227,9 @@ export class Conversation {
       l.awaited = undefined;
     }
     this.awaiting = kept;
+    for (const [batch, lines] of this.#rounds) {
+      if (!lines.some((l) => l.awaited)) this.#rounds.delete(batch);
+    }
     /* Nulled whatever survives above: a card with no process cannot be nudged,
        and a held prompt is waiting on an allowance rather than on a flush. */
     this.pendingNudge = null;
@@ -2203,23 +2239,48 @@ export class Conversation {
   /** Nothing carried it *yet* — Skein is holding it deliberately, and will send
    *  it when an account frees up.
    *
-   *  The line stays exactly as `echo` drew it: still `pending`, because it is,
-   *  and still `awaited`, because when the hold releases `#deliver` writes this
-   *  very text to stdin and the replay has to have a line to claim. Clearing
-   *  `awaited` here would make that echo find nothing and push a second copy of
-   *  your prompt — the same double-draw `#settleEchoes` was rewritten to avoid.
+   *  The line is marked `held` and stays `awaited`, because when the hold
+   *  releases these very words go down the wire and the replay has to have a
+   *  line to claim. Clearing `awaited` here would make that echo find nothing
+   *  and push a second copy of your prompt — the same double-draw
+   *  `#settleEchoes` was rewritten to avoid. It was left `pending` for this
+   *  feature's first life, and a relay turn speaking on a held card then ran
+   *  `#settleEchoes` over it and drew your kept words exactly like delivered
+   *  ones.
    *
-   *  What it *does* take back is the turn. `echo` opens one from the gesture, on
-   *  the reasoning that a prompt you sent is a turn beginning; a prompt that
-   *  never left is not. Left open, the card read celadon and `working` for as
-   *  long as the hold lasted — up to a five-hour window — which is the wall
-   *  claiming a card is burning tokens while it sits doing nothing. Worse, both
-   *  `#heal` and `#nudge` refuse a working card, so the two mechanisms that
-   *  could have got it moving again were the two the stuck state locked out.
+   *  The line is found once, here, and remembered under the message's `key`
+   *  (`#heldLines`): everything after — the release, a cancel, a lapse — goes
+   *  to that line and never searches by text again. Searching was how a second
+   *  "yes" typed behind a "yes" already on its way had the *sent* one marked
+   *  failed and its own left held for ever. The newest pending line with these
+   *  words is the one `echo` drew a moment ago.
    *
-   *  Same guard as `echoFailed`: if something in this turn has already spoken,
-   *  the turn is real and belongs to an earlier prompt. */
-  echoHeld(why: string) {
+   *  `giveTurn` takes back the turn `echo` opened from the gesture: a prompt
+   *  that never left is not a turn beginning, and a card left `working` through
+   *  a hold read celadon for as long as the window took to turn over — up to
+   *  five hours of the wall claiming it was burning tokens — and locked out
+   *  `#heal` and `#nudge`, both of which refuse a working card. False for a
+   *  message joining a queue behind a round that is out: that round is a real
+   *  turn, waking or running, and taking it back would let the next round be
+   *  written into it (found in review). Same guard as `echoFailed`: if
+   *  something in this turn has already spoken, the turn is real. */
+  echoHeld(held: { key: string; text: string } | null, why: string, giveTurn = true) {
+    if (held !== null) {
+      const want = held.text.trim();
+      for (let i = this.lines.length - 1; i >= 0; i--) {
+        const l = this.lines[i]!;
+        if (
+          l.kind === "you" &&
+          l.state === "pending" &&
+          (l.text.trim() === want || l.echo?.trim() === want)
+        ) {
+          l.state = "held";
+          this.#heldLines.set(held.key, l);
+          break;
+        }
+      }
+    }
+    if (!giveTurn) return;
     if (!this.streaming && this.#turnText.length === 0) {
       this.working = false;
       this.restingSince ??= Date.now();
@@ -2227,21 +2288,95 @@ export class Conversation {
     this.activity = why;
   }
 
-  /** The hold released — the line drawn a while ago is going down the wire now.
+  /** Each held message's line, by `HeldItem.key`. See `echoHeld`. */
+  #heldLines = new Map<string, Line>();
+
+  /** Draw a held message again after a restart: held, awaited and counted,
+   *  exactly as `echo` and `echoHeld` would have left it. See `restore`. */
+  drawHeld(key: string, text: string) {
+    const line = this.#push("you", text, "held");
+    line.awaited = true;
+    this.awaiting += 1;
+    this.#heldLines.set(key, line);
+  }
+
+  /** The hold released — the lines drawn a while ago are going down the wire
+   *  now, as one round.
    *
    *  `echoHeld` gave the turn back when the prompt was held; this takes it again
    *  at the moment it is actually sent, which is the same rule `echo` follows
    *  from the gesture. Without it the card sat at rest with a prompt on the wire
    *  until the first event answered, and `unacknowledged` would have started
-   *  counting against it. */
-  echoResumed(text: string) {
+   *  counting against it.
+   *
+   *  Each line goes back to pending and takes the round's echo, since that is
+   *  what the one replay will say; a round of one keeps its own when the two
+   *  agree, which is the ordinary prompt's case. A round of several is
+   *  numbered, and its lines kept together under the number (`#rounds`) so the
+   *  replay settles every one — including one the transcript has since scrolled
+   *  past `MAX_LINES`, which a search of `lines` would never find again. */
+  echoResumed(round: readonly { key: string }[], echo: string) {
+    const lines: Line[] = [];
+    for (const { key } of round) {
+      const line = this.#heldLines.get(key);
+      this.#heldLines.delete(key);
+      if (!line) continue;
+      line.state = "pending";
+      if (echo.trim() !== line.text.trim()) line.echo = echo;
+      lines.push(line);
+    }
+    if (lines.length > 1) {
+      const batch = ++Conversation.#batches;
+      for (const l of lines) l.batch = batch;
+      this.#rounds.set(batch, lines);
+    }
     const idle = !this.working;
     if (idle) this.#beginTurn();
     /* `echo`'s rule: the held text opens the turn it is sent into only if
        nothing else is running. A hold can release into a card a relay is
        already answering, and the prompt then queues behind that turn. */
-    this.#opener = openerAfter(this.#opener, { cue: "sent", text, working: !idle });
+    this.#opener = openerAfter(this.#opener, { cue: "sent", text: echo, working: !idle });
     this.activity = "sending…";
+  }
+
+  /** Where `echoResumed` numbers its rounds. Wall-wide rather than per card,
+   *  so a number is never reused on a card that has been cleared. */
+  static #batches = 0;
+
+  /** The lines of each round still owed its replay, by number. */
+  #rounds = new Map<number, Line[]>();
+
+  /** Close a round's lines — claimed, or failed — and take it off the books. */
+  #closeRound(batch: number, failed: boolean) {
+    for (const l of this.#rounds.get(batch) ?? []) {
+      if (failed) {
+        if (l.state === undefined && !l.awaited) continue;
+        l.state = "failed";
+      } else l.state = undefined;
+      if (l.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
+      l.awaited = undefined;
+    }
+    this.#rounds.delete(batch);
+  }
+
+  /** Held messages that will not be sent after all — cancelled, cleared,
+   *  closed, or found without their pictures: each line marked, and out of
+   *  `awaiting` in the same breath, the correction every abandoned prompt is
+   *  owed (`turns.md`). By key, never by text. `why` is what the card says. */
+  failHeld(keys: readonly string[], why: string) {
+    for (const key of keys) {
+      const line = this.#heldLines.get(key);
+      this.#heldLines.delete(key);
+      if (!line) continue;
+      line.state = "failed";
+      if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
+      line.awaited = undefined;
+    }
+    if (!this.streaming && this.#turnText.length === 0) {
+      this.working = false;
+      this.restingSince ??= Date.now();
+    }
+    this.activity = why;
   }
 
   /** A held retry or pick-up has been overtaken: a model has answered on this
@@ -2251,21 +2386,26 @@ export class Conversation {
    *  The line `echo` drew for it is closed the way every abandoned prompt is —
    *  marked, and taken out of `awaiting` in the same breath, because a held
    *  line keeps `awaited` on purpose and nothing would ever claim it now. Not
-   *  through `echoFailed`, which also gives the turn back: this is called from
+   *  through `failHeld`, which also gives the turn back: this is called from
    *  inside a live turn somebody else's prompt opened, and that turn is real.
    *  Skein clears the timer and the row (`#lapseHeld`); this is only the
    *  card's half. */
-  lapseHeld() {
+  lapseHeld(lapsed: readonly HeldItem[]) {
     const held = this.held;
     if (!held) return;
-    this.held = null;
-    const line = this.#echoOf(held.text, (l) => l.state === "pending" || l.awaited === true);
-    if (line) {
-      line.state = "failed";
-      if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
-      line.awaited = undefined;
+    const gone = new Set(lapsed.map((h) => h.key));
+    const left = held.queue.filter((h) => !gone.has(h.key));
+    this.held = left.length ? { ...held, queue: left } : null;
+    for (const h of lapsed) {
+      const line = this.#heldLines.get(h.key);
+      this.#heldLines.delete(h.key);
+      if (line) {
+        line.state = "failed";
+        if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
+        line.awaited = undefined;
+      }
+      this.#push("meta", heldLapsedNote(h.text));
     }
-    this.#push("meta", heldLapsedNote(held.text));
   }
 
   /** A side question has gone out.
@@ -2302,8 +2442,13 @@ export class Conversation {
    *  a send that failed is one still marked pending, never an older copy of the
    *  same words that has been answered and is merely waiting on its echo. */
   echoFailed(text: string, why: string) {
+    /* Pending only: a held line is closed by its key (`failHeld`), never by
+       a search that could reach the wrong copy of the same words. */
     const line = this.#echoOf(text, (l) => l.state === "pending");
-    if (line) {
+    /* A round fails whole: every line it carried is owed the same correction —
+       marked, and out of `awaiting`. */
+    if (line?.batch !== undefined) this.#closeRound(line.batch, true);
+    else if (line) {
       line.state = "failed";
       if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
       line.awaited = undefined;
@@ -2640,7 +2785,9 @@ export class Conversation {
              the CLI recorded it, so the held copy would be the duplicate. Seen
              2026-10-16: a relay answered at 02:40, the held retry sent at
              02:42:55 on top of it. Skein does the dropping (`#lapseHeld`). */
-          if (this.held?.composed && lapsesOnAnswer(this.held.text)) this.pendingHeldLapse = true;
+          if (this.held?.queue.some((h) => h.composed && lapsesOnAnswer(h.text))) {
+            this.pendingHeldLapse = true;
+          }
         }
 
         /* The prose between tool calls arrives as thinking blocks the server
@@ -3441,6 +3588,8 @@ export class Conversation {
        rather than of the session, and clearing would silently drop the card
        back onto the first account. */
     this.held = null;
+    this.#heldLines.clear();
+    this.#rounds.clear();
     this.ctxTokens = 0;
     this.costUsd = 0;
     /* The fresh session's `total_cost_usd` starts from zero again, so a

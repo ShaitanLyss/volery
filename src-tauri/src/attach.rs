@@ -166,6 +166,23 @@ const NAME_MOST: usize = 64;
 /// wall decodes each again (`Attachments.fromCarried`), which is the real
 /// "is this an image" check; this is the shape, and the one that runs in Rust.
 pub fn carried_fit(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Result<(), String> {
+    let cost = pictures_fit(pictures, text)?;
+    if cost > CARRY_MOST {
+        return Err(format!(
+            "this prompt comes to {} MB and at most {} MB goes to another wall at once — send fewer pictures, or smaller ones",
+            mb(cost),
+            CARRY_MOST / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
+/// Every check `carried_fit` makes but the frame's ceiling, answering what the
+/// prompt would cost on the wire. Shared with the hold, which writes a held
+/// prompt's pictures to the store (`store::write_hold`): those bytes
+/// are read back hours later into a request, so they owe the same scrutiny as
+/// bytes from another machine, and none of the frame's — they never ride one.
+pub fn pictures_fit(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Result<usize, String> {
     if pictures.len() > MAX_ATTACHED {
         return Err(format!("{} pictures — {MAX_ATTACHED} is the most one prompt carries", pictures.len()));
     }
@@ -216,14 +233,7 @@ pub fn carried_fit(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Re
         }
         cost += data.len() + name.len() + p.media_type.len() + 48;
     }
-    if cost > CARRY_MOST {
-        return Err(format!(
-            "this prompt comes to {} MB and at most {} MB goes to another wall at once — send fewer pictures, or smaller ones",
-            mb(cost),
-            CARRY_MOST / (1024 * 1024)
-        ));
-    }
-    Ok(())
+    Ok(cost)
 }
 
 /// One decimal place of a megabyte, for a sentence.

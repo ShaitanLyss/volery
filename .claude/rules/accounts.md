@@ -411,8 +411,8 @@ and there was nothing left to swap. Sink 10a2d3c5 diagnosed it as the wall never
 acting on `availableAt`, which had not been true since v0.10.0; fad16c9c is the
 real one.
 
-`held_text`, `held_why` and `held_until` are `migrate_v27`. Three columns rather
-than a JSON blob, deliberately against the `widget.config_json` bargain: that one
+`held_text`, `held_why` and `held_until` were `migrate_v27`; the text became a
+queue in `migrate_v54` (below). Columns rather than a JSON blob, deliberately against the `widget.config_json` bargain: that one
 is right where the front end owns a shape that may change and a normalizer can
 degrade it to something drawable, and here degrading means "no prompt held",
 which is exactly the loss. **Written at `#hold`, not at shutdown** — the lesson
@@ -428,10 +428,14 @@ already past *at once* rather than letting it wait out a sweep for a door that
 opened while the app was shut. `#rearmHold` is shared with `#hold` for that
 reason — the inline version was why a restored hold would have had no timer.
 
-Escape on a held card drops the hold and the prompt with it, which is the same
-gesture and the same meaning it already has on a card waiting to heal
-(`skein.svelte.ts::stop`). A card waiting on your account's clock is a card
-about to act on its own, and Escape aimed at one means don't.
+Escape on a held card drops the hold, which is the same gesture and the same
+meaning it already has on a card waiting to heal (`skein.svelte.ts::stop`). A
+card waiting on your account's clock is a card about to act on its own, and
+Escape aimed at one means don't. **It does not drop your words**, which it did
+until 2026-10-16: they go back to the card's draft, pictures and all
+(`#dropHold`, `onHandBack`), so "don't send this" never means "and forget I
+wrote it". A clear and a close do the same, the close into the wall's own draft
+since the card's goes with it.
 
 **And dropping the prompt means closing the books on it**, which that gesture did
 not do until 2026-09-11. The held line keeps `awaited` on purpose — `releaseHeld`
@@ -460,10 +464,11 @@ left is not a turn beginning, and nothing on the hold path was giving it back:
   So the two mechanisms that exist to get a stuck card moving were locked out by
   exactly the state that stuck it.
 
-`echoHeld` gives the turn back. What it deliberately does **not** touch is the
-line: it stays `pending`, because it is, and it stays `awaited`, because
-`releaseHeld` sends this very text later and `--replay-user-messages` needs a
-line to claim — clearing it would have Skein's own re-send draw your words a
+`echoHeld` gives the turn back. The line it marks `held` — it was left
+`pending` for this feature's first life, and a relay turn speaking on a held card
+then ran `#settleEchoes` over it and drew your kept words exactly like delivered
+ones — and it stays `awaited`, because a release sends these very words later and
+`--replay-user-messages` needs a line to claim — clearing it would have Skein's own re-send draw your words a
 second time, on the one path where Skein rather than you decides to send them.
 `#forgetEchoes` learns the same exception: a stream closing says nothing about a
 prompt that was never written to it. `echoResumed` takes the turn back at the
@@ -487,6 +492,49 @@ to try again, while the turn stayed open, so the card sat celadon and working
 over a prompt that existed nowhere but in a line drawn as though it had been
 sent. `echoFailed` is what says a send never left, and it is what that arm always
 meant.
+
+### A queue, not a slot — and one round when it goes
+
+Lyss, 2026-10-16: *"something typed or done by the user should never be lost."*
+The hold was one slot (`conv.held.text`). The first message held was kept,
+persisted and sent; a **second** typed into the same card was refused — rightly
+guarded against a nudge or heal overwriting yours (sink `4ac63054`), wrongly
+applied to you — marked `not sent`, and kept nowhere, so a restart took it (sink
+`864ccaae`). A genuine failure and the no-account arm were the same loss one
+path over. `holding.ts` has the shape; what matters here:
+
+- **Append, never refuse.** `conv.held` is `{ queue, why, until, waiting }`, and
+  anything you send to a card holding anything joins the back — *even when an
+  account is free*, since sending it then would put it ahead of words you wrote
+  first (`#append`). A heal's composed re-ask goes to the front: it stands for
+  the turn that broke, which came before everything queued.
+- **Persisted as rows.** `held_prompt` (`migrate_v54`), one per message, keyed so
+  a message keeps its pictures as the ones ahead of it go; the whole queue is
+  rewritten in one transaction per change, chained per card on the front end
+  because the command left the main thread to carry pictures. A restored hold is
+  *drawn* again — each message a `held` line after the history — where it used to
+  exist only as a countdown on the face, which is exactly what read as lost.
+- **One round, one turn.** On release the queue goes as one prompt, each message
+  verbatim under its own divider beneath a line telling the agent a later one may
+  revise an earlier one (`composeRound`). One turn per message was the first
+  plan and was overruled: it re-reads the context per message and has the agent
+  act on message one before reading message two. The CLI agrees, as it happens —
+  probed 2026-10-16, it merges prompts queued on its own stdin into one turn. The
+  lines settle together: they share a `batch`, carry the round's echo, and the
+  one replay claims them all (`#claimEcho`) — still an exact-text claim, on the
+  round's text.
+- **Cut at slash commands**, which cannot ride inside other words. What is left
+  after a cut waits (`waiting: "turn"`) for the round ahead of it to finish its
+  turn and goes then (`#drain`), not while a heal is due.
+- **Nothing that cannot be sent is dropped.** Every account switched off or none
+  signed in is now *held* (`NO_ACCOUNT_HELD`) with the fault still raised, where
+  it was a failure. A send that fails outright hands what you wrote back to the
+  draft (`send(…, { yours: true })` from the dock and the voice). A pictured
+  prompt is held with its pictures — `attach.md`'s carve-out.
+- **What is still not covered**, said so it is not mistaken for done: a message
+  written to the child's stdin and not yet taken up when Volery crashes is lost
+  with the process, held or not — the window is the CLI's own queue, and is the
+  same window every send into a busy card has always had.
 
 ### A reading the network went away in the middle of
 

@@ -159,6 +159,38 @@ screenshot into a prompt is not a statement that you want it pinned up.
   revoke owed by whichever of four call sites dropped the last reference. At `THUMB_SIDE` it is
   a few kilobytes, it survives being copied into a `Line`, and there is nothing to release.
 
+### The one carve-out: a held message's pictures
+
+**Lyss, 2026-10-16: a held message's pictures are written to disk until it is sent.** Everything
+above stands for every other picture. The exception is a prompt held because no account will take
+it (`accounts.md`, `holding.ts`): the hold is persisted so it survives the wall closing, and a
+held message whose pictures did not would come back as a sentence naming pictures nobody has.
+Until that day such a prompt was refused rather than held (`PICTURES_NOT_HELD`), which met the
+no-disk rule by failing the one thing you had just asked for. Sink `864ccaae` is why that stopped
+being acceptable: *something typed or done by the user should never be lost.*
+
+Scoped exactly as narrowly as the reason:
+
+- **In SQLite, not as files** — `held_picture`, beside `held_prompt` (`store::migrate_v54`). A
+  file cannot go *with* its row: a crash between deleting the message and deleting the file
+  would leave a screenshot in app data for ever. In the database, `write_hold` takes a message's
+  pictures out in the same transaction that takes the message out of the queue, so the table
+  never holds a picture whose message is not still queued.
+- **Checked as if it came from another machine** — `attach::pictures_fit`, the same scrutiny
+  `carried_fit` gives a picture off the wire, less the frame's ceiling. These bytes go back into
+  a request hours later, and a picture the API refuses then is a held message that cannot go.
+- **Gone when the message goes**: sent (after the send, so a crash mid-send restarts holding
+  them — a copy is recoverable where a loss is not), handed back to the draft, cancelled, or the
+  card closed (`forget_held`, since a close is soft and no cascade fires). `sweep_held` at every
+  load is the backstop for anything a crash left.
+- **Handed back as attachments, not tokens.** Escape on a held card, a clear, a close, or a send
+  that fails outright puts the words back in the draft *and* decodes the pictures back into
+  chips (`App.svelte`'s `onHandBack`, `Attachments.fromCarried`). A picture that could not be
+  found again has its token taken out of the sentence (`holding.ts::withoutMissing`) and the
+  transcript says it needs attaching afresh.
+- **A remote prompt is held on the owning wall's disk**, by the same path: it arrives through
+  `Skein.send` like any other.
+
 ## Scaling, and the two caps that are not the same cap
 
 `MAX_SIDE` is 1568 because the API scales anything larger down before the model sees it —

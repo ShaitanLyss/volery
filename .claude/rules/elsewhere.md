@@ -373,13 +373,13 @@ the far side, not a second set.
   that exchange lands. The cost is reach: a wall this one cannot dial — reachable only through
   a third, or only dialling in — never receives one, and the prompt reads *never left this wall*
   rather than arriving as words. A relay that is handed one anyway drops it.
-- **Never held for an account.** A prompt the waterfall would hold keeps its *text*, in the
-  store (`held_text`), to send when an account frees up. A picture can be neither written there
-  nor dropped from the sentence naming it — the release would send `[image 1]` about nothing,
-  and tell the far wall `taken` now. So `#deliver` fails a pictured prompt instead of holding it
-  (`attach.ts::PICTURES_NOT_HELD`), and the far wall is answered refused. Local and remote alike:
-  it was a local bug first.
-- **Held until answered, and never written to disk.** The fleet keeps an ask for ten minutes for
+- **Held for an account like any other, pictures and all** (since 2026-10-16). It was *never*
+  held: the hold kept text alone, a picture could neither be written there nor dropped from the
+  sentence naming it, and `#deliver` failed a pictured prompt and answered the far wall refused
+  (`PICTURES_NOT_HELD`). Now the owning wall holds it on *its* disk — `held_picture`, the one
+  carve-out from attachments never touching one (`attach.md`) — and answers `taken`, which is
+  true: the wall has it and will send it. Local and remote alike, as the refusal was.
+- **Held until answered, and never written to disk in transit.** The fleet keeps an ask for ten minutes for
   the *key* that stops a redelivered frame being a second prompt; `unburden` drops the pictures
   the moment an answer is recorded or heard, and the addressee never keeps them at all. Nothing
   on either wall writes them anywhere, which is `attach.md`'s rule kept across the wire.

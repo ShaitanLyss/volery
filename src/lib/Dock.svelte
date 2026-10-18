@@ -691,7 +691,7 @@
          broadcast readout, because "stop" beside a list of four is a
          question rather than a verb — the key and the button both aim at
          the focused card alone. -->
-    {#if card?.face.working}
+    {#if card?.face.working || card?.can("stop") === "yes"}
       <!-- On a card elsewhere too: stopping a turn crosses as an act, and a
            wall too old to be asked says so when it is pressed rather than the
            button being missing. -->

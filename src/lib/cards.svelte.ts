@@ -191,7 +191,12 @@ export class LocalCard implements CardHandle {
     if (verb === "glass" && this.#hands.heldByGlass(c))
       return { no: "this card is on the glass with its grouping — move the grouping instead (space then g g)" };
     if (verb === "hand" && !c.planDoc) return { no: "it has no plan to hand on" };
-    return canDo(null, verb, { dormant: c.dormant, working: c.working, spoken: c.everSpoke });
+    return canDo(null, verb, {
+      dormant: c.dormant,
+      working: c.working,
+      spoken: c.everSpoke,
+      pending: !!c.held || !!c.pendingHeal || !!c.pendingNudge,
+    });
   }
   async do(verb: Verb, args: Record<string, unknown> = {}): Promise<Can> {
     const ok = this.can(verb);
@@ -269,7 +274,7 @@ export class LocalCard implements CardHandle {
     return "yes";
   }
   async say(text: string, turn: Turn) {
-    await this.#skein.send(this.conv, text, turn);
+    await this.#skein.send(this.conv, text, turn, { yours: true });
   }
   stir() {
     this.#skein.stir(this.conv);
@@ -362,7 +367,11 @@ export class RemoteCard implements CardHandle {
   }
   can(verb: Verb): Can {
     const s = this.shadow;
-    return canDo(s.remote, verb, { dormant: s.dormant, working: s.working, spoken: s.everSpoke });
+    return canDo(s.remote, verb, {
+      dormant: s.dormant,
+      working: s.working,
+      spoken: s.everSpoke,
+    });
   }
   async do(verb: Verb, args: Record<string, unknown> = {}): Promise<Can> {
     const ok = this.can(verb);

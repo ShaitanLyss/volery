@@ -1185,7 +1185,11 @@ export type WireLine = {
   kind: string;
   text: string;
   note?: string;
-  state?: "pending" | "failed";
+  /** `held` is the owning wall keeping words for an account to free up —
+   *  drawn as such on the far wall too, since "on its way" would be the wrong
+   *  thing to tell the person who wrote them. A wall from before it knew the
+   *  word drops it and draws the line as settled. */
+  state?: "pending" | "failed" | "held";
   narration?: true;
   /** The call, flattened. `input` arrives as a *string*: it is an unknown JSON
    *  value on the far side, and a string is the only shape both ends can assert
@@ -1199,7 +1203,11 @@ export type TailSource = {
   kind: string;
   text: string;
   note?: string;
-  state?: "pending" | "failed";
+  /** `held` is the owning wall keeping words for an account to free up —
+   *  drawn as such on the far wall too, since "on its way" would be the wrong
+   *  thing to tell the person who wrote them. A wall from before it knew the
+   *  word drops it and draws the line as settled. */
+  state?: "pending" | "failed" | "held";
   narration?: true;
   call?: {
     name?: string;
@@ -1268,7 +1276,7 @@ export function readTail(raw: unknown): WireLine[] | null {
     if (typeof o.kind !== "string" || typeof o.text !== "string") continue;
     const w: WireLine = { kind: o.kind, text: capText(o.text, TAIL_TEXT_CAP) };
     if (typeof o.note === "string") w.note = capText(o.note, TITLE_CAP);
-    if (o.state === "pending" || o.state === "failed") w.state = o.state;
+    if (o.state === "pending" || o.state === "failed" || o.state === "held") w.state = o.state;
     if (o.narration === true) w.narration = true;
     const c = o.call;
     if (c && typeof c === "object") {

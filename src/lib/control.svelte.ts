@@ -904,6 +904,11 @@ export class Control {
         namedByHand: c.namedByHand,
         tier: c.tier,
         activity: c.activity,
+        /* How many messages it is holding for an account, and how many prompts
+           it still owes an echo — the two numbers a lost or stuck message shows
+           up in, and neither is on the face (sink 864ccaae). */
+        held: c.held?.queue.length ?? 0,
+        awaiting: c.awaiting,
         dormant: c.dormant,
         /* What separates a crash from a card restored off disk — both are
            dormant, and only one of them is something to announce. */
