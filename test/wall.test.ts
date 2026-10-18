@@ -1145,7 +1145,7 @@ ti("a question arriving does not take the dock off a notice being answered", asy
   await ctl("ask", { id: here, askId: "hold-n", notice: "Migration landed." });
   await until("the notice to be drawn", snapshot, (s) => s.dom.noticeShown === "hold-n");
 
-  await ctl("real.click", { selector: ".notice .row input" });
+  await ctl("real.click", { selector: ".notice .row textarea" });
   for (const key of ["h", "a", "l", "f"]) await ctl("real.key", { key });
   const typed = await snapshot();
   expect(typed.dom.focusedTag).toBe("INPUT");

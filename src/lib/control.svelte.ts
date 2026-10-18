@@ -1352,7 +1352,7 @@ export class Control {
            half of "the panel held" that a key alone cannot show: the same item
            redrawn from scratch has the same key and an empty field. */
         reply:
-          document.querySelector<HTMLInputElement>(".notice .row input, .ask .free input")?.value ?? null,
+          document.querySelector<HTMLTextAreaElement>(".notice .row textarea, .ask .free textarea")?.value ?? null,
         /* A drag on the wall must be a gesture, never a text selection. That
            distinction is invisible to a synthetic pointer — only a real one
            makes Chromium start selecting — so the count is reported here rather
