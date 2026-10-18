@@ -352,3 +352,29 @@ export function matches(r: ChatRow, query: string): boolean {
   const hay = `${r.title}\n${whereOf(r)}\n${r.lastWords}`.toLowerCase();
   return words.every((w) => hay.includes(w));
 }
+
+/** How long a finished conversation's last message has to have been on screen
+ *  before reading it counts as having read it. */
+export const DWELL_MS = 2000;
+
+/** Does reading a `done` notice settle it (`docs/chat-mode.md` §5.4)?
+ *
+ *  All four, and every shortcut around them was a bug the review found:
+ *  Ctrl+Tab skimming past a row, the selection a view switch lands on, the
+ *  card selected after a close, a launch with nobody at the keyboard — each
+ *  would have acknowledged rests nobody read, and taken them out of the away
+ *  pile. Only a `done` notice settles this way; a turn that ended on a
+ *  question stays until it is answered, because reading a question is not
+ *  answering it. */
+export function settles(s: {
+  /** The notice's conversation is the one in front of you. */
+  selected: boolean;
+  /** The window is in front. */
+  focused: boolean;
+  /** Away mode is on. */
+  away: boolean;
+  /** How long its last message has been on screen, in ms. */
+  seenFor: number;
+}): boolean {
+  return s.selected && s.focused && !s.away && s.seenFor >= DWELL_MS;
+}

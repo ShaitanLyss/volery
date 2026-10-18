@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  DWELL_MS,
   afterClose,
   ageOf,
+  settles,
   dayOf,
   groups,
   matches,
@@ -290,5 +292,20 @@ describe("projects and search", () => {
     expect(matches(r, "PORTFOLIO header")).toBe(true);
     expect(matches(r, "dark lisbon")).toBe(false);
     expect(matches(r, "  ")).toBe(true);
+  });
+});
+
+describe("settling a finished conversation by reading it", () => {
+  const ok = { selected: true, focused: true, away: false, seenFor: DWELL_MS };
+
+  test("selected, in front, not away, and its last message on screen for two seconds", () => {
+    expect(settles(ok)).toBe(true);
+  });
+
+  test("any one missing and it stands — skimming past, a background window, away, a glance", () => {
+    expect(settles({ ...ok, selected: false })).toBe(false);
+    expect(settles({ ...ok, focused: false })).toBe(false);
+    expect(settles({ ...ok, away: true })).toBe(false);
+    expect(settles({ ...ok, seenFor: DWELL_MS - 1 })).toBe(false);
   });
 });

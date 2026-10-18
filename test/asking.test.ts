@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  askKey,
   NO_ANSWER_NOTE,
   NO_PREFERENCE,
   NOT_REACHED,
@@ -975,5 +976,43 @@ describe("a typed yes on a question only a button answers", () => {
     expect(w).toContain("“delete it”");
     expect(w).toContain("nothing was sent");
     expect(typedYesWarning("y", undefined)).toContain("the button");
+  });
+});
+
+describe("the keys inside a question", () => {
+  const two = { options: 3, selected: null, many: true, reviewing: false };
+
+  test("a number selects that option, and only one that exists", () => {
+    expect(askKey({ key: "1" }, two)).toEqual({ act: "select", at: 0 });
+    expect(askKey({ key: "3" }, two)).toEqual({ act: "select", at: 2 });
+    expect(askKey({ key: "4" }, two)).toBeNull();
+  });
+
+  test("enter gives what is selected, and does nothing with nothing selected", () => {
+    expect(askKey({ key: "Enter" }, { ...two, selected: 1 })).toEqual({ act: "give", at: 1 });
+    expect(askKey({ key: "Enter" }, two)).toBeNull();
+    expect(askKey({ key: "Enter", shift: true }, { ...two, selected: 1 })).toBeNull();
+  });
+
+  test("up and down move the selection, wrapping, starting from the end they point at", () => {
+    expect(askKey({ key: "ArrowDown" }, two)).toEqual({ act: "select", at: 0 });
+    expect(askKey({ key: "ArrowUp" }, two)).toEqual({ act: "select", at: 2 });
+    expect(askKey({ key: "ArrowDown" }, { ...two, selected: 2 })).toEqual({ act: "select", at: 0 });
+  });
+
+  test("left and right step between questions, only when there are several", () => {
+    expect(askKey({ key: "ArrowRight" }, two)).toEqual({ act: "step", by: 1 });
+    expect(askKey({ key: "ArrowLeft" }, two)).toEqual({ act: "step", by: -1 });
+    expect(askKey({ key: "ArrowRight" }, { ...two, many: false })).toBeNull();
+  });
+
+  test("enter on the review sends the sheet", () => {
+    expect(askKey({ key: "Enter" }, { options: 0, selected: null, many: true, reviewing: true })).toEqual({ act: "send" });
+  });
+
+  test("a modifier is somebody else's key, and space is the leader's", () => {
+    expect(askKey({ key: "1", ctrl: true }, two)).toBeNull();
+    expect(askKey({ key: "ArrowDown", alt: true }, two)).toBeNull();
+    expect(askKey({ key: " " }, two)).toBeNull();
   });
 });

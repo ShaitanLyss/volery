@@ -33,6 +33,11 @@
   import Thread from "./Thread.svelte";
   import HuntBar from "./HuntBar.svelte";
   import MessageBox from "./MessageBox.svelte";
+  import Ask from "./Ask.svelte";
+  import Notice from "./Notice.svelte";
+  import Toasts from "./Toasts.svelte";
+  import { tick } from "svelte";
+  import { settles, DWELL_MS } from "./chatview";
   import Icon from "./Icon.svelte";
   import WindowControls from "./WindowControls.svelte";
 
@@ -47,6 +52,7 @@
     kin,
     reading = 1,
     watching = true,
+    away = false,
     sidebar = $bindable(true),
     onselect,
     onwall,
@@ -71,8 +77,11 @@
     kin: readonly { child: string; parent: string }[];
     /** The reading size the wall's panel is set at (ctrl+wheel), shared. */
     reading?: number;
-    /** Whether the window is in front — the follow re-pins on coming back. */
+    /** Whether the window is in front — the follow re-pins on coming back, and
+     *  a finished conversation is only settled by reading it while it is. */
     watching?: boolean;
+    /** Away mode is on: nothing is settled by a window nobody is at. */
+    away?: boolean;
     sidebar?: boolean;
     onselect: (id: string) => void;
     onwall: () => void;
@@ -159,8 +168,85 @@
     const to = nextOf(gs, selected);
     if (!to) return false;
     onselect(to);
+    void focusAsk();
     return true;
   }
+
+  /* ── what it is waiting on you for, at the end of its thread ──────────── */
+
+  /** This conversation's own items in the queue (`Front.of`): its question at
+   *  the front, and its notices. Drawn as the last thing in the thread, because
+   *  in chat view the only way to see a conversation is to open it (§5.3). */
+  const own = $derived(selected ? front.of(selected) : []);
+  const ownAsk = $derived(own.find((t) => t.kind === "ask") ?? null);
+  /** The notices drawn inline: a card's own and a given-up error, which stay
+   *  until answered with their own buttons (§5.4). A `done` notice is the
+   *  *finished* row and settles by being read; a `question` one is a line. */
+  const ownNotices = $derived(
+    own.filter((t) => t.kind === "notice" && (t.notice.kind === "error" || t.notice.kind === "card")),
+  );
+  const endedOnQuestion = $derived(
+    own.find((t) => t.kind === "notice" && t.notice.kind === "question") ?? null,
+  );
+
+  let askPanel = $state<ReturnType<typeof Ask> | undefined>();
+
+  /** Go to the question on purpose — the toast's *answer*, Alt+↓ — and put
+   *  the keyboard on its first option. Never on arrival. */
+  export async function focusAsk() {
+    await tick();
+    askPanel?.focusFirst();
+    askPanel && scroller?.scrollTo({ top: scroller.scrollHeight });
+  }
+
+  /* ── settling a finished conversation by reading it (§5.4) ─────────────
+     The dwell: selected, the window in front, not away, and its last message on
+     screen for two seconds — `chatview.ts::settles`. Measured by an observer on
+     the last line, so nothing polls, and only while a `done` notice stands on
+     the conversation in front of you. */
+  const done = $derived(card?.notices.find((n) => n.kind === "done") ?? null);
+  $effect(() => {
+    const n = done;
+    const c = card;
+    const el = scroller;
+    if (!n || !c || !el) return;
+    const focused = watching;
+    const gone = away;
+    let since: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = () => {
+      if (since === null) return;
+      if (settles({ selected: c.id === selected, focused, away: gone, seenFor: Date.now() - since })) {
+        void c.acknowledge(n, "");
+      }
+    };
+    const watch = new IntersectionObserver(
+      (entries) => {
+        const seen = entries.some((e) => e.isIntersecting);
+        if (seen && since === null) {
+          since = Date.now();
+          timer = setTimeout(settle, DWELL_MS + 50);
+        } else if (!seen) {
+          since = null;
+          if (timer) clearTimeout(timer);
+          timer = null;
+        }
+      },
+      { root: el, threshold: 0 },
+    );
+    /* After the column has drawn: the last line is the conversation's last
+       message, wherever the reading is. */
+    const raf = requestAnimationFrame(() => {
+      const lines = el.querySelectorAll(".line");
+      const last = lines[lines.length - 1];
+      if (last) watch.observe(last);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      watch.disconnect();
+      if (timer) clearTimeout(timer);
+    };
+  });
 
   /* ── the conversation in front of you ───────────────────────────────── */
 
@@ -316,6 +402,15 @@
 
   <main class="sheet" data-tier={pool} aria-label="conversation">
     {@render band?.()}
+    <Toasts
+      {front}
+      {selected}
+      focused={watching}
+      onanswer={(id) => {
+        onselect(id);
+        void focusAsk();
+      }}
+    />
     <section class="thread" data-attach-to="prompt" style:--read={reading * 1.2}>
       {#if thread?.finder().on}
         <HuntBar hunt={thread.finder()} onclose={() => composer.input?.focus()} />
@@ -328,6 +423,46 @@
           <div class="col">
             {#if card}
               <Thread bind:this={thread} {card} />
+              {#if ownAsk && ownAsk.kind === "ask"}
+                {@const sheet = ownAsk.ask}
+                <div class="inline" aria-live="assertive">
+                  <Ask
+                    bind:this={askPanel}
+                    ask={sheet}
+                    card={card.id}
+                    project={card.where}
+                    title={card.face.title}
+                    scripts={card.scripts}
+                    onanswer={() => card.answer(sheet)}
+                    ondefer={() => card.defer(sheet)}
+                    onheld={() => card.holdAsk()}
+                  />
+                </div>
+              {/if}
+              {#each ownNotices as t (t.key)}
+                {#if t.kind === "notice"}
+                  {@const n = t.notice}
+                  <div class="inline">
+                    <Notice
+                      notice={n}
+                      project={card.where}
+                      title={card.face.title}
+                      onack={() => card.acknowledge(n, "")}
+                      onclosecard={() => void card.do("close")}
+                      onfollow={(text) => card.acknowledge(n, text)}
+                    />
+                  </div>
+                {/if}
+              {/each}
+              {#if endedOnQuestion && endedOnQuestion.kind === "notice"}
+                {@const q = endedOnQuestion.notice}
+                <p class="ended">
+                  it ended on a question — your answer goes in the box below
+                  <button type="button" onclick={() => void card.acknowledge(q, "")} title="it needs nothing from you — take it out of needs you"
+                    >dismiss</button
+                  >
+                </p>
+              {/if}
             {:else}
               <div class="greeting">
                 <h1>what shall we work on?</h1>
@@ -670,6 +805,27 @@
   .greeting p {
     margin: 0;
     color: var(--cv-note, var(--paper-mute));
+  }
+  /* Its question and its notices, as the last thing in the thread. No cap on
+     their height: the column scrolls (§7.4). */
+  .inline {
+    --ask-ceiling: none;
+    font-family: var(--cv-ui, var(--util));
+    animation: arrive var(--dur-step, 240ms) var(--ease-out, ease-out) both;
+  }
+  .ended {
+    margin: 0;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 12.5px;
+    color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim));
+  }
+  .ended button {
+    margin-left: 6px;
+    font-size: 12px;
+    color: var(--paper-dim);
+    text-decoration: underline;
+    text-decoration-color: var(--paper-faint);
+    text-underline-offset: 3px;
   }
   .sheet :global(.hunt) {
     top: 10px;

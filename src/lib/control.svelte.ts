@@ -24,7 +24,7 @@
 import { view } from "./view.svelte";
 import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import type { Conversation } from "./conversation.svelte";
 import { SKIPPED, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
 import { noticeLine } from "./notice";
@@ -60,7 +60,9 @@ import {
   resetIn,
   tierOf as windowTier,
   said as windowSaid,
+  type Report,
 } from "./limits";
+import { waterfall } from "./waterfall.svelte";
 import type { DevOps } from "./devops.svelte";
 import type { Shell } from "./shell.svelte";
 import type { Finder } from "./finder.svelte";
@@ -2438,6 +2440,39 @@ export class Control {
         return ledgerSnapshot(h);
       },
 
+      /** An allowance in any state, without spending one. A lab cannot run an
+       *  account down, and chat view draws three things off how far down one
+       *  is (`docs/chat-mode.md` §5.7).
+       *
+       *  - `accounts: [{ label, windows }]` stands in for the waterfall's
+       *    registry and its readings (`Waterfall.standIn`). Every account at 100%
+       *    with a reset an hour out is *run out everywhere*: the next `send` goes
+       *    through the real `#settleAccount` into a real hold — `held_prompt`
+       *    rows, the release timer, the hand-back on Escape.
+       *  - `limits: Report` stands in for this machine's own reading
+       *    (`Ledger.standIn`), for the running-low line and the sidebar's foot.
+       *  - `clear` takes both down and reads the real ones again.
+       *
+       *  Which rung: the *reading* is a stand-in (rung one), and everything it
+       *  causes is the app's own path from the send onward. Keep every account
+       *  spent while it stands: one the chooser would *use* is moved onto, and
+       *  a stood-in label has no credential store to spawn with. */
+      allowance: async (op) => {
+        if (op.clear) {
+          waterfall.standIn(null);
+          h.ledger.standIn(null);
+        }
+        if (Array.isArray(op.accounts)) waterfall.standIn(op.accounts as { label: string; windows: Report["windows"] }[]);
+        if (op.limits && typeof op.limits === "object") h.ledger.standIn(op.limits as Report);
+        await settle();
+        return {
+          managing: waterfall.list.length,
+          usable: waterfall.usable.length,
+          choice: waterfall.list.length ? waterfall.next({}).kind : null,
+          limits: h.ledger.limits,
+        };
+      },
+
       /** The machine under the wall, as far as a test can move it.
        *
        *  `pretendIdle` stands in for nobody having touched the keyboard for as
@@ -3300,6 +3335,35 @@ export class Control {
         });
         target.dispatchEvent(ev);
         return { key: String(op.key ?? "Enter"), defaultPrevented: ev.defaultPrevented };
+      },
+
+      /** Type into any field: set its value and dispatch the `input` event a
+       *  keystroke would, which is what every two-way binding listens for. The
+       *  `type` op writes the draft through the app; this reaches a field the
+       *  draft is not — a question's own answer box, a notice's follow-up, the
+       *  find bar (sink `90058cb7`). Rung one: it proves the binding, not what
+       *  a real key types (`real.key` is that). */
+      fill: async (op) => {
+        const el = this.#el(op) as HTMLInputElement | HTMLTextAreaElement;
+        if (!("value" in el)) throw new Error(`"${String(op.selector)}" is not a field`);
+        el.focus();
+        el.value = String(op.text ?? "");
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+        return { value: el.value };
+      },
+
+      /** Tell the window it has, or has lost, the focus — the window's own
+       *  `tauri://focus`/`tauri://blur`, emitted to it, which is what
+       *  `Attention` folds. A lab sits at the bottom of the z-order and is
+       *  never in front, so anything that waits for the person to be looking —
+       *  chat view settling a finished conversation by its being read — is
+       *  otherwise untestable there. Rung one; nothing is raised. */
+      "window.focus": async (op) => {
+        const on = op.focused === undefined ? true : !!op.focused;
+        await emitTo({ kind: "Window", label: "main" }, on ? "tauri://focus" : "tauri://blur", null);
+        await settle();
+        return { windowFocused: h.attention.focused };
       },
 
       /** The whole pointer ladder, not just the click at the end of it.

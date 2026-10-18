@@ -338,6 +338,27 @@
     {#if line.receipt}
       <div class="receipt" class:late={line.state === "failed"}>{line.receipt}</div>
     {/if}
+    <!-- Sent while the agent was working: the CLI queues it behind the running
+         turn (`turns.md`), and `awaited` is the honest flag for as long as that
+         holds — `pending` is taken off by the running turn's next message,
+         whose answer is not about this prompt (CLAUDE.md, *Settling a line is
+         not claiming it*). So it says when it goes, rather than looking sent.
+         *Send now* is a stop and nothing else: an interrupt does not lose a
+         queued prompt, the CLI takes it up next, and stopping then sending
+         would deliver it twice (`docs/chat-mode.md` §5.6). -->
+    {#if line.kind === "you" && line.awaited && conv.working && line.state !== "held" && line.state !== "failed"}
+      <div class="receipt queued" aria-live="polite">
+        queued — it goes when this turn finishes
+        {#if card.can("stop") === "yes"}
+          <button
+            type="button"
+            class="now"
+            onclick={() => void card.do("stop")}
+            title="stop this turn — the queued message goes next (esc)">send now</button
+          >
+        {/if}
+      </div>
+    {/if}
     <!-- The pictures that went with the prompt, under the words that refer to
          them by name. Thumbnails rather than the bytes that were sent — a card
          talking all week would otherwise hold every screenshot at full size for
@@ -837,6 +858,26 @@
     padding-left: 0.75em;
     margin-top: calc(-0.15rem * var(--read, 1));
     user-select: none;
+  }
+  .receipt.queued {
+    display: flex;
+    gap: 0.6em;
+    align-items: baseline;
+    align-self: var(--you-align, auto);
+  }
+  .receipt .now {
+    font: inherit;
+    color: var(--paper-mute);
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--paper-faint);
+    text-underline-offset: 3px;
+  }
+  .receipt .now:hover {
+    color: var(--paper);
   }
   .receipt.late {
     color: var(--st-fail);

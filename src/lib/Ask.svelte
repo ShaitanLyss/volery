@@ -35,6 +35,7 @@
     answeredCount,
     isComplete,
     isUnsaid,
+    askKey,
     lookLabel,
     panelsOf,
     stepAt,
@@ -182,6 +183,49 @@
     at = null;
     warned = null;
   });
+
+  /** Which option the keyboard has selected, or null. The options are a
+   *  single-select listbox (§10.2 of `docs/chat-mode.md`): the number keys and
+   *  ↑ ↓ move this, Enter gives it. A click gives at once, as it always did. */
+  let selected = $state<number | null>(null);
+  $effect(() => {
+    void id;
+    void step;
+    selected = null;
+  });
+
+  /** Put the keyboard on the first option — what chat view does when you go to
+   *  a question on purpose (its toast's *answer*, Alt+↓). Never on arrival:
+   *  focus is not taken by anything arriving (§10.2). */
+  export function focusFirst() {
+    const first = root?.querySelector<HTMLElement>(".opt, .free textarea, .send.go");
+    first?.focus();
+    if (current?.options.length) selected = 0;
+  }
+
+  /** The panel's own keys, outside its answer field (`asking.ts::askKey`). */
+  function onKey(e: KeyboardEvent) {
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable)) return;
+    /* Enter on a focused button is the button's own click — giving the option
+       it is, which is the same thing the selection would give. */
+    if (e.key === "Enter" && t?.tagName === "BUTTON" && selected === null) return;
+    const k = askKey(
+      { key: e.key, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey, shift: e.shiftKey },
+      { options: reviewing ? 0 : (current?.options.length ?? 0), selected, many, reviewing },
+    );
+    if (!k) return;
+    e.preventDefault();
+    /* Stopped: a number typed here is an answer, not the start of a message
+       in the box below, and an arrow is this panel's, not the reading's. */
+    e.stopPropagation();
+    if (k.act === "select") {
+      selected = k.at;
+      root?.querySelectorAll<HTMLElement>(".opt")[k.at]?.focus();
+    } else if (k.act === "give") give(current.options[k.at].label);
+    else if (k.act === "step") move(k.by);
+    else if (k.act === "send") send();
+  }
 
   /* The draft belongs to the question it was typed at, not to the panel — and
      revisiting an answered question shows what was said, so it can be
@@ -331,12 +375,18 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- A group with keys of its own: the listbox's, and Alt+D/Alt+R from
+     anywhere in it, including the field. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
   class="ask"
   bind:this={root}
   data-ask={ask.askId}
+  role="group"
+  aria-label={current?.question ?? "a question"}
+  tabindex="-1"
   onkeydown={(e) => {
+    onKey(e);
     /* The keyboard path for `defer`, from anywhere in the panel including the
        field: alt+D, which nothing else on the wall binds. */
     if (ondefer && e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "d") {
@@ -459,14 +509,18 @@
     {/if}
 
     {#if current.options.length}
-      <div class="options">
-        {#each current.options as o}
+      <div class="options" role="listbox" aria-label="options — 1 to {Math.min(9, current.options.length)}, enter gives">
+        {#each current.options as o, i}
           <button
             class="opt"
+            role="option"
+            aria-selected={selected === i}
             class:chosen={ask.answers[step] === o.label}
+            class:lit={selected === i}
             onclick={() => give(o.label)}
+            title={i < 9 ? `${i + 1} selects it, enter gives it` : undefined}
           >
-            <span class="lbl">{o.label}</span>
+            <span class="lbl">{#if i < 9}<span class="num" aria-hidden="true">{i + 1}</span>{/if}{o.label}</span>
             {#if o.detail}<span class="det">{o.detail}</span>{/if}
           </button>
         {/each}
@@ -594,8 +648,14 @@
        length would otherwise push the field it is to be answered in off the
        bottom of the window. Stepping through the questions is most of what
        keeps this from being reached; this is the floor under it. */
-    max-height: min(52cqh, 30rem);
+    /* `--ask-ceiling`: the dock leaves it at this, and chat view's thread sets
+       it to `none`, since a cap of half the window is wrong inside a column
+       that scrolls (`docs/chat-mode.md` §7.4). A property, not a prop. */
+    max-height: var(--ask-ceiling, min(52cqh, 30rem));
     overflow-y: auto;
+  }
+  .ask:focus {
+    outline: none;
   }
 
   .head {
@@ -773,6 +833,20 @@
   }
   /* What you said last time you were here. Revisiting an answered question has
      to show its answer, or "back" is a way to lose one. */
+  /* Selected from the keyboard: brighter rather than coloured, as the find's
+     current match is — the amber is the panel's, not one option's. */
+  .opt.lit {
+    border-color: var(--paper-mute);
+    background: var(--raised);
+  }
+  .opt .num {
+    display: inline-block;
+    min-width: 1.1em;
+    margin-right: 0.35rem;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--paper-faint);
+  }
   .opt.chosen {
     border-color: color-mix(in srgb, var(--st-ask) 70%, var(--edge));
     background: var(--raised);

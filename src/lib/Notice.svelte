@@ -212,7 +212,8 @@
        its reason: the panel sits above the draft field and grows upward, so in
        a short window it would push the field it is answered in off the bottom.
        The text box is what gives way, not the reply row. */
-    max-height: min(52cqh, 30rem);
+    /* `--ask-ceiling`, as the question's: chat view's thread sets it to `none`. */
+    max-height: var(--ask-ceiling, min(52cqh, 30rem));
     min-height: 0;
   }
   .notice.question {

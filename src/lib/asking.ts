@@ -871,3 +871,44 @@ export function askHeadline(questions: AskQuestion[]): string {
    beside it holding the same rule for notices, and a question outranked every
    notice — so the hold here could not stop a question taking the dock off a
    notice being typed into. `queue.ts` is the one rule over every kind. */
+
+/** What a key does inside a question's panel (`Ask.svelte`), when the caret is
+ *  not in its own answer field — `docs/chat-mode.md` §5.3, §10.2.
+ *
+ *  The options are a single-select listbox: the number keys and ↑ ↓ move the
+ *  selection, Enter gives the one selected, and ← → step between the questions
+ *  of a call. A listbox rather than a radio group because a radio checks with
+ *  Space, and Space is the leader's. With nothing selected Enter on the review
+ *  sends the sheet; otherwise Enter is the field's or the button's own.
+ *
+ *  Null is "not this panel's key" — it goes on to wherever it was going, which
+ *  for a printable key with nothing focused is the message box. */
+export type AskKeyAct =
+  | { act: "select"; at: number }
+  | { act: "give"; at: number }
+  | { act: "send" }
+  | { act: "step"; by: 1 | -1 };
+
+export function askKey(
+  p: { key: string; ctrl?: boolean; alt?: boolean; meta?: boolean; shift?: boolean },
+  s: { options: number; selected: number | null; many: boolean; reviewing: boolean },
+): AskKeyAct | null {
+  if (p.ctrl || p.alt || p.meta) return null;
+  if (/^[1-9]$/.test(p.key)) {
+    const at = Number(p.key) - 1;
+    return at < s.options ? { act: "select", at } : null;
+  }
+  if ((p.key === "ArrowDown" || p.key === "ArrowUp") && s.options > 0) {
+    const by = p.key === "ArrowDown" ? 1 : -1;
+    const from = s.selected ?? (by > 0 ? -1 : s.options);
+    return { act: "select", at: (from + by + s.options) % s.options };
+  }
+  if ((p.key === "ArrowLeft" || p.key === "ArrowRight") && s.many) {
+    return { act: "step", by: p.key === "ArrowRight" ? 1 : -1 };
+  }
+  if (p.key === "Enter" && !p.shift) {
+    if (s.selected !== null && s.selected < s.options) return { act: "give", at: s.selected };
+    if (s.reviewing) return { act: "send" };
+  }
+  return null;
+}
