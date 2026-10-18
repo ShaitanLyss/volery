@@ -476,3 +476,36 @@ describe("a line inside the thread is never first of anything but its wrapper", 
     expect(wrong).toEqual([]);
   });
 });
+
+/* The sixth: two files whose import specifiers differ only in case are one
+   file on this machine. A rune module `palette.svelte.ts` is imported as
+   `"./palette.svelte"`, and on Windows' case-insensitive disk that specifier
+   resolves to a component `Palette.svelte` first if one exists — every importer
+   of the skins then got a component, and `vite build` failed for every card
+   and lab in the tree ("skin is not exported by src/lib/Palette.svelte"). A
+   PascalCase component and a lowercase module are kept apart by the initial
+   alone, which is exactly what this disk ignores, so no two files in one
+   directory may share a specifier once case is folded. */
+describe("no two files are one file on a case-insensitive disk", () => {
+  test("no specifier is shared, once case is folded", () => {
+    const clash: string[] = [];
+    const walk = (dir: string) => {
+      const seen = new Map<string, string>();
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(p);
+          continue;
+        }
+        /* What an import names: `Foo.svelte` and `foo.svelte.ts` are both
+           `./foo.svelte`, `bar.ts` is `./bar`. */
+        const spec = e.name.replace(/\.ts$/, "").toLowerCase();
+        const was = seen.get(spec);
+        if (was && was !== e.name) clash.push(`${join(dir, was)} ~ ${p}`);
+        else seen.set(spec, e.name);
+      }
+    };
+    walk(SRC);
+    expect(clash).toEqual([]);
+  });
+});
