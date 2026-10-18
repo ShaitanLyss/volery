@@ -158,7 +158,7 @@
     mergeDraft,
     type Draft,
   } from "./lib/drafts";
-  import { Attachments, boxAt, dropping } from "./lib/attach.svelte";
+  import { Attachments, boxAt, dropping, listenDrops } from "./lib/attach.svelte";
   import type { Turn } from "./lib/attach";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
@@ -1341,27 +1341,27 @@
      conversation and a picture is pinned up. Tauri hands us real filesystem
      paths, so all of it is paths rather than browser blobs. */
   $effect(() => {
-    const un = getCurrentWebview().onDragDropEvent(async (e) => {
+    const un = listenDrops(async (d) => {
       /* The payload carries a PHYSICAL pixel position; getBoundingClientRect
          works in CSS pixels. On a 150% display those differ by 1.5×, so
          skipping this makes every drop land well off from where you aimed. */
       const dpr = window.devicePixelRatio || 1;
       const css = (p: { x: number; y: number }) => ({ x: p.x / dpr, y: p.y / dpr });
 
-      if (e.payload.type === "over") {
+      if (d.type === "over") {
         /* The only feedback there is. With no DOM drag events reaching the
            elements, a box that did not light up would leave you guessing
            whether a drop was going to attach or fly past onto the wall. */
-        const p = css(e.payload.position);
+        const p = css(d.position);
         dropping.over = boxAt(p.x, p.y)?.el ?? null;
         return;
       }
-      if (e.payload.type !== "drop") {
+      if (d.type !== "drop") {
         dropping.over = null;
         return;
       }
 
-      const p = css(e.payload.position);
+      const p = css(d.position);
       const box = boxAt(p.x, p.y);
       dropping.over = null;
 
@@ -1369,13 +1369,21 @@
          path (decided 2026-10-18): dropped into a sentence, a folder is a
          thing being talked about, not a place to start a conversation. */
       if (box) {
-        await box.target.take(e.payload.paths, box.where);
+        await box.target.take(d.paths, box.where, d.links, d.refused);
+        return;
+      }
+      /* A link means something only in a sentence; on the wall it is
+         nothing to pin and nowhere to open, so it is said rather than lost. */
+      if (!d.paths.length) {
+        if (d.links.length || d.refused.length) {
+          skein.fault = d.refused[0] ?? "a link goes into a prompt — drop it on the dock";
+        }
         return;
       }
 
       const sorted = await invoke<{ dirs: string[]; images: string[] }>(
         "classify_drop",
-        { paths: e.payload.paths },
+        { paths: d.paths },
       );
 
       /* On the wall a folder is a conversation, wherever it lands. */
