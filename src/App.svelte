@@ -5549,12 +5549,10 @@
                rather than drawn by a second panel. -->
           <Transcript
             bind:this={transcript}
-            conv={card.readable}
+            {card}
             read={reading}
             rails={railsOn}
             watching={attention.focused}
-            onhistory={() => card?.history()}
-            onfile={card.look}
             onread={setRead}
           />
         </aside>

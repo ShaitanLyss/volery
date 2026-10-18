@@ -413,3 +413,48 @@ describe("what stands on the glass, and what only drifts over it", () => {
     });
   }
 });
+
+/* The fourth: when a column of rules moves from one component to another, it
+   moves whole. `Transcript.svelte` was split in three for chat view
+   (`docs/chat-mode.md` §7.2) — the conversation's column into `Thread.svelte`,
+   the find bar into `HuntBar.svelte`, and the panel's chrome left behind — and
+   a component is the only CSS scope this codebase has. A rule left in the wrong
+   file is silent: it compiles, it is unused, and the element it was for is
+   drawn bare. A rule copied into both is the drift a second reading invites.
+   So each class the split was about is defined in exactly one of the three. */
+describe("the thread, the find bar and the panel each own their rules", () => {
+  const owner: Record<string, string> = {
+    line: "Thread.svelte",
+    blk: "Thread.svelte",
+    seam: "Thread.svelte",
+    fold: "Thread.svelte",
+    cap: "Thread.svelte",
+    inside: "Thread.svelte",
+    shots: "Thread.svelte",
+    receipt: "Thread.svelte",
+    guess: "Thread.svelte",
+    hunt: "HuntBar.svelte",
+    lines: "Transcript.svelte",
+    rails: "Transcript.svelte",
+    reading: "Transcript.svelte",
+    "meta-bar": "Transcript.svelte",
+    "to-end": "Transcript.svelte",
+  };
+  const three = ["Thread.svelte", "HuntBar.svelte", "Transcript.svelte"];
+  /** Every class a component's stylesheet puts at the head of a top-level rule. */
+  const heads = (file: string) =>
+    new Set(
+      topLevelSelectors(stylesheet(readFileSync(join(SRC, "lib", file), "utf8")))
+        .flatMap((s) => s.split(","))
+        .map((s) => /^\s*\.([a-zA-Z][a-zA-Z0-9_-]*)/.exec(s)?.[1])
+        .filter((c): c is string => !!c),
+    );
+  const sheets = Object.fromEntries(three.map((f) => [f, heads(f)]));
+
+  for (const [cls, file] of Object.entries(owner)) {
+    test(`.${cls} is ${file}'s alone`, () => {
+      const where = three.filter((f) => sheets[f].has(cls));
+      expect(where).toEqual([file]);
+    });
+  }
+});

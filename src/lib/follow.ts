@@ -346,7 +346,7 @@ export function stickToTail(el: HTMLElement): () => void {
  *  needs a guard: it fires on every hover, which would hold the window
  *  permanently open for a cursor resting over the panel. A held button is what
  *  makes a move a drag. */
-export function witness(el: HTMLElement, tail: Tail): () => void {
+export function witness(el: HTMLElement, tail: { gestured(): void }): () => void {
   const onGesture = (e: Event) => {
     if (e.type === "pointermove" && (e as PointerEvent).buttons === 0) return;
     tail.gestured();

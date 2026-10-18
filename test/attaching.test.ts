@@ -50,7 +50,6 @@ const NOT_AGENT_BOUND: Record<string, string> = {
   "lib/Spotify.svelte": "a search for music",
   "lib/Spyglass.svelte": "the finder's query",
   "lib/Themes.svelte": "a theme's name and values",
-  "lib/Transcript.svelte": "a word to find in the transcript",
 };
 
 /** The inputs that do speak to an agent, each of which must mount the box. */

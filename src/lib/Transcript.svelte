@@ -1,19 +1,11 @@
 <script lang="ts">
-  /* A `!` run keeps its colour: the shell is spawned with FORCE_COLOR, so `cargo`
-     and `git` answer in SGR sequences exactly as they do in the console panel,
-     and this is the same parser reading them. */
-  import { ansiVar, parseAnsi } from "./ansi";
   import { untrack } from "svelte";
   import type { Line } from "./conversation.svelte";
-  import Markdown from "./Markdown.svelte";
   import Jobs from "./Jobs.svelte";
   import Rail from "./Rail.svelte";
-  import ToolCall from "./ToolCall.svelte";
-  import Figure from "./Figure.svelte";
   import { nudgeReading } from "./layout";
   import { scopeFiles, scopePictures } from "./paths.svelte";
   import { readingOf } from "./gears";
-  import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
     conclusionAt,
     landing,
@@ -24,34 +16,26 @@
     type Kind,
     type Mark,
   } from "./outline";
-  import {
-    blocksOf,
-    foldCount,
-    foldSummary,
-    runFoldCap,
-    longFold,
-    type Block,
-    type Readable,
-  } from "./transcript";
-  import { MIN_QUERY, huntBlocks, huntCap, matchAt, stepTo, tally } from "./hunt";
   import { selectionMarkdown } from "./copy";
-  /* The judgement, and the slack it is made with, are shared with every other
-     scroller that follows its own tail — see follow.ts. The wiring is not: this
-     panel has a rail carrying the view, a keyboard ladder that steps it, and a
-     `following` its effect graph reads, so it keeps its own effect and hands
-     that module the three numbers. */
-  import { gestureLive, hearGrowth, stillFollowing, STICK_PX } from "./follow";
+  /* The follow — the panel's own, which a conversation's every reading now
+     wears — and the column it follows, which chat view draws too. See
+     follow.svelte.ts and Thread.svelte. */
+  import { Follow, RELEASE } from "./follow.svelte";
+  import Thread from "./Thread.svelte";
+  import HuntBar from "./HuntBar.svelte";
+  import type { CardHandle } from "./cards.svelte";
 
   let {
-    conv,
+    card,
     watching = true,
     read = 1,
     rails = "left",
-    onhistory,
-    onfile,
     onread,
   }: {
-    conv: Readable;
+    /** The conversation, by its handle — the column reads it, and asks it for
+     *  its history and to open a file a tool call named, so neither is a
+     *  callback a mounter could forget (`Thread.svelte`). */
+    card: CardHandle;
     /** Which side the outline rails hang off, which is the side the wall is on
      *  — see the note by `.rails`. The panel's berth decides it
      *  (`berth.md`); the panel does not know, and should not. */
@@ -65,36 +49,14 @@
      *  `readingScale`. Resolved by the caller, because it is stored beside the
      *  viewport and the panel's width rather than in here. */
     read?: number;
-    /** Ask for the scrollback that predates this card's process. Routed out
-     *  rather than invoked here: `skein.svelte.ts` is the only thing that talks
-     *  to Rust. */
-    onhistory?: () => void;
-    /** Look at a file a tool call named, in the finder's viewer. Routed out for
-     *  the same reason as `onlink`: which panel is on screen is not this one's
-     *  business. The path arrives project-relative, already reduced against
-     *  `conv.cwd` by `ToolCall` — see `.claude/rules/finding.md`. */
-    onfile?: (path: string, line: number | null) => void;
     /** A notch of ctrl+wheel asking for a different size. Routed out for the
      *  same reason the width's drag is: how this window is set up to be read
      *  from is not the panel's to keep. */
     onread?: (next: number) => void;
   } = $props();
 
-  /* The agent speaks markdown — headings, lists, fenced code, tables — and it
-     used to arrive here as literal asterisks and hashes. Parsed per line rather
-     than once per render: `lines` only ever grows, so a line is folded the once.
-     Everything else is left exactly as it is. `you` is what *you* typed, shown
-     character for character; a tool call and an error are already terse and
-     already monospaced.
+  const conv = $derived(card.readable);
 
-     The turn still being written is the same argument one level down, and it
-     used to be the exception: `parseMarkdown(conv.streaming)` re-read the whole
-     of an answer on every `text_delta`, which is thousands of times a turn and
-     quadratic in its length — 36.6 s of parsing across a hundred-thousand
-     character report, against 169 ms now. `StreamedMarkdown` settles everything
-     above the last block boundary once and hands it back by identity, so this
-     one holds a fold rather than being one. See markdown.ts for what counts as
-     a boundary; it is the whole of the subtlety. */
   /* Which directory *this card's* prose counts from. One line, because the
      navigation comes down from the root — see `scopeFiles`. `null` for a chat
      card, which has no directory behind it: a relative path there counts from
@@ -106,333 +68,31 @@
      picture drawn with nothing to say so. See `scopePictures`. */
   scopePictures(() => (conv.kind === "project" && !conv.elsewhere ? conv.cwd : null) ?? null);
 
-  const stream = new StreamedMarkdown();
-  const streamed = $derived(stream.read(conv.id, conv.streaming));
-
-  /* Runs of tool calls fold into one line each — see transcript.ts for why, and
-     for why the two columns are folded separately. Both are cheap: a fold is one
-     pass over an array that only grows at the end. */
-  const past = $derived(blocksOf(conv.history, "h"));
-  /* `conv.dropped` is what makes a live line's key its absolute position rather
-     than its index in a window that slides — without it the whole column is
-     rebuilt on every message past the cap, and the reading goes with it. See
-     `Conversation.dropped`. */
-  const live = $derived(blocksOf(conv.lines, "l", conv.dropped));
-
-  /** Which folded groups are open, by key. Every group starts closed — the
-   *  space they were taking is the whole point — and each is its own decision,
-   *  since what you want open is the one round you are picking apart.
-   *
-   *  A plain object rather than a set: `$state` proxies it, so reading
-   *  `open[key]` in the markup subscribes to that one group and opening one
-   *  redraws one cap. Not persisted — where you had scrolled to isn't either,
-   *  and a fresh view of a card is a fresh view. */
-  let open = $state<Record<string, true>>({});
-
-  /** Which folds you have deliberately *closed*.
-   *
-   *  A second record rather than a flag on `open`, because one kind of fold has
-   *  the opposite default: a `!` run starts open. Every other fold hides
-   *  machinery you did not ask for — a run is the thing you asked for, and a
-   *  `git status` you have to click to read is a `git status` you would rather
-   *  have typed somewhere else. So "have you touched this one" is a different
-   *  question for runs than for calls, and it gets its own answer. */
-  let shut = $state<Record<string, true>>({});
-
-  /** Is this run's fold open? Open unless you shut it. */
-  const runOpen = (key: string) => !shut[key];
-
-  /** Where one line's own fold state lives, for the one kind of line that has
-   *  any: a tool call.
-   *
-   *  Its `tool_use` id, which is unique across the card, is stable for as long
-   *  as the line is, and is the *same string after a restart* — history reads
-   *  it out of the session file — so a call you had open stays open across a
-   *  rouse. The block key is the fallback for a call that arrived without one,
-   *  and is positional in exactly the way `blocksOf` warns about; that is
-   *  acceptable here only because nothing on the wire has ever omitted the id. */
-  const lineKey = (line: Line, fallback: string) => line.call?.id ?? fallback;
-
-  function toggleRun(key: string) {
-    if (shut[key]) delete shut[key];
-    else shut[key] = true;
-    unfolded();
-    refresh(0);
-  }
-
-  function toggle(key: string) {
-    if (open[key]) delete open[key];
-    else open[key] = true;
-    /* The column just changed height, so every offset the rails measured is
-       stale — including which mark counts as where you are reading. */
-    unfolded();
-    refresh(0);
-  }
-
-  /** A fold you have just worked is something you are asking to read where it
-   *  is, so it lets go of the tail — the same argument the rails' `jump` makes,
-   *  and one the follow now needs made out loud: it hears the column itself, so
-   *  a call unfolded at the bottom of a live turn would otherwise carry the view
-   *  straight past the header to the end of whatever it uncovered.
-   *
-   *  Said for closing as well as for opening, and that is safe rather than
-   *  sloppy: a shorter column clamps the view back down onto the tail, which is
-   *  a real scroll event, and `onScroll` measures it and takes the tail up
-   *  again. */
-  function unfolded() {
-    following = false;
-    pinned = -1;
-  }
-
   let scroller: HTMLDivElement | undefined = $state();
 
-  /* ── finding a word in what you are reading ──────────────────────────────
-   *
-   * Ctrl+F used to reach the webview's own find bar, which searched the *whole
-   * document* — the header, every card title, every widget on the wall — and
-   * drew Chromium's chrome over an app that has none. Asked for by the user
-   * (sink 776a4d34). The arithmetic is `hunt.ts`, pure and tested; this is the
-   * field, the stepping and the scroll.
-   *
-   * Both columns at once, past and live, because "this transcript" is what the
-   * panel is showing and the split into history and live is an implementation
-   * detail of how it got there. */
-  let hunting = $state(false);
-  let query = $state("");
-  let mark = $state(0);
-  let field: HTMLInputElement | undefined = $state();
+  /** The column, mounted in the scroller below. */
+  let thread = $state<ReturnType<typeof Thread> | undefined>();
 
-  const searchable = $derived([...past, ...live]);
-  const found = $derived(hunting ? huntBlocks(searchable, query) : []);
-  const matches = $derived(tally(found));
-  const cap = $derived(huntCap(query, matches, mark));
-  /** Which block keys carry a match — read in the markup, so a band is one
-   *  lookup rather than a scan per block. */
-  const lit = $derived(new Set(found.map((f) => f.key)));
-  /** The block the cursor is in, for the brighter of the two bands. */
-  const here = $derived(matchAt(found, mark)?.key ?? null);
+  /** The panel's follow: the tail, held while you are at it and let go of only
+   *  by a hand. Its resize also re-measures the rails, because a rewrap moves
+   *  every mark and `far` taken at the old width is a way back that never
+   *  appears — only on a resize, since measuring is the walk `refresh` exists
+   *  to throttle. */
+  const follow = new Follow(() => measure());
 
   /** Open the find bar, or put the cursor back in it if it is already open.
    *
    *  Exported because Ctrl+F is a *global* binding — `App.svelte` owns the
-   *  ladder and swallows the key everywhere so the browser never sees it — and
-   *  because pressing it twice should select what you typed rather than clear
-   *  it, which is what every find bar does. */
+   *  ladder and swallows the key everywhere so the browser never sees it. The
+   *  find itself is the thread's (`hunt.svelte.ts`). */
   export function hunt() {
-    hunting = true;
-    /* After the field exists. A `tick` would do, and a frame is what the rest of
-       this component already waits on. */
-    requestAnimationFrame(() => {
-      field?.focus();
-      field?.select();
-    });
+    thread?.finder().open();
   }
 
-  function unhunt() {
-    hunting = false;
-    query = "";
-    mark = 0;
-    /* Back to the column, or the next keystroke goes nowhere — the field was
-       holding focus and the panel's own keys are read on the scroller. */
-    scroller?.focus();
-  }
-
-  /** Carry the view to the match at `mark`.
-   *
-   *  Opens the fold it is in first, which is the half that makes searching a
-   *  closed fold honest: `hunt.ts::textOf` deliberately looks inside one, so a
-   *  match there is real and landing on a collapsed line would be the panel
-   *  saying "here" and showing nothing.
-   *
-   *  `pinned = -1` and `stopGlide()` for the reason `step` does it: this is you
-   *  changing your mind about where the view should be, and the follow would
-   *  otherwise write the tail straight over it on the next event. */
-  function carry() {
-    const at = matchAt(found, mark);
-    if (!at || !scroller) return;
-    stopGlide();
-    pinned = -1;
-    following = false;
-    if (shut[at.key]) delete shut[at.key];
-    if (!open[at.key]) open[at.key] = true;
-    requestAnimationFrame(() => {
-      const wrap = scroller?.querySelector<HTMLElement>(`[data-hunt="${CSS.escape(at.key)}"]`);
-      /* The *child*, not the wrapper. `.blk` is `display: contents`, which is
-         what makes an anchor per block free — and an element with no box has
-         nothing for `scrollIntoView` to scroll to, so aiming at the wrapper
-         silently does nothing at all. */
-      const el = wrap?.firstElementChild ?? wrap;
-      el?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-  }
-
-  /** The block a reveal last landed on, lit for a moment so the eye finds it
-   *  in a column that has just scrolled under it. Cleared by its own timer. */
-  let sought = $state<string | null>(null);
-  let soughtTimer: ReturnType<typeof setTimeout> | null = null;
-  $effect(() => () => {
-    if (soughtTimer) clearTimeout(soughtTimer);
-  });
-
-  /** Carry the view to the last line `want` matches, opening the fold it is in.
-   *
-   *  The last rather than the first, because what asks is a timeline step
-   *  looking for the write that finished it, and a receipt is unique — but a
-   *  caller with a looser test wants the most recent, which is the one nearest
-   *  where the reader already is. Answers whether anything matched, so a caller
-   *  whose card is still reading its history off disk can try again.
-   *
-   *  Lets go of the tail for `carry`'s reason: this is you choosing where the
-   *  view should be, and the follow would otherwise write the tail over it. */
+  /** Carry the view to the last line `want` matches — the thread's, which lets
+   *  go of the tail by raising `RELEASE` on its way. */
   export function reveal(want: (line: Line) => boolean): boolean {
-    if (!scroller) return false;
-    const blocks = [...past, ...live];
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i];
-      const lines = b.kind === "tools" ? b.lines : [b.line];
-      if (!lines.some(want)) continue;
-      stopGlide();
-      pinned = -1;
-      following = false;
-      if (b.kind === "tools" && !open[b.key]) open[b.key] = true;
-      if (b.kind === "long" && !open[b.key]) open[b.key] = true;
-      sought = b.key;
-      if (soughtTimer) clearTimeout(soughtTimer);
-      soughtTimer = setTimeout(() => (sought = null), 1800);
-      requestAnimationFrame(() => {
-        const wrap = scroller?.querySelector<HTMLElement>(`[data-hunt="${CSS.escape(b.key)}"]`);
-        /* The child, for `carry`'s reason: `.blk` has no box of its own. */
-        const el = wrap?.firstElementChild ?? wrap;
-        el?.scrollIntoView({ block: "center", behavior: "smooth" });
-      });
-      return true;
-    }
-    return false;
-  }
-
-  function stepMatch(by: number) {
-    if (matches === 0) return;
-    mark = stepTo(matches, mark, by);
-    carry();
-  }
-
-  /** The field's own keys. Enter steps, shift+Enter steps back, Escape leaves.
-   *
-   *  Stopped from propagating, all of them: Escape on this wall interrupts a
-   *  card's turn, and closing a find bar must not also stop an agent — the same
-   *  care `Bump.svelte` takes with its own Escape. */
-  function onHuntKey(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      unhunt();
-      return;
-    }
-    if (e.key === "Enter") {
-      e.preventDefault();
-      e.stopPropagation();
-      stepMatch(e.shiftKey ? -1 : 1);
-      return;
-    }
-    /* Everything else is typing, and must not reach the wall's ladder — a
-       printable key there goes into the focused card's draft. */
-    e.stopPropagation();
-  }
-
-  /* A new query starts from the first match rather than from wherever the last
-     one left the cursor, and lands on it without being asked. Keyed on the
-     query alone: stepping changes `mark` and must not re-trigger this. */
-  $effect(() => {
-    const q = query;
-    if (!hunting) return;
-    mark = 0;
-    if (q.trim().length >= MIN_QUERY) carry();
-  });
-
-  /** How long after the last scroll event a view being carried counts as having
-   *  arrived. Chromium's smooth scroll emits all the way to the end, so this is
-   *  measured from the last of them, not from the click. */
-  const SETTLE_MS = 120;
-
-  /** Whether the view is parked at the tail. Recomputed on every scroll, so
-   *  scrolling back down by hand resumes following without a control to click. */
-  let following = $state(true);
-
-  /** Non-zero while the rail is carrying the view somewhere. */
-  let carrying = 0;
-
-  /** Where the follow last put the view, or `-1`.
-   *
-   *  The same distinction `carrying` draws, for the other thing in here that
-   *  moves the view on its own — and the follow went without it for as long as it
-   *  has existed. A write to `scrollTop` does not dispatch its scroll event
-   *  synchronously: the event arrives a beat later, and `onScroll` then recomputes
-   *  `following` from `atTail`. A burst of deltas landing inside that beat moves
-   *  the bottom out from under the write, so `atTail` is measured against a column
-   *  that has already grown past the place we aimed at, reads false, and the panel
-   *  silently stops following. Nothing takes it back: `following` is only re-armed
-   *  by scrolling down by hand or by the studio losing focus.
-   *
-   *  Which is why the symptom is *mid-conversation* rather than at the top. The
-   *  view is stranded at whatever height the column had at that instant, and the
-   *  faster the turn writes, the further from the tail it stops — a card roused at
-   *  launch, whose whole transcript arrives at once and which then takes a turn,
-   *  froze around two thirds of the way down a wall of its own reading.
-   *
-   *  Measured, not a flag: content landing *below* the view does not change
-   *  `scrollTop`, so the event that reports our own write reports exactly the
-   *  number we wrote, and anything else is you. */
-  let pinned = -1;
-
-  /** When a hand was last on this column, or `-1` for never.
-   *
-   *  `pinned` above identifies the follow's *own* writes, and that turned out to
-   *  be the smaller half of the problem: the browser moves a scroller too, with
-   *  nobody touching it. A column that gets shorter has `scrollTop` clamped for
-   *  it, and Chromium's scroll anchoring (`overflow-anchor` is `auto`) adjusts
-   *  `scrollTop` to hold content above the fold still when the height above
-   *  changes. Both arrive as ordinary scroll events, reporting numbers the follow
-   *  never wrote, in the rendering update's scroll steps — which run *before*
-   *  animation-frame callbacks, so they land in front of the frame `keepTail` has
-   *  already queued, and that frame then finds `following` false and declines to
-   *  pin. Which is the whole of "I put a card at the end, look at another card,
-   *  come back, and sometimes it jumps way up": the column settles in two passes
-   *  and the second pass was read as a decision.
-   *
-   *  So only a gesture may let go of the tail. The judgement is `stillFollowing`,
-   *  which has the argument in full; this is the measurement it needs. */
-  let gesturedAt = -1;
-
-  /** Put the view on the tail, and remember where that turned out to be. Every
-   *  programmatic trip to the bottom goes through here, or the next one to be
-   *  added is the next one to be read as you scrolling away. */
-  function pin(el: HTMLElement) {
-    el.scrollTop = el.scrollHeight;
-    pinned = el.scrollTop;
-  }
-
-  /** The follow's pending frame: one write however many reasons to make it land
-   *  in the same one. */
-  let holding = 0;
-
-  /** Put the view back on the tail, if that is still where it belongs.
-   *
-   *  On the next frame rather than now, because every caller is *inside* the
-   *  change: mid-effect and mid-mutation-callback the panel still has its old
-   *  height, so scrolling to `scrollHeight` here would stop one line short of
-   *  the text that caused it.
-   *
-   *  And asked again when the frame fires, not only when it was scheduled — a
-   *  frame is long enough to have let go. A rail click or an unfolded call
-   *  during a live turn lands between the two, and this would otherwise carry
-   *  out a decision that had already been reversed. */
-  function keepTail() {
-    if (holding || !following) return;
-    holding = requestAnimationFrame(() => {
-      holding = 0;
-      const el = scroller;
-      if (el && following) pin(el);
-    });
+    return thread?.reveal(want) ?? false;
   }
 
   /** How far below the fold the tail has to be before the way back is worth
@@ -448,50 +108,8 @@
    *  later. */
   let far = $state(false);
 
-  function atTail(el: HTMLElement): boolean {
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
-  }
-
   function below(el: HTMLElement): number {
     return el.scrollHeight - el.scrollTop - el.clientHeight;
-  }
-
-  /** Take the reading once the movement stops. */
-  function settle() {
-    carrying = 0;
-    if (scroller) following = atTail(scroller);
-  }
-
-  function onScroll() {
-    if (!scroller) return;
-    measure();
-    /* A carried view's own scroll events say nothing about where you want to
-       be. This is not a nicety: the first event of a smooth scroll fires with
-       the panel barely moved, so a panel parked at the tail — which is where
-       every panel starts — read as still following, and the follow below
-       promptly dragged it back down. Clicking a rail entry looked like clicking
-       nothing at all. */
-    if (carrying) {
-      clearTimeout(carrying);
-      carrying = window.setTimeout(settle, SETTLE_MS);
-      return;
-    }
-    /* And the follow's own write, reported a beat after it happened — plus every
-       scroll the *browser* made with no hand behind it, which is what
-       `gestured` answers. The judgement is `stillFollowing`, pure and tested,
-       because it is the panel's most consequential few lines. See follow.ts. */
-    const was = pinned;
-    following = stillFollowing({
-      scrollTop: scroller.scrollTop,
-      scrollHeight: scroller.scrollHeight,
-      clientHeight: scroller.clientHeight,
-      pinned,
-      following,
-      gestured: gestureLive(gesturedAt, performance.now()),
-    });
-    /* Consumed: the next event is either ours again (and re-pinned by the follow)
-       or a hand on the wheel. */
-    if (was >= 0 && scroller.scrollTop !== was) pinned = -1;
   }
 
   /* ── the rails ────────────────────────────────────────────────────────────
@@ -691,22 +309,12 @@
     places = [];
     headAt = -1;
     saidAt = -1;
-    /* The keys belong to the column that is going: another card's groups would
-       be closed anyway, and a key it happens to share is not the same run. */
-    open = {};
     /* And a run in flight belongs to the panel that is going away. Cleared here
        rather than left to the next `measure`, which is a timeout away: a button
        offering the way back on a panel that starts at the tail is a button
        pointing at where you already are. */
-    stopGlide();
+    follow.fresh();
     far = false;
-    /* The place the follow pinned belonged to the column that is going. */
-    pinned = -1;
-    /* And so did the gesture, which is the one that would otherwise reopen the
-       bug from the side: wheel the panel and click another card inside the same
-       `GESTURE_MS`, and the new column's own clamp arrives with your scroll of
-       the *previous* card still vouching for it. A fresh view has no history. */
-    gesturedAt = -1;
     refresh(0);
   });
 
@@ -722,14 +330,9 @@
     refresh(STREAM_MS);
   });
 
-  /* The timers — and the frame loop — are the one thing here that outlives the
-     panel. */
-  $effect(() => () => {
-    clearTimeout(recollect);
-    clearTimeout(carrying);
-    cancelAnimationFrame(gliding);
-    cancelAnimationFrame(holding);
-  });
+  /* The rails' timer is the one thing here that outlives the panel; the
+     follow's own go with its attachment. */
+  $effect(() => () => clearTimeout(recollect));
 
   /** Hand the clipboard the markdown, not the drawing of it.
    *
@@ -754,10 +357,7 @@
     /* Clicking a rail is asking to read something, so it lets go of the tail —
        otherwise a live turn drags the view straight back down. `settle` takes
        it up again if the view came to rest at the bottom after all. */
-    following = false;
-    pinned = -1;
-    clearTimeout(carrying);
-    carrying = window.setTimeout(settle, SETTLE_MS);
+    follow.carry();
     /* Where the mark sits inside the scroller, whatever it is nested in:
        `offsetTop` would answer for the nearest positioned ancestor, and the
        panel is free to grow one. A little air above it, too — a heading flush
@@ -767,66 +367,6 @@
       (p.el.getBoundingClientRect().top - el.getBoundingClientRect().top) -
       12;
     el.scrollTo({ top: Math.max(0, to), behavior: "smooth" });
-  }
-
-  /** How long the run back to the tail takes, whatever the distance.
-   *
-   *  Fixed, which is why this is hand-run rather than `behavior: "smooth"`:
-   *  Chromium scales that duration with the distance, so on a transcript of any
-   *  length the way back is a long slow ride to somewhere you asked to be now.
-   *  Not instant either — landing at the bottom of a column that looks nothing
-   *  like the one you left reads as having been moved rather than having
-   *  travelled, and the point of the button is to know where you went. */
-  const TAIL_MS = 300;
-
-  /** Non-zero while the run is in flight. */
-  let gliding = 0;
-
-  /** The wheel outranks a run in progress: without this the frame loop would
-   *  write its next position straight over yours, and changing your mind
-   *  halfway down would do nothing. */
-  function stopGlide() {
-    if (!gliding) return;
-    cancelAnimationFrame(gliding);
-    gliding = 0;
-  }
-
-  /** Run back to the tail and take the tail up again on arrival. */
-  function toTail() {
-    const el = scroller;
-    if (!el) return;
-    stopGlide();
-    /* Same carry as the rail's: `following` off so the follow effect doesn't
-       teleport us there mid-run, and `settle` to take the reading once the
-       movement stops — which here means switching following back *on*, since
-       the tail is where this is going. */
-    following = false;
-    clearTimeout(carrying);
-    carrying = window.setTimeout(settle, SETTLE_MS);
-
-    const from = el.scrollTop;
-    const start = performance.now();
-    const step = (now: number) => {
-      const t = Math.min(1, (now - start) / TAIL_MS);
-      /* The target is read every frame, not once: a turn streaming while you
-         travel moves the bottom, and a run computed against where the bottom
-         used to be lands short of it. */
-      const to = el.scrollHeight - el.clientHeight;
-      el.scrollTop = from + (to - from) * (1 - (1 - t) ** 3);
-      if (t < 1) {
-        gliding = requestAnimationFrame(step);
-        return;
-      }
-      gliding = 0;
-      /* Taking the tail back up is the entire gesture, so it is said rather than
-         re-derived: `settle` would ask `atTail` about a column a streaming turn
-         has already grown, and answer that the button had not worked. */
-      pin(el);
-      clearTimeout(carrying);
-      carrying = 0;
-      following = true;
-    };
-    gliding = requestAnimationFrame(step);
   }
 
   /** What one line of prose is drawn at, which is the unit a step is measured
@@ -863,48 +403,18 @@
     /* Same right the wheel has: a key is you changing your mind about a run
        already in flight, and the frame loop would otherwise write its next
        position straight over the step. */
-    stopGlide();
     /* The one real gesture the scroller's own listeners cannot see, so it is said
        out loud here. Ctrl+arrow is read by `App.svelte`'s global ladder with the
        caret usually still in the draft, so the keydown never reaches `.lines` —
        and a gesture that leaves no record is now a gesture that cannot let go of
        the tail, which would make these keys unable to scroll up off a live turn. */
-    gesturedAt = performance.now();
+    follow.stepped();
     /* Yours, so it must be read as yours even if it lands exactly on the tail the
        follow last pinned — that is a step back *onto* a live turn, and taking it
        up again is the point of measuring rather than flagging. */
-    pinned = -1;
     const delta = dir * stepBy(kind, lineHeight(el), el.clientHeight);
     el.scrollTop = landing(el.scrollTop, delta, el.scrollHeight, el.clientHeight);
   }
-
-  /* Focusing a different card is a fresh view, and a fresh view starts at the
-     tail — otherwise the scroll position you left behind on one card decides
-     where you land on the next one. */
-  $effect(() => {
-    void conv.id;
-    following = true;
-  });
-
-  /* The panel opening is what pays for reading a multi-megabyte file: the wall
-     itself never needs the scrollback, and reading every card's transcript at
-     launch would undo lazy restore.
-
-     Untracked, because the loader's own first act is to read `historyState` to
-     see whether it has already run — inside a tracking scope that would make
-     this effect depend on the very field it is about to write.
-
-     And again whenever the card says there is more to read (`historyMark`),
-     which only a card on another wall has: its conversation is pulled from its
-     own wall rather than read off this disk, so it is pulled again when that
-     wall says it has moved on. A card here reads once, and its own fold does
-     the rest. */
-  $effect(() => {
-    const c = conv;
-    void c.id;
-    void c.historyMark;
-    untrack(() => onhistory?.());
-  });
 
   /* A panel nobody is looking at used to let go of the place it was holding,
      and that is gone.
@@ -951,83 +461,18 @@
      truth.** Anything that corrects a value "for" the user has to be re-read
      whenever that value's meaning is tightened. */
 
-  /* Follow the tail while the column grows — but only if that is where you
-     already were. Scrolling up during a live turn is how you read what has just
-     gone past, and pinning the view to the bottom on every token made that
-     impossible: the line you were reading left the screen before you finished
-     it, several times a second.
-
-     **Heard from the column rather than declared by the panel**, which is the
-     whole of the fix for "it keeps ending up back up the page and I keep
-     clicking the button". This used to wake on four conversation signals —
-     `streaming`, `lines.length`, `history.length`, `activity` — which is every
-     way the *agent* can make the column taller and not one of the others. Every
-     other way changed the height with no signal behind it and therefore with
-     nothing to re-pin: the panel dragged narrower by its grip, or the window
-     resized, which rewraps every line of an answer into a taller column; a fold
-     opened; a `!` run writing its output into a line that already exists, which
-     moves no length anywhere. Each of them left the view above the tail with
-     `following` still *true* — so by the panel's own account nothing was wrong,
-     nothing re-armed it, and only the wheel or the button got you back.
-
-     `hearGrowth` is the same pair of observers `stickToTail` hands every plain
-     scroller in the app, and the argument for it is the one already written
-     there: a component that has to declare its own growth is a component that
-     forgets to. Which this one did, in four ways, for as long as it has existed.
-
-     A mutation re-pins; a resize re-measures as well, because a rewrap moves
-     every mark in the panel and `far` taken at the old width is a way back that
-     never appears. Only on a resize, though — measuring is the walk `refresh`
-     exists to throttle, and the content effects above already ask for it at a
-     rate a stream can afford. */
+  /* Following the tail while the column grows, hearing a hand on it, and
+     letting go of it when the thread says a fold was worked are all the
+     follow's now (`follow.svelte.ts`), worn by the scroller below. What stays
+     here is the panel's own answer to the thread letting go: the column just
+     changed height, so every offset the rails measured is stale — including
+     which mark counts as where you are reading. */
   $effect(() => {
     const el = scroller;
     if (!el) return;
-    /* Untracked, or reading `following` here would have every scroll that lets
-       go of the tail tear the observers down and build them again. */
-    untrack(keepTail);
-    return hearGrowth(el, keepTail, () => {
-      keepTail();
-      measure();
-    });
-  });
-
-  /* What a hand on this column looks like, and the only thing allowed to let go
-     of the tail. Everything else that moves a scroller — the follow's own write,
-     the clamp, scroll anchoring, a rewrap — is now unable to strand the reading
-     by construction rather than by being recognised one producer at a time. See
-     `gesturedAt` above and `stillFollowing` in follow.ts.
-
-     Capture phase, so a gesture answered by something inside the column — a fold
-     header, a link, a copy button — is still seen; passive, because nothing here
-     is prevented, only witnessed. `pointerdown` covers the scrollbar, whose track
-     is part of this element, and the start of a selection dragged past the edge;
-     `pointermove` continues both, and needs the button guard, or a cursor resting
-     over the panel would hold the window open forever.
-
-     Deliberately on the scroller and not on the window: **a click on a card is
-     what switches cards**, and if that counted as a gesture in here the panel
-     would be back to reading the new card's own settling as a decision — the bug
-     this is the fix for, arriving through the front door. */
-  $effect(() => {
-    const el = scroller;
-    if (!el) return;
-    const kinds = [
-      "wheel",
-      "keydown",
-      "pointerdown",
-      "pointermove",
-      "touchstart",
-      "touchmove",
-    ] as const;
-    const on = (e: Event) => {
-      if (e.type === "pointermove" && (e as PointerEvent).buttons === 0) return;
-      gesturedAt = performance.now();
-    };
-    for (const k of kinds) el.addEventListener(k, on, { capture: true, passive: true });
-    return () => {
-      for (const k of kinds) el.removeEventListener(k, on, { capture: true });
-    };
+    const again = () => refresh(0);
+    el.addEventListener(RELEASE, again);
+    return () => el.removeEventListener(RELEASE, again);
   });
 
   /* And coming back to the window is a moment to honour the tail, because the
@@ -1044,7 +489,7 @@
      condition and a trigger are the same act unless you separate them. */
   $effect(() => {
     void watching;
-    untrack(keepTail);
+    untrack(() => follow.keepTail());
   });
 
   /* ── how big the reading is ───────────────────────────────────────────────
@@ -1137,7 +582,7 @@
     requestAnimationFrame(() => {
       /* The tail outranks the anchor — a panel that was following is asking to
          stay at the bottom, not at 0.98 of a column that just grew. */
-      if (untrack(() => following)) pin(el);
+      if (untrack(() => follow.following)) follow.pin();
       else if (at !== null) el.scrollTop = at * el.scrollHeight;
       /* After the scroll, not before: `measure` reads `scrollTop`. */
       refresh(0);
@@ -1146,226 +591,6 @@
 
   $effect(() => () => clearTimeout(readTimer));
 </script>
-
-<!-- One line of the column, drawn exactly as it always was: the two columns and
-     the inside of a fold all go through here, so history, live text and a call
-     you have opened cannot drift apart.
-
-     `key` is the line's own place in `open` — needed because a tool call is now
-     a fold in its own right, nested inside the run fold it may be part of. It
-     is passed in rather than derived here for the reason a group's key is its
-     first line's words: the live column is sliced at `MAX_LINES`, so anything
-     positional silently moves an opened thing onto a different one. A call's
-     key is its `tool_use` id, which is the one identifier that is the same line
-     for as long as the line exists — and the same one after a restart, since
-     history reads it out of the session file. -->
-{#snippet one(line: Line, key: string)}
-  {#if line.kind === "tool" && line.call}
-    <!-- A call is openable: closed it is the line it always was, open it is
-         every argument the model wrote and what came back. No `data-nav`, like
-         everything else inside a fold. -->
-    <ToolCall
-      call={line.call}
-      text={line.text}
-      open={!!open[key]}
-      ontoggle={() => toggle(key)}
-      root={conv.kind === "project" ? conv.cwd : undefined}
-      {onfile}
-    />
-  {:else if line.kind === "text"}
-    <!-- `data-nav` is the rail's whole handle on the panel: this one is the
-         answer itself, and the marks inside it are its shape. -->
-    <!-- Narration is the server's summary of what the agent wrote between tool
-         calls, which is all of that prose the wire carries. Speech, so drawn as
-         speech; marked, because it is the gist rather than the words. -->
-    <div
-      class="line text md"
-      class:narration={line.narration}
-      data-nav="msg"
-      title={line.narration
-        ? "summarised by the server — what the agent wrote between tool calls"
-        : undefined}
-    >
-      <Markdown blocks={parseMarkdown(line.text)} />
-    </div>
-  {:else}
-    <!-- The line is drawn exactly as it was — `pre-wrap` here, so the text stays
-         glued to its tags. -->
-    <!-- A prompt is drawn when you send it, so its own line carries whether the
-         agent has it yet: dimmed while it is on its way, and saying so if it
-         never got there. -->
-    <div
-      class="line {line.kind}"
-      class:pending={line.state === "pending"}
-      class:held={line.state === "held"}
-      class:failed={line.state === "failed"}
-      data-nav={line.kind === "you" ? "you" : null}
-    >{line.text}</div>
-    <!-- What became of it on another machine. Only a shadow card sets this, and
-         it is under the words rather than beside them for the reason the `you`
-         register itself is drawn plainly: the receipt is about the sending, not
-         part of what was said. A line this wall still holds and a line the far
-         wall has are the two cases somebody is actually watching for, so the
-         second is drawn quietly and the first and third are not. -->
-    {#if line.receipt}
-      <div class="receipt" class:late={line.state === "failed"}>{line.receipt}</div>
-    {/if}
-    <!-- The pictures that went with the prompt, under the words that refer to
-         them by name. Thumbnails rather than the bytes that were sent — a card
-         talking all week would otherwise hold every screenshot at full size for
-         as long as it is on the wall (`attach.ts::THUMB_SIDE`).
-
-         A restored card has none: they were never in the session file as
-         anything a panel could draw, so a transcript read back off disk shows
-         the prompt with its `[name]` tokens and nothing under it. That is the
-         honest shape rather than a gap — the sentence still says which picture
-         it meant. -->
-    {#if line.shots?.length}
-      <div class="shots">
-        {#each line.shots as s (s.name)}
-          <img src={s.thumb} alt={s.name} title={s.name} />
-        {/each}
-      </div>
-    {/if}
-  {/if}
-{/snippet}
-
-<!-- A column of blocks: lines, and runs of tool calls folded into one cap each.
-     Nothing navigable is ever inside a fold — a tool call carries no `data-nav` —
-     so the rails list the same places whatever is open. -->
-{#snippet column(blocks: Block[])}
-  {#each blocks as b (b.key)}
-    <!-- A wrapper per block, and only so a find has something to scroll to.
-         `display: contents` so it is invisible to layout — the column's own
-         flex still sees the block itself, which is what keeps this from being a
-         reflow in exchange for a feature. The band is drawn on the wrapper
-         rather than on the block, because a block is four different elements
-         depending on what it is and one of them is a component. -->
-    <div
-      class="blk"
-      data-hunt={b.key}
-      class:found={lit.has(b.key)}
-      class:here={here === b.key}
-      class:sought={sought === b.key}
-    >
-    {#if b.kind === "line"}
-      {@render one(b.line, lineKey(b.line, b.key))}
-    {:else if b.kind === "long"}
-      <!-- What a compaction carried forward, the whole of a skill the agent
-           invoked, the prompt rousing sent a card whose turn was cut off, or
-           Skein's account of why a prompt it re-sent is in the column twice.
-           Folded like a run of calls, but marked as its own thing: the words
-           inside are neither yours nor the agent's — the CLI or Skein put them
-           there — so they must not be able to be read as either. Closed until
-           you open it, which is the whole point: a summary runs to twenty
-           thousand characters, a skill to rather more, and the resume prompt to
-           twenty lines of instructions addressed to somebody else — and the
-           round you came here to read is on the far side of one.
-
-           One branch for all four, because the drawing is the same problem four
-           times and only the cap differs — `longFold` is where it does. The
-           `failed` mark is the resume prompt's alone: folded, the line's own is
-           not on screen to be read.
-
-           The resend mark is the one that is not a whole line of its own on the
-           wire — it is the tail of a prompt, and `blocksOf` has drawn the rest
-           of that prompt as an ordinary `you` line directly above this block.
-           So here alone the thing above the fold and the thing inside it were
-           one string when they went.
-
-           Parsed as markdown only when it is open. Both are written as headed
-           sections and lists; parsing one on every keystroke of a live turn,
-           folded away where nobody can see it, would be the panel's most
-           expensive line by far. -->
-      {@const fold = longFold(b.line)}
-      <div class="fold long" class:shown={open[b.key]}>
-        <button
-          type="button"
-          class="cap"
-          class:failed={b.line.state === "failed"}
-          aria-expanded={open[b.key] ? "true" : "false"}
-          onclick={() => toggle(b.key)}
-          title={open[b.key] ? "fold it away" : fold.hint}
-        >
-          <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
-          <span class="what">{fold.cap}</span>
-        </button>
-        {#if open[b.key]}
-          <!-- No `data-nav`: the rails list places in the conversation, and a
-               summary's own two dozen headings — or a skill's — would bury every
-               one of them. -->
-          <div class="inside">
-            <div class="line text md">
-              <Markdown blocks={parseMarkdown(b.line.text)} />
-            </div>
-          </div>
-        {/if}
-      </div>
-    {:else if b.kind === "shown"}
-      <!-- A picture an agent showed, where it showed it — never inside a fold,
-           since it is the thing the turn wanted you to look at. See
-           `.claude/rules/showing.md`. -->
-      <Figure line={b.line} />
-    {:else if b.kind === "shell"}
-      <!-- A `!` run: a command you ran in this card's directory rather than
-           something you said to its agent. Open unless you shut it, which is
-           the one fold on this wall that starts that way round — the others
-           hide machinery, and this is what you asked for.
-
-           The cap is written whole by `bang.ts::runCap` when the run is drawn,
-           so it carries the command, the line count and how it ended without
-           this component knowing what any of those mean. -->
-      <div class="fold run" class:shown={runOpen(b.key)}>
-        <button
-          type="button"
-          class="cap"
-          class:failed={b.line.state === "failed"}
-          aria-expanded={runOpen(b.key) ? "true" : "false"}
-          onclick={() => toggleRun(b.key)}
-          title={runOpen(b.key) ? "fold what it printed away" : "what it printed"}
-        >
-          <span class="mark" aria-hidden="true">{runOpen(b.key) ? "▾" : "▸"}</span>
-          <span class="what">{runFoldCap(b.line)}</span>
-        </button>
-        {#if runOpen(b.key) && b.line.text}
-          <!-- No `data-nav`, like every other fold: the rails list places in the
-               conversation, and a build's output is not one of them. -->
-          <div class="inside">
-            <div class="line out">{#each parseAnsi(b.line.text) as sp}<span
-                  style:color={sp.color === null ? null : ansiVar(sp.color)}
-                  style:font-weight={sp.bold ? "600" : null}
-                  style:opacity={sp.dim ? 0.6 : null}>{sp.text}</span
-                >{/each}</div>
-          </div>
-        {/if}
-      </div>
-    {:else}
-      <div class="fold" class:shown={open[b.key]}>
-        <button
-          type="button"
-          class="cap"
-          aria-expanded={open[b.key] ? "true" : "false"}
-          onclick={() => toggle(b.key)}
-          title={open[b.key] ? "fold the calls away" : foldSummary(b.lines)}
-        >
-          <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
-          <!-- Folded, the cap carries the latest call in the run, so a group at
-               the foot of a live turn says what is happening without being
-               opened. Open, the calls themselves say it. -->
-          <span class="what">{open[b.key] ? foldCount(b.lines) : foldSummary(b.lines)}</span>
-        </button>
-        {#if open[b.key]}
-          <div class="inside">
-            {#each b.lines as line, i (i)}
-              {@render one(line, lineKey(line, `${b.key}:${i}`))}
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
-    </div>
-  {/each}
-{/snippet}
 
 <!-- `--read` is set on the panel rather than on the column, so anything drawn
      here can be sized in step with the reading; only what is *in* the column
@@ -1405,142 +630,28 @@
          the one gesture where the text moving under you is the worst possible
          answer. It sits at the top because a match is scrolled to the *centre*,
          so a bar at the foot would be the one place a match can never be. -->
-    {#if hunting}
-      <div class="hunt">
-        <input
-          bind:this={field}
-          bind:value={query}
-          class="q"
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
-          placeholder="find in this transcript"
-          aria-label="find in this transcript"
-          onkeydown={onHuntKey}
-        />
-        <span class="tally" class:none={query.trim().length >= MIN_QUERY && matches === 0}
-          >{cap}</span
-        >
-        <button
-          type="button"
-          class="hstep"
-          disabled={matches === 0}
-          title="previous match — shift+enter"
-          onclick={() => stepMatch(-1)}>↑</button
-        >
-        <button
-          type="button"
-          class="hstep"
-          disabled={matches === 0}
-          title="next match — enter"
-          onclick={() => stepMatch(1)}>↓</button
-        >
-        <button type="button" class="hstep" title="close — escape" onclick={unhunt}>×</button>
-      </div>
+    {#if thread?.finder().on}
+      <HuntBar hunt={thread.finder()} onclose={() => scroller?.focus()} />
     {/if}
     <div
       class="lines"
       bind:this={scroller}
-      onscroll={onScroll}
-      onwheel={stopGlide}
+      onscroll={measure}
+      {@attach follow.attach}
       oncopy={onCopy}
     >
-      <!-- What was said before this card had a process listening. Drawn in the
-           same column and the same kinds as the live fold, so the seam is a rule
-           and a label rather than a change of voice. -->
-      {#if conv.history.length}
-        <div class="seam">
-          <span>
-            {conv.historyPartial
-              ? "earlier — read from the transcript, from partway in"
-              : "earlier — read from the transcript"}
-          </span>
-        </div>
-        {@render column(past)}
-        {#if conv.lines.length || conv.streaming}
-          <div class="seam rule"></div>
-        {/if}
-      {:else if conv.historyState === "loading"}
-        <div class="line meta">reading the transcript…</div>
-      {/if}
-
-      {@render column(live)}
-      {#if conv.streaming}
-        <!-- Two components, one column: what has settled and what is still
-             being written. Neither adds an element, so `.md > :first-child` and
-             `:last-child` still find the ends of the answer — and the settled
-             array's identity only moves when one more block joins it, so
-             Svelte's each walks none of them on an ordinary delta. That is the
-             other half of the fix; parsing once would be wasted if the diff
-             still read every block per token.
-             The caret goes wherever the writing has got to, which is the last
-             settled block on the deltas where the tail is only blank lines —
-             or it would blink out between one paragraph and the next. -->
-        <div class="line text md" data-nav="msg">
-          <Markdown
-            blocks={streamed.settled}
-            caret={streamed.tail.length === 0}
-          />
-          <Markdown blocks={streamed.tail} caret />
-        </div>
-      {/if}
-      <!-- What the agent is doing *now*, at the foot of the column.
-           The transcript is a record of what landed, and a tool call lands as a
-           line only when its block closes — so between "you asked" and the first
-           thing written there was nothing on the page at all, and a run folded
-           away is a page that does not visibly move for a minute at a time. This
-           is the live edge: it says thinking, or the call in flight, and it goes
-           when the turn does.
-           Not while text is streaming — `activity` is "responding" then, and the
-           words arriving above are a better account of it than the word is. -->
-      {#if conv.working && conv.activity !== "responding"}
-        <div class="line doing" aria-live="polite">
-          <span class="pip" aria-hidden="true"></span>{conv.doing}
-        </div>
-        <!-- The one wait long enough to be worth a bar, and the only one whose
-             bar is a guess — nothing on the wire says how far along a fold is,
-             so this is drawn against what compactions have actually cost on
-             this machine. It is built not to overclaim: it stops short of full
-             at the predicted moment and creeps after, so it can never sit at
-             the end pretending to be done, and the line above says "longer than
-             usual" when the prediction has been blown. Dotted, like everything
-             else here that is not yet settled. -->
-        {#if conv.compactFrac !== null}
-          <div
-            class="guess"
-            role="progressbar"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            aria-valuenow={Math.round(conv.compactFrac * 100)}
-            aria-label="compacting, estimated"
-          >
-            <span class="fill" style:width="{conv.compactFrac * 100}%"></span>
-          </div>
-        {/if}
-      {/if}
-      <!-- An empty card should read as a beginning, not as a missing component.
-           The theme is ink on paper down to its token names, so a card with
-           nothing on it is a sheet with nothing on it — and one that has spoken
-           but whose pages are not on disk is a different thing again, worth
-           saying rather than dressing up as new. -->
-      {#if conv.lines.length === 0 && !conv.working && !conv.streaming && conv.historyState !== "loading" && !conv.history.length}
-        <div class="line meta">
-          {#if !conv.dormant}
-            the page is open — say something
-          {:else if conv.everSpoke}
-            its earlier pages aren't here — speak and it picks up where it left off
-          {:else}
-            a fresh sheet — it wakes when you speak
-          {/if}
-        </div>
-      {/if}
+      <!-- The conversation itself — what was said, folded where it is
+           machinery, and the turn still being written. `display: contents`, so
+           this scroller's flex sees its lines exactly as before it was a
+           component of its own. -->
+      <Thread bind:this={thread} {card} />
     </div>
 
     <!-- Only when the way back is a journey. No arrow glyph: `↓` falls through
          to Segoe UI Emoji and renders *blue*, and colour on this wall is
          status. -->
     {#if far}
-      <button class="to-end" onclick={toTail}>to the end</button>
+      <button class="to-end" onclick={() => follow.toTail()}>to the end</button>
     {/if}
 
     <!-- What the wheel just did, while you are doing it. Opposite corner from
@@ -1683,120 +794,6 @@
     flex-direction: column;
   }
 
-  /* ── the find bar ──────────────────────────────────────────────────────
-     Chrome, so achromatic: colour on this wall is status and a search is not
-     one. The single exception is `.tally.none`, which is a *result* — the word
-     is not here — and takes the same rust every other failed reading does. */
-  .hunt {
-    position: absolute;
-    z-index: 3;
-    top: 0.3rem;
-    right: 0.9rem;
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.25rem 0.3rem;
-    /* Opaque. It stands over the column, and nothing standing over something
-       else on this wall may be transparent. */
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    box-shadow: 0 3px 10px color-mix(in srgb, var(--ink) 45%, transparent);
-  }
-  .hunt .q {
-    width: 13rem;
-    font-family: var(--util);
-    font-size: calc(0.68rem * var(--read, 1));
-    line-height: 1.4;
-    padding: 0.1rem 0.35rem;
-    color: var(--paper);
-    background: var(--well);
-    border: 1px solid var(--edge);
-    border-radius: 3px;
-  }
-  .hunt .q:focus {
-    outline: none;
-    border-color: var(--paper-faint);
-  }
-  .hunt .tally {
-    min-width: 5.5rem;
-    font-family: var(--util);
-    font-size: calc(0.6rem * var(--read, 1));
-    color: var(--paper-mute);
-    white-space: nowrap;
-  }
-  .hunt .tally.none {
-    /* The one coloured thing in this bar, and it is a *result* rather than
-       chrome: the word is not in this transcript. Same rust every other failed
-       reading on the wall takes. */
-    color: var(--st-fail);
-  }
-  .hunt .hstep {
-    font-family: var(--util);
-    font-size: 0.7rem;
-    line-height: 1;
-    padding: 0.15rem 0.3rem;
-    color: var(--paper-dim);
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    cursor: pointer;
-  }
-  .hunt .hstep:hover:not(:disabled) {
-    color: var(--paper);
-    border-color: var(--edge);
-  }
-  .hunt .hstep:disabled {
-    color: var(--paper-faint);
-    cursor: default;
-  }
-
-  /* One wrapper per block, and `display: contents` is the whole of why it is
-     affordable: the column's flex layout still sees the block itself, so this
-     adds an anchor to scroll to and changes nothing about how anything sits.
-
-     Which means the band cannot be a background — a `display: contents` element
-     has no box to paint. It is drawn on the block inside instead, which is the
-     one thing a wrapper can still reach. */
-  .blk {
-    display: contents;
-  }
-  /* Every match, quietly. A found block is a place worth noticing while you
-     scan; it is not where you are. */
-  .blk.found > :global(*) {
-    background: color-mix(in srgb, var(--paper) 7%, transparent);
-    border-radius: 2px;
-  }
-  /* And where you are, which has to be findable at a glance in a column of
-     them. Still achromatic — brighter rather than coloured. */
-  .blk.here > :global(*) {
-    background: color-mix(in srgb, var(--paper) 15%, transparent);
-    outline: 1px solid var(--paper-faint);
-    outline-offset: 1px;
-  }
-  /* Where a timeline step carried you: the find's own mark, fading out once
-     the eye has had it. Brighter rather than coloured, as `here` is. */
-  .blk.sought > :global(*) {
-    border-radius: 2px;
-    animation: sought 1.8s ease-out both;
-  }
-  @keyframes sought {
-    0%,
-    35% {
-      background: color-mix(in srgb, var(--paper) 15%, transparent);
-      outline: 1px solid var(--paper-faint);
-      outline-offset: 1px;
-    }
-    100% {
-      background: transparent;
-      outline: 1px solid transparent;
-      outline-offset: 1px;
-    }
-  }
-  :global(html[data-motion="still"]) .blk.sought > :global(*) {
-    animation: none;
-    background: color-mix(in srgb, var(--paper) 15%, transparent);
-  }
   /* Quiet, achromatic, and clear of the 9px scrollbar. Opaque because it sits
      over the last lines of the answer, and raised off the well rather than
      outlined in anything brighter: it is a way out of where you are, not a
@@ -1885,426 +882,6 @@
     padding-right: 0.3rem;
     /* What a mark's `offsetTop` is measured against — see `measure`. */
     position: relative;
-  }
-  .line {
-    /* The only size the column actually sets: a heading, a fence, a table and
-       a caret are all `em` off this one, so this is the whole of the knob.
-
-       Two multipliers, and they answer different questions. `--read` is
-       ctrl+wheel — how large you want this hour's reading, held per card
-       session in the studio. `--tx-size` is what the wall is *set* in, held by
-       the theme. Keeping them apart means changing the theme does not throw
-       away a size you had wheeled to, and vice versa. Both carry the value
-       they always had as a fallback, so this rule is correct with neither
-       `tokens.css` nor a theme in front of it. */
-    font-size: calc(var(--tx-size, 0.86rem) * var(--read, 1));
-    line-height: var(--tx-leading, 1.55);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    /* A line takes the panel, never its widest neighbour. `.lines` is a column
-       flex container *and* a scroll container, so `align-items: stretch`
-       resolves against the scrollable content width — which is whatever the
-       widest child is. One wide table or code fence therefore set the measure
-       for every paragraph in the transcript, and prose you had to scroll
-       sideways to read was the result. A percentage resolves against the
-       containing block instead, which is this column's content box whatever is
-       overflowing it, so siblings stop deciding for each other. */
-    width: 100%;
-    max-width: 78ch;
-  }
-  /* The agent's prose — the thing the panel exists to be read in, at length.
-     Themed apart from your own half below, because which of the two belongs at
-     the top of the ink ramp is a real question: see the `prose` theme, which
-     answers it the other way round. The fallback is the value this rule always
-     carried, so the column is correct with no theme and no `tokens.css`. */
-  .line.text {
-    color: var(--tx-prose, var(--paper-dim));
-  }
-  /* A folded line brings its own layout: paragraphs keep the agent's newlines,
-     but a heading, a list and a table must not be held in pre-wrap. */
-  .line.md {
-    white-space: normal;
-  }
-  /* A pseudo-element rather than a child, so `.md > :last-child` still finds
-     the end of the answer and a copy never carries the word. Achromatic: what
-     this says is whose words these are, which is not a status. */
-  .line.text.narration::after {
-    content: "summary";
-    display: block;
-    margin-top: calc(0.15rem * var(--read, 1));
-    font-family: var(--util);
-    font-size: calc(0.68rem * var(--read, 1));
-    color: var(--paper-faint);
-  }
-  /* Your half of the conversation. Set in against a rule rather than in a
-     bubble: the transcript is one column of speech, and what distinguishes you
-     is the margin, not a container. */
-  .line.you {
-    color: var(--tx-you, var(--paper));
-    border-left: 2px solid var(--paper-faint);
-    padding-left: calc(0.6rem * var(--read, 1));
-    margin-left: -0.05rem;
-    /* Where a round begins. Two paragraphs inside one answer sit 0.55em apart
-       and a prompt sat only `.lines`' gap from the answer above it — about two
-       pixels between "next paragraph" and "a whole new thing was said", which
-       is proximity saying nothing and the reason finding a round wanted the
-       rail. The left rule was already the landmark; this is the room it needs
-       to act as one, and 0 is the historical value so an unthemed column is
-       untouched.
-
-       `--read`-multiplied like every other space in the panel: air that does
-       not grow with the type closes up at 200%. The rule is off by default
-       (`transparent`) and is the stronger setting of the same idea — the seam
-       treatment the history boundary uses, applied per round. With the left
-       rule already there it reads as a bracket opening the round rather than
-       as one more horizontal line down a long card. Half the round's air sits
-       under it, so the rule leads the prompt instead of touching it. */
-    margin-top: calc(var(--tx-round, 0rem) * var(--read, 1));
-    border-top: 1px solid var(--tx-round-rule, transparent);
-    padding-top: calc(var(--tx-round, 0rem) * 0.5 * var(--read, 1));
-  }
-  /* The pictures a prompt carried, under it and inside its bracket — the left
-     rule continues past them, because they are part of the same thing you said.
-     A row that wraps rather than scrolls: twenty images is the cap and a
-     sideways scroller inside a column you are already scrolling is two gestures
-     fighting. */
-  .shots {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    border-left: 2px solid var(--paper-faint);
-    padding-left: calc(0.6rem * var(--read, 1));
-    margin-left: -0.05rem;
-    padding-top: 0.35rem;
-  }
-  .shots img {
-    max-width: calc(7rem * var(--read, 1));
-    max-height: calc(7rem * var(--read, 1));
-    border-radius: 2px;
-    /* Opaque, per the standing rule — a PNG with an alpha channel drawn onto
-       the panel would show whatever is behind it through the middle of the
-       picture. */
-    background: var(--surface);
-  }
-
-  /* Nothing above it to be separated from, and a rule across the top of the
-     panel is furniture announcing the start of a column you are already
-     looking at. */
-  .line.you:first-child {
-    margin-top: 0;
-    border-top-color: transparent;
-    padding-top: 0;
-  }
-  /* On its way. The rule goes dashed and the text sits back a shade — the same
-     "not settled yet" the streaming fence uses, and achromatic, because a prompt
-     in flight is not a status the wall reports in colour. */
-  .line.you.pending {
-    /* A shade back from wherever the theme put a settled prompt, rather than a
-       fixed `--paper-dim`. Fixed was right while a prompt was always `--paper`
-       and became wrong the moment `--tx-you` existed: the `prose` theme sets a
-       settled prompt to `--paper-dim` itself, at which point "sits back a
-       shade" was the same colour as arrived, and the only thing left saying a
-       prompt was still in flight was the dashed rule. Mixing toward the well
-       keeps the step whatever the theme does with the ramp. */
-    color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
-    border-left-style: dashed;
-  }
-  /* Kept for an allowance to come back (`holding.ts`). Sits back like a
-     prompt on its way, and says what it is waiting for in the face `· not
-     sent` uses — but achromatic, because nothing has gone wrong: the card has
-     your words and will send them itself. Rust is kept for the one state of
-     the four that means they did not go. */
-  .line.you.held {
-    color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
-    border-left-style: dashed;
-  }
-  .line.you.held::after {
-    content: " · held — will send when allowance returns";
-    font-family: var(--util);
-    font-size: calc(0.7rem * var(--read, 1));
-    color: var(--paper-faint);
-  }
-  /* It never left. Rust, which is what failure is everywhere else here, and it
-     says which failure rather than leaving a colour to be interpreted. The words
-     stay exactly where they were written, to be copied back out of. */
-  .line.you.failed {
-    border-left-color: var(--st-fail);
-  }
-  .line.you.failed::after {
-    content: " · not sent";
-    font-family: var(--util);
-    font-size: calc(0.7rem * var(--read, 1));
-    color: var(--st-fail);
-  }
-  /* What the far wall did with a prompt. Sits under the words in the utility
-     face at the same size `· not sent` uses, indented to the prompt's own rule
-     so the two read as one thing. Achromatic while it is ordinary — a message
-     crossing a network is not a status — and rust only where it stopped being
-     ordinary, which is the house rule for colour rather than an exception to
-     it. Not copied: `copy.ts` takes what is drawn, and a receipt is Volery's
-     sentence about the sending rather than anything anybody said. */
-  .receipt {
-    font-family: var(--util);
-    font-size: calc(0.7rem * var(--read, 1));
-    color: var(--paper-faint);
-    padding-left: 0.75em;
-    margin-top: calc(-0.15rem * var(--read, 1));
-    user-select: none;
-  }
-  .receipt.late {
-    color: var(--st-fail);
-  }
-  .line.tool {
-    font-family: var(--mono);
-    font-size: calc(0.7rem * var(--read, 1));
-    color: var(--paper-mute);
-  }
-  .line.tool::before {
-    content: "▸ ";
-    color: var(--paper-faint);
-  }
-  .line.error {
-    font-family: var(--mono);
-    font-size: calc(0.7rem * var(--read, 1));
-    color: var(--st-fail);
-  }
-  /* What you answered a parked question with. Small, and set just under the
-     call that asked it: it is your words, so it is not monospaced like the
-     machinery, but it is a reply rather than a prompt and must not carry the
-     weight of one — a decision made in the dock is read here as the footnote to
-     the call above, not as a new thing said. Achromatic, like everything else
-     that is not a status: the amber the question wore was the card waiting, and
-     it is not waiting any more. */
-  .line.answer {
-    font-family: var(--util);
-    font-size: calc(0.74rem * var(--read, 1));
-    color: var(--paper-mute);
-  }
-  .line.answer::before {
-    content: "↳ ";
-    color: var(--paper-faint);
-  }
-
-  /* ── a side question, and what came back ─────────────────────────────────
-     `/btw`. Neither of these is part of the conversation — the question opened
-     no turn and the answer came from a *fork* of the session — so they are set
-     apart rather than drawn as a prompt and an answer. A rule down the left is
-     what says "beside": the column's own voices all start at the margin, and
-     these two are the only pair that does not.
-
-     Achromatic, because colour on this wall is status and a side question is
-     not one. Quiet, because it is a footnote to a conversation that is carrying
-     on without it — which is the whole feature. */
-  .line.asked,
-  .line.aside {
-    border-left: 1px solid var(--edge);
-    padding-left: 0.5rem;
-    margin-left: 0.1rem;
-    font-family: var(--util);
-    font-size: calc(0.74rem * var(--read, 1));
-    white-space: pre-wrap;
-  }
-  /* The question is yours, so it takes the weight your prompts take — one step
-     down, since it is a footnote. */
-  .line.asked {
-    color: var(--paper-dim);
-  }
-  .line.asked::before {
-    content: "btw ";
-    font-family: var(--mono);
-    font-size: 0.9em;
-    color: var(--paper-faint);
-  }
-  .line.aside {
-    color: var(--paper-mute);
-  }
-
-  /* ── a folded run of tool calls ─────────────────────────────────────────── */
-  .fold {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  /* The cap is chrome, and reads as the calls it stands for: same monospace,
-     same size, same paper as a tool line, so a folded run does not weigh more
-     on the page than the run itself did. */
-  .cap {
-    display: flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    width: 100%;
-    text-align: left;
-    background: none;
-    border: 0;
-    padding: 0;
-    font-family: var(--mono);
-    font-size: 0.7rem;
-    line-height: 1.55;
-    color: var(--paper-mute);
-    cursor: pointer;
-  }
-  .cap:hover {
-    color: var(--paper-dim);
-  }
-  .cap .mark {
-    flex: 0 0 auto;
-    color: var(--paper-faint);
-  }
-  .cap .what {
-    /* One line: an opened run is where the detail is. */
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .fold.shown .cap {
-    color: var(--paper-dim);
-  }
-  /* These caps are the register the `meta` line is in — the CLI talking
-     about the conversation rather than in it — because that is what they are,
-     and because reading as a tool call would put them among the machinery when
-     they are the opposite: what the card kept, and what it was told to do. Set
-     in a shade further from the tool caps around them, and given the seam's
-     dotted rule under them, since each *is* a discontinuity — the same thing
-     the seam between the file and the stream marks, happening mid-column. */
-  .fold.long > .cap {
-    font-family: var(--util);
-    font-size: calc(0.72rem * var(--read, 1));
-    padding-bottom: 0.25rem;
-    border-bottom: 1px dotted var(--edge);
-  }
-  /* Opened, it is a long read and wants the column it is set in to say where it
-     ends as clearly as where it begins. */
-  .fold.long.shown > .inside {
-    border-left-style: dotted;
-    padding-bottom: 0.2rem;
-  }
-  /* ── a `!` run ──────────────────────────────────────────────────────────
-     A command you drove rather than one the agent did, so the cap is set a shade
-     brighter than the tool caps it sits among: this is the one piece of
-     machinery in the column you put there yourself. */
-  .fold.run > .cap .what {
-    color: var(--paper-dim);
-  }
-  /* Rust, and on the *command* rather than in its output — which line failed is
-     a question you ask having scrolled past a screenful of what it printed, so
-     the answer wants to be at the top of that screen. The same call
-     `Console.svelte` makes for the same reason. A run that was *stopped* wears
-     nothing: killing it is something you did on purpose. */
-  .cap.failed .what {
-    color: var(--st-fail);
-  }
-  /* What it printed. `pre-wrap` because a build's indentation is how you read
-     it, and `anywhere` because the panel is a third of the window wide and a
-     stack trace's paths are longer than that. */
-  .line.out {
-    font-family: var(--mono);
-    font-size: calc(0.68rem * var(--read, 1));
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    color: var(--paper-mute);
-  }
-
-  /* Set in against a rule, the same way your own half of the conversation is:
-     what binds the calls together is the margin, not a container. */
-  .inside {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    border-left: 1px solid var(--edge);
-    padding-left: 0.6rem;
-    margin-left: 0.3rem;
-  }
-
-  /* The live edge. Celadon because it is a status and that is what celadon
-     means on this wall — the same working colour the card is wearing. */
-  .line.doing {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-family: var(--util);
-    font-size: 0.72rem;
-    color: var(--paper-mute);
-  }
-  .line.doing .pip {
-    flex: 0 0 auto;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--st-work);
-    animation: pulse 2.4s ease-in-out infinite;
-  }
-
-  /* A predicted bar, drawn as one. The track is dotted rather than solid —
-     everything unsettled in this panel is (the streaming fence, a pending
-     prompt, the summary's rule), and a prediction is the most unsettled thing
-     here. Celadon, because it is the working status and this is the same card
-     state the pip above is reporting; it earns the colour by being a status
-     rather than decoration.
-
-     Two pixels tall and inset to sit under the words rather than beside them:
-     it is the line's evidence, not a second thing to read. The transition is
-     what makes a once-a-second `clock` look continuous — without it the fill
-     steps ~0.8% at a time and reads as a stall. Linear, not eased: an eased
-     step would accelerate and decelerate twice a second, which is worse than
-     the step it hides. */
-  .guess {
-    height: 2px;
-    margin: 0.1rem 0 0.15rem 0.65rem;
-    border-bottom: 1px dotted var(--edge);
-  }
-  .guess .fill {
-    display: block;
-    height: 2px;
-    background: var(--st-work);
-    opacity: 0.55;
-    transition: width 1s linear;
-  }
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 0.35;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .line.doing .pip {
-      animation: none;
-    }
-  }
-  :global(html[data-motion="still"]) .line.doing .pip {
-    animation: none;
-  }
-  .line.meta {
-    font-family: var(--util);
-    font-size: calc(0.76rem * var(--read, 1));
-    color: var(--paper-note, var(--paper-faint));
-  }
-
-  /* Where the file stops and the stream starts. Achromatic — this is chrome,
-     not status. */
-  .seam {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 0 0 auto;
-    font-family: var(--util);
-    font-size: calc(0.64rem * var(--read, 1));
-    color: var(--paper-note, var(--paper-faint));
-  }
-  .seam::before,
-  .seam::after {
-    content: "";
-    flex: 1 1 auto;
-    height: 1px;
-    background: var(--edge);
-  }
-  /* The closing seam carries no label: the history above it already said what
-     it was, and the live lines below need no announcement. */
-  .seam.rule {
-    gap: 0;
   }
 
   .meta-bar {
