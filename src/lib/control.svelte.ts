@@ -164,6 +164,10 @@ export type ControlHost = {
    *  click and Escape call, so the op cannot drift from the gesture. */
   deselect: () => void;
   draft: () => string;
+  /** What is attached to the dock's draft: each attachment's kind, name, and
+   *  the path a file goes as — so a test can see a drop or a paste land as the
+   *  thing it should, which the draft's words alone (a token) cannot say. */
+  attached: () => { kind: string; name: string; path: string | null }[];
   setDraft: (text: string) => void;
   /** What the slash palette is offering for the draft as it stands. */
   commands: () => { name: string }[];
@@ -665,6 +669,7 @@ export class Control {
          `pick.ts` keys on and what a test wants to compare. */
       picks: h.studio.picks.map((p) => `${p.kind}:${p.id}`),
       draft: h.draft(),
+      attached: h.attached(),
       flags: h.flags(),
       loaded: h.skein.loaded,
       fault: h.skein.fault,
@@ -2228,6 +2233,37 @@ export class Control {
           at: img ? { x: img.x, y: img.y, w: img.w, h: img.h } : null,
           fault: h.board.fault,
         };
+      },
+
+      /** A paste of any files into an input, as a real `paste` event on the
+       *  textarea it would be typed into — `PromptBox`'s own handler takes it
+       *  from there (`Attachments.takePaste`), so what is under test is the
+       *  box rather than a parallel path.
+       *
+       *  `into` is a selector for the box (`[data-ask] [data-attach]`,
+       *  `[data-notice] [data-attach]`), defaulting to the dock's field.
+       *  `files` is `[{ name, type, data }]`, data in base64. Like
+       *  `image.paste` it cannot put anything on the OS clipboard, so what an
+       *  Explorer copy does there (`CF_HDROP`, a path) needs a hand on ctrl+V. */
+      paste: async (op) => {
+        const box = document.querySelector(String(op.into ?? ".dock [data-attach]"));
+        const area = box?.querySelector("textarea");
+        if (!area) throw new Error(`no input under ${String(op.into ?? "the dock")}`);
+        const dt = new DataTransfer();
+        for (const f of Array.isArray(op.files) ? op.files : []) {
+          const raw = atob(String(f.data ?? ""));
+          dt.items.add(
+            new File([Uint8Array.from(raw, (c) => c.charCodeAt(0))], String(f.name ?? "file"), {
+              type: String(f.type ?? ""),
+            }),
+          );
+        }
+        if (op.text !== undefined) dt.setData("text/plain", String(op.text));
+        area.focus();
+        area.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+        await new Promise((r) => setTimeout(r, Number(op.settleMs ?? 600)));
+        await settle();
+        return { text: area.value, images: h.board.images.length, attached: h.attached() };
       },
 
       "image.update": (op) => {

@@ -149,6 +149,11 @@ export type Can = "yes" | { no: string };
  *    check (`attach::carried_fit`) would refuse after the draft had gone. */
 export function carriesTo(remote: Remote, turn: Turn): Can {
   if (remote.unheard) return { no: `${remote.host} has not been heard from — a prompt would be refused` };
+  if (turn.files.length) {
+    return {
+      no: `${turn.files[0]!.name} is a file on this machine, and only pictures travel to a card on ${remote.host} yet — attach a picture, or say where it is on that machine`,
+    };
+  }
   if (!turn.carried.length) return "yes";
   if (!remote.pictures) {
     return {

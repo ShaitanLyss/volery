@@ -76,7 +76,7 @@ import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, confirmHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
-import { Attachments } from "./attach.svelte";
+import { Attachments, attachedIn } from "./attach.svelte";
 import { turnOf, type Carried, type Turn } from "./attach";
 
 const SECTIONS_KEY = "skein.sections.v1";
@@ -1084,6 +1084,12 @@ export class Elsewhere {
       this.#fold(id, { kind: "unsent", why: `${s.host} has not been heard from — nothing was sent` });
       return;
     }
+    /* Words only cross in an answer, so far: refused with the reason rather
+       than sent without the thing the words are about. */
+    if (said === undefined && attachedIn(`ask:${sheet.askId}`).length) {
+      this.#fold(id, { kind: "unsent", why: `only words go in an answer to a card on ${s.host} — take the attachment out, or send it as a message` });
+      return;
+    }
     s.answering = [...s.answering, sheet.askId];
     try {
       await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: sheet.askId });
@@ -1118,6 +1124,11 @@ export class Elsewhere {
     const d = s.digest.notices.find((x) => `${s.id}:${x.id}` === n.id);
     if (!d) return false;
     const { answers, text } = noticeAnswer(d, reply);
+    /* Words only cross in a reply, so far — refused with the reply kept. */
+    if (reply.trim() && attachedIn(`notice:${n.id}`).length) {
+      this.#skein.fault = `only words go in a reply to a notice on ${s.host} — take the attachment out, or send it as a message`;
+      return false;
+    }
     const id = crypto.randomUUID();
     const said = reply.trim();
     if (said) {

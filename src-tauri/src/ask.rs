@@ -306,6 +306,13 @@ impl Held {
 pub struct Asks {
     port: Mutex<u16>,
     pending: Mutex<HashMap<String, Parked>>,
+    /// The blocks an answer carries beside its words — pictures written into
+    /// the answer box (sink fd7ef025) — by ask id, from `answer_ask` until the
+    /// parking thread writes the reply. Kept beside the channel rather than in
+    /// it, so everything that reads an answer as *text* (a deferral, a hold, a
+    /// settle) goes on reading the same string, and only the write at the end
+    /// learns there was more.
+    attached: Mutex<HashMap<String, Vec<Value>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -565,18 +572,58 @@ pub fn hold_ask(asks: State<'_, Asks>, ask_id: String, held: Option<Held>) -> Re
 }
 
 /// Hand the UI's answer back to the parked HTTP request.
+///
+/// `content` is the answer as blocks when it carries a picture: the same
+/// words, cut at the picture's token the way a prompt is (`attach.ts`), so the
+/// agent sees each picture where the sentence put it. Probed before it was
+/// built (`tools/probe-tool-image.ts`): an `image` block in a tool result
+/// reaches the model, seven colours named in order. A PDF does not — the CLI
+/// saves a resource blob to disk and hands the model its path — so a
+/// `document` block is refused here as it is in the panel.
 #[tauri::command]
-pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Result<(), String> {
+pub fn answer_ask(
+    asks: State<'_, Asks>,
+    ask_id: String,
+    answer: String,
+    content: Option<Vec<crate::supervisor::Block>>,
+) -> Result<(), String> {
+    let blocks = match content {
+        Some(c) => Some(result_blocks(&c)?),
+        None => None,
+    };
     let parked = asks
         .pending
         .lock()
         .unwrap()
         .remove(&ask_id)
         .ok_or("that question is no longer waiting")?;
-    parked
-        .tx
-        .send(answer)
-        .map_err(|_| "the asking turn has gone".to_string())
+    if let Some(b) = blocks {
+        asks.attached.lock().unwrap().insert(ask_id.clone(), b);
+    }
+    parked.tx.send(answer).map_err(|_| {
+        asks.attached.lock().unwrap().remove(&ask_id);
+        "the asking turn has gone".to_string()
+    })
+}
+
+/// An answer's blocks as a tool result carries them: MCP's `image` is
+/// `{ data, mimeType }` where a prompt's is `{ source: { media_type, data } }`.
+/// The words are scrubbed as every text this server returns is
+/// (`crate::clean`).
+pub(crate) fn result_blocks(blocks: &[crate::supervisor::Block]) -> Result<Vec<Value>, String> {
+    use crate::supervisor::Block;
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Text { text } => Ok(json!({ "type": "text", "text": crate::clean::scrub(text) })),
+            Block::Image { source } => {
+                Ok(json!({ "type": "image", "data": source.data, "mimeType": source.media_type }))
+            }
+            Block::Document { .. } => Err("a PDF cannot go in an answer to a question — the agent \
+                                           would be handed a copy it cannot open. Send it as a message instead"
+                .to_string()),
+        })
+        .collect()
 }
 
 /// Answer a parked question from another wall, over the flyway.
@@ -1306,6 +1353,12 @@ pub(crate) fn park_for_answer(
     .and_then(|()| w.flush());
 }
 
+/// Whether the reply going out is still the answer as it was given — no settle
+/// rewrote it into a sentence of its own.
+fn settle_none_or_same(reply: &str, answer: &str) -> bool {
+    reply == answer
+}
+
 /// What the answer *means*, for a parked call that is not `ask_user`.
 ///
 /// `ask_user` needs none of this: the reply to the agent is the answer, word for
@@ -1721,11 +1774,19 @@ fn park_and_stream(
         Some(_) => answer.clone(),
         None => answer.clone(),
     };
+    /* An answer that carried pictures goes as its blocks — only when it is the
+       answer the user sent, unchanged: a settle composes its own sentence, and
+       a deferral or a partial sheet is Volery's words, not the user's. */
+    let attached = asks.attached.lock().unwrap().remove(&ask_id);
+    let content = match attached {
+        Some(blocks) if real && settle_none_or_same(&reply, &answer) => Value::Array(blocks),
+        _ => json!([{ "type": "text", "text": reply }]),
+    };
     let delivered = chunk(
         &mut *w,
         &sse(&json!({
             "jsonrpc": "2.0", "id": id,
-            "result": { "content": [{ "type": "text", "text": reply }] }
+            "result": { "content": content }
         })),
     )
     .and_then(|()| w.write_all(b"0\r\n\r\n"))
@@ -5060,5 +5121,36 @@ mod tests {
         let q = yes_no();
         assert!(q.get("confirm").is_none());
         assert!(!afar_may_answer(true, &q));
+    }
+
+    /// A picture written into an answer box reaches the agent as MCP's own
+    /// image block, in the place the sentence put it — the shape
+    /// `tools/probe-tool-image.ts` sent and the model read.
+    #[test]
+    fn an_answers_picture_goes_back_as_an_mcp_image_where_it_was_written() {
+        use crate::supervisor::{Block, ImageSource};
+        let out = result_blocks(&[
+            Block::Text { text: "like ".into() },
+            Block::Image { source: ImageSource { media_type: "image/png".into(), data: "AAAA".into() } },
+            Block::Text { text: " but\u{0}bigger".into() },
+        ])
+        .unwrap();
+        assert_eq!(out[0], json!({ "type": "text", "text": "like " }));
+        assert_eq!(out[1], json!({ "type": "image", "data": "AAAA", "mimeType": "image/png" }));
+        /* Scrubbed like every text this server hands an agent. */
+        assert_eq!(out[2], json!({ "type": "text", "text": " butbigger" }));
+    }
+
+    /// A PDF in a tool result is saved to disk by the CLI and pointed at, which
+    /// a chat card cannot open — so it is refused, with a sentence that says
+    /// what to do instead.
+    #[test]
+    fn a_pdf_in_an_answer_is_refused() {
+        use crate::supervisor::{Block, ImageSource};
+        let err = result_blocks(&[Block::Document {
+            source: ImageSource { media_type: "application/pdf".into(), data: "JVBERg==".into() },
+        }])
+        .unwrap_err();
+        assert!(err.contains("Send it as a message"), "{err}");
     }
 }

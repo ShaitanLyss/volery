@@ -4,6 +4,7 @@ mod actions;
 mod applog;
 mod arrange;
 mod attach;
+mod attachments;
 mod asana;
 mod aside;
 mod ask;
@@ -1048,6 +1049,11 @@ pub fn run() {
             store::save_server_group,
             store::delete_server_group,
             attach::read_attachment,
+            attachments::inspect_paths,
+            attachments::clipboard_paths,
+            attachments::write_attachments,
+            attachments::read_document,
+            attachments::attachments_root,
             show::read_picture,
             show::read_shown,
             show::measure_picture,

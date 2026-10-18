@@ -1431,3 +1431,17 @@ that missed one, so the number is shown.
 What stops it being decided here: the peek is the user's window and the chime is their room.
 Every other tool on this server spends tokens or disk; this one spends attention, and there is
 no measurement that settles how much of that an agent should be allowed to take.
+
+#### An answer can carry a picture or a file
+
+The answer box is a `PromptBox` (sink `fd7ef025`), so a picture pasted or a file dropped into
+it goes back with the answer: a picture as an MCP `image` block where the sentence put it, a
+file as its path in the words. That rests on a probe, `tools/probe-tool-image.ts`: the CLI
+forwards an image block in a tool result to the model (seven colours named in order), and does
+**not** inline a PDF resource blob — it saves it and hands the model the path, which a chat
+card cannot open, so a PDF in an answer to one is refused. `answer_ask` takes the blocks as
+`content` beside the words and `Asks.attached` holds them until the parking thread writes the
+reply, so everything that reads an answer as text — a deferral, a held sheet, a settle — is
+unchanged, and the blocks are used only when the reply is the answer as given. The whole
+argument is in `attach.md`, *A question's answer is a tool result*. From another wall an answer
+still carries words only, and an attachment there is refused with the reason.

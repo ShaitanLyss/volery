@@ -35,7 +35,7 @@
   import { nameBesideProject } from "./naming";
   import { promptPath } from "./shell";
   import { BANG, isBang, kindLabel, tokens, type Completion, type Match } from "./bang";
-  import { dropToken, runsOf, sizeNote } from "./attach";
+  import PromptBox from "./PromptBox.svelte";
   import type { DockSite } from "./berth";
 
   let {
@@ -48,7 +48,6 @@
     waiting,
     clashing,
     bangCard,
-    dropping,
     berth,
     grabbing,
     onmoor,
@@ -85,13 +84,6 @@
     clashing: string[];
     /** Which card a `!` line would run in. One card, never the gathering. */
     bangCard: Conversation | null;
-    /** A file is being dragged over somewhere that would attach it to this
-     *  draft. The only feedback a drag gets: an OS file drag fires no DOM drag
-     *  events at all here — the webview swallows them so the payload can carry
-     *  real paths — so nothing under the cursor is ever told it is hovered, and
-     *  without this the dock would look identical whether a drop was about to
-     *  land in the prompt or fly past onto the wall. */
-    dropping: boolean;
     /** Where the dock is moored, and — while it is floating — the box it was
      *  put in, in window coordinates. The dock has always been a strip along
      *  the bottom; over three screens that is a line of text pinned to the
@@ -462,45 +454,6 @@
     card?.stir();
   }
 
-  /* An image lives by its token, so backspacing over one detaches it — and that
-     has to be true of *typing*, not only of the writes that go through
-     `Field.put`. The text is two-way bound to the textarea, so an ordinary
-     keystroke never reaches `put` at all: without this, deleting `[shot 1]`
-     left the picture in the strip above the field and counted against the cap,
-     while `compose` — which asks `stillIn` — would not have sent it. The strip
-     and the sentence disagreeing about what is attached is the one state this
-     feature must not have.
-
-     `untrack` because `prune` both reads and writes the list; depending on what
-     it writes would make the effect re-run itself. It only assigns when
-     something actually went, so an ordinary keystroke costs a filter and no
-     invalidation. Third effect of this shape here — the two above it drop a
-     dismissal that has stopped applying to the draft, and this drops a picture
-     that has. */
-  $effect(() => {
-    const text = field.text;
-    untrack(() => field.shots.prune(text));
-  });
-
-  /** Is the field drawing its own text, so the chips can be drawn in it?
-   *
-   *  A shell line already owns the tint layer and the two cannot both have it —
-   *  `!` is a different vocabulary over the same box. In practice they never
-   *  meet: a `!` line is a command run in a directory and has nothing to do with
-   *  a picture, and attaching one to a shell command would be nonsense. This is
-   *  what makes that true rather than merely likely. */
-  const marked = $derived(!field.banging && field.shots.any);
-
-  /** Take an image out of the prompt.
-   *
-   *  By editing the sentence, which is the only thing an attachment *is* — see
-   *  `attach.ts::dropToken`. `Attachments.prune` then drops it on the next
-   *  read, so this needs no second call and the two can never disagree about
-   *  what is attached. */
-  function detach(name: string) {
-    field.put(dropToken(field.text, name));
-  }
-
   /** Whichever of the palette's two stages is up. Bound by both, since they are
    *  the arms of one `if` and never both on screen. */
   let palette = $state<HTMLElement | undefined>(undefined);
@@ -537,7 +490,7 @@
 <footer
   bind:borderBoxSize={box}
   class="dock"
-  class:dropping
+  data-attach-area
   class:moored-top={berth.site === "top"}
   class:afloat={berth.site === "float"}
   style:width={berth.site === "float" ? `${berth.w}px` : undefined}
@@ -867,93 +820,22 @@
     </p>
   {/if}
 
-  <!-- What is attached to the draft. Above the field rather than below it, so
-       the pictures sit between the target line and the sentence that refers to
-       them — and so the field itself never moves as you type.
+  <!-- The field, and everything attached to it: the strip of pictures and
+       files above it, the chips in the sentence, paste and drop. All of it is
+       `PromptBox`'s, which every input that speaks to an agent is — so the
+       dock is one of them rather than the one that had it (sink fd7ef025).
 
-       Drawn only when there is something to draw: an empty strip on every card
-       all day is a row of chrome saying nothing, and the dock is already four
-       stacked things deep. -->
-  {#if field.shots.any}
-    <div class="shots">
-      {#each field.shots.list as a (a.id)}
-        <button
-          class="shot"
-          type="button"
-          title="{a.name} — {sizeNote(a)}. Click to take it out of the prompt."
-          onclick={() => detach(a.name)}
-        >
-          {#if a.kind === "picture"}<img src={a.thumb} alt="" />{/if}
-          <span class="what">
-            <span class="who">{a.name}</span>
-            <span class="how">{sizeNote(a)}</span>
-          </span>
-          <span class="off" aria-hidden="true">✕</span>
-        </button>
-      {/each}
-    </div>
-  {/if}
-  <!-- A refusal is said once and where the gesture was made, rather than in the
-       fault bar — dropping eighty files on the dock is a thing that happens by
-       accident and the answer belongs beside the thing you dropped them on. -->
-  {#if field.shots.refused}
-    <p class="line refused-shot">{field.shots.refused}</p>
-  {/if}
-
-  <div class="field">
-    <!-- The highlight is drawn *behind* a transparent textarea, which is why
-         both `tokens` and `runsOf` have to concatenate back to exactly what went
-         in: one dropped space and every colour on the line sits over the wrong
-         character. The `!` is drawn here rather than tokenised, since it is the
-         mode marker and not part of the command — and the remainder is passed
-         untrimmed, because trimming it would shift everything after a leading
-         space.
-
-         `marked` is the same mechanism over the other vocabulary, and it is
-         switched on *only* while something is attached. That is deliberate
-         rather than lazy: drawing the text underneath means the textarea's own
-         glyphs go transparent, which is a real cost — an IME's composition text
-         would be invisible while you typed it — and it is a cost worth paying
-         only on the drafts that have a chip to show. An ordinary prompt is
-         exactly the field it has always been. -->
-    <div
-      class="ink"
-      class:shell={field.banging}
-      class:marked={marked}
-    >
-      {#if field.banging}
-        <div class="tint" aria-hidden="true"><span class="t-mark"
-            >{BANG}</span
-          >{#each tokens(field.text.slice(BANG.length)) as t, i (i)}<span
-              class="t-{t.kind}">{t.text}</span
-            >{/each}</div>
-      {:else if marked}
-        <div class="tint" aria-hidden="true">{#each runsOf(field.text, field.shots.list) as r, i (i)}{#if r.chip}<span
-                class="chip">{r.text}</span
-              >{:else}{r.text}{/if}{/each}</div>
-      {/if}
-      <textarea
-        bind:this={prompt}
-        bind:value={field.text}
-        onkeydown={onkey}
-        oninput={edited}
-        onkeyup={caretMoved}
-        onclick={caretMoved}
-        onfocus={caretMoved}
-        placeholder={field.banging
-          ? "run a command in this card's directory…"
-          : targets.length > 1
-            ? `Say something to all ${targets.length}…`
-            : card?.remote
-              ? `Say something to ${card.remote.host}…`
-              : card
-                ? "Say something…"
-                : "Open a conversation first"}
-        disabled={targets.length === 0 && !card}
-        spellcheck={!field.banging}
-        rows="1"
-      ></textarea>
-    </div>
+       The `!` line draws its own tint in the same box: a shell line is a
+       different vocabulary over the same field, and the two never meet — a
+       command run in a directory has nothing to do with an attachment. Its
+       remainder is passed untrimmed, because trimming would shift everything
+       after a leading space. -->
+  {#snippet bangTint()}
+    <div class="tint" aria-hidden="true"><span class="t-mark">{BANG}</span
+      >{#each tokens(field.text.slice(BANG.length)) as t, i (i)}<span class="t-{t.kind}">{t.text}</span
+        >{/each}</div>
+  {/snippet}
+  {#snippet keyHint()}
     <!-- Keyed on the refusal count so the flash retriggers: a second press
          with the modifier still missing has to be a second answer, and a CSS
          animation on a node that was never replaced runs exactly once. The
@@ -964,7 +846,35 @@
         >{field.banging || targets.length <= 1 ? "↵" : "Ctrl ↵"}</span
       >
     {/key}
-  </div>
+  {/snippet}
+  <PromptBox
+    bind:text={field.text}
+    bind:el={prompt}
+    shots={field.shots}
+    name="prompt"
+    accepts={() => !!card || targets.length > 0}
+    oncaret={(c) => (field.caret = c)}
+    tint={field.banging ? bangTint : undefined}
+    inkClass={field.banging ? "shell" : ""}
+    after={keyHint}
+    onkeydown={onkey}
+    oninput={edited}
+    onkeyup={caretMoved}
+    onclick={caretMoved}
+    onfocus={caretMoved}
+    placeholder={field.banging
+      ? "run a command in this card's directory…"
+      : targets.length > 1
+        ? `Say something to all ${targets.length}…`
+        : card?.remote
+          ? `Say something to ${card.remote.host}…`
+          : card
+            ? "Say something…"
+            : "Open a conversation first"}
+    disabled={targets.length === 0 && !card}
+    spellcheck={!field.banging}
+    rows={1}
+  />
 </footer>
 
 <style>
@@ -1308,23 +1218,10 @@
     font-size: 0.7rem;
   }
 
-  .field {
-    display: flex;
-    align-items: flex-end;
-    gap: 0.6rem;
-    background: var(--well);
-    border: 1px solid var(--edge);
-    border-radius: 3px;
-    padding: 0.5rem 0.65rem;
-  }
   /* ── the `!` line ────────────────────────────────────────────────────────
      The field holds two things in the same box: a textarea whose text is
-     transparent, and the coloured copy of it underneath. */
-  .ink {
-    position: relative;
-    flex: 1 1 auto;
-    display: flex;
-  }
+     transparent, and the coloured copy of it underneath. The box is
+     `PromptBox`'s; the copy is drawn here, by the snippet it is handed. */
   /* Named for what it does rather than for how it looks, and deliberately not
      `.ghost` — that is this stylesheet's chrome-button class, one bare rule of
      it sits further up, and a second bare `.ghost` here won on being later in
@@ -1339,130 +1236,24 @@
     overflow: hidden;
   }
   /* Both halves get the same metrics, or the colours drift off the characters as
-     the line grows. */
-  .ink.shell textarea,
-  .ink.shell .tint {
+     the line grows. `:global` because the field is `PromptBox`'s and this is
+     the dock's own vocabulary drawn into it (the `inkClass` it is handed). */
+  .dock :global(.ink.shell textarea),
+  .dock :global(.ink.shell .tint) {
     font-family: var(--mono);
     font-size: 0.82rem;
     line-height: 1.45;
   }
-  .ink.shell textarea {
+  .dock :global(.ink.shell textarea) {
     /* The caret stays, which is the whole trick: the text is drawn once,
        underneath, and this is only where it is typed. */
     color: transparent;
     caret-color: var(--paper);
   }
-  .ink.shell textarea::selection {
+  .dock :global(.ink.shell textarea::selection) {
     /* Transparent text with an ordinary selection is an invisible highlight, so
        the selection has to be something you can see against the ghost. */
     background: var(--edge);
-  }
-
-  /* ── an image written into the prompt ────────────────────────────────────
-     The same trick as the `!` line one box over: the text is drawn once
-     underneath and the textarea is only where it is typed. Both halves take the
-     *same* metrics — the field's own, not the mono the shell line uses — or the
-     chips drift off the characters they are meant to be sitting on. */
-  .ink.marked textarea,
-  .ink.marked .tint {
-    font-family: var(--body);
-    font-size: 0.9rem;
-    line-height: 1.45;
-  }
-  .ink.marked textarea {
-    color: transparent;
-    caret-color: var(--paper);
-  }
-  .ink.marked textarea::selection {
-    background: var(--edge);
-  }
-  .ink.marked .tint {
-    color: var(--paper);
-  }
-  /* A chip is the *same glyphs* with a background behind them, and that is the
-     whole reason this works: anything that changed the token's width — padding,
-     a different face, a border — would move every character after it out from
-     under the caret. So it is colour and a radius and nothing else, and the
-     background is drawn with `box-decoration-break` so a token that wraps
-     across two lines gets a rounded end on each rather than one box spanning
-     the gap. Achromatic: colour on this wall means status, and a picture you
-     attached is not one. */
-  .chip {
-    background: var(--edge);
-    color: var(--paper);
-    border-radius: 3px;
-    box-decoration-break: clone;
-    -webkit-box-decoration-break: clone;
-  }
-
-  /* ── the strip of what is attached ───────────────────────────────────────── */
-  .shots {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin-bottom: 0.4rem;
-  }
-  .shot {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.2rem 0.3rem 0.2rem 0.2rem;
-    background: none;
-    border: 1px solid var(--edge);
-    border-radius: 3px;
-    cursor: pointer;
-    text-align: left;
-    font: inherit;
-    color: var(--paper-mute);
-  }
-  .shot:hover {
-    border-color: var(--paper-faint);
-    color: var(--paper);
-  }
-  .shot img {
-    /* A fixed box with the picture covering it, so a wide screenshot and a tall
-       one make the same shape and the strip does not go ragged. */
-    width: 2rem;
-    height: 2rem;
-    object-fit: cover;
-    border-radius: 2px;
-    /* Nothing standing on this wall may be transparent, and a PNG with an alpha
-       corner drawn straight onto the dock would show the ambience through the
-       middle of a thumbnail. */
-    background: var(--surface);
-  }
-  .shot .what {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.2;
-  }
-  .shot .who {
-    font-size: 0.72rem;
-  }
-  .shot .how {
-    font-size: 0.64rem;
-    color: var(--paper-faint);
-  }
-  .shot .off {
-    font-size: 0.7rem;
-    color: var(--paper-faint);
-    padding-left: 0.1rem;
-  }
-  .shot:hover .off {
-    color: var(--paper);
-  }
-  .refused-shot {
-    color: var(--paper-mute);
-  }
-
-  /* A drag is overhead and would land here. An outline rather than a fill: the
-     dock is where you are about to read a sentence, and washing it over hides
-     the very draft the picture is about to be written into. Achromatic — the
-     four colours on this wall are the three statuses and the shell line, and a
-     drop is none of them. */
-  .dock.dropping {
-    outline: 1px dashed var(--paper-faint);
-    outline-offset: -3px;
   }
 
   /* Colour on a shell line, which is the one place on this wall it is not
@@ -1537,24 +1328,6 @@
     font-family: var(--mono);
   }
 
-  .field textarea {
-    flex: 1 1 auto;
-    background: none;
-    border: 0;
-    resize: none;
-    color: var(--paper);
-    font-family: var(--body);
-    font-size: 0.9rem;
-    line-height: 1.45;
-    max-height: 7rem;
-    field-sizing: content;
-  }
-  .field textarea:focus {
-    outline: none;
-  }
-  .field textarea::placeholder {
-    color: var(--paper-faint);
-  }
   .key {
     font-family: var(--mono);
     font-size: 0.66rem;

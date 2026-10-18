@@ -1,22 +1,34 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  DOCUMENT,
   MAX_ATTACHED,
   MAX_BYTES,
+  MAX_FILE_BYTES,
   MAX_SIDE,
   THUMB_SIDE,
   encodeAs,
+  isDocument,
   mediaTypeOf,
   nameFromFile,
   pastedName,
+  planFor,
   scaleTo,
   stillIn,
   tokenFor,
+  turnOf,
   uniqueName,
   type Attachment,
+  type Bytes,
   type Carried,
+  type FileRef,
   type Picture,
   type MediaType,
+  type Reach,
+  type Turn,
 } from "./attach";
+
+/** What `inspect_paths` answers for one path (`attachments.rs`). */
+type Inspected = { path: string; name: string; dir: boolean; size: number | null; picture: boolean };
 
 /** The images hanging off one draft — the bytes, the decoding, and the scaling.
  *
@@ -59,8 +71,22 @@ export class Attachments {
 
   #seq = 0;
 
+  /** Names other drafts already use that this one's must not repeat — the
+   *  other steps of one question's sheet, whose answers are sent as one reply
+   *  and whose tokens therefore share one sentence. */
+  #others: () => string[];
+
+  constructor(others: () => string[] = () => []) {
+    this.#others = others;
+  }
+
   get names(): string[] {
     return this.list.map((a) => a.name);
+  }
+
+  /** Every name a new attachment here must not take. */
+  #taken(): string[] {
+    return [...this.names, ...this.#others()];
   }
 
   get any(): boolean {
@@ -99,25 +125,21 @@ export class Attachments {
     if (kept.length !== this.list.length) this.list = kept;
   }
 
-  /** Take images off a paste. Returns the tokens to write into the draft, in
-   *  the order they arrived. */
+  /** Take files off a paste, or off anything else that hands over bytes with
+   *  no path: a picture is decoded and attached inline as it always was, and
+   *  anything else is kept as bytes, written into the card's folder only when
+   *  the prompt is sent (`ready`). Returns the tokens to write into the draft,
+   *  in the order they arrived. */
   async fromFiles(files: readonly File[]): Promise<string[]> {
     const out: string[] = [];
     this.busy = true;
     try {
       for (const f of files) {
-        const media = mediaTypeOf(f.type, f.name);
-        if (!media) {
-          /* Said rather than skipped. A `bmp` on the clipboard is a perfectly
-             ordinary thing to have copied, and it *can* be pinned to the wall —
-             the API is what will not take it (`attach.ts::MEDIA`). Passing over
-             it in silence would read as the paste having failed to register at
-             all, which is the one thing a gesture must never look like. */
-          this.refused = `${f.name || "that image"} is a kind the agent cannot be sent (${f.type || "unknown"})`;
-          continue;
-        }
         if (!this.#room()) break;
-        const token = await this.#take(f, media, f.name ? nameFromFile(f.name) : "");
+        const media = mediaTypeOf(f.type, f.name);
+        const token = media
+          ? await this.#take(f, media, f.name ? nameFromFile(f.name) : "")
+          : await this.#keepBytes(f);
         if (token) out.push(token);
       }
     } finally {
@@ -126,39 +148,87 @@ export class Attachments {
     return out;
   }
 
-  /** Take images off a drop, which arrives as filesystem paths. */
+  /** Take whatever a drop or an Explorer copy names, which arrives as
+   *  filesystem paths: a picture is read and attached inline, as the dock
+   *  always did, and every other file — and a folder (decided 2026-10-18) — is
+   *  attached as its path, which is what the agent is handed. */
   async fromPaths(paths: readonly string[]): Promise<string[]> {
     const out: string[] = [];
     this.busy = true;
     try {
-      for (const path of paths) {
+      let seen: Inspected[];
+      try {
+        seen = await invoke<Inspected[]>("inspect_paths", { paths });
+      } catch (err) {
+        this.refused = String(err);
+        return out;
+      }
+      for (const it of seen) {
         if (!this.#room()) break;
-        let read: { media_type: string; data: string };
-        try {
-          read = await invoke("read_attachment", { path });
-        } catch (err) {
-          this.refused = String(err);
-          continue;
-        }
-        const media = mediaTypeOf(read.media_type, path);
-        if (!media) continue;
-        /* Rust already answered in base64, so it is handed straight through as
-           `ready` — decoding it here only to encode it again would cost two
-           passes over a multi-megabyte string for a file that usually needs no
-           re-encoding at all. The blob is still needed, to be decoded for its
-           dimensions and its thumbnail. */
-        const token = await this.#take(
-          new Blob([bytesOf(read.data) as BlobPart], { type: media }),
-          media,
-          nameFromFile(path),
-          read.data,
-        );
+        const token = it.picture ? await this.#readPicture(it.path) : this.#keepPath(it);
         if (token) out.push(token);
       }
+      /* Said after the rest landed, so a success beside it does not wipe it. */
+      const missing = paths.length - seen.length;
+      if (missing > 0) this.refused = `${missing === 1 ? "one of those is" : `${missing} of those are`} not there any more`;
     } finally {
       this.busy = false;
     }
     return out;
+  }
+
+  /** What a paste puts in the draft: the words that came with it, and the
+   *  tokens of what is attached, in that order.
+   *
+   *  **Read the event before anything awaits**: `clipboardData` is only valid
+   *  during the event, so whatever is taken after the first `await` is gone.
+   *  Then the clipboard is asked for paths (`CF_HDROP`), because a file copied
+   *  in Explorer arrives in the event as a `File` with bytes and no path — and
+   *  the same file dragged is passed by its path (Lyss, 2026-10-16), so pasting
+   *  it must be too. Only where the clipboard names none are the bytes kept.
+   *
+   *  Null when the paste carries no file at all, so the caller leaves it to the
+   *  field — an ordinary text paste is the browser's to do. */
+  takePaste(e: ClipboardEvent): Promise<{ said: string; tokens: string[] }> | null {
+    const data = e.clipboardData;
+    if (!data || !data.files.length) return null;
+    const files = [...data.files];
+    const said = data.getData("text/plain");
+    e.preventDefault();
+    return (async () => {
+      let paths: string[] = [];
+      try {
+        paths = await invoke<string[]>("clipboard_paths");
+      } catch {
+        /* Not knowing the paths costs a copy of the bytes, never the paste. */
+      }
+      /* The clipboard is read after the event, so it is asked whether it still
+         holds what was pasted: as many files, by the same names. Anything else
+         means it changed under us, and the bytes in hand are the truth. */
+      const named = (p: string) => p.split(/[\\/]/).pop() ?? p;
+      const same =
+        paths.length === files.length && files.every((f, i) => !f.name || named(paths[i]!) === f.name);
+      const tokens = same ? await this.fromPaths(paths) : await this.fromFiles(files);
+      /* Explorer can write the copied files' names as the text beside them;
+         typing those into the sentence beside their own tokens says each one
+         twice. Text that came from anywhere else is kept. */
+      const echoes = said.trim() !== "" && files.every((f) => f.name && said.includes(f.name));
+      return { said: echoes ? "" : said, tokens };
+    })();
+  }
+
+  /** The list this draft would be sent with to one target — bytes written into
+   *  the card's own folder for a project card, a PDF read in to go inline for a
+   *  chat card — or why it cannot go. The draft's own list is not touched, so a
+   *  refusal (or a broadcast, where each card gets a folder of its own) leaves
+   *  the draft exactly as it was. */
+  ready(text: string, reach: Reach, card: string): Promise<Attachment[] | { refused: string }> {
+    return readyFor(text, this.list, reach, card);
+  }
+
+  /** The turn this draft makes for one target: `ready`, then cut once. */
+  turnFor(text: string, reach: Reach, card: string): Promise<Turn | { refused: string }> {
+    return turnFrom(text, this.list, reach, card);
   }
 
   /** Take the pictures a prompt from another wall carried — the owning wall's
@@ -196,8 +266,59 @@ export class Attachments {
    *  dropped by accident produces one sentence instead of eighty. */
   #room(): boolean {
     if (this.list.length < MAX_ATTACHED) return true;
-    this.refused = `${MAX_ATTACHED} images is the most one prompt carries — the rest were left`;
+    this.refused = `${MAX_ATTACHED} attachments is the most one prompt carries — the rest were left`;
     return false;
+  }
+
+  /** A picture named by a path: read through `attach.rs`, then decoded and
+   *  scaled like a paste. Rust answers in base64 already, so it is handed
+   *  straight through as `ready` — decoding it only to encode it again would
+   *  cost two passes over a multi-megabyte string for a file that usually needs
+   *  no re-encoding at all. */
+  async #readPicture(path: string): Promise<string | null> {
+    let read: { media_type: string; data: string };
+    try {
+      read = await invoke("read_attachment", { path });
+    } catch (err) {
+      this.refused = String(err);
+      return null;
+    }
+    const media = mediaTypeOf(read.media_type, path);
+    if (!media) return null;
+    return this.#take(new Blob([bytesOf(read.data) as BlobPart], { type: media }), media, nameFromFile(path), read.data);
+  }
+
+  /** A file or folder, attached as its path. Nothing is read: the agent opens
+   *  it with its own tools. */
+  #keepPath(it: Inspected): string {
+    const name = uniqueName(this.#taken(), nameFromFile(it.path) || "file");
+    const file: FileRef = { kind: "file", id: `a${++this.#seq}`, name, path: it.path, dir: it.dir, size: it.size };
+    this.list = [...this.list, file];
+    this.refused = null;
+    return tokenFor(name);
+  }
+
+  /** Bytes with no path, held in memory until the send — the rule pictures
+   *  already keep: an unsent draft never touches the disk. */
+  async #keepBytes(f: Blob, called = ""): Promise<string | null> {
+    const label = called || (f instanceof File ? f.name : "") || "file";
+    if (f.size > MAX_FILE_BYTES) {
+      this.refused = `${label} is ${Math.round(f.size / (1024 * 1024))} MB — the most one attachment may be is ${MAX_FILE_BYTES / (1024 * 1024)} MB`;
+      return null;
+    }
+    const data = await base64Of(f);
+    const name = uniqueName(this.#taken(), nameFromFile(label) || "file");
+    const kept: Bytes = {
+      kind: "bytes",
+      id: `a${++this.#seq}`,
+      name,
+      mediaType: f.type || (isDocument("", name) ? DOCUMENT : ""),
+      data,
+      bytes: f.size,
+    };
+    this.list = [...this.list, kept];
+    this.refused = null;
+    return tokenFor(name);
   }
 
   /** Decode, scale if it is over the ceiling, re-encode, and keep a thumbnail.
@@ -249,8 +370,8 @@ export class Attachments {
       }
 
       const name = uniqueName(
-        this.names,
-        suggested || pastedName(this.names),
+        this.#taken(),
+        suggested || pastedName(this.#taken()),
       );
       const attachment: Picture = {
         kind: "picture",
@@ -339,4 +460,175 @@ function bytesOf(b64: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+/** A list made ready for one target — what `Attachments.ready` does for its
+ *  own list, for a reply whose attachments are spread over several fields (a
+ *  question's sheet). Bytes are written into the card's own folder for a
+ *  project card, a PDF read in to go inline for a chat card, or the reason it
+ *  cannot go is returned. The list handed in is never changed. */
+export async function readyFor(
+  text: string,
+  list: readonly Attachment[],
+  reach: Reach,
+  card: string,
+): Promise<Attachment[] | { refused: string }> {
+  const plan = planFor(text, list, reach);
+  if (plan.refused) return { refused: plan.refused };
+  const swap = new Map<string, Attachment>();
+  if (plan.write.length) {
+    let paths: string[];
+    try {
+      paths = await invoke<string[]>("write_attachments", {
+        card,
+        files: plan.write.map((b) => ({ name: b.name, data: b.data })),
+      });
+    } catch (err) {
+      return { refused: String(err) };
+    }
+    plan.write.forEach((b, i) => {
+      swap.set(b.id, { kind: "file", id: b.id, name: b.name, path: paths[i]!, dir: false, size: b.bytes });
+    });
+  }
+  for (const f of plan.read) {
+    try {
+      const data = await invoke<string>("read_document", { path: f.path });
+      swap.set(f.id, {
+        kind: "bytes",
+        id: f.id,
+        name: f.name,
+        mediaType: DOCUMENT,
+        data,
+        bytes: Math.floor((data.length * 3) / 4),
+      });
+    } catch (err) {
+      return { refused: String(err) };
+    }
+  }
+  return list.map((a) => swap.get(a.id) ?? a);
+}
+
+/** The turn a sentence and a list make for one target: ready, then cut once. */
+export async function turnFrom(
+  text: string,
+  list: readonly Attachment[],
+  reach: Reach,
+  card: string,
+): Promise<Turn | { refused: string }> {
+  const ready = await readyFor(text, list, reach, card);
+  return "refused" in ready ? ready : turnOf(text, ready, reach);
+}
+
+/* ── where a drop lands ──────────────────────────────────────────────────────
+ *
+ * Every input that sends text to an agent is a `PromptBox`, and a `PromptBox`
+ * says it can take a drop by being mounted: it registers its root here. So the
+ * drop handler asks one question of the DOM — which box is under the point —
+ * and no surface wires a drop of its own. A new input gets drops by existing,
+ * which is the rule CLAUDE.md states about a capability every surface should
+ * have (`test/attaching.test.ts` holds it).
+ *
+ * The hit test is off the DOM because a Tauri drag is not a DOM drag: an OS
+ * file drag fires no `dragenter` on any element — the webview swallows them so
+ * the payload can carry real paths — so nothing under the cursor is told it is
+ * hovered, and `elementFromPoint` is the only way to ask.
+ *
+ * Three ways a point reaches a box, in order:
+ *
+ * - **On the box itself**: the token goes in at its caret.
+ * - **In an area that holds boxes** (`data-attach-area`, the dock): the first
+ *   box in it, which is the one in front — a question or a notice drawn above
+ *   the field comes before the field. A drop on the dock's chrome used to land
+ *   in the prompt field even with a question in front of it, which is a picture
+ *   meant for an answer going to a different conversation.
+ * - **On a surface that stands for a named box** (`data-attach-to`, the panel,
+ *   which *is* the conversation the dock's field speaks to): the token goes on
+ *   the end, since a drop on the transcript aims at no word (`attach.md`). */
+
+/** Where in the sentence a dropped thing goes. */
+export type Landing = "caret" | "end";
+
+/** What a box does with a drop. */
+export type DropTarget = {
+  take(paths: string[], where: Landing): Promise<void>;
+  /** Whether a drop here means anything right now — a dock aimed at no card
+   *  does not, and the drop falls through to the wall. */
+  accepts?(): boolean;
+};
+
+const boxes = new WeakMap<Element, DropTarget>();
+const named = new Map<string, Element>();
+
+/** Which box a drag is over, for the one piece of feedback a drag gets. */
+class Hovered {
+  over = $state<Element | null>(null);
+}
+export const dropping = new Hovered();
+
+/** Register a box. Returns the unregistration, so it is an attachment's whole
+ *  body: `{@attach (el) => registerBox(el, target, name)}`. */
+export function registerBox(el: Element, target: DropTarget, name?: string): () => void {
+  boxes.set(el, target);
+  if (name) named.set(name, el);
+  return () => {
+    boxes.delete(el);
+    if (name && named.get(name) === el) named.delete(name);
+    if (dropping.over === el) dropping.over = null;
+  };
+}
+
+/** The box a drop at this point lands in, and where in its sentence. */
+export function boxAt(x: number, y: number): { el: Element; target: DropTarget; where: Landing } | null {
+  const at = document.elementFromPoint(x, y);
+  if (!at) return null;
+  const ok = (el: Element | null | undefined) => {
+    const t = el ? boxes.get(el) : undefined;
+    return t && (t.accepts?.() ?? true) ? t : null;
+  };
+  const own = at.closest("[data-attach]") ?? at.closest("[data-attach-area]")?.querySelector("[data-attach]") ?? null;
+  const t = ok(own);
+  if (own && t) return { el: own, target: t, where: "caret" };
+  const to = at.closest("[data-attach-to]")?.getAttribute("data-attach-to");
+  const el = to ? named.get(to) : undefined;
+  const n = ok(el);
+  return el && n ? { el, target: n, where: "end" } : null;
+}
+
+/* ── the drafts that are not the dock's ──────────────────────────────────────
+ *
+ * A question's answer and a notice's reply keep their words in `replies`,
+ * keyed by the field (`replies.svelte.ts`), because the panel that draws one
+ * comes and goes with the dock's queue — and the same notice can be drawn twice
+ * at once, in the dock and in the away pile. Their attachments are kept the
+ * same way and for the same reason: by the same key, outside any component, one
+ * list per field however many panels draw it. In memory only, as every
+ * attachment in a draft is (`attach.md`). */
+const keptLists = new Map<string, Attachments>();
+
+/** The attachments of the field kept under `key`. `family` is the reply they
+ *  go out in together — a question's whole sheet — so a name is unique across
+ *  it and the one sentence they are cut from never holds two tokens alike. */
+export function attachmentsOf(key: string, family = key): Attachments {
+  let a = keptLists.get(key);
+  if (!a) {
+    a = new Attachments(() =>
+      [...keptLists].filter(([k]) => k !== key && (k === family || k.startsWith(`${family}:`))).flatMap(([, l]) => l.names),
+    );
+    keptLists.set(key, a);
+  }
+  return a;
+}
+
+/** Everything attached across one reply's fields, for the cut. */
+export function attachedIn(family: string): Attachment[] {
+  return [...keptLists]
+    .filter(([k]) => k === family || k.startsWith(`${family}:`))
+    .flatMap(([, l]) => l.list);
+}
+
+/** Let a reply's attachments go: it was sent, or taken down. */
+export function forgetAttachments(family: string): void {
+  for (const k of [...keptLists.keys()]) {
+    if (k === family || k.startsWith(`${family}:`)) keptLists.delete(k);
+  }
 }

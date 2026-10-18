@@ -29,6 +29,7 @@
    * turn per card — which is why the pile says how many cards it is about to
    * wake before you start. */
 
+  import { attachedIn, forgetAttachments, turnFrom } from "./attach.svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
   import type { Conversation } from "./conversation.svelte";
@@ -119,8 +120,21 @@
     }
     sending = d.id;
     try {
+      /* What was attached in its answer boxes goes with it, as it would with
+         a prompt — made ready before the claim, so a refusal leaves it on the
+         pile with the answers on it. */
+      const words = answerEnvelope(d.questions, d.answers, clock.t - d.askedAt);
+      const attached = attachedIn(`ask:${d.id}`);
+      const turn = attached.length
+        ? await turnFrom(words, attached, { chat: conv.kind === "chat", afar: false }, conv.id)
+        : undefined;
+      if (turn && "refused" in turn) {
+        fault = turn.refused;
+        return;
+      }
       if (!(await presence.claim(d.id))) return;
-      await skein.send(conv, answerEnvelope(d.questions, d.answers, clock.t - d.askedAt));
+      await skein.send(conv, turn?.text ?? words, turn);
+      forgetAttachments(`ask:${d.id}`);
     } catch (err) {
       fault = String(err);
     } finally {
@@ -153,6 +167,7 @@
   async function drop(d: Deferred) {
     /* And anything half-typed into it, which nothing will draw again. */
     replies.forget(`ask:${d.id}`);
+    forgetAttachments(`ask:${d.id}`);
     await presence.claim(d.id);
     if (!presence.waiting) onclose();
   }

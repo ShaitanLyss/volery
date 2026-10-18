@@ -27,6 +27,8 @@
   import { replies } from "./replies.svelte";
   import { glance } from "./glancing.svelte";
   import { replyKey } from "./replies";
+  import PromptBox from "./PromptBox.svelte";
+  import { attachmentsOf } from "./attach.svelte";
   import {
     NO_PREFERENCE,
     SKIPPED,
@@ -488,14 +490,21 @@
           title="The question after this one">→</button
         >
       {/if}
-      <input
-        bind:value={free}
+      <!-- A `PromptBox`, as every input that speaks to an agent is: a picture
+           pasted or a file dropped here goes into the answer as it would into
+           a prompt (sink fd7ef025). Its attachments are kept by the same key
+           as its words, and named across the whole sheet, since the sheet
+           goes back as one reply. -->
+      <PromptBox
+        bind:text={free}
+        shots={attachmentsOf(draftKey, item)}
+        rows={1}
         oninput={() => {
           warned = null;
           replies.put(draftKey, free, about);
         }}
         onkeydown={(e) => {
-          if (e.key === "Enter") {
+          if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             give(free);
           }
@@ -784,26 +793,18 @@
     display: flex;
     gap: 0.4rem;
   }
-  .free input {
+  /* The answer box is a `PromptBox`; this sets how it looks here, through the
+     properties it reads, rather than reaching into it. */
+  .free > :global(.box) {
     flex: 1 1 auto;
     /* Without this a long placeholder or a long draft sets the flex item's
        min-content width and widens the dock — the same trap `.detail` fell
        into against a code fence. */
     min-width: 0;
-    background: var(--ink);
-    border: 1px solid var(--edge);
-    border-radius: 3px;
-    color: var(--paper);
-    font-family: var(--body);
-    font-size: 0.86rem;
-    padding: 0.38rem 0.55rem;
-  }
-  .free input:focus {
-    outline: none;
-    border-color: var(--paper-faint);
-  }
-  .free input::placeholder {
-    color: var(--paper-faint);
+    --pb-bg: var(--ink);
+    --pb-pad: 0.38rem 0.55rem;
+    --pb-size: 0.86rem;
+    --pb-max: 6rem;
   }
   .nav {
     font-family: var(--util);

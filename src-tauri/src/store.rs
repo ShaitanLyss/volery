@@ -5463,6 +5463,12 @@ pub fn close_conversation_record(
            (`Skein.close`). */
         forget_held(&conn, &id)?;
     }
+    /* And the files written for it — browser drags and pasted blobs, which
+       were kept for the life of the card because a later turn may read one
+       again (`attachments.rs`). After the hold above: the front end has
+       already handed its words back, and read back any file of the card's
+       own folder they named (`Skein.close`). */
+    crate::attachments::clear_for(&store.1, &id);
     /* And any delete it handed the wall to ask about: the card is gone, and a
        question has no deadline to end it any more (`ask::drop_handoffs`). */
     if let Some(asks) = tauri::Manager::try_state::<crate::ask::Asks>(&app) {
@@ -5772,6 +5778,12 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
         .collect::<Result<Vec<StoredConversation>, _>>()
         .map_err(|e| e.to_string())?;
     sweep_held(&conn);
+    /* The same backstop for files written for a card that closed while
+       something stopped its folder going with it. Off this thread. */
+    crate::attachments::sweep(
+        &store.1,
+        &conversations.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+    );
     let mut held = held_queues(&conn)?;
     let conversations: Vec<StoredConversation> = conversations
         .into_iter()

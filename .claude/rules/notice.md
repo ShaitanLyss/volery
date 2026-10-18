@@ -86,6 +86,16 @@ having been back, and acknowledging is having been back.
   has no flag in its digest; its tier already arrives `rest`, and it reads as an ordinary
   rest there.
 
+### A reply can carry a picture or a file
+
+The reply box is a `PromptBox`, as every input that speaks to an agent is (`attach.md`, *Any
+file, into any input*): a picture or a file goes with the reply as it would with a prompt. A
+follow-up to a notice at rest is a prompt, so it goes through `Skein.send` with its turn; one to
+a parked notice is a tool result, and goes as `answer_ask`'s blocks. Either way the attachments
+are made ready *before* the notice comes down, so a refusal leaves it standing with the reply
+still in its box. A reply to a notice on another wall carries words only for now, and an
+attachment there is refused with the reason.
+
 ### Detecting "ended on a question" was measured, not guessed
 
 848 real turn endings from this machine's transcripts (2026-10-07) were labelled four ways

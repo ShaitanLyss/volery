@@ -6,10 +6,15 @@ paths:
   - "src-tauri/src/dropzone.rs"
   - "src/lib/drafts.ts"
   - "src/lib/field.svelte.ts"
+  - "src/lib/PromptBox.svelte"
+  - "src-tauri/src/attachments.rs"
+  - "test/attaching.test.ts"
   - "tools/probe-image.ts"
+  - "tools/probe-tool-image.ts"
+  - "tools/probe-document.ts"
 ---
 
-# Showing an agent a picture
+# Showing an agent a picture, a file, a folder
 
 Until now the only way was to write a path in the draft and hope the agent reached for `Read`.
 That costs a tool call, a round trip and the agent's willingness — and it fails outright for
@@ -114,8 +119,8 @@ They cannot disagree about what is attached because they ask one question.
 so an ordinary keystroke never reaches `put` at all — the first version pruned only on the
 writes that replace a whole line, which meant deleting a token left the picture in the strip
 above the field and counted against the cap, while `compose` would not have sent it. The strip
-and the sentence disagreeing is the one state this feature must not have; the third `$effect`
-in `Dock.svelte` is what stops it.
+and the sentence disagreeing is the one state this feature must not have; the `$effect` in
+`PromptBox.svelte` is what stops it, for every box at once.
 
 ## How it is drawn, and the one trick
 
@@ -140,7 +145,8 @@ place and the caret lands mid-word.
 ## Where the bytes live, and what is never written to disk
 
 Nothing is copied anywhere. The bytes are held in memory on the draft, base64'd into the
-envelope at send, and dropped.
+envelope at send, and dropped. (A *file* with no path behind it is the one thing written to
+disk, at the send and into its card's folder — see *Any file, into any input* below.)
 
 `store::import_image` would have been one line and is the wrong home twice over:
 `sweep_references` deletes every file in `references/` that no `image` row points at, and an
@@ -225,23 +231,157 @@ token would still be in the other card's text.
 (a card being *closed*, where the line is handed to the wall and goes on being shown, so an
 Escape you pressed over it a second ago still applies).
 
-## Which gesture lands where
+## Any file, into any input that speaks to an agent
+
+Lyss, 2026-10-16 and 2026-10-18 (sink `fd7ef025`): *"the attachments fixes and improvements like
+supporting all files and folders, anywhere in all inputs that are to go back to agents"*. Two
+things were wrong, and the second was the larger one:
+
+- **Only pictures.** A PDF, a Word file or a folder dropped on the dock did nothing useful.
+- **Only the dock.** A picture pasted into a question's answer box was pinned to the *wall*, a
+  file dropped while a question was in front of the dock went into the hidden prompt field
+  behind it, and a notice's reply could carry nothing. CLAUDE.md's "a capability every
+  surface should have is not a prop", in its plainest form.
+
+### Three kinds of attachment, and what each becomes
+
+`attach.ts::Attachment` is a union:
+
+| kind | where it comes from | a project card here | a chat card | a card on another wall |
+|---|---|---|---|---|
+| `picture` | a paste, a dropped image | an `image` block, as always | an `image` block | crosses with the prompt (`Pictured`) |
+| `file` | a drop, an Explorer copy, a folder | **its path, as-is**, in the words | a PDF is read in as a `document` block; anything else refused | not yet — refused with the draft kept |
+| `bytes` | a pasted blob, a browser drag | written into the card's folder, then its path | a PDF inline; anything else refused | not yet |
+
+**A path is passed as-is** (Lyss, 2026-10-16): the agent opens it with its own tools, which is
+what Claude Code does with a path dragged into a terminal. Nothing is copied and nothing is
+spent up front, whatever the file is. `pathText` writes it bare, quoted only when a space
+would make it two words, as a terminal does.
+
+**The token is replaced by the path in the *text* when the turn is cut** (`resolveFiles`), so
+past the cut a file is words. The held queue, a combined round, the echo the replay is
+claimed on and the transcript all carry a file as the sentence it now is, and none of them had
+to learn that files exist. Picture tokens stay in `Turn.text`, because the hold and another
+wall both re-cut at them.
+
+`planFor(text, list, reach)` is the one place that decides what a target needs before the
+cut: bytes to write, PDFs to read in, or a refusal naming the file. `Reach` is asked of the
+card's handle (`CardHandle.reach`), never passed by a surface. A refusal is said beside the
+box with the draft kept, before anything is cleared. A broadcast composes per card, since
+each project card gets its own folder.
+
+**A folder dropped *into* an input is attached as its path; on the wall it still opens a
+card.** That is the orchestrator's decision (34b07397, 2026-10-18), and it follows from the
+gesture: dropped into a sentence, a folder is a thing being talked about, not a place to
+start a conversation.
+
+### Bytes with no path are written at the send, into the card's folder
+
+`<wall>/attachments/<card>/<send>/<name>` (`attachments.rs`). Not while the draft is being
+written: drafts hold bytes in memory exactly as they hold pictures, so an unsent draft never
+touches the disk, which keeps this file's older rule intact.
+
+- **Kept until the card closes, not until the message is delivered.** Delivery is the *start*
+  of the turn in which the agent reads the file, and a later turn ("now page three of that
+  PDF") reads it again. The close removes the folder (`clear_for`, beside `forget_held` in
+  `close_conversation_record`) and every load sweeps folders whose card is not open (`sweep`).
+- **Bounded, because this disk runs near-full.** 24 MB a file (the same number as `look.rs`'s
+  `FILE_MOST`, which is what will carry one across the flyway) and 512 MB for every card on
+  the wall together. Past either, the write is refused in words that say where the space went
+  and that it is kept until each card closes. Nothing older is deleted to make room: a file a
+  card may still be reading is not ours to take away.
+- **A held message survives on its own**, because the bytes were written before the hold and
+  the hold carries the path in its words. A restart leaves the folder, since the card is
+  still open.
+
+### An Explorer copy is a path too
+
+A paste event hands the webview a `File` with bytes and no path. Left there, a file copied in
+Explorer and pasted would be written out a second time, where the same file dragged is passed
+by its path. So `takePaste` asks Rust for the clipboard's `CF_HDROP` (`clipboard_paths`, read
+through OLE because that is the `windows` feature set this crate already builds with), and
+uses the paths when the clipboard still holds the same files by name. The event is read
+before anything awaits, since `clipboardData` is only valid during it.
+
+### One box, mounted by every agent-bound input
+
+`PromptBox.svelte` is the box, and **attaching is what it does, not what a surface wires**:
+paste, drop, the tokens and chips, the strip of thumbnails and file tiles, and pruning on
+every keystroke. Its API is documented at its top and is deliberately small, because chat
+view (`docs/chat-mode.md`) is a second presentation over the same logic. The logic is plain:
+`Attachments` (`attach.svelte.ts`) and `attach.ts` underneath, with `turnFor` / `turnFrom`
+turning a draft into a turn for one target.
+
+The dock, a question's answer (`Ask.svelte`) and a notice's reply (`Notice.svelte`, also drawn
+by `Vigil.svelte`) all mount it. A question's and a notice's attachments are kept beside their
+words in `replies`, by the same key and outside any component (`attachmentsOf`), because the
+panel comes and goes with the dock's queue and the same notice can be drawn twice at once. A
+question's sheet shares one namespace across its steps, since the sheet goes back as one reply.
+
+**`test/attaching.test.ts` holds it, and the shape is the finding.test.ts one.** Every
+`<textarea>` or `<input>` in the app fails unless its file is named with the reason its words
+reach no agent. So a new input fails until somebody decides which it is, and the default is the
+one that cannot quietly lose pictures. It was checked to fail by putting Notice's old `<input>`
+back by hand.
+
+**The voice draft is not on the list because there is no box.** `voicing.svelte.ts` sends
+spoken words straight to the card; there is nothing to paste or drop into.
+
+### Where a drop lands: the DOM is asked for a box
+
+The drop target is still hit-tested off the DOM, because a Tauri drag fires no DOM drag events.
+What changed is what is asked: not "is this the dock or the panel" by class name, but **which
+`PromptBox` is under the point** (`boxAt`). A box registers itself as it mounts
+(`registerBox`), so a new input gets drops by existing. Three ways a point reaches one:
+
+- **on a box**: the token goes in at its caret;
+- **in an area that holds boxes** (`data-attach-area`, the dock): the first box in it, which is
+  the one in front — a question drawn above the field comes before the field. The old hit test
+  answered "dock" and attached into the prompt field behind the question;
+- **on a surface that stands for a named box** (`data-attach-to="prompt"`, the panel): the token
+  goes on the *end*, for the reason given below.
+
+The outline that says a drop will land is drawn by the box under the drag (`dropping.over`),
+not by the dock as a whole.
 
 | gesture | where | what happens |
 |---|---|---|
-| paste, caret in the dock | the field | attaches, token at the caret; text on the clipboard is inserted too |
-| paste, anywhere else | the wall | pins, exactly as before |
-| drop on the dock | the field | attaches, token at the caret |
-| drop on the panel (the transcript) | the field | attaches, token **appended at the end** |
-| drop on the wall | the wall | pins, exactly as before |
-| drop of a folder | anywhere | opens a conversation, wherever it landed |
+| paste, caret in any agent-bound box | that box | attaches; an Explorer copy as paths; text on the clipboard is inserted too |
+| paste, anywhere else | the wall | a picture is pinned, exactly as before |
+| drop on a box | that box | attaches at its caret; a folder as its path |
+| drop on the dock's chrome | the box in front | a question's or a notice's, else the field |
+| drop on the panel (the transcript) | the dock's field | attaches, token **appended at the end** |
+| drop on the wall | the wall | a folder opens a card, a picture is pinned |
 
-**The drop target is hit-tested off the DOM, because a Tauri drag is not a DOM drag**: an OS
-file drag fires no `dragenter` on any element — the webview swallows them so the payload can
-carry real paths — so nothing under the cursor is ever told it is hovered.
-`document.elementFromPoint` is the only way to ask, and the highlight on the dock is the only
-feedback a drag gets. The payload's position is in **physical** pixels; the existing `/ dpr`
-was already load-bearing and is now read by the hit test too.
+### A question's answer is a tool result, and a picture in it was probed first
+
+An `ask_user` answer is not a prompt: it is the result of a parked `tools/call` (`ask.rs`). So
+before anything was built, `tools/probe-tool-image.ts` (one Haiku turn) put
+`[text, image, text, image, text]` in a stub server's result: seven colours named in order. The
+CLI forwards the image blocks to the model. It also writes each to the session's
+`tool-results` folder and appends `[Image: source: <path>]`, which costs nothing. An embedded
+`resource` blob carrying a PDF is **not** inline: the CLI saves it there and hands the model
+the path, so it reaches a project card (which reads the path) and never a chat card.
+
+So `answer_ask` takes the blocks beside the words (`content`), kept on `Asks.attached` by ask
+id until the parking thread writes the reply. Everything that reads an answer as *text* — a
+deferral, a held sheet, a settle — goes on reading the same string, and only the final write
+learns there was more, and only when the reply is the answer as given. A PDF for a chat card
+is refused in the panel and again in Rust (`result_blocks`): send it as a message instead,
+where `tools/probe-document.ts` showed a `document` block on stdin is read.
+
+The same path takes a parked notice's reply. An unparked notice's follow-up is a prompt and
+goes through `Skein.send` with its turn, as the dock does.
+
+### What is not done yet
+
+- **Across the flyway** a file and a byte attachment are refused with the draft kept
+  (`handle.ts::carriesTo`), and so is any attachment in an answer or a notice reply to a card
+  on another wall. Pictures in a prompt cross as before.
+- **Browser drags** (bytes with no path, and links) need `dropzone.rs`'s target taught the
+  browser formats; see the section on that below.
+
+## The dock and the panel are one target
 
 The dock and the panel are one target between them, not two. Both mean "give this to the card
 I am talking to" — the panel *is* that card's conversation — and splitting them would be two
@@ -252,8 +392,11 @@ They differ in one thing only: **where in the sentence the token goes.** On the 
 aiming at the field, so it lands at the caret. On the transcript you are aiming at no word at
 all, so it goes on the end. The caret of a field you have not touched is the *start*, and a
 picture dropped on the conversation arriving before what you had typed reads as the drop having
-gone wrong (Lyss, 2026-10-18). `dropTargetAt` answers `"dock" | "panel"` for exactly this, and
-`typeIntoDraft(token, "end")` is `insertAt` with a null caret.
+gone wrong (Lyss, 2026-10-18). The panel says so with `data-attach-to="prompt"`, and `boxAt`
+answers `"end"` for it.
+
+The payload's position is in **physical** pixels; the `/ dpr` in `App.svelte`'s drop handler is
+load-bearing and is what the hit test reads.
 
 ## An unsent line outlives the window, and the pictures in it do not
 

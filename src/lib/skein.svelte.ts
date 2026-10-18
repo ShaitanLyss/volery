@@ -74,7 +74,8 @@ import {
   sayRepair,
   type RepairReport,
 } from "./repair";
-import { type Block, type Carried, type Turn } from "./attach";
+import { type Attachment, type Block, type Carried, type Reach, type Turn } from "./attach";
+import { attachedIn, forgetAttachments, turnFrom } from "./attach.svelte";
 import {
   NO_ACCOUNT_HELD,
   QUEUED_LINE,
@@ -289,6 +290,11 @@ type AskOpenedPayload = {
   ours?: boolean;
   since?: number;
 };
+
+/** What an attachment becomes on its way to a card on this wall. */
+function reachOf(c: Conversation): Reach {
+  return { chat: c.kind === "chat", afar: false };
+}
 
 export class Skein {
   projects = $state<Project[]>([]);
@@ -4450,14 +4456,27 @@ export class Skein {
   async answerAsk(conv: Conversation, answer?: string) {
     const ask = conv.pendingAsk;
     if (!ask) return;
-    const text =
+    const composed =
       answer !== undefined
         ? answer
         : composeAnswer(ask.questions, ask.answers);
+    /* What was attached across the sheet's answer boxes goes back with it, cut
+       at its tokens the way a prompt is: a picture as an image block in the
+       tool result (`tools/probe-tool-image.ts` — the model sees it), a file as
+       its path in the words. Made ready *before* the question comes down, so a
+       refusal leaves it standing with the answers on it. */
+    const family = `ask:${ask.askId}`;
+    const sent = await this.#replyWith(conv, composed, attachedIn(family));
+    if ("refused" in sent) {
+      this.fault = sent.refused;
+      return;
+    }
+    const text = sent.text;
     conv.closeAsk(ask.askId);
     conv.activity = "responding";
     try {
-      await invoke("answer_ask", { askId: ask.askId, answer: text });
+      await invoke("answer_ask", { askId: ask.askId, answer: text, content: sent.content });
+      forgetAttachments(family);
       /* Skein's own question is not drawn as something you said, and the flag is
          the whole of why `PendingAsk` carries one. `close` asking whether a card
          the caller did not open should go is a question with no `ask_user` call
@@ -4622,19 +4641,47 @@ export class Skein {
   async followUpNotice(n: Notice, reply: string): Promise<boolean> {
     const said = reply.trim();
     if (!said) {
+      forgetAttachments(`notice:${n.id}`);
       await this.acknowledgeNotice(n);
       return true;
     }
-    this.notices = this.notices.filter((x) => x.id !== n.id);
+    const c = this.#byId.get(n.conversationId);
+    /* A picture or a file in the reply goes with it, as it would in a prompt.
+       Made ready before the notice is taken down, so a refusal leaves it up
+       with the reply still in its box. */
+    const attached = attachedIn(`notice:${n.id}`);
+    if (attached.length && !c) {
+      this.fault = "the card that notice is about is not on this wall, so its attachments cannot go to it";
+      return false;
+    }
     if (n.askId) {
-      return invoke("answer_ask", { askId: n.askId, answer: parkedReply(said) }).then(
-        () => true,
+      const sent = c ? await this.#replyWith(c, parkedReply(said), attached) : { text: parkedReply(said) };
+      if ("refused" in sent) {
+        this.fault = sent.refused;
+        return false;
+      }
+      this.notices = this.notices.filter((x) => x.id !== n.id);
+      return invoke("answer_ask", { askId: n.askId, answer: sent.text, content: sent.content }).then(
+        () => {
+          forgetAttachments(`notice:${n.id}`);
+          return true;
+        },
         (err) => {
           this.fault = String(err);
           return false;
         },
       );
     }
+    let turn: Turn | undefined;
+    if (attached.length && c) {
+      const made = await turnFrom(followUpText(n, said), attached, reachOf(c), c.id);
+      if ("refused" in made) {
+        this.fault = made.refused;
+        return false;
+      }
+      turn = made;
+    }
+    this.notices = this.notices.filter((x) => x.id !== n.id);
     const taken = await invoke<unknown>("notice_take", { id: n.id }).catch(() => null);
     if (!taken) {
       /* Somebody got there first — the card stirred and took it down, or it was
@@ -4644,8 +4691,33 @@ export class Skein {
     }
     /* Whether it went is answered for the one caller that has to say so to
        somebody else — a follow-up typed on another wall (`Elsewhere.#take`). */
-    const c = this.#byId.get(n.conversationId);
-    return c ? this.send(c, followUpText(n, said)) : false;
+    if (!c) return false;
+    const went = await this.send(c, turn?.text ?? followUpText(n, said), turn);
+    if (went) forgetAttachments(`notice:${n.id}`);
+    return went;
+  }
+
+  /** A reply to a parked call — a question's answer, a notice's — with what
+   *  was attached to it: the words with every file's token resolved to its
+   *  path, and the blocks when a picture is among them. A tool result cannot
+   *  carry a PDF the model reads (`tools/probe-tool-image.ts`: the CLI saves
+   *  it and points at it), so one is refused for a chat card, which has no way
+   *  to open it, and a project card is handed the path. */
+  async #replyWith(
+    c: Conversation,
+    words: string,
+    attached: Attachment[],
+  ): Promise<{ text: string; content?: Block[] } | { refused: string }> {
+    if (!attached.length) return { text: words };
+    const turn = await turnFrom(words, attached, reachOf(c), c.id);
+    if ("refused" in turn) return turn;
+    if (turn.content.some((b) => b.type === "document")) {
+      return { refused: "a PDF cannot go back in an answer to a chat card — it has no way to open one. Send it as a message instead" };
+    }
+    return {
+      text: turn.text,
+      content: turn.content.some((b) => b.type !== "text") ? turn.content : undefined,
+    };
   }
 
   /* ── the horizon ─────────────────────────────────────────────────────
@@ -4722,14 +4794,21 @@ export class Skein {
    *  to: what you sent went to all of them at once, and a line appearing on the
    *  fourth card two seconds after the first would read as four separate
    *  gestures. */
-  async broadcast(convs: Conversation[], text: string, turn?: Turn) {
-    /* One composed turn for every card, not one apiece: the draft was cut once
-       and the same blocks — the same base64, the same order — go to all of
-       them. Composing per card would be the same picture encoded N times for
-       no difference in what arrives. */
-    for (const c of convs) c.echo(text, turn && { echo: turn.echo, shots: turn.shots });
+  async broadcast(convs: Conversation[], text: string, turn?: Turn | ((c: Conversation) => Turn)) {
+    /* A turn per card, composed by the dock before anything was cleared: what
+       an attachment becomes depends on the card — a file written into its own
+       folder, a PDF inline for a chat card (`Attachments.turnFor`). Where the
+       draft holds pictures alone the turns are the same blocks, the same
+       base64, so nothing is encoded twice for nothing. Every echo is drawn
+       before the first send, as it always was. */
+    const turnFor = (c: Conversation) => (typeof turn === "function" ? turn(c) : turn);
     for (const c of convs) {
-      await this.#route(c, text, turn, { yours: true });
+      const t = turnFor(c);
+      c.echo(t?.text ?? text, t && { echo: t.echo, shots: t.shots });
+    }
+    for (const c of convs) {
+      const t = turnFor(c);
+      await this.#route(c, t?.text ?? text, t, { yours: true });
     }
   }
 

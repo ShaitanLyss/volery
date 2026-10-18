@@ -32,7 +32,7 @@ import type { CardFace } from "./Card.svelte";
 import type { Readable } from "./transcript";
 import type { Notice } from "./notice";
 import type { MenuTarget } from "./menu";
-import type { Turn } from "./attach";
+import type { Reach, Turn } from "./attach";
 import type { Timeline } from "./timeline";
 import { actFor, canDo, carriesTo, dockHints, verbsFor, whyNot, type Can, type Remote, type Said, type Verb } from "./handle";
 import { closeWarnings } from "./closing";
@@ -59,6 +59,11 @@ export interface CardHandle {
   /** May a panel drawn for one of its questions run scripts — the card's
    *  kind, as it is for a question asked here. */
   readonly scripts: boolean;
+  /** What an attachment becomes on its way to it (`attach.ts::Reach`): a
+   *  chat card has no filesystem, and a card on another wall writes the bytes
+   *  on its own disk. Asked of the card rather than passed, so a new surface
+   *  sending to one cannot get it wrong. */
+  readonly reach: Reach;
   /** What the dock says beside its name. */
   readonly hints: Said[];
   /** The fields its right-click reads (`menu.ts::cardRows`). */
@@ -162,6 +167,9 @@ export class LocalCard implements CardHandle {
   }
   get scripts() {
     return this.conv.kind !== "chat";
+  }
+  get reach(): Reach {
+    return { chat: this.conv.kind === "chat", afar: false };
   }
   get hints() {
     return dockHints(this.conv, null);
@@ -344,6 +352,9 @@ export class RemoteCard implements CardHandle {
   }
   get scripts() {
     return this.shadow.digest.kind !== "chat";
+  }
+  get reach(): Reach {
+    return { chat: this.shadow.digest.kind === "chat", afar: true };
   }
   get hints() {
     return dockHints(this.shadow, this.remote);

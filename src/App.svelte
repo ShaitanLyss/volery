@@ -32,7 +32,6 @@
   } from "./lib/studio.svelte";
   import { Skein, type Session } from "./lib/skein.svelte";
   import { Board } from "./lib/images.svelte";
-  import { insertAt } from "./lib/attach";
   import { Widgets } from "./lib/widgets.svelte";
   import { chronicle } from "./lib/chronicle.svelte";
   import { Undo } from "./lib/undo.svelte";
@@ -159,7 +158,8 @@
     mergeDraft,
     type Draft,
   } from "./lib/drafts";
-  import { Attachments } from "./lib/attach.svelte";
+  import { Attachments, boxAt, dropping } from "./lib/attach.svelte";
+  import type { Turn } from "./lib/attach";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
   import {
@@ -1332,43 +1332,13 @@
     });
   });
 
-  /** What a drop is currently hovering, so the thing it would land on can say
-   *  so. `null` is the wall, which needs no highlight — it is the default and
-   *  the whole window. */
-  let dropOn = $state<"dock" | "panel" | null>(null);
-
-  /** Where a drop at these window coordinates would land.
-   *
-   *  Hit-tested off the DOM rather than tracked as state, because a Tauri drag
-   *  is not a DOM drag: an OS file drag fires no `dragenter` on any element (the
-   *  webview swallows them so the payload can carry real paths), so nothing
-   *  under the cursor is ever told it is being hovered. `elementFromPoint` is
-   *  the only way to ask, and it is exactly what the pointer tracking one line
-   *  up already does with `.closest`.
-   *
-   *  The dock and the panel are one target between them and not two. Both mean
-   *  "give this to the card I am talking to" — the panel *is* that card's
-   *  conversation — and splitting them would be two answers to a question with
-   *  one, plus an edge along the middle of the screen you would have to aim
-   *  either side of. They differ only in *where in the sentence* the picture
-   *  goes: on the dock you are aiming at the field, so it lands at the caret;
-   *  on the transcript you are not aiming at any word, so it goes on the end —
-   *  the caret of a field you have not touched is the start, and a picture
-   *  dropped on the conversation arriving *before* what you had typed reads as
-   *  the drop having gone wrong (Lyss, 2026-10-18). */
-  function dropTargetAt(x: number, y: number): "dock" | "panel" | null {
-    const el = document.elementFromPoint(x, y);
-    if (!el) return null;
-    if (el.closest(".dock")) return "dock";
-    return el.closest(".side") ? "panel" : null;
-  }
-
-  /* Throw things at the wall and it works out what you meant: a folder becomes
-     a conversation, an image gets pinned up, and an image dropped on the dock or
-     the open transcript is attached to the prompt instead. Tauri hands us real
-     filesystem paths, so all three are imports rather than browser blobs — which
-     is also why the attach path has to go through Rust to read the bytes
-     (`attach.rs`), where the paste already has them. */
+  /* Throw things at the wall and it works out what you meant. A drop on any
+     input that speaks to an agent attaches to it — a picture inline, any other
+     file or a folder as its path — and that is one question asked of the DOM
+     (`attach.svelte.ts::boxAt`), not a target per surface: every such input is
+     a `PromptBox`, which registers itself. Anywhere else, a folder becomes a
+     conversation and a picture is pinned up. Tauri hands us real filesystem
+     paths, so all of it is paths rather than browser blobs. */
   $effect(() => {
     const un = getCurrentWebview().onDragDropEvent(async (e) => {
       /* The payload carries a PHYSICAL pixel position; getBoundingClientRect
@@ -1379,42 +1349,36 @@
 
       if (e.payload.type === "over") {
         /* The only feedback there is. With no DOM drag events reaching the
-           elements, a dock that did not light up would leave you guessing
+           elements, a box that did not light up would leave you guessing
            whether a drop was going to attach or fly past onto the wall. */
         const p = css(e.payload.position);
-        dropOn = dropTargetAt(p.x, p.y);
+        dropping.over = boxAt(p.x, p.y)?.el ?? null;
         return;
       }
       if (e.payload.type !== "drop") {
-        dropOn = null;
+        dropping.over = null;
         return;
       }
 
       const p = css(e.payload.position);
-      const onto = dropTargetAt(p.x, p.y);
-      dropOn = null;
+      const box = boxAt(p.x, p.y);
+      dropping.over = null;
+
+      /* Into an input, everything is an attachment — a folder included, as its
+         path (decided 2026-10-18): dropped into a sentence, a folder is a
+         thing being talked about, not a place to start a conversation. */
+      if (box) {
+        await box.target.take(e.payload.paths, box.where);
+        return;
+      }
 
       const sorted = await invoke<{ dirs: string[]; images: string[] }>(
         "classify_drop",
         { paths: e.payload.paths },
       );
 
-      /* A folder is a conversation wherever it lands. Dropping one on the dock
-         is not a thing anybody means as "attach a folder", and the alternative
-         — refusing it there — would be a gesture that silently did nothing on a
-         strip two hundred pixels tall. */
+      /* On the wall a folder is a conversation, wherever it lands. */
       for (const dir of sorted.dirs) await openIn(dir);
-
-      /* `reach`, not `targets`: the dock talks to the card in the ring wherever
-         it is, and a picture now travels to a card on another wall
-         (`elsewhere.md`) — asking `targets`, which is this wall's alone, pinned
-         a picture dropped for a far card to the wall instead. */
-      if (onto && reach.length) {
-        for (const token of await field.shots.fromPaths(sorted.images)) {
-          typeIntoDraft(token, onto === "panel" ? "end" : "caret");
-        }
-        return;
-      }
 
       const at = canvas?.toCanvas(p.x, p.y);
       if (!at) return;
@@ -2897,27 +2861,10 @@
     const images = [...data.files].filter((f) => f.type.startsWith("image/"));
     if (!images.length) return;
 
-    /* Into the draft, if the draft is where you were typing. This used to be
-       the case that *refused*: an image pasted into a field with text beside it
-       on the clipboard fell through to the browser, and one pasted alone got
-       pinned to the wall behind the panel — which is the whole gesture this
-       feature exists to replace. Now both attach.
-
-       The text beside it still arrives, because copying from a web page puts
-       both there and the words are usually the half you meant. Inserted here
-       rather than left to the browser: `preventDefault` is needed for the
-       image, and once it is called nothing is going to insert the text but
-       us. */
-    if (e.target === prompt) {
-      e.preventDefault();
-      const said = data.getData("text/plain");
-      if (said) typeIntoDraft(said);
-      for (const token of await field.shots.fromFiles(images)) typeIntoDraft(token);
-      return;
-    }
-
-    /* Anywhere else it is the wall's, exactly as it was. Note this deliberately
-       still pins from inside some *other* field — the sink's body, a rename —
+    /* A paste into any input that speaks to an agent never reaches here:
+       `PromptBox` takes it and stops it (`Attachments.takePaste`). Anywhere
+       else it is the wall's, exactly as it was. Note this deliberately still
+       pins from inside some *other* field — the sink's body, a rename —
        where there is no draft to attach to and the wall is the only thing a
        picture could mean. */
     if (isTyping(e.target) && data.types.includes("text/plain")) return;
@@ -2936,23 +2883,6 @@
       x += 28;
       y += 28;
     }
-  }
-
-  /** Put something into the draft where the caret is, and leave the caret after
-   *  it — the way typing it would have.
-   *
-   *  Shared by the paste and the drop, because both are "this arrived while you
-   *  were writing" and both have to leave you able to carry on writing. The
-   *  textarea's own selection is set after a tick, since the value it is being
-   *  set against has not been rendered yet. */
-  function typeIntoDraft(put: string, where: "caret" | "end" = "caret") {
-    const { text, caret } = insertAt(field.text, where === "end" ? null : field.caret, put);
-    field.text = text;
-    field.caret = caret;
-    void tick().then(() => {
-      prompt?.focus();
-      prompt?.setSelectionRange(caret, caret);
-    });
   }
 
   async function pickFolder() {
@@ -3356,24 +3286,49 @@
     if (reach.length > 1 && !broadcast) return field.refuse();
 
     /* Composed *before* the field is cleared, and that ordering is the whole of
-       it: the pictures live on the field, and `put("")` prunes every one of
-       them. Cut once, here — `turn` carries the blocks that go on the wire, the
-       string the wire will replay for them, and the thumbnails the transcript
-       keeps, all three from one split of the sentence. See `attach.ts`. */
-    const turn = field.turn(text);
-    /* And asked whether it can arrive before anything is cleared: a card on
-       another wall takes words only, and none at all while its wall is quiet.
-       Refused rather than dropped, with the draft kept and the reason said. */
+       it: the attachments live on the field, and `put("")` prunes every one of
+       them. Composed **per card**, because what an attachment becomes depends
+       on where it goes (`Attachments.turnFor`): bytes are written into *this*
+       card's folder for a project card, a PDF goes inline to a chat card, and
+       a card on another wall is handed the bytes to write on its own disk.
+       Each turn is still cut once — the blocks, the string the wire will
+       replay for them and the thumbnails all from one split (`attach.ts`).
+
+       Anything that cannot go is refused here, with the draft kept and the
+       reason said beside it, rather than after the words have gone. */
     const one = reach.length === 1 ? reach[0]! : null;
-    const carries = one ? one.carries(turn) : "yes";
-    if (carries !== "yes") {
-      skein.fault = carries.no;
-      return field.refuse();
+    if (one) {
+      const turn = await field.shots.turnFor(text, one.reach, one.id);
+      if ("refused" in turn) {
+        field.shots.refused = turn.refused;
+        return field.refuse();
+      }
+      /* And asked whether it can arrive: a card on another wall takes what its
+         wall can take, and nothing at all while its wall is quiet. */
+      const carries = one.carries(turn);
+      if (carries !== "yes") {
+        skein.fault = carries.no;
+        return field.refuse();
+      }
+      field.put("");
+      field.at = 0;
+      /* `turn.text`, not what was typed: a file's token is its path from here
+         on, so the line drawn is the line the agent reads. */
+      await one.say(turn.text, turn);
+      return;
+    }
+    const turns = new Map<string, Turn>();
+    for (const c of targets) {
+      const turn = await field.shots.turnFor(text, { chat: c.kind === "chat", afar: false }, c.id);
+      if ("refused" in turn) {
+        field.shots.refused = `${c.title || c.project}: ${turn.refused}`;
+        return field.refuse();
+      }
+      turns.set(c.id, turn);
     }
     field.put("");
     field.at = 0;
-    if (one) await one.say(text, turn);
-    else await skein.broadcast(targets, text, turn);
+    await skein.broadcast(targets, text, (c) => turns.get(c.id)!);
   }
 
   async function send(broadcast = false) {
@@ -4535,6 +4490,8 @@
     setFocused: (id) => (focusedId = id),
     deselect: ondeselect,
     draft: () => field.text,
+    attached: () =>
+      field.shots.list.map((a) => ({ kind: a.kind, name: a.name, path: a.kind === "file" ? a.path : null })),
     /* Stirred as well as written, which is the same claim the dock's `oninput`
        makes and has to be made twice because these are two ways of writing a
        draft that share no code. Dictating a sentence into a dormant card is
@@ -5509,6 +5466,7 @@
       {#if card && showDetail}
         <aside
           class="side"
+          data-attach-to="prompt"
           class:moored-left={berths.panel.site === "left"}
           class:afloat={panelAfloat}
           style:width="{panelAfloat ? panelAt.w : panelPx}px"
@@ -5629,7 +5587,6 @@
     {waiting}
     {clashing}
     {bangCard}
-    dropping={dropOn !== null}
     berth={{ site: berths.dock.site, x: dockAt.x, y: dockAt.y, w: dockAt.w, inset: dockInset }}
     grabbing={mooring?.what === "dock"}
     onmoor={{

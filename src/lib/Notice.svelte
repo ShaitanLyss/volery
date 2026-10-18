@@ -11,6 +11,8 @@
      one that is genuinely blocking, and it borrows the ask's amber. */
   import Said from "./Said.svelte";
   import { replies } from "./replies.svelte";
+  import PromptBox from "./PromptBox.svelte";
+  import { attachmentsOf, forgetAttachments } from "./attach.svelte";
   import { clock } from "./conversation.svelte";
   import { stood } from "./presence";
   import { nameBesideProject } from "./naming";
@@ -113,6 +115,7 @@
   function ack() {
     replies.closing(key);
     replies.forget(key);
+    forgetAttachments(key);
     onack();
   }
 
@@ -155,8 +158,13 @@
   <Said text={notice.text} />
 
   <div class="row">
-    <input
-      bind:value={() => reply, (v) => replies.put(key, v, about)}
+    <!-- A `PromptBox`, as every input that speaks to an agent is: a picture or
+         a file goes into the reply as it would into a prompt (sink fd7ef025),
+         its attachments kept by the notice's key as the words are. -->
+    <PromptBox
+      bind:text={() => reply, (v) => replies.put(key, v, about)}
+      shots={attachmentsOf(key)}
+      rows={1}
       placeholder={words.placeholder}
       onkeydown={(e) => {
         if (onclosecard && isCloseKey(e)) {
@@ -281,23 +289,15 @@
     display: flex;
     gap: 0.4rem;
   }
-  .row input {
+  /* The reply box is a `PromptBox`; this sets how it looks here, through the
+     properties it reads. */
+  .row > :global(.box) {
     flex: 1 1 auto;
     min-width: 0;
-    background: var(--ink);
-    border: 1px solid var(--edge);
-    border-radius: 3px;
-    color: var(--paper);
-    font-family: var(--body);
-    font-size: 0.86rem;
-    padding: 0.38rem 0.55rem;
-  }
-  .row input:focus {
-    outline: none;
-    border-color: var(--paper-faint);
-  }
-  .row input::placeholder {
-    color: var(--paper-faint);
+    --pb-bg: var(--ink);
+    --pb-pad: 0.38rem 0.55rem;
+    --pb-size: 0.86rem;
+    --pb-max: 6rem;
   }
   .btn {
     font-family: var(--util);
