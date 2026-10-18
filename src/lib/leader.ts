@@ -32,6 +32,31 @@ export const LEADER = " ";
  *  hour later part of a sequence you had forgotten opening. */
 export const LAPSE_MS = 1000;
 
+/** Whether a keydown may be offered to the leader at all, given where the
+ *  keyboard is.
+ *
+ *  `text` is what the focused text field holds, or null when the focus is in
+ *  none. Outside a field every key may lead, as it always could. **Inside an
+ *  empty one it may too** — Lyss, 2026-10-18: *"leader chords should work even
+ *  when in a text field when it's empty and I do a space bar"* (sink
+ *  `3cd4359c`). The gate used to be "not in a field" alone, and the dock's
+ *  field holds the focus nearly all day, so every chord began with a click
+ *  somewhere else.
+ *
+ *  Empty is exactly the case where a space means nothing to the field: a
+ *  prompt never begins with one. And it stays true for the whole chord, which
+ *  is what makes the rule hold together — the leader's space is swallowed, so
+ *  the next key still meets an empty field, and a key that completes no chord
+ *  falls through into it as a letter, nvim's `<space>q`. A field with anything
+ *  in it is typing, and a space there is a space.
+ *
+ *  Never during an IME composition: the field's value lags the composition, so
+ *  "empty" is a reading of a field that is in the middle of being written. */
+export function mayLead(text: string | null, composing: boolean): boolean {
+  if (composing) return false;
+  return text === null || text === "";
+}
+
 /** What a completed chord asks for.
  *
  *  A union rather than a string, because the two arms carry different things

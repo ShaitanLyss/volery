@@ -1,6 +1,37 @@
 import { describe, expect, test } from "bun:test";
 
-import { CHORDS, LAPSE_MS, LEADER, chord, offers } from "../src/lib/leader";
+import { CHORDS, LAPSE_MS, LEADER, chord, mayLead, offers } from "../src/lib/leader";
+
+describe("where the leader may start", () => {
+  test("outside any field, as it always could", () => {
+    expect(mayLead(null, false)).toBe(true);
+  });
+
+  test("from an empty field — sink 3cd4359c", () => {
+    expect(mayLead("", false)).toBe(true);
+  });
+
+  test("not from a field with anything in it, where a space is a space", () => {
+    expect(mayLead("hello", false)).toBe(false);
+    expect(mayLead(" ", false)).toBe(false);
+  });
+
+  test("never during an IME composition, whatever the field reads", () => {
+    expect(mayLead("", true)).toBe(false);
+    expect(mayLead(null, true)).toBe(false);
+  });
+
+  test("the whole chord meets an empty field, and a miss falls through as a letter", () => {
+    /* The space is swallowed, so the field is still empty for the next key;
+       `<space>q` completes nothing and the `q` is the field's. */
+    const lead = chord(null, LEADER);
+    expect(lead.swallow).toBe(true);
+    expect(mayLead("", false)).toBe(true);
+    const miss = chord(lead.open, "q");
+    expect(miss.kind).toBe("lapse");
+    expect(miss.swallow).toBe(false);
+  });
+});
 
 /* These were `finding.test.ts`'s and moved here with the machine they cover.
    Two things changed and nothing else did: a chord fires a *verb* rather than a

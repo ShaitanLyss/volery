@@ -208,6 +208,7 @@
      its hint, moved out of `Spyglass.svelte` with it. */
   import Which from "./lib/Which.svelte";
   import { Leader } from "./lib/leader.svelte";
+  import { mayLead } from "./lib/leader";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
@@ -3928,6 +3929,12 @@
      * the field and this ladder no longer runs at all. So the leader costs
      * nothing that was being used.
      *
+     * And from an *empty* field as well as from no field (sink 3cd4359c,
+     * `leader.ts::mayLead`), because the dock's field holds the focus nearly
+     * all day and a chord that began with a click elsewhere was a chord nobody
+     * reached for. Empty is the one state in which a space means nothing to
+     * the field, and the swallowed space keeps it empty for the next key.
+     *
      * `press` is the machine and it answers whether the key was ours: a second
      * key that completes no chord abandons the sequence and **falls through**,
      * the way `<space>q` in nvim leaves you with a `q`. Not called at all with
@@ -3938,7 +3945,7 @@
       !e.metaKey &&
       !e.altKey &&
       !menu &&
-      !isTyping(e.target) &&
+      mayLead(fieldText(e.target), e.isComposing || e.keyCode === 229) &&
       leader.press(e.key)
     ) {
       e.preventDefault();
@@ -4158,6 +4165,16 @@
       field.caret = null;
       void focusDraft();
     }
+  }
+
+  /** What the text field a key landed in holds, or null when it landed in
+   *  none — the leader's reading of where the keyboard is (`mayLead`). */
+  function fieldText(target: EventTarget | null): string | null {
+    if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+      return target.value;
+    }
+    if (target instanceof HTMLElement && target.isContentEditable) return target.textContent ?? "";
+    return null;
   }
 
   function isTyping(target: EventTarget | null): boolean {
