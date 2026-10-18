@@ -189,6 +189,11 @@ export type Line = {
     | "relay"
     | "shell";
   text: string;
+  /** When it happened, in ms: stamped as it arrives, or read off the session
+   *  record's own `timestamp` when it came off disk. Nothing kept a time until
+   *  chat view needed one — a run's *worked for 2m 14s*, a live step's elapsed
+   *  time (`docs/chat-mode.md` §7.6). Absent where neither knew. */
+  at?: number;
   /** The cap a folded line wears — set on the three kinds that fold on their
    *  own. On a `summary` it is what the compaction cost and saved: the numbers
    *  arrive one event before the words they belong to, and are absent when no
@@ -2013,7 +2018,7 @@ export class Conversation {
     note?: string,
     call?: ToolCall,
   ): Line {
-    const line: Line = { kind, text };
+    const line: Line = { kind, text, at: Date.now() };
     if (state) line.state = state;
     if (note) line.note = note;
     if (call) line.call = call;
@@ -2040,7 +2045,7 @@ export class Conversation {
     for (let i = this.lines.length - 1; i >= 0; i--) {
       const call = this.lines[i].call;
       if (call?.id === toolId) {
-        call.result = landed(text, failed, pictures);
+        call.result = { ...landed(text, failed, pictures), at: Date.now() };
         return call.name;
       }
     }

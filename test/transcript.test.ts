@@ -6,6 +6,7 @@ import {
   longFold,
   MIN_FOLD,
   runFoldCap,
+  runSummary,
 } from "../src/lib/transcript";
 import type { Line } from "../src/lib/conversation.svelte";
 import { RESUME_CAP, RESUME_FAILED_CAP, resumePrompt } from "../src/lib/rousing";
@@ -471,5 +472,49 @@ describe("a prompt skein sent again", () => {
     expect(shape([said(`it said "${resendMark("overloaded", 2)}" and went again`)])).toBe(
       "text",
     );
+  });
+});
+
+describe("what a run of machinery came to (chat view)", () => {
+  const call = (name: string, input: Record<string, unknown>, at?: number, landedAt?: number): Line => ({
+    kind: "tool",
+    text: name,
+    ...(at !== undefined ? { at } : {}),
+    call: { name, input, ...(landedAt !== undefined ? { result: { text: "", at: landedAt } } : {}) },
+  });
+
+  test("files read once each, edits by file, the tests named", () => {
+    const s = runSummary([
+      call("Read", { file_path: "a.ts" }),
+      call("Read", { file_path: "a.ts" }),
+      call("Read", { file_path: "b.ts" }),
+      call("Edit", { file_path: "a.ts", old_string: "x", new_string: "y\nz" }),
+      call("Edit", { file_path: "a.ts", old_string: "p", new_string: "q" }),
+      call("Write", { file_path: "c.ts", content: "1\n2\n3" }),
+      call("Bash", { command: "bun test test/a.test.ts", description: "Run the tests" }),
+    ]);
+    expect(s.words).toBe("read 2 files, edited 2, ran the tests");
+    expect(s.added).toBe(2 + 1 + 3);
+    expect(s.removed).toBe(1 + 1);
+  });
+
+  test("commands that are not tests are counted, and the rest is said", () => {
+    expect(runSummary([call("Bash", { command: "git status" }), call("Grep", { pattern: "x" }), call("mcp__x__y", {})]).words).toBe(
+      "searched once, ran 1 command, 1 other step",
+    );
+  });
+
+  test("how long it worked runs from the first call to the last thing that landed", () => {
+    const s = runSummary([call("Read", { file_path: "a" }, 1_000, 2_000), call("Bash", { command: "ls" }, 3_000, 135_000)]);
+    expect(s.worked).toBe(134_000);
+  });
+
+  test("a run with no times says nothing about time rather than zero", () => {
+    expect(runSummary([call("Read", { file_path: "a" })]).worked).toBeNull();
+  });
+
+  test("under a second is not worth a number", () => {
+    expect(runSummary([call("Read", { file_path: "a" }, 1_000, 1_400)]).worked).toBeNull();
+    expect(runSummary([call("Read", { file_path: "a" }, 1_000, 2_000)]).worked).toBe(1_000);
   });
 });

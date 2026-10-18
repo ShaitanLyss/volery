@@ -413,3 +413,105 @@ export function longFold(line: Line): { cap: string; hint: string } {
     hint: "what the compaction carried forward",
   };
 }
+
+/** What a run of machinery did, as chat view folds it (`docs/chat-mode.md`
+ *  §4.2): *read 6 files, edited 3, ran the tests*, with a diff stat and how
+ *  long it worked. The panel keeps `foldSummary` — its status-line reading of
+ *  the last call — and chat view, whose reader is not watching the machinery,
+ *  wants what it came to instead.
+ *
+ *  Counted by tool, not by line: files are counted once however often they
+ *  were read; edits by the file they touched. The diff stat is lines, counted
+ *  off the arguments the model wrote (an edit's old and new strings, a write's
+ *  content) — the honest reading of "how much changed" that needs no git, and
+ *  a rough one: an edit that rewrites a line counts it once each way, as a
+ *  diff does. */
+export type RunSummary = {
+  /** The phrases, joined: `read 6 files, edited 3, ran the tests`. */
+  words: string;
+  added: number;
+  removed: number;
+  /** From the first call to the last thing that landed, in ms — or null when
+   *  the run carries no times (a transcript read before they were kept), or
+   *  took under a second, where *worked for 0s* would be a number saying
+   *  nothing. */
+  worked: number | null;
+};
+
+const READS = new Set(["Read", "NotebookRead"]);
+const SEARCHES = new Set(["Grep", "Glob", "LS"]);
+const EDITS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+const SHELLS = new Set(["Bash", "PowerShell"]);
+const WEB = new Set(["WebSearch", "WebFetch"]);
+const HELPERS = new Set(["Task", "Agent"]);
+const TESTS = /\b(test|tests|vitest|jest|pytest|cargo test|bun test|bun run test|gate)\b/i;
+
+function linesIn(v: unknown): number {
+  return typeof v === "string" && v.length ? v.split("\n").length : 0;
+}
+
+export function runSummary(lines: Line[]): RunSummary {
+  const read = new Set<string>();
+  const edited = new Set<string>();
+  let searched = 0;
+  let commands = 0;
+  let tests = false;
+  let web = 0;
+  let helpers = 0;
+  let other = 0;
+  let added = 0;
+  let removed = 0;
+  let first: number | null = null;
+  let last: number | null = null;
+  for (const line of lines) {
+    const call = line.call;
+    if (line.at !== undefined) {
+      first = first === null ? line.at : Math.min(first, line.at);
+      last = last === null ? line.at : Math.max(last, line.at);
+    }
+    if (call?.result?.at !== undefined) last = last === null ? call.result.at : Math.max(last, call.result.at);
+    if (!call) {
+      other++;
+      continue;
+    }
+    const input = (call.input ?? {}) as Record<string, unknown>;
+    const file = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : "";
+    if (READS.has(call.name)) read.add(file || `#${read.size}`);
+    else if (SEARCHES.has(call.name)) searched++;
+    else if (EDITS.has(call.name)) {
+      edited.add(file || `#${edited.size}`);
+      if (call.name === "Write") added += linesIn(input.content);
+      else if (call.name === "MultiEdit" && Array.isArray(input.edits)) {
+        for (const e of input.edits as Record<string, unknown>[]) {
+          removed += linesIn(e?.old_string);
+          added += linesIn(e?.new_string);
+        }
+      } else {
+        removed += linesIn(input.old_string);
+        added += linesIn(input.new_string ?? input.new_source);
+      }
+    } else if (SHELLS.has(call.name)) {
+      commands++;
+      const said = `${String(input.command ?? "")} ${String(input.description ?? "")}`;
+      if (TESTS.test(said)) tests = true;
+    } else if (WEB.has(call.name)) web++;
+    else if (HELPERS.has(call.name)) helpers++;
+    else other++;
+  }
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  const words: string[] = [];
+  if (read.size) words.push(`read ${n(read.size, "file", "files")}`);
+  if (searched) words.push(`searched ${searched === 1 ? "once" : `${searched} times`}`);
+  if (edited.size) words.push(`edited ${edited.size}`);
+  if (tests) words.push("ran the tests");
+  else if (commands) words.push(`ran ${n(commands, "command", "commands")}`);
+  if (web) words.push(`looked on the web${web > 1 ? ` ${web} times` : ""}`);
+  if (helpers) words.push(`started ${n(helpers, "helper", "helpers")}`);
+  if (other) words.push(n(other, "other step", "other steps"));
+  return {
+    words: words.join(", "),
+    added,
+    removed,
+    worked: first !== null && last !== null && last - first >= 1000 ? last - first : null,
+  };
+}

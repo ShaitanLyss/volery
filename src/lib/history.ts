@@ -138,9 +138,13 @@ export function foldTranscript(
 ): History {
   const max = opts.max ?? HISTORY_MAX_LINES;
   const lines: Line[] = [];
+  /* The record being folded's own time, which every line it pushes takes —
+     the session file's `timestamp`, an ISO string on every record. */
+  let at: number | undefined;
   const push = (kind: Line["kind"], t: string, note?: string, call?: ToolCall) => {
     if (!t.trim()) return;
     const line: Line = { kind, text: t };
+    if (at !== undefined) line.at = at;
     if (note) line.note = note;
     if (call) line.call = call;
     lines.push(line);
@@ -217,6 +221,10 @@ export function foldTranscript(
       /* A transcript is appended to while we read it, so the last line is
          routinely half-written. Not worth surfacing. */
       continue;
+    }
+    {
+      const t = typeof rec?.timestamp === "string" ? Date.parse(rec.timestamp) : NaN;
+      at = Number.isFinite(t) ? t : undefined;
     }
 
     /* A subagent's own turns. The live card collapses these into seats and
@@ -303,6 +311,7 @@ export function foldTranscript(
                 block.is_error === true,
                 picturesOf(block.content),
               );
+              if (at !== undefined) call.result.at = at;
             }
             if (!asked.has(block.tool_use_id)) continue;
             const note = answerNote(textOf(block.content));

@@ -46,14 +46,32 @@
     foldCount,
     foldSummary,
     runFoldCap,
+    runSummary,
     longFold,
     type Block,
   } from "./transcript";
+  import { view } from "./view.svelte";
+  import { clock } from "./conversation.svelte";
+  import { spanOf } from "./classify";
   import { MIN_QUERY, matchAt } from "./hunt";
   import { Hunting } from "./hunt.svelte";
   import { RELEASE } from "./follow.svelte";
 
   let { card }: { card: CardHandle } = $props();
+
+  /* Chat view reads a run of machinery as what it came to, where the panel
+     reads it as a status line of its last call (`docs/chat-mode.md` §4.2, §6.4
+     "the live parts"). Read, not passed: the view is one holder for the
+     window, and the panel is not mounted while chat view is up. */
+  const chat = $derived(view.current === "chat");
+  /** The run still being written: the last block of the live column while the
+   *  card works. Chat view shows it as the step it is on and how long it has
+   *  been at it — shimmer with a clock beside it, never shimmer alone. */
+  const liveRun = $derived.by(() => {
+    if (!conv.working) return null;
+    const last = live[live.length - 1];
+    return last && last.kind === "tools" ? last.key : null;
+  });
 
   const conv = $derived(card.readable);
 
@@ -501,7 +519,25 @@
           <!-- Folded, the cap carries the latest call in the run, so a group at
                the foot of a live turn says what is happening without being
                opened. Open, the calls themselves say it. -->
-          <span class="what">{open[b.key] ? foldCount(b.lines) : foldSummary(b.lines)}</span>
+          {#if chat}
+            {@const sum = runSummary(b.lines)}
+            {#if b.key === liveRun}
+              {@const since = b.lines[0]?.at}
+              <span class="what live"
+                ><span class="shimmer">{b.lines[b.lines.length - 1]?.text ?? ""}</span>{#if since}<span class="time"
+                    >{spanOf(Math.max(0, (clock.t - since) / 1000))}</span
+                  >{/if}</span
+              >
+            {:else}
+              <span class="what"
+                >{#if sum.worked !== null}<b>worked for {spanOf(sum.worked / 1000)}</b> — {/if}{sum.words ||
+                  foldCount(b.lines)}</span
+              >
+              {#if sum.added || sum.removed}<span class="delta">+{sum.added} −{sum.removed}</span>{/if}
+            {/if}
+          {:else}
+            <span class="what">{open[b.key] ? foldCount(b.lines) : foldSummary(b.lines)}</span>
+          {/if}
         </button>
         {#if open[b.key]}
           <div class="inside">
@@ -948,10 +984,18 @@
   }
 
   /* ── a folded run of tool calls ─────────────────────────────────────────── */
+  /* A run of calls folded: on the wall a line of chrome in the tool's own
+     mono; in chat view a quiet card, the mockups' `.work` — set by custom
+     properties (`--run-*`) whose defaults are exactly the panel's, so nothing
+     here reaches in from outside and the panel does not move. */
   .fold {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+    border: var(--run-border, 0 solid transparent);
+    border-radius: var(--run-radius, 0);
+    background: var(--run-fill, none);
+    padding: var(--run-pad, 0);
   }
   /* The cap is chrome, and reads as the calls it stands for: same monospace,
      same size, same paper as a tool line, so a folded run does not weigh more
@@ -965,11 +1009,74 @@
     background: none;
     border: 0;
     padding: 0;
-    font-family: var(--mono);
-    font-size: 0.7rem;
+    font-family: var(--run-face, var(--mono));
+    font-size: var(--run-size, 0.7rem);
     line-height: 1.55;
     color: var(--paper-mute);
     cursor: pointer;
+  }
+  .cap b {
+    font-weight: 500;
+    color: var(--paper);
+  }
+  .cap .delta,
+  .cap .time {
+    margin-left: auto;
+    padding-left: 0.6rem;
+    flex: 0 0 auto;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--cv-note, var(--paper-mute));
+  }
+  .cap .what.live {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--paper);
+  }
+  /* The live step's shimmer: a band of the sheet's own ink moving across the
+     words, by transform only, only while a step is live (a running clock sits
+     beside it, so a stalled agent does not read as a working one). `spare`
+     steps it, `still` and reduced motion stop it (`motion.md`). */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+    display: inline-block;
+    vertical-align: bottom;
+    min-width: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0 -60%;
+    background: linear-gradient(
+      100deg,
+      transparent 35%,
+      color-mix(in oklab, var(--cv-sheet, var(--ink)) 70%, transparent) 50%,
+      transparent 65%
+    );
+    animation: sweep 1.8s var(--ease-move, ease-in-out) infinite;
+  }
+  @keyframes sweep {
+    from {
+      transform: translateX(-45%);
+    }
+    to {
+      transform: translateX(45%);
+    }
+  }
+  :global(html[data-motion="spare"]) .shimmer::after {
+    animation-timing-function: steps(8, end);
+  }
+  :global(html[data-motion="still"]) .shimmer::after {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .shimmer::after {
+      animation: none;
+    }
   }
   .cap:hover {
     color: var(--paper-dim);

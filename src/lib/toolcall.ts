@@ -496,6 +496,10 @@ export type ToolResult = {
   pictures?: Picture[];
   /** How many more came back than are being drawn — see `RESULT_PICTURES`. */
   unshown?: number;
+  /** When it landed, in ms — the end of the call, as its line's `at` is the
+   *  start. Stamped by whoever lands it: live as it arrives, off disk from the
+   *  record. Absent where neither knew. */
+  at?: number;
 };
 
 /** How many pictures one call may keep.
