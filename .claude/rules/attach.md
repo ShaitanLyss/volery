@@ -3,6 +3,7 @@ paths:
   - "src/lib/attach.ts"
   - "src/lib/attach.svelte.ts"
   - "src-tauri/src/attach.rs"
+  - "src-tauri/src/dropzone.rs"
   - "src/lib/drafts.ts"
   - "src/lib/field.svelte.ts"
   - "tools/probe-image.ts"
@@ -315,3 +316,22 @@ is written to `localStorage` behind a `KEEP_AFTER_MS` debounce and read back at 
   `build.md`), so what is proved is: the pure suites, `svelte-check`, `cargo check --lib
   --profile test`, and the CLI probe. `gears.md` records what driving the real wall found that
   a green suite could not, and the same warning applies here — every branch below is new.
+
+## A file dragged from Explorer needs a drop target on every window under the page
+
+`dropzone.rs` has the whole argument; the part to carry is the shape. Tauri's native drop is
+wry's, and wry registers its `IDropTarget` by walking the child windows that exist at the end of
+`build()`. WebView2's browser process makes `Chrome_WidgetWin_1` on its own schedule, so the walk
+is a race, and on a loaded machine it is lost: no target there, `SetAllowExternalDrop(false)`
+means nothing else answers, and the cursor over the page is the no-entry sign (2026-10-18,
+v0.62/0.63 — a folder opened no card, an image attached nowhere). **Proved with a real OLE drag**,
+not the control surface: a `DoDragDrop` of a `CF_HDROP` object from another process while
+`SetCursorPos` moved the real cursor over the lab window, run against Paint first as the control
+that the driver itself is sound. The failing launches had `OleDropTargetInterface` on
+`Chrome_WidgetWin_0` alone; the winning ones on `_1` as well.
+
+The fix walks again once the page has loaded and gives every window with no target one of ours,
+emitting Tauri's own `tauri://drag-*` events so `onDragDropEvent` is unchanged. A window that
+already has a target is left alone, so a launch that won the race has one target per window as
+before. If it ever needs proving again, drive it from another process — and mind that a person
+using the same machine can put another window over the lab mid-run, which reads as a failure.

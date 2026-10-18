@@ -24,6 +24,7 @@ pub mod azdo;
 mod control;
 mod creds;
 mod docket;
+mod dropzone;
 /// The rows a forge answers in, and the two providers that fill them. `forge`
 /// is vocabulary-neutral on purpose — see its header for the line between a
 /// projection that is honest and one that is a lie.
@@ -530,6 +531,17 @@ fn speak_for_panics() {
 fn open_windows(app: &tauri::App, frame: Option<window::Frame>) -> Result<(), String> {
     for config in app.config().app.windows.clone() {
         tauri::WebviewWindowBuilder::from_config(app.handle(), &config)
+            /* wry registers the window's drop target by walking the child
+               windows that exist when `build()` returns, and WebView2 may not
+               have made the one that matters yet. Done again once the page has
+               loaded. See `dropzone.rs`. */
+            .map(|builder| {
+                builder.on_page_load(|window, payload| {
+                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                        dropzone::arm(&window);
+                    }
+                })
+            })
             .and_then(|builder| builder.build())
             .map_err(|e| format!("Volery could not open its {} window.\n\n{e}", config.label))?;
     }

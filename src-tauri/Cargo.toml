@@ -208,6 +208,8 @@ iroh = { version = "1.3.0", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
+# `#[implement]` in dropzone.rs expands to paths in this crate by name.
+windows-core = "0.61"
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;
 # killing the parent leaves orphans holding ports. A job object kills the tree.
 windows = { version = "0.61", features = [
@@ -241,6 +243,10 @@ windows = { version = "0.61", features = [
     # ITEMIDLIST (Shell, Shell_Common), CoTaskMemFree to give it back, and a COM
     # apartment on the calling thread (System_Com).
     "Win32_System_Com",
+    # A file dragged from Explorer: `IDropTarget`, `RegisterDragDrop` and the
+    # modifier-key flags its methods take. See `dropzone.rs`.
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
     "Win32_System_JobObjects",
     # Keeping the machine awake on mains (a power request, the AC/DC
     # notification, what the lid does) and the per-user `Run` entry that
