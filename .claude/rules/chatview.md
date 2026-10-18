@@ -32,6 +32,11 @@ paths:
   - "src/lib/allowance.ts"
   - "src/lib/search.ts"
   - "src/lib/projectview.ts"
+  - "src/lib/Toasts.svelte"
+  - "src/lib/SidePane.svelte"
+  - "src/lib/PlanStrip.svelte"
+  - "src/lib/PlanDoc.svelte"
+  - "src/lib/others.svelte.ts"
 ---
 
 # Chat view: one conversation's column, read in two rooms
@@ -185,6 +190,61 @@ A restored card had no clock for the sidebar's day groups — `restingSince` is 
 `store.rs::LAST_ACTIVE` reads its newest turn (or its birth) into `lastActive` at load: an
 expression, not a column, so no rung. `Conversation.turnSince` stamps when a turn opens, for a
 working row's age and so *working* does not reshuffle each time a card speaks.
+
+### An agent's life in the thread (phase 4)
+
+**Its question is the last thing in its thread**, `Ask.svelte` itself with `--ask-ceiling:
+none`, so the column scrolls rather than the sheet capping. The keys a question answers to —
+a number picks, ← → between questions, the options a single-select listbox — are in
+`Ask.svelte` and `asking.ts::askKey`, not in chat view, so the dock has them too. One drawing,
+two places.
+
+**Arrivals are toasts and nothing takes the focus.** `Toasts.svelte` reads `front.svelte.ts`
+— the same queue the dock draws — for what arrived while the window is in front: two at most
+and *and N more*, a question's toast answers by selecting its conversation. A row rising in
+the sidebar is the other half of the same news.
+
+**Reading a finished conversation settles it, and only reading.** `chatview.ts::settles` is
+four conditions: selected, window in front, not away, the last message on screen for
+`DWELL_MS`. Every shortcut round one was a bug the review found — Ctrl+Tab skimming past, the
+selection a view switch lands on, the card selected after a close, a launch with nobody at the
+keyboard — each would have acknowledged rests nobody read and taken them out of the away pile.
+A turn that ended on a question is never settled by reading: it stays in *needs you* until it
+is answered or dismissed. The dwell is an `IntersectionObserver` on the last `.line`, so it
+measures what is on screen and not what is selected.
+
+**A queued message says so.** A prompt sent mid-turn is `awaited` until the CLI takes it up
+(CLAUDE.md, *Settling a line is not claiming it*), so the bubble reads *queued — it goes when
+this turn finishes*, with *send now* as `do("stop")` and nothing else: the CLI does not lose a
+queued prompt on an interrupt, and stopping then sending would deliver it twice.
+
+**A line keeps when it happened.** `Line.at` and `ToolResult.at` are stamped live and read off
+each session record's `timestamp` in `history.ts`. `transcript.ts::runSummary` folds a run by
+tool — files counted once, edits by file, *ran the tests* when a shell line names them, a diff
+stat off the arguments the model wrote — and `Thread` reads `view.current` to draw it in chat
+view while the panel keeps `foldSummary`. A plan written is *wrote the plan*, not an edit: nothing
+in the project has changed yet. Under a second says no time at all.
+
+**Relations reach through `others.svelte.ts`, which only chat view provides.** A spawn's
+linked card stands where the call stands, its child read off the receipt's handle
+(`spawnedHandle`; kin knows *that* a card has children, not which call opened each). A relay is
+a message from its sender with their name openable, never your bubble. Ambient with no default,
+by CLAUDE.md's *a capability every surface should have is not a prop*: the wall's panel provides
+nothing and so draws neither, which is the point — on the wall a child is a limb.
+
+**The plan strip and the pane read `timeline.ts`; nothing decides a plan here.** The strip
+flourishes once on completion (≤ 650ms, opacity and transform) and leaves the document; the
+pane (Ctrl+., `view.pane`, closed by default) reads the files through `Skein.trail` only while
+its tab is open, once a turn — never on a delta — and says *could not be read* rather than
+drawing an empty list that reads as *none*. A finished plan is `PlanDoc.svelte` at the thread's
+end; *build it here* takes it down itself once the go-ahead is sent, because a plan written by
+a card already out of plan first has no gear change to clear it.
+
+**The offstage wall is measured, not argued.** `snapshot.dom.running` counts running
+animations and those inside `.wall`. With the wall offstage the second is 0, and chat view at
+rest is 0.00% GPU 3D where the wall at rest is 54% (its ambience). Chat view's own status
+animations while cards work hold the present rate up (~20% for three working cards): any
+infinite animation does, whatever it moves, which `motion.md` explains.
 
 ### Starting things (phase 5)
 

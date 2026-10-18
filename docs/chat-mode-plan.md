@@ -178,10 +178,12 @@ gathering and the focus are as left. Additions the plan did not name: `SlashPale
 (the palette lifted out of the dock so both fields draw it), `Icon.svelte`/`icons.ts` (the
 mockups' sprite as data, no `{@html}`), `Cards.all`, `store.rs::LAST_ACTIVE` and
 `Conversation.turnSince` (the sidebar's clocks), `--pb-font` on `PromptBox`, the `--you-*`
-knobs on the thread, `leader.ts::actsOnWall` and `space w v`, the menu's `view` field. **Not yet
-done:** the GPU measurement of offstage against unmounted (below) — the five obligations are
-met, and the measurement is owed before the first release; the `key` op's target (the op
-already takes a selector, which the labs use).
+knobs on the thread, `leader.ts::actsOnWall` and `space w v`, the menu's `view` field. The GPU
+measurement was made in phase 4 (`41b6f03`): with nothing working, chat view in front is 0
+animations and 0.00% GPU 3D while the wall in front is 54% (its ambience); with three cards
+mid-turn nothing animates inside the offstage wall. So offstage is measured equal to unmounted,
+and no unmounted build was needed to show it. The `key` op's target was never wanted: the op
+already takes a selector, which the labs use.
 
 The first visible phase. Reachable only by the switch, Ctrl+Shift+M or `space w v`; an install with
 no stored choice still opens on the wall, and no first-launch screen exists yet. It lands on `main`
@@ -237,6 +239,29 @@ anyone should live in.
     in the lab; `wall.test.ts` asserts the reading).
 
 ## Phase 4 · an agent's life in the thread — L
+
+**Done** — `daa89e2` (the question at the thread's end with its keys, toasts, settling by the
+dwell, queued bubbles), `f3cf780` (`files_handled_by` off the main thread), `a0a704f`
+(timestamps and the run summary), `9502be3` (the side pane, the plan strip, the linked card, the
+relay drawn from its sender), `da352d6` (the plan document card), `41b6f03` (the animation
+count, and the measurement phase 3 owed). Lab `chat`, frozen, fed wire and the real MCP route:
+4a 19/19 (questions in the thread and the dock, a toast, Alt+↓, settling), 4b 19/19, 4c 5/5,
+the dock's keys 2/2, phase 3 re-run 20/20. Deviations:
+
+- **The linked card is read off the spawn's receipt** (`chatview.ts::spawnedHandle`, *its handle
+  is …*), not off `kin`, because kin says *that* a card has children and not which call opened
+  each. The pane's *linked* tab is kin's, and was not lab-driven: only a real `spawn` writes the
+  table, and that is a real turn. Its drawing is the sidebar's nesting, which phase 3 verified.
+- **Reaching other cards from the thread is `others.svelte.ts`**, ambient and provided only by
+  chat view, so the wall's panel draws neither the linked card nor a relay as a message.
+- **The run summary** says *wrote the plan* for a write into `~/.claude/plans` rather than an
+  edit with a diff stat, *started a conversation* only for a spawn that opened one, and nothing
+  about time under a second.
+- **The *send now* path** is lab-checked as far as the queued note; the stop it sends needs a
+  real turn, which no lab here has taken.
+- Chat view's four status animations while cards work (the sidebar's breathing dots, the
+  thread's pip and shimmer) hold the present rate up, ~20% GPU 3D for three working cards
+  against the wall's 59%: the motion pass in phase 6 is where that is looked at.
 
 The first release of chat view, as a minor version, once this phase stands up.
 
