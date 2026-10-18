@@ -53,6 +53,11 @@
   import { settles, DWELL_MS } from "./chatview";
   import Icon from "./Icon.svelte";
   import WindowControls from "./WindowControls.svelte";
+  import SidePane from "./SidePane.svelte";
+  import PlanStrip from "./PlanStrip.svelte";
+  import { provideOthers } from "./others.svelte";
+  import { cardByHandle } from "./chatview";
+  import { view } from "./view.svelte";
 
   let {
     skein,
@@ -124,6 +129,16 @@
   } = $props();
 
   const card = $derived(cards.find(selected));
+  /** Its live plan, read where the wall's plate reads it. */
+  const timeline = $derived(card ? skein.timelines.liveFor(card.id) : null);
+
+  /* What a thread drawn here can reach of the others: the card a spawn opened,
+     the one a relay came from — and selecting it is this view's to say
+     (`others.svelte.ts`). */
+  provideOthers({
+    find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
+    open: (id) => choose(id),
+  });
 
   /* ── the sidebar's rows ─────────────────────────────────────────────── */
 
@@ -215,6 +230,12 @@
 
   let looking = $state(false);
   /** Ctrl+K and the sidebar's *search*. */
+  /** The side pane, open or closed — the bar's toggle and Ctrl+. (§3). */
+  export function togglePane() {
+    view.pane = !view.pane;
+    view.save();
+  }
+
   export function search() {
     looking = true;
   }
@@ -419,7 +440,9 @@
     }
     return ledger.limits?.windows ?? null;
   });
-  const account = $derived(footOf(label, windows, label ? null : (ledger.limits?.plan ?? null)));
+  const account = $derived(
+    footOf(label, windows, label ? null : (ledger.limits?.plan ?? null), starter.ready === "signed-out"),
+  );
   /* This machine's own reading is the ledger's, asked for only while chat view
      is up and no account is managed — the waterfall polls its own, and Rust
      floors both (`limits.rs`). */
@@ -451,7 +474,10 @@
         type="button"
         title={sidebar ? "hide the sidebar (ctrl+shift+S)" : "show the sidebar (ctrl+shift+S)"}
         aria-pressed={sidebar}
-        onclick={() => (sidebar = !sidebar)}><Icon name="side" /></button
+        onclick={() => {
+          sidebar = !sidebar;
+          view.save();
+        }}><Icon name="side" /></button
       >
     </div>
     <div class="where" data-tauri-drag-region>
@@ -470,6 +496,15 @@
       </span>
     {/if}
     {@render extras?.()}
+    {#if card}
+      <button
+        class="iconbtn"
+        type="button"
+        title={view.pane ? "hide the plan, files and linked conversations (ctrl+.)" : "the plan, files and linked conversations (ctrl+.)"}
+        aria-pressed={view.pane}
+        onclick={togglePane}><Icon name="pane" /></button
+      >
+    {/if}
     <div class="views" role="group" aria-label="view">
       <button type="button" onclick={onwall} title="the wall — every conversation at once (ctrl+shift+M, or space then w v)">
         <Icon name="wall" small />wall
@@ -522,6 +557,7 @@
         onwall={() => onshowwall(project.name)}
       />
     {:else}
+    <div class="split">
     <section class="thread" data-attach-to="prompt" style:--read={reading * 1.2}>
       {#if thread?.finder().on}
         <HuntBar hunt={thread.finder()} onclose={() => composer.input?.focus()} />
@@ -582,11 +618,16 @@
       </div>
       {#if card}
         <div class="foot">
+          <div class="above"><PlanStrip {timeline} /></div>
           <Budget {card} {windows} onaccounts={() => onaccount?.()} onusage={() => (pop = true)} />
           <MessageBox {field} {bang} {composer} {card} {starter} />
         </div>
       {/if}
     </section>
+    {#if card && view.pane}
+      <SidePane {card} {cards} {timeline} {kin} trail={(id) => skein.trail(id)} onselect={choose} />
+    {/if}
+    </div>
     {/if}
   </main>
 
@@ -835,9 +876,16 @@
   .chat.nosidebar .sheet {
     margin-left: 8px;
   }
+  /* The thread and, when it is open, the pane beside it (§3). */
+  .split {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+  }
   .thread {
     position: relative;
     flex: 1 1 auto;
+    min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
@@ -932,6 +980,16 @@
     position: relative;
     z-index: 2;
     padding: 0 0 18px;
+  }
+  /* What stands above the message box: the plan, while there is one. */
+  .above {
+    width: min(calc(var(--cv-measure, 46rem) + 2rem), calc(100% - 48px));
+    margin: 0 auto 8px;
+    display: flex;
+    justify-content: center;
+  }
+  .above:empty {
+    display: none;
   }
   /* Its question and its notices, as the last thing in the thread. No cap on
      their height: the column scrolls (§7.4). */

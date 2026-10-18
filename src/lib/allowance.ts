@@ -31,14 +31,18 @@ export function clockOf(ms: number, now: number): string {
 /** The sidebar's foot: who this conversation spends, and the window that binds
  *  it (*max · 47% of this session*). `label` is the managed account it is on,
  *  null for the machine's own credential; `plan` what that account is a
- *  subscription to, where known. */
+ *  subscription to, where known; `signedOut` that the machine's credential is
+ *  known to be signed out (`starting.ts::readiness`), which the foot must not
+ *  contradict while the card above it is asking you to sign in. */
 export function footOf(
   label: string | null,
   windows: readonly Window[] | null,
   plan: string | null,
+  signedOut = false,
 ): { name: string; line: string } {
   const name = label ?? "claude code";
   const w = windows ? binding([...windows]) : null;
+  if (!w && !label && signedOut) return { name, line: "not signed in yet" };
   if (!w) return { name, line: label ? "this conversation's account" : "as this computer is signed in" };
   const used = `${pct(w.used)} of ${windowNoun(w)}`;
   return { name, line: plan ? `${plan.toLowerCase()} · ${used}` : used };

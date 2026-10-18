@@ -41,6 +41,10 @@ describe("the sidebar's foot", () => {
   test("the machine's own credential, with no reading yet", () => {
     expect(footOf(null, null, null)).toEqual({ name: "claude code", line: "as this computer is signed in" });
   });
+  test("signed out is said, not contradicted (the signed-out lab drew 'as this computer is signed in')", () => {
+    expect(footOf(null, null, null, true)).toEqual({ name: "claude code", line: "not signed in yet" });
+    expect(footOf("work", null, null, true).line).toBe("this conversation's account");
+  });
   test("the fullest window binds, the week when it is fuller", () => {
     expect(footOf(null, [win({ used: 10 }), win({ group: "weekly", used: 80 })], null).line).toBe("80% of this week");
   });
