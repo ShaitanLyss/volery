@@ -189,6 +189,15 @@ describe("what a row says", () => {
     );
   });
 
+  test("a subtitle is words, not markdown", () => {
+    expect(subtitleOf(row("x", { lastWords: "**What it does.** A drop under a `title`, _once_." }), "finished")).toBe(
+      "What it does. A drop under a title, once.",
+    );
+    expect(subtitleOf(row("x", { lastWords: "## Round 2: what I'll check" }), "finished")).toBe("Round 2: what I'll check");
+    expect(subtitleOf(row("x", { lastWords: "- first item" }), "finished")).toBe("first item");
+    expect(subtitleOf(row("x", { lastWords: "2 * 3 = 6 and snake_case_name" }), "finished")).toBe("2 * 3 = 6 and snake_case_name");
+  });
+
   test("a history row has its place beside the title and nothing under it", () => {
     const p = groups([row("x", { project: null })], NOW)[0].rows[0];
     expect(p.sub).toBeNull();

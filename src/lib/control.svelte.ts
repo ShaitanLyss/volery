@@ -21,6 +21,7 @@
  * There is no `eval` op, on purpose. A fixed vocabulary is a description of
  * what the app can be asked to do; an eval hole is a description of nothing. */
 
+import { view } from "./view.svelte";
 import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -169,6 +170,9 @@ export type ControlHost = {
    *  thing it should, which the draft's words alone (a token) cannot say. */
   attached: () => { kind: string; name: string; path: string | null }[];
   setDraft: (text: string) => void;
+  /** Go to the wall or to chat view, the way the switch, Ctrl+Shift+M and
+   *  `space w v` do (`App.svelte::switchView`). */
+  switchView: (to: "wall" | "chat") => Promise<void>;
   /** What the slash palette is offering for the draft as it stands. */
   commands: () => { name: string }[];
   /** And what its second stage is offering, once a command that takes a value
@@ -669,6 +673,10 @@ export class Control {
          `pick.ts` keys on and what a test wants to compare. */
       picks: h.studio.picks.map((p) => `${p.kind}:${p.id}`),
       draft: h.draft(),
+      /* Which view the window draws, and chat view's sidebar. A test about chat
+         view asks this before it believes anything it measures. */
+      view: view.current,
+      sidebar: view.sidebar,
       attached: h.attached(),
       flags: h.flags(),
       loaded: h.skein.loaded,
@@ -1633,6 +1641,17 @@ export class Control {
        *  Takes nothing: a chat card has no directory to be given, which is the
        *  whole of what makes it one. The `kind` comes back so a test can see it
        *  got the card it asked for, since nothing else in the snapshot differs. */
+      /** Switch the view: `to=chat` or `to=wall`, through the app's own switch,
+       *  so a spread window un-spreads and a half-answered question carries
+       *  across exactly as the key does. With no `to`, only reads. */
+      view: async (op) => {
+        const to = op.to;
+        if (to === "chat" || to === "wall") await h.switchView(to);
+        else if (to !== undefined) throw new Error("view takes to=wall or to=chat");
+        await settle();
+        return { view: view.current, sidebar: view.sidebar };
+      },
+
       chat: async () => {
         const before = new Set(h.skein.convs.map((c) => c.id));
         await h.openChat();

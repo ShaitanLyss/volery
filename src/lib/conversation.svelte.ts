@@ -704,6 +704,20 @@ export class Conversation {
   /** When the current rest began — the clock urgency decays against. */
   restingSince = $state<number | null>(null);
 
+  /** When this card last did anything, as the store remembers it — its newest
+   *  settled turn, or its birth (`store.rs::LAST_ACTIVE`). Read once, at
+   *  launch; this session's own activity is `restingSince`. Chat view's sidebar
+   *  sorts history by the later of the two, since a card restored dormant has
+   *  no other clock. */
+  lastActive = $state<number | null>(null);
+
+  /** When the turn under way began, or null between turns' notice of one —
+   *  set where a turn opens (`#beginTurn`) and left standing after, since what
+   *  reads it asks only while the card is working. Chat view's sidebar draws a
+   *  working row's age from it, and orders *working* by it so a row does not
+   *  move each time the card speaks (`chatview.ts::groups`). */
+  turnSince = $state<number | null>(null);
+
   /** Put by on purpose: kept on the wall, kept out of what is waiting.
    *
    *  Amber on this wall means *nobody has been back to this in a while*, which
@@ -1530,6 +1544,8 @@ export class Conversation {
     effort?: string | null;
     /** Optional because a row written before schema v23 has no gear. */
     permissionMode?: string | null;
+    /** Read, not stored — absent from a layout file or an older build. */
+    lastActive?: number | null;
   }): Conversation {
     const c = new Conversation(
       row.id,
@@ -1548,6 +1564,7 @@ export class Conversation {
        gave the two ids a reason to differ. A row from before then holds its own
        id, so the fallback is belt and braces rather than a migration. */
     c.sessionId = row.agent_session_id || row.id;
+    c.lastActive = row.lastActive ?? null;
     c.title = row.title || UNNAMED;
     /* A row from before the column existed defaults to false, which is the
        truth about it: no card was ever named by hand before there was a way
@@ -2542,6 +2559,7 @@ export class Conversation {
     this.saidNoAllowance = false;
     this.streaming = "";
     this.restingSince = null;
+    this.turnSince = Date.now();
     this.working = true;
     /* The rest it was about is over, so whatever you saw of it is too — a new
        rest counts from nothing, and a new question reaches you. */

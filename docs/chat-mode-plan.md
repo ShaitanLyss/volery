@@ -47,6 +47,8 @@ Sizes: **S** under ~300 lines changed, **M** under ~800, **L** more (moves count
 
 ## Phase 0 · the leader from an empty field — S
 
+**Done** (`621506f`). Lab 8/8 at the synthetic-key rung; the real-key rung not run.
+
 Lyss, 2026-10-18: *"leader chords should work even when in a text field when it's empty and I do
 a space bar."* Sink `3cd4359c`. Independent of everything else here and useful on the wall today,
 so it ships first.
@@ -84,6 +86,13 @@ Before phase 2 starts, plan-check with card `34b07397`, and post a billboard not
 
 ## Phase 1 · the thread comes out of the transcript — M
 
+**Done** (`3213bb0`, plus `6720d5a` for a bug it uncovered: `.line.you:first-child` had matched
+every prompt since the `.blk` wrapper, so `--tx-round` never drew). Deviations: `Thread` takes a
+`CardHandle` rather than a `Readable` and two callbacks (history and file links ride on the
+handle, so no mounter can forget them), and `Transcript` takes `card` too; the find bar is
+`HuntBar.svelte` over a `Hunting` class the thread owns. Two labs side by side, panel captures
+pixel-identical; typing into the find field and a peered lab's history were not driven.
+
 No visible change.
 
 - **Files.** New `src/lib/Thread.svelte`: the `one` and `column` snippets (`Transcript.svelte`
@@ -107,6 +116,8 @@ No visible change.
   specificity can shift when rules move components; the before/after capture is what catches it.
 
 ## Phase 2a · the composer comes out of App — L
+
+**Done** (`6cd407e`), after 2b. Lab 14/14; the `/clear`-into-a-dormant-card resume was not driven.
 
 No visible change.
 
@@ -138,6 +149,9 @@ No visible change.
 
 ## Phase 2b · what is in front of you comes out of the dock — M
 
+**Done** (`22c2d6e`), before 2a — it did not need the composer, and the attachments work was
+still holding App. `Front` is constructed in App, since chat view unmounts the dock. Lab 9/9.
+
 No visible change.
 
 - **Files.** New `src/lib/front.svelte.ts` (`Dock.svelte` 155–289: items from `cards.asking` and
@@ -155,6 +169,19 @@ No visible change.
   changes; only where they live.
 
 ## Phase 3 · the switch, and chat view's skeleton — L
+
+**Done.** Lab 20/20: the view op switches; the sidebar's groups in §5.1's order; Ctrl+Tab,
+Alt+↓ and a row click leave the viewport and the wall's gathering exactly as they were; a
+Ctrl+Enter from chat view reaches the selected card and not the gathered one; a picture pasted
+into the message box is a chip and nothing is pinned; back on the wall the viewport, the
+gathering and the focus are as left. Additions the plan did not name: `SlashPalette.svelte`
+(the palette lifted out of the dock so both fields draw it), `Icon.svelte`/`icons.ts` (the
+mockups' sprite as data, no `{@html}`), `Cards.all`, `store.rs::LAST_ACTIVE` and
+`Conversation.turnSince` (the sidebar's clocks), `--pb-font` on `PromptBox`, the `--you-*`
+knobs on the thread, `leader.ts::actsOnWall` and `space w v`, the menu's `view` field. **Not yet
+done:** the GPU measurement of offstage against unmounted (below) — the five obligations are
+met, and the measurement is owed before the first release; the `key` op's target (the op
+already takes a selector, which the labs use).
 
 The first visible phase. Reachable only by the switch, Ctrl+Shift+M or `space w v`; an install with
 no stored choice still opens on the wall, and no first-launch screen exists yet. It lands on `main`

@@ -37,6 +37,7 @@
    */
 
   import { untrack } from "svelte";
+  import { view } from "./view.svelte";
   import { hexRgb, rgba, type Rgb } from "./ambience";
   import { centreOf, type Box, type Pt } from "./flow";
   import {
@@ -351,7 +352,8 @@
      carefully. */
   let raf = 0;
   function ensureLoop() {
-    if (raf || still) return;
+    /* Not while the wall is offstage under chat view: frames nobody can see. */
+    if (raf || still || view.current === "chat") return;
     raf = requestAnimationFrame(step);
   }
   function step() {
@@ -373,6 +375,9 @@
     void boxes;
     void scale;
     void charged;
+    /* Coming back from chat view is a reason to paint: a limb that was growing
+       when the wall went offstage has to pick up where its clock now is. */
+    void view.current;
     if (!el) return;
     paint(Date.now());
     ensureLoop();

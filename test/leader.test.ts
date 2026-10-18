@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { CHORDS, LAPSE_MS, LEADER, chord, mayLead, offers } from "../src/lib/leader";
+import { CHORDS, LAPSE_MS, LEADER, actsOnWall, chord, mayLead, offers } from "../src/lib/leader";
 
 describe("where the leader may start", () => {
   test("outside any field, as it always could", () => {
@@ -251,6 +251,7 @@ describe("the which-key hint", () => {
       { keys: "wg", label: "glass: scaled to any screen / one per screen size" },
       { keys: "wp", label: "panel: right / left / floating" },
       { keys: "ws", label: "every screen / one screen" },
+      { keys: "wv", label: "the wall / chat view" },
       { keys: "z", label: "away / back" },
     ]);
   });
@@ -302,9 +303,9 @@ describe("the which-key hint", () => {
   });
 
   test("so is the window", () => {
-    /* Four verbs now: which screens the studio is over, where each of the two
-       things you work *in* is moored, and how the glass follows the one screen
-       it is on. The family was always the argument — placing a window is
+    /* Six verbs now: which screens the studio is over, where each of the two
+       things you work *in* is moored, how the glass follows the one screen it
+       is on, and which of the two views the window draws. The family was always the argument — placing a window is
        several verbs and they want to sit together in the hint — and this is it
        being taken. */
     expect(offers("w")).toEqual([
@@ -313,6 +314,7 @@ describe("the which-key hint", () => {
       { keys: "g", label: "glass: scaled to any screen / one per screen size" },
       { keys: "p", label: "panel: right / left / floating" },
       { keys: "s", label: "every screen / one screen" },
+      { keys: "v", label: "the wall / chat view" },
     ]);
     expect(chord("w", "g")).toMatchObject({ kind: "fire", verb: { kind: "window", act: "glass" } });
     expect(chord("w", "a")).toMatchObject({ kind: "fire", verb: { kind: "window", act: "extent" } });
@@ -363,5 +365,25 @@ describe("the which-key hint", () => {
         expect(b.keys.startsWith(a.keys)).toBe(false);
       }
     }
+  });
+});
+
+describe("which chords want the wall", () => {
+  const verbOf = (keys: string) => CHORDS.find((c) => c.keys === keys)!.verb;
+
+  test("the chords that arrange the wall switch to it under chat view", () => {
+    for (const keys of ["ws", "wp", "wd", "wa", "wg", "gg", "gn", "gr", "ll", "lg", "ls", "la", "cg", "ck", "cl", "ee", "en", "dp", "dr"]) {
+      expect([keys, actsOnWall(verbOf(keys))]).toEqual([keys, true]);
+    }
+  });
+
+  test("the rest mean the same in either view and run where they are", () => {
+    for (const keys of ["wv", "ff", "vv", "dn", "cm", "cc", "cr", "z", "ts"]) {
+      expect([keys, actsOnWall(verbOf(keys))]).toEqual([keys, false]);
+    }
+  });
+
+  test("space w v is the view", () => {
+    expect(verbOf("wv")).toEqual({ kind: "window", act: "view" });
   });
 });

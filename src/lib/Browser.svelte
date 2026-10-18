@@ -21,6 +21,7 @@
    * straight back up. */
 
   import { onDestroy } from "svelte";
+  import { view } from "./view.svelte";
   import LogFace from "./LogFace.svelte";
   import LogTail from "./LogTail.svelte";
   import { emptyBecause, linesFor, tail, type Row } from "./logface";
@@ -62,7 +63,11 @@
     pane.targets.find((t) => t.id === cfg.target) ?? pane.targets[0] ?? null,
   );
 
-  const seeing = $derived(cfg.variant === "page");
+  /* A page shown is a screencast running, which is a frame pushed for every
+     paint of the page — so not while the wall is offstage under chat view,
+     where nobody can see the widget. The subject stays attached; only the
+     frames stop. */
+  const seeing = $derived(cfg.variant === "page" && view.current === "wall");
 
   /* Attaching is an effect rather than something the buttons do, because the
      subject moves on its own: a page the agent navigates away from closes its

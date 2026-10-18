@@ -175,6 +175,14 @@ pub struct StoredConversation {
     pub last_ending: Option<String>,
     /// Put by on purpose: on the wall, out of what is waiting, and not roused.
     pub aside: bool,
+    /// When this card last did anything, in ms: its newest settled turn, or its
+    /// birth when it has none. Chat view's sidebar sorts history by it into
+    /// today, yesterday, this week and earlier (`chatview.ts::dayOf`), and a
+    /// card restored at launch has no other clock — `restingSince` is this
+    /// session's, and is null on every card that has not spoken since. Read
+    /// rather than stored, so it needs no rung: see `LAST_ACTIVE`.
+    #[serde(rename = "lastActive", default)]
+    pub last_active: Option<i64>,
     /// This card had a process when the wall last went away — see
     /// `migrate_v51`. The row holds a generation; this is only whether it is
     /// set, which is the whole of what the front end asks of it. Defaulted for
@@ -5694,6 +5702,15 @@ pub fn delete_server_group(store: tauri::State<'_, Store>, id: String) -> Result
     Ok(())
 }
 
+/// When a conversation (`c`) last did anything: its newest settled turn, or its
+/// birth. A column expression rather than a column, because the answer is
+/// already in `turn` and a stored copy would be a second clock to keep in step
+/// with it. `turn` has no index on `conversation_id` beyond the foreign key's
+/// scan, and that is fine at this size: one row per settled turn, read once at
+/// launch.
+const LAST_ACTIVE: &str =
+    "COALESCE((SELECT MAX(t.ended_at) FROM turn t WHERE t.conversation_id = c.id), c.born_at)";
+
 /// The whole studio, in one round trip. This is what lets the wall paint
 /// itself before anything has been spawned.
 #[tauri::command]
@@ -5728,18 +5745,18 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
     let territories = territory_rows(&conn)?;
 
     let mut cs = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT c.id, c.agent_session_id, c.project_id, c.territory_id, c.cwd, c.title, c.worktree,
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
                     c.permission_mode, c.held_why, c.held_until,
-                    c.rest_seen, c.awake
+                    c.rest_seen, c.awake, {LAST_ACTIVE}
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
-              ORDER BY c.born_at",
-        )
+              ORDER BY c.born_at"
+        ))
         .map_err(|e| e.to_string())?;
     let conversations = cs
         .query_map([], |r| {
@@ -5772,6 +5789,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 held_until: r.get(24)?,
                 rest_seen: r.get::<_, i64>(25)? != 0,
                 awake: r.get::<_, i64>(26)? != 0,
+                last_active: r.get(27)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -9168,6 +9186,38 @@ mod tests {
     }
 
     use super::*;
+
+    /// A card's last activity is its newest turn, or its birth with none — what
+    /// chat view's sidebar sorts a restored card's history by.
+    #[test]
+    fn last_active_is_the_newest_turn_or_the_birth() {
+        let conn = db();
+        seed_project(&conn, "p", "C:/p");
+        for (id, born) in [("quiet", 1_000_i64), ("spoke", 2_000)] {
+            conn.execute(
+                "INSERT INTO conversation (id, project_id, cwd, born_at, kind) VALUES (?1, 'p', 'C:/p', ?2, 'project')",
+                params![id, born],
+            )
+            .unwrap();
+        }
+        for at in [5_000_i64, 9_000, 7_000] {
+            conn.execute(
+                "INSERT INTO turn (conversation_id, ended_at, status_tier) VALUES ('spoke', ?1, 'rest')",
+                params![at],
+            )
+            .unwrap();
+        }
+        let of = |id: &str| -> i64 {
+            conn.query_row(
+                &format!("SELECT {LAST_ACTIVE} FROM conversation c WHERE c.id = ?1"),
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(of("quiet"), 1_000);
+        assert_eq!(of("spoke"), 9_000);
+    }
 
     /// One real stop is one relay, and only work of the child's own earns the
     /// next. Walks the sequence the incident had (sink 24d36a07): the child

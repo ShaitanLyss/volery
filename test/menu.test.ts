@@ -862,3 +862,32 @@ describe("moving a grouping's cards to another machine", () => {
     expect(moveAllOf(menuFor({ kind: "region" }))).toBeNull();
   });
 });
+
+describe("a card's menu under chat view", () => {
+  /* The wall is offstage there, so a row that arranges it would act where
+     nobody can see (docs/chat-mode.md §4.1). */
+  const full = {
+    kind: "card" as const,
+    pinned: true,
+    glass: false,
+    groupings: [{ id: "g2", name: "elsewhere" }],
+    spoken: true,
+  };
+  const all = (view?: "wall" | "chat") =>
+    menuFor({ ...full, view }).flatMap((m) => ("items" in m && m.items ? [m.id, ...m.items.map((i) => i.id)] : [m.id]));
+
+  test("drops the glass, keeping a message, regrouping and unpinning", () => {
+    const chat = all("chat");
+    for (const id of ["glass", "keep:wall", "keep:glass", "regroup", "unpin"]) expect(chat).not.toContain(id);
+  });
+
+  test("keeps what is about the conversation", () => {
+    const chat = all("chat");
+    for (const id of ["aside", "clear", "close", "copy-resume"]) expect(chat).toContain(id);
+  });
+
+  test("and on the wall, or with no view said, nothing changed", () => {
+    expect(all("wall")).toEqual(all(undefined));
+    for (const id of ["keep:wall", "regroup", "unpin"]) expect(all("wall")).toContain(id);
+  });
+});

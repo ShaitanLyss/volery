@@ -28,6 +28,12 @@ export type Pick = { id: string; label: string; on: boolean; note?: string };
 
 export type MenuTarget = {
   kind: MenuKind;
+  /** Which view the menu is opened in. Under chat view the wall is offstage,
+   *  so the rows that arrange it — the glass, keeping a message on it, moving
+   *  a card between its groupings, unpinning — are dropped rather than offered
+   *  to act where nobody can see (`docs/chat-mode.md` §4.1). Set by the card's
+   *  handle, which reads the view, so no surface has to remember to say it. */
+  view?: "wall" | "chat";
   /* card */
   dormant?: boolean;
   pinned?: boolean;
@@ -366,6 +372,8 @@ function tidy(items: (MenuItem | null | undefined | false)[]): MenuItem[] {
  *  card's menu reaches a remote one by being added to the table, not by being
  *  written twice. */
 function cardRows(t: MenuTarget): (MenuItem | null)[] {
+  /* A verb the wall-only rows ask as well: is the wall the view. */
+  const wall = t.view !== "chat";
   const has = (v: Verb) => !t.verbs || t.verbs.has(v);
   return [
         /* First, because on a card that has one it is what you right-clicked
@@ -401,7 +409,7 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            every project until somebody makes a second. The card's own grouping
            is already filtered out by the caller, so a submenu that appears
            always has something in it to pick. */
-        has("regroup") && (t.groupings ?? []).length
+        wall && has("regroup") && (t.groupings ?? []).length
           ? more(
               "regroup",
               "move it to",
@@ -412,7 +420,7 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
               })),
             )
           : null,
-        has("regroup") && (t.groupings ?? []).length ? sep : null,
+        wall && has("regroup") && (t.groupings ?? []).length ? sep : null,
         /* The same verb across a machine boundary — the card, its whole
            conversation, picked up on another wall. A submenu for `regroup`'s
            reason, and absent where there is nowhere to go. The code moves by
@@ -440,7 +448,7 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            reliably answers "nothing" is one you stop reading after the second
            time, which is how a real answer gets missed later. */
         has("processes") && !t.dormant ? item("processes", "processes…") : null,
-        has("pin") && t.pinned ? item("unpin", "let it flow again") : null,
+        wall && has("pin") && t.pinned ? item("unpin", "let it flow again") : null,
         /* One item with two labels rather than two items, because it is one
            state with two sides — the same shape as `pinned`'s "let it flow
            again", which is also only ever offered as the way back. A toggle
@@ -477,7 +485,7 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            you decide about the card rather than things you do to the
            conversation inside it. Nothing stops and nothing is lost — the wall
            still holds its slot — so it is not marked danger. */
-        t.held || !has("glass") ? null : glassItem(t.glass),
+        !wall || t.held || !has("glass") ? null : glassItem(t.glass),
         /* Its last message, hung up beside it and kept there (`tether.ts`).
            Beside the glass because it is the same kind of decision — where on
            this wall you want something kept in view — and a pair of rows
@@ -485,8 +493,8 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            apart, and a list you open to find two rows costs a gesture to tell
            you what this already says. Offered on a card that has said nothing
            yet: a pin is a live view, and its first words arrive in it. */
-        has("keep") ? item("keep:wall", "keep what it last said on the wall") : null,
-        has("keep") ? item("keep:glass", "keep what it last said on the glass") : null,
+        wall && has("keep") ? item("keep:wall", "keep what it last said on the wall") : null,
+        wall && has("keep") ? item("keep:glass", "keep what it last said on the glass") : null,
         sep,
         /* Beside `close`, because both end the conversation — but not marked
            danger, and the difference is real: closing takes the card off the

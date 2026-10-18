@@ -177,6 +177,60 @@
      reason one is free. */
   --ch-shadow: none;
 
+  /* ── chat view (`docs/chat-mode.md` §8) ───────────────────────────────
+     Lamplight: the studio's warm ink, gradients as light, colour still only
+     meaning status. Every one of these is a relationship to the tokens above
+     rather than a literal, so every skin reaches chat view with no per-skin
+     work and studio is unchanged. Each is consumed in a chat view component
+     and read with a fallback there; `test/chattokens.test.ts` holds both. */
+  /* The chrome's face — the system's own variable face on Windows 11 — and the
+     same at display sizes. The agent's prose stays the studio's serif. */
+  --cv-ui: "Segoe UI Variable Text", "Segoe UI", var(--util);
+  --cv-ui-display: "Segoe UI Variable Display", "Segoe UI", var(--util);
+  /* The column. A centred column has room the panel does not. */
+  --cv-measure: 44rem;
+  /* The agent's prose, ~12:1 — derived from the reading knob, so `prose` and
+     `temper` still move it. */
+  --cv-prose: color-mix(in oklab, var(--tx-prose, var(--paper-dim)) 45%, var(--paper));
+  /* Small text that is a note: an age, a count, a hint. `--paper-mute`
+     (4.9:1), never `--paper-faint` (2.8:1, below AA), which `theme.md` keeps
+     for marks. */
+  --cv-note: var(--paper-mute);
+  /* Surfaces: the window behind the sheet, the sheet, the message box. Three
+     lightness steps, each with a hairline and a static shadow. */
+  --cv-ground: var(--well);
+  --cv-sheet: var(--ink);
+  --cv-lift: color-mix(in oklab, var(--surface) 82%, var(--paper) 3%);
+  --cv-hair: color-mix(in oklab, var(--edge) 80%, transparent);
+  /* The lamp is luminance only; the pool is the status of the conversation in
+     front of you, scaled by the skin's bloom so a light skin tints rather than
+     stains. */
+  --cv-lamp: color-mix(in oklab, var(--paper) 6%, transparent);
+  --cv-pool-work: color-mix(in oklab, var(--st-work) calc(24% * var(--ch-bloom, 1)), transparent);
+  --cv-pool-ask: color-mix(in oklab, var(--st-ask) calc(26% * var(--ch-bloom, 1)), transparent);
+  --cv-pool-fail: color-mix(in oklab, var(--st-fail) calc(22% * var(--ch-bloom, 1)), transparent);
+  /* Radii: chips and rows, the message box. The card (12px) and the
+     empty-state box (26px) are declared with the surfaces that draw them. */
+  --cv-r-s: 7px;
+  --cv-r-l: 20px;
+  /* Dither under every gradient, because a gradient on near-black bands and
+     banding is what makes one look cheap. */
+  --cv-grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.45  0 0 0 0 0.4  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+
+  /* ── motion (`docs/chat-mode.md` §9.1) ────────────────────────────────
+     One vocabulary for every transition. App-wide on purpose, so no prefix:
+     the wall may use them next. `--ease-out` is a reference to `--ch-ease`
+     rather than a copy, so a skin's ease moves it. Every motion is transform or
+     opacity and ends (`motion.md`). */
+  --dur-tap: 90ms;
+  --dur-quick: 160ms;
+  --dur-step: 240ms;
+  --dur-scene: 360ms;
+  --dur-stage: 520ms;
+  --ease-out: var(--ch-ease, cubic-bezier(0.2, 0.8, 0.3, 1));
+  --ease-move: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-pop: cubic-bezier(0.34, 1.36, 0.64, 1);
+
   /* ── the sixteen terminal colours (`ansi.ts`) ─────────────────────────
      What a server, a job or a Bash result draws its SGR colours with. Warm
      takes on the standard 16 for a dark ground, and not skin knobs: a program's
@@ -213,6 +267,17 @@
    each pair but is held to the same floor, because a colour that is only legible
    as the plain one is a colour half of a build log cannot use. */
 :root[data-ground="light"] {
+  /* Chat view on a light ground follows `theme.md`'s light ladder: the ground
+     is darkest, the sheet lifts off it, the message box is the brightest thing,
+     and none of them is white. The lamp is a pale light rather than a paper
+     glow, and the pools are thinner, since light reads as light only on dark. */
+  --cv-ground: var(--ink);
+  --cv-sheet: var(--well);
+  --cv-lift: var(--surface);
+  --cv-prose: var(--tx-prose, var(--paper-dim));
+  --cv-lamp: color-mix(in oklab, var(--surface) 70%, transparent);
+  --cv-pool-work: color-mix(in oklab, var(--st-work) 9%, transparent);
+  --cv-pool-ask: color-mix(in oklab, var(--st-ask) 12%, transparent);
   --ansi-0: var(--paper);
   --ansi-1: #9c3a24;
   --ansi-2: #256b57;

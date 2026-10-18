@@ -150,8 +150,18 @@ export function whereOf(r: ChatRow): string {
   return r.host ? `${place} · on ${r.host}` : place;
 }
 
+/** The first line with anything on it, as words: the marks markdown writes
+ *  around them (`**`, `_`, backticks, a heading's `#`, a list's `-`) are taken
+ *  off, since a subtitle is read in passing and a row reading
+ *  `**What it does.**` is a row showing its working. */
 function firstLine(text: string): string {
-  return (text.split("\n").find((l) => l.trim()) ?? "").trim();
+  const line = (text.split("\n").find((l) => l.trim()) ?? "").trim();
+  return line
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^([-*+]|\d+[.)])\s+/, "")
+    /* Only at a word's edges, so `snake_case` and `2 * 3` keep theirs. */
+    .replace(/(^|[\s(])(\*\*|__|\*|_|`)(\S(?:.*?\S)?)\2(?=$|[\s.,;:!?)])/g, "$1$3")
+    .trim();
 }
 
 function tone(r: ChatRow, group: GroupKey): Tone {

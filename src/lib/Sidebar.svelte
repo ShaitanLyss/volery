@@ -1,0 +1,488 @@
+<script lang="ts">
+  /* Chat view's sidebar: every conversation on the wall, sorted by what it
+     needs from you (`docs/chat-mode.md` §5.1). What goes where is decided in
+     `chatview.ts::groups` and nowhere else; this draws the answer.
+
+     Rows travel between groups by FLIP rather than jumping — `animate:flip`
+     is transform only, and it ends — and not at all under `still` or a
+     system that asked for reduced motion. */
+  import { flip } from "svelte/animate";
+  import { cubicInOut } from "svelte/easing";
+  import Icon from "./Icon.svelte";
+  import type { Group, Placed, ProjectRow } from "./chatview";
+
+  let {
+    groups,
+    projects,
+    selected,
+    account = null,
+    onselect,
+    onnew,
+    onsearch,
+    onproject,
+    onmenu,
+    onaccount,
+  }: {
+    groups: Group[];
+    projects: ProjectRow[];
+    selected: string | null;
+    /** Who is signed in and what binds them, for the foot (§5.7). */
+    account?: { name: string; line: string } | null;
+    onselect: (id: string) => void;
+    onnew: () => void;
+    onsearch: () => void;
+    onproject: (name: string) => void;
+    onmenu: (e: MouseEvent, id: string) => void;
+    onaccount?: () => void;
+  } = $props();
+
+  /** Set aside starts folded: it is the end of the list on purpose. */
+  let asideOpen = $state(false);
+
+  /** How long a row's travel takes, or nothing when the wall is asked to keep
+   *  still. Read when the move happens rather than once, so changing the
+   *  setting is heard by the next move. */
+  function travel(): number {
+    const still =
+      document.documentElement.dataset.motion === "still" ||
+      matchMedia("(prefers-reduced-motion: reduce)").matches;
+    return still ? 0 : 360;
+  }
+
+  /** What a row is called to a screen reader: its title, then its state in
+   *  words — the dot's colour is never the only telling (§10.2). */
+  function nameOf(p: Placed): string {
+    const state =
+      p.tone === "ask"
+        ? "needs you"
+        : p.tone === "fail"
+          ? "failed"
+          : p.tone === "work"
+            ? "working"
+            : p.tone === "done"
+              ? "finished"
+              : "";
+    return [p.row.title, state, p.sub ?? ""].filter(Boolean).join(", ");
+  }
+
+  /* §5.1's order: what is live, then the projects, then history and what was
+     set aside. */
+  const LIVE = new Set(["needs", "working", "finished"]);
+  const live = $derived(groups.filter((g) => LIVE.has(g.key)));
+  const rest = $derived(groups.filter((g) => !LIVE.has(g.key)));
+
+  const initial = $derived((account?.name ?? "?").trim().slice(0, 1).toUpperCase());
+</script>
+
+<nav class="side" aria-label="conversations">
+  <button class="new" type="button" onclick={onnew} title="a new conversation (ctrl+shift+O)">
+    <Icon name="plus" />new conversation<kbd>ctrl shift O</kbd>
+  </button>
+  <button class="find" type="button" onclick={onsearch} title="search conversations and everything else (ctrl+K)">
+    <Icon name="search" />search<kbd>ctrl K</kbd>
+  </button>
+
+  <div class="list">
+    {#each live as g (g.key)}
+      {@render group(g)}
+    {/each}
+    {@render folders()}
+    {#each rest as g (g.key)}
+      {@render group(g)}
+    {/each}
+  </div>
+
+  <div class="me">
+    <span class="avatar" aria-hidden="true">{initial}</span>
+    <button class="who" type="button" onclick={() => onaccount?.()} title="accounts and allowance">
+      <b>{account?.name ?? "not signed in"}</b>
+      {#if account?.line}<span>{account.line}</span>{/if}
+    </button>
+  </div>
+</nav>
+
+{#snippet group(g: Group)}
+  <section class="group" aria-label={g.label}>
+    {#if g.key === "aside"}
+      <h2>
+        <button class="fold" type="button" aria-expanded={asideOpen} onclick={() => (asideOpen = !asideOpen)}>
+          <Icon name={asideOpen ? "chev-d" : "chev-r"} small />{g.label}<span class="n">{g.rows.length}</span>
+        </button>
+      </h2>
+    {:else}
+      <h2>{g.label}{#if LIVE.has(g.key)}<span class="n">{g.rows.length}</span>{/if}</h2>
+    {/if}
+    {#if g.key !== "aside" || asideOpen}
+      <ul>
+        {#each g.rows as p (p.row.id)}
+          <li animate:flip={{ duration: travel(), easing: cubicInOut }}>{@render row(p)}</li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+{/snippet}
+
+{#snippet row(p: Placed)}
+  {#if p.ghost}
+    <div class="ghost" aria-hidden="true">{p.ghost}</div>
+  {/if}
+  <button
+    type="button"
+    class="row {p.tone}"
+    data-row={p.row.id}
+    class:on={p.row.id === selected}
+    class:kid={p.depth > 0}
+    style:--depth={p.depth}
+    aria-current={p.row.id === selected ? "true" : undefined}
+    aria-label={nameOf(p)}
+    onclick={() => onselect(p.row.id)}
+    oncontextmenu={(e) => {
+      e.preventDefault();
+      onmenu(e, p.row.id);
+    }}
+  >
+    <i class="st {p.tone}" aria-hidden="true"></i>
+    <span class="t">{p.row.title}</span>
+    <span class="aside">{p.aside}</span>
+    {#if p.sub}<span class="sub">{p.sub}</span>{/if}
+  </button>
+{/snippet}
+
+{#snippet folders()}
+  {#if projects.length}
+    <section class="group" aria-label="projects">
+      <h2>projects</h2>
+      <ul>
+        {#each projects as f (f.name)}
+          <li>
+            <button type="button" class="row folder" onclick={() => onproject(f.name)} aria-label="{f.name}, {f.count} conversations">
+              <Icon name="folder" small />
+              <span class="t">{f.name}</span>
+              <span class="aside">
+                {#if f.live.length}<span class="dots">{#each f.live as t, i (i)}<i class={t}></i>{/each}</span>{/if}
+                <span class="count">{f.count}</span>
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+{/snippet}
+
+<style>
+  .side {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 2px 10px 10px 10px;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+  }
+  kbd {
+    margin-left: auto;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 11px;
+    color: var(--cv-note, var(--paper-mute));
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--cv-hair, var(--edge));
+    background: color-mix(in oklab, var(--surface) 60%, transparent);
+  }
+  .new {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 36px;
+    padding: 0 10px 0 11px;
+    border-radius: 10px;
+    color: var(--paper);
+    background: linear-gradient(180deg, color-mix(in oklab, var(--raised) 100%, var(--paper) 5%), var(--raised));
+    border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 8%);
+    box-shadow:
+      0 1px 0 color-mix(in oklab, var(--paper) 6%, transparent) inset,
+      0 4px 12px -6px color-mix(in srgb, var(--shade) 70%, transparent);
+  }
+  .find {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 34px;
+    margin-top: 6px;
+    padding: 0 10px 0 11px;
+    border-radius: 10px;
+    color: var(--paper-mute);
+    transition: background var(--dur-tap, 90ms) var(--ease-out, ease-out);
+  }
+  .find:hover {
+    background: color-mix(in oklab, var(--surface) 70%, transparent);
+  }
+
+  .list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding-bottom: 8px;
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .group h2 {
+    margin: 0 0 4px;
+    padding: 0 10px;
+    font: 500 11.5px/1.2 var(--cv-ui, var(--util));
+    color: var(--paper-mute);
+    letter-spacing: 0.01em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .group h2 .n {
+    color: var(--cv-note, var(--paper-mute));
+    font-weight: 400;
+  }
+  .fold {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: inherit;
+  }
+
+  .row {
+    position: relative;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    align-items: center;
+    column-gap: 9px;
+    min-height: 32px;
+    padding: 5px 9px 5px calc(10px + var(--depth, 0) * 16px);
+    border-radius: 9px;
+    color: var(--paper-dim);
+    transition: background var(--dur-quick, 160ms) var(--ease-out, ease-out);
+  }
+  .row:hover {
+    background: color-mix(in oklab, var(--surface) 70%, transparent);
+  }
+  .row .t {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row .sub {
+    grid-column: 2 / 4;
+    font-size: 12px;
+    color: var(--paper-mute);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+  }
+  .row .aside {
+    font-size: 11.5px;
+    color: var(--cv-note, var(--paper-mute));
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+  }
+  .row.on {
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--raised) 100%, var(--paper) 3%),
+      color-mix(in oklab, var(--surface) 90%, transparent)
+    );
+    color: var(--paper);
+    box-shadow: 0 0 0 1px var(--cv-hair, var(--edge)) inset;
+  }
+  .row.done .t {
+    font-weight: 500;
+  }
+  /* A row that needs you carries its status as light from one edge — the
+     wash (§8.2). Achromatic everywhere else. */
+  .row.ask {
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--st-ask) calc(15% * var(--ch-bloom, 1) + 4%), transparent),
+      transparent 80%
+    );
+    color: var(--paper);
+  }
+  .row.ask .sub {
+    color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim));
+  }
+  .row.fail .sub {
+    color: color-mix(in oklab, var(--st-fail) 60%, var(--paper-dim));
+  }
+
+  /* A child, joined to its parent by a hairline. */
+  .row.kid::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--depth, 1) * 16px);
+    top: -6px;
+    bottom: 50%;
+    width: 9px;
+    border-left: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    border-bottom-left-radius: 6px;
+  }
+  .ghost {
+    padding: 2px 10px 0 34px;
+    font-size: 12px;
+    color: var(--cv-note, var(--paper-mute));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Status: the dot carries the colour, and a working one breathes. The breath
+     is opacity on a pseudo — the compositor's own — and only while working, so
+     a sidebar with nothing working presents nothing (`motion.md`). */
+  .st {
+    position: relative;
+    width: 14px;
+    height: 14px;
+    display: grid;
+    place-items: center;
+  }
+  .st::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--st-rest);
+  }
+  .st.work::before {
+    background: var(--st-work);
+  }
+  .st.ask::before {
+    background: var(--st-ask);
+  }
+  .st.fail::before {
+    background: var(--st-fail);
+  }
+  .st.done::before {
+    background: transparent;
+    box-shadow: 0 0 0 1.5px var(--paper-mute) inset;
+  }
+  .st.rest::before {
+    width: 6px;
+    height: 6px;
+    background: transparent;
+    box-shadow: 0 0 0 1.3px var(--paper-faint) inset;
+  }
+  .st.work::after,
+  .st.ask::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle, color-mix(in oklab, var(--st-work) 55%, transparent), transparent 70%);
+    animation: breathe 2.4s var(--ease-move, ease-in-out) infinite alternate;
+  }
+  .st.ask::after {
+    background: radial-gradient(circle, color-mix(in oklab, var(--st-ask) 60%, transparent), transparent 70%);
+    animation: none;
+    opacity: 0.9;
+  }
+  @keyframes breathe {
+    from {
+      opacity: 0.25;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  :global(html[data-motion="spare"]) .st::after {
+    animation-timing-function: steps(6, end);
+  }
+  :global(html[data-motion="still"]) .st::after {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .st::after {
+      animation: none;
+    }
+  }
+
+  .folder .dots {
+    display: inline-flex;
+    gap: 3px;
+  }
+  .folder .dots i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--st-work);
+  }
+  .folder .dots i.ask {
+    background: var(--st-ask);
+  }
+  .folder .dots i.fail {
+    background: var(--st-fail);
+  }
+  .folder .count {
+    margin-left: 6px;
+  }
+  .folder :global(svg) {
+    color: var(--paper-mute);
+  }
+
+  .me {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 8px 0 8px;
+    border-top: 1px solid var(--cv-hair, var(--edge));
+  }
+  .avatar {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font: 600 12px var(--cv-ui, var(--util));
+    color: var(--paper);
+    background: radial-gradient(
+      circle at 30% 25%,
+      color-mix(in oklab, var(--raised) 100%, var(--paper) 10%),
+      var(--raised)
+    );
+    box-shadow:
+      0 0 0 2px var(--cv-ground, var(--well)),
+      0 0 0 3.5px var(--edge);
+  }
+  .who {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
+    min-width: 0;
+  }
+  .who b {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--paper);
+  }
+  .who span {
+    font-size: 11.5px;
+    color: var(--paper-mute);
+  }
+</style>

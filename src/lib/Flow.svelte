@@ -33,6 +33,7 @@
    *   glass, so a strand crosses the ground and never a transcript.
    */
 
+  import { view } from "./view.svelte";
   import {
     FILAMENTS,
     PULSES,
@@ -132,8 +133,12 @@
      retires one. */
   const flying = $derived(flights.all.length > 0);
 
+  /* And only while the wall is the view. Under chat view it is offstage —
+     `display: none` stops CSS animation and stops no JavaScript — so a loop here
+     would be frames paid for and impossible to see. The flights wait, and are
+     swept on the first frame back. */
   $effect(() => {
-    if (flying) start();
+    if (flying && view.current === "wall") start();
     else stop();
     return stop;
   });

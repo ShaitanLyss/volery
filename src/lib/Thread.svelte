@@ -695,11 +695,34 @@
   /* Your half of the conversation. Set in against a rule rather than in a
      bubble: the transcript is one column of speech, and what distinguishes you
      is the margin, not a container. */
+  /* Your half of the conversation. On the wall, set in against a rule; in chat
+     view, a bubble on the right — the one convention every chat product shares,
+     and the one visible difference between the two readings of this column
+     (`docs/chat-mode.md` §7.2). It is custom properties rather than a class a
+     mounter reaches in to restyle, and every one of them defaults to exactly
+     what the panel draws, so the panel does not move a pixel:
+
+     `--you-align`, `--you-width` — where the line sits and how wide;
+     `--you-fill`, `--you-radius` — the bubble's ground and corners;
+     `--you-rule` — the left edge (the panel's rule);
+     `--you-edge` — the other three edges (the panel has none but the round's);
+     `--you-pad-l/-r/-t/-b` — the padding; `--you-face`, `--you-size` — the type.
+     */
   .line.you {
     color: var(--tx-you, var(--paper));
-    border-left: 2px solid var(--paper-faint);
-    padding-left: calc(0.6rem * var(--read, 1));
+    border-left: var(--you-rule, 2px solid var(--paper-faint));
+    padding-left: var(--you-pad-l, calc(0.6rem * var(--read, 1)));
     margin-left: -0.05rem;
+    align-self: var(--you-align, auto);
+    width: var(--you-width, 100%);
+    background: var(--you-fill, none);
+    border-radius: var(--you-radius, 0);
+    border-right: var(--you-edge, 0 solid transparent);
+    border-bottom: var(--you-edge, 0 solid transparent);
+    padding-right: var(--you-pad-r, 0);
+    padding-bottom: var(--you-pad-b, 0);
+    font-family: var(--you-face, inherit);
+    font-size: var(--you-size, calc(var(--tx-size, 0.86rem) * var(--read, 1)));
     /* Where a round begins. Two paragraphs inside one answer sit 0.55em apart
        and a prompt sat only `.lines`' gap from the answer above it — about two
        pixels between "next paragraph" and "a whole new thing was said", which
@@ -716,8 +739,8 @@
        as one more horizontal line down a long card. Half the round's air sits
        under it, so the rule leads the prompt instead of touching it. */
     margin-top: calc(var(--tx-round, 0rem) * var(--read, 1));
-    border-top: 1px solid var(--tx-round-rule, transparent);
-    padding-top: calc(var(--tx-round, 0rem) * 0.5 * var(--read, 1));
+    border-top: var(--you-edge, 1px solid var(--tx-round-rule, transparent));
+    padding-top: var(--you-pad-t, calc(var(--tx-round, 0rem) * 0.5 * var(--read, 1)));
   }
   /* The pictures a prompt carried, under it and inside its bracket — the left
      rule continues past them, because they are part of the same thing you said.
@@ -756,8 +779,8 @@
      through the wrapper now, which is the column's first block or nothing. */
   .thread > .blk:first-child > .line.you {
     margin-top: 0;
-    border-top-color: transparent;
-    padding-top: 0;
+    border-top-color: var(--you-first-top, transparent);
+    padding-top: var(--you-pad-t, 0);
   }
   /* On its way. The rule goes dashed and the text sits back a shade — the same
      "not settled yet" the streaming fence uses, and achromatic, because a prompt

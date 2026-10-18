@@ -13,6 +13,12 @@ paths:
   - "src/lib/view.svelte.ts"
   - "src/lib/field.svelte.ts"
   - "src/lib/Dock.svelte"
+  - "src/lib/ChatView.svelte"
+  - "src/lib/Sidebar.svelte"
+  - "src/lib/MessageBox.svelte"
+  - "src/lib/SlashPalette.svelte"
+  - "src/lib/Icon.svelte"
+  - "src/lib/icons.ts"
 ---
 
 # Chat view: one conversation's column, read in two rooms
@@ -109,6 +115,63 @@ card and lands in its transcript; `/gear planning` reaches the focused card only
 dismisses the palette keeping the text; Enter on a gathering refuses and keeps the draft while
 Ctrl+Enter reaches both; Tab steps to the next card; a draft is parked and handed back across a
 switch; a key typed on the wall lands in the draft and focuses the field.
+
+### The switch, and the wall that stays mounted offstage (phase 3)
+
+`view.svelte.ts` holds which view the window draws (`localStorage`, `skein.view.v1`), and
+`App.svelte::switchView` is the one way to change it — the title bar's switch, Ctrl+Shift+M,
+`space w v` and the control surface's `view` op all go through it. Under chat view `App`
+draws `ChatView` instead of the wall's header, band, panel and dock; the wall itself stays
+mounted with `class:offstage` (`display: none`) and `inert`, so going back is instant and
+every card, widget and pane keeps its state. Five obligations come with that, each a bug the
+design review found:
+
+- **Nothing reveals a card on it.** Its surface measures 0 wide, so a reveal decides every card
+  is off screen, pans and saves the viewport. `Canvas.reveal`, `revealWidget`, `fitAll`,
+  `center` and `toCanvas` read the view and do nothing (or answer from the viewport alone).
+  Every road into `focusCard` therefore lands harmlessly, and `ring` stops at the focus under
+  chat view: the wall's *selection* is a gathering Lyss built and chat view never touches it.
+  `openIn`/`openChat` honour the same rule. Canvas imports the holder as `viewing`, because it
+  already has a `view` — the viewport.
+- **Nothing behind it runs.** `display: none` stops CSS animation and no JavaScript, so the
+  canvas gets `ambience={null}`, `Flow`'s and `Lineage`'s frame loops wait on the view, the
+  browser widget's screencast is not `seeing`, and the panel is not mounted at all.
+- **The chrome is not measured offstage.** `arrange.svelte.ts` keeps the lowest chrome height it
+  ever sees per mooring; one frame without the dock would store a height with no dock in it for
+  good, so `onchrome` is ignored under chat view.
+- **The keys that act on the wall are guarded** — `chatKey` in App: Tab is focus traversal,
+  Home is the top of the thread, the wall's undo and Delete are inert, Escape stops a turn and
+  goes no further, Ctrl+Tab walks the *sidebar*, Alt+↓ is the next that needs you. Leader
+  chords that arrange the wall (`leader.ts::actsOnWall`) switch to it and then run, because
+  the chord says you want the wall.
+- **Nothing pastes or drops onto it.** `onPaste` returns under chat view (a paste into the
+  message box is `PromptBox`'s and never reaches it), and a drop on anything but an input
+  opens a folder as a conversation and says where else a file goes — never pins.
+
+The composer's reach is the selected card alone under chat view, with broadcast forced off;
+the lab proved a Ctrl+Enter there reaches the selected card and not the gathered one.
+
+**The thread is restyled by custom properties, never by reaching in.** Your own line is a
+bubble on the right through `--you-align`, `--you-fill`, `--you-radius`, `--you-rule`,
+`--you-edge`, the `--you-pad-*` four, `--you-face` and `--you-size` — each defaulting to exactly
+what the panel draws, so the panel did not move a pixel. The agent's prose takes the reading
+colour through `--tx-prose`, as a reading theme already does.
+
+**The palette is one component** (`SlashPalette.svelte`), lifted out of the dock so chat view's
+message box draws the same rows; the composer carries out what a row does. `PromptBox` gained
+`--pb-font`, because you write in the UI's face and the agent answers in the book's (§8.3).
+
+**The tokens are declared once, consumed, and never read bare.** `--cv-*`, `--dur-*` and
+`--ease-*` live in `tokens.css` (with the light-ground relationships under
+`:root[data-ground="light"]`), and `test/chattokens.test.ts` asserts each is declared, drawn
+with somewhere, and read with a fallback — what `theme.test.ts` asserts of the reading knobs,
+which it never saw. A token a later phase draws is declared with that phase, not ahead.
+`test/palette.test.ts` holds the `--ch-*` reads in `tokens.css` to the same standard.
+
+A restored card had no clock for the sidebar's day groups — `restingSince` is this session's.
+`store.rs::LAST_ACTIVE` reads its newest turn (or its birth) into `lastActive` at load: an
+expression, not a column, so no rung. `Conversation.turnSince` stamps when a turn opens, for a
+working row's age and so *working* does not reshuffle each time a card speaks.
 
 ### A capture of a lab is DPI-aware or it is cropped
 

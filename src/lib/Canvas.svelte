@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { Conversation } from "./conversation.svelte";
+  /* Which view the window draws — named apart from this file's own `view`,
+     the viewport. */
+  import { view as viewing } from "./view.svelte";
   import { cubicOut } from "svelte/easing";
   import { untrack } from "svelte";
   import {
@@ -382,7 +385,9 @@
   /** Screen point → canvas point. Everything that manipulates a node needs
    *  this, because the layer is translated and scaled under them. */
   export function toCanvas(clientX: number, clientY: number) {
-    const r = surface?.getBoundingClientRect();
+    /* Offstage there is no surface to be under: answered from the viewport
+       alone, which is where the wall will be when it comes back. */
+    const r = viewing.current === "chat" ? undefined : surface?.getBoundingClientRect();
     return {
       x: ((clientX - (r?.left ?? 0)) - studio.x) / studio.scale,
       y: ((clientY - (r?.top ?? 0)) - studio.y) / studio.scale,
@@ -487,7 +492,7 @@
    *  the *view* rather than of the canvas, which has no middle: it is unbounded,
    *  and its origin can be miles from anything you are looking at. */
   export function center() {
-    const r = surface?.getBoundingClientRect();
+    const r = viewing.current === "chat" ? undefined : surface?.getBoundingClientRect();
     if (!r) return { x: 0, y: 0 };
     return toCanvas(r.left + r.width / 2, r.top + r.height / 2);
   }
@@ -2304,6 +2309,8 @@
    *  looking at changes. The density stays put because it is a deliberate choice
    *  — this shows you the card, it does not decide how you are reading the wall. */
   export function reveal(id: string) {
+    /* Offstage under chat view (`docs/chat-mode.md` §7.5): the wall is hidden, not unmounted, and its surface measures 0 wide — so a reveal would decide every card is off screen, pan, and save the viewport. Nothing moves the wall while it cannot be seen. */
+    if (viewing.current === "chat") return;
     const shadow = elsewhere.laid.find((l) => l.conv.id === id);
     const n = model.laid.find((l) => l.conv.id === id) ?? shadow;
     if (!n) return;
@@ -2398,6 +2405,7 @@
    *  calls when a countdown that has rung is clicked — a widget is not in
    *  `model.laid`, since nothing on this wall lays it out. */
   export function revealWidget(id: string) {
+    if (viewing.current === "chat") return;
     const w = widgets.items.find((w) => w.id === id);
     if (!w || spotOf(w)) return;
     revealBox(w.x, w.y, w.w, w.h);
@@ -2485,7 +2493,7 @@
   }
 
   export function fitAll() {
-    if (!surface) return;
+    if (!surface || viewing.current === "chat") return;
     /* References and instruments are part of the wall, so framing "everything"
        has to include them — otherwise Home hides the board you just pinned up,
        or the clock you just hung.

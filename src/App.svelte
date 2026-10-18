@@ -193,7 +193,13 @@
   import { Leader } from "./lib/leader.svelte";
   import { Front } from "./lib/front.svelte";
   import { Composer } from "./lib/composer.svelte";
-  import { mayLead } from "./lib/leader";
+  /* Chat view: a second presentation of this same wall (`docs/chat-mode.md`).
+     The view is read from one holder, never passed. */
+  import ChatView from "./lib/ChatView.svelte";
+  import { view } from "./lib/view.svelte";
+  import { replies } from "./lib/replies.svelte";
+  import type { View } from "./lib/viewmode";
+  import { actsOnWall, mayLead, type Verb as ChordVerb } from "./lib/leader";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
@@ -582,6 +588,15 @@
   }
 
   const leader = new Leader((verb) => {
+    /* Under chat view the wall is offstage, and a chord that arranges it says
+       you want it: switch, then run (`leader.ts::actsOnWall`). */
+    if (view.current === "chat" && actsOnWall(verb)) {
+      void switchView("wall").then(() => runChord(verb));
+      return;
+    }
+    runChord(verb);
+  });
+  function runChord(verb: ChordVerb) {
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") {
       if (verb.what === "pile") presence.openPile();
@@ -590,7 +605,8 @@
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
-      if (verb.act === "span") void span.toggle();
+      if (verb.act === "view") void switchView(view.current === "chat" ? "wall" : "chat");
+      else if (verb.act === "span") void span.toggle();
       else if (verb.act === "panel") berths.cyclePanel();
       else if (verb.act === "glass") {
         /* Said back, the way the machine toggles are: on the screen the glass
@@ -647,6 +663,11 @@
       else showSink = true;
     }
     else if (verb.kind === "dock") {
+      /* `space d n` is chat view's Alt+↓ there: the next that needs you. */
+      if (view.current === "chat" && verb.act === "next") {
+        if (!chatview?.nextNeeding()) skein.fault = "nothing is waiting on you";
+        return;
+      }
       const why = dock?.chord(verb.act);
       if (why) skein.fault = why;
     }
@@ -655,7 +676,7 @@
        rather than met on the way back to work. Same surface, `mode="play"` —
        see `Gate.svelte`, which is why this is one line and not a component. */
     else playing = verb.toy;
-  });
+  }
 
   /** A puzzle opened from the shelf, or null. Distinct from `gating`, which is
    *  the same surface standing in the way: one of them ends away mode on the
@@ -1129,6 +1150,8 @@
    *  every gesture takes — the menu, the dock, the chords and the panel ask it
    *  `can` and call `do`, and none of them asks which kind it is. */
   const card = $derived(cards.find(focusedId));
+  /** Chat view is up: the wall is offstage (`switchView`). */
+  const chat = $derived(view.current === "chat");
   /* What is in front of you: the queue every card writes to and which item of
      it is held (`front.svelte.ts`). Here rather than in the dock, which only
      draws the held item, because chat view draws the same queue and unmounts
@@ -1146,7 +1169,11 @@
   /* A card you are looking at finishing is something you watched, so it raises
      no notice — the user's choice. All three facts live here, so this is where
      the question is answered for `Skein`. */
-  skein.watching = (id) => id === focusedId && showDetail && attention.focused;
+  skein.watching = (id) =>
+    id === focusedId && (view.current === "chat" || showDetail) && attention.focused;
+  /* In chat view the conversation in front of you is always open — selecting it
+     is the only way to see it — so being selected with the window in front is
+     being watched, and it raises no notice (`docs/chat-mode.md` §5.2). */
   /* The away pile reads the notices raised while you were out. */
   presence.notices = () => skein.noticeQueue;
 
@@ -1360,6 +1387,21 @@
         await box.target.take(d.paths, box.where, d.links, d.refused);
         return;
       }
+      /* Under chat view nothing reaches the offstage wall (§6.5). A folder on the
+         sheet's ground or the sidebar starts a conversation there, as on the
+         wall; anything else has its two places to go, and is told so. */
+      if (view.current === "chat") {
+        if (!d.paths.length) {
+          if (d.links.length || d.refused.length) skein.fault = d.refused[0] ?? "a link goes into the message box";
+          return;
+        }
+        const sorted = await invoke<{ dirs: string[]; images: string[] }>("classify_drop", { paths: d.paths });
+        for (const dir of sorted.dirs) await openIn(dir);
+        if (sorted.images.length || d.paths.length > sorted.dirs.length) {
+          skein.fault = "drop it on the message box or the conversation to attach it";
+        }
+        return;
+      }
       /* A link means something only in a sentence; on the wall it is
          nothing to pin and nowhere to open, so it is said rather than lost. */
       if (!d.paths.length) {
@@ -1428,7 +1470,9 @@
     const conv = await skein.open(dir, worktree, preset);
     if (conv) {
       focusedId = conv.id;
-      studio.selectOnly(conv.id);
+      /* Chat view leaves the wall's selection alone — a gathering there is
+         yours, and the new card is selected by being focused (§5.2). */
+      if (view.current !== "chat") studio.selectOnly(conv.id);
     }
     spawning = false;
     return conv;
@@ -1443,7 +1487,9 @@
     const conv = await skein.openChat();
     if (conv) {
       focusedId = conv.id;
-      studio.selectOnly(conv.id);
+      /* Chat view leaves the wall's selection alone — a gathering there is
+         yours, and the new card is selected by being focused (§5.2). */
+      if (view.current !== "chat") studio.selectOnly(conv.id);
     }
     spawning = false;
     return conv;
@@ -2852,6 +2898,11 @@
   async function onPaste(e: ClipboardEvent) {
     const data = e.clipboardData;
     if (!data) return;
+    /* Under chat view the wall is offstage, and a picture pinned to it would be
+       a screenshot copied into references, up where nobody can see it, while
+       the message went without it (§6.5). A paste into the message box is
+       `PromptBox`'s and never reaches here; anywhere else it is nothing. */
+    if (view.current === "chat") return;
 
     /* Read the files out synchronously: `clipboardData` is only valid during
        the event, so anything taken after the first await is gone. */
@@ -3167,7 +3218,105 @@
    *  while the dock still pointed a broadcast at whatever was picked before it. */
   function focusCard(c: CardHandle) {
     ring(c);
+    /* Every road here — Ctrl+Tab, the dock's "more", a click on the peek, a
+       timeline step, the sink — lands on chat view's select under chat view:
+       `ring` sets the focus and nothing else, and the canvas does not reveal on
+       a wall that is offstage (`Canvas.reveal`). */
     canvas?.reveal(c.id);
+  }
+
+  /* ── chat view ───────────────────────────────────────────────────────────
+   *
+   * A second presentation of this wall (`docs/chat-mode.md`, `chatview.md`):
+   * the wall stays mounted, offstage, and five things come with that — nothing
+   * reveals a card on it, nothing behind it runs, its chrome is not measured,
+   * the keys that act on it are guarded, and nothing pastes or drops onto it. */
+  let chatview = $state<ReturnType<typeof ChatView> | undefined>();
+  /** Whether the window was spread over several screens when chat view took
+   *  it, so going back to the wall can spread it again (§5.8). */
+  let respread = false;
+
+  /** Go to a view. Chat view is a single-screen layout, so a spread window comes
+   *  back to the home screen first and is spread again on the way back — the
+   *  window moving before the view does, since the two fight otherwise. */
+  async function switchView(to: View) {
+    if (to === view.current) return;
+    if (to === "chat") {
+      /* A question in the dock you had half answered for a card other than
+         the focused one: chat view opens on *that* conversation, because what
+         you were typing into must not change under you (§5.8). */
+      const held = front.shown;
+      if (held && held.card !== focusedId && replies.byYou(held.key)) focusedId = held.card;
+      if (span.view) {
+        respread = true;
+        await span.toggle();
+      }
+      view.set("chat");
+    } else {
+      view.set("wall");
+      if (respread) {
+        respread = false;
+        await tick();
+        await span.toggle();
+      }
+    }
+  }
+
+  /** Chat view's own keys, and the wall's keys made inert while it is up
+   *  (§7.5, §10.1). True when the key was answered here. */
+  function chatKey(e: KeyboardEvent): boolean {
+    const typing = isTyping(e.target);
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.shiftKey && !e.altKey && (e.key === "S" || e.key === "s")) {
+      e.preventDefault();
+      view.sidebar = !view.sidebar;
+      view.save();
+      return true;
+    }
+    if (mod && !e.altKey && e.key === "Tab") {
+      e.preventDefault();
+      chatview?.walk(e.shiftKey ? -1 : 1);
+      return true;
+    }
+    if (e.altKey && !mod && e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!chatview?.nextNeeding()) skein.fault = "nothing is waiting on you";
+      return true;
+    }
+    if (mod && !e.altKey && ["ArrowUp", "ArrowDown", "PageUp", "PageDown"].includes(e.key)) {
+      e.preventDefault();
+      const up = e.key === "ArrowUp" || e.key === "PageUp";
+      chatview?.step(e.key.startsWith("Page") ? "page" : "line", up ? -1 : 1);
+      return true;
+    }
+    if (typing) return false;
+    if (e.key === "Home") {
+      e.preventDefault();
+      chatview?.top();
+      return true;
+    }
+    /* The wall's undo and its plate removal, Tab's walk across cards: all about
+       a wall nobody can see. Tab is left to the browser — focus traversal. */
+    if (mod && !e.altKey && ["z", "Z", "y", "Y"].includes(e.key)) return true;
+    if (e.key === "Delete" || e.key === "Backspace" || e.key === "Tab") return true;
+    if (e.key === "Escape") {
+      /* Stops a turn, and goes no further: it never deselects, which would
+         empty the view (§5.6). Anything open over the view answers its own. */
+      if (menu || showImport || showThemes || showAccounts || showKeyring || showFlyway || showSink || showDrop || showAnnals || unfinished || openRun || guiding)
+        return true;
+      if (card && card.can("stop") === "yes") void card.do("stop");
+      return true;
+    }
+    /* A printable key with nothing focused goes into the message box, as it
+       goes into the dock on the wall — and the box is the composer's input. */
+    if (e.key.length === 1 && !mod && !e.altKey && !menu && composer.reach.length > 0) {
+      e.preventDefault();
+      field.text += e.key;
+      field.caret = null;
+      void composer.focus();
+      return true;
+    }
+    return false;
   }
 
   /** Put the ring on a card without moving the wall. The gathering follows: a
@@ -3176,6 +3325,9 @@
    *  the one thing in a focus that is about which wall a card is on. */
   function ring(c: CardHandle) {
     focusedId = c.id;
+    /* Never the wall's selection under chat view: that is a gathering Lyss
+       may have built, and chat view does not read it (§5.2). */
+    if (view.current === "chat") return;
     if (c.conv) studio.selectOnly(c.id);
     else studio.clearSelection();
   }
@@ -3425,7 +3577,10 @@
        you typed, which is what every find bar does. */
     if ((e.key === "f" || e.key === "F") && (e.ctrlKey || e.metaKey) && !e.altKey) {
       e.preventDefault();
-      if (!shell.open && !finder.open && card && showDetail) transcript?.hunt();
+      if (!shell.open && !finder.open) {
+        if (view.current === "chat") chatview?.hunt();
+        else if (card && showDetail) transcript?.hunt();
+      }
       return;
     }
 
@@ -3509,7 +3664,14 @@
       return;
     }
 
-    if (e.key === "F11") {
+    if (view.current === "chat" && chatKey(e)) return;
+
+    if (e.ctrlKey && e.shiftKey && !e.altKey && (e.key === "M" || e.key === "m")) {
+      /* Wall ↔ chat, from anywhere and mid-draft (`docs/chat-mode.md` §5.8):
+         the draft is the window's, so it goes with you either way. */
+      e.preventDefault();
+      void switchView(view.current === "chat" ? "wall" : "chat");
+    } else if (e.key === "F11") {
       e.preventDefault();
       const win = getCurrentWindow();
       await win.setFullscreen(!(await win.isFullscreen()));
@@ -3863,21 +4025,32 @@
       skein.fault = "no card has the focus";
       return;
     }
+    /* Under chat view the card is not on screen to be pointed at, so the menu
+       opens where the conversation's title is. */
+    const node =
+      view.current === "chat"
+        ? null
+        : (document.querySelector(
+            `[data-conv="${CSS.escape(c.id)}"], [data-shadow="${CSS.escape(c.id)}"]`,
+          ) as HTMLElement | null);
+    const r = node?.getBoundingClientRect();
+    menuAt(c, r ? r.left + 12 : window.innerWidth / 3, r ? r.top + 12 : 60, true);
+  }
+
+  /** A card's menu, at a point. `keyed` when the keyboard opened it, so the
+   *  first row is lit for the arrows. */
+  function menuAt(c: CardHandle, x: number, y: number, keyed: boolean) {
     const items = menuFor(c.menu());
     if (!items.length) return;
-    const node = document.querySelector(
-      `[data-conv="${CSS.escape(c.id)}"], [data-shadow="${CSS.escape(c.id)}"]`,
-    ) as HTMLElement | null;
-    const r = node?.getBoundingClientRect();
     menu = {
-      x: r ? r.left + 12 : window.innerWidth / 3,
-      y: r ? r.top + 12 : window.innerHeight / 3,
+      x,
+      y,
       items,
       act: (id) => {
         const v = rowVerb(id);
         if (v) void c.do(v.verb, v.args);
       },
-      keyed: true,
+      keyed,
     };
   }
 
@@ -4068,6 +4241,7 @@
        would be the slow one. `field.put` is also how a draft is *cleared* —
        `setDraft("")` — and how a parked one is handed back on a card switch,
        which is why the emptiness check is here rather than inside `stir`. */
+    switchView: (to) => switchView(to),
     setDraft: (t) => {
       field.put(t);
       if (stirsCard(t) && !field.banging) card?.stir();
@@ -4586,41 +4760,10 @@
     {/if}
   {/snippet}
 
-  <!-- This bar IS the title bar. Undecorated window, so dragging, double-click
-       to maximise, and the window buttons all live here. -->
-  <!-- While spread, the bar stops being a title bar: a drag would carry a window
-       the size of every screen off them, and a double-click would maximise it
-       onto one. Tauri's drag script listens on `document`, so stopping the
-       press here is the whole of the switch. Not a control, so no role: it is
-       the banner, and the handler only ever *declines* a gesture. -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header
-    class="bar"
-    data-tauri-drag-region
-    bind:this={bar}
-    onmousedown={(e) =>
-      spread &&
-      (e.target as HTMLElement).hasAttribute?.("data-tauri-drag-region") &&
-      e.stopPropagation()}
-  >
-    <!-- Never drawn, never reachable, and the only honest place to read a
-         natural width from: measuring the real items would mean measuring the
-         thing the measurement is about to change, which is how a fold gets into
-         a loop with itself. `inert` so nothing in here can be tabbed to or
-         clicked, and absolutely placed so it costs the bar no room. -->
-    <div class="ruler" aria-hidden="true" inert>
-      {#each FOLD_ORDER as key (key)}
-        {#if barPresent.has(key)}
-          <span class="rule" data-rule={key}>{@render chromeItem(key, true)}</span>
-        {/if}
-      {/each}
-    </div>
-
-    <span class="wordmark" data-tauri-drag-region data-fixed>Volery</span>
-    {#if shows("tag")}
-      {@render chromeItem("tag", false)}
-    {/if}
-    <span class="grow" data-tauri-drag-region></span>
+  <!-- What the window's title bar carries in either view: the update offer and
+       the control chip. One snippet, drawn by the wall's bar and by chat
+       view's, so the two cannot drift. -->
+  {#snippet barExtras()}
     <!--
       A newer Volery. Quiet until there is one, and then one button rather than a
       dialog: an update is an offer, and an offer that interrupts you is a
@@ -4662,6 +4805,53 @@
         >control :{control.endpoint.port}</span
       >
     {/if}
+  {/snippet}
+
+  <!-- Chat view's band: the fault line, which is the window's, at the head of
+       its sheet. The servers and effects drawers are the wall's. -->
+  {#snippet chatBand()}
+    {#if skein.fault}
+      <button class="fault" onclick={() => (skein.fault = null)}>{skein.fault}</button>
+    {/if}
+  {/snippet}
+
+  {#if !chat}
+  <!-- This bar IS the title bar. Undecorated window, so dragging, double-click
+       to maximise, and the window buttons all live here. -->
+  <!-- While spread, the bar stops being a title bar: a drag would carry a window
+       the size of every screen off them, and a double-click would maximise it
+       onto one. Tauri's drag script listens on `document`, so stopping the
+       press here is the whole of the switch. Not a control, so no role: it is
+       the banner, and the handler only ever *declines* a gesture. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <header
+    class="bar"
+    data-tauri-drag-region
+    bind:this={bar}
+    onmousedown={(e) =>
+      spread &&
+      (e.target as HTMLElement).hasAttribute?.("data-tauri-drag-region") &&
+      e.stopPropagation()}
+  >
+    <!-- Never drawn, never reachable, and the only honest place to read a
+         natural width from: measuring the real items would mean measuring the
+         thing the measurement is about to change, which is how a fold gets into
+         a loop with itself. `inert` so nothing in here can be tabbed to or
+         clicked, and absolutely placed so it costs the bar no room. -->
+    <div class="ruler" aria-hidden="true" inert>
+      {#each FOLD_ORDER as key (key)}
+        {#if barPresent.has(key)}
+          <span class="rule" data-rule={key}>{@render chromeItem(key, true)}</span>
+        {/if}
+      {/each}
+    </div>
+
+    <span class="wordmark" data-tauri-drag-region data-fixed>Volery</span>
+    {#if shows("tag")}
+      {@render chromeItem("tag", false)}
+    {/if}
+    <span class="grow" data-tauri-drag-region></span>
+    {@render barExtras()}
     <!-- The cluster that gives way. `min-width: 0` and its own `overflow` are
          the guarantee: whatever the measurement below decides, this is the only
          thing in the bar that may shrink, so the open button and the window
@@ -4683,6 +4873,17 @@
         {@render chromeItem(key, false)}
       {/each}
     </Overflow>
+    <!-- The way into chat view from the wall: one conversation at a time, the
+         shape people know from other chat apps (`docs/chat-mode.md`). Fixed
+         rather than foldable, because the view is the one thing in the bar
+         that is not a verb on the wall. -->
+    <button
+      class="ghost"
+      data-fixed
+      data-view="chat"
+      onclick={() => void switchView("chat")}
+      title="chat view — one conversation at a time (ctrl+shift+M, or space then w v)">chat</button
+    >
     <button class="open" onclick={pickFolder} disabled={spawning} data-fixed>
       {spawning ? "opening…" : "Open a folder…"}
     </button>
@@ -4693,6 +4894,7 @@
          way it did as a direct child. -->
     <span class="anchor" data-fixed><WindowControls /></span>
   </header>
+  {/if}
 
   <!-- Everything that stands in the column between the title bar and the wall,
        in one box: the fault bar and the two drawers the bar's buttons open.
@@ -4701,6 +4903,7 @@
        *and* this to reach the title bar, so it has to be measured as one and
        stepped aside as one (`panelReach`). Anything new that stands here goes
        inside it, or the panel's head is drawn over it. -->
+  {#if !chat}
   <div
     class="band"
     bind:borderBoxSize={bandBox}
@@ -4719,6 +4922,7 @@
       <Effects {ambience} />
     {/if}
   </div>
+  {/if}
 
   <Glance />
 
@@ -4923,8 +5127,49 @@
        on the dock's top edge — and beside an available-width dock, the panel
        runs on past that edge, so a strip the wall's width was drawn over the
        newest lines of the transcript. -->
+  {#if chat}
+    <ChatView
+      bind:this={chatview}
+      {skein}
+      {cards}
+      {front}
+      {composer}
+      {field}
+      {bang}
+      selected={focusedId}
+      kin={elsewhere.kin}
+      reading={reading}
+      watching={attention.focused}
+      bind:sidebar={view.sidebar}
+      onselect={(id) => {
+        const c = cards.find(id);
+        if (c) ring(c);
+      }}
+      onwall={() => void switchView("wall")}
+      onmenu={(e, id) => {
+        const c = cards.find(id);
+        if (c) menuAt(c, e.clientX, e.clientY, false);
+      }}
+      onnew={() => void openChat()}
+      onsearch={() => (skein.fault = "search arrives with the next step of chat view — ctrl+F finds in this conversation")}
+      onproject={(name) => {
+        const newest = skein.convs.filter((c) => c.project === name).at(-1);
+        if (newest) ring(cards.of(newest));
+      }}
+      onaccount={() => (showAccounts = true)}
+      onread={setRead}
+      extras={barExtras}
+      band={chatBand}
+    />
+  {/if}
+  <!-- Offstage under chat view: hidden, not unmounted, so the switch back is
+       instant and every card, widget and pane keeps its state. `display: none`
+       by a class — the `hidden` attribute loses to `.wall`'s own display — and
+       `inert`, so nothing in it can be tabbed to or clicked. -->
   <main
     class="wall"
+    class:offstage={chat}
+    inert={chat}
     class:sizing={!!grip}
     style:--beside-left={footInset.left ? `${footInset.left}px` : undefined}
     style:--beside-right={footInset.right ? `${footInset.right}px` : undefined}
@@ -4965,7 +5210,7 @@
           focusedId = conv.id;
           void finder.lookAt(planRoot(path), planFile(path));
         }}
-        ambience={wallAmbience}
+        ambience={chat ? null : wallAmbience}
         flights={skein.flights}
         lineage={elsewhere.kin}
         billboard={skein.board}
@@ -4976,7 +5221,12 @@
         homeScreen={spread
           ? { x: spread.x, y: spread.y, w: roomW, h: Math.max(0, winH - spread.y - spread.b) }
           : null}
-        onchrome={(h) => void arrangements.observeChrome(berths.dock.site, h)}
+        onchrome={(h) => {
+          /* Never measured offstage: the lowest chrome ever seen is kept per
+             mooring, and one frame of the wall laid out without its dock would
+             store a height with no dock in it, for good (§7.5). */
+          if (!chat) void arrangements.observeChrome(berths.dock.site, h);
+        }}
         {focusedId}
         draft={field.preview}
         draftIds={targetIds}
@@ -5031,7 +5281,7 @@
         onstickproject={(id, at) => skein.stickTerritory(id, at)}
         onnameterritory={(id, name) => skein.renameTerritory(id, name)}
       />
-      {#if card && showDetail}
+      {#if card && showDetail && !chat}
         <aside
           class="side"
           data-attach-to="prompt"
@@ -5142,6 +5392,7 @@
     <Hearing {voicing} />
   </div>
 
+  {#if !chat}
   <Dock
     bind:this={dock}
     {field}
@@ -5167,6 +5418,7 @@
     oncycle={cycleWaiting}
     onselect={focusCard}
   />
+  {/if}
 
   <!-- The break, taken. Last in the studio and above everything in it, panel
        and dock included — this is the one thing in the app that stops *you*
@@ -5446,6 +5698,11 @@
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
+  }
+  /* Offstage under chat view. A class rather than `hidden`, which `.wall`'s own
+     `display` would beat (`docs/chat-mode.md` §7.5). */
+  .wall.offstage {
+    display: none;
   }
   /* The voice bar's box: a column, so the bar inside it is centred as it was
      when it was the studio's own child, and positioned above the wall for the

@@ -98,7 +98,7 @@ export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
   | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" }
-  | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" }
+  | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" }
@@ -198,6 +198,9 @@ export const CHORDS: readonly Chord[] = [
   { keys: "dr", label: "what the asking card last said", verb: { kind: "dock", act: "glance" } },
   { keys: "sd", label: "drop something in the sink", verb: { kind: "sink", act: "drop" } },
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
+  /* `wv`: the wall or chat view (`docs/chat-mode.md` §5.8) — how the window is
+     drawn, so the window family. Ctrl+Shift+M is the same, from anywhere. */
+  { keys: "wv", label: "the wall / chat view", verb: { kind: "window", act: "view" } },
   /* `g` is the grouping family — how this folder's work is arranged on the
      wall, which is what v42 made a thing you can have more than one of. A
      family rather than two letters off the top, per the rule above the table:
@@ -440,4 +443,32 @@ export function offers(open: string): { keys: string; label: string }[] {
   return CHORDS.filter((c) => c.keys.startsWith(open) && c.keys.length > open.length)
     .map((c) => ({ keys: c.keys.slice(open.length), label: c.label }))
     .sort((a, b) => (a.keys < b.keys ? -1 : a.keys > b.keys ? 1 : 0));
+}
+
+/** Whether a chord acts on the wall itself — its windows, its groupings, a
+ *  plan's plate, the glass, another wall's section, the dock's own queue.
+ *
+ *  Chat view keeps the wall offstage, and a chord that moved or arranged
+ *  something on it would do so where nobody can see (`docs/chat-mode.md`
+ *  §7.5). The chord says you want the wall, so chat view switches to it and
+ *  then runs it. Everything else — finding a file, the themes, the toys, a
+ *  card's own verbs, away — means the same in either view and runs where it is.
+ *  The view chord itself is the one window verb that is not about the wall. */
+export function actsOnWall(verb: Verb): boolean {
+  switch (verb.kind) {
+    case "window":
+      return verb.act !== "view";
+    case "grouping":
+    case "plan":
+    case "elsewhere":
+      return true;
+    case "card":
+      return verb.act === "glass" || verb.act === "keep" || verb.act === "keep-glass";
+    case "dock":
+      /* The next thing waiting is chat view's too — its *needs you*. The
+         rest are the dock's own unsent replies, which live on the wall. */
+      return verb.act !== "next";
+    default:
+      return false;
+  }
 }

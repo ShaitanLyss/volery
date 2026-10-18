@@ -51,7 +51,7 @@
    *     />
    *
    * Styled by custom properties so a surface sets the look without reaching in:
-   * `--pb-bg`, `--pb-border`, `--pb-pad`, `--pb-size`, `--pb-max`. Defaults are
+   * `--pb-bg`, `--pb-border`, `--pb-pad`, `--pb-size`, `--pb-max`, `--pb-font`. Defaults are
    * the dock's. */
   import { tick, untrack, type Snippet } from "svelte";
   import type { HTMLTextareaAttributes } from "svelte/elements";
@@ -271,7 +271,7 @@
     border: 0;
     resize: none;
     color: var(--paper);
-    font-family: var(--body);
+    font-family: var(--pb-font, var(--body));
     font-size: var(--pb-size, 0.9rem);
     line-height: 1.45;
     max-height: var(--pb-max, 7rem);
@@ -292,7 +292,7 @@
      chips drift off the characters they sit on. */
   .ink.marked textarea,
   .ink.marked .tint {
-    font-family: var(--body);
+    font-family: var(--pb-font, var(--body));
     font-size: var(--pb-size, 0.9rem);
     line-height: 1.45;
   }

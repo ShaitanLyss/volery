@@ -39,6 +39,7 @@ import { closeWarnings } from "./closing";
 import { presetById } from "./presets";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
+import { view } from "./view.svelte";
 
 /** What a gesture holds. See the head of this file. */
 export interface CardHandle {
@@ -178,6 +179,7 @@ export class LocalCard implements CardHandle {
     const c = this.conv;
     return {
       kind: "card",
+      view: view.current,
       dormant: c.dormant,
       spoken: c.everSpoke || c.working,
       aside: c.aside,
@@ -363,6 +365,7 @@ export class RemoteCard implements CardHandle {
     const s = this.shadow;
     return {
       kind: "card",
+      view: view.current,
       host: s.host,
       verbs: verbsFor(s.remote),
       glass: !!s.glass,
@@ -480,6 +483,13 @@ export class Cards {
     if (c) return this.#ofConv(c);
     const s = this.walls.find(id);
     return s ? this.#ofShadow(s) : null;
+  }
+
+  /** Every card, here and on every other wall, as handles — this wall's in
+   *  the order it opened them, then every other's. Chat view's sidebar lists
+   *  them (`chatview.ts::groups`). */
+  get all(): CardHandle[] {
+    return [...this.skein.convs.map((c) => this.#ofConv(c)), ...this.walls.shadows.map((s) => this.#ofShadow(s))];
   }
 
   /** The handle for a card here. */
