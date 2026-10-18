@@ -510,3 +510,11 @@ question that silently vanished is a card that appears to have forgotten it.
 reaches one process), the finite wait, the hard failure when the card's account is not signed
 in rather than a quiet fall-through to whichever one is, and the refusal when a card has never
 taken a turn — there is nothing to fork. `bun tools/lift-aside.ts` runs its five assertions.
+
+**A side question carries what is attached to it** (sink `fd7ef025`). The dock's draft is cut per
+card before the field is cleared, as a prompt is, and a picture goes as blocks: the fork then
+reads and answers in stream-json — `--input-format stream-json --output-format stream-json` —
+one envelope holding the frame and then the question's blocks in order, and the answer is the
+`result` event's text (`aside::envelope_of`, `answer_of`). Words alone keep the plain-text path
+they always had; a file is already its path in the words. Driven on a lab wall with a Haiku
+card: `/btw what colours are in [shot.png]` named the three colours of a pasted picture.
