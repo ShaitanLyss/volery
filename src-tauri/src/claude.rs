@@ -304,6 +304,86 @@ fn install() -> Result<String, String> {
         .to_string())
 }
 
+/// Whether the machine's own Claude Code is signed in — the credential a card
+/// spawns as when it is on no account Volery manages. Mirrors the parts of
+/// `claude auth status --json` the empty state reads.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Auth {
+    pub logged_in: bool,
+    /// `claude.ai`, `none`, or whatever else the CLI names its method.
+    pub method: String,
+    /// `subscriptionType` — `max`, `pro`, `team` — when signed in to one.
+    pub plan: Option<String>,
+}
+
+/// Read what `auth status --json` printed. `None` for anything that is not the
+/// record, so a CLI that changed its shape reads as "could not tell" rather
+/// than as signed out.
+pub fn read_auth(said: &str) -> Option<Auth> {
+    let v: serde_json::Value = serde_json::from_str(said.trim()).ok()?;
+    let logged_in = v.get("loggedIn")?.as_bool()?;
+    Some(Auth {
+        logged_in,
+        method: v
+            .get("authMethod")
+            .and_then(|m| m.as_str())
+            .unwrap_or("none")
+            .to_string(),
+        plan: v
+            .get("subscriptionType")
+            .and_then(|m| m.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    })
+}
+
+/// Ask the CLI whether it is signed in, without a turn.
+///
+/// `tools/probe-auth.ts` is why this is the question and why the exit code is
+/// ignored: signed out exits **1** with a perfectly good record on stdout, and
+/// a reader that took a non-zero exit as "could not ask" would call a
+/// newcomer's machine broken rather than signed out. Spawned in Volery's own
+/// environment, which is the one an unmanaged card inherits — nothing set,
+/// nothing removed — so the answer is about the card that would spawn. About a
+/// second a call (the probe, 2.1.288), so the front end asks when the empty
+/// state is drawn and on *look again*, never on a timer.
+pub fn auth_status(home: &Path) -> Result<Auth, String> {
+    use std::process::Stdio;
+    let mut cmd = Command::new(program(home));
+    cmd.args(["auth", "status", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    quiet(&mut cmd);
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("could not ask claude code: {e}"))?;
+    /* In a job like every other spawn, though this one exits on its own in a
+       second: what the promise "children die with the app" is worth is what
+       the job holds (`CLAUDE.md`). */
+    let job = crate::servers::jobs::Job::new();
+    if let Some(j) = &job {
+        j.assign(child.id());
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("could not ask claude code: {e}"))?;
+    read_auth(&String::from_utf8_lossy(&out.stdout))
+        .ok_or_else(|| "claude code did not say whether it is signed in".to_string())
+}
+
+/// What chat view's empty state asks before the first message (§5.9).
+#[tauri::command]
+pub async fn claude_auth(app: tauri::AppHandle) -> Result<Auth, String> {
+    use tauri::Manager;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("no home dir: {e}"))?;
+    crate::off_main(move || auth_status(&home)).await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +423,32 @@ mod tests {
             "the desktop app's directory must not be in the search, or a \
              not-found message sends somebody to reinstall the wrong product"
         );
+    }
+
+    /// The two records `tools/probe-auth.ts` read off claude 2.1.288, less the
+    /// fields it redacts.
+    #[test]
+    fn a_signed_in_record_reads_signed_in_with_its_plan() {
+        let said = r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"team"}"#;
+        assert_eq!(
+            read_auth(said),
+            Some(Auth { logged_in: true, method: "claude.ai".into(), plan: Some("team".into()) })
+        );
+    }
+
+    #[test]
+    fn a_signed_out_record_reads_signed_out() {
+        let said = r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty","configDirectory":"C:\\Users\\x\\.claude"}"#;
+        assert_eq!(
+            read_auth(said),
+            Some(Auth { logged_in: false, method: "none".into(), plan: None })
+        );
+    }
+
+    #[test]
+    fn anything_else_is_could_not_tell_rather_than_signed_out() {
+        assert_eq!(read_auth(""), None);
+        assert_eq!(read_auth("error: unknown command 'auth'"), None);
+        assert_eq!(read_auth(r#"{"authMethod":"none"}"#), None);
     }
 }

@@ -158,6 +158,10 @@ bun tools/probe-skills.ts initialize   # the whole slash vocabulary with a descr
                                    # shows what system/init publishes; `silent` that it
                                    # publishes nothing until a first message lands;
                                    # `seeded` adds three .claude/commands/ files
+bun tools/probe-auth.ts            # whether this machine's own Claude Code is signed in,
+                                   # asked through `claude auth status --json` with no turn.
+                                   # Signed out exits 1 with a good record — the exit code is
+                                   # not a failure. Chat view's empty state rests on it
 bun tools/probe-modes.ts           # which permission modes a card can be put into, and OUT
                                    # of. `--plan-born` reproduces the one-way door: a card
                                    # spawned `--permission-mode plan` is refused

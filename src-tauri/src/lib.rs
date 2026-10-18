@@ -926,6 +926,7 @@ pub fn run() {
             browser::browser_open,
             claude::find_claude,
             claude::install_claude,
+            claude::claude_auth,
             accounts::list_accounts,
             accounts::add_account,
             accounts::remove_account,
