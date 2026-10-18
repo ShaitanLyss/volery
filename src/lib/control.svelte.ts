@@ -1357,6 +1357,29 @@ export class Control {
             h: Math.round(r.height),
           };
         }),
+        /* What the compositor is being asked to move: every running animation
+           in the document, and how many of them are inside the wall. Chat view
+           holds the wall offstage rather than unmounting it, and the claim that
+           costs nothing is exactly `offstage: 0` — `display: none` cancels a
+           CSS animation, where `visibility` or an opacity would not. The GPU a
+           wall costs rides on this count (`motion.md`), so it is read here
+           rather than reasoned about. */
+        running: (() => {
+          const live = document.getAnimations().filter((x) => x.playState === "running");
+          const wall = document.querySelector(".wall");
+          const inWall = (x: Animation) => {
+            const t = (x.effect as KeyframeEffect | null)?.target;
+            return !!(t && wall?.contains(t));
+          };
+          /* Named, so a cost can be traced to its rule: an animation's name
+             and the class of what it moves. */
+          const names = live.map((x) => {
+            const t = (x.effect as KeyframeEffect | null)?.target as Element | null;
+            const name = (x as CSSAnimation).animationName ?? (x as CSSTransition).transitionProperty ?? "script";
+            return `${name}@${t?.classList[0] ?? t?.tagName.toLowerCase() ?? "?"}`;
+          });
+          return { all: live.length, wall: live.filter(inWall).length, names };
+        })(),
         imageNodes: document.querySelectorAll("[data-image]").length,
         seatNodes: document.querySelectorAll("[data-seat]").length,
         transcriptOpen: !!document.querySelector(".side"),
