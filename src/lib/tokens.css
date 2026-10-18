@@ -276,14 +276,17 @@
   /* Chat view on a light ground follows `theme.md`'s light ladder: the ground
      is darkest, the sheet lifts off it, the message box is the brightest thing,
      and none of them is white. The lamp is a pale light rather than a paper
-     glow, and the pools are thinner, since light reads as light only on dark. */
+     glow, and the pools are thinner, since light reads as light only on dark —
+     thinner by the skin's own bloom, which every light skin turns down to about
+     a third, so a skin that wants more of it says so in one knob. */
   --cv-ground: var(--ink);
   --cv-sheet: var(--well);
   --cv-lift: var(--surface);
   --cv-prose: var(--tx-prose, var(--paper-dim));
   --cv-lamp: color-mix(in oklab, var(--surface) 70%, transparent);
-  --cv-pool-work: color-mix(in oklab, var(--st-work) 9%, transparent);
-  --cv-pool-ask: color-mix(in oklab, var(--st-ask) 12%, transparent);
+  --cv-pool-work: color-mix(in oklab, var(--st-work) calc(30% * var(--ch-bloom, 0.3)), transparent);
+  --cv-pool-ask: color-mix(in oklab, var(--st-ask) calc(40% * var(--ch-bloom, 0.3)), transparent);
+  --cv-pool-fail: color-mix(in oklab, var(--st-fail) calc(30% * var(--ch-bloom, 0.3)), transparent);
   --ansi-0: var(--paper);
   --ansi-1: #9c3a24;
   --ansi-2: #256b57;

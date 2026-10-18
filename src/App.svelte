@@ -202,7 +202,8 @@
   import ChatView from "./lib/ChatView.svelte";
   import { view } from "./lib/view.svelte";
   import { replies } from "./lib/replies.svelte";
-  import type { View } from "./lib/viewmode";
+  import { opening, type View } from "./lib/viewmode";
+  import Welcome from "./lib/Welcome.svelte";
   import { CHORDS, actsOnWall, mayLead, type Verb as ChordVerb } from "./lib/leader";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
@@ -1182,6 +1183,30 @@
   const card = $derived(cards.find(focusedId));
   /** Chat view is up: the wall is offstage (`switchView`). */
   const chat = $derived(view.current === "chat");
+
+  /* The first launch (§6.9, §7.7): asked once, of an install that has never
+     held a conversation, and decided only when both the store and the control
+     surface have answered — before that, "nothing here" and "not read yet" are
+     one reading, and the question would flash at a wall that has cards, or at a
+     lab driven before its endpoint arrived. `opening` is pure and tested. */
+  let askedWelcome = $state(false);
+  const welcoming = $derived.by(
+    () =>
+      opening({
+        stored: view.stored,
+        loaded: skein.loaded && control.asked,
+        conversations: skein.convs.length,
+        projects: skein.projects.length,
+        driven: control.live,
+        askWelcome: askedWelcome,
+      }) === "welcome",
+  );
+  /** The welcome's answer: stored either way, so it is never asked again. */
+  async function welcomed(to: View) {
+    askedWelcome = false;
+    if (to === view.current) view.set(to);
+    else await switchView(to);
+  }
   /* What is in front of you: the queue every card writes to and which item of
      it is held (`front.svelte.ts`). Here rather than in the dock, which only
      draws the held item, because chat view draws the same queue and unmounts
@@ -3316,8 +3341,8 @@
     }
     if (mod && e.shiftKey && !e.altKey && (e.key === "S" || e.key === "s")) {
       e.preventDefault();
-      view.sidebar = !view.sidebar;
-      view.save();
+      /* The view decides: a narrow window opens the drawer instead (§6.8). */
+      chatview?.toggleSidebar();
       return true;
     }
     /* The side pane beside the thread (§3) — mid-draft too, like the sidebar. */
@@ -4340,6 +4365,7 @@
        `setDraft("")` — and how a parked one is handed back on a card switch,
        which is why the emptiness check is here rather than inside `stir`. */
     switchView: (to) => switchView(to),
+    askWelcome: () => (askedWelcome = true),
     setDraft: (t) => {
       field.put(t);
       if (stirsCard(t) && !field.banging) card?.stir();
@@ -5225,6 +5251,9 @@
        on the dock's top edge — and beside an available-width dock, the panel
        runs on past that edge, so a strip the wall's width was drawn over the
        newest lines of the transcript. -->
+  {#if welcoming}
+    <Welcome onchoose={(to) => void welcomed(to)} />
+  {/if}
   {#if chat}
     <ChatView
       bind:this={chatview}
@@ -5268,7 +5297,7 @@
   <main
     class="wall"
     class:offstage={chat}
-    inert={chat}
+    inert={chat || welcoming}
     class:sizing={!!grip}
     style:--beside-left={footInset.left ? `${footInset.left}px` : undefined}
     style:--beside-right={footInset.right ? `${footInset.right}px` : undefined}
@@ -5717,6 +5746,10 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    /* One line however narrow the bar: chat view's at 560px squeezed it into
+       three. The title beside it gives way instead, by its ellipsis. */
+    flex: none;
+    white-space: nowrap;
   }
   .up {
     color: var(--st-ask);

@@ -814,6 +814,13 @@
     flex-wrap: wrap;
     gap: 0.4rem;
   }
+  /* A narrow window stacks the options (§6.8): one a row, the whole width,
+     rather than a ragged wrap. */
+  @media (max-width: 599px) {
+    .options {
+      flex-direction: column;
+    }
+  }
   .opt {
     display: flex;
     flex-direction: column;

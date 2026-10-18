@@ -253,6 +253,12 @@
     width: 12px;
     height: 12px;
   }
+  /* Below 600px the hint line goes (§6.8): the keys are in each control's title. */
+  @media (max-width: 599px) {
+    .hint {
+      display: none;
+    }
+  }
   .hint {
     margin: 8px 0 0;
     text-align: center;

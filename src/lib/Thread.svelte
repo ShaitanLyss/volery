@@ -1380,6 +1380,9 @@
   :global(html[data-motion="still"]) .line.doing .pip {
     animation: none;
   }
+  :global(html[data-motion="spare"]) .line.doing .pip {
+    animation-timing-function: steps(6, end);
+  }
   .line.meta {
     font-family: var(--util);
     font-size: calc(0.76rem * var(--read, 1));

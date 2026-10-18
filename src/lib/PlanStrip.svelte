@@ -59,7 +59,7 @@
       <path d="M6.2 4.5h6.8M6.2 8h6.8M6.2 11.5h6.8" />
       <circle cx="3.4" cy="4.5" r=".5" /><circle cx="3.4" cy="8" r=".5" /><circle cx="3.4" cy="11.5" r=".5" />
     </svg>
-    plan
+    <span class="lbl">plan</span>
     <span class="segs" aria-hidden="true">
       {#each steps as s, i (i)}
         {@const st = leaving ? "done" : effective(s)}
@@ -132,6 +132,14 @@
   .of {
     color: var(--cv-note, var(--paper-mute));
     flex: none;
+  }
+  /* Narrow (§6.8): the strip shrinks to its current step. */
+  @media (max-width: 899px) {
+    .lbl,
+    .sub,
+    .of {
+      display: none;
+    }
   }
   /* The flourish: every segment fills (the class above), and the strip fades
      and lifts away once — opacity and transform, then it is gone. */

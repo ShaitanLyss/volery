@@ -215,6 +215,7 @@
    *  one is up, gives way to it. */
   function choose(id: string) {
     page = null;
+    drawer = false;
     onselect(id);
   }
 
@@ -241,6 +242,56 @@
        `Conversation`) has no gear change to clear it, and once the go-ahead
        has gone it is being built, not waiting. */
     if (await skein.send(conv, `The plan in ${path} is approved — build it.`)) conv.planDoc = null;
+  }
+
+  /* ── what a screen reader hears (§10.2) ─────────────────────────────── */
+  /* Streaming is announced by the paragraph, not the token: each answer as it
+     settles into a line, and *finished* when the turn ends. Only for the
+     conversation in front of you, and nothing on selecting one — arriving at a
+     conversation is not news about it. A question announces itself
+     (`.inline`, assertive) and is not repeated here. */
+  let announce = $state("");
+  let heard = { id: "", lines: 0, working: false };
+  $effect(() => {
+    const c = card;
+    const id = c?.id ?? "";
+    const lines = c?.readable.lines ?? [];
+    const n = lines.length;
+    const working = c?.face.working ?? false;
+    untrack(() => {
+      if (heard.id !== id) {
+        heard = { id, lines: n, working };
+        return;
+      }
+      const fresh = lines.slice(heard.lines).filter((l) => l.kind === "text");
+      if (fresh.length) announce = fresh[fresh.length - 1].text.slice(0, 600);
+      if (heard.working && !working) announce = `${announce ? `${announce} — ` : ""}finished`;
+      heard = { id, lines: n, working };
+    });
+  });
+
+  /* ── narrow windows (§6.8) ──────────────────────────────────────────── */
+  /* Below 900px the sidebar is a drawer behind the bar's menu button, with a
+     badge counting what needs you, and the pane is a sheet over the thread.
+     Below 600px the model chip and the hint line shorten in their own files,
+     by media query, since they have nothing to decide. */
+  let width = $state(typeof window === "undefined" ? 1280 : window.innerWidth);
+  const narrow = $derived(width < 900);
+  let drawer = $state(false);
+  const needing = $derived(gs.find((g) => g.key === "needs")?.rows.length ?? 0);
+  $effect(() => {
+    if (!narrow) drawer = false;
+  });
+
+  /** The sidebar, shown or hidden — or, in a narrow window, the drawer
+   *  opened or closed. The bar's button and Ctrl+Shift+S. */
+  export function toggleSidebar() {
+    if (narrow) {
+      drawer = !drawer;
+      return;
+    }
+    sidebar = !sidebar;
+    view.save();
   }
 
   /** The side pane, open or closed — the bar's toggle and Ctrl+. (§3). */
@@ -468,7 +519,9 @@
   let pop = $state(false);
 </script>
 
-<div class="chat" class:nosidebar={!sidebar}>
+<svelte:window bind:innerWidth={width} />
+
+<div class="chat" class:nosidebar={!sidebar || narrow} class:narrow>
   <header class="bar" data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
@@ -482,16 +535,24 @@
         <path d="M12 3.8a8.2 8.2 0 1 1-8 6.4" fill="none" stroke="url(#cv-markg)" stroke-width="3.4" stroke-linecap="round" />
       </svg>
       <span class="word" data-tauri-drag-region>volery</span>
-      <button
-        class="iconbtn"
-        type="button"
-        title={sidebar ? "hide the sidebar (ctrl+shift+S)" : "show the sidebar (ctrl+shift+S)"}
-        aria-pressed={sidebar}
-        onclick={() => {
-          sidebar = !sidebar;
-          view.save();
-        }}><Icon name="side" /></button
-      >
+      {#if narrow}
+        <button
+          class="iconbtn menu"
+          type="button"
+          title={needing ? `conversations — ${needing} need you (ctrl+shift+S)` : "conversations (ctrl+shift+S)"}
+          aria-expanded={drawer}
+          onclick={toggleSidebar}
+          ><Icon name="menu" />{#if needing}<span class="badge" aria-hidden="true">{needing}</span>{/if}</button
+        >
+      {:else}
+        <button
+          class="iconbtn"
+          type="button"
+          title={sidebar ? "hide the sidebar (ctrl+shift+S)" : "show the sidebar (ctrl+shift+S)"}
+          aria-pressed={sidebar}
+          onclick={toggleSidebar}><Icon name="side" /></button
+        >
+      {/if}
     </div>
     <div class="where" data-tauri-drag-region>
       <span class="title" data-tauri-drag-region>{title}</span>
@@ -529,7 +590,35 @@
     <span class="winctl"><WindowControls /></span>
   </header>
 
-  {#if sidebar}
+  {#if narrow && drawer}
+    <!-- The drawer: the same sidebar over the sheet, a scrim behind it that
+         closes it, Escape too. Choosing a row closes it (`choose`). -->
+    <button type="button" class="scrim" aria-label="close the conversations" tabindex="-1" onclick={() => (drawer = false)}
+    ></button>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="drawer"
+      onkeydown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          drawer = false;
+        }
+      }}
+    >
+      <Sidebar
+        groups={gs}
+        projects={folders}
+        {selected}
+        {account}
+        onselect={choose}
+        {onnew}
+        onsearch={search}
+        onproject={openProject}
+        {onmenu}
+        onaccount={() => (pop = !pop)}
+      />
+    </div>
+  {:else if sidebar && !narrow}
     <Sidebar
       groups={gs}
       projects={folders}
@@ -545,6 +634,7 @@
   {/if}
 
   <main class="sheet" data-tier={pool} aria-label="conversation">
+    <p class="sr" aria-live="polite">{announce}</p>
     {@render band?.()}
     <Toasts
       {front}
@@ -650,7 +740,9 @@
       {/if}
     </section>
     {#if card && view.pane}
-      <SidePane {card} {cards} {timeline} {kin} trail={(id) => skein.trail(id)} onselect={choose} />
+      <div class="beside" class:over={narrow}>
+        <SidePane {card} {cards} {timeline} {kin} trail={(id) => skein.trail(id)} onselect={choose} />
+      </div>
     {/if}
     </div>
     {/if}
@@ -903,9 +995,116 @@
   }
   /* The thread and, when it is open, the pane beside it (§3). */
   .split {
+    position: relative;
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
+  }
+  /* Heard, not seen. */
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .beside {
+    display: flex;
+    min-height: 0;
+  }
+  /* Narrow: the pane is a sheet over the thread rather than a column beside
+     it, which would leave the thread too little to be read in. */
+  .beside.over {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+    box-shadow: -18px 0 40px -24px color-mix(in srgb, var(--shade) 90%, transparent);
+  }
+
+  /* ── narrow windows (§6.8) ── */
+  .chat.narrow .word,
+  .chat.narrow .mark {
+    display: none;
+  }
+  .chat.narrow .brand {
+    width: auto;
+  }
+  .menu {
+    position: relative;
+  }
+  .badge {
+    position: absolute;
+    top: -2px;
+    right: -3px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 15px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--ink);
+    background: var(--st-ask);
+  }
+  .scrim {
+    position: absolute;
+    inset: 44px 0 0 0;
+    z-index: 20;
+    border: 0;
+    padding: 0;
+    background: color-mix(in srgb, var(--shade) 45%, transparent);
+    animation: fade var(--dur-quick, 160ms) var(--ease-out, ease-out) both;
+  }
+  .drawer {
+    position: absolute;
+    top: 44px;
+    left: 0;
+    bottom: 0;
+    z-index: 21;
+    width: min(300px, 86vw);
+    display: flex;
+    flex-direction: column;
+    background: var(--cv-ground, var(--well));
+    border-right: 1px solid var(--cv-hair, var(--edge));
+    box-shadow: 18px 0 40px -24px color-mix(in srgb, var(--shade) 90%, transparent);
+    animation: drawer var(--dur-step, 240ms) var(--ease-out, ease-out) both;
+  }
+  .drawer > :global(.side) {
+    flex: 1 1 auto;
+  }
+  @keyframes drawer {
+    from {
+      transform: translateX(-16px);
+      opacity: 0;
+    }
+  }
+  :global(html[data-motion="still"]) .drawer {
+    animation-name: fade;
+    animation-duration: var(--dur-quick, 160ms);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .drawer {
+      animation-name: fade;
+    }
+  }
+  /* Below 600px the bar keeps what it must: the menu, the title, the switch
+     as its icons. */
+  @media (max-width: 599px) {
+    .chat .chip,
+    .chat .ctx {
+      display: none;
+    }
+    .views button {
+      font-size: 0;
+      gap: 0;
+    }
   }
   .thread {
     position: relative;

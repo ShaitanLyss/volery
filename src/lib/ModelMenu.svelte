@@ -84,7 +84,10 @@
       title={card ? "the model and how hard it thinks — sends /model and /effort (alt+M)" : "what this conversation opens as (alt+M)"}
       onclick={() => (open = !open)}
     >
-      {chip}<Icon name="chev-d" small />
+      <span class="full">{chip}</span><span class="short">{chip.split(" ")[0]}</span><Icon
+        name="chev-d"
+        small
+      />
     </button>
     {#if open}
       <PickMenu {rows} {up} label="model and effort" onpick={(id) => void pick(id)} onclose={() => (open = false)} />
@@ -96,6 +99,18 @@
   .wrap {
     position: relative;
     display: inline-flex;
+  }
+  /* Below 600px the chip says only the model's family (§6.8). */
+  .short {
+    display: none;
+  }
+  @media (max-width: 599px) {
+    .full {
+      display: none;
+    }
+    .short {
+      display: inline;
+    }
   }
   .wrap :global(.menu) {
     left: auto;

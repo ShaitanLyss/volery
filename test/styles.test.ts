@@ -509,3 +509,26 @@ describe("no two files are one file on a case-insensitive disk", () => {
     expect(clash).toEqual([]);
   });
 });
+
+/* Chat view's motion pass (`docs/chat-mode.md` §9, `motion.md`): an animation
+   that never ends holds the compositor's present rate up for as long as it
+   runs, so every one in a chat-view component answers to all three of the
+   wall's motion settings and to the system's request — stepped under `spare`,
+   stopped under `still` and under reduced motion. A new one that forgets an arm
+   fails here rather than on somebody's battery. */
+describe("chat view's endless animations answer to every motion setting", () => {
+  const CHAT = [
+    "ChatView", "Sidebar", "MessageBox", "Toasts", "SidePane", "PlanStrip", "PlanDoc", "Thread",
+    "NewChat", "Lookup", "ProjectPage", "Budget", "AccountPop", "PickMenu", "ModelMenu",
+    "GettingReady", "Welcome", "SlashPalette", "HuntBar",
+  ];
+  for (const name of CHAT) {
+    const css = readFileSync(join(SRC, "lib", `${name}.svelte`), "utf8");
+    if (!/\binfinite\b/.test(css)) continue;
+    test(name, () => {
+      expect(css).toContain('data-motion="spare"');
+      expect(css).toContain('data-motion="still"');
+      expect(css).toContain("prefers-reduced-motion: reduce");
+    });
+  }
+});

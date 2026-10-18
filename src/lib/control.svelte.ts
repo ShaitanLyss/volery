@@ -22,6 +22,7 @@
  * what the app can be asked to do; an eval hole is a description of nothing. */
 
 import { view } from "./view.svelte";
+import { skin } from "./palette.svelte";
 import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
@@ -175,6 +176,8 @@ export type ControlHost = {
   /** Go to the wall or to chat view, the way the switch, Ctrl+Shift+M and
    *  `space w v` do (`App.svelte::switchView`). */
   switchView: (to: "wall" | "chat") => Promise<void>;
+  /** Show the first-launch screen though the window is driven. */
+  askWelcome: () => void;
   /** What the slash palette is offering for the draft as it stands. */
   commands: () => { name: string }[];
   /** And what its second stage is offering, once a command that takes a value
@@ -519,6 +522,10 @@ export const PROMPT_BOX = '[data-attach-name="prompt"]';
 
 export class Control {
   endpoint = $state<Endpoint | null>(null);
+  /** Whether Rust has said if anything is driving the window — the first
+   *  launch's question waits on it (`viewmode.ts::opening`), or a lab would see
+   *  the welcome for the moment before its endpoint arrived. */
+  asked = $state(false);
 
   /** Anything the page threw. Silent front-end errors are exactly what a
    *  screenshot can't show me, so they ride along in every snapshot. */
@@ -577,6 +584,7 @@ export class Control {
 
   async #attach() {
     const ep = await invoke<Endpoint | null>("control_endpoint").catch(() => null);
+    this.asked = true;
     if (!ep) return;
     this.endpoint = ep;
 
@@ -1683,9 +1691,20 @@ export class Control {
       view: async (op) => {
         const to = op.to;
         if (to === "chat" || to === "wall") await h.switchView(to);
-        else if (to !== undefined) throw new Error("view takes to=wall or to=chat");
+        /* The first-launch screen, which a driven window never shows uninvited
+           (§7.7): a lab with nothing in it may ask for it. */ else if (to === "welcome") h.askWelcome();
+        else if (to !== undefined) throw new Error("view takes to=wall, to=chat or to=welcome");
         await settle();
         return { view: view.current, sidebar: view.sidebar };
+      },
+
+      /** Put a skin on — `studio`, `vellum`, `sugar`, `meadow` or any other
+       *  the ring holds — so a lab can look at every screen on each. No `id`
+       *  reads which is on. */
+      skin: async (op) => {
+        if (op.id !== undefined) skin.set(String(op.id));
+        await settle();
+        return { skin: skin.theme.id, ground: document.documentElement.dataset.ground ?? "dark" };
       },
 
       chat: async () => {

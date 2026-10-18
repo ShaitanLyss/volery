@@ -22,7 +22,9 @@ class ViewHolder {
    *  open. Closed by default: the live parts density (§6.4). */
   pane = $state(false);
   /** What was stored, if anything — `opening` asks whether a choice exists. */
-  stored: ViewState | null = null;
+  /** What was chosen and kept — read by the first-launch decision, so a
+   *  reactive value: choosing on the welcome screen must take it down. */
+  stored = $state.raw<ViewState | null>(null);
 
   constructor() {
     try {
