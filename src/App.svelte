@@ -208,6 +208,7 @@
      its hint, moved out of `Spyglass.svelte` with it. */
   import Which from "./lib/Which.svelte";
   import { Leader } from "./lib/leader.svelte";
+  import { Front } from "./lib/front.svelte";
   import { mayLead } from "./lib/leader";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
@@ -1146,6 +1147,11 @@
    *  every gesture takes — the menu, the dock, the chords and the panel ask it
    *  `can` and call `do`, and none of them asks which kind it is. */
   const card = $derived(cards.find(focusedId));
+  /* What is in front of you: the queue every card writes to and which item of
+     it is held (`front.svelte.ts`). Here rather than in the dock, which only
+     draws the held item, because chat view draws the same queue and unmounts
+     the dock — a hold the dock owned would be dropped on every switch. */
+  const front = new Front(cards, () => card?.id ?? null, (c) => focusCard(c));
   /* How a glance turns a card id into a card — said once, here, so every
      surface that opens one (a card, a question, a chord) has it by existing.
      The peek window never says it, and so offers no glance. */
@@ -5606,6 +5612,7 @@
     {bang}
     {card}
     {cards}
+    {front}
     {targets}
     {waiting}
     {clashing}

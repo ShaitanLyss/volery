@@ -15,16 +15,15 @@
    * and it is the *boundary* between the dock and everything else rather than a
    * thing inside it. Splitting it across two files would put the two halves of
    * one priority order where neither can be read against the other. */
-  import { tick, untrack } from "svelte";
+  import { tick } from "svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
-  import type { Notice as NoticeRow } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
-  import type { Conversation, PendingAsk } from "../lib/conversation.svelte";
+  import type { Conversation } from "../lib/conversation.svelte";
   import type { CardHandle, Cards } from "./cards.svelte";
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
-  import { nextItem, settleHold, shownItem, steady, type Hold, type Waiting } from "./queue";
+  import type { Front } from "./front.svelte";
   import { replies } from "./replies.svelte";
   import { glance } from "./glancing.svelte";
   import type { Orphan, Reply } from "./replies";
@@ -44,6 +43,7 @@
     bang,
     card,
     cards,
+    front,
     targets,
     waiting,
     clashing,
@@ -74,6 +74,9 @@
      *  the queue (`items`), drawn by the same panels and held by the same rule
      *  — see `queue.ts`. */
     cards: Cards;
+    /** What is in front of you — the queue, and which item of it is held
+     *  (`front.svelte.ts`). */
+    front: Front;
     /** A gathering of this wall's cards, for a broadcast — a selection never
      *  holds a card on another wall. */
     targets: Conversation[];
@@ -124,161 +127,20 @@
     onselect: (card: CardHandle) => void;
   } = $props();
 
-  /* ── what the panel is already on ──────────────────────────────────────
+  /* ── what is in front of you ───────────────────────────────────────────
    *
-   * The dock draws one thing out of a queue every card on the wall — and every
-   * card on every other wall in the flyway — is writing to all the time. Which
-   * one is a single hold over all of it, of every kind: a question, a notice,
-   * either from another wall. It stays on what it holds for as long as that
-   * exists, whatever arrives and whatever it is; `queue.ts` has the rule, and
-   * the bug that made it one rule rather than one per kind.
-   *
-   * `$effect.pre` rather than `$effect` so the hold is settled before the
-   * template reads the deriveds that depend on it: doing it after would have
-   * the panel drawn once with the stale hold on the frame you click a card. */
-
-  /** One thing waiting on you, with what its panel needs to draw it.
-   *
-   *  Only the question at the *front* of a card's queue is an item: a card's
-   *  questions are answered in the order it asked them, and `answerAsk`
-   *  answers the front one. The rest are counted in `waitingOnYou` and come
-   *  forward one by one, as the hold moves on to them (`settleHold`'s
-   *  same-card rule). */
-  type Item =
-    | (Waiting & { kind: "ask"; of: CardHandle; ask: PendingAsk })
-    | (Waiting & { kind: "notice"; of: CardHandle; notice: NoticeRow });
-
-  /* Two kinds, not four: a question and a notice, each carrying its card's
-     handle, so one panel answers either wherever the card runs. There were a
-     far-ask and a far-notice beside them, each with a snippet of its own and a
-     callback per gesture threaded in from `App.svelte` — the shape that let a
-     card on another wall drift from one here.
-
-     Keyed as the panels key their replies (`replies.ts`), so "this item is
-     still waiting" and "this reply's item is still waiting" are one question.
-     A far notice's id already carries its shadow's (`afar.ts::noticeHere`).
-
-     And every item that has not changed is handed back as the very object it
-     was (`steady`): this is rebuilt on any traffic anywhere — a far wall's
-     digest alone does it every few seconds — and a panel handed a new object
-     for the same question wakes everything reading it. Plain, not `$state`:
-     the derived's own memory, read and written only here. */
-  let lastItems = new Map<string, Item>();
-  const items = $derived.by((): Item[] => {
-    const out: Item[] = [];
-    /* `far` is the one thing the queue asks about where a card runs: this
-       wall's before another's at the same tier, unless it is the card in the
-       ring (`queueOrder`). */
-    for (const of of cards.asking) {
-      const ask = of.ask;
-      if (ask) out.push({ kind: "ask", key: `ask:${ask.askId}`, card: of.id, tier: 0, far: !of.conv, of, ask });
-    }
-    for (const { card: of, notice } of cards.noticing) {
-      out.push({ kind: "notice", key: `notice:${notice.id}`, card: of.id, tier: 1, far: !of.conv, of, notice });
-    }
-    const kept = steady(lastItems, out);
-    lastItems = new Map(kept.map((t) => [t.key, t]));
-    return kept;
-  });
-
+   * The queue every card writes to, the one item of it that is held, the guard
+   * for a held item going while you type into it, and the step to the next:
+   * `front.svelte.ts`, constructed in `App.svelte`, because chat view draws the
+   * same queue and a hold the dock owned would be dropped every time chat view
+   * unmounts it. The dock draws the held item; `queue.ts` still has the rule,
+   * and the bug that made it one rule rather than one per kind. */
+  const items = $derived(front.items);
+  const shown = $derived(front.shown);
+  const next = $derived(front.next);
+  const waitingOnYou = $derived(front.waitingOnYou);
   /** The card in the ring, here or on another wall. */
   const ring = $derived(card?.id ?? null);
-
-  /** Is this card — here or elsewhere — still on the wall? */
-  function stands(id: string): boolean {
-    return cards.stands(id);
-  }
-
-  function whoOf(t: Item): string {
-    const name = nameBesideProject(t.of.face.title);
-    return `${t.of.where}${name ? ` · ${name}` : ""}`;
-  }
-
-  let hold = $state.raw<Hold | null>(null);
-  /* Plain, not `$state`: this effect's own memory of the last ring and the
-     last queue it saw, and nothing may re-run on either. */
-  let ringed: string | null = null;
-  let seen = new Map<string, Item>();
-  $effect.pre(() => {
-    const now = items;
-    const at = ring;
-    untrack(() => {
-      /* The ring moving is you choosing a card — unless the card it was on is
-         gone. Closing the card in the ring moves the ring on by itself
-         (`closeConv` in `App.svelte`), and that is the wall tidying up after
-         you, not you choosing whichever card it landed on. */
-      const moved = at !== ringed && (ringed === null || stands(ringed));
-      ringed = at;
-      const before = hold;
-      hold = settleHold(now, at, hold, moved);
-      if (moved || hold?.key !== before?.key) swapped = null;
-      /* The held item went without you: guard what you were typing. */
-      if (!moved && before && hold && hold.key !== before.key && !replies.byYou(before.key)) {
-        const gone = seen.get(before.key);
-        if (gone) guardSwap(gone);
-      }
-      seen = new Map(now.map((t) => [t.key, t]));
-    });
-  });
-
-  /* What is drawn. Asked of the same rule as the hold rather than read off
-     it, so it is right on the very frame an item goes, before the effect above
-     has re-settled anything. */
-  const shown = $derived(shownItem(items, ring, hold));
-
-  /* ── the held item going while you type into it ────────────────────────
-   *
-   * Nothing arriving moves the hold, but the held item can still *go*: a
-   * question's deadline, a rest notice taken down because its card started a
-   * turn, another wall answering it or going quiet. The hold moves on to the
-   * next — and when that is the same kind, the same panel is reused, the caret
-   * stays where it was, and the rest of your sentence and its Enter would land
-   * on a different question. Blurring the field is no answer: a key typed with
-   * nothing focused goes to the prompt (`onGlobalKey`), and its Enter would
-   * then send the tail of the sentence to the card in the ring.
-   *
-   * So the field keeps the caret, the note says what happened, and the first
-   * Enter after the swap is held — once. Your words for the one that went are
-   * still kept under it (`replies`), and handed back by the line below. */
-  let swapped = $state<string | null>(null);
-  let heldEl = $state<HTMLElement | undefined>(undefined);
-
-  function guardSwap(gone: Item) {
-    const el = document.activeElement;
-    if (!heldEl || !(el instanceof HTMLElement) || !heldEl.contains(el)) return;
-    const kind = gone.kind === "ask" ? "question" : "notice";
-    swapped = `the ${kind} from ${whoOf(gone)} went while you were in it — this is another one, so enter is held once`;
-  }
-
-  function guardEnter(e: KeyboardEvent) {
-    if (!swapped || e.key !== "Enter") return;
-    e.preventDefault();
-    e.stopPropagation();
-    swapped = null;
-  }
-
-  /* The whole queue, as the "more" line counts it. Questions are counted
-     rather than the cards holding them: one card can be parked on several at
-     once (`Conversation.asks`), and a line reading "2 more waiting on you"
-     over three unanswered questions is an instrument that cannot be trusted
-     to have counted the one you have not seen. Arrivals are signalled here and
-     only here — never by moving what you are on. */
-  const waitingOnYou = $derived(cards.waitingOnYou);
-
-  /** What "more waiting on you" would step to — null when everything else is
-   *  queued behind the card's own question, which only answering reaches. */
-  const next = $derived(nextItem(items, shown?.key ?? null));
-
-  /** Step to the next item, and put its card in the ring so the transcript
-   *  beside it is the one it is about. Setting the hold first is what makes
-   *  the ring landing there agree with it rather than re-decide. */
-  function more() {
-    if (!next) return;
-    hold = { key: next.key, card: next.card };
-    swapped = null;
-    const to = cards.find(next.card);
-    if (to) onselect(to);
-  }
 
   /* The dock draws whichever card is waiting, which need not be the card in
      the ring — `elsewhere` is that case and it is drawn on the panel. So a
@@ -349,7 +211,7 @@
   export function chord(act: DockChord): string | null {
     if (act === "next") {
       if (!next) return "nothing else is waiting on you";
-      more();
+      front.more();
       return null;
     }
     if (act === "glance") {
@@ -358,7 +220,7 @@
       if (shown?.kind !== "ask") {
         return shown ? "the notice already shows what it said" : "nothing is waiting on you";
       }
-      const at = heldEl?.querySelector("[data-ask]") ?? null;
+      const at = front.heldEl?.querySelector("[data-ask]") ?? null;
       return glance.open(shown.of.id, at, true) ? null : "it has not said anything yet";
     }
     if (!stray) return "no unsent reply is waiting";
@@ -547,8 +409,8 @@
       >
     </div>
   {/if}
-  {#if swapped}
-    <div class="unsent" role="status"><span class="why">{swapped}</span></div>
+  {#if front.swapped}
+    <div class="unsent" role="status"><span class="why">{front.swapped}</span></div>
   {/if}
 
   <!-- One branch per kind, and the kind of the thing held never changes, so
@@ -565,9 +427,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="held"
-    bind:this={heldEl}
-    onkeydowncapture={guardEnter}
-    onpointerdowncapture={() => (swapped = null)}
+    bind:this={front.heldEl}
+    onkeydowncapture={front.guardEnter}
+    onpointerdowncapture={() => (front.swapped = null)}
   >
     <!-- A question or a notice from a card here or on another wall, in the
          one panel each has. What differs is the card's, read off its handle:
@@ -607,7 +469,7 @@
     {/if}
   </div>
   {#if shown && next}
-    <button class="more" onclick={more} title="Step to the next thing waiting (space then d n)">
+    <button class="more" onclick={() => front.more()} title="Step to the next thing waiting (space then d n)">
       {waitingOnYou - 1} more waiting on you
     </button>
   {:else if shown && waitingOnYou > 1}
