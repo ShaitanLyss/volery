@@ -180,7 +180,7 @@ describe("what a held message says", () => {
   test("held is told apart from not sent, and only not sent alarms", () => {
     expect(HELD_MARK).toContain("held — will send when allowance returns");
     expect(HELD_MARK).not.toContain("not sent");
-    const css = readFileSync("src/lib/Transcript.svelte", "utf8");
+    const css = readFileSync("src/lib/Thread.svelte", "utf8");
     /* The transcript draws exactly these words … */
     expect(css).toContain(`content: "${HELD_MARK}"`);
     /* … and achromatic, where a failed line is rust. */
