@@ -652,6 +652,29 @@ is bounded four ways, each aimed at a different failure:
   been closed says nothing and a child closed inside the grace vanishes, one query standing in
   for three guards.
 
+### Once per stop, which the grace alone did not give
+
+Sink `24d36a07`: one child's stop was relayed to its parent three times in two days. The
+child's transcript shows why, and it is not a poll or a restart — **a reply is a turn.** A
+sibling's relay ("queued behind you…") woke the child, which answered "no action needed" in
+150 tokens; that `result` closed a turn, re-armed the grace, and two minutes later the parent
+was told the child had stopped, a second time, about nothing. The grace only outlasts a
+turn that opens *inside* it; a reply turn that opens and closes minutes later is a fresh rest.
+
+So the wall remembers what it told. `stop_told` has a row per child whose parent was sent the
+stop and which has done nothing of its own since; delivery writes it and the next turn that is
+**not a reply to a card other than the parent** deletes it (`store::stop_to_arm`). A turn that
+is such a reply, while the row stands, does not arm the grace. Three choices worth keeping:
+
+- **Replies are known from the relay's own bookkeeping.** `relay::turn_closed` already counts
+  the turn a message will be handled in (`Inbound::pending`); it now also says who wrote the
+  message and answers `Some(sender)` for exactly that close. No turn data is guessed from
+  token counts.
+- **The parent's own instruction is work.** A message from the parent is not a reply for this
+  purpose: the parent is owed word of how it went, and it asked for it.
+- **It is a row, not a flag in the map**, so a restart cannot turn a child's later reply into
+  news. The brood (pending settles) is still memory only. Schema v55, no backfill.
+
 ### What it deliberately does not do
 
 - **It does not rouse, and it does not queue.** A dormant parent gets nothing. `later.rs`
@@ -659,9 +682,10 @@ is bounded four ways, each aimed at a different failure:
   the other way here — nobody asked for this, its whole value is being timely, and a card that
   has stopped should not come back tomorrow to be told about work that finished today. It
   calls `list` when it wakes, as it would have anyway.
-- **It keeps nothing on disk.** A pending settle is about a card running *now*; across a
-  restart there is no parent to tell and no child still going, so a table would only be a way
-  to deliver stale news. A plain map, and no migration.
+- **It keeps no pending settle on disk.** A pending settle is about a card running *now*;
+  across a restart there is no parent to tell and no child still going, so a table would only
+  be a way to deliver stale news. A plain map for those. The one thing on disk is the other
+  fact, `stop_told` (schema v55) — see below.
 - **It asks for nothing back.** The envelope says so in words. A parent that replies has spent
   the turn the whole mechanism was built to save.
 - **It does not start a fourth poller.** `sweep` rides `later::spawn_waker`'s existing tick.

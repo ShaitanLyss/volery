@@ -2326,10 +2326,12 @@ pub fn spawned_by(app: AppHandle, id: String) -> Result<Option<String>, String> 
  *   nobody asked for this, its whole value is being timely, and a card that has
  *   stopped should not come back tomorrow to be told about work that finished
  *   today. It calls `list` when it wakes, as it would have anyway.
- * - **It keeps nothing on disk.** A pending settle is about a card that is
- *   running *now*; across a restart there is no parent to tell and no child
+ * - **It keeps no pending settle on disk.** A pending settle is about a card that
+ *   is running *now*; across a restart there is no parent to tell and no child
  *   still going, so a table would only be a way to deliver stale news. Hence a
- *   plain map rather than a row, and no migration.
+ *   plain map for those. What *is* on disk is the other fact, `stop_told`: that
+ *   the parent has been told, and the child has done nothing of its own since
+ *   (schema v55). See "Once per stop" below.
  * - **It asks for nothing back.** The envelope says so in words, because a
  *   parent that answers a notice has spent the turn this was built to save.
  */
@@ -2395,13 +2397,13 @@ pub fn settling_toward(parent_id: &str) -> bool {
 /// `guidance::for_conversation`'s reason one file over: a thing carried in
 /// memory is a thing every future path has to remember to carry, and this one
 /// would be wrong for exactly the cards restored at launch.
-pub fn settling(app: &AppHandle, id: &str) {
+pub fn settling(app: &AppHandle, id: &str, replied_to: Option<&str>) {
     let Some(store) = app.try_state::<Store>() else {
         return;
     };
     let parent_id = {
         let Ok(conn) = store.0.lock() else { return };
-        crate::store::spawner_of(&conn, id)
+        crate::store::stop_to_arm(&conn, id, replied_to)
     };
     let Some(parent_id) = parent_id else { return };
     if let Ok(mut b) = brood().lock() {
@@ -2410,6 +2412,26 @@ pub fn settling(app: &AppHandle, id: &str) {
             Settling { parent_id, due_at: crate::store::now() + SETTLE_GRACE_MS },
         );
     }
+}
+
+/// Was the turn that just closed a reply to a card other than the parent?
+///
+/// A message from the parent is an instruction, and the parent is owed word of
+/// how it went; one from anybody else (a sibling asking whether the editor is
+/// free, a card that was briefed to report back) is answered in a line and says
+/// nothing new about whether *this* child has stopped.
+pub(crate) fn is_reply(replied_to: Option<&str>, parent_id: &str) -> bool {
+    matches!(replied_to, Some(from) if from != parent_id)
+}
+
+/// Does a turn that has just closed start the grace?
+///
+/// Pure, so the four cases that matter are asserted: it does unless the parent
+/// was already told about this stop and the turn was only a reply to somebody
+/// else. `told` is what `stop_told` holds, which is what lets it hold across a
+/// restart.
+pub(crate) fn arms_stop(told: bool, reply: bool) -> bool {
+    !(told && reply)
 }
 
 /// Everything that has gone quiet long enough, delivered.
@@ -2465,6 +2487,15 @@ pub fn sweep(app: &AppHandle) {
            above. The entries are already out of the map, which is what makes
            that true rather than merely intended. */
         if crate::supervisor::deliver(app, &parent, &text).is_ok() {
+            /* Written down as told, so a reply this child makes later — a sibling's
+               question, after a restart or not — is not a second stop. */
+            if let Some(store) = app.try_state::<Store>() {
+                if let Ok(conn) = store.0.lock() {
+                    for c in &children {
+                        crate::store::mark_stop_told(&conn, c);
+                    }
+                }
+            }
             if let Ok(mut b) = brood().lock() {
                 b.told_at.insert(parent, now);
             }

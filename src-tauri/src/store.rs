@@ -362,7 +362,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 54;
+const SCHEMA_VERSION: i64 = 55;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -422,6 +422,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (52, migrate_v52),
     (53, migrate_v53),
     (54, migrate_v54),
+    (55, migrate_v55),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3013,6 +3014,29 @@ fn migrate_v54(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v54: {e}"))
+}
+
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: a new table
+/// and nothing existing changes.
+///
+/// `stop_told` holds the children whose parent has already been sent "a card you
+/// opened has stopped" and which have not done any work of their own since. A row
+/// is the whole fact, and settling deletes it, so the table cannot drift from the
+/// question it answers (`spawn::settling`). It is persisted rather than kept in
+/// the `Brood` map because the map is a reading about a rest in progress and
+/// dies with the process, while this is a reading about what the parent has been
+/// *told* — and a reply a child makes after a restart must not read as news.
+/// Nothing to backfill: before this, no stop was ever recorded as told.
+fn migrate_v55(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS stop_told (
+            child_id TEXT PRIMARY KEY,
+            at       INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v55: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -8782,6 +8806,46 @@ pub fn provenance_row(conn: &Connection, id: &str) -> Option<Provenance> {
 }
 
 /// Who opened this card, if anybody did.
+/// The parent has been told this child stopped (`spawn::sweep`). See `migrate_v55`.
+pub fn mark_stop_told(conn: &Connection, child: &str) {
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO stop_told (child_id, at) VALUES (?1, ?2)",
+        params![child, now()],
+    );
+}
+
+/// The child did work of its own, so its next stop is news again.
+pub fn clear_stop_told(conn: &Connection, child: &str) {
+    let _ = conn.execute("DELETE FROM stop_told WHERE child_id = ?1", params![child]);
+}
+
+/// Has the parent already been told about the stop this child is still in?
+pub fn stop_told(conn: &Connection, child: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM stop_told WHERE child_id = ?1",
+        params![child],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// A turn closed on `child`: is there a stop to start the grace for, and whose
+/// is it? `Some(parent)` arms it. Folds in the clearing of `stop_told` when the
+/// turn was the child's own, so this is the one place the "told" record moves
+/// on the turn side; `mark_stop_told` is the other, on delivery.
+pub fn stop_to_arm(conn: &Connection, child: &str, replied_to: Option<&str>) -> Option<String> {
+    let parent = spawner_of(conn, child)?;
+    let reply = crate::spawn::is_reply(replied_to, &parent);
+    let told = stop_told(conn, child);
+    if !reply {
+        clear_stop_told(conn, child);
+    }
+    crate::spawn::arms_stop(told, reply).then_some(parent)
+}
+
 pub fn spawner_of(conn: &Connection, id: &str) -> Option<String> {
     conn.query_row(
         "SELECT parent_id FROM spawned WHERE child_id = ?1",
@@ -9092,6 +9156,52 @@ mod tests {
     }
 
     use super::*;
+
+    /// One real stop is one relay, and only work of the child's own earns the
+    /// next. Walks the sequence the incident had (sink 24d36a07): the child
+    /// finishes, the parent is told, a sibling asks it something, it answers in
+    /// a line and goes quiet again.
+    #[test]
+    fn a_stop_is_told_once_until_the_child_works_again() {
+        let conn = db();
+        record_spawn(&conn, "kid", "parent").unwrap();
+        // (a) its own turn closes: a stop to tell.
+        assert_eq!(stop_to_arm(&conn, "kid", None).as_deref(), Some("parent"));
+        // the sweep delivered it.
+        mark_stop_told(&conn, "kid");
+        // (b) a reply to a sibling closes, quiet again with no work of its own: nothing.
+        assert_eq!(stop_to_arm(&conn, "kid", Some("sibling")), None);
+        assert_eq!(stop_to_arm(&conn, "kid", Some("sibling")), None);
+        // an instruction from the parent is work the parent is owed word of.
+        assert_eq!(stop_to_arm(&conn, "kid", Some("parent")).as_deref(), Some("parent"));
+        mark_stop_told(&conn, "kid");
+        // (c) a turn of its own, then a stop: a second relay.
+        assert_eq!(stop_to_arm(&conn, "kid", None).as_deref(), Some("parent"));
+        mark_stop_told(&conn, "kid");
+        assert_eq!(stop_to_arm(&conn, "kid", Some("sibling")), None);
+    }
+
+    /// (d) The record is a row, so a wall restart cannot make a reply look like
+    /// news: only the in-memory brood is lost, and it was never the record.
+    #[test]
+    fn the_told_record_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("stop-told-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            migrate(&conn).unwrap();
+            record_spawn(&conn, "kid", "parent").unwrap();
+            mark_stop_told(&conn, "kid");
+        }
+        let conn = Connection::open(&path).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(stop_to_arm(&conn, "kid", Some("sibling")), None);
+        assert_eq!(stop_to_arm(&conn, "kid", None).as_deref(), Some("parent"));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

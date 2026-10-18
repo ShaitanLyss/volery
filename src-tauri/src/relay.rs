@@ -118,6 +118,9 @@ pub const RELAY_MARK: &str = "[skein relay]";
 struct Inbound {
     chain: String,
     hops: i64,
+    /// Who wrote the message this mark is for, when it is a card. `None` for a
+    /// message that came from another wall.
+    from: Option<String>,
     /// How many turn-closes this mark must outlive.
     ///
     /// One for the turn the message will be handled in, plus one more if a turn
@@ -703,7 +706,7 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             );
         }
         if awake {
-            arm(&relays, app, to_id, &chain, hops);
+            arm(&relays, app, to_id, Some(caller), &chain, hops);
         }
         /* A dormant card addressed *by name* is woken to read this, rather than
            left holding it until somebody next speaks to it. See `Queued, then
@@ -809,7 +812,7 @@ fn throttled(relays: &Relays, caller: &str) -> Result<usize, u64> {
 }
 
 /// Mark a card as acting inside a chain, so what it sends next is counted.
-fn arm(relays: &Relays, app: &AppHandle, to_id: &str, chain: &str, hops: i64) {
+fn arm(relays: &Relays, app: &AppHandle, to_id: &str, from: Option<&str>, chain: &str, hops: i64) {
     let mid_turn = app
         .state::<crate::supervisor::Supervisor>()
         .liveness(to_id)
@@ -818,9 +821,11 @@ fn arm(relays: &Relays, app: &AppHandle, to_id: &str, chain: &str, hops: i64) {
     let entry = inbound.entry(to_id.to_string()).or_insert(Inbound {
         chain: chain.to_string(),
         hops,
+        from: from.map(str::to_string),
         pending: 0,
     });
     entry.chain = chain.to_string();
+    entry.from = from.map(str::to_string);
     entry.hops = hops;
     /* See `Inbound::pending`: a message written while a turn is running is
        queued behind it by the CLI, so that turn's close is not ours. */
@@ -829,21 +834,27 @@ fn arm(relays: &Relays, app: &AppHandle, to_id: &str, chain: &str, hops: i64) {
 
 /// A turn ended on this card. Called from `supervisor::persist_turn`, which is
 /// the one place both boundaries of a turn already go through.
-pub fn turn_closed(app: &AppHandle, id: &str) {
-    let Some(relays) = app.try_state::<Relays>() else {
-        return;
-    };
+///
+/// Answers who the turn was a reply to: `Some(sender)` when this close is the
+/// close of a turn a card's message caused, `None` for every turn that was the
+/// card's own (or whose sender was another wall). `spawn::settling` reads it,
+/// because a child's reply to a sibling is not a stop its parent needs a second
+/// notice about.
+pub fn turn_closed(app: &AppHandle, id: &str) -> Option<String> {
+    let relays = app.try_state::<Relays>()?;
     let mut inbound = relays.inbound.lock().unwrap();
-    let done = match inbound.get_mut(id) {
+    let (done, from) = match inbound.get_mut(id) {
         Some(i) => {
             i.pending = i.pending.saturating_sub(1);
-            i.pending == 0
+            (i.pending == 0, i.from.clone())
         }
-        None => false,
+        None => (false, None),
     };
     if done {
         inbound.remove(id);
+        return from;
     }
+    None
 }
 
 /// Hand a woken card what was written to it while it slept.
@@ -899,7 +910,7 @@ pub fn drain_inbox(app: &AppHandle, id: &str) {
                 crate::store::mark_delivered(&conn, &q.id);
             }
             if let Some(relays) = app.try_state::<Relays>() {
-                arm(&relays, app, id, &q.chain, q.hops);
+                arm(&relays, app, id, Some(&q.from_id), &q.chain, q.hops);
             }
             let _ = app.emit(
                 "relay:sent",
@@ -1364,7 +1375,7 @@ pub(crate) fn deliver_from_afar(app: &AppHandle, card: &str, text: &str) -> Resu
         crate::store::record_relay(&conn, &crate::store::uuid_v4(), card, card, text, &chain, 1, awake)?;
     }
     if awake {
-        arm(&relays, app, card, &chain, 1);
+        arm(&relays, app, card, None, &chain, 1);
         return Ok("delivered");
     }
     let _ = app.emit("relay:wake", RelayWake { to: card.to_string() });
