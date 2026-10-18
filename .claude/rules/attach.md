@@ -378,8 +378,8 @@ goes through `Skein.send` with its turn, as the dock does.
 - **Across the flyway** a file and a byte attachment are refused with the draft kept
   (`handle.ts::carriesTo`), and so is any attachment in an answer or a notice reply to a card
   on another wall. Pictures in a prompt cross as before.
-- **Browser drags** (bytes with no path, and links) need `dropzone.rs`'s target taught the
-  browser formats; see the section on that below.
+- **Browser drags were built blind**: the session was locked, so no real drag out of Chrome,
+  Edge or Firefox could be made. See the section below for what is owed.
 
 ## The dock and the panel are one target
 
@@ -531,3 +531,40 @@ So the registration is **driven by the events, not timed**:
   drag**, and it accepts file drops: the drop pastes the path at the terminal's prompt. Put the
   lab topmost, aim off-centre, and use a drag that cancels itself rather than one that releases
   the button wherever it happens to be.
+
+## A browser's drag: a picture as bytes, a link as its text
+
+A drag out of a browser carries no `CF_HDROP` and did nothing (sink `4efa4af9`). `dropzone.rs`'s
+own target, the one IDropTarget on every window under the webview, now reads what a browser
+offers, through `Offer` so the whole reading is a test over a fake data object:
+
+- **`CF_HDROP` first and alone.** A drag with real paths is read exactly as it shipped,
+  whatever else it carries (`real_paths_are_read_alone_and_unchanged`), and the branch for it
+  in `DragEnter` and `Drop` is untouched code.
+- **A virtual file** — `FileGroupDescriptorW` names it, `FileContents` at each index is its
+  bytes, as an `IStream` or an `HGLOBAL` — is read *during* the drop, since the data object is
+  the source's and valid only until `Drop` returns, then written off the main thread into
+  `attachments/_dropped/` under the same budget as everything written for a card. The drop
+  then names those paths like any other. Such a file is `staged`: a send to a project card
+  claims it into that card's folder (`claim_dropped`), and one never sent is swept at the next
+  load. A picture among them is a picture chip, read inline as a dropped image always was.
+- **A link** (`UniformResourceLocatorW`, Firefox's `text/x-moz-url`) **lands as its text and is
+  never fetched**, decided with 34b07397: a fetch would be a network request with none of the
+  browser's sign-ins — an intranet PDF behind single sign-on comes back as the login page — of
+  a size nobody knows, and the agent can fetch a URL itself. Chromium's `.url` shortcut,
+  offered beside every link it drags, is recognised as that link and not attached.
+
+It still emits Tauri's own `tauri://drag-drop`, with two fields added — `links` and
+`refused` — so there is no second front-end path. `listenDrops` hears the four events itself
+because `onDragDropEvent` rebuilds the payload with `paths` and `position` only. **macOS and
+Linux are a seam, not a build**: wry reads only `NSFilenamesPboardType` there and only
+`text/uri-list` on GTK, so a browser drag arrives with no paths. Teaching them means an `Offer`
+over `NSPasteboard` (`public.file-url`, file promises, `public.url`) and over GTK's
+`drag-data-received`, feeding the same `read` — and nothing of either can be built or tried on
+this machine.
+
+**Owed, because the session was locked when this was built:** `tools/drop/browsers.ps1` (with
+`browsink.cs`, a sink that logs every format and reads `FileContents` at index 0) drags a
+picture, a PDF link and a picture link out of Chrome, Edge and Firefox with real input. Run it
+unlocked and check the formats against the bullets above, then drag a browser picture onto a
+lab wall's dock and a link onto its question box.

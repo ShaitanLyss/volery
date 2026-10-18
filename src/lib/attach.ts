@@ -185,6 +185,11 @@ export type FileRef = {
   dir: boolean;
   /** Bytes on disk, when known — drawn under the tile. */
   size: number | null;
+  /** A browser drag's file, written into the wall's staging folder when it
+   *  landed (`dropzone.rs`). It has a path but is nobody's yet: a send to a
+   *  project card claims it into that card's folder, where it lives until the
+   *  card closes (`attachments.rs`). */
+  staged?: boolean;
 };
 
 /** Bytes with no path behind them: a browser drag, a pasted file that is not a
@@ -329,21 +334,23 @@ export function planFor(
   text: string,
   list: readonly Attachment[],
   reach: Reach,
-): { write: Bytes[]; read: FileRef[]; refused: string | null } {
+): { write: Bytes[]; read: FileRef[]; claim: FileRef[]; refused: string | null } {
   const write: Bytes[] = [];
   const read: FileRef[] = [];
+  const claim: FileRef[] = [];
   const used = stillIn(text, list);
   for (const a of used) {
     if (a.kind === "picture") continue;
     if (a.kind === "bytes" && a.bytes > MAX_FILE_BYTES) {
-      return { write, read, refused: `${a.name} is ${mb(a.bytes)} — the most one attachment may be is ${mb(MAX_FILE_BYTES)}` };
+      return { write, read, claim, refused: `${a.name} is ${mb(a.bytes)} — the most one attachment may be is ${mb(MAX_FILE_BYTES)}` };
     }
   }
-  if (reach.afar) return { write, read, refused: null };
+  if (reach.afar) return { write, read, claim, refused: null };
   for (const a of used) {
     if (a.kind === "picture") continue;
     if (!reach.chat) {
       if (a.kind === "bytes") write.push(a);
+      if (a.kind === "file" && a.staged) claim.push(a);
       continue;
     }
     /* A chat card: no filesystem, so a path is nothing to it. */
@@ -352,17 +359,18 @@ export function planFor(
       return {
         write: [],
         read: [],
+        claim: [],
         refused: a.kind === "file" && a.dir
           ? `${a.name} is a folder, and a chat card has no files to open it with — only pictures and PDFs can be given to one`
           : `${a.name} cannot be given to a chat card — it has no files to open it with, and only pictures and PDFs go to one inline`,
       };
     }
     if (a.kind === "bytes" && a.bytes > MAX_DOCUMENT_BYTES) {
-      return { write: [], read: [], refused: `${a.name} is ${mb(a.bytes)} — a PDF given inline may be at most ${mb(MAX_DOCUMENT_BYTES)}` };
+      return { write: [], read: [], claim: [], refused: `${a.name} is ${mb(a.bytes)} — a PDF given inline may be at most ${mb(MAX_DOCUMENT_BYTES)}` };
     }
     if (a.kind === "file") read.push(a);
   }
-  return { write, read, refused: null };
+  return { write, read, claim, refused: null };
 }
 
 /** Is this a PDF? The type when one was given, the extension otherwise —

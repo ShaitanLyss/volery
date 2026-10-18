@@ -87,13 +87,29 @@ pub struct Inspected {
     /// A picture the API takes (`attach::media_type_of`), which the dock reads
     /// and sends inline rather than by path — the behaviour it always had.
     pub picture: bool,
+    /// A browser drag's file, staged until a send claims it for a card.
+    pub staged: bool,
 }
 
 /// What each path is. A path that is not there is left out, rather than failing
 /// the whole drop: one stale entry on a clipboard must not cost the rest.
 #[tauri::command]
-pub async fn inspect_paths(paths: Vec<String>) -> Result<Vec<Inspected>, String> {
-    crate::off_main(move || paths.iter().filter_map(|p| inspect(Path::new(p))).collect()).await
+pub async fn inspect_paths(
+    store: tauri::State<'_, crate::store::Store>,
+    paths: Vec<String>,
+) -> Result<Vec<Inspected>, String> {
+    let wall = store.1.clone();
+    crate::off_main(move || {
+        paths
+            .iter()
+            .filter_map(|p| {
+                let mut i = inspect(Path::new(p))?;
+                i.staged = is_staged(&wall, Path::new(p));
+                Some(i)
+            })
+            .collect()
+    })
+    .await
 }
 
 pub fn inspect(p: &Path) -> Option<Inspected> {
@@ -108,6 +124,7 @@ pub fn inspect(p: &Path) -> Option<Inspected> {
         dir: meta.is_dir(),
         size: meta.is_file().then(|| meta.len()),
         picture: meta.is_file() && crate::attach::media_type_of(p).is_some(),
+        staged: false,
     })
 }
 
@@ -285,6 +302,106 @@ fn size_of(dir: &Path) -> u64 {
         .sum()
 }
 
+/* ── a browser's drag: bytes staged until a send claims them ──────────────────
+ *
+ * A picture dragged out of a browser arrives as bytes with no path
+ * (`dropzone.rs`), and the drop has to say *something* the front end can take
+ * the way it takes an Explorer drop — a path. So the drag's files are written
+ * here, under `_dropped`, the moment they land, and the drop names those paths.
+ * They are the wall's until a send claims them for a card (`claim_dropped`
+ * moves them into that card's folder, where they live until it closes); one
+ * never sent is swept at the next load, since `sweep` keeps only folders of
+ * open cards and `_dropped` is not one. Under the same budget as everything
+ * written for a card. */
+
+/// Where a drag's files wait to be claimed.
+pub fn staging(wall: &Path) -> PathBuf {
+    root(wall).join("_dropped")
+}
+
+/// Write a drag's files and answer the paths they now have, and what was
+/// refused. Never fails the drop: a file that cannot be written is said.
+pub fn stage(wall: &Path, files: Vec<crate::dropzone::Virtual>) -> (Vec<String>, Vec<String>) {
+    let mut paths = Vec::new();
+    let mut refused = Vec::new();
+    if files.is_empty() {
+        return (paths, refused);
+    }
+    let dir = staging(wall).join(fresh_key());
+    let mut taken: Vec<String> = Vec::new();
+    for f in files {
+        let size = f.bytes.len() as u64;
+        if size > FILE_MOST {
+            refused.push(format!("{} is {} — the most one attachment may be is {}", f.name, mb(size), mb(FILE_MOST)));
+            continue;
+        }
+        let held = size_of(&root(wall));
+        if held + size > WALL_MOST {
+            refused.push(format!(
+                "{} was not kept: attachments on this machine already come to {} of {}, and they are kept until each card closes — close cards you are done with",
+                f.name,
+                mb(held),
+                mb(WALL_MOST)
+            ));
+            continue;
+        }
+        let mut plain = crate::flyway::look::plain_name(&f.name);
+        let mut n = 2;
+        while taken.contains(&plain.to_lowercase()) {
+            plain = numbered(&crate::flyway::look::plain_name(&f.name), n);
+            n += 1;
+        }
+        taken.push(plain.to_lowercase());
+        let path = dir.join(&plain);
+        match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &f.bytes)) {
+            Ok(()) => paths.push(path.to_string_lossy().into_owned()),
+            Err(e) => refused.push(format!("{} could not be kept: {e}", f.name)),
+        }
+    }
+    (paths, refused)
+}
+
+/// Is this a path a drag's file was staged at?
+pub fn is_staged(wall: &Path, path: &Path) -> bool {
+    path.starts_with(staging(wall))
+}
+
+/// Move staged files into a card's own folder, answering their new paths in
+/// order. A path that is not staged is answered as it is — a send never moves
+/// a file somebody else owns.
+#[tauri::command]
+pub async fn claim_dropped(
+    store: tauri::State<'_, crate::store::Store>,
+    card: String,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let wall = store.1.clone();
+    crate::off_main(move || claim(&wall, &card, &paths)).await?
+}
+
+pub fn claim(wall: &Path, card: &str, paths: &[String]) -> Result<Vec<String>, String> {
+    let dir = card_dir(wall, card).join(fresh_key());
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let from = Path::new(p);
+        if !is_staged(wall, from) {
+            out.push(p.clone());
+            continue;
+        }
+        let name = from.file_name().ok_or_else(|| format!("{p} names no file"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("could not make a folder for the attachments: {e}"))?;
+        let to = dir.join(name);
+        std::fs::rename(from, &to)
+            .or_else(|_| std::fs::copy(from, &to).map(|_| ()).and_then(|()| std::fs::remove_file(from)))
+            .map_err(|e| format!("{} could not be moved to its card: {e}", name.to_string_lossy()))?;
+        if let Some(parent) = from.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        out.push(to.to_string_lossy().into_owned());
+    }
+    Ok(out)
+}
+
 /* ── reading a PDF in for a chat card ─────────────────────────────────────── */
 
 /// A PDF's bytes in base64, to go inline as a `document` block.
@@ -455,5 +572,40 @@ mod tests {
         assert!(ts.contains("export const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;"));
         assert_eq!(FILE_MOST, 24 * 1024 * 1024);
         assert_eq!(DOCUMENT_MOST, 20 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_browser_drag_is_staged_then_claimed_into_its_card() {
+        let wall = scratch("stage");
+        let (paths, refused) = stage(
+            &wall,
+            vec![crate::dropzone::Virtual { name: "pic.png".into(), bytes: b"png".to_vec() }],
+        );
+        assert!(refused.is_empty());
+        assert!(is_staged(&wall, Path::new(&paths[0])));
+        let elsewhere = wall.join("mine.txt");
+        std::fs::write(&elsewhere, b"x").unwrap();
+        let moved = claim(&wall, "c", &[paths[0].clone(), elsewhere.to_string_lossy().into_owned()]).unwrap();
+        assert!(Path::new(&moved[0]).starts_with(card_dir(&wall, "c")), "{}", moved[0]);
+        assert_eq!(std::fs::read(&moved[0]).unwrap(), b"png");
+        assert!(!Path::new(&paths[0]).exists());
+        /* A file that was not staged is somebody's own, and is never moved. */
+        assert_eq!(moved[1], elsewhere.to_string_lossy());
+        assert!(elsewhere.exists());
+        /* And an unclaimed drag goes at the next load. */
+        assert!(stale(&root(&wall), &["c".into()]).contains(&staging(&wall)) || !staging(&wall).exists());
+        let _ = std::fs::remove_dir_all(wall);
+    }
+
+    #[test]
+    fn a_staged_file_past_the_cap_is_said_not_written() {
+        let wall = scratch("stagecap");
+        let (paths, refused) = stage(
+            &wall,
+            vec![crate::dropzone::Virtual { name: "huge.bin".into(), bytes: vec![0u8; (FILE_MOST + 1) as usize] }],
+        );
+        assert!(paths.is_empty());
+        assert!(refused[0].contains("huge.bin"));
+        let _ = std::fs::remove_dir_all(wall);
     }
 }

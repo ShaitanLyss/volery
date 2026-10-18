@@ -28,7 +28,7 @@ import {
 } from "./attach";
 
 /** What `inspect_paths` answers for one path (`attachments.rs`). */
-type Inspected = { path: string; name: string; dir: boolean; size: number | null; picture: boolean };
+type Inspected = { path: string; name: string; dir: boolean; size: number | null; picture: boolean; staged: boolean };
 
 /** The images hanging off one draft — the bytes, the decoding, and the scaling.
  *
@@ -292,7 +292,15 @@ export class Attachments {
    *  it with its own tools. */
   #keepPath(it: Inspected): string {
     const name = uniqueName(this.#taken(), nameFromFile(it.path) || "file");
-    const file: FileRef = { kind: "file", id: `a${++this.#seq}`, name, path: it.path, dir: it.dir, size: it.size };
+    const file: FileRef = {
+      kind: "file",
+      id: `a${++this.#seq}`,
+      name,
+      path: it.path,
+      dir: it.dir,
+      size: it.size,
+      ...(it.staged ? { staged: true } : {}),
+    };
     this.list = [...this.list, file];
     this.refused = null;
     return tokenFor(name);
@@ -490,6 +498,15 @@ export async function readyFor(
       swap.set(b.id, { kind: "file", id: b.id, name: b.name, path: paths[i]!, dir: false, size: b.bytes });
     });
   }
+  if (plan.claim.length) {
+    let paths: string[];
+    try {
+      paths = await invoke<string[]>("claim_dropped", { card, paths: plan.claim.map((f) => f.path) });
+    } catch (err) {
+      return { refused: String(err) };
+    }
+    plan.claim.forEach((f, i) => swap.set(f.id, { ...f, path: paths[i]!, staged: false }));
+  }
   for (const f of plan.read) {
     try {
       const data = await invoke<string>("read_document", { path: f.path });
@@ -550,7 +567,9 @@ export type Landing = "caret" | "end";
 
 /** What a box does with a drop. */
 export type DropTarget = {
-  take(paths: string[], where: Landing): Promise<void>;
+  /** `links` land as their text — a link dragged out of a browser is never
+   *  fetched (`dropzone.rs`) — and `refused` is said beside the box. */
+  take(paths: string[], where: Landing, links?: string[], refused?: string[]): Promise<void>;
   /** Whether a drop here means anything right now — a dock aimed at no card
    *  does not, and the drop falls through to the wall. */
   accepts?(): boolean;
@@ -631,4 +650,45 @@ export function forgetAttachments(family: string): void {
   for (const k of [...keptLists.keys()]) {
     if (k === family || k.startsWith(`${family}:`)) keptLists.delete(k);
   }
+}
+
+/* ── hearing a drop ──────────────────────────────────────────────────────────
+ *
+ * Tauri's own drag events, the ones every platform emits, heard here rather
+ * than through `onDragDropEvent` for one reason: that wrapper rebuilds the
+ * payload and keeps only `paths` and `position`, and on Windows the drop target
+ * is Volery's own (`dropzone.rs`), which also says what a *browser* drag
+ * carried — `links`, and anything it could not take (`refused`). Elsewhere the
+ * two fields are simply absent. Still one path: the same four events, one
+ * handler. */
+export type Drag =
+  | { type: "over"; position: { x: number; y: number } }
+  | { type: "leave" }
+  | {
+      type: "drop";
+      paths: string[];
+      position: { x: number; y: number };
+      links: string[];
+      refused: string[];
+    };
+
+export async function listenDrops(handler: (d: Drag) => void): Promise<() => void> {
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  const w = getCurrentWebview();
+  type Raw = { paths?: string[]; position?: { x: number; y: number }; links?: string[]; refused?: string[] };
+  const offs = await Promise.all([
+    w.listen<Raw>("tauri://drag-enter", (e) => handler({ type: "over", position: e.payload.position ?? { x: 0, y: 0 } })),
+    w.listen<Raw>("tauri://drag-over", (e) => handler({ type: "over", position: e.payload.position ?? { x: 0, y: 0 } })),
+    w.listen<Raw>("tauri://drag-drop", (e) =>
+      handler({
+        type: "drop",
+        paths: e.payload.paths ?? [],
+        position: e.payload.position ?? { x: 0, y: 0 },
+        links: e.payload.links ?? [],
+        refused: e.payload.refused ?? [],
+      }),
+    ),
+    w.listen("tauri://drag-leave", () => handler({ type: "leave" })),
+  ]);
+  return () => offs.forEach((f) => f());
 }

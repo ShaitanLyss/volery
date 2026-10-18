@@ -510,12 +510,12 @@ describe("what each target needs done first", () => {
   test("a project card here writes held bytes and reads nothing", () => {
     const b = bytes("drag.zip", "application/zip");
     const plan = planFor("take [drag.zip]", [b, file("f", "C:\\f")], HERE);
-    expect(plan).toEqual({ write: [b], read: [], refused: null });
+    expect(plan).toEqual({ write: [b], read: [], claim: [], refused: null });
   });
 
   test("a chat card reads a PDF on disk to send it inline", () => {
     const f = file("r.pdf", "C:\\r.pdf");
-    expect(planFor("[r.pdf]", [f], CHAT)).toEqual({ write: [], read: [f], refused: null });
+    expect(planFor("[r.pdf]", [f], CHAT)).toEqual({ write: [], read: [f], claim: [], refused: null });
   });
 
   test("a chat card refuses any other file, naming it", () => {
@@ -526,7 +526,7 @@ describe("what each target needs done first", () => {
 
   test("a PDF held as bytes goes inline to a chat card as a document block", () => {
     const b = bytes("d.pdf", "application/pdf");
-    expect(planFor("[d.pdf]", [b], CHAT)).toEqual({ write: [], read: [], refused: null });
+    expect(planFor("[d.pdf]", [b], CHAT)).toEqual({ write: [], read: [], claim: [], refused: null });
     const turn = turnOf("read [d.pdf] now", [b], CHAT);
     expect(turn.content).toEqual([
       { type: "text", text: "read " },
@@ -546,12 +546,21 @@ describe("what each target needs done first", () => {
     for (const reach of [HERE, CHAT, AFAR]) expect(planFor("[huge.bin]", [b], reach).refused).toContain("huge.bin");
   });
 
+  /* A browser drag's file waits in the wall's staging folder until a send to a
+     project card claims it into that card's own — and a chat card reads a
+     staged PDF in like any other. */
+  test("a staged file is claimed for a project card, and read for a chat card", () => {
+    const f = file("p.pdf", "C:\\w\\_dropped\\k\\p.pdf", { staged: true });
+    expect(planFor("[p.pdf]", [f], HERE)).toEqual({ write: [], read: [], claim: [f], refused: null });
+    expect(planFor("[p.pdf]", [f], CHAT)).toEqual({ write: [], read: [f], claim: [], refused: null });
+  });
+
   test("only what the sentence still names is planned", () => {
     expect(planFor("nothing", [bytes("z", "application/zip")], CHAT).refused).toBeNull();
   });
 
   test("a card on another wall needs nothing done here", () => {
-    expect(planFor("[z]", [bytes("z", "application/zip")], AFAR)).toEqual({ write: [], read: [], refused: null });
+    expect(planFor("[z]", [bytes("z", "application/zip")], AFAR)).toEqual({ write: [], read: [], claim: [], refused: null });
   });
 
   test("bytes that cannot go inline keep their token in the words rather than vanish", () => {

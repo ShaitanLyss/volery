@@ -147,8 +147,10 @@
       root,
       {
         accepts,
-        take: async (paths, where) => {
-          place(await shots.fromPaths(paths), where);
+        take: async (paths, where, links = [], refused = []) => {
+          const tokens = paths.length ? await shots.fromPaths(paths) : [];
+          place([...tokens, ...links], where);
+          if (refused.length) shots.refused = refused.join(" · ");
         },
       },
       name,

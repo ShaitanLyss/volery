@@ -250,6 +250,11 @@ windows = { version = "0.61", features = [
     # A file dragged from Explorer: `IDropTarget`, `RegisterDragDrop` and the
     # modifier-key flags its methods take. See `dropzone.rs`.
     "Win32_System_Ole",
+    # A browser's drag: the registered formats it offers (`FileGroupDescriptorW`,
+    # `FileContents`, `UniformResourceLocatorW`) are named, and a virtual file's
+    # bytes may come as an HGLOBAL. See `dropzone.rs`, sink 4efa4af9.
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_System_SystemServices",
     "Win32_System_JobObjects",
     # Keeping the machine awake on mains (a power request, the AC/DC

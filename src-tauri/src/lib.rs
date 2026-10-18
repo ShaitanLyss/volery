@@ -1054,6 +1054,7 @@ pub fn run() {
             attachments::write_attachments,
             attachments::read_document,
             attachments::attachments_root,
+            attachments::claim_dropped,
             show::read_picture,
             show::read_shown,
             show::measure_picture,
