@@ -1557,6 +1557,11 @@ impl Link {
                     return refuse(self, "a notice is taken down by a person, not by another card".into());
                 }
                 let notice = crate::notice::afar(d.answers.as_deref()).map(str::to_string);
+                /* A reply may carry what a prompt may, checked here as a
+                   prompt's is. */
+                if let Err(why) = crate::attach::carried_fit(&d.pictures, &d.text) {
+                    return refuse(self, format!("{} would not take its pictures: {why}", self.me));
+                }
                 if let Ok(mut p) = self.prompts_in.lock() {
                     p.insert((host.clone(), request.clone()), now);
                 }
@@ -1568,7 +1573,8 @@ impl Link {
                         card: row.id,
                         text: d.text,
                         notice,
-                        pictures: Vec::new(),
+                        pictures: d.pictures,
+                        answers: None,
                     },
                 );
             }
@@ -1576,6 +1582,37 @@ impl Link {
                — the channel a click in this wall's own dock uses — and is
                answered taken or refused on the spot, with no front end in
                between. */
+            /* An answer that carries pictures or files goes the way a person's
+               prompt does — to the front end, which fetches the files, cuts
+               the sentence as the dock would and answers the parked call
+               through `answer_ask` — once this wall has said the question may
+               take one. */
+            Act::Prompt if d.answers.is_some() && !d.pictures.is_empty() => {
+                let ask_id = d.answers.clone().unwrap_or_default();
+                if d.asked_by.card.is_some() {
+                    return refuse(self, "a question is answered by a person, not by another card".into());
+                }
+                if let Err(why) = crate::ask::afar_may_attach(&self.app, &row.id, &ask_id)
+                    .and_then(|()| crate::attach::carried_fit(&d.pictures, &d.text))
+                {
+                    return refuse(self, why);
+                }
+                if let Ok(mut p) = self.prompts_in.lock() {
+                    p.insert((host.clone(), request.clone()), now);
+                }
+                let _ = self.app.emit(
+                    "flyway:prompt",
+                    PromptHere {
+                        id: request,
+                        from: PromptFrom { host, card: None },
+                        card: row.id,
+                        text: d.text,
+                        notice: None,
+                        pictures: d.pictures,
+                        answers: Some(ask_id),
+                    },
+                );
+            }
             Act::Prompt if d.answers.is_some() => {
                 let ask_id = d.answers.clone().unwrap_or_default();
                 let outcome = crate::ask::answer_from_afar(&self.app, &row.id, &ask_id, &d.text);
@@ -1619,6 +1656,7 @@ impl Link {
                         text: d.text,
                         notice: None,
                         pictures: d.pictures,
+                        answers: None,
                     },
                 );
             }
@@ -2392,6 +2430,11 @@ struct PromptHere {
     /// it exactly as a paste in its own dock is (`Attachments.fromCarried`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pictures: Vec<fleet::Picture>,
+    /// The parked question this answers, when the answer carries pictures or
+    /// files: the front end fetches and cuts it as it would a prompt, then
+    /// answers the question through `answer_ask` (`ask::afar_may_attach`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    answers: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -2709,9 +2752,10 @@ pub async fn flyway_prompt(
     if text.trim().is_empty() {
         return Err("an empty prompt is nothing to send".into());
     }
-    /* An answer is words, as the dock composes it; only a prompt carries
-       pictures. */
-    let pictures = if ask_id.is_some() { Vec::new() } else { pictures.unwrap_or_default() };
+    /* An answer may carry pictures and files as a prompt may — the owning
+       wall hands it to its front end to fetch and cut (`afar_may_attach`) —
+       and is checked here as a prompt is. */
+    let pictures = pictures.unwrap_or_default();
     crate::off_main(move || {
         crate::attach::carried_fit(&pictures, &text)?;
         l.send_prompt(PromptRequest {

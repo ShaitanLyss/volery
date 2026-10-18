@@ -4638,7 +4638,7 @@ export class Skein {
    *  gesture here, and it is what you asked for. The take comes before the
    *  send, `later::serve_due`'s ordering: an interruption between the two
    *  loses a follow-up rather than delivering it twice. */
-  async followUpNotice(n: Notice, reply: string): Promise<boolean> {
+  async followUpNotice(n: Notice, reply: string, given?: Attachment[]): Promise<boolean> {
     const said = reply.trim();
     if (!said) {
       forgetAttachments(`notice:${n.id}`);
@@ -4649,7 +4649,9 @@ export class Skein {
     /* A picture or a file in the reply goes with it, as it would in a prompt.
        Made ready before the notice is taken down, so a refusal leaves it up
        with the reply still in its box. */
-    const attached = attachedIn(`notice:${n.id}`);
+    /* `given` is a reply from another wall, whose attachments arrived with it
+       (`Elsewhere.#gather`); a reply typed here keeps its own by the notice. */
+    const attached = given ?? attachedIn(`notice:${n.id}`);
     if (attached.length && !c) {
       this.fault = "the card that notice is about is not on this wall, so its attachments cannot go to it";
       return false;
@@ -4695,6 +4697,26 @@ export class Skein {
     const went = await this.send(c, turn?.text ?? followUpText(n, said), turn);
     if (went) forgetAttachments(`notice:${n.id}`);
     return went;
+  }
+
+  /** Answer one of a card's questions with words and attachments that came
+   *  from another wall (`Elsewhere.#gather`), through the channel a click here
+   *  uses. The reason it could not, or null. */
+  async answerAskWith(conv: Conversation, askId: string, words: string, attached: Attachment[]): Promise<string | null> {
+    const ask = conv.asks.find((a) => a.askId === askId);
+    if (!ask) return "that question is no longer waiting";
+    if (ask.ours) return "that question is this wall's own and is answered with a decision";
+    const sent = await this.#replyWith(conv, words, attached);
+    if ("refused" in sent) return sent.refused;
+    try {
+      await invoke("answer_ask", { askId, answer: sent.text, content: sent.content });
+    } catch (err) {
+      return String(err);
+    }
+    conv.closeAsk(askId);
+    conv.activity = "responding";
+    conv.answered(sent.text);
+    return null;
   }
 
   /** A reply to a parked call — a question's answer, a notice's — with what

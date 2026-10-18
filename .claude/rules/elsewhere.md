@@ -446,8 +446,17 @@ Driven across two peered lab walls (`bun run lab att`, `bun run lab atb --peer a
 path, a pasted text file as bytes and a picture, to a Haiku card on the other wall, which named
 both code words and the colours. The owning wall's folder held the two files.
 
-**Still words only:** an answer to a question, and a reply to a notice, sent from here to a
-card on another wall. An attachment in either is refused with the reason (`shadows.svelte.ts`).
+**An answer and a notice reply carry them too.** Sent from here they go the prompt's way —
+pictures in the list, files staged and named by a manifest (`Elsewhere.#carrying`) — and
+`flyway_prompt` no longer drops a picture because an `askId` is set. On the owning wall an
+answer with attachments is not handed straight into the parked call as words are
+(`ask::answer_from_afar`): `ask::afar_may_attach` checks the question is still parked, on this
+card, and an agent's own, and the answer goes to the front end like a prompt, where
+`#gather` decodes the pictures and fetches the files and `Skein.answerAskWith` gives it through
+`answer_ask` — the channel a click here uses, so the tool result carries the image blocks.
+A notice reply takes the same `#gather` into `followUpNotice`. Driven across the two labs: a
+note and a picture in a remote `ask_user` answer (the note reached the agent as a path on its
+machine, the picture's colours were named) and a picture in a remote notice reply.
 
 ### A question asked over there is answered from here
 

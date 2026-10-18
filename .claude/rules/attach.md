@@ -375,9 +375,8 @@ goes through `Skein.send` with its turn, as the dock does.
 
 ### What is not done yet
 
-- **Across the flyway** a prompt's files cross and are written on the owning wall
-  (`elsewhere.md`, *And so does a file*). An attachment in an *answer* or a *notice reply* to a
-  card on another wall is still refused with the reason.
+- **Across the flyway** a prompt's, an answer's and a notice reply's files cross and are written
+  on the owning wall (`elsewhere.md`, *And so does a file*).
 - **Browser drags were built blind**: the session was locked, so no real drag out of Chrome,
   Edge or Firefox could be made. See the section below for what is owed.
 

@@ -93,8 +93,8 @@ file, into any input*): a picture or a file goes with the reply as it would with
 follow-up to a notice at rest is a prompt, so it goes through `Skein.send` with its turn; one to
 a parked notice is a tool result, and goes as `answer_ask`'s blocks. Either way the attachments
 are made ready *before* the notice comes down, so a refusal leaves it standing with the reply
-still in its box. A reply to a notice on another wall carries words only for now, and an
-attachment there is refused with the reason.
+still in its box. A reply to a notice on another wall carries them
+too (`elsewhere.md`).
 
 ### Detecting "ended on a question" was measured, not guessed
 

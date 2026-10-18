@@ -70,14 +70,14 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import type { Effort } from "./commands";
-import { actRefusal, panelNotes, type Remote, type Said, type Verb } from "./handle";
+import { actRefusal, carriesTo, panelNotes, type Remote, type Said, type Verb } from "./handle";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, confirmHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
 import { Attachments, attachedIn, turnFrom } from "./attach.svelte";
-import { MANIFEST, manifestEntry, readManifest, type Carried, type FileRef, type Turn } from "./attach";
+import { MANIFEST, manifestEntry, readManifest, turnOf, type Attachment, type Carried, type FileRef, type Turn } from "./attach";
 
 const SECTIONS_KEY = "skein.sections.v1";
 function loadSections(): Placed {
@@ -1090,15 +1090,23 @@ export class Elsewhere {
       this.#fold(id, { kind: "unsent", why: `${s.host} has not been heard from — nothing was sent` });
       return;
     }
-    /* Words only cross in an answer, so far: refused with the reason rather
-       than sent without the thing the words are about. */
-    if (said === undefined && attachedIn(`ask:${sheet.askId}`).length) {
-      this.#fold(id, { kind: "unsent", why: `only words go in an answer to a card on ${s.host} — take the attachment out, or send it as a message` });
+    /* What was attached across the sheet goes with it, as with a prompt —
+       the owning wall fetches and cuts it (`#gather`, `afar_may_attach`). */
+    const carrying = said === undefined ? await this.#carrying(s, text, `ask:${sheet.askId}`) : { text };
+    if ("refused" in carrying) {
+      this.#fold(id, { kind: "unsent", why: carrying.refused });
       return;
     }
     s.answering = [...s.answering, sheet.askId];
     try {
-      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: sheet.askId });
+      await invoke("flyway_prompt", {
+        id,
+        to: s.host,
+        card: s.card,
+        text: carrying.text,
+        askId: sheet.askId,
+        pictures: carrying.pictures,
+      });
     } catch (e) {
       this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
     }
@@ -1130,9 +1138,10 @@ export class Elsewhere {
     const d = s.digest.notices.find((x) => `${s.id}:${x.id}` === n.id);
     if (!d) return false;
     const { answers, text } = noticeAnswer(d, reply);
-    /* Words only cross in a reply, so far — refused with the reply kept. */
-    if (reply.trim() && attachedIn(`notice:${n.id}`).length) {
-      this.#skein.fault = `only words go in a reply to a notice on ${s.host} — take the attachment out, or send it as a message`;
+    /* A reply carries what was attached to it, as a prompt does. */
+    const carrying = reply.trim() ? await this.#carrying(s, text, `notice:${n.id}`) : { text };
+    if ("refused" in carrying) {
+      this.#skein.fault = carrying.refused;
       return false;
     }
     const id = crypto.randomUUID();
@@ -1152,7 +1161,14 @@ export class Elsewhere {
     });
     s.acking = [...s.acking, d.id];
     try {
-      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: answers });
+      await invoke("flyway_prompt", {
+        id,
+        to: s.host,
+        card: s.card,
+        text: carrying.text,
+        askId: answers,
+        pictures: carrying.pictures,
+      });
     } catch (e) {
       const why = String(e) || "the link would not take it";
       this.#noticed(id, "refused", why);
@@ -1348,6 +1364,8 @@ export class Elsewhere {
     /** What it carries besides its words, already checked by Rust
      *  (`attach::carried_fit`). */
     pictures?: (Carried | { name: string; mediaType: string; data: string })[];
+    /** The question this answers, when the answer carries pictures or files. */
+    answers?: string;
   }) {
     /* A redelivered frame gets the answer the first one got, and never a
        second send. The link already drops repeats; this is the second lock on
@@ -1378,6 +1396,16 @@ export class Elsewhere {
     /* A notice taken down from another wall: the same two gestures the dock
        here makes, on the row this wall holds — so the queue, the card and the
        register cannot tell a click there from one here. */
+    /* An answer to one of this card's questions that carries pictures or
+       files (`ask::afar_may_attach` let it through): gathered as a prompt's
+       are, then given through `answer_ask` as a click here would. */
+    if (p.answers) {
+      const list = await this.#gather(p, conv);
+      if (typeof list === "string") return this.#settle(p, "refused", list);
+      const why = await this.#skein.answerAskWith(conv, p.answers, p.text, list);
+      return this.#settle(p, why ? "refused" : "taken", why ?? undefined);
+    }
+
     if (p.notice) {
       const n = this.#skein.notices.find((x) => x.id === p.notice && x.conversationId === conv.id && !x.askId);
       if (!n) {
@@ -1391,8 +1419,10 @@ export class Elsewhere {
         await this.#skein.acknowledgeNotice(n);
         return this.#settle(p, "taken");
       }
+      const list = p.pictures?.length ? await this.#gather(p, conv) : [];
+      if (typeof list === "string") return this.#settle(p, "refused", list);
       conv.note(`sent from ${p.from.host}`);
-      const went = await this.#skein.followUpNotice(n, p.text).catch(() => false);
+      const went = await this.#skein.followUpNotice(n, p.text, list).catch(() => false);
       return this.#settle(
         p,
         went ? "taken" : "refused",
@@ -1401,43 +1431,14 @@ export class Elsewhere {
     }
 
     /* Its pictures are attached here the way a paste in this wall's own dock
-       is — decoded, held to the same limits, given a thumbnail — and then the
-       sentence is cut with them by the same `turnOf` the dock uses, so the far
-       card gets the turn a person at this keyboard would have sent. All or
-       nothing: the sentence without one of its pictures is refused, never
-       sent. Nothing is written to disk; the bytes leave with the send. */
+       is, its files fetched into the card's own folder (`#gather`), and the
+       sentence is cut with them for this card's reach — so the far card gets
+       the turn a person at this keyboard would have sent. All or nothing. */
     let turn: Turn | undefined;
     if (p.pictures?.length) {
-      const shots = new Attachments();
-      /* Files are not in the list: a manifest says where they are, and they
-         are pulled from the wall that sent them and written into this card's
-         own folder, so the agent here is handed paths on this machine. All or
-         nothing, as the pictures are. */
-      const manifest = p.pictures.map((e) => readManifest(e)).find((m) => m !== null) ?? null;
-      const pictures = p.pictures.filter((e): e is Carried => e.mediaType !== MANIFEST);
-      /* A decode that throws is answered too — an asker that never hears back
-         can only say it does not know, and the key above would swallow its
-         retry. */
-      const why = pictures.length
-        ? await shots.fromCarried(pictures).catch((e) => String((e as Error)?.message ?? e) || "could not be read")
-        : null;
-      if (why) return this.#settle(p, "refused", `${this.me || "that wall"} would not take its pictures: ${why}`);
-      let files: FileRef[] = [];
-      if (manifest) {
-        let got: { n: number; path: string | null; fault: string | null }[];
-        try {
-          got = await invoke("flyway_fetch", { host: p.from.host, card: conv.id, stage: manifest.stage });
-        } catch (e) {
-          return this.#settle(p, "refused", `${this.me || "that wall"} could not fetch its files: ${String(e)}`);
-        }
-        const fault = got.find((g) => g.fault || !g.path);
-        if (fault || got.length !== manifest.names.length) {
-          return this.#settle(p, "refused", `${this.me || "that wall"} could not fetch its files: ${fault?.fault ?? "some did not arrive"}`);
-        }
-        files = got.map((g, i) => ({ kind: "file", id: `f${i}`, name: manifest.names[i]!, path: g.path!, dir: false, size: null }));
-      }
-      const made = await turnFrom(p.text, [...shots.list, ...files], { chat: conv.kind === "chat", afar: false }, conv.id);
-      shots.clear();
+      const list = await this.#gather(p, conv);
+      if (typeof list === "string") return this.#settle(p, "refused", list);
+      const made = await turnFrom(p.text, list, { chat: conv.kind === "chat", afar: false }, conv.id);
       if ("refused" in made) return this.#settle(p, "refused", `${this.me || "that wall"} could not give it to the card: ${made.refused}`);
       turn = made;
     }
@@ -1454,6 +1455,73 @@ export class Elsewhere {
       sent ? "taken" : "refused",
       sent ? undefined : `${this.me || "that wall"} could not deliver it — ${conv.activity}`,
     );
+  }
+
+  /** What a prompt or an answer from another wall carries, made attachments
+   *  of this wall's: its pictures decoded as a paste here is, and its files
+   *  pulled from the wall that sent them (`flyway_fetch`) into the card's own
+   *  folder, so the agent is handed paths on this machine. All or nothing:
+   *  the reason, naming what did not come, when anything is missing. */
+  async #gather(
+    p: { from: { host: string }; pictures?: (Carried | { name: string; mediaType: string; data: string })[] },
+    conv: Conversation,
+  ): Promise<Attachment[] | string> {
+    const me = this.me || "that wall";
+    const all = p.pictures ?? [];
+    const manifest = all.map((e) => readManifest(e)).find((m) => m !== null) ?? null;
+    const pictures = all.filter((e): e is Carried => e.mediaType !== MANIFEST);
+    const shots = new Attachments();
+    /* A decode that throws is answered too — an asker that never hears back
+       can only say it does not know. */
+    const why = pictures.length
+      ? await shots.fromCarried(pictures).catch((e) => String((e as Error)?.message ?? e) || "could not be read")
+      : null;
+    if (why) return `${me} would not take its pictures: ${why}`;
+    let files: FileRef[] = [];
+    if (manifest) {
+      let got: { n: number; path: string | null; fault: string | null }[];
+      try {
+        got = await invoke("flyway_fetch", { host: p.from.host, card: conv.id, stage: manifest.stage });
+      } catch (e) {
+        return `${me} could not fetch its files: ${String(e)}`;
+      }
+      const fault = got.find((g) => g.fault || !g.path);
+      if (fault || got.length !== manifest.names.length) {
+        return `${me} could not fetch its files: ${fault?.fault ?? "some did not arrive"}`;
+      }
+      files = got.map((g, i) => ({ kind: "file", id: `f${i}`, name: manifest.names[i]!, path: g.path!, dir: false, size: null }));
+    }
+    const list = [...shots.list, ...files];
+    shots.clear();
+    return list;
+  }
+
+  /** What a wall here sends with an answer or a reply to a card on another:
+   *  the words as the dock would cut them for that wall, its pictures, and a
+   *  manifest of its files held here for that wall to pull — or why not. */
+  async #carrying(
+    s: Shadow,
+    text: string,
+    family: string,
+  ): Promise<{ text: string; pictures?: { name: string; mediaType: string; data: string }[] } | { refused: string }> {
+    const list = attachedIn(family);
+    if (!list.length) return { text };
+    const turn = turnOf(text, list, { chat: false, afar: true });
+    const can = carriesTo(s.remote, turn);
+    if (can !== "yes") return { refused: can.no };
+    const pictures: { name: string; mediaType: string; data: string }[] = [...turn.carried];
+    if (turn.files.length) {
+      try {
+        const stage = await invoke<string>("stage_outbound", {
+          card: s.card,
+          files: turn.files.map((f) => (f.kind === "file" ? { name: f.name, path: f.path } : { name: f.name, data: f.data })),
+        });
+        pictures.push(manifestEntry({ stage, names: turn.files.map((f) => f.name) }));
+      } catch (e) {
+        return { refused: String(e) };
+      }
+    }
+    return { text: turn.text, pictures: pictures.length ? pictures : undefined };
   }
 
   /* ── a person's gesture from another wall, on a card here ─────────── */

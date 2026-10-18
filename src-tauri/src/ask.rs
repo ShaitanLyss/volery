@@ -682,6 +682,25 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
         .map_err(|_| "the asking turn has gone".to_string())
 }
 
+/// Whether an answer from another wall that carries pictures or files may be
+/// handed to this wall's front end to cut and give (`flyway/link.rs`): the
+/// question is still parked, on this card, and is an agent's `ask_user` — a
+/// question Volery composed is answered with a decision, and has no use for a
+/// picture. The answer itself goes through `answer_ask`, the channel a click
+/// here uses, once the front end has fetched the files and cut the sentence.
+pub(crate) fn afar_may_attach(app: &AppHandle, card: &str, ask_id: &str) -> Result<(), String> {
+    let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
+    let pending = asks.pending.lock().map_err(|_| "this wall's questions are wedged".to_string())?;
+    match pending.get(ask_id) {
+        None => Err("that question is no longer waiting — it was answered on its own wall, or filed into its pile".into()),
+        Some(p) if p.conversation_id != card => Err("that question belongs to another card on this wall".into()),
+        Some(p) if p.ours || p.act.is_some() => {
+            Err("that question is this wall's own and is answered with a decision, so a picture or a file has nowhere to go".into())
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 /// Whether a parked question may be answered from another wall.
 ///
 /// An agent's `ask_user` always may: the answer is information flowing back to

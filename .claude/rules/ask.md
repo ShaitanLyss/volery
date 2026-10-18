@@ -1444,4 +1444,5 @@ card cannot open, so a PDF in an answer to one is refused. `answer_ask` takes th
 reply, so everything that reads an answer as text — a deferral, a held sheet, a settle — is
 unchanged, and the blocks are used only when the reply is the answer as given. The whole
 argument is in `attach.md`, *A question's answer is a tool result*. From another wall an answer
-still carries words only, and an attachment there is refused with the reason.
+carries them too: the owning wall fetches and cuts it, then gives it through `answer_ask`
+(`elsewhere.md`).
