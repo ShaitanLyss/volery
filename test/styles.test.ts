@@ -458,3 +458,21 @@ describe("the thread, the find bar and the panel each own their rules", () => {
     });
   }
 });
+
+/* And the fifth, which is the one the split above found. Every block in the
+   thread is wrapped in a `.blk` (`display: contents`, for the find to scroll
+   to), so a line is always the first child of its own wrapper and a
+   `:first-child` written against the line matches every line there is. That
+   is how the themes' room above a prompt (`--tx-round`) went undrawn for two
+   months behind `.line.you:first-child`: the rule meant "the first prompt in
+   the column" and said "every prompt". "First in the column" is the wrapper's
+   to say. */
+describe("a line inside the thread is never first of anything but its wrapper", () => {
+  test("no :first-child or :last-child is written against a .line in Thread.svelte", () => {
+    const css = stylesheet(readFileSync(join(SRC, "lib", "Thread.svelte"), "utf8"));
+    const wrong = topLevelSelectors(css)
+      .flatMap((s) => s.split(","))
+      .filter((s) => /\.line[\w.-]*:(first|last)-child/.test(s));
+    expect(wrong).toEqual([]);
+  });
+});

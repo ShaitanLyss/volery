@@ -745,8 +745,16 @@
 
   /* Nothing above it to be separated from, and a rule across the top of the
      panel is furniture announcing the start of a column you are already
-     looking at. */
-  .line.you:first-child {
+     looking at.
+
+     The first prompt *of the column*, which is what this was written against —
+     and for two months it meant every prompt. `44a19be` wrapped each block in a
+     `.blk` for the find to scroll to, and a prompt is the first child of its
+     own wrapper, so `.line.you:first-child` matched them all: the round's air
+     and rule (`--tx-round`, set by `readable`, `column` and the themes built
+     on them) were zeroed on every prompt and no theme could draw them. Anchored
+     through the wrapper now, which is the column's first block or nothing. */
+  .thread > .blk:first-child > .line.you {
     margin-top: 0;
     border-top-color: transparent;
     padding-top: 0;
