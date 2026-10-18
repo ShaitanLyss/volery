@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
+import { SKEIN_SPAWN_TOOL } from "../src/lib/classify";
 import {
+  spawnedHandle,
+  cardByHandle,
+  SPAWN_TOOL,
   DWELL_MS,
   afterClose,
   ageOf,
@@ -307,5 +311,36 @@ describe("settling a finished conversation by reading it", () => {
     expect(settles({ ...ok, focused: false })).toBe(false);
     expect(settles({ ...ok, away: true })).toBe(false);
     expect(settles({ ...ok, seenFor: DWELL_MS - 1 })).toBe(false);
+  });
+});
+
+describe("conversations that start conversations", () => {
+  const receipt = (text: string, failed?: true) => ({ name: SPAWN_TOOL, result: { text, failed } });
+
+  test("a spawn's receipt names the card it opened", () => {
+    expect(spawnedHandle(receipt("opening a card in C:\\x — its handle is ab12cd34. It has the brief"))).toBe("ab12cd34");
+    expect(
+      spawnedHandle(receipt("opening a card in the caravan project, at C:\\c — its handle is 0f0f0f0f. It has")),
+    ).toBe("0f0f0f0f");
+  });
+
+  test("anything else opens nothing", () => {
+    expect(spawnedHandle(undefined)).toBeNull();
+    expect(spawnedHandle({ name: SPAWN_TOOL })).toBeNull();
+    expect(spawnedHandle(receipt("its handle is ab12cd34", true))).toBeNull();
+    expect(spawnedHandle({ name: "mcp__skein__send", result: { text: "its handle is ab12cd34" } })).toBeNull();
+    expect(spawnedHandle(receipt("refused: three cards are already working"))).toBeNull();
+  });
+
+  test("the spawn tool's name is the classifier's", () => {
+    expect(SPAWN_TOOL).toBe(SKEIN_SPAWN_TOOL);
+  });
+
+  test("a handle finds its card by prefix, and nothing else does", () => {
+    const ids = ["ab12cd34-1111-2222", "ff00ff00-3333"];
+    expect(cardByHandle("ab12cd34", ids)).toBe("ab12cd34-1111-2222");
+    expect(cardByHandle("deadbeef", ids)).toBeNull();
+    expect(cardByHandle("", ids)).toBeNull();
+    expect(cardByHandle("ab12", ids)).toBeNull();
   });
 });

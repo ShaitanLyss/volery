@@ -378,3 +378,34 @@ export function settles(s: {
 }): boolean {
   return s.selected && s.focused && !s.away && s.seenFor >= DWELL_MS;
 }
+
+/* ── conversations that start conversations (§5.5) ─────────────────────── */
+
+/** The handle of the card a `spawn` call opened, read off its receipt — or
+ *  null when the call is something else, has not landed, failed, or opened
+ *  nothing this build can read a handle out of.
+ *
+ *  Off the receipt rather than off `Skein.kin`, because kin knows *that* a card
+ *  has children and not *which call* opened each one, and the linked card
+ *  stands where the call stands. `spawn::opened_text` says `its handle is
+ *  <eight hex>` on every arm, local or remote; a receipt that grows another
+ *  shape draws no linked card, which is the quiet failure — the pane's
+ *  *linked* tab, read off kin, still lists the child. */
+export function spawnedHandle(call: { name: string; result?: { text: string; failed?: true } } | undefined): string | null {
+  if (!call || call.name !== SPAWN_TOOL || !call.result || call.result.failed) return null;
+  return /its handle is ([0-9a-f]{8})\b/.exec(call.result.text)?.[1] ?? null;
+}
+
+/** Must agree with `classify.ts::SKEIN_SPAWN_TOOL`; restated rather than
+ *  imported so this file keeps knowing nothing of the event vocabulary beyond
+ *  the one name it reads. Held by a test. */
+export const SPAWN_TOOL = "mcp__skein__spawn";
+
+/** Which card a handle names, among the ids on the wall — the card itself or
+ *  null. A handle is an id's first eight characters (`relay::handle_of`);
+ *  two ids sharing them is the case `relay.rs` refuses, so the first match is
+ *  the only one. Used for a spawn's child and a relay's sender alike. */
+export function cardByHandle(handle: string, ids: readonly string[]): string | null {
+  if (!/^[0-9a-f]{8}$/.test(handle)) return null;
+  return ids.find((id) => id.startsWith(handle)) ?? null;
+}

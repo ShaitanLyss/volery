@@ -1539,6 +1539,19 @@ export class Skein {
     return this.#openIn(cwd, worktree?.trim() || null, "project", null, setup);
   }
 
+  /** The files a card has handled, for chat view's side pane — the same read
+   *  a handoff makes, off the main thread in Rust (`store::files_handled_by`).
+   *  Null when it cannot be read, which the pane says rather than drawing an
+   *  empty list that would read as "none". */
+  async trail(id: string): Promise<Trail | null> {
+    try {
+      return await invoke<Trail>("files_handled_by", { conversationId: id, limit: BRIEF_FETCH });
+    } catch (e) {
+      console.error("files_handled_by", e);
+      return null;
+    }
+  }
+
   /** Hand a planning card's plan to a fresh card that will build it.
    *
    *  The saving is the context reset, not the cheaper model — `handoff.ts` has

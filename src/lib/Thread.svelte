@@ -56,6 +56,10 @@
   import { MIN_QUERY, matchAt } from "./hunt";
   import { Hunting } from "./hunt.svelte";
   import { RELEASE } from "./follow.svelte";
+  import { others } from "./others.svelte";
+  import { spawnedHandle } from "./chatview";
+  import { relayBody, relayFrom } from "./relay";
+  import { cardName } from "./naming";
 
   let { card }: { card: CardHandle } = $props();
 
@@ -74,6 +78,11 @@
   });
 
   const conv = $derived(card.readable);
+
+  /* The other conversations, if the surface above can reach them — chat view
+     can and the wall's panel provides nothing, so the relations below are
+     drawn there and nowhere else (`others.svelte.ts`). */
+  const reach = others();
 
   /* The agent speaks markdown — headings, lists, fenced code, tables — and it
      used to arrive here as literal asterisks and hashes. Parsed per line rather
@@ -397,6 +406,49 @@
   {/if}
 {/snippet}
 
+<!-- Where a spawn call stands, the conversation it started (§5.5): its name,
+     what it is doing, its live dot, and the way into it. Only where the view
+     can reach other cards; the wall shows the same thing as a limb. -->
+{#snippet linked(lines: Line[])}
+  {#if reach}
+    {#each lines as l, i (i)}
+      {@const h = spawnedHandle(l.call)}
+      {@const kid = h ? reach.find(h) : null}
+      {#if kid}
+        <button
+          type="button"
+          class="linked"
+          class:work={kid.face.working}
+          onclick={() => reach.open(kid.id)}
+          title="open the conversation this one started"
+        >
+          <svg class="i" viewBox="0 0 16 16" aria-hidden="true"
+            ><circle cx="4.5" cy="3.5" r="1.6" /><circle cx="4.5" cy="12.5" r="1.6" /><circle cx="11.5" cy="5.5" r="1.6" /><path
+              d="M4.5 5.1v5.8M11.5 7.1c0 2.4-2 3.2-5.4 3.9"
+            /></svg
+          >
+          <span class="who">
+            <span class="t">{cardName(kid.face.title, "").text || "a conversation"}</span>
+            <span class="sub"
+              >started by this conversation · {kid.ask
+                ? "asking you something"
+                : kid.face.working
+                  ? kid.face.doing || "working"
+                  : kid.face.tier === "fail"
+                    ? "stopped on an error"
+                    : "at rest"}</span
+            >
+          </span>
+          <span class="go"
+            ><i class="st" class:work={kid.face.working} class:ask={!!kid.ask} class:fail={kid.face.tier === "fail"}
+            ></i>open</span
+          >
+        </button>
+      {/if}
+    {/each}
+  {/if}
+{/snippet}
+
 <!-- A column of blocks: lines, and runs of tool calls folded into one cap each.
      Nothing navigable is ever inside a fold — a tool call carries no `data-nav` —
      so the rails list the same places whatever is open. -->
@@ -417,6 +469,24 @@
     >
     {#if b.kind === "line"}
       {@render one(b.line, lineKey(b.line, b.key))}
+      {#if b.line.call}{@render linked([b.line])}{/if}
+    {:else if b.kind === "long" && chat && b.line.kind === "relay"}
+      <!-- In chat view a relay is a message *from* whoever sent it, not a fold
+           of machinery and never your own words (§5.5) — the sender named, and
+           openable where they are on the wall. The envelope's note to the model
+           stays out, as `relayBody` keeps it out everywhere. -->
+      {@const from = relayFrom(b.line.text)}
+      {@const sender = from?.handle && reach ? reach.find(from.handle) : null}
+      <div class="line text md from" data-nav="msg">
+        <div class="by">
+          {#if sender}
+            <button type="button" onclick={() => reach?.open(sender.id)} title="open {from?.name}">{from?.name}</button>
+          {:else}
+            {from?.name ?? "another conversation"}
+          {/if}
+        </div>
+        <Markdown blocks={parseMarkdown(relayBody(b.line.text))} />
+      </div>
     {:else if b.kind === "long"}
       <!-- What a compaction carried forward, the whole of a skill the agent
            invoked, the prompt rousing sent a card whose turn was cut off, or
@@ -547,6 +617,7 @@
           </div>
         {/if}
       </div>
+      {@render linked(b.lines)}
     {/if}
     </div>
   {/each}
@@ -981,6 +1052,103 @@
   }
   .line.aside {
     color: var(--paper-mute);
+  }
+
+  /* ── chat view's relations (§5.5) ───────────────────────────────────────── */
+  /* The conversation a spawn started, as the mockups' `.linked`: a quiet card
+     with a wash of the working hue only while it works. */
+  .linked {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: var(--cv-r-m, 12px);
+    border: 1px solid var(--cv-hair, var(--edge));
+    background: color-mix(in oklab, var(--surface) 50%, transparent);
+    font: inherit;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 13px;
+    color: var(--paper-dim);
+    text-align: left;
+    cursor: pointer;
+  }
+  .linked.work {
+    background:
+      linear-gradient(90deg, color-mix(in oklab, var(--st-work) calc(10% * var(--ch-bloom, 1)), transparent), transparent 60%),
+      color-mix(in oklab, var(--surface) 50%, transparent);
+  }
+  .linked:hover,
+  .linked:focus-visible {
+    border-color: var(--edge);
+  }
+  .linked .i {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: var(--paper-mute);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+  }
+  .linked .who {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .linked .t {
+    color: var(--paper);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .linked .sub {
+    font-size: 12px;
+    color: var(--paper-mute);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .linked .go {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--paper-dim);
+  }
+  .linked .st {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--st-rest);
+  }
+  .linked .st.work {
+    background: var(--st-work);
+  }
+  .linked .st.ask {
+    background: var(--st-ask);
+  }
+  .linked .st.fail {
+    background: var(--st-fail);
+  }
+  /* A message from another conversation: set as the agent's own prose is, under
+     the sender's name — never in your bubble. */
+  .line.from .by {
+    margin-bottom: 4px;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 12.5px;
+    color: var(--paper-mute);
+  }
+  .line.from .by button {
+    font: inherit;
+    color: var(--paper-dim);
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
   }
 
   /* ── a folded run of tool calls ─────────────────────────────────────────── */

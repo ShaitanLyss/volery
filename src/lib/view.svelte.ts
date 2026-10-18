@@ -18,6 +18,9 @@ class ViewHolder {
   current = $state<View>("wall");
   /** Whether chat view's sidebar is shown. */
   sidebar = $state(true);
+  /** Chat view's side pane — plan, files, linked, jobs, side question — is
+   *  open. Closed by default: the live parts density (§6.4). */
+  pane = $state(false);
   /** What was stored, if anything — `opening` asks whether a choice exists. */
   stored: ViewState | null = null;
 
@@ -30,6 +33,7 @@ class ViewHolder {
     if (this.stored) {
       this.current = this.stored.view;
       this.sidebar = this.stored.sidebar;
+      this.pane = this.stored.pane;
     }
   }
 
@@ -48,6 +52,7 @@ class ViewHolder {
       ...(this.stored ?? DEFAULT_STATE),
       view: this.current,
       sidebar: this.sidebar,
+      pane: this.pane,
     };
     this.stored = next;
     try {

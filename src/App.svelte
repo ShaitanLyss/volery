@@ -3320,6 +3320,12 @@
       view.save();
       return true;
     }
+    /* The side pane beside the thread (§3) — mid-draft too, like the sidebar. */
+    if (mod && !e.shiftKey && !e.altKey && e.key === ".") {
+      e.preventDefault();
+      chatview?.togglePane();
+      return true;
+    }
     if (mod && !e.altKey && e.key === "Tab") {
       e.preventDefault();
       chatview?.walk(e.shiftKey ? -1 : 1);
