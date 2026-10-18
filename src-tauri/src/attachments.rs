@@ -536,6 +536,54 @@ pub fn outbound_args(card: &str, stage: &str) -> Result<serde_json::Value, Strin
     }
 }
 
+/* ── a held message handed back from a card being closed ───────────────────
+ *
+ * A message held for an account carries a written file as the path it was
+ * given, in its words. Closing the card hands the message back to a draft —
+ * and then takes the card's folder, which is where that path points. So before
+ * the folder goes, the files those words name are moved into the wall's
+ * staging folder and the words rewritten to say where: the draft keeps the
+ * file until the next load, as any drag that has not been sent yet does. A
+ * held message is something typed by a person, and it is not lost by the card
+ * it was typed at going away. */
+
+/// Rewrite held messages being handed back from a closing card so no path in
+/// them points into that card's folder, moving each named file to staging.
+#[tauri::command]
+pub async fn restage_held(
+    store: tauri::State<'_, crate::store::Store>,
+    card: String,
+    texts: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let wall = store.1.clone();
+    crate::off_main(move || texts.iter().map(|t| restage(&wall, &card, t)).collect()).await
+}
+
+pub fn restage(wall: &Path, card: &str, text: &str) -> String {
+    let dir = card_dir(wall, card).to_string_lossy().into_owned();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(&dir) {
+        let quoted = rest[..at].ends_with('"');
+        let tail = &rest[at..];
+        let end = if quoted { tail.find('"') } else { tail.find(char::is_whitespace) }.unwrap_or(tail.len());
+        let path = &tail[..end];
+        out.push_str(&rest[..at]);
+        let from = Path::new(path);
+        let moved = from.file_name().and_then(|name| {
+            let to_dir = staging(wall).join(fresh_key());
+            let to = to_dir.join(name);
+            std::fs::create_dir_all(&to_dir).ok()?;
+            std::fs::rename(from, &to).ok()?;
+            Some(to.to_string_lossy().into_owned())
+        });
+        out.push_str(moved.as_deref().unwrap_or(path));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /* ── reading a PDF in for a chat card ─────────────────────────────────────── */
 
 /// A PDF's bytes in base64, to go inline as a `document` block.
@@ -771,6 +819,25 @@ mod tests {
         let wall = scratch("outdir");
         let err = stage_out(&wall, "c", vec![("src".into(), Some(wall.to_string_lossy().into_owned()), None)]).unwrap_err();
         assert!(err.contains("folder"), "{err}");
+        let _ = std::fs::remove_dir_all(wall);
+    }
+
+    #[test]
+    fn a_held_message_handed_back_from_a_closing_card_keeps_its_files() {
+        let wall = scratch("restage");
+        let paths = write(&wall, "c", &[("my notes.txt", b"n".to_vec()), ("a.png", b"p".to_vec())]).unwrap();
+        let text = format!("see \"{}\" and {} please", paths[0], paths[1]);
+        let back = restage(&wall, "c", &text);
+        assert!(!back.contains(&card_dir(&wall, "c").to_string_lossy().into_owned()), "{back}");
+        clear_for(&wall, "c");
+        let quoted = back.split('"').nth(1).unwrap();
+        let bare = back.rsplit(" and ").next().unwrap().trim_end_matches(" please");
+        for p in [quoted, bare] {
+            assert!(is_staged(&wall, Path::new(p)) && Path::new(p).exists(), "{p}");
+        }
+        assert!(back.starts_with("see \"") && back.ends_with(" please"));
+        /* Words naming nothing of the card's are handed back as they were. */
+        assert_eq!(restage(&wall, "c", "plain words"), "plain words");
         let _ = std::fs::remove_dir_all(wall);
     }
 }

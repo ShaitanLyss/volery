@@ -3912,6 +3912,18 @@ export class Skein {
     if (unread) this.fault = "a held message's pictures could not be read back — its words are in the draft without them";
     for (const item of held.queue) this.#heldPictures.delete(item.key);
     this.#writeHold(conv);
+    /* A held message names a written file by its path in the card's own
+       folder, and closing the card takes that folder — so the files are moved
+       to where an unsent drag waits, and the words rewritten to point there,
+       before the close goes on (`attachments::restage_held`). */
+    if (why === "closed" && parts.length) {
+      try {
+        const texts = await invoke<string[]>("restage_held", { card: conv.id, texts: parts.map((p) => p.item.text) });
+        parts.forEach((p, i) => (p.item = { ...p.item, text: texts[i] ?? p.item.text }));
+      } catch (err) {
+        this.fault = `a held message's files could not be kept: ${String(err)}`;
+      }
+    }
     this.#handBack(conv, parts, why);
   }
 

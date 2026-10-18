@@ -1057,6 +1057,7 @@ pub fn run() {
             attachments::attachments_root,
             attachments::claim_dropped,
             attachments::stage_outbound,
+            attachments::restage_held,
             show::read_picture,
             show::read_shown,
             show::measure_picture,

@@ -292,7 +292,11 @@ touches the disk, which keeps this file's older rule intact.
   card may still be reading is not ours to take away.
 - **A held message survives on its own**, because the bytes were written before the hold and
   the hold carries the path in its words. A restart leaves the folder, since the card is
-  still open.
+  still open. **Closing the card hands the message back and then takes the folder**, so before
+  it goes `restage_held` moves every file the handed-back words name into `_dropped` and
+  rewrites the words to point there (`Skein.#dropHold`). The draft then keeps them until the
+  next load, as an unsent drag does: something a person typed is not lost by the card it was
+  typed at going away.
 
 ### An Explorer copy is a path too
 
