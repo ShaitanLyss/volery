@@ -32,6 +32,40 @@ import type { Draft } from "./drafts";
  *  `.claude/rules/bang.md` for what the two vocabularies mean; this only holds
  *  which one is being spoken. */
 export class Field {
+  /* The field's own rules, which lived in the dock's effects until a second
+     field over the same draft — chat view's message box — needed them too.
+     Here, every view over the draft has them by existing. Constructed once, in
+     `App.svelte`, so these run for the life of the window. */
+  constructor() {
+    /* A draft that stops being a shell line is a new question, so the
+       dismissal does not outlive it — the same rule the palette's has. */
+    $effect(() => {
+      if (!isBang(this.text)) this.bangOff = false;
+    });
+    /* A draft that stops being a command being typed is a new question, so the
+       dismissal does not outlive it. Without this, one Escape silenced the
+       palette for the rest of the session. Both stages count: dismissing over
+       `/model son` must not be undone by the very next keystroke. Asked of
+       `slashAt` rather than of `token`, because the dismissal is what
+       suppresses `token` and would otherwise hide the very thing that clears
+       it. */
+    $effect(() => {
+      if (slashAt(this.text, this.caret) === null && typingChoice(this.text) === null) {
+        this.commandsOff = false;
+      }
+    });
+    /* The lit row goes back to the top when the list under it is replaced, or
+       stepping from the names to the values would land on whichever value
+       happened to share an index with the command you just picked. */
+    $effect(() => {
+      void this.#stage;
+      this.at = 0;
+    });
+  }
+
+  /** Which list the palette is showing — what resets the lit row. */
+  #stage = $derived.by(() => (this.choosing ? `values:${this.choosing.cmd.name}` : "names"));
+
   /** The text itself. Two-way with the textarea, and the one thing here that
    *  anything outside the dock writes — a command that rewrites the line, a
    *  completion that lands in it, a card switch that swaps the draft out. */

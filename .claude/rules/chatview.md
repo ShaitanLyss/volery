@@ -7,6 +7,12 @@ paths:
   - "src/lib/chatview.ts"
   - "src/lib/viewmode.ts"
   - "src/lib/Transcript.svelte"
+  - "src/lib/front.svelte.ts"
+  - "src/lib/composer.ts"
+  - "src/lib/composer.svelte.ts"
+  - "src/lib/view.svelte.ts"
+  - "src/lib/field.svelte.ts"
+  - "src/lib/Dock.svelte"
 ---
 
 # Chat view: one conversation's column, read in two rooms
@@ -62,6 +68,47 @@ fold and its calls open were pixel-identical; a fold opened mid-stream let go of
 both; *to the end* took it up again; a rail click carried the view and a streaming turn did
 not drag it back. Not driven: typing into the find field (there is no `fill` op), and a peered
 lab's history on open.
+
+### What is in front of you came out of the dock (phase 2b)
+
+`front.svelte.ts`'s `Front` is the queue — each card's front question and its notices, the
+held item, the guard for a held item going while you type into it, "more waiting on you" —
+constructed once in `App.svelte`. It cannot live in the dock: chat view unmounts the dock, and a
+hold the dock owned would be dropped on every switch. `queue.ts` keeps every rule; the dock
+draws the held item through local aliases so `test/queue.test.ts`'s markup assertions still hold
+on `Dock.svelte`. `Front.of(card)` is for chat view's thread.
+
+A `$derived` class field that reads a private field straight off `this` — `$derived(f(this.#x))`
+— is refused by TypeScript as *used before its initialization*, because field initializers run
+before the constructor assigns. `$derived.by(() => …)` defers the read and is what to write.
+
+### The composer came out of App (phase 2a)
+
+`onDraftKey`, `send`, `sendText`, `runCommand`, the `!` line's run and completions, and the
+dock's caret and stir handlers are `composer.svelte.ts`'s `Composer` now, over `Field`. Its keys
+are a table in `composer.ts`, per view, and `test/composer.test.ts` holds it. Four things it had
+to take with it, because App held them in places a move would have missed:
+
+- **The mounted field, as a registry.** `composer.input` is whichever field is on screen
+  (`bind:el={composer.input}`), and focusing the draft, the caret after a completion and the
+  `!` history all reach through it. App's single `prompt` ref was the dock's alone: a key typed
+  on the wall under chat view would have focused a textarea that was not there.
+- **The stir guard** (`edited`): a second field that stirred without `stirsCard` would bring
+  back `/clear` typed into a dormant card resuming the session it was clearing.
+- **The field's own rules** — a dismissal that does not outlive its draft, the lit row back to
+  the top when the list changes — moved from the dock's effects into `Field`'s constructor.
+- **The view.** `composer.reach` and `targets` are the selected card alone in chat view, and
+  every send forces broadcast off there, whatever modifier is down.
+
+One fix made on the way rather than frozen: the palette's Escape did not stop propagating, so
+the window's handler blurred the field on the same press. `palette-off` stops it now.
+
+Lab (frozen, synthetic keys on the dock's field, no API turn spent — `/model` is answered by the
+CLI locally, `/gear` is Volery's, a `!` line is a shell), 14/14: a `!` line runs in the focused
+card and lands in its transcript; `/gear planning` reaches the focused card only; Escape
+dismisses the palette keeping the text; Enter on a gathering refuses and keeps the draft while
+Ctrl+Enter reaches both; Tab steps to the next card; a draft is parked and handed back across a
+switch; a key typed on the wall lands in the draft and focuses the field.
 
 ### A capture of a lab is DPI-aware or it is cropped
 

@@ -9,12 +9,11 @@
    *
    * What is here is what the dock alone owns: the target line, the palette in
    * its two stages, the `!` line's offering and bar, and the field. What is not
-   * is the keyboard — `onDraftKey` stays in `App.svelte` beside `onGlobalKey`,
-   * deliberately. That ladder is not dock-local: half its branches are about the
-   * wall (Tab between cards, Escape to the ground, the transcript's scrolling),
-   * and it is the *boundary* between the dock and everything else rather than a
-   * thing inside it. Splitting it across two files would put the two halves of
-   * one priority order where neither can be read against the other. */
+   * is what the keys and the sends *do* — that is the composer's
+   * (`composer.svelte.ts`, its table in `composer.ts`), because chat view draws a
+   * second field over the same draft and the two must not drift. Read its table
+   * against `onGlobalKey` in `App.svelte`: the two ladders still share every
+   * key. */
   import { tick } from "svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
@@ -24,16 +23,17 @@
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import type { Front } from "./front.svelte";
+  import type { Composer } from "./composer.svelte";
   import { replies } from "./replies.svelte";
   import { glance } from "./glancing.svelte";
   import type { Orphan, Reply } from "./replies";
   import { isShadowKey } from "./shadow";
   import type { DockChord } from "./leader";
   import { scopeFiles } from "./paths.svelte";
-  import { completionForChoice, slashAt, stirsCard, typingChoice, type Command } from "./commands";
+  import { completionForChoice } from "./commands";
   import { nameBesideProject } from "./naming";
   import { promptPath } from "./shell";
-  import { BANG, isBang, kindLabel, tokens, type Completion, type Match } from "./bang";
+  import { BANG, isBang, kindLabel, tokens } from "./bang";
   import PromptBox from "./PromptBox.svelte";
   import type { DockSite } from "./berth";
 
@@ -52,11 +52,7 @@
     grabbing,
     onmoor,
     onheight,
-    prompt = $bindable(),
-    onkey,
-    onsendtext,
-    onrun,
-    ontake,
+    composer,
     oncycle,
     onselect,
   }: {
@@ -113,13 +109,11 @@
      *  berth's — the field grows as you type. Reported rather than stored, so
      *  a floating dock can be clamped against a bottom edge it actually has. */
     onheight: (h: number) => void;
-    /** The textarea itself, handed back up so a keystroke on the wall can put
-     *  the focus here and the character with it. */
-    prompt: HTMLTextAreaElement | undefined;
-    onkey: (e: KeyboardEvent) => void;
-    onsendtext: (text: string, broadcast: boolean) => Promise<void>;
-    onrun: (cmd: Command, broadcast: boolean) => Promise<void>;
-    ontake: (offer: Completion, match: Match) => Promise<void>;
+    /** The window's message to a card — what a key in the field does, what
+     *  Enter sends and to whom, the commands and the `!` line
+     *  (`composer.svelte.ts`). The dock is one drawing of it; its field
+     *  registers itself as the composer's input. */
+    composer: Composer;
     oncycle: (step: 1 | -1) => void;
     /** Land on a card, here or elsewhere, the way clicking it does — asked for
      *  by a panel when the card being asked is not the one in the ring, and by
@@ -194,7 +188,7 @@
     await tick();
     field.put(field.text.trim() ? `${field.text.trimEnd()}\n\n${o.text}` : o.text);
     replies.forget(o.item);
-    prompt?.focus();
+    composer.input?.focus();
   }
 
   async function copyStray(o: Orphan) {
@@ -245,76 +239,9 @@
     onheight(height);
   });
 
-  /* A draft that stops being a shell line is a new question, so the dismissal
-     does not outlive it — the same rule the palette's has, for the same reason. */
-  $effect(() => {
-    if (!isBang(field.text)) field.bangOff = false;
-  });
-
-  /* A draft that stops being a command being typed is a new question, so the
-     dismissal does not outlive it. Without this, one Escape silenced the
-     palette for the rest of the session. Both stages count: dismissing over
-     `/model son` must not be undone by the very next keystroke.
-
-     Asked of `slashAt` rather than `typingName` now that a name can sit inside
-     a sentence: the question is whether the *caret* is still in one, and moving
-     it out of the word you dismissed over is as much a new question as deleting
-     the word would be. Read against `field.commandsOff` being what suppresses
-     `field.token` — this has to ask the draft directly, or the dismissal would
-     hide the very thing that clears it. */
-  $effect(() => {
-    if (
-      slashAt(field.text, field.caret) === null &&
-      typingChoice(field.text) === null
-    ) {
-      field.commandsOff = false;
-    }
-  });
-
-  /** Where the caret is, off the textarea itself.
-   *
-   *  Everything the palette's first stage does keys on which word the caret is
-   *  in, and there is no one event that reports every way it moves — `input`
-   *  covers typing, `keyup` the arrows and Home/End, `click` a pointer landing
-   *  mid-word, and `focus` coming back to a draft you left. Four cheap handlers
-   *  rather than `selectionchange`, which is engine-dependent and would fail
-   *  silently by leaving the palette matching the end of the line.
-   *
-   *  Never called for a write this app made: those go through `Field.put`,
-   *  which puts the caret back to meaning the end of the text. */
-  function caretMoved() {
-    field.caret = prompt?.selectionStart ?? null;
-  }
-
-  /** An edit to the draft, as opposed to the caret merely moving in it.
-   *
-   *  Both are `oninput`'s business here and they are two different questions,
-   *  which is why this is not folded into `caretMoved`: that one is also on
-   *  `keyup`, `click` and `focus`, and none of those is you writing anything.
-   *
-   *  What the edit buys is the card's process. A card at rest no longer gets one
-   *  at launch (`rousing.ts`), so the first send of the day would otherwise be a
-   *  spawn and a `--resume` waited out with the sentence already typed. Starting
-   *  it on the first character spends that second on the time you were using
-   *  anyway. Nothing is awaited and no answer is read — `Skein.stir` is a head
-   *  start, and `#deliver` still asks for a process and still fails honestly if
-   *  there is none.
-   *
-   *  Two things it is asked about first. A `!` line is a shell command run in
-   *  the card's directory by `bang.rs` and reaches no agent at all, so a card
-   *  you only ever run commands in stays dormant. And an empty box is a draft
-   *  you have just cleared or backspaced out of, which is the opposite of
-   *  turning towards the card.
-   *
-   *  The focused card and not `targets`: a gathering of twenty would otherwise
-   *  be twenty spawns off one keystroke, which is the thundering herd
-   *  `ROUSE_GAP_MS` exists to avoid. A broadcast wakes each of them in
-   *  `#deliver` as it reaches them. */
-  function edited() {
-    caretMoved();
-    if (field.banging || !stirsCard(field.text)) return;
-    card?.stir();
-  }
+  /* The field's own rules — a dismissal that does not outlive its draft, the
+     lit row going back to the top — are `Field`'s now, and the caret and the
+     stir are the composer's: every view over the draft has them by existing. */
 
   /** Whichever of the palette's two stages is up. Bound by both, since they are
    *  the arms of one `if` and never both on screen. */
@@ -334,14 +261,6 @@
     palette?.querySelector(".cmd.on")?.scrollIntoView({ block: "nearest" });
   });
 
-  /* The lit row goes back to the top when the list under it is replaced, or
-     stepping from the names to the values would land on whichever value
-     happened to share an index with the command you just picked. */
-  const stage = $derived(field.choosing ? `values:${field.choosing.cmd.name}` : "names");
-  $effect(() => {
-    stage;
-    field.at = 0;
-  });
 </script>
 
 <!-- Moored beside a panel it stops at the panel's border: a margin on a
@@ -560,7 +479,7 @@
                the draft is cleared while the caret is somewhere else. */
             e.preventDefault();
             field.at = i;
-            void onsendtext(
+            void composer.sendText(
               completionForChoice(field.choosing!.cmd, choice),
               targets.length > 1,
             );
@@ -591,7 +510,7 @@
                the draft is cleared while the caret is somewhere else. */
             e.preventDefault();
             field.at = i;
-            void onrun(cmd, targets.length > 1);
+            void composer.runCommand(cmd, targets.length > 1);
           }}
           onmouseenter={() => (field.at = i)}
         >
@@ -649,7 +568,7 @@
                  the caret is somewhere else by the time the text lands. */
               e.preventDefault();
               bang.at = i;
-              void ontake(bang.offer!, m);
+              void composer.takeCompletion(bang.offer!, m);
             }}
             onmouseenter={() => (bang.at = i)}
           >
@@ -711,7 +630,7 @@
   {/snippet}
   <PromptBox
     bind:text={field.text}
-    bind:el={prompt}
+    bind:el={composer.input}
     shots={field.shots}
     name="prompt"
     accepts={() => !!card || targets.length > 0}
@@ -719,11 +638,11 @@
     tint={field.banging ? bangTint : undefined}
     inkClass={field.banging ? "shell" : ""}
     after={keyHint}
-    onkeydown={onkey}
-    oninput={edited}
-    onkeyup={caretMoved}
-    onclick={caretMoved}
-    onfocus={caretMoved}
+    onkeydown={composer.key}
+    oninput={composer.edited}
+    onkeyup={composer.caretMoved}
+    onclick={composer.caretMoved}
+    onfocus={composer.caretMoved}
     placeholder={field.banging
       ? "run a command in this card's directory…"
       : targets.length > 1
