@@ -719,3 +719,47 @@ export function insertAt(
   const put = lead + token + tail;
   return { text: before + put + after, caret: at + lead.length + token.length };
 }
+
+/* ── files to a card on another wall ──────────────────────────────────────────
+ *
+ * A file crosses as its bytes, written on the wall that owns the card, and the
+ * far agent is handed a path on its own machine (`elsewhere.md`). Not in the
+ * prompt's frame — that is the 7 MB `Pictured` frame, and a file may be 24 MB —
+ * but pulled in parts by the owning wall from this one, through the transfer
+ * that already carries a question's files (`look.rs`). The prompt carries only
+ * where to pull from: a manifest, riding in the prompt's picture list as an
+ * entry of its own type. In the list rather than in a field of the frame
+ * because a wall from before files would drop an unknown field in silence and
+ * hand its card a sentence naming files it never received — where an entry of
+ * a type it does not know is refused by its own `carried_fit`, whole, with the
+ * draft kept here. */
+
+/** The type the manifest rides under. `attachments::MANIFEST` in Rust. */
+export const MANIFEST = "application/vnd.volery.files+json";
+
+/** What the owning wall needs to pull a prompt's files: the stage this wall
+ *  holds them under, and the token each one wears, in order. */
+export type Manifest = { stage: string; names: string[] };
+
+/** The manifest as a picture-list entry. */
+export function manifestEntry(m: Manifest): { name: string; mediaType: string; data: string } {
+  const json = new TextEncoder().encode(JSON.stringify(m));
+  let bin = "";
+  for (const b of json) bin += String.fromCharCode(b);
+  return { name: "files", mediaType: MANIFEST, data: btoa(bin) };
+}
+
+/** A manifest out of a picture-list entry, or null for anything that is not
+ *  one — a normalizer, since it came from another machine. */
+export function readManifest(e: { mediaType: string; data: string }): Manifest | null {
+  if (e.mediaType !== MANIFEST) return null;
+  try {
+    const bin = atob(e.data);
+    const v = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0))));
+    if (typeof v?.stage !== "string" || !Array.isArray(v.names)) return null;
+    const names = v.names.filter((n: unknown): n is string => typeof n === "string");
+    return names.length === v.names.length ? { stage: v.stage, names } : null;
+  } catch {
+    return null;
+  }
+}

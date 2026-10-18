@@ -183,6 +183,28 @@ pub fn carried_fit(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Re
 /// are read back hours later into a request, so they owe the same scrutiny as
 /// bytes from another machine, and none of the frame's — they never ride one.
 pub fn pictures_fit(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Result<usize, String> {
+    /* A prompt's manifest of files rides in its picture list under a type of
+       its own (`attachments::MANIFEST`): it is where to pull the files from,
+       not a picture, and is held only to being small. A wall from before files
+       refuses it here as "not an image", whole — which is the point of
+       carrying it in this list rather than a field an old wall would drop. */
+    let mut cost = 0usize;
+    let mut kept = Vec::with_capacity(pictures.len());
+    for p in pictures {
+        if p.media_type == crate::attachments::MANIFEST {
+            if p.data.len() > 64 * 1024 {
+                return Err("its list of files is larger than any list of files is".into());
+            }
+            cost += p.data.len() + p.name.len() + p.media_type.len() + 48;
+        } else {
+            kept.push(p.clone());
+        }
+    }
+    let pictures = &kept[..];
+    Ok(cost + pictures_fit_only(pictures, text)?)
+}
+
+fn pictures_fit_only(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Result<usize, String> {
     if pictures.len() > MAX_ATTACHED {
         return Err(format!("{} pictures — {MAX_ATTACHED} is the most one prompt carries", pictures.len()));
     }
@@ -367,5 +389,19 @@ mod tests {
         let mut one = PNG.to_vec();
         one.resize(MAX_BYTES, 0);
         assert_eq!(carried_fit(&[pic("one", "image/png", &one)], "[one]"), Ok(()));
+    }
+
+    /// A prompt's list of files rides beside its pictures and is not one of
+    /// them: no token in the sentence, not an image — and still held small.
+    #[test]
+    fn a_list_of_files_rides_with_the_pictures_and_is_not_checked_as_one() {
+        let manifest = Picture {
+            name: "files".into(),
+            media_type: crate::attachments::MANIFEST.into(),
+            data: crate::base64(br#"{"stage":"stage-1","names":["a.pdf"]}"#),
+        };
+        assert!(carried_fit(&[manifest.clone()], "read [a.pdf]").is_ok());
+        let big = Picture { data: "A".repeat(70 * 1024), ..manifest };
+        assert!(carried_fit(&[big], "read [a.pdf]").is_err());
     }
 }

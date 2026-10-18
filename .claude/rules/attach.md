@@ -250,8 +250,8 @@ things were wrong, and the second was the larger one:
 | kind | where it comes from | a project card here | a chat card | a card on another wall |
 |---|---|---|---|---|
 | `picture` | a paste, a dropped image | an `image` block, as always | an `image` block | crosses with the prompt (`Pictured`) |
-| `file` | a drop, an Explorer copy, a folder | **its path, as-is**, in the words | a PDF is read in as a `document` block; anything else refused | not yet — refused with the draft kept |
-| `bytes` | a pasted blob, a browser drag | written into the card's folder, then its path | a PDF inline; anything else refused | not yet |
+| `file` | a drop, an Explorer copy, a folder | **its path, as-is**, in the words | a PDF is read in as a `document` block; anything else refused | pulled by the owning wall and written there; a folder refused |
+| `bytes` | a pasted blob, a browser drag | written into the card's folder, then its path | a PDF inline; anything else refused | pulled and written there |
 
 **A path is passed as-is** (Lyss, 2026-10-16): the agent opens it with its own tools, which is
 what Claude Code does with a path dragged into a terminal. Nothing is copied and nothing is
@@ -375,9 +375,9 @@ goes through `Skein.send` with its turn, as the dock does.
 
 ### What is not done yet
 
-- **Across the flyway** a file and a byte attachment are refused with the draft kept
-  (`handle.ts::carriesTo`), and so is any attachment in an answer or a notice reply to a card
-  on another wall. Pictures in a prompt cross as before.
+- **Across the flyway** a prompt's files cross and are written on the owning wall
+  (`elsewhere.md`, *And so does a file*). An attachment in an *answer* or a *notice reply* to a
+  card on another wall is still refused with the reason.
 - **Browser drags were built blind**: the session was locked, so no real drag out of Chrome,
   Edge or Firefox could be made. See the section below for what is owed.
 

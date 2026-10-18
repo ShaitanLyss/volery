@@ -93,6 +93,9 @@ export type Remote = {
   /** Whether that wall announced `pictures` — that a person's prompt to one
    *  of its cards may carry them (`fleet::CAN_PICTURES`). Absent is no. */
   pictures?: boolean;
+  /** Whether that wall announced `files` — that it pulls a prompt's files from
+   *  this one and writes them on its own disk (`attachments::CAN_FILES`). */
+  files?: boolean;
 };
 
 /** The verbs on offer for a card. `null` for a card on this wall means all of
@@ -150,9 +153,15 @@ export type Can = "yes" | { no: string };
 export function carriesTo(remote: Remote, turn: Turn): Can {
   if (remote.unheard) return { no: `${remote.host} has not been heard from — a prompt would be refused` };
   if (turn.files.length) {
-    return {
-      no: `${turn.files[0]!.name} is a file on this machine, and only pictures travel to a card on ${remote.host} yet — attach a picture, or say where it is on that machine`,
-    };
+    if (!remote.files) {
+      return {
+        no: `${remote.host} runs a Volery from before files could be sent to its cards — send the words alone, or update it there`,
+      };
+    }
+    /* A folder is a place on this machine, not something to carry: its files
+       are, one at a time. */
+    const dir = turn.files.find((f) => f.kind === "file" && f.dir);
+    if (dir) return { no: `${dir.name} is a folder, and only files travel to another wall — drop the files in it instead` };
   }
   if (!turn.carried.length) return "yes";
   if (!remote.pictures) {

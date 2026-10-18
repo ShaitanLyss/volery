@@ -416,6 +416,39 @@ the reason `elsewhere` is a field of the face: every surface that draws a card r
 none can forget it. The link's record of births and the card can arrive in either order; an
 effect stamps whichever comes second.
 
+### And so does a file, pulled rather than carried
+
+A file, or bytes with no path (a pasted blob, a browser drag), goes to a card on another wall
+the way it goes to one here — as a path the agent reads — except the path has to be one on
+*that* machine (sink `fd7ef025`). So the bytes cross and are written on the owning wall, into
+the card's own folder (`attachments.rs`), and its agent is handed that path.
+
+- **Pulled, not carried in the frame.** The prompt rides `Pictured`, 7 MB for everything, and a
+  file may be 24 MB. The transfer that already moves a question's files in parts (`look.rs`)
+  is reused whole: the sender holds the files under a stage id (`stage_outbound` — a path is
+  served from where it is, bytes are written under `attachments/_outbound` first), and the
+  owning wall asks for that id the way it asks for a question's files — `look_here` serves a
+  `stage-` id from `attachments::outbound_args`, a question's own id from `ask.rs` as before.
+  `flyway_fetch` gathers and writes into the card's folder. A stage is let go after an hour.
+- **The prompt names the stage in its picture list**, as an entry of its own type
+  (`attach.ts::MANIFEST`), with the token each file wears. Not in a new field of the frame: a
+  wall from before files would drop an unknown field in silence and hand its card a sentence
+  naming files it never got, where an unknown entry in the picture list is refused whole by its
+  own `carried_fit`. A wall that has files announces `files` (`attachments::CAN_FILES`), and the
+  dock refuses with the draft kept when the far wall has not (`handle.ts::carriesTo`).
+- **The owning wall cuts the sentence itself**, with `turnFrom` and its own card's reach — so a
+  far *chat* card gets a PDF inline and refuses anything else, exactly as one here would. All
+  or nothing, like the pictures: a file that did not arrive refuses the prompt.
+- **A folder does not travel.** It is a place on the sending machine; its files can be dropped
+  instead, and the dock says so.
+
+Driven across two peered lab walls (`bun run lab att`, `bun run lab atb --peer att`): a PDF by
+path, a pasted text file as bytes and a picture, to a Haiku card on the other wall, which named
+both code words and the colours. The owning wall's folder held the two files.
+
+**Still words only:** an answer to a question, and a reply to a notice, sent from here to a
+card on another wall. An attachment in either is refused with the reason (`shadows.svelte.ts`).
+
 ### A question asked over there is answered from here
 
 The general rule (sink `16864f3d`): **anything that parks waiting for a person must travel to

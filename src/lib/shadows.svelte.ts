@@ -76,8 +76,8 @@ import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, confirmHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
-import { Attachments, attachedIn } from "./attach.svelte";
-import { turnOf, type Carried, type Turn } from "./attach";
+import { Attachments, attachedIn, turnFrom } from "./attach.svelte";
+import { MANIFEST, manifestEntry, readManifest, type Carried, type FileRef, type Turn } from "./attach";
 
 const SECTIONS_KEY = "skein.sections.v1";
 function loadSections(): Placed {
@@ -135,6 +135,9 @@ export type RosterRow = {
   /** It takes a person's prompt with pictures in it (`fleet::CAN_PICTURES`).
    *  Absent from an older build, which is a no. */
   pictures?: boolean;
+  /** It announced `files`: it pulls a prompt's files from the wall that sent
+   *  them (`attachments::CAN_FILES`). */
+  files?: boolean;
   /** It opens an empty card a person here asks for (`flyway/opening.rs`) —
    *  what a section's menu reads to offer one. Absent from an older build. */
   opens?: boolean;
@@ -490,6 +493,9 @@ export class Shadow {
       /* No row, or an older one, is no: a picture sent there would arrive as
          the sentence without it. The link refuses one too. */
       pictures: !!row && !row.older && row.pictures === true,
+      /* The same for files, which the owning wall pulls from this one
+         (`flyway_fetch`). */
+      files: !!row && !row.older && row.files === true,
     };
   }
   /** The accounts its wall can put it on, by label — what `put it on…`
@@ -1188,7 +1194,21 @@ export class Elsewhere {
       return;
     }
     try {
-      const pictures = turn?.carried.length ? turn.carried : undefined;
+      let pictures: { name: string; mediaType: string; data: string }[] | undefined = turn?.carried.length
+        ? [...turn.carried]
+        : undefined;
+      /* Files are held here for the owning wall to pull (`stage_outbound`),
+         and the prompt carries only where they are — see `attach.ts`,
+         *files to a card on another wall*. */
+      if (turn?.files.length) {
+        const stage = await invoke<string>("stage_outbound", {
+          card: s.card,
+          files: turn.files.map((f) =>
+            f.kind === "file" ? { name: f.name, path: f.path } : { name: f.name, data: f.data },
+          ),
+        });
+        pictures = [...(pictures ?? []), manifestEntry({ stage, names: turn.files.map((f) => f.name) })];
+      }
       await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, pictures });
     } catch (e) {
       this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
@@ -1327,7 +1347,7 @@ export class Elsewhere {
     notice?: string;
     /** What it carries besides its words, already checked by Rust
      *  (`attach::carried_fit`). */
-    pictures?: Carried[];
+    pictures?: (Carried | { name: string; mediaType: string; data: string })[];
   }) {
     /* A redelivered frame gets the answer the first one got, and never a
        second send. The link already drops repeats; this is the second lock on
@@ -1389,19 +1409,43 @@ export class Elsewhere {
     let turn: Turn | undefined;
     if (p.pictures?.length) {
       const shots = new Attachments();
+      /* Files are not in the list: a manifest says where they are, and they
+         are pulled from the wall that sent them and written into this card's
+         own folder, so the agent here is handed paths on this machine. All or
+         nothing, as the pictures are. */
+      const manifest = p.pictures.map((e) => readManifest(e)).find((m) => m !== null) ?? null;
+      const pictures = p.pictures.filter((e): e is Carried => e.mediaType !== MANIFEST);
       /* A decode that throws is answered too — an asker that never hears back
          can only say it does not know, and the key above would swallow its
          retry. */
-      const why = await shots.fromCarried(p.pictures).catch((e) => String((e as Error)?.message ?? e) || "could not be read");
+      const why = pictures.length
+        ? await shots.fromCarried(pictures).catch((e) => String((e as Error)?.message ?? e) || "could not be read")
+        : null;
       if (why) return this.#settle(p, "refused", `${this.me || "that wall"} would not take its pictures: ${why}`);
-      turn = turnOf(p.text, shots.list);
+      let files: FileRef[] = [];
+      if (manifest) {
+        let got: { n: number; path: string | null; fault: string | null }[];
+        try {
+          got = await invoke("flyway_fetch", { host: p.from.host, card: conv.id, stage: manifest.stage });
+        } catch (e) {
+          return this.#settle(p, "refused", `${this.me || "that wall"} could not fetch its files: ${String(e)}`);
+        }
+        const fault = got.find((g) => g.fault || !g.path);
+        if (fault || got.length !== manifest.names.length) {
+          return this.#settle(p, "refused", `${this.me || "that wall"} could not fetch its files: ${fault?.fault ?? "some did not arrive"}`);
+        }
+        files = got.map((g, i) => ({ kind: "file", id: `f${i}`, name: manifest.names[i]!, path: g.path!, dir: false, size: null }));
+      }
+      const made = await turnFrom(p.text, [...shots.list, ...files], { chat: conv.kind === "chat", afar: false }, conv.id);
       shots.clear();
+      if ("refused" in made) return this.#settle(p, "refused", `${this.me || "that wall"} could not give it to the card: ${made.refused}`);
+      turn = made;
     }
 
     conv.note(`sent from ${p.from.host}`);
     let sent = false;
     try {
-      sent = await this.#skein.send(conv, p.text, turn);
+      sent = await this.#skein.send(conv, turn?.text ?? p.text, turn);
     } catch {
       sent = false;
     }

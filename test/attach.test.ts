@@ -27,6 +27,9 @@ import {
   uniqueName,
   planFor,
   pathText,
+  manifestEntry,
+  readManifest,
+  MANIFEST,
   resolveFiles,
   MAX_FILE_BYTES,
   MAX_DOCUMENT_BYTES,
@@ -574,5 +577,22 @@ describe("the reading under a tile", () => {
   test("a file says it goes as its path", () => {
     expect(sizeNote(file("a", "C:\\a", { size: 2048 }))).toBe("2 KB · sent as its path");
     expect(sizeNote(file("d", "C:\\d", { dir: true, size: null }))).toBe("folder · sent as its path");
+  });
+});
+
+/* A file to a card on another wall crosses as a manifest in the picture list,
+   which a wall from before files refuses whole rather than dropping. */
+describe("the manifest of files for another wall", () => {
+  test("it reads back what was written, unicode names included", () => {
+    const m = { stage: "stage-1", names: ["réport.pdf", "notes 2.txt"] };
+    const e = manifestEntry(m);
+    expect(e.mediaType).toBe(MANIFEST);
+    expect(readManifest(e)).toEqual(m);
+  });
+
+  test("anything that is not one is not read as one", () => {
+    expect(readManifest({ mediaType: "image/png", data: "AAAA" })).toBeNull();
+    expect(readManifest({ mediaType: MANIFEST, data: "!!" })).toBeNull();
+    expect(readManifest({ mediaType: MANIFEST, data: btoa(JSON.stringify({ stage: 1, names: [] })) })).toBeNull();
   });
 });

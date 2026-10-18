@@ -308,11 +308,17 @@ describe("whether a turn can reach a card on another wall", () => {
   /* A file crosses as bytes the far wall writes on its own disk, and until
      that is built it does not cross at all — refused with the draft kept, so
      the words never arrive without the thing they are about. */
-  test("a file is refused to another wall, naming it", () => {
+  test("a file goes to a wall that pulls files, and is refused by one that does not", () => {
     const f = { kind: "file" as const, id: "f", name: "r.pdf", path: "C:\\r.pdf", dir: false, size: 1 };
+    expect(carriesTo(lab({ pictures: true, files: true }), turn([], [f]))).toBe("yes");
     const said = carriesTo(lab({ pictures: true }), turn([], [f]));
-    expect(said).not.toBe("yes");
-    expect((said as { no: string }).no).toContain("r.pdf");
+    expect((said as { no: string }).no).toContain("before files");
+  });
+
+  test("a folder does not travel, and says to send its files", () => {
+    const d = { kind: "file" as const, id: "d", name: "src", path: "C:\\src", dir: true, size: null };
+    const said = carriesTo(lab({ pictures: true, files: true }), turn([], [d]));
+    expect((said as { no: string }).no).toContain("src is a folder");
   });
 
   test("words go to any wall that is heard", () => {

@@ -402,6 +402,140 @@ pub fn claim(wall: &Path, card: &str, paths: &[String]) -> Result<Vec<String>, S
     Ok(out)
 }
 
+/* ── files a prompt carries to a card on another wall ─────────────────────────
+ *
+ * The bytes cross and are written on the wall that owns the card, so the far
+ * agent is handed a path on its own machine. Not in the prompt's frame — that
+ * is `Pictured`, 7 MB for everything — but pulled by the owning wall in parts
+ * (`flyway/look.rs`, proven to 24 MB a file for a question's files), from a
+ * stage this wall holds: `stage_outbound` registers the files under an id the
+ * prompt names (`attach.ts::manifestEntry`), the owning wall asks for that id
+ * the way it would ask for a question (`Link::look_here`), and writes what it
+ * gathers into its card's folder (`flyway_fetch`). A file named by path is
+ * served from where it is; bytes with no path are written under `_outbound`
+ * first. A stage is let go an hour after it was made, and `_outbound` goes at
+ * the next load with every other folder that is not an open card's. */
+
+/// The type a prompt's manifest of files rides under in its picture list.
+/// `attach.ts::MANIFEST`.
+pub const MANIFEST: &str = "application/vnd.volery.files+json";
+
+/// The word a wall announces in `Facts::can` when it pulls a prompt's files
+/// (`flyway_fetch`) and serves its own (`outbound_args`).
+pub const CAN_FILES: &str = "files";
+
+/// How long a stage is kept for the owning wall to pull from.
+const OUTBOUND_KEEP: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+struct Outbound {
+    card: String,
+    files: Vec<(String, String)>,
+    dir: Option<PathBuf>,
+    at: std::time::Instant,
+}
+
+static OUTBOUND: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Outbound>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// One file a prompt to another wall carries: by its path, or as bytes.
+#[derive(Deserialize)]
+pub struct Sending {
+    pub name: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+}
+
+/// Hold a prompt's files for the owning wall to pull, and answer the stage's id.
+/// `card` is the card on *that* wall, which is the only one that may pull them.
+#[tauri::command]
+pub async fn stage_outbound(
+    store: tauri::State<'_, crate::store::Store>,
+    card: String,
+    files: Vec<Sending>,
+) -> Result<String, String> {
+    let wall = store.1.clone();
+    crate::off_main(move || {
+        let mut decoded = Vec::with_capacity(files.len());
+        for f in files {
+            let bytes = match &f.data {
+                Some(d) => Some(crate::unbase64(d).ok_or_else(|| format!("{} could not be read back from the draft", f.name))?),
+                None => None,
+            };
+            decoded.push((f.name, f.path, bytes));
+        }
+        stage_out(&wall, &card, decoded)
+    })
+    .await?
+}
+
+/// The staging itself, on a directory a test can point anywhere.
+pub fn stage_out(wall: &Path, card: &str, files: Vec<(String, Option<String>, Option<Vec<u8>>)>) -> Result<String, String> {
+    let stage = format!("stage-{}", fresh_key());
+    let dir = root(wall).join("_outbound").join(&stage);
+    let mut held = Vec::with_capacity(files.len());
+    let mut wrote = false;
+    for (name, path, bytes) in files {
+        match (path, bytes) {
+            (Some(p), _) => {
+                let p = PathBuf::from(p);
+                let meta = std::fs::metadata(&p).map_err(|e| format!("{name}: {e}"))?;
+                if !meta.is_file() {
+                    return Err(format!("{name} is a folder, and only files travel to another wall"));
+                }
+                if meta.len() > FILE_MOST {
+                    return Err(format!("{name} is {} — the most one attachment may be is {}", mb(meta.len()), mb(FILE_MOST)));
+                }
+                let parent = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                let file = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                held.push((parent, file));
+            }
+            (None, Some(b)) => {
+                if b.len() as u64 > FILE_MOST {
+                    return Err(format!("{name} is {} — the most one attachment may be is {}", mb(b.len() as u64), mb(FILE_MOST)));
+                }
+                let plain = crate::flyway::look::plain_name(&name);
+                let at = dir.join(held.len().to_string());
+                std::fs::create_dir_all(&at).map_err(|e| format!("could not hold {name} for the other wall: {e}"))?;
+                std::fs::write(at.join(&plain), &b).map_err(|e| format!("could not hold {name} for the other wall: {e}"))?;
+                wrote = true;
+                held.push((at.to_string_lossy().into_owned(), plain));
+            }
+            (None, None) => return Err(format!("{name} came with nothing to send")),
+        }
+    }
+    let mut out = OUTBOUND.lock().map_err(|_| "the outbound files are wedged".to_string())?;
+    /* Let go of what nobody pulled within the hour. */
+    out.retain(|_, o| {
+        let keep = o.at.elapsed() < OUTBOUND_KEEP;
+        if !keep {
+            if let Some(d) = &o.dir {
+                let _ = std::fs::remove_dir_all(d);
+            }
+        }
+        keep
+    });
+    out.insert(
+        stage.clone(),
+        Outbound { card: card.to_string(), files: held, dir: wrote.then_some(dir), at: std::time::Instant::now() },
+    );
+    Ok(stage)
+}
+
+/// A stage as a question's arguments, so `look::answer` serves it exactly as
+/// it serves a question's files: one site per file, in order.
+pub fn outbound_args(card: &str, stage: &str) -> Result<serde_json::Value, String> {
+    let out = OUTBOUND.lock().map_err(|_| "the outbound files are wedged".to_string())?;
+    match out.get(stage) {
+        None => Err("those files are no longer held here — they were sent more than an hour ago".into()),
+        Some(o) if o.card != card => Err("those files were sent to another card".into()),
+        Some(o) => Ok(serde_json::json!({
+            "questions": o.files.iter().map(|(r, n)| serde_json::json!({ "file": { "root": r, "path": n } })).collect::<Vec<_>>()
+        })),
+    }
+}
+
 /* ── reading a PDF in for a chat card ─────────────────────────────────────── */
 
 /// A PDF's bytes in base64, to go inline as a `document` block.
@@ -606,6 +740,37 @@ mod tests {
         );
         assert!(paths.is_empty());
         assert!(refused[0].contains("huge.bin"));
+        let _ = std::fs::remove_dir_all(wall);
+    }
+
+    #[test]
+    fn a_stage_serves_its_files_to_the_card_they_were_sent_to_and_no_other() {
+        let wall = scratch("out");
+        let on_disk = wall.join("report.pdf");
+        std::fs::write(&on_disk, b"%PDF-").unwrap();
+        let stage = stage_out(
+            &wall,
+            "far-card",
+            vec![
+                ("report.pdf".into(), Some(on_disk.to_string_lossy().into_owned()), None),
+                ("drag.png".into(), None, Some(b"png".to_vec())),
+            ],
+        )
+        .unwrap();
+        let args = outbound_args("far-card", &stage).unwrap();
+        let files = crate::flyway::look::files_in(&args);
+        assert_eq!(files[0], (wall.to_string_lossy().into_owned(), "report.pdf".to_string()));
+        assert_eq!(std::fs::read(Path::new(&files[1].0).join(&files[1].1)).unwrap(), b"png");
+        assert!(outbound_args("another-card", &stage).is_err());
+        assert!(outbound_args("far-card", "stage-nope").is_err());
+        let _ = std::fs::remove_dir_all(wall);
+    }
+
+    #[test]
+    fn a_folder_does_not_travel() {
+        let wall = scratch("outdir");
+        let err = stage_out(&wall, "c", vec![("src".into(), Some(wall.to_string_lossy().into_owned()), None)]).unwrap_err();
+        assert!(err.contains("folder"), "{err}");
         let _ = std::fs::remove_dir_all(wall);
     }
 }

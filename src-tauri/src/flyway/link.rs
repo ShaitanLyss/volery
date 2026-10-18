@@ -510,6 +510,7 @@ impl Link {
                         tail::WORD.to_string(),
                         super::moving::WORD.to_string(),
                         look::WORD.to_string(),
+                        crate::attachments::CAN_FILES.to_string(),
                         super::opening::WORD.to_string(),
                         boards::WORD.to_string(),
                     ])
@@ -1934,7 +1935,15 @@ impl Link {
     /// part — an answer reads at most `look::BUDGET` of file, which is a disk
     /// read rather than a wait on anything.
     fn look_here(&self, id: &str, card: &str, ask: &str, want: &[look::Want]) -> LookMsg {
-        match crate::ask::args_for_afar(&self.app, card.trim(), ask.trim()) {
+        /* A stage is a prompt's files this wall is holding for the card's own
+           wall to pull (`attachments::stage_outbound`), served exactly as a
+           question's files are. */
+        let args = if ask.trim().starts_with("stage-") {
+            crate::attachments::outbound_args(card.trim(), ask.trim())
+        } else {
+            crate::ask::args_for_afar(&self.app, card.trim(), ask.trim())
+        };
+        match args {
             Ok(args) => look::answer(id, &self.me, &args, want, &mut Disk),
             Err(why) => LookMsg::Looked { id: id.to_string(), args: None, files: vec![], parts: vec![], why: Some(why) },
         }
@@ -2093,6 +2102,7 @@ impl Link {
                     closes: e.facts.can.iter().any(|c| c == fleet::CAN_PERSON_CLOSE),
                     opens: e.facts.can.iter().any(|c| c == super::opening::WORD),
                     pictures: e.facts.can.iter().any(|c| c == fleet::CAN_PICTURES),
+                    files: e.facts.can.iter().any(|c| c == crate::attachments::CAN_FILES),
                 }
             })
             .collect()
@@ -2439,6 +2449,9 @@ pub struct RosterRow {
     /// It announced `pictures` — `Remote.pictures`: a person's prompt to one
     /// of its cards may carry them.
     pictures: bool,
+    /// It announced `files` — `Remote.files`: it pulls a prompt's files from
+    /// the wall that sent them (`flyway_fetch`).
+    files: bool,
     /// It opens a card a person here asks for with no brief
     /// (`opening::WORD`) — what a section's menu reads to offer one.
     opens: bool,
@@ -2931,6 +2944,69 @@ pub async fn flyway_look_forget(app: AppHandle, host: String, ask: String) -> Re
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
             _ => Ok(()),
         }
+    })
+    .await?
+}
+
+/// One file a prompt from another wall carried, as this wall now holds it: a
+/// path in the card's own folder, or why it is not here.
+#[derive(Serialize)]
+pub struct Fetched {
+    n: usize,
+    path: Option<String>,
+    fault: Option<String>,
+}
+
+/// Pull the files a prompt from `host` carries for `card`, from the stage that
+/// wall is holding them under, and write them into the card's own folder
+/// (`attachments.rs`) — so the agent here is handed paths on this machine.
+/// Through the transfer a question's files take (`look.rs`), in parts, each
+/// file whole or said not to be.
+#[tauri::command]
+pub async fn flyway_fetch(app: AppHandle, host: String, card: String, stage: String) -> Result<Vec<Fetched>, String> {
+    let Some(l) = current(&app) else {
+        return Err("this wall is not on a flyway".into());
+    };
+    let (host, card, stage) = (host.trim().to_string(), card.trim().to_string(), stage.trim().to_string());
+    if host.is_empty() || card.is_empty() || !stage.starts_with("stage-") {
+        return Err("no files were named".into());
+    }
+    let check = l.clone();
+    let h = host.clone();
+    crate::off_main(move || check.reachable(&h, crate::attachments::CAN_FILES, "cannot send files to a card here — update it"))
+        .await??;
+    let gathered = l.read_look(&host, &card, &stage).await?;
+    let wall = app.state::<crate::store::Store>().1.clone();
+    crate::off_main(move || {
+        let dir = crate::attachments::card_dir(&wall, &card).join(format!("from-{}", crate::store::uuid_v4()));
+        let args = gathered
+            .settle(&host, &mut |n, name, bytes| {
+                let at = dir.join(n.to_string());
+                std::fs::create_dir_all(&at).map_err(|e| e.to_string())?;
+                std::fs::write(at.join(name), bytes).map_err(|e| e.to_string())?;
+                Ok((at.to_string_lossy().into_owned(), name.to_string()))
+            })
+            .ok_or_else(|| format!("{host} sent no files"))?;
+        let mut out = Vec::new();
+        let mut n = 0usize;
+        let mut walked = args;
+        let _ = crate::ask::each_site::<()>(&mut walked, &mut |site: &mut Value| {
+            if let Some(f) = site.get("file").filter(|f| !f.is_null()) {
+                let s = |k: &str| f.get(k).and_then(Value::as_str).map(str::to_string);
+                out.push(match (s("root"), s("path"), s("fault")) {
+                    (_, _, Some(fault)) => Fetched { n, path: None, fault: Some(fault) },
+                    (Some(root), Some(path), None) => Fetched {
+                        n,
+                        path: Some(std::path::Path::new(&root).join(path).to_string_lossy().into_owned()),
+                        fault: None,
+                    },
+                    _ => Fetched { n, path: None, fault: Some("it did not arrive".into()) },
+                });
+                n += 1;
+            }
+            Ok(())
+        });
+        Ok(out)
     })
     .await?
 }
