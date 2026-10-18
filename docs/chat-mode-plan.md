@@ -275,6 +275,35 @@ The first release of chat view, as a minor version, once this phase stands up.
 
 ## Phase 5 · starting things — L
 
+**Done** (`fb0d2a0` the auth probe and `claude_auth`, `fad47c3` the allowance stand-ins,
+`dfcc9b4` the rest, `c41e00a` the foot's signed-out wording). Lab `chat5`, frozen: 40/40 for the
+main run and 5/5 for the signed-out arm, at the synthetic-key rung; one real Haiku turn (the
+just-chat conversation), everything else the app's own ops. Deviations:
+
+- **The probe's answer** (spec §11.4): `claude auth status --json`, run in Volery's own
+  environment, ~1s, signed out exits 1 with a good record. On Lyss's machine the default
+  credential *is* signed out (every sign-in is managed), so readiness reads a usable account as
+  ready first. *Sign in to Claude* signs into a managed account — `signin.rs` writes only into
+  a store — rather than the machine's own credential.
+- **The simulated allowance** is a new `allowance` op over `Waterfall.standIn` and
+  `Ledger.standIn`. The reading is rung one; the hold it causes is the real `#settleAccount`
+  path from the send onward. An unmanaged install has no hold at all today (`#managing` is
+  false), so the banner is a managed wall's.
+- **No *open in your editor*** on the project page: nothing on the wall opens a folder in an
+  editor, and a row that does nothing was left out rather than drawn. *Last changed* is
+  *worked in*, from the conversations, since no command reads a folder's mtime.
+- **The palette is `Lookup.svelte`, its ranking `search.ts`** — `Palette.svelte` is the same
+  file as `palette.svelte.ts` on a case-insensitive disk and broke every build for minutes.
+  `menu.ts` dropping wall-only rows was already done in phase 3.
+- **Not built**: held bubbles' *edit* (the mockup's narrow.html) — the hold's take-back is the
+  banner's *take it back*, which returns the whole hold as the spec says. The place chip's
+  *on a new branch…* (§4.5) — the wall's worktree prompt is a Canvas gesture with no chat-view
+  surface yet.
+- **Unverified**: anything at the real-key rung (what a keystroke types), the signed-in browser
+  round trip itself (clicking *sign in to Claude* would open a real browser), a `warm` reading
+  on a managed account rather than the machine's own, and the narrow and light-skin drawings
+  (phase 6).
+
 - **Files.** The empty state with the place picker and suggestions; the *getting ready* card
   (Claude Code not found — `claude.rs`; not signed in — `signin.rs`, after a probe of how to tell
   the machine's default credential is signed out without spending a turn, spec §11.4);

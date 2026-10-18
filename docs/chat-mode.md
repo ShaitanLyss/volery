@@ -1191,9 +1191,10 @@ chat view only, in `composer.ts` (§7.3); the keys that act on the hidden wall a
 3. **Hidden or unmounted.** §7.5 keeps the wall mounted offstage with five obligations, and phase 3
    measures it against unmounting. If the obligations cost more to keep than a remount costs to
    pay, the answer changes; the doc says which way the measurement went once it has.
-4. **A signed-out default credential.** Nothing detects that the machine's own Claude Code is
-   signed out (`accounts.rs::signed_in` covers managed accounts). The first-hour walkthrough needs
-   it; what to ask the CLI without spending a turn wants a probe.
+4. **A signed-out default credential.** *Answered in phase 5* (`tools/probe-auth.ts`,
+   `claude.rs::claude_auth`): `claude auth status --json` in Volery's own environment, ~1s, no
+   turn; signed out exits 1 with a good record. A usable managed account is ready whatever the
+   default credential says, and signing in from the empty state signs into a managed account.
 5. **Code highlighting.** Kept off on the house rule. Familiar products all colour code; Lyss may
    want to revisit it for chat view, where the rule's cost is most visible. Not asked yet.
 6. **Thumbs and feedback.** Left out — there is no one to receive them. Revisit only if Volery

@@ -19,6 +19,19 @@ paths:
   - "src/lib/SlashPalette.svelte"
   - "src/lib/Icon.svelte"
   - "src/lib/icons.ts"
+  - "src/lib/NewChat.svelte"
+  - "src/lib/PickMenu.svelte"
+  - "src/lib/ModelMenu.svelte"
+  - "src/lib/GettingReady.svelte"
+  - "src/lib/ProjectPage.svelte"
+  - "src/lib/Lookup.svelte"
+  - "src/lib/Budget.svelte"
+  - "src/lib/AccountPop.svelte"
+  - "src/lib/starting.ts"
+  - "src/lib/starting.svelte.ts"
+  - "src/lib/allowance.ts"
+  - "src/lib/search.ts"
+  - "src/lib/projectview.ts"
 ---
 
 # Chat view: one conversation's column, read in two rooms
@@ -172,6 +185,87 @@ A restored card had no clock for the sidebar's day groups — `restingSince` is 
 `store.rs::LAST_ACTIVE` reads its newest turn (or its birth) into `lastActive` at load: an
 expression, not a column, so no rung. `Conversation.turnSince` stamps when a turn opens, for a
 working row's age and so *working* does not reshuffle each time a card speaks.
+
+### Starting things (phase 5)
+
+**The empty sheet is the new conversation.** Ctrl+Shift+O and *new conversation* clear the
+selection (`App.newConversation`), and `NewChat.svelte` is what the sheet draws with nothing
+selected. Nothing is spawned until the first send — a conversation nobody has written to is
+not a process. The draft is the window's one `Field`, so what is typed there survives reading
+another conversation and coming back.
+
+- **The first send takes the draft out before it opens the card.** `Starter.start` opens
+  through App's `openIn`/`openChat` (one `spawning` latch), then hands the draft to the
+  composer — the one send path, so pictures, naming and the stir guard are what they always
+  are. But opening moves the focus, and the focus moving is where `drafts.ts::switchTo` parks
+  the field under the bucket it was holding (the empty sheet's) and hands the new card its own
+  empty one. So the field is emptied first and the draft put back after a `tick`, and a card
+  that fails to open gives the words back.
+- **The place is a choice with a default, never a mode** (§2.1). `starting.ts::startingPlace`:
+  the last place started from, then the most recently used project of *this* wall (a card on
+  another wall belongs to that wall's folder of the same name), then *just chat* — a
+  newcomer's first launch. A picked folder (*open a folder…*, Ctrl+O) is a place, not yet a
+  project: nothing opens until the send, and after it the folder is remembered as the project
+  `ensure_project` made it. `localStorage` (`skein.start.v1`), per machine, like the view.
+- **The chat home is a territory and no project.** It is how "no project" has an address
+  (`store::chat_home`); the sidebar counted it as a project called *chat* until phase 5
+  filtered it out, and the place menu never offers it.
+
+**Readiness asks the CLI, and a signed-out default is not signed out.** `claude_auth` runs
+`claude auth status --json` in Volery's own environment — the one an unmanaged card inherits.
+`tools/probe-auth.ts` measured it (claude 2.1.288): ~1s a spawn, so it is asked when the empty
+state draws and on *look again*, never on a timer; signed out exits **1** with a good record, so
+the exit code is not the answer. And on Lyss's machine the default credential *is* signed out —
+every sign-in is a managed account — so `readiness` reads any usable account as ready first.
+*Sign in to Claude* signs into a managed account (the first registered, or `claude`), because
+`signin.rs` writes only into a store and an account is what the waterfall already spawns on.
+Claude Code not found shows the PowerShell line and runs nothing.
+
+**The model menu is the wall's five presets, one scale.** For a new conversation it is the
+preset the card opens with (`Skein.openChat` now carries `open`'s three states, so a chat card
+stops opening on whatever Claude Code was configured for). For an open one it sends `/model`,
+and `/effort` after it only where the family's automatic level differs: `Skein.send` already
+follows a `/model` with `effortForModel`'s level, and sending the same one again drew the line
+and its answer twice (`starting.ts::switchLines`). *As claude code is set up* is not offered on
+an open card — a conversation cannot be told to forget a model.
+
+**A project's page, and what it does not offer.** `ProjectPage.svelte` over
+`projectview.ts`, which reads `chatview.ts::groups` so the page and the sidebar cannot disagree
+about *needs you*. Instructions and read only write the project row (`setProjectGuidance`,
+`setProjectReadOnly`) and the page says a running card hears them at its next start. There is
+no *open in your editor*: nothing on the wall opens a folder in an editor today, and a row that
+does nothing is worse than no row. Dev servers are the project's groups, if it has any.
+
+**Ctrl+K is one ranked list** (`search.ts`, drawn by `Lookup.svelte`). Conversations and
+projects are offered only when `chatview.ts::matches` says so — the sidebar's own rule — and a
+chord typed as its keys (`vv`, `space v v`) comes first, so the palette is where a forgotten
+chord is looked up in both directions. A chord that arranges the wall switches to it first, as
+the leader does. **The component is not `Palette.svelte`**: `palette.svelte.ts` (the skins) is
+the same file on a case-insensitive disk, and `import "./palette.svelte"` resolved to the
+component and broke every build in the tree for a few minutes. Check a new name against
+`ls src/lib` case-insensitively, and an import without an extension against every extension
+the resolver tries (`projectview.ts`, not `projectpage.ts`, beside `ProjectPage.svelte`).
+
+**The allowance is read where it is spent.** The conversation's managed account (or the one the
+waterfall would put it on), else this machine's own reading — the ledger's, asked only while
+chat view is up and nothing is managed. `allowance.ts` words it: the foot's *max · 47% of this
+session*, the running-low line at `limits.ts`'s warm, the banner while the waterfall holds. The
+banner's *take it back* is `do("stop")`, which drops the whole hold back into the box (there is
+no per-message take-back). An unmanaged install has no hold at all — `#managing` is false and a
+spent default credential answers the send with the CLI's own error — so the banner is a managed
+wall's; that is today's model, not chat view's to change.
+
+**Testing an allowance without spending one** is the `allowance` control op:
+`Waterfall.standIn` replaces the registry and readings and holds the beat off; `Ledger.standIn`
+does the same for this machine's reading. The reading is rung one; the hold it causes is the
+app's own path from the send onward. Keep every stood-in account spent — one the chooser would
+*use* is moved onto, and a stood-in label has no credential store.
+
+Lab (frozen, `bun run lab chat5`), 40/40 — see `dfcc9b4` for the list. One real Haiku turn,
+everything else synthetic keys and the app's own ops. The signed-out arm, 5/5, ran in a second
+launch with `CLAUDE_SECURESTORAGE_CONFIG_DIR` pointed at an empty directory, since **a lab
+inherits the launching shell's credential** — launched from a card on a managed account, every
+lab card is signed in, and the signed-out state cannot be reached without that.
 
 ### A capture of a lab is DPI-aware or it is cropped
 
