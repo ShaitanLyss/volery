@@ -232,8 +232,20 @@ export class Ledger {
   /** Ask the account what is left. Obeys the watcher rule the transcript pass
    *  obeys, and for a stronger reason: this one leaves the machine, so a wall
    *  with no usage widget on it must make no request at all. */
+  /** The control surface's stand-in for this machine's own reading — a
+   *  running-low allowance without spending one (`control.svelte.ts`, the
+   *  `allowance` op). While it stands the beat leaves `limits` alone. */
+  standIn(report: Report | null) {
+    this.#standIn = report !== null;
+    if (report) {
+      this.limits = report;
+      this.limitsFault = null;
+    } else void this.#askAllowance();
+  }
+  #standIn = false;
+
   async #askAllowance() {
-    if (this.#askingAllowance || !this.#wants("allowance")) return;
+    if (this.#askingAllowance || this.#standIn || !this.#wants("allowance")) return;
     this.#askingAllowance = true;
     try {
       this.limits = await invoke<Report>("read_limits");

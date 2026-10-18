@@ -106,6 +106,34 @@ export class Waterfall {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #busy = false;
 
+  /** The control surface's stand-in for a registry and its readings: an
+   *  allowance spent without spending one (`control.svelte.ts`, the
+   *  `allowance` op). While it stands `refresh` and `poll` leave the registry
+   *  alone — the next beat would otherwise put the real one back mid-test —
+   *  and everything downstream (`next`, `choose`, the hold) reads it as it
+   *  reads a real one, which is the point: what is under test is the hold,
+   *  not the reading. `null` takes it down and reads the real registry again. */
+  standIn(accounts: { label: string; windows: Report["windows"] }[] | null) {
+    if (!accounts) {
+      this.#standIn = false;
+      void this.refresh();
+      return;
+    }
+    this.#standIn = true;
+    this.list = accounts.map((a, i) => ({
+      label: a.label,
+      priority: 1,
+      rank: i,
+      enabled: true,
+      caps: {},
+      signedIn: true,
+      lapsed: false,
+    }));
+    const at = Date.now();
+    this.allowances = Object.fromEntries(accounts.map((a) => [a.label, { ok: true as const, windows: a.windows, at }]));
+  }
+  #standIn = false;
+
   get watchers(): number {
     return this.#watchers.size;
   }
@@ -151,6 +179,7 @@ export class Waterfall {
   /** The registry and the machine — cheap, local, and the things that change
    *  when you press something rather than when time passes. */
   async refresh() {
+    if (this.#standIn) return;
     try {
       const [list, stored, claude] = await Promise.all([
         invoke<Account[]>("list_accounts"),
@@ -209,7 +238,7 @@ export class Waterfall {
    *  reading three part-spent subscriptions as untouched, over a network blip
    *  that changed nothing about any of them. */
   async poll() {
-    if (this.#busy) return;
+    if (this.#busy || this.#standIn) return;
     const labels = this.list
       .filter((a) => a.signedIn && a.enabled && !a.lapsed)
       .map((a) => a.label);
