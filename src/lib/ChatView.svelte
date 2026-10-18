@@ -33,6 +33,19 @@
   import Thread from "./Thread.svelte";
   import HuntBar from "./HuntBar.svelte";
   import MessageBox from "./MessageBox.svelte";
+  import NewChat from "./NewChat.svelte";
+  import ProjectPage from "./ProjectPage.svelte";
+  import Budget from "./Budget.svelte";
+  import AccountPop from "./AccountPop.svelte";
+  import Lookup from "./Lookup.svelte";
+  import type { Starter } from "./starting.svelte";
+  import type { Actions } from "./actions.svelte";
+  import type { Ledger } from "./ledger.svelte";
+  import type { Entry } from "./search";
+  import { CHORDS } from "./leader";
+  import { COMMANDS } from "./commands";
+  import { footOf } from "./allowance";
+  import { waterfall } from "./waterfall.svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
   import Toasts from "./Toasts.svelte";
@@ -58,9 +71,12 @@
     onwall,
     onmenu,
     onnew,
-    onsearch,
-    onproject,
     onaccount,
+    starter,
+    actions,
+    ledger,
+    onpalette,
+    onshowwall,
     onread,
     extras,
     band,
@@ -87,9 +103,18 @@
     onwall: () => void;
     onmenu: (e: MouseEvent, id: string) => void;
     onnew: () => void;
-    onsearch: () => void;
-    onproject: (name: string) => void;
     onaccount?: () => void;
+    /** The empty state's choices and its first send (`starting.svelte.ts`). */
+    starter: Starter;
+    /** A project's actions, for its page (`actions.svelte.ts`). */
+    actions: Actions;
+    /** This machine's own allowance reading, for the foot (§5.7). */
+    ledger: Ledger;
+    /** What a pick in Ctrl+K does when it is not a conversation or a project:
+     *  a chord, a command, a setting, the sink — App's to run. */
+    onpalette: (e: Entry) => void;
+    /** A project page's *show it on the wall*. */
+    onshowwall: (name: string) => void;
     onread?: (next: number) => void;
     /** What the window's own title bar carries in either view — the update
      *  offer, the control chip — drawn in this one's. */
@@ -153,7 +178,53 @@
 
   const rows = $derived(cards.all.map(rowOf));
   const gs = $derived(groups(rows, clock.t));
-  const folders = $derived(projectsOf(rows, skein.projects.map((p) => p.name), clock.t));
+  /* The chat home is a territory so that "no project" has an address
+     (`store::chat_home`), and is no project: its conversations say *chat*. */
+  const folders = $derived(
+    projectsOf(
+      rows,
+      skein.projects.filter((p) => !skein.isChatHome(p.root_path)).map((p) => p.name),
+      clock.t,
+    ),
+  );
+
+  /* ── a project's page, and ctrl+K ───────────────────────────────────── */
+
+  /** The project whose page is in the sheet, by name, or null. Choosing a
+   *  conversation leaves it (§6.7). */
+  let page = $state<string | null>(null);
+  const project = $derived(page ? (skein.projects.find((p) => p.name === page) ?? null) : null);
+
+  /** Open a conversation from the sidebar, the page or Ctrl+K — the page, if
+   *  one is up, gives way to it. */
+  function choose(id: string) {
+    page = null;
+    onselect(id);
+  }
+
+  /** The sidebar's *projects* group, and Ctrl+K's projects. */
+  export function openProject(name: string) {
+    page = name;
+  }
+
+  /** A new conversation: the empty sheet, which is App's to clear the
+   *  selection for; here, only the page gives way. */
+  export function fresh() {
+    page = null;
+  }
+
+  let looking = $state(false);
+  /** Ctrl+K and the sidebar's *search*. */
+  export function search() {
+    looking = true;
+  }
+
+  function picked(e: Entry) {
+    looking = false;
+    if (e.kind === "conversation") choose(e.id);
+    else if (e.kind === "project") page = e.name;
+    else onpalette(e);
+  }
 
   /** Ctrl+Tab and Ctrl+Shift+Tab: the next conversation in the sidebar's
    *  order, not the wall's (§5.2). */
@@ -321,19 +392,44 @@
     !card ? "rest" : card.ask || card.face.tier === "ask" ? "ask" : card.face.tier === "fail" ? "fail" : card.face.working ? "work" : "rest",
   );
 
-  const title = $derived(card ? cardName(card.face.title, "").text || "new conversation" : "chat");
+  const title = $derived(
+    project ? project.name : card ? cardName(card.face.title, "").text || "new conversation" : "new conversation",
+  );
   const ctx = $derived(card ? Math.round((card.face.ctx ?? 0) * 100) : 0);
   const place = $derived(
-    !card ? null : card.conv?.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
+    project ? "project" : !card ? null : card.conv?.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
   );
   /* The account this conversation spends, for the foot. A card on no named
      account is on whatever Claude Code itself is signed in as, which is the
      usual case and not a fault — the allowance reading beside it is phase 5's
      (§5.7). */
-  const account = $derived({
-    name: card?.face.accountLabel ?? "claude code",
-    line: card?.face.accountLabel ? "this conversation's account" : "as this computer is signed in",
+  /** Which allowance the foot and the line above the message box read: the
+   *  managed account this conversation is on — or, before it is on one, the
+   *  account the waterfall would put it on — else this machine's own (§5.7). */
+  const label = $derived.by(() => {
+    if (card?.face.accountLabel) return card.face.accountLabel;
+    if (!waterfall.list.length) return null;
+    const next = waterfall.next({});
+    return next.kind === "use" ? next.label : (waterfall.usable[0]?.label ?? waterfall.list[0]?.label ?? null);
   });
+  const windows = $derived.by(() => {
+    if (label) {
+      const a = waterfall.allowances[label];
+      return a?.ok ? a.windows : null;
+    }
+    return ledger.limits?.windows ?? null;
+  });
+  const account = $derived(footOf(label, windows, label ? null : (ledger.limits?.plan ?? null)));
+  /* This machine's own reading is the ledger's, asked for only while chat view
+     is up and no account is managed — the waterfall polls its own, and Rust
+     floors both (`limits.rs`). */
+  $effect(() => {
+    if (waterfall.list.length) return;
+    ledger.attach("chatview", "allowance");
+    return () => ledger.detach("chatview");
+  });
+  /** The foot's popover: each window, today's spend, *manage accounts*. */
+  let pop = $state(false);
 </script>
 
 <div class="chat" class:nosidebar={!sidebar}>
@@ -391,12 +487,12 @@
       projects={folders}
       {selected}
       {account}
-      {onselect}
+      onselect={choose}
       {onnew}
-      {onsearch}
-      {onproject}
+      onsearch={search}
+      onproject={openProject}
       {onmenu}
-      {onaccount}
+      onaccount={() => (pop = !pop)}
     />
   {/if}
 
@@ -411,6 +507,21 @@
         void focusAsk();
       }}
     />
+    {#if project}
+      <ProjectPage
+        {skein}
+        {actions}
+        {project}
+        groups={gs}
+        onselect={choose}
+        onnew={() => {
+          starter.choose({ kind: "project", name: project.name, dir: project.root_path });
+          page = null;
+          onnew();
+        }}
+        onwall={() => onshowwall(project.name)}
+      />
+    {:else}
     <section class="thread" data-attach-to="prompt" style:--read={reading * 1.2}>
       {#if thread?.finder().on}
         <HuntBar hunt={thread.finder()} onclose={() => composer.input?.focus()} />
@@ -464,19 +575,43 @@
                 </p>
               {/if}
             {:else}
-              <div class="greeting">
-                <h1>what shall we work on?</h1>
-                <p>pick a conversation on the left, or start a new one.</p>
-              </div>
+              <NewChat {skein} {field} {composer} {starter} {rows} groups={gs} />
             {/if}
           </div>
         {/key}
       </div>
-      <div class="foot">
-        <MessageBox {field} {bang} {composer} {card} />
-      </div>
+      {#if card}
+        <div class="foot">
+          <Budget {card} {windows} onaccounts={() => onaccount?.()} onusage={() => (pop = true)} />
+          <MessageBox {field} {bang} {composer} {card} {starter} />
+        </div>
+      {/if}
     </section>
+    {/if}
   </main>
+
+  {#if pop}
+    <AccountPop
+      name={account.name}
+      {windows}
+      spend={skein.spend}
+      onmanage={() => {
+        pop = false;
+        onaccount?.();
+      }}
+      onclose={() => (pop = false)}
+    />
+  {/if}
+  {#if looking}
+    <Lookup
+      {rows}
+      projects={folders.map((f) => f.name)}
+      chords={CHORDS}
+      commands={COMMANDS.filter((c) => c.by === "skein")}
+      onpick={picked}
+      onclose={() => (looking = false)}
+    />
+  {/if}
 </div>
 
 <style>
@@ -729,6 +864,13 @@
     --you-pad-b: 11px;
     --you-face: var(--cv-ui, var(--util));
     --you-size: 14.5px;
+    /* A run of machinery as the mockups' quiet card (`.work`). */
+    --run-border: 1px solid var(--cv-hair, var(--edge));
+    --run-radius: var(--cv-r-m, 12px);
+    --run-fill: color-mix(in oklab, var(--surface) 55%, transparent);
+    --run-pad: 9px 12px;
+    --run-face: var(--cv-ui, var(--util));
+    --run-size: 13px;
   }
   /* The pool: the status of the conversation in front of you, as light at the
      foot of the thread. Static once drawn; only its opacity moves between
@@ -790,21 +932,6 @@
     position: relative;
     z-index: 2;
     padding: 0 0 18px;
-  }
-  .greeting {
-    margin: auto 0;
-    text-align: center;
-  }
-  .greeting h1 {
-    margin: 0 0 8px;
-    font-family: var(--cv-ui-display, var(--display));
-    font-weight: 400;
-    font-size: 28px;
-    color: var(--paper);
-  }
-  .greeting p {
-    margin: 0;
-    color: var(--cv-note, var(--paper-mute));
   }
   /* Its question and its notices, as the last thing in the thread. No cap on
      their height: the column scrolls (§7.4). */

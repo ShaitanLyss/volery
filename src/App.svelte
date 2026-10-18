@@ -195,13 +195,15 @@
   import { Leader } from "./lib/leader.svelte";
   import { Front } from "./lib/front.svelte";
   import { Composer } from "./lib/composer.svelte";
+  import { Starter } from "./lib/starting.svelte";
+  import type { Entry } from "./lib/search";
   /* Chat view: a second presentation of this same wall (`docs/chat-mode.md`).
      The view is read from one holder, never passed. */
   import ChatView from "./lib/ChatView.svelte";
   import { view } from "./lib/view.svelte";
   import { replies } from "./lib/replies.svelte";
   import type { View } from "./lib/viewmode";
-  import { actsOnWall, mayLead, type Verb as ChordVerb } from "./lib/leader";
+  import { CHORDS, actsOnWall, mayLead, type Verb as ChordVerb } from "./lib/leader";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
@@ -857,6 +859,7 @@
        last few hundred milliseconds of typing are otherwise still pending. */
     clearTimeout(keeping);
     keep(field.draft);
+    starter.release();
     skein.detach();
     elsewhere.detach();
     attention.detach();
@@ -1508,10 +1511,10 @@
   /** A card with no project and no reach onto this machine — see
    *  `Skein.openChat`. Guarded by the same `spawning` latch as `openIn`, since
    *  both cost a process and a double click on either should cost one card. */
-  async function openChat() {
+  async function openChat(preset?: Preset | null) {
     if (spawning) return null;
     spawning = true;
-    const conv = await skein.openChat();
+    const conv = await skein.openChat(preset);
     if (conv) {
       focusedId = conv.id;
       /* Chat view leaves the wall's selection alone — a gathering there is
@@ -3182,6 +3185,10 @@
     cycleTab: (step, wide) => cycleTab(step, wide),
     openImport: (force) => openImport(force),
   });
+  /* Chat view's empty state: the place, the preset and the first send
+     (`starting.svelte.ts`). Beside the composer, whose send it ends in, and
+     held here because the choices outlive the empty state that draws them. */
+  const starter = new Starter({ skein, field, composer, openIn, openChat });
 
 
   /** Step along the cards that want something, in urgency order.
@@ -3294,6 +3301,19 @@
   function chatKey(e: KeyboardEvent): boolean {
     const typing = isTyping(e.target);
     const mod = e.ctrlKey || e.metaKey;
+    /* A new conversation, a folder to start one in, and search-and-everything
+       (§10.1) — each works mid-draft, so ahead of the typing guard. */
+    if (mod && !e.altKey && (e.key === "O" || e.key === "o")) {
+      e.preventDefault();
+      newConversation();
+      if (!e.shiftKey) void starter.pickFolder().then(() => composer.focus());
+      return true;
+    }
+    if (mod && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      chatview?.search();
+      return true;
+    }
     if (mod && e.shiftKey && !e.altKey && (e.key === "S" || e.key === "s")) {
       e.preventDefault();
       view.sidebar = !view.sidebar;
@@ -3344,6 +3364,51 @@
       return true;
     }
     return false;
+  }
+
+  /** A new conversation, under chat view: the sheet with nothing selected is
+   *  the empty state (`NewChat.svelte`), and its first send opens the card —
+   *  nothing is spawned for a conversation nobody has written to yet. */
+  function newConversation() {
+    focusedId = null;
+    chatview?.fresh();
+  }
+
+  /** What a pick in chat view's Ctrl+K does when it is not a conversation or a
+   *  project, which chat view opens itself (`search.ts`). A chord runs as the
+   *  leader runs it — switching to the wall first when it arranges the wall. */
+  function runEntry(e: Entry) {
+    if (e.kind === "chord") {
+      const c = CHORDS.find((k) => k.keys === e.keys);
+      if (!c) return;
+      if (actsOnWall(c.verb)) void switchView("wall").then(() => runChord(c.verb));
+      else runChord(c.verb);
+    } else if (e.kind === "command") {
+      field.text = `/${e.name} `;
+      field.caret = null;
+      void composer.focus();
+    } else if (e.kind === "sink") {
+      showSink = true;
+    } else if (e.kind === "setting") {
+      if (e.id === "themes") showThemes = true;
+      else if (e.id === "accounts") showAccounts = true;
+      else if (e.id === "guidance") guiding = { focus: null };
+      else if (e.id === "keyring") showKeyring = true;
+      else if (e.id === "carry") showCarry = true;
+      else void openImport();
+    }
+  }
+
+  /** A project page's *show it on the wall*: the wall, with that project's
+   *  newest conversation focused and revealed there — on the wall, where a
+   *  reveal is safe again. */
+  async function showOnWall(name: string) {
+    await switchView("wall");
+    /* Laid out first: a reveal against the surface still measuring 0 wide is
+       the very pan chat view exists not to make (§7.5). */
+    await tick();
+    const newest = skein.convs.filter((c) => c.project === name).at(-1);
+    if (newest) focusCard(cards.of(newest));
   }
 
   /** Put the ring on a card without moving the wall. The gathering follows: a
@@ -5167,6 +5232,7 @@
       kin={elsewhere.kin}
       reading={reading}
       watching={attention.focused}
+      away={presence.away}
       bind:sidebar={view.sidebar}
       onselect={(id) => {
         const c = cards.find(id);
@@ -5177,12 +5243,12 @@
         const c = cards.find(id);
         if (c) menuAt(c, e.clientX, e.clientY, false);
       }}
-      onnew={() => void openChat()}
-      onsearch={() => (skein.fault = "search arrives with the next step of chat view — ctrl+F finds in this conversation")}
-      onproject={(name) => {
-        const newest = skein.convs.filter((c) => c.project === name).at(-1);
-        if (newest) ring(cards.of(newest));
-      }}
+      {starter}
+      {actions}
+      {ledger}
+      onnew={newConversation}
+      onpalette={runEntry}
+      onshowwall={(name) => void showOnWall(name)}
       onaccount={() => (showAccounts = true)}
       onread={setRead}
       extras={barExtras}

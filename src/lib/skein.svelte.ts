@@ -1648,10 +1648,19 @@ export class Skein {
    *  the wall. Somewhere is needed — the CLI is spawned in a directory and the
    *  transcript path is derived from it — but nothing about the card wants a
    *  project, and pointing it at one would be the wall claiming a relationship
-   *  the card does not have. */
-  async openChat(): Promise<Conversation | null> {
+   *  the card does not have.
+   *
+   *  `preset` carries `open`'s three states, for `open`'s reason: chat view's
+   *  model menu chooses one for a new conversation (`docs/chat-mode.md` §7.6),
+   *  `null` is *as claude code is set up*, and nobody saying is the wall's
+   *  default — which a chat card did not get before, and opened on whatever
+   *  Claude Code was configured for while every project card beside it opened
+   *  on the default the wall had been told. */
+  async openChat(preset?: Preset | null): Promise<Conversation | null> {
+    const setup =
+      preset === undefined ? defaultPresetFor(this.defaultPreset) : (preset ?? undefined);
     try {
-      return await this.#openIn(await this.#chatHome(), null, "chat");
+      return await this.#openIn(await this.#chatHome(), null, "chat", null, setup);
     } catch (err) {
       this.fault = String(err);
       return null;

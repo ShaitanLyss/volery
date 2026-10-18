@@ -15,6 +15,8 @@
   import PromptBox from "./PromptBox.svelte";
   import SlashPalette from "./SlashPalette.svelte";
   import Icon from "./Icon.svelte";
+  import ModelMenu from "./ModelMenu.svelte";
+  import type { Starter } from "./starting.svelte";
   import type { CardHandle } from "./cards.svelte";
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
@@ -25,12 +27,15 @@
     bang,
     composer,
     card,
+    starter,
   }: {
     field: Field;
     bang: Bang;
     composer: Composer;
     /** The conversation in front of you, or null on the empty sheet. */
     card: CardHandle | null;
+    /** For the model menu beside send (`ModelMenu.svelte`). */
+    starter: Starter;
   } = $props();
 
   const working = $derived(!!card && (card.face.working || card.can("stop") === "yes"));
@@ -101,6 +106,7 @@
       </button>
     {/if}
     <span class="grow"></span>
+    <ModelMenu {card} {starter} up />
     <button
       type="submit"
       class="send"

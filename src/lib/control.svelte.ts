@@ -808,6 +808,11 @@ export class Control {
              claim worth seeing from outside is that sticking a territory
              changed neither. */
           glass: t ? spotOf(t) : null,
+          /* What its conversations are told and whether they may write —
+             chat view's project page writes both, and the spawn that reads
+             them is guidance.rs's own tested path. */
+          instructions: p.instructions,
+          readOnly: p.readOnly,
           /* How wide it is. The stored count, null and all, rather than what
              `colsOf` would draw — the whole thing worth asserting from outside
              is that "never sized" and "sized to the default" stay different
@@ -1014,6 +1019,7 @@ export class Control {
         ctxTokens: c.ctxTokens,
         contextWindow: c.contextWindow,
         model: c.model ?? null,
+        effort: c.effort ?? null,
         costUsd: c.costUsd,
         turns: c.turns,
         lastError: c.lastError,
