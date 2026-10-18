@@ -38,6 +38,7 @@
  * you actually want the bundle checked. */
 
 import { spawnSync } from "node:child_process";
+import { staleArtifact } from "./stale";
 
 type Step = {
   /** What it is, in CI's words. */
@@ -79,9 +80,28 @@ const run = STEPS.filter((s) => full || !s.heavy);
 let failed = 0;
 for (const s of run) {
   process.stdout.write(`\n── ${s.name} ─────────────────────────────\n`);
-  const r = spawnSync(s.cmd, s.args, { encoding: "utf8", shell: true });
-  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-  process.stdout.write(out.split("\n").slice(-25).join("\n"));
+  const go = () => {
+    const r = spawnSync(s.cmd, s.args, { encoding: "utf8", shell: true });
+    return { r, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  };
+  const tail = (o: string) => o.split("\n").slice(-25).join("\n");
+  let { r, out } = go();
+  process.stdout.write(tail(out));
+
+  /* A cargo step can go red because a concurrent build (another card, a lab)
+     replaced an artifact in the shared target dir under it. Retry exactly once,
+     only on the two known signatures, and say so — the retry still has to show
+     `expect` below, so it is no softer than the first run. */
+  const stale = s.cmd === "cargo" && r.status !== 0 ? staleArtifact(out) : null;
+  if (stale) {
+    console.error(`\n   ${s.name}: stale artifact (${stale}), retried once`);
+    const first = out;
+    ({ r, out } = go());
+    process.stdout.write(tail(out));
+    if (r.status !== 0 || !s.expect.test(out)) {
+      console.error(`\n   first attempt, key lines:\n${first.split("\n").filter((l) => /error|invalid metadata|rlib format/.test(l)).slice(0, 6).join("\n")}`);
+    }
+  }
 
   const said = s.expect.test(out);
   if (r.status === 0 && said) {

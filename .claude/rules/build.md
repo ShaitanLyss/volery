@@ -534,3 +534,15 @@ as described above.
 `Win32_UI_Accessibility` came in at the same time, for `SetWinEventHook`. It is what tells
 `dropzone.rs` the browser process has created or reparented a window. The why is in
 `attach.md`.
+
+## The gate retries a stale artifact once, and says so
+
+`bun run gate`'s cargo step shares `src-tauri/target/debug` with every card and lab on the
+machine, so a concurrent build can leave an rlib or `.rmeta` half-replaced under it. Two
+signatures, both cleared by a plain rerun: `invalid metadata files for crate …` and
+`crate … required to be available in rlib format, but was not found in this form`.
+`tools/stale.ts` matches only those; the gate reruns the step once and prints
+`stale artifact (<signature>), retried once`. The retry must still show
+`test result: ok. N passed`, and if it fails too the first attempt's error lines are printed
+beside it. A compile error or failed test in our code never matches. The gate deliberately has
+no `CARGO_TARGET_DIR` of its own: a cold target is tens of GB on a disk that runs near-full.
