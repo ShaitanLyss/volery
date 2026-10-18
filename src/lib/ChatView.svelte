@@ -55,6 +55,7 @@
   import WindowControls from "./WindowControls.svelte";
   import SidePane from "./SidePane.svelte";
   import PlanStrip from "./PlanStrip.svelte";
+  import PlanDoc from "./PlanDoc.svelte";
   import { provideOthers } from "./others.svelte";
   import { cardByHandle } from "./chatview";
   import { view } from "./view.svelte";
@@ -230,6 +231,18 @@
 
   let looking = $state(false);
   /** Ctrl+K and the sidebar's *search*. */
+  /** Build a finished plan in the conversation that wrote it: out of plan
+   *  first — which takes the plan card down (`Conversation.planDoc`) — and
+   *  told to go. The same two moves a hand makes on the wall. */
+  async function buildHere(conv: NonNullable<CardHandle["conv"]>, path: string) {
+    await skein.setGear(conv, "making");
+    /* Taken down here too, not only by the gear's ack: a plan written by a
+       card already out of plan first (any write into `~/.claude/plans` is one,
+       `Conversation`) has no gear change to clear it, and once the go-ahead
+       has gone it is being built, not waiting. */
+    if (await skein.send(conv, `The plan in ${path} is approved — build it.`)) conv.planDoc = null;
+  }
+
   /** The side pane, open or closed — the bar's toggle and Ctrl+. (§3). */
   export function togglePane() {
     view.pane = !view.pane;
@@ -601,6 +614,18 @@
                   </div>
                 {/if}
               {/each}
+              {#if card.conv?.planDoc}
+                {@const conv = card.conv}
+                {@const path = conv.planDoc ?? ""}
+                <div class="inline">
+                  <PlanDoc
+                    {path}
+                    busy={conv.working}
+                    onhere={() => void buildHere(conv, path)}
+                    onfresh={() => void card.do("hand")}
+                  />
+                </div>
+              {/if}
               {#if endedOnQuestion && endedOnQuestion.kind === "notice"}
                 {@const q = endedOnQuestion.notice}
                 <p class="ended">

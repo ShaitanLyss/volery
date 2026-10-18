@@ -24,7 +24,8 @@ import {
 } from "./classify";
 import type { Effort } from "./commands";
 import type { ConvKind, Job, Line } from "./conversation.svelte";
-import type { Gear } from "./gears";
+import { isPlanDocument, type Gear } from "./gears";
+import { SPAWN_TOOL, spawnedHandle } from "./chatview";
 import { isWakePrompt } from "./relay";
 import {
   JOBS_CAP,
@@ -458,6 +459,8 @@ export function runSummary(lines: Line[]): RunSummary {
   let tests = false;
   let web = 0;
   let helpers = 0;
+  let started = 0;
+  let planned = false;
   let other = 0;
   let added = 0;
   let removed = 0;
@@ -478,6 +481,9 @@ export function runSummary(lines: Line[]): RunSummary {
     const file = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : "";
     if (READS.has(call.name)) read.add(file || `#${read.size}`);
     else if (SEARCHES.has(call.name)) searched++;
+    /* A plan written into `~/.claude/plans` is not an edit to the project —
+       nothing there has changed yet, which is the whole point of one. */
+    else if (EDITS.has(call.name) && isPlanDocument(file)) planned = true;
     else if (EDITS.has(call.name)) {
       edited.add(file || `#${edited.size}`);
       if (call.name === "Write") added += linesIn(input.content);
@@ -496,6 +502,13 @@ export function runSummary(lines: Line[]): RunSummary {
       if (TESTS.test(said)) tests = true;
     } else if (WEB.has(call.name)) web++;
     else if (HELPERS.has(call.name)) helpers++;
+    /* A conversation it opened is not a step of machinery — it has its own
+       linked card under the run (§5.5) — but the run should still say so. */
+    else if (call.name === SPAWN_TOOL) {
+      /* Only one that opened something; a refusal is a step like any other. */
+      if (spawnedHandle(call)) started++;
+      else other++;
+    }
     else other++;
   }
   const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
@@ -503,10 +516,12 @@ export function runSummary(lines: Line[]): RunSummary {
   if (read.size) words.push(`read ${n(read.size, "file", "files")}`);
   if (searched) words.push(`searched ${searched === 1 ? "once" : `${searched} times`}`);
   if (edited.size) words.push(`edited ${edited.size}`);
+  if (planned) words.push("wrote the plan");
   if (tests) words.push("ran the tests");
   else if (commands) words.push(`ran ${n(commands, "command", "commands")}`);
   if (web) words.push(`looked on the web${web > 1 ? ` ${web} times` : ""}`);
   if (helpers) words.push(`started ${n(helpers, "helper", "helpers")}`);
+  if (started) words.push(started === 1 ? "started a conversation" : `started ${started} conversations`);
   if (other) words.push(n(other, "other step", "other steps"));
   return {
     words: words.join(", "),

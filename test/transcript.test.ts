@@ -513,6 +513,20 @@ describe("what a run of machinery came to (chat view)", () => {
     expect(runSummary([call("Read", { file_path: "a" })]).worked).toBeNull();
   });
 
+  test("a conversation it started is said as one, not as another step", () => {
+    const spawn = (text: string) => ({ ...call("mcp__skein__spawn", { brief: "x" }), call: { name: "mcp__skein__spawn", input: { brief: "x" }, result: { text } } });
+    expect(runSummary([call("Read", { file_path: "a" }), spawn("opening a card in C:\\x — its handle is ab12cd34.")]).words).toBe(
+      "read 1 file, started a conversation",
+    );
+    expect(runSummary([spawn("refused: not now")]).words).toBe("1 other step");
+  });
+
+  test("a plan written is not an edit to the project", () => {
+    const s = runSummary([call("Write", { file_path: "C:\\Users\\x\\.claude\\plans\\fix-it.md", content: "a\nb" })]);
+    expect(s.words).toBe("wrote the plan");
+    expect(s.added).toBe(0);
+  });
+
   test("under a second is not worth a number", () => {
     expect(runSummary([call("Read", { file_path: "a" }, 1_000, 1_400)]).worked).toBeNull();
     expect(runSummary([call("Read", { file_path: "a" }, 1_000, 2_000)]).worked).toBe(1_000);

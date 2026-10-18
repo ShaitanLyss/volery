@@ -600,7 +600,7 @@
               >
             {:else}
               <span class="what"
-                >{#if sum.worked !== null}<b>worked for {spanOf(sum.worked / 1000)}</b> — {/if}{sum.words ||
+                >{#if sum.worked !== null}<b>worked for {spanOf(sum.worked / 1000)}</b>{" — "}{/if}{sum.words ||
                   foldCount(b.lines)}</span
               >
               {#if sum.added || sum.removed}<span class="delta">+{sum.added} −{sum.removed}</span>{/if}

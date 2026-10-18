@@ -233,11 +233,14 @@
     gap: 2px;
     padding: 10px 10px 0;
     border-bottom: 1px solid var(--cv-hair, var(--edge));
+    /* Five tabs in 300px: they fit, and where a large reading size makes them
+       not, they scroll without a bar drawn under them. */
     overflow-x: auto;
+    scrollbar-width: none;
   }
   .tabs button {
     height: 32px;
-    padding: 0 10px;
+    padding: 0 8px;
     font-size: 12.5px;
     color: var(--paper-mute);
     border-bottom: 2px solid transparent;
