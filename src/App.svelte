@@ -145,6 +145,8 @@
     KEEP_AFTER_MS,
     KEPT_KEY,
     decodeKept,
+    decodeKeptFiles,
+    withoutGoneFiles,
     encodeKept,
     mergeDraft,
     type Draft,
@@ -1075,13 +1077,38 @@
      anything is drawn, so the restore lands under the focus effect below
      rather than racing it. See `drafts.ts`: the pictures do not come back, and
      their tokens come out with them. */
-  drafts.restore(decodeKept(readKept()));
+  const keptRaw = readKept();
+  drafts.restore(decodeKept(keptRaw), decodeKeptFiles(keptRaw));
   /* The wall's own bucket is handed over here rather than by the focus effect
      below, which cannot do it: nothing has moved, so `holds(null)` is already
      true and it returns early. Everything restored under a *card* waits to be
      handed over by clicking that card, which is the round trip `switchTo`
      already makes. */
   field.take(drafts.peek(null));
+  /* A file attached by its path comes back with its draft — and is asked of
+     the disk once the wall is up, since a path is only worth keeping while
+     something is there: one that has gone is taken out of the sentence and
+     the wall says how many (sink c2f56f0d). */
+  void (async () => {
+    const asked = [...new Set([...drafts.paths(), ...field.shots.list.flatMap((a) => (a.kind === "file" ? [a.path] : []))])];
+    if (!asked.length) return;
+    let there: Set<string>;
+    try {
+      there = new Set((await invoke<{ path: string }[]>("inspect_paths", { paths: asked })).map((i) => i.path));
+    } catch {
+      return;
+    }
+    const gone = (p: string) => !there.has(p);
+    let dropped = drafts.dropMissing(gone);
+    const held = withoutGoneFiles(field.draft, gone);
+    if (held.dropped) {
+      field.hold(held.draft);
+      dropped += held.dropped;
+    }
+    if (dropped) {
+      skein.fault = `${dropped === 1 ? "a file" : `${dropped} files`} attached before the restart ${dropped === 1 ? "is" : "are"} not there any more, and came out of the draft`;
+    }
+  })();
   function readKept(): string | null {
     try {
       return localStorage.getItem(KEPT_KEY);

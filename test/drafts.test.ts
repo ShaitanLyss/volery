@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import type { Attachment } from "../src/lib/attach";
+import type { Attachment, FileRef } from "../src/lib/attach";
 import {
   Drafts,
   KEEP_BUDGET,
   decodeKept,
+  decodeKeptFiles,
   encodeKept,
+  KEPT_FILES,
+  withoutGoneFiles,
   mergeDraft,
   type Draft,
 } from "../src/lib/drafts";
@@ -310,5 +313,79 @@ describe("words the wall could not send, handed back to the draft", () => {
     /* And the wall's own bucket, for a card that has just been closed. */
     d.give(null, words("from a closed card"));
     expect(d.peek(null).text).toBe("from a closed card");
+  });
+});
+
+/* A file attached by its path is the one attachment a crash-restored draft
+   keeps (sink c2f56f0d): a path writes nothing private, and dropping it would
+   take a word out of the sentence. Pictures and pasted bytes still go. */
+describe("a file attached by its path survives the keeping", () => {
+  const file = (name: string, path: string, over: Partial<FileRef> = {}): FileRef => ({
+    kind: "file",
+    id: name,
+    name,
+    path,
+    dir: false,
+    size: 10,
+    ...over,
+  });
+
+  test("it is kept beside the words and comes back as a chip", () => {
+    const d = new Drafts();
+    const held: Draft = {
+      text: "read [r.pdf] and [shot 1] in [src]",
+      shots: [file("r.pdf", "C:\\r.pdf"), shot("shot 1"), file("src", "C:\\src", { dir: true })],
+    };
+    const raw = encodeKept(d.keeping(held));
+    expect(decodeKept(raw)).toEqual({ "": "read [r.pdf] and in [src]" });
+    expect(decodeKeptFiles(raw)).toEqual({
+      "": [
+        { name: "r.pdf", path: "C:\\r.pdf", dir: false },
+        { name: "src", path: "C:\\src", dir: true },
+      ],
+    });
+    const back = new Drafts();
+    back.restore(decodeKept(raw), decodeKeptFiles(raw));
+    const got = back.peek(null);
+    expect(got.text).toBe("read [r.pdf] and in [src]");
+    expect(got.shots.map((a) => (a.kind === "file" ? [a.name, a.path, a.dir] : a.kind))).toEqual([
+      ["r.pdf", "C:\\r.pdf", false],
+      ["src", "C:\\src", true],
+    ]);
+  });
+
+  test("a staged browser drag does not travel: its folder is swept at load", () => {
+    const d = new Drafts();
+    const raw = encodeKept(d.keeping({ text: "see [p.png]", shots: [file("p.png", "C:\\w\\_dropped\\p.png", { staged: true })] }));
+    expect(decodeKept(raw)).toEqual({ "": "see" });
+    expect(decodeKeptFiles(raw)).toEqual({});
+  });
+
+  test("a file whose path is gone comes out of the sentence, counted", () => {
+    const d = new Drafts();
+    d.restore(
+      { a: "compare [old.txt] with [new.txt]" },
+      { a: [{ name: "old.txt", path: "C:\\old.txt", dir: false }, { name: "new.txt", path: "C:\\new.txt", dir: false }] },
+    );
+    expect(d.paths().sort()).toEqual(["C:\\new.txt", "C:\\old.txt"]);
+    expect(d.dropMissing((p) => p === "C:\\old.txt")).toBe(1);
+    expect(d.peek("a").text).toBe("compare with [new.txt]");
+    expect(d.peek("a").shots.map((s) => s.name)).toEqual(["new.txt"]);
+    expect(withoutGoneFiles(d.peek("a"), () => false).dropped).toBe(0);
+  });
+
+  test("an older build reads the words and passes over the files", () => {
+    const raw = encodeKept(new Drafts().keeping({ text: "[a.txt] please", shots: [file("a.txt", "C:\\a.txt")] }));
+    /* What `decodeKept` has always done: keep string values, skip the rest. */
+    const old = Object.fromEntries(Object.entries(JSON.parse(raw)).filter(([, v]) => typeof v === "string"));
+    expect(old).toEqual({ "": "[a.txt] please" });
+  });
+
+  test("a hand-edited keeping cannot conjure a chip with no token, nor a malformed file", () => {
+    const raw = JSON.stringify({ x: "no token here", [KEPT_FILES]: { x: [{ name: "a", path: "C:\\a", dir: false }, { name: 3 }] } });
+    expect(decodeKeptFiles(raw)).toEqual({ x: [{ name: "a", path: "C:\\a", dir: false }] });
+    const d = new Drafts();
+    d.restore(decodeKept(raw), decodeKeptFiles(raw));
+    expect(d.peek("x").shots).toEqual([]);
   });
 });

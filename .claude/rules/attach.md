@@ -425,6 +425,15 @@ is written to `localStorage` behind a `KEEP_AFTER_MS` debounce and read back at 
   and nothing of it is written to disk. Keeping them would put screenshots of whatever was on
   screen into a file on this machine, indefinitely, as a side effect of a feature about not
   losing typed words.
+- **A file attached by its path is the exception, and travels** (sink `c2f56f0d`). A path is
+  not the bytes, so keeping one writes nothing private, and dropping it would take a word out
+  of the sentence. The files ride under a reserved key (`KEPT_FILES`) holding an object, which
+  an older build's `decodeKept` passes over, so its words still come back there. On restore
+  the disk is asked once (`inspect_paths`): a file still there is a chip again, one that has
+  gone comes out of the sentence and the wall says how many. A *staged* browser drag does not
+  travel — its folder is swept at load. Driven on a lab wall: a draft holding two dropped files,
+  the wall killed, one file deleted, the wall relaunched — the draft came back with the one
+  that was still there, and the note.
 - **Which means their tokens come out with them.** A restored `look at [shot 1]` with nothing
   attached is a prompt referring to something the agent will never receive — the one failure
   `Attachments.prune` exists to prevent, arriving from the other direction. `withoutShots`

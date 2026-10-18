@@ -1,4 +1,4 @@
-import { dropToken, tokenFor, uniqueName, type Attachment } from "./attach";
+import { dropToken, stillIn, tokenFor, uniqueName, type Attachment, type FileRef } from "./attach";
 
 /** What you have typed and not yet sent, per card — the words and the pictures.
  *
@@ -153,16 +153,35 @@ export type Kept = Record<string, string>;
  *  the pictures, and says nothing about pictures that are not there. */
 function withoutShots(d: Draft): string {
   let text = d.text;
-  for (const s of d.shots) text = dropToken(text, s.name);
+  for (const s of d.shots) if (!keepsAcross(s)) text = dropToken(text, s.name);
   return text;
 }
+
+/** A file attached by its path is the one attachment that does travel
+ *  (sink c2f56f0d): it is a path, not the bytes behind it, so keeping it writes
+ *  nothing private anywhere — and losing it would take a word out of the
+ *  sentence you wrote. Not a *staged* one, whose bytes wait in a folder the
+ *  next load sweeps. */
+function keepsAcross(a: Attachment): a is FileRef {
+  return a.kind === "file" && !a.staged;
+}
+
+/** A file kept with a draft: enough to put the chip back. */
+export type KeptFile = { name: string; path: string; dir: boolean };
+
+/** Where the files ride in the keeping: a key no card id can be (ids are
+ *  uuids, the wall is `""`), holding an object — which a build from before it
+ *  passes over, since `decodeKept` keeps only string values. So the words of
+ *  every draft still come back on an older build, without their files. */
+export const KEPT_FILES = "\u0001files";
 
 /** The keeping, as the one string the browser holds.
  *
  *  Takes the entries in the order they should survive the bound, which
  *  `Drafts.keeping` puts the held one at the head of. */
 export function encodeKept(entries: readonly (readonly [string, Draft])[]): string {
-  const kept: Kept = {};
+  const kept: Record<string, unknown> = {};
+  const files: Record<string, KeptFile[]> = {};
   let used = 0;
   for (const [id, d] of entries) {
     const text = withoutShots(d);
@@ -173,8 +192,50 @@ export function encodeKept(entries: readonly (readonly [string, Draft])[]): stri
     if (used && used + text.length > KEEP_BUDGET) break;
     kept[id] = text;
     used += text.length;
+    const these = stillIn(text, d.shots.filter(keepsAcross)).map((f) => ({ name: f.name, path: f.path, dir: f.dir }));
+    if (these.length) files[id] = these;
   }
+  if (Object.keys(files).length) kept[KEPT_FILES] = files;
   return JSON.stringify(kept);
+}
+
+/** The files kept with each draft, out of whatever is in the store — a
+ *  normalizer, like `decodeKept`, since it is read before the wall is drawn. */
+export function decodeKeptFiles(raw: string | null): Record<string, KeptFile[]> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  const all = (parsed as Record<string, unknown> | null)?.[KEPT_FILES];
+  if (!all || typeof all !== "object" || Array.isArray(all)) return {};
+  const out: Record<string, KeptFile[]> = {};
+  for (const [id, list] of Object.entries(all as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue;
+    const ok = list.filter(
+      (f): f is KeptFile =>
+        !!f && typeof f.name === "string" && !!f.name && typeof f.path === "string" && !!f.path && typeof f.dir === "boolean",
+    );
+    if (ok.length) out[id] = ok;
+  }
+  return out;
+}
+
+/** A draft with every file whose path is gone taken out of the sentence, and
+ *  how many went — a restored chip pointing at nothing is a prompt naming
+ *  something the agent will never find. */
+export function withoutGoneFiles(d: Draft, gone: (path: string) => boolean): { draft: Draft; dropped: number } {
+  let text = d.text;
+  let dropped = 0;
+  const shots = d.shots.filter((a) => {
+    if (a.kind !== "file" || !gone(a.path)) return true;
+    text = dropToken(text, a.name);
+    dropped += 1;
+    return false;
+  });
+  return dropped ? { draft: { text, shots }, dropped } : { draft: d, dropped: 0 };
 }
 
 /** What was kept, out of whatever is in the store.
@@ -297,11 +358,42 @@ export class Drafts {
    *  overwrite what you have been typing with what you were typing last week.
    *  The pictures are gone — see `withoutShots` — so every restored draft is
    *  words alone, which is exactly what `Draft` with an empty `shots` is. */
-  restore(kept: Kept): void {
+  restore(kept: Kept, files: Record<string, KeptFile[]> = {}): void {
     if (this.#parked.size) return;
+    let n = 0;
     for (const [id, text] of Object.entries(kept)) {
-      if (text) this.#parked.set(id, { text, shots: [] });
+      if (!text) continue;
+      /* Only a file the sentence still names comes back as a chip; a keeping
+         edited by hand cannot make one appear with no token. */
+      const shots: FileRef[] = stillIn(text, files[id] ?? []).map((f) => ({
+        kind: "file",
+        id: `kept${++n}`,
+        name: f.name,
+        path: f.path,
+        dir: f.dir,
+        size: null,
+      }));
+      this.#parked.set(id, { text, shots });
     }
+  }
+
+  /** Take every file whose path is gone out of every parked draft, answering
+   *  how many went — the second half of a restore, once the disk has said. */
+  dropMissing(gone: (path: string) => boolean): number {
+    let dropped = 0;
+    for (const [id, d] of this.#parked) {
+      const out = withoutGoneFiles(d, gone);
+      dropped += out.dropped;
+      this.#park(id, out.draft);
+    }
+    return dropped;
+  }
+
+  /** Every path a parked draft names, for that check. */
+  paths(): string[] {
+    const out = new Set<string>();
+    for (const d of this.#parked.values()) for (const a of d.shots) if (a.kind === "file") out.add(a.path);
+    return [...out];
   }
 
   /** Forget the drafts of cards that are not on the wall any more.
