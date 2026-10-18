@@ -530,20 +530,13 @@ fn speak_for_panics() {
 /// it, is shown here and nowhere else. See window.rs.
 fn open_windows(app: &tauri::App, frame: Option<window::Frame>) -> Result<(), String> {
     for config in app.config().app.windows.clone() {
-        tauri::WebviewWindowBuilder::from_config(app.handle(), &config)
-            /* wry registers the window's drop target by walking the child
-               windows that exist when `build()` returns, and WebView2 may not
-               have made the one that matters yet. Done again once the page has
-               loaded. See `dropzone.rs`. */
-            .map(|builder| {
-                builder.on_page_load(|window, payload| {
-                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                        dropzone::arm(&window);
-                    }
-                })
-            })
+        let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)
             .and_then(|builder| builder.build())
             .map_err(|e| format!("Volery could not open its {} window.\n\n{e}", config.label))?;
+        /* WebView2 puts the page in windows of its browser process, which join
+           this one after `build()` returns; each gets a drop target as it
+           arrives. See `dropzone.rs`. */
+        dropzone::watch(&window);
     }
     /* Place and show the studio window before it has painted a frame. `main`
        is `"visible": false` in tauri.conf.json and this is the only thing that

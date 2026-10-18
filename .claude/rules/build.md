@@ -518,3 +518,19 @@ So, two rules, and the second is the general one:
 success without having tested anything is worse than one that fails, because the failure mode
 is silence that looks like virtue.** Ask of any gate not "did it exit 0" but "what did it say
 it checked, and was that a number".
+
+## `webview2-com` is a direct dependency, and its minor must follow wry's
+
+Since 2026-10-18, `dropzone.rs` uses `webview2-com` directly. Tauri's `with_webview` hands back
+an `ICoreWebView2Controller` *from wry's copy of that crate*. The browser's process id and the
+`ProcessFailed` handler are read off it, and that only type-checks when ours is **the same
+copy**. So the dependency is `webview2-com = "0.38"`, the minor wry 0.55 resolves (0.38.2, on
+`windows` 0.61). When a Tauri bump moves wry to a later webview2-com minor, move this line with
+it. The failure otherwise is a type mismatch between two crates that are both called
+`ICoreWebView2Controller`, which reads as nonsense until you look at the paths. Nothing changes
+on gnu: the crate was already in the tree under wry, and it links `WebView2Loader.dll` exactly
+as described above.
+
+`Win32_UI_Accessibility` came in at the same time, for `SetWinEventHook`. It is what tells
+`dropzone.rs` the browser process has created or reparented a window. The why is in
+`attach.md`.

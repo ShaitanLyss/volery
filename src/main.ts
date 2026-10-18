@@ -46,8 +46,10 @@ window.addEventListener("contextmenu", (e) => e.preventDefault());
    whole of how a folder becomes a card and an image lands on the wall) is
    implemented in wry by walking the WebView2 child windows, calling
    `RevokeDragDrop` on each and registering an `IDropTarget` of its own
-   (wry 0.55.1, `src/webview2/drag_drop.rs`). That target understands exactly
-   one clipboard format, `CF_HDROP` — a list of file paths. Anything else and
+   (wry 0.55.1, `src/webview2/drag_drop.rs`) — and since 2026-10-18 the target
+   on every one of those windows is `dropzone.rs`'s, which replaces wry's and
+   keeps its shape. That target understands exactly one clipboard format,
+   `CF_HDROP` — a list of file paths. Anything else and
    `DragEnter` returns `S_OK` having set neither `enter_is_valid` nor
    `*pdwEffect`, and `Drop` never writes `*pdwEffect` at all.
 

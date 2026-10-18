@@ -325,21 +325,66 @@ is written to `localStorage` behind a `KEEP_AFTER_MS` debounce and read back at 
   --profile test`, and the CLI probe. `gears.md` records what driving the real wall found that
   a green suite could not, and the same warning applies here — every branch below is new.
 
-## A file dragged from Explorer needs a drop target on every window under the page
+## A file dragged from Explorer: a drop target on every window, from the moment it joins ours
 
-`dropzone.rs` has the whole argument; the part to carry is the shape. Tauri's native drop is
-wry's, and wry registers its `IDropTarget` by walking the child windows that exist at the end of
-`build()`. WebView2's browser process makes `Chrome_WidgetWin_1` on its own schedule, so the walk
-is a race, and on a loaded machine it is lost: no target there, `SetAllowExternalDrop(false)`
-means nothing else answers, and the cursor over the page is the no-entry sign (2026-10-18,
-v0.62/0.63 — a folder opened no card, an image attached nowhere). **Proved with a real OLE drag**,
-not the control surface: a `DoDragDrop` of a `CF_HDROP` object from another process while
-`SetCursorPos` moved the real cursor over the lab window, run against Paint first as the control
-that the driver itself is sound. The failing launches had `OleDropTargetInterface` on
-`Chrome_WidgetWin_0` alone; the winning ones on `_1` as well.
+`dropzone.rs` has the whole argument. What to carry is three measured facts and the shape they
+force. They were measured 2026-10-18 with real OLE drags: `DoDragDrop` of a `CF_HDROP` object
+from another process, the cursor moved by `SetCursorPos`. The probes are in `tools/drop/`
+(`run-ole.ps1`'s header lists them and what each found). `sniff.ps1` there is a drag that
+enters, reads the effect the target answered, and **cancels**, so it is safe to aim at anything.
 
-The fix walks again once the page has loaded and gives every window with no target one of ours,
-emitting Tauri's own `tauri://drag-*` events so `onDragDropEvent` is unchanged. A window that
-already has a target is left alone, so a launch that won the race has one target per window as
-before. If it ever needs proving again, drive it from another process — and mind that a person
-using the same machine can put another window over the lab mid-run, which reads as a failure.
+1. **OLE's hit test walks up to a registered ancestor only within one process**
+   (`run-ole.ps1 -Mode same|cross|refuse`, a synthetic tree). An unregistered same-process child reaches its parent's
+   target. A child owned by another process does not: the drag is refused. A child whose target
+   refuses stops the walk.
+2. **The page is drawn in another process's windows.** `Chrome_WidgetWin_1` and
+   `Chrome_RenderWidgetHostHWND` belong to the msedgewebview2 *browser* process, under our
+   `Chrome_WidgetWin_0`. `WindowFromPoint` over the page answers the render window. So no target
+   on any window of ours can take a drop, which is how wry's walk lost: the installed 0.62 had
+   its target on `Chrome_WidgetWin_0` alone, and every drop was the no-entry sign.
+3. **Those windows join our tree after `build()`.** A WinEvent log of a launch shows
+   `Chrome_WidgetWin_1` created top-level, the render window parked in a hidden window of the
+   browser's, and both *reparented* under ours. Polling the drop-target prop from launch shows
+   Chromium registering its own target on `Chrome_WidgetWin_1` and losing it ~100ms later. That
+   was on an **idle** lab launch, not only under load.
+
+**And a process can register a target on another process's window**, and OLE calls it when a
+drag enters that window. That is **measured, not documented**: `run-ole.ps1 -Mode crossreg`,
+and `probe-reg.ps1`, which reproduced the lost state on a lab and fixed it with one target on the
+render window, registered from a third process. The whole fix rests on it. So a refused
+registration is a `warn` in the app log naming the window's class (target `dropzone`), and a
+WebView2 update that breaks it reads there rather than as a silent no-entry cursor.
+
+So the registration is **driven by the events, not timed**:
+- Once the window is built, `SetWinEventHook` puts `EVENT_OBJECT_CREATE` and
+  `EVENT_OBJECT_PARENTCHANGE` on the browser process (its id off `CoreWebView2`).
+- Then it walks once. Hook first, then walk, so there is no gap between them.
+- Any event for a window whose root is ours walks again, and every window without our target
+  gets one.
+- **Ours replaces wry's and Chromium's**, so Windows has one target implementation. That is where
+  a browser drag's formats will be taught (sink `4efa4af9`). It emits Tauri's own `tauri://drag-*`
+  events, so `onDragDropEvent`, `dropTargetAt` and the control surface's `drop` op are untouched.
+  `dragDropEnabled` stays on everywhere (one config), which keeps wry's synchronous
+  `SetAllowExternalDrop(false)`: Chromium never offers a DOM drop of its own.
+- `ProcessFailed` re-reads the browser id and re-hooks if it changed. Closing the window
+  unhooks. `Ledger` is that bookkeeping, with the OS left out so `cargo test` asserts it.
+- macOS and Linux need none of it. wry's drop there is a WKWebView subclass's own methods and
+  GTK signals on the webview widget, there from birth.
+
+**What the e2e showed**, real OLE drags on a lab wall:
+- A folder opened a card, an image pinned, an image on the dock attached, and an image on the
+  transcript appended.
+- Six fresh launches each accepted the drop, one of them at 100% CPU (24 busy loops).
+- A renderer killed and reloaded got a **new** render window, and its target arrived from that
+  window's own creation event (`drop target on Chrome_RenderWidgetHostHWND`, alone in the log).
+- After a GPU-process kill, the new `Intermediate D3D Window` waits bare until the next walk. It
+  is layered and transparent, so the hit test passes through it, and a drag still landed.
+
+**Two traps in driving this by hand:**
+- **The display is at 150%.** A PowerShell harness that is not DPI-aware has its
+  `SetWindowPos` and `SetCursorPos` virtualised while `CopyFromScreen` is not. Call
+  `SetProcessDPIAware()` first.
+- **Windows Terminal raises an invisible `CASCADIA_HOSTING_WINDOW_CLASS` window during any
+  drag**, and it accepts file drops: the drop pastes the path at the terminal's prompt. Put the
+  lab topmost, aim off-centre, and use a drag that cancels itself rather than one that releases
+  the button wherever it happens to be.

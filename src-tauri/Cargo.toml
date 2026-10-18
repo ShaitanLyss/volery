@@ -210,6 +210,10 @@ iroh = { version = "1.3.0", default-features = false, features = [
 [target.'cfg(windows)'.dependencies]
 # `#[implement]` in dropzone.rs expands to paths in this crate by name.
 windows-core = "0.61"
+# The WebView2 interfaces Tauri's `with_webview` hands back: dropzone.rs reads
+# the browser process's id off them and hears `ProcessFailed`. Pinned to the
+# minor wry uses, so these are the same types rather than a second copy.
+webview2-com = "0.38"
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;
 # killing the parent leaves orphans holding ports. A job object kills the tree.
 windows = { version = "0.61", features = [
@@ -258,6 +262,10 @@ windows = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
+    # `SetWinEventHook`: dropzone.rs hears the browser process create and
+    # reparent the windows the page is drawn in, and gives each a drop target
+    # as it joins this window. See `dropzone.rs`.
+    "Win32_UI_Accessibility",
     # The control surface drives the *real* cursor. A synthetic pointer event
     # can't see Chromium retargeting a click after setPointerCapture, which is
     # the bug class that has shipped here twice.
