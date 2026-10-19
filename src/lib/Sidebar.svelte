@@ -169,7 +169,7 @@
   >
     <i class="st {p.tone}" aria-hidden="true"></i>
     <span class="t">{p.row.title}</span>
-    <span class="aside">{p.aside}</span>
+    <span class="aside" title={p.aside}>{p.aside}</span>
     {#if p.sub}<span class="sub">{p.sub}</span>{/if}
   </button>
 {/snippet}
@@ -295,7 +295,11 @@
     position: relative;
     width: 100%;
     display: grid;
-    grid-template-columns: 14px 1fr auto;
+    /* The title keeps its room and the place gives way. `1fr auto` let the
+       place take what it wanted, and a card on another wall says where in a
+       long phrase (`portfolio · on lab-cva.queerisfreedom`), which squeezed its
+       title to a letter or to nothing (found driving two labs, 2026-10-19). */
+    grid-template-columns: 14px minmax(7em, 1fr) minmax(0, auto);
     align-items: center;
     column-gap: 9px;
     min-height: 32px;
@@ -325,8 +329,18 @@
     font-size: 11.5px;
     color: var(--cv-note, var(--paper-mute));
     white-space: nowrap;
+    min-width: 0;
+    /* Where a row is, or how long its turn has run, is read in passing; its
+       title is what you are looking for. Whole on hover (`title`). */
+    max-width: 8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+  }
+  .folder .aside {
     display: inline-flex;
     align-items: center;
+    justify-content: flex-end;
   }
   .row.on {
     background: linear-gradient(

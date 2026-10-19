@@ -465,3 +465,20 @@ describe("a card here always has an age", () => {
     expect(restedOf({ working: true, restingSince: NOW, lastActive: NOW }, opened)).toBeNull();
   });
 });
+
+describe("a row's title keeps its room", () => {
+  /* Found driving two labs: a card on another wall says where in a long
+     phrase ("proj-cva · on lab-cva.queerisfreedom"), and under `1fr auto` the
+     place took all it wanted — titles read "t." or nothing at all. The title
+     is what is looked for; the place gives way and is whole on hover. */
+  const src = require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "../src/lib/Sidebar.svelte"), "utf8");
+  test("the title column has a floor and the place may shrink to nothing", () => {
+    expect(src).toMatch(/grid-template-columns:\s*14px\s+minmax\(7em,\s*1fr\)\s+minmax\(0,\s*auto\)/);
+  });
+  test("the place is capped, ellipsed and titled", () => {
+    const aside = /\.row \.aside \{([^}]*)\}/.exec(src)?.[1] ?? "";
+    expect(aside).toContain("text-overflow: ellipsis");
+    expect(aside).toContain("max-width");
+    expect(src).toContain('<span class="aside" title={p.aside}>');
+  });
+});
