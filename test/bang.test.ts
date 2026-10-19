@@ -355,3 +355,10 @@ describe("handover", () => {
     expect(handover("ls", "/x", 0, out)).not.toContain("local-command-stdout");
   });
 });
+
+describe("capOutput counts what was trimmed before it", () => {
+  test("lines already gone are added to what the cap drops", () => {
+    expect(capOutput(["a", "b"], 400, 7)).toEqual({ text: "a\nb", dropped: 7 });
+    expect(capOutput(["a", "b", "c"], 2, 7)).toEqual({ text: "b\nc", dropped: 8 });
+  });
+});

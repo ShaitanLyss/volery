@@ -35,6 +35,7 @@ import {
   type Tally,
 } from "./actions";
 import { stripAnsi } from "./ansi";
+import { foldTail } from "./logface";
 import type { Build } from "./buildlog";
 import { Listeners } from "./listeners";
 import { parseLine, type Editor } from "./unreallog";
@@ -95,7 +96,10 @@ export class Run {
   pct = $state<number | null>(null);
   /** The last thing worth repeating — a file being compiled, a verdict. */
   note = $state<string | null>(null);
-  log = $state<string[]>([]);
+  /* Raw, and replaced once per batch (`take`): a deep proxy re-indexed per
+     line is ~500 signal writes a line, which is the freeze `crate::sluice`
+     was written for, one layer up. */
+  log = $state.raw<string[]>([]);
   endedAt = $state<number | null>(null);
 
   /** Set to true by `cancel`, so a step that is waiting rather than running —
@@ -113,22 +117,36 @@ export class Run {
   }
 
   push(line: string) {
-    /* The log keeps its colour — `FORCE_COLOR` is set precisely so it has some,
-       and the panel renders it. Everything that *reads* the line works on the
-       stripped text: a `[1/4]` behind an SGR sequence does not match anything,
-       and a note carrying raw escapes would put them in a tooltip and on the
-       fault bar as literal `ESC[43m`. */
-    this.log.push(line);
-    if (this.log.length > MAX_LOG) this.log = this.log.slice(-MAX_LOG);
+    this.take([line]);
+  }
 
-    const plain = stripAnsi(line);
-    const p = progressFrom(plain);
-    if (p) {
-      if (p.pct !== null) this.pct = p.pct;
-      if (p.note) this.note = p.note;
+  /** A batch of output — what `action:log` carries. Every line is *read*
+   *  (progress, the automation tally, the live step's watcher); the log and
+   *  the runes are written once for the batch.
+   *
+   *  The log keeps its colour — `FORCE_COLOR` is set precisely so it has some,
+   *  and the panel renders it. Everything that *reads* the line works on the
+   *  stripped text: a `[1/4]` behind an SGR sequence does not match anything,
+   *  and a note carrying raw escapes would put them in a tooltip and on the
+   *  fault bar as literal `ESC[43m`. */
+  take(lines: readonly string[], gap: string | null = null) {
+    let pct = this.pct;
+    let note = this.note;
+    let tally = this.tally;
+    for (const line of lines) {
+      const plain = stripAnsi(line);
+      const p = progressFrom(plain);
+      if (p) {
+        if (p.pct !== null) pct = p.pct;
+        if (p.note) note = p.note;
+      }
+      tally = automationStep(tally, plain);
+      this.watch?.(plain);
     }
-    this.tally = automationStep(this.tally, plain);
-    this.watch?.(plain);
+    this.pct = pct;
+    this.note = note;
+    this.tally = tally;
+    this.log = foldTail(this.log, gap, lines, MAX_LOG);
   }
 
   /** The tail of the output, for a failure that had nothing else to say. */
@@ -161,7 +179,7 @@ export class Actions {
    *  reading does not become less true because the process finished exiting,
    *  and the last hundred lines of a session are often exactly what you wanted
    *  once it had gone — an assertion, a crash, the reason it will not reopen. */
-  editorLogs = $state<Record<string, string[]>>({});
+  editorLogs = $state.raw<Record<string, string[]>>({});
   /** Which projects' editor logs anything on the wall is asking for. Set by
    *  `App.svelte` off the widgets that are up, the way `Cycle.watched` is: this
    *  file may not reach into the widget registry, and a tail nobody is looking
@@ -222,17 +240,23 @@ export class Actions {
   #wire() {
     const keep = this.#listeners.keep.bind(this.#listeners);
     keep(
-      listen<{ run_id: string; line: string }>("action:log", (e) => {
+      /* A batch, never a line — at most ten a second per run, whatever the
+         child prints (`actions.rs`'s outlet). `skipped` is what went by too
+         fast to be handed over at all, and is said rather than hidden. */
+      listen<{ run_id: string; lines: string[]; skipped: number }>("action:log", (e) => {
+        const gap = e.payload.skipped
+          ? `… ${e.payload.skipped.toLocaleString("en")} lines went by too fast to read`
+          : null;
         const run = this.#byRunId.get(e.payload.run_id);
         if (run) {
-          run.push(e.payload.line);
+          run.take(e.payload.lines, gap);
           return;
         }
         /* Or it is a standing editor tail, which is the same event because it is
            the same Rust primitive: `tail_log` emits `action:log` under whatever
            id it was given, and a widget's tail is one more id. */
         const root = this.#tailRoots.get(e.payload.run_id);
-        if (root) this.#pushEditor(root, e.payload.line);
+        if (root) this.#pushEditor(root, e.payload.lines, gap);
       }),
     );
     keep(
@@ -555,21 +579,17 @@ export class Actions {
       .sort((a, b) => a.project.localeCompare(b.project));
   }
 
-  /** One tailed line, kept and capped.
+  /** Tailed lines, kept and capped — one batch, one new record.
    *
-   *  Pushed into the held array rather than replacing the record, which matters
-   *  at this volume: an editor loading a level says a thousand things in a few
-   *  seconds, and a `{ ...this.editorLogs }` per line would be a thousand copies
-   *  of a map of five-hundred-line arrays. Deep `$state` makes the push itself
-   *  reactive. */
-  #pushEditor(root: string, line: string) {
-    const held = this.editorLogs[root];
-    if (!held) {
-      this.editorLogs[root] = [line];
-      return;
-    }
-    held.push(line);
-    if (held.length > MAX_LOG) held.splice(0, held.length - MAX_LOG);
+   *  This was a push into a deep `$state` array per line, on the argument that
+   *  a `{ ...this.editorLogs }` per line would be a thousand copies of a map
+   *  while an editor loads a level. The argument was right about copies and
+   *  wrong about the proxy: trimming a deep array re-indexes every element
+   *  through it, ~500 signal writes a line. Lines now arrive in batches
+   *  (`tail_log` emits one per pass), so one copy per batch is the cheap shape. */
+  #pushEditor(root: string, lines: readonly string[], gap: string | null = null) {
+    const held = this.editorLogs[root] ?? [];
+    this.editorLogs = { ...this.editorLogs, [root]: foldTail(held, gap, lines, MAX_LOG) };
   }
 
   /** Start the editor-log tails that are wanted and stop the ones that are not.
@@ -661,9 +681,9 @@ export class Actions {
          the alternative is two editors' output run together with nothing saying
          where one stopped - and the last lines before a restart are usually why
          it was restarted. */
-      this.#pushEditor(root, "── editor restarted ──");
+      this.#pushEditor(root, ["── editor restarted ──"]);
     }
-    for (const l of lines.slice(-MAX_LOG)) this.#pushEditor(root, l);
+    this.#pushEditor(root, lines.slice(-MAX_LOG));
   }
 
   /* ── running one ──────────────────────────────────────────────────────── */
@@ -964,11 +984,12 @@ export class Actions {
         maxBytes: 64 * 1024,
       });
       if (!text) return;
-      run.log.push("── UnrealBuildTool log ──");
-      for (const line of text.split(/\r?\n/).filter((l) => l.trim())) {
-        run.log.push(line);
-      }
-      if (run.log.length > MAX_LOG) run.log = run.log.slice(-MAX_LOG);
+      run.log = foldTail(
+        run.log,
+        "── UnrealBuildTool log ──",
+        text.split(/\r?\n/).filter((l) => l.trim()),
+        MAX_LOG,
+      );
     } catch {
       /* No log is not worse than the failure we already have. */
     }

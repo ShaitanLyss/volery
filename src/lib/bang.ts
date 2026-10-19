@@ -345,11 +345,14 @@ export const BANG_LINES = 400;
 export function capOutput(
   lines: string[],
   cap = BANG_LINES,
+  /** Lines already gone before these — trimmed as the run went, or never
+   *  handed over because they came faster than the wall draws. */
+  before = 0,
 ): { text: string; dropped: number } {
-  if (lines.length <= cap) return { text: lines.join("\n"), dropped: 0 };
+  if (lines.length <= cap) return { text: lines.join("\n"), dropped: before };
   return {
     text: lines.slice(lines.length - cap).join("\n"),
-    dropped: lines.length - cap,
+    dropped: before + lines.length - cap,
   };
 }
 

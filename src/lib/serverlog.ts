@@ -22,7 +22,7 @@
  * hides, and what to say about a server that is not saying anything are all
  * testable directly. `ServerLog.svelte` draws it. */
 
-import type { Row } from "./logface";
+import { foldTail, type Row } from "./logface";
 
 /** What one server in a group is doing.
  *
@@ -35,6 +35,31 @@ export type Health = "idle" | "starting" | "up" | "exited";
  *  reader per pipe, which is what made it true (it was hardcoded `false` for
  *  every line ever emitted under the merged PTY reader). */
 export type LogLine = { label: string; line: string; stderr: boolean };
+
+/** A group printing faster than anything can read (`servers.rs`'s `FLOOD`):
+ *  lines a second, how long the wall will let it go on, and whether the wall
+ *  has already stopped it for this. */
+export type Flood = { rate: number; stopsIn: number | null; stopped: boolean };
+
+/** A batch of `server:log` folded into a log of at most `cap` lines.
+ *
+ *  `skipped` is lines that went by too fast for the wall to be handed at all
+ *  (`crate::sluice`), and they get one line saying so rather than nothing: a
+ *  log that silently began in the middle reads as the whole log. A fresh array
+ *  every time — `GroupRuntime.log` is `$state.raw`, which invalidates on
+ *  identity, and one copy per batch is the whole point of batching. */
+export function foldLog(
+  log: readonly LogLine[],
+  lines: readonly LogLine[],
+  skipped: number,
+  cap: number,
+): LogLine[] {
+  const gap: LogLine | null =
+    skipped > 0
+      ? { label: "volery", line: `… ${skipped.toLocaleString("en")} lines went by too fast to draw`, stderr: false }
+      : null;
+  return foldTail(log, gap, lines, cap);
+}
 
 /** A group, as much of one as a log needs to draw itself.
  *
@@ -53,6 +78,8 @@ export type Reading = {
   servers: { label: string; port: number | null }[];
   health: Record<string, Health>;
   log: LogLine[];
+  /** Absent or null unless the group is flooding, or was stopped for it. */
+  flood?: Flood | null;
 };
 
 /** Whether this group counts as the one to follow — the `live` a subject knob
@@ -140,9 +167,27 @@ export function latest(
 export function standing(g: Reading): {
   down: boolean;
   word: string | null;
-  verb: "start" | "start again";
+  verb: "start" | "start again" | "restart";
 } {
-  if (!g.running) return { down: true, word: "not started", verb: "start" };
+  if (!g.running) {
+    if (g.flood?.stopped) {
+      return {
+        down: true,
+        word: "stopped by the wall — it was flooding its log",
+        verb: "start again",
+      };
+    }
+    return { down: true, word: "not started", verb: "start" };
+  }
+  /* Ahead of everything else a running group can be: a flood is the one state
+     where the scroll itself is useless — the same failure a thousand times a
+     second — so the face says what is happening instead of drawing it. The log
+     is still whole in the servers panel and in `server_log`. */
+  if (g.flood) {
+    const rate = `~${g.flood.rate.toLocaleString("en")} lines a second`;
+    const when = g.flood.stopsIn === null ? "" : `; the wall stops it in ${g.flood.stopsIn}s`;
+    return { down: true, word: `flooding its log — ${rate}${when}`, verb: "restart" };
+  }
   if (g.overall === "exited") {
     const out = g.servers.filter((s) => g.health[s.label] === "exited").length;
     return {

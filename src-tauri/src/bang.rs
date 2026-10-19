@@ -56,9 +56,16 @@ use crate::shell::{launch, prime_command};
 #[derive(Clone, Serialize)]
 struct BangOut {
     id: String,
-    line: String,
-    stderr: bool,
+    /// A batch, never a line — see `crate::sluice`. stdout and stderr in the
+    /// order they were read, which is the order the transcript line keeps.
+    lines: Vec<String>,
+    /// Lines that went by faster than the wall draws and were left out.
+    skipped: usize,
 }
+
+/// The most lines one `bang:out` batch carries: the transcript line's own cap
+/// (`BANG_LINES` in `bang.ts`), so nothing is left out that it would have kept.
+const BANG_BATCH: usize = 400;
 
 /// The end of a run.
 ///
@@ -160,16 +167,18 @@ pub async fn bang_run(
            these threads are detached, and a thread parked on a `join` is one
            the shutdown path would have to know about. */
         let left = Arc::new(AtomicUsize::new(2));
+        let spout = outlet(&app, &id);
         if let Some(out) = stdout {
-            pump_into(app.clone(), id.clone(), left.clone(), out, false);
+            pump_into(app.clone(), id.clone(), left.clone(), out, spout.clone());
         } else {
             finish_if_last(&app, &id, &left);
         }
         if let Some(err) = stderr {
-            pump_into(app.clone(), id.clone(), left.clone(), err, true);
+            pump_into(app.clone(), id.clone(), left.clone(), err, spout.clone());
         } else {
             finish_if_last(&app, &id, &left);
         }
+        drop(spout);
 
         Ok(program)
     })
@@ -186,21 +195,35 @@ fn pump_into<R: std::io::Read + Send + 'static>(
     id: String,
     left: Arc<AtomicUsize>,
     mut reader: R,
-    stderr: bool,
+    spout: crate::sluice::Sluice<String>,
 ) {
     std::thread::spawn(move || {
-        pump_lines(&mut reader, |line| {
-            let _ = app.emit(
-                "bang:out",
-                BangOut {
-                    id: id.clone(),
-                    line,
-                    stderr,
-                },
-            );
-        });
+        pump_lines(&mut reader, |line| spout.push(line));
+        /* What was read goes out before `bang:done` says the run is over. */
+        spout.flush();
+        drop(spout);
         finish_if_last(&app, &id, &left);
     });
+}
+
+/// A run's door to the wall: `bang:out` at most ten times a second, however
+/// fast the command prints. A `!` aimed at a log follower or a runaway loop is
+/// exactly the case — one emit per line is what froze the wall once.
+fn outlet(app: &AppHandle, id: &str) -> crate::sluice::Sluice<String> {
+    let app = app.clone();
+    let id = id.to_string();
+    crate::sluice::Sluice::open(
+        crate::sluice::Spec {
+            name: "bang:out",
+            cap: Some(BANG_BATCH),
+            period: std::time::Duration::from_millis(100),
+            flood: None,
+        },
+        move |lines, skipped| {
+            let _ = app.emit_to("main", "bang:out", BangOut { id: id.clone(), lines, skipped });
+        },
+        |_, _| {},
+    )
 }
 
 /// Reap the child and say how it went — but only for the last stream to close.

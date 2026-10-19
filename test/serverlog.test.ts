@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   absence,
+  foldLog,
   groupOptions,
   isLive,
   keeping,
@@ -217,5 +218,56 @@ describe("a group names itself the same way everywhere", () => {
       { value: "a", label: "skein · dev" },
       { value: "b", label: "nova · api" },
     ]);
+  });
+});
+
+/* The wall is handed batches now, never lines — `servers.rs`'s outlet. */
+describe("foldLog", () => {
+  const l = (n: number): LogLine => line("web", String(n));
+
+  test("a batch is appended, and the log keeps its newest `cap`", () => {
+    const out = foldLog([l(1), l(2)], [l(3), l(4)], 0, 3);
+    expect(out.map((x) => x.line)).toEqual(["2", "3", "4"]);
+  });
+
+  test("the skipped line survives a full batch, which is the only batch that has one", () => {
+    const full = Array.from({ length: 400 }, (_, i) => l(i));
+    const out = foldLog([l(-2), l(-1)], full, 9_000, 400);
+    expect(out).toHaveLength(400);
+    expect(out[0].label).toBe("volery");
+    expect(out[0].line).toContain("9,000");
+    expect(out[399].line).toBe("399");
+  });
+
+  test("lines skipped by the outlet are said, not silently missing", () => {
+    const out = foldLog([l(1)], [l(9)], 12_431, 10);
+    expect(out.map((x) => x.line)).toEqual(["1", "… 12,431 lines went by too fast to draw", "9"]);
+    expect(out[1].label).toBe("volery");
+  });
+
+  test("a fresh array every time, because the log is `$state.raw`", () => {
+    const log = [l(1)];
+    expect(foldLog(log, [], 0, 10)).not.toBe(log);
+  });
+});
+
+describe("a flooding group", () => {
+  test("says so instead of drawing the flood, and how long it has left", () => {
+    const s = standing(group({ flood: { rate: 3614, stopsIn: 42, stopped: false } }));
+    expect(s.down).toBe(true);
+    expect(s.word).toBe("flooding its log — ~3,614 lines a second; the wall stops it in 42s");
+    expect(s.verb).toBe("restart");
+  });
+
+  test("stopped for it, it says who stopped it and why", () => {
+    const s = standing(
+      group({ running: false, overall: "idle", flood: { rate: 3614, stopsIn: null, stopped: true } }),
+    );
+    expect(s.word).toBe("stopped by the wall — it was flooding its log");
+    expect(s.verb).toBe("start again");
+  });
+
+  test("a group with no flood reads exactly as before", () => {
+    expect(standing(group({ flood: null })).down).toBe(false);
   });
 });

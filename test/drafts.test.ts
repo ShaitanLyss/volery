@@ -6,10 +6,12 @@ import {
   KEEP_BUDGET,
   decodeKept,
   decodeKeptFiles,
+  decodeOutbox,
   encodeKept,
   KEPT_FILES,
   withoutGoneFiles,
   mergeDraft,
+  withOutbox,
   type Draft,
 } from "../src/lib/drafts";
 
@@ -387,5 +389,41 @@ describe("a file attached by its path survives the keeping", () => {
     const d = new Drafts();
     d.restore(decodeKept(raw), decodeKeptFiles(raw));
     expect(d.peek("x").shots).toEqual([]);
+  });
+});
+
+/* The outbox: a send the app died holding comes back as that card's draft. */
+describe("the outbox", () => {
+  test("a send left behind goes back in front of the card's draft", () => {
+    const back = withOutbox(
+      { a: "typed after", b: "untouched" },
+      { t1: { card: "a", text: "sent while frozen", at: 2 } },
+    );
+    expect(back).toEqual({ a: "sent while frozen\n\ntyped after", b: "untouched" });
+  });
+
+  test("several come back oldest first, and a card with no draft gets one", () => {
+    const back = withOutbox(
+      {},
+      {
+        late: { card: "c", text: "second", at: 20 },
+        early: { card: "c", text: "first", at: 10 },
+      },
+    );
+    expect(back).toEqual({ c: "first\n\nsecond" });
+  });
+
+  test("an empty outbox changes nothing", () => {
+    const kept = { a: "x" };
+    expect(withOutbox(kept, {})).toEqual(kept);
+  });
+
+  test("a damaged outbox is no outbox rather than a wall that will not open", () => {
+    expect(decodeOutbox(null)).toEqual({});
+    expect(decodeOutbox("{not json")).toEqual({});
+    expect(decodeOutbox("[1,2]")).toEqual({});
+    expect(
+      decodeOutbox(JSON.stringify({ ok: { card: "a", text: "hi", at: 1 }, blank: { card: "a", text: "  " }, junk: 3 })),
+    ).toEqual({ ok: { card: "a", text: "hi", at: 1 } });
   });
 });

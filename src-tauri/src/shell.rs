@@ -107,8 +107,41 @@ pub struct Shells(Mutex<HashMap<String, Shell>>);
 #[derive(Clone, Serialize)]
 struct ShellOut {
     id: String,
+    /// A batch, never a line — see `crate::sluice` and `outlet` below.
+    lines: Vec<OutLine>,
+    /// Lines that went by faster than the console draws and were left out.
+    skipped: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct OutLine {
     line: String,
     stderr: bool,
+}
+
+/// The most lines one `shell:out` batch carries: the console's own scrollback
+/// (`SCROLLBACK` in `shell.ts`, 1,200) less the one line that says how many
+/// were skipped — a full batch plus that line would push the line straight out.
+const SHELL_BATCH: usize = 1_199;
+
+/// A shell's door to the wall. `tail -f` on a busy log, or a loop that never
+/// ends, is a shell printing as fast as it can — and one emit per line is what
+/// froze the wall once (`crate::sluice`).
+fn outlet(app: &AppHandle, id: &str) -> crate::sluice::Sluice<OutLine> {
+    let app = app.clone();
+    let id = id.to_string();
+    crate::sluice::Sluice::open(
+        crate::sluice::Spec {
+            name: "shell:out",
+            cap: Some(SHELL_BATCH),
+            period: std::time::Duration::from_millis(100),
+            flood: None,
+        },
+        move |lines, skipped| {
+            let _ = app.emit_to("main", "shell:out", ShellOut { id: id.clone(), lines, skipped });
+        },
+        |_, _| {},
+    )
 }
 
 #[derive(Clone, Serialize)]
@@ -257,9 +290,11 @@ pub fn open_shell(
 
     /* Both streams, because PowerShell does all of its complaining on stderr
        and half of what you run does too. */
+    let spout = outlet(&app, &id);
     if let Some(mut out) = stdout {
         let app = app.clone();
         let id = id.clone();
+        let spout = spout.clone();
         std::thread::spawn(move || {
             pump_lines(&mut out, |text| {
                 /* The marker is the one line that is not output. Anything in
@@ -267,15 +302,11 @@ pub fn open_shell(
                    ended without a newline leaves its last word there. */
                 if let Some((before, ok, cwd)) = read_mark(&text) {
                     if !before.is_empty() {
-                        let _ = app.emit(
-                            "shell:out",
-                            ShellOut {
-                                id: id.clone(),
-                                line: before.to_string(),
-                                stderr: false,
-                            },
-                        );
+                        spout.push(OutLine { line: before.to_string(), stderr: false });
                     }
+                    /* The command's output goes out before the prompt that
+                       ends it, or the console marks the wrong line failed. */
+                    spout.flush();
                     let _ = app.emit(
                         "shell:done",
                         ShellDone {
@@ -286,15 +317,10 @@ pub fn open_shell(
                     );
                     return;
                 }
-                let _ = app.emit(
-                    "shell:out",
-                    ShellOut {
-                        id: id.clone(),
-                        line: text,
-                        stderr: false,
-                    },
-                );
+                spout.push(OutLine { line: text, stderr: false });
             });
+            spout.flush();
+            drop(spout);
             /* stdout ending is the shell ending, and the panel has to say so
                rather than sit there taking input nothing will read. */
             let _ = app.emit("shell:exit", ShellExit { id, code: None });
@@ -302,21 +328,12 @@ pub fn open_shell(
     }
 
     if let Some(mut err) = stderr {
-        let app = app.clone();
-        let id = id.clone();
+        let spout = spout.clone();
         std::thread::spawn(move || {
-            pump_lines(&mut err, |text| {
-                let _ = app.emit(
-                    "shell:out",
-                    ShellOut {
-                        id: id.clone(),
-                        line: text,
-                        stderr: true,
-                    },
-                );
-            });
+            pump_lines(&mut err, |text| spout.push(OutLine { line: text, stderr: true }));
         });
     }
+    drop(spout);
 
     /* Prime it, then mark — so the first thing the panel hears is where the
        shell is, which is also the first moment it is ready for anything. */

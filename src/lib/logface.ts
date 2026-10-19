@@ -178,3 +178,23 @@ export function emptyBecause(hidden: number, narrowing: string): string | null {
   if (hidden <= 0) return null;
   return `nothing ${narrowing} — ${hidden} ${hidden === 1 ? "line" : "lines"} filtered out`;
 }
+
+/** A batch folded onto the tail of a log, keeping the newest `cap` — and a
+ *  `gap` line (what went by too fast to be handed over) that survives the cut.
+ *
+ *  The gap goes between the old log and the batch, which is where the missing
+ *  lines were. It must outlive the slice: a batch only skips anything when it
+ *  arrived full, so the plain tail of `[...log, gap, ...lines]` is exactly the
+ *  slice that drops it — and a log that silently begins mid-flood is the one
+ *  thing the count exists to prevent. So when the cut reaches past it, it is
+ *  put back at the head in place of the oldest line kept.
+ *
+ *  A fresh array every time, for the logs that are `$state.raw`. */
+export function foldTail<T>(log: readonly T[], gap: T | null, lines: readonly T[], cap: number): T[] {
+  const full = gap === null ? [...log, ...lines] : [...log, gap, ...lines];
+  if (full.length <= cap) return full;
+  const cut = full.length - cap;
+  const out = full.slice(cut);
+  if (gap !== null && cut > log.length) out[0] = gap;
+  return out;
+}

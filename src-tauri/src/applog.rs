@@ -29,8 +29,21 @@
 //!
 //! ### What it is, and the bound that keeps it honest
 //!
-//! A bounded ring and an event. Not a file — see the note at the bottom about
-//! the half this deliberately does not do yet.
+//! A bounded ring, an event, and — since 2026-10-19 — a file.
+//!
+//! **The file is `logs/volery.log` in the app's data folder**, rolled to
+//! `volery.old.log` at `FILE_BYTES`, so the whole of it on disk is a few MB and
+//! no more. It exists because of the night the wall froze for ten minutes and
+//! was restarted: everything this module had heard went with the process, and
+//! the only account of what happened was the *Next.js* dev server's own log
+//! file, which happened to keep one. A ring is the right reader for a widget
+//! and the wrong one for a post-mortem, because the post-mortem is always
+//! about a process that is no longer there. `watchdog.rs` writes its stalls
+//! here, which is the reading that night needed.
+//!
+//! Lines leave through a `crate::sluice` — batched, at most ten emits a second
+//! — and the file is written by the sluice's own thread, never the logging
+//! one, so a `log!` on the main thread costs a lock and a push and no I/O.
 //!
 //! **`KEEP` lines and no more.** A log that grows is a leak with a heartbeat on
 //! a wall left open for days, and the rule this app already follows for the same
@@ -63,7 +76,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How many lines are kept for a face that mounts late.
 ///
@@ -87,7 +100,14 @@ pub struct Line {
 }
 
 static RING: Mutex<VecDeque<Line>> = Mutex::new(VecDeque::new());
-static APP: OnceLock<AppHandle> = OnceLock::new();
+/// Where lines leave for the wall and the file. Set once in `install`; a line
+/// logged before it exists is in the ring and nowhere else, as before.
+static OUTLET: OnceLock<crate::sluice::Sluice<Line>> = OnceLock::new();
+
+/// How big `volery.log` may grow before it is rolled. Two of them on disk at
+/// most: a busy `info` day is a few hundred KB, and the night this was written
+/// for would have fitted many times over.
+const FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 thread_local! {
     /// See the module note: a logger that logs must not re-enter itself.
@@ -194,8 +214,8 @@ impl log::Log for Sink {
             }
         }
 
-        if let Some(app) = APP.get() {
-            let _ = app.emit("app:log", line);
+        if let Some(out) = OUTLET.get() {
+            out.push(line);
         }
 
         BUSY.with(|b| b.set(false));
@@ -224,7 +244,29 @@ pub fn install(app: AppHandle) {
         .max()
         .unwrap_or(log::LevelFilter::Info);
 
-    let _ = APP.set(app);
+    let dir = app.path().app_data_dir().ok().map(|d| d.join("logs"));
+    let mut file = dir.map(Journal::new);
+    let _ = OUTLET.set(crate::sluice::Sluice::open(
+        crate::sluice::Spec {
+            name: "app:log",
+            cap: Some(KEEP),
+            period: Duration::from_millis(100),
+            flood: None,
+        },
+        move |lines: Vec<Line>, skipped| {
+            /* On the sluice's thread, or a pusher's when it is closed — and
+               anything in the emit's path that logs would re-enter this module
+               and wait on the lock this closure is called under. The latch
+               turns that into a dropped line instead of a deadlock. */
+            let was = BUSY.with(|b| b.replace(true));
+            if let Some(f) = file.as_mut() {
+                f.write(&lines, skipped);
+            }
+            let _ = app.emit_to("main", "app:log", lines);
+            BUSY.with(|b| b.set(was));
+        },
+        |_, _| {},
+    ));
     if log::set_boxed_logger(Box::new(Sink { targets, everything })).is_ok() {
         /* The global max is the *loosest* of the ceilings, because it is a
            cheap pre-filter in front of `enabled` rather than a policy of its
@@ -300,6 +342,83 @@ fn pick_complaint(ring: &VecDeque<Line>, prefix: &str, floor: u64) -> Option<Str
         .map(|l| l.text.clone())
 }
 
+/// The log on disk: one file, appended to, rolled once at `FILE_BYTES`.
+///
+/// Failure anywhere here is silent and permanent for the session — a log that
+/// cannot be written is not worth an app that will not run, and there is no
+/// better channel to complain through than the one that just failed.
+struct Journal {
+    dir: std::path::PathBuf,
+    out: Option<std::fs::File>,
+    size: u64,
+}
+
+impl Journal {
+    fn new(dir: std::path::PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&dir);
+        let mut j = Journal { dir, out: None, size: 0 };
+        j.open();
+        j
+    }
+
+    fn open(&mut self) {
+        let path = self.dir.join("volery.log");
+        self.out = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        self.size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    }
+
+    fn write(&mut self, lines: &[Line], skipped: usize) {
+        use std::io::Write;
+        if self.size >= FILE_BYTES {
+            self.out = None;
+            let _ = std::fs::rename(self.dir.join("volery.log"), self.dir.join("volery.old.log"));
+            self.open();
+        }
+        let Some(out) = self.out.as_mut() else { return };
+        let mut text = String::new();
+        if skipped > 0 {
+            text.push_str(&format!("… {skipped} lines came too fast to keep\n"));
+        }
+        for l in lines {
+            text.push_str(&file_line(l));
+        }
+        if out.write_all(text.as_bytes()).is_ok() {
+            self.size += text.len() as u64;
+        }
+    }
+}
+
+/// One line as the file keeps it: UTC time, level, target, text.
+fn file_line(l: &Line) -> String {
+    format!("{} {:5} {}: {}\n", stamp(l.at), l.level, l.target, l.text.replace('\n', "\n  "))
+}
+
+/// Milliseconds since the epoch as `2026-10-19T06:04:12.345Z`, without a date
+/// crate. UTC on purpose: a file read on another machine, or across a daylight
+/// change, says one thing. Days to a civil date is Howard Hinnant's
+/// `civil_from_days`.
+fn stamp(ms: u64) -> String {
+    let secs = ms / 1000;
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60,
+        ms % 1000
+    )
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -311,6 +430,20 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use log::LevelFilter as F;
+
+    #[test]
+    fn a_stamp_is_utc_and_reads_back() {
+        assert_eq!(stamp(0), "1970-01-01T00:00:00.000Z");
+        /* The night this file was written for: 17:04:12.345 AEDT. */
+        assert_eq!(stamp(1_792_389_852_345), "2026-10-19T06:04:12.345Z");
+        assert_eq!(stamp(951_782_400_000), "2000-02-29T00:00:00.000Z");
+    }
+
+    #[test]
+    fn a_file_line_keeps_a_multiline_message_on_its_own_indent() {
+        let l = Line { at: 0, level: "warn", target: "skein".into(), text: "a\nb".into() };
+        assert_eq!(file_line(&l), "1970-01-01T00:00:00.000Z warn  skein: a\n  b\n");
+    }
 
     #[test]
     fn the_default_is_info_and_nothing_else() {

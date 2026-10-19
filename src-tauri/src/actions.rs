@@ -63,9 +63,47 @@ use crate::servers::{jobs, pump_lines};
 #[derive(Clone, Serialize)]
 struct ActionLog {
     run_id: String,
-    line: String,
-    /// cargo and UBT do much of their talking here.
-    stderr: bool,
+    /// A batch, never a line — see `log_outlet`. Which pipe a line came down
+    /// is not carried: the wall never read it, and cargo and UBT do half their
+    /// ordinary talking on stderr anyway.
+    lines: Vec<String>,
+    /// Lines that went by faster than the wall could take and were left out.
+    skipped: usize,
+}
+
+/// The most lines one `action:log` batch carries.
+///
+/// Higher than the run's scrollback (`MAX_LOG`, 500) on purpose: the front end
+/// *reads* every line it is given — progress, the automation tally — so this is
+/// a ceiling on a flood rather than a scrollback. Fifty thousand lines a second
+/// still gets through whole; past that nothing is reading them anyway.
+const ACTION_BATCH: usize = 5_000;
+
+/// A run's door to the wall: `action:log` at most ten times a second, however
+/// fast the child prints. `crate::sluice` has the night that made it necessary.
+fn log_outlet(app: &AppHandle, run_id: &str) -> crate::sluice::Sluice<String> {
+    let app = app.clone();
+    let run_id = run_id.to_string();
+    crate::sluice::Sluice::open(
+        crate::sluice::Spec {
+            name: "action:log",
+            cap: Some(ACTION_BATCH),
+            period: Duration::from_millis(100),
+            flood: None,
+        },
+        move |lines, skipped| {
+            let _ = app.emit_to(
+                "main",
+                "action:log",
+                ActionLog {
+                    run_id: run_id.clone(),
+                    lines,
+                    skipped,
+                },
+            );
+        },
+        |_, _| {},
+    )
 }
 
 #[derive(Clone, Serialize)]
@@ -202,26 +240,21 @@ pub fn run_action(
         j.assign(child.id());
     }
 
-    for (stream, is_err) in [
-        (child.stdout.take().map(Pipe::Out), false),
-        (child.stderr.take().map(Pipe::Err), true),
+    let out = log_outlet(&app, &run_id);
+    for stream in [
+        child.stdout.take().map(Pipe::Out),
+        child.stderr.take().map(Pipe::Err),
     ] {
         let Some(mut stream) = stream else { continue };
-        let app = app.clone();
-        let run_id = run_id.clone();
+        let out = out.clone();
         std::thread::spawn(move || {
-            pump_lines(&mut stream, |line| {
-                let _ = app.emit(
-                    "action:log",
-                    ActionLog {
-                        run_id: run_id.clone(),
-                        line,
-                        stderr: is_err,
-                    },
-                );
-            });
+            pump_lines(&mut stream, |line| out.push(line));
         });
     }
+    /* The waiter flushes before it gives a verdict, so the lines already read
+       are drawn ahead of `ok` or `failed` rather than after them. */
+    let flush = out.clone();
+    drop(out);
 
     let stopped = Arc::new(AtomicBool::new(false));
     runs.0.lock().unwrap().insert(
@@ -245,6 +278,8 @@ pub fn run_action(
         }
         let cancelled = stopped.load(Ordering::Relaxed);
         let code = status.as_ref().ok().and_then(|s| s.code()).map(|c| c as u32);
+        flush.flush();
+        drop(flush);
         let _ = app.emit(
             "action:state",
             ActionState {
@@ -329,6 +364,10 @@ pub fn tail_log(
     );
 
     std::thread::spawn(move || {
+        /* Already a batch per pass in spirit — it reads every 250ms — and now in
+           fact: one emit per pass rather than one per line, since an editor log
+           can grow by thousands of lines between two looks. */
+        let mut batch: Vec<String> = Vec::new();
         let mut pending = String::new();
         while !stopped.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(250));
@@ -358,14 +397,18 @@ pub fn tail_log(
                 if line.is_empty() {
                     continue;
                 }
-                let _ = app.emit(
+                batch.push(line);
+            }
+            if !batch.is_empty() {
+                let lines = std::mem::take(&mut batch);
+                let skipped = lines.len().saturating_sub(ACTION_BATCH);
+                let _ = app.emit_to(
+                    "main",
                     "action:log",
                     ActionLog {
                         run_id: run_id.clone(),
-                        line,
-                        /* A log file has one stream, and the editor writes its
-                           own errors into it as ordinary lines. */
-                        stderr: false,
+                        lines: lines.into_iter().skip(skipped).collect(),
+                        skipped,
                     },
                 );
             }

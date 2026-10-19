@@ -17,6 +17,7 @@ import {
   BANG,
   type Completion,
   type Match,
+  BANG_LINES,
   capOutput,
   handover,
   runCap,
@@ -46,10 +47,27 @@ type Run = {
    *  pressed the key rather than asked afterwards, because by the time a build
    *  ends you are reading something else. */
   handOver: boolean;
+  /** The newest `BANG_LINES`, which is all the transcript line ever shows and
+   *  all the handover ever sends. Kept to that as the run goes, so a `!` that
+   *  never stops printing is a bounded run rather than a growing one. */
   lines: string[];
   /** Waiting for the next flush. */
   pending: string[];
+  /** Lines no longer in `lines`: trimmed as the run went, or never handed over
+   *  because they came faster than the wall draws (`bang.rs`'s outlet). */
+  dropped: number;
 };
+
+/** Move a run's pending lines into it, keeping the newest `BANG_LINES`. */
+function gather(run: Run) {
+  run.lines.push(...run.pending);
+  run.pending = [];
+  const over = run.lines.length - BANG_LINES;
+  if (over > 0) {
+    run.lines.splice(0, over);
+    run.dropped += over;
+  }
+}
 
 /** One card's `!` history, and where Up has walked to in it. Per card rather
  *  than one for the wall, the same call `shell.md` makes about the console's:
@@ -123,6 +141,7 @@ export class Bang {
       handOver,
       lines: [],
       pending: [],
+      dropped: 0,
     });
     conv.bangOpen(cmd, runCap(cmd, null, 0, true));
 
@@ -244,15 +263,17 @@ export class Bang {
     const keep = this.#listeners.keep.bind(this.#listeners);
 
     keep(
-      listen<{ id: string; line: string; stderr: boolean }>("bang:out", (e) => {
+      /* A batch, never a line (`bang.rs`'s outlet). */
+      listen<{ id: string; lines: string[]; skipped: number }>("bang:out", (e) => {
         const run = this.#runs.get(e.payload.id);
         if (!run) return;
+        run.dropped += e.payload.skipped;
         /* stderr and stdout into one column, in the order they arrived. A
            command's complaint belongs where it happened — the console panel
            colours the two apart, and here the whole run is one transcript line,
            so there is nothing to colour. What the shell wrote, in order, is what
            you would have seen in a terminal. */
-        run.pending.push(e.payload.line);
+        run.pending.push(...e.payload.lines);
         this.#schedule();
       }),
     );
@@ -262,16 +283,15 @@ export class Bang {
         const run = this.#runs.get(e.payload.id);
         if (!run) return;
         this.#runs.delete(e.payload.id);
-        run.lines.push(...run.pending);
-        run.pending = [];
+        gather(run);
 
         const conv = this.#look(e.payload.id);
         if (!conv) return;
         const code = e.payload.code;
-        const out = capOutput(run.lines);
+        const out = capOutput(run.lines, BANG_LINES, run.dropped);
         conv.bangClose(
           out.text,
-          runCap(run.cmd, code, run.lines.length, false),
+          runCap(run.cmd, code, run.dropped + run.lines.length, false),
           /* A non-zero exit is a failure and is marked. `null` is a run that was
              stopped, which is something you did on purpose — the cap says so in
              words, and the line wears no fault. */
@@ -298,12 +318,11 @@ export class Bang {
   #flush() {
     for (const [id, run] of this.#runs) {
       if (!run.pending.length) continue;
-      run.lines.push(...run.pending);
-      run.pending = [];
+      gather(run);
       const conv = this.#look(id);
       if (!conv) continue;
-      const out = capOutput(run.lines);
-      conv.bangDraw(out.text, runCap(run.cmd, null, run.lines.length, true));
+      const out = capOutput(run.lines, BANG_LINES, run.dropped);
+      conv.bangDraw(out.text, runCap(run.cmd, null, run.dropped + run.lines.length, true));
     }
   }
 }

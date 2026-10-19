@@ -84,6 +84,36 @@ here all along with no trouble, and `pwsh` would cost the ~4s profile load per s
 `shell.md` measured. The store held zero `server_group` rows when this changed, so nothing
 stored had to be re-authored — but that is luck, and a future change of shell is a migration.
 
+### A group that floods, and the outlet every line goes through
+
+**No line is ever emitted on its own.** A run of a group opens one `Outlet`
+(`crate::sluice::Sluice<LogLine>`) in `start`, every pump thread holds a clone, and `say_line`
+is the only way a line leaves: record first (the `Trace` ring, unchanged), then push. The
+outlet hands the wall a `server:log` **batch** — `{ group_id, lines, skipped }` — at most every
+100ms, carrying the newest `WALL_LOG` (400, the wall's own scrollback) and a count of what went
+by too fast. `foldLog` in `serverlog.ts` draws that count as a line rather than starting the log
+silently in the middle. Why, in one number: on 2026-10-19 nova's dev server printed 32,000
+lines in a second, each was an emit onto the main thread, and the wall froze for ten minutes
+(`sluice.rs` has the night; `tools/probe-flood.ts` reproduces it).
+
+- **`flush()` before `exited`.** A pump flushes when its pipe closes, before `exit_if_last` can
+  say the server died — otherwise the last words would land after the death notice.
+- **A flood is 1,000 lines a second held five seconds** (`FLOOD`), measured over whole seconds
+  by the sluice's own thread. A compile dumping its errors is hot for a second and is not one.
+  It is `server:flood` to the wall, `flooding` in the `servers` tool, and the widget's face says
+  so in place of the scroll — the one state where the scroll is useless.
+- **After sixty hot seconds the wall stops the group** (`FLOOD_STOP`, Lyss 2026-10-19: mark it,
+  then stop it). Through `stop_run(.., Some(&alive))`, which stops only if the group is still
+  *the run that flooded* — `alive` is that run's `polling` flag, compared by pointer — so a
+  restart a moment earlier is never the casualty. It goes through `remember(false)` like any
+  stop: a group the wall had to stop must not come back by itself at the next launch and do it
+  again. A line from `volery` in the log, a `stopped: true` flood event ahead of
+  `server:running`, and a chronicle row say who stopped it and why.
+- **`start_group` and `stop_group` are `off_main`** now. A restart kills a tree and waits for it
+  holding `running`, and `group_running` takes that lock from the main thread.
+- **To `main` only.** The outlet's emits are `emit_to("main", …)`: the peek window folds none of
+  this, and an emit to every webview is a script evaluated in every one.
+
 ### A group you put down stays down
 
 **The wall comes back the way you left it, and before 2026-09-14 it did not.** The load path

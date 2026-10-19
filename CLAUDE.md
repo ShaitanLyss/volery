@@ -109,7 +109,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # servers.rs, shell.rs, nvim.rs, find.rs, slash.rs, sessions.rs,
                               # project.rs,
                               # usage.rs,
-                              # tunnel.rs, applog.rs,
+                              # tunnel.rs, applog.rs, sluice.rs,
                               # limits.rs, load.rs, pool.rs, perf.rs,
                               # timeline.rs, arrange.rs, notice.rs, machine.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
@@ -225,6 +225,11 @@ bun tools/lift-sink.ts             # same, for the scope a listing row carries a
                                    # that would otherwise have made the seventh twin
 bun tools/lift-clip.ts             # same, for the one cap and the one scrub every text
                                    # field on every surface passes through
+bun tools/lift-sluice.ts           # same, for the batcher every line pump emits through —
+                                   # threads included, since half of it is the flusher
+bun tools/probe-flood.ts           # the 2026-10-19 freeze reproduced: a real flooding child
+                                   # through the real pump, per line vs through the sluice,
+                                   # into a stand-in main thread. No API turn; one core ~20s
 bun tools/lift-repair.ts           # same, for the file a repair names — the heuristic that
                                    # reads a path out of a shell line without inventing one,
                                    # and the note that tells the agent the file still has
@@ -346,8 +351,14 @@ once there is something to say**, since no further ask can change the answer.
 
 That is the lesson worth carrying, and it generalises past updates: when the thing you care
 about emits nothing, **look for an event that already exists near it and fold that instead**,
-then bound whatever is left over. Anything proposing to be the fourth owes one of these
+then bound whatever is left over. Anything proposing to be the next one owes one of these
 shapes and the same argument. "I could not find where the event was" is not the argument.
+
+**The fourth is `watchdog.rs`, and its argument is the strongest of the four**: a starved main
+thread is the one thing that *cannot* announce itself, because every event this wall folds is
+delivered by that thread — the absence of events is the symptom. It posts one no-op closure a
+second and never stacks a second behind an unanswered first, so a healthy wall pays a few
+microseconds and a stalled one pays nothing. It exists because of 2026-10-19, below.
 
 Your own prompt is the one exception, and it is drawn the moment you send it
 (`Conversation.echo`). It was once the other way round: only `--replay-user-messages`
@@ -551,6 +562,23 @@ Each of these was learned in one place and then bit somewhere else. They are sta
 rather than only in the rule that owns them, because a rule loads when you open its files and
 these apply when you open almost anything.
 
+- **A stream of lines reaches the wall through `crate::sluice`, never as one `app.emit` per
+  line.** An emit from a worker thread is a push onto the main thread's queue, which is
+  unbounded and is the same thread that delivers every card's events and answers every
+  `invoke`. On 2026-10-19 a card deleted a worktree whose `node_modules` was a junction into
+  nova's, the running dev server printed 741,000 "Module not found" lines in five minutes
+  (32,000 in one second), and the wall answered nothing for ten minutes — no question drawn,
+  no confirmation clickable, no prompt sent. The cost of a line had been proportional to how
+  fast a child chose to print. A sluice makes it proportional to a clock: batches at most
+  every `period`, capped to what the reader keeps (`skipped` says how many went by), or
+  lossless where every item matters (`conv:events`). `flush()` before any event that must
+  follow the lines. Server groups, actions, `!`, the Alt+I shell, card events and the app log
+  all go through one; anything new that pumps a child's output owes the same.
+  `tools/probe-flood.ts` reproduces the night with the real pump and sluice: per line, 11
+  million emits left queued and a card's events unanswered; through a sluice, 81 emits and a
+  card waiting 164µs at worst. A group that holds 1,000 lines a second for five seconds is
+  marked flooding and **stopped after sixty** (Lyss's call), and `watchdog.rs` logs any stall
+  over two seconds to `logs/volery.log`, which now outlives the process.
 - **A Tauri command that blocks must be `async`, and `crate::off_main` is how.** A
   `#[tauri::command]` without `async` compiles to `tauri-macros`' `body_blocking` arm, which
   runs the function *inline on the thread that dispatched the IPC* — the main thread. That is

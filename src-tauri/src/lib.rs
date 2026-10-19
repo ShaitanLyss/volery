@@ -84,6 +84,9 @@ pub mod sinksync;
 /// Public so `examples/slash-probe.rs` can drive the real request rather than a
 /// copy of it, the same arrangement `find` and `azdo` have.
 pub mod slash;
+/* The one door a stream of lines goes through on its way to the wall — see its
+   header for the flood that froze the wall without it. */
+mod sluice;
 mod smith;
 mod spawn;
 /* What answers a double-click while WebView2 starts — see its header. */
@@ -109,6 +112,7 @@ mod vault;
    thing in this app that cannot be tested without a person, so the probe is how
    somebody checks theirs. */
 pub mod voice;
+mod watchdog;
 mod window;
 mod workflow;
 mod worktree;
@@ -701,6 +705,9 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
     /* Whether the update the last run started landed — a chronicle row, since
        the card that asked for it went down with the wall and cannot say. */
     update::landed(app.handle());
+    /* Whether the main thread is answering — the one reading no event can
+       give. It waits out the launch itself before its first look. */
+    watchdog::start(app.handle().clone());
 
     /* Last: the windows, and nothing that a command reads may move below
        this. `open_windows` also shows the studio — see there. */

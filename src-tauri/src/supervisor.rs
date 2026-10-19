@@ -1016,16 +1016,73 @@ impl Drop for Claim<'_> {
     }
 }
 
+/// What `conv:events` carries: every event the card's stream produced since the
+/// last batch, in order. Never a single event — see `event_outlet`.
 #[derive(Clone, Serialize)]
-struct ConvEvent {
+struct ConvEvents {
     id: String,
-    event: serde_json::Value,
+    events: Vec<serde_json::Value>,
+}
+
+/// The least time between two `conv:events` batches for one card.
+///
+/// Fifty milliseconds is under a frame at the rate a transcript is read, and it
+/// turns a reasoning model's `thinking_delta` stream — eight to every text
+/// delta, dozens a second per card — into twenty emits a second at most, which
+/// on a wall of ten working cards is the difference between the main thread
+/// evaluating a thousand scripts a second and two hundred.
+const EVENT_PERIOD: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A card's door to the wall. **Lossless**: every event reaches the fold, in
+/// order — what is bounded is the number of emits, which is where the main
+/// thread's cost per event was. `crate::sluice` has the night that showed what
+/// one emit per item costs when a stream runs away.
+fn event_outlet(app: &AppHandle, id: &str) -> crate::sluice::Sluice<serde_json::Value> {
+    let app = app.clone();
+    let id = id.to_string();
+    crate::sluice::Sluice::open(
+        crate::sluice::Spec { name: "conv:events", cap: None, period: EVENT_PERIOD, flood: None },
+        move |events, _| {
+            /* Only to `main`: the peek window does not fold a card's stream,
+               and every webview an emit reaches is a script evaluated there. */
+            let _ = app.emit_to("main", "conv:events", ConvEvents { id: id.clone(), events });
+        },
+        |_, _| {},
+    )
 }
 
 #[derive(Clone, Serialize)]
 struct ConvLine {
     id: String,
-    line: String,
+    /// A batch, like every other stream a child prints — see `stderr_outlet`.
+    lines: Vec<String>,
+    skipped: usize,
+}
+
+impl ConvLine {
+    fn one(id: &str, line: String) -> Self {
+        ConvLine { id: id.to_string(), lines: vec![line], skipped: 0 }
+    }
+}
+
+/// A card's stderr, batched. The CLI is quiet there in the ordinary course, and
+/// that is not a bound: a crash loop in an MCP server it relays, or a runaway
+/// debug print, is exactly a child printing faster than anything reads.
+fn stderr_outlet(app: &AppHandle, id: &str) -> crate::sluice::Sluice<String> {
+    let app = app.clone();
+    let id = id.to_string();
+    crate::sluice::Sluice::open(
+        crate::sluice::Spec {
+            name: "conv:stderr",
+            cap: Some(200),
+            period: std::time::Duration::from_millis(100),
+            flood: None,
+        },
+        move |lines, skipped| {
+            let _ = app.emit_to("main", "conv:stderr", ConvLine { id: id.clone(), lines, skipped });
+        },
+        |_, _| {},
+    )
 }
 
 #[derive(Clone, Serialize)]
@@ -1624,12 +1681,12 @@ fn spawn_now(
                everything the child says; there is nothing to invent. */
             let _ = app.emit(
                 "conv:stderr",
-                ConvLine {
-                    id: id.clone(),
-                    line: format!(
+                ConvLine::one(
+                    &id,
+                    format!(
                         "skein could not ask this card for the {mode} gear — {e}.                          It is running in making; try the gear again."
                     ),
-                },
+                ),
             );
         }
     }
@@ -1652,6 +1709,7 @@ fn spawn_now(
         let id = id.clone();
         let turn = turn.clone();
         std::thread::spawn(move || {
+            let events = event_outlet(&app, &id);
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
@@ -1681,22 +1739,13 @@ fn spawn_now(
                             note_browser(&app, &id, down);
                         }
                         note_pooled(&app, &id, &event);
-                        let _ = app.emit(
-                            "conv:event",
-                            ConvEvent {
-                                id: id.clone(),
-                                event,
-                            },
-                        );
+                        events.push(event);
                     }
                     Err(_) => {
-                        let _ = app.emit(
-                            "conv:stderr",
-                            ConvLine {
-                                id: id.clone(),
-                                line,
-                            },
-                        );
+                        /* Behind the events read before it, as it was when
+                           each went out on its own. */
+                        events.flush();
+                        let _ = app.emit_to("main", "conv:stderr", ConvLine::one(&id, line));
                     }
                 }
             }
@@ -1739,6 +1788,11 @@ fn spawn_now(
                already removed by a deliberate close, and one superseded, are
                both "nothing of ours left to reap". */
             let code = app.state::<Supervisor>().reap(&id, generation);
+            /* The last of the stream goes out before the card is told it ended
+               — `markExited` reads the transcript it has, and a `result` still
+               in the outlet would be a turn the card thinks never finished. */
+            events.flush();
+            drop(events);
             let _ = app.emit("conv:exit", ConvExit { id, code });
         });
     }
@@ -1747,17 +1801,12 @@ fn spawn_now(
         let app = app.clone();
         let id = id.clone();
         std::thread::spawn(move || {
+            let out = stderr_outlet(&app, &id);
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let _ = app.emit(
-                    "conv:stderr",
-                    ConvLine {
-                        id: id.clone(),
-                        line,
-                    },
-                );
+                out.push(line);
             }
         });
     }

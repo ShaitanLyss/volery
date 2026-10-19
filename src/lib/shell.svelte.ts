@@ -364,13 +364,22 @@ export class Shell {
     const keep = this.#listeners.keep.bind(this.#listeners);
 
     keep(
-      listen<{ id: string; line: string; stderr: boolean }>("shell:out", (e) => {
-        const session = this.#heard(e.payload.id);
-        this.#push(session, {
-          text: e.payload.line,
-          kind: e.payload.stderr ? "err" : "out",
-        });
-      }),
+      /* A batch, never a line — `shell.rs`'s outlet, at most ten a second. */
+      listen<{ id: string; lines: { line: string; stderr: boolean }[]; skipped: number }>(
+        "shell:out",
+        (e) => {
+          const session = this.#heard(e.payload.id);
+          if (e.payload.skipped) {
+            this.#push(session, {
+              text: `… ${e.payload.skipped.toLocaleString("en")} lines went by too fast to draw`,
+              kind: "note",
+            });
+          }
+          for (const l of e.payload.lines) {
+            this.#push(session, { text: l.line, kind: l.stderr ? "err" : "out" });
+          }
+        },
+      ),
     );
 
     keep(

@@ -128,6 +128,15 @@
         <div class="group">
           <span class="dot {dotClass(g)}"></span>
           <span class="glabel">{g.group.label}</span>
+          {#if g.flood}
+            <!-- Said beside the name rather than in the log, which is the one
+                 place a flood makes unreadable. -->
+            <span class="flood"
+              >{g.flood.stopped
+                ? "stopped by the wall — it was flooding its log"
+                : `flooding · ~${g.flood.rate.toLocaleString("en")} lines/s`}</span
+            >
+          {/if}
           {#each g.group.servers as s}
             <span class="svc" data-h={g.health[s.label] ?? "idle"}>
               {s.label}{#if s.port}<i>:{s.port}</i>{/if}
@@ -150,8 +159,8 @@
         </div>
 
         {#if openLog === g.group.id}
-          <!-- Servers run under a real PTY, so their output arrives with its
-               colour intact. Rendering it is the point of the PTY. -->
+          <!-- Servers run through pipes with colour asked for (`force_colour`),
+               so their output arrives with it intact. -->
           <pre class="log" {@attach stickToTail}>{#each g.log.slice(-120) as l}<span class="ln"><span
                   class="src">{l.label}</span> │ {#each parseAnsi(l.line) as s}<span
                   style:color={s.color === null
@@ -353,5 +362,11 @@
   }
   .log .quiet {
     color: var(--paper-faint);
+  }
+  /* Rust, because a flood is a failure of the group's — the one colour this
+     wall spends on that. */
+  .flood {
+    color: var(--st-fail);
+    font-size: 0.85em;
   }
 </style>

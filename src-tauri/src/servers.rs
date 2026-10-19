@@ -239,6 +239,17 @@ struct RunningGroup {
 /// parked and a card's log arriving in a lump after the fact.
 #[derive(Default)]
 pub struct Servers {
+    /// Held across the whole of a `start` or a `stop_run`, so the two are one
+    /// at a time — which they were for free while both ran on the main thread
+    /// and stopped being the day they moved off it. `start` takes the old run
+    /// out of `running` and spends a second or two spawning before it puts the
+    /// new one in: a stop landing in that window found nothing, and the group
+    /// ran on after you had stopped it; two starts (a double click, the face's
+    /// restart) each found nothing and spawned two trees fighting for a port.
+    /// One lock for the wall rather than one per group: starts are rare and
+    /// short, and nothing here is worth a second ordering to reason about.
+    /// Taken before `running` and `trace`, never while holding either.
+    turnstile: Mutex<()>,
     running: Mutex<HashMap<String, RunningGroup>>,
     /// What each group has said and what each of its servers was last reported
     /// as. `Arc` because a pump thread outlives the call that made it and holds
@@ -247,13 +258,61 @@ pub struct Servers {
     trace: Traces,
 }
 
+/// One line on its way to the wall.
 #[derive(Clone, Serialize)]
-struct ServerLog {
-    group_id: String,
+struct LogLine {
     label: String,
     line: String,
     stderr: bool,
 }
+
+/// What `server:log` carries: a batch, never a line. See `outlet`.
+#[derive(Clone, Serialize)]
+struct ServerLogs {
+    group_id: String,
+    lines: Vec<LogLine>,
+    /// Lines that went by faster than the wall draws and were left out of
+    /// this batch. Still in the ring, for `server_log`.
+    skipped: usize,
+}
+
+/// `server:flood` — a group printing faster than anything can read, or no
+/// longer doing so. `rate` is lines a second; `stops_in` is how long the wall
+/// will let it go on (`FLOOD_STOP`), absent once it has ended.
+#[derive(Clone, Serialize)]
+struct ServerFlood {
+    group_id: String,
+    flooding: bool,
+    rate: u32,
+    stops_in: Option<u64>,
+    /// The wall is stopping the group for this, and is about to say so with
+    /// `server:running` — sent first, so the wall can tell that stop from one
+    /// you asked for.
+    stopped: bool,
+}
+
+/// A group's door to the wall. One per run of a group, shared by every pump
+/// thread in it; see `crate::sluice` for the night that made it necessary.
+type Outlet = crate::sluice::Sluice<LogLine>;
+
+/// The least time between two `server:log` batches for one group: ten a second
+/// at most, whatever the group prints. Fast enough that a log you are watching
+/// reads as live; slow enough that 32,000 lines in one second are ten emits.
+const OUTLET_PERIOD: Duration = Duration::from_millis(100);
+
+/// What a flood is, for a dev server. A thousand lines a second held for five
+/// seconds is no compile anybody reads — the busiest real burst on this wall,
+/// a cold `next dev` failing every route, is a few hundred lines once — and it
+/// is a twentieth of the rate that took the wall down.
+const FLOOD: crate::sluice::Flood = crate::sluice::Flood {
+    rate: 1_000,
+    after: Duration::from_secs(5),
+};
+
+/// How long a flood may run before the wall stops the group (Lyss, 2026-10-19:
+/// mark it, and stop it after sixty seconds). Counted from the first hot
+/// second, so it is a minute of output, not a minute after the mark.
+const FLOOD_STOP: Duration = Duration::from_secs(60);
 
 /* ── what a group has said ────────────────────────────────────────────────
  *
@@ -314,6 +373,9 @@ struct Trace {
     /// fold in the front end (`GroupRuntime.health`), so without this a tool
     /// could say a group was running and not whether anything had come up.
     health: HashMap<String, String>,
+    /// Lines a second, while the group is flooding. Read by `servers`, so a
+    /// card asking why a page is blank hears that its dev server is screaming.
+    flood: Option<u32>,
 }
 
 type Traces = Arc<Mutex<HashMap<String, Trace>>>;
@@ -396,16 +458,20 @@ fn say_state(app: &AppHandle, trace: &Traces, group_id: &str, label: &str, state
     );
 }
 
-/// Say a line, to the wall and to the record, in one call.
+/// Say a line, to the record and then through the group's outlet, in one call.
 ///
-/// The pump has its own copy of this inlined — it holds the `Traces` directly
-/// rather than reaching for them per line, which is the point of cloning the
-/// `Arc` into the thread — so this is for the handful of lines Skein itself
-/// puts on a server's log rather than the ones a server printed. There are few
-/// of them and they are the ones most worth having in the record: "the system
-/// cannot find the file specified" is usually the whole answer to why a group
-/// will not come up.
-fn say_line(app: &AppHandle, trace: &Traces, group_id: &str, label: &str, line: String, err: bool) {
+/// Every line goes through here — the pumps' and the handful Volery itself puts
+/// on a server's log ("the system cannot find the file specified" is usually
+/// the whole answer to why a group will not come up). **Never `app.emit` per
+/// line**: that is the shape that froze the wall (`crate::sluice`).
+///
+/// Recorded before it is pushed, and the order is not arbitrary: the outlet
+/// crosses a thread boundary into the event loop and lands whenever the main
+/// thread next drains, so a card that asked immediately after a line was drawn
+/// on the wall could otherwise be answered without it. Writing first makes the
+/// record the earlier of the two readings, which is the direction that cannot
+/// surprise anybody.
+fn say_line(trace: &Traces, out: &impl Pour, group_id: &str, label: &str, line: String, err: bool) {
     if let Ok(mut map) = trace.lock() {
         map.entry(group_id.to_string()).or_default().push(Said {
             label: label.to_string(),
@@ -414,16 +480,146 @@ fn say_line(app: &AppHandle, trace: &Traces, group_id: &str, label: &str, line: 
             at: crate::store::now(),
         });
     }
-    let _ = app.emit(
-        "server:log",
-        ServerLog {
-            group_id: group_id.to_string(),
-            label: label.to_string(),
-            line,
-            stderr: err,
-        },
-    );
+    out.pour(LogLine {
+        label: label.to_string(),
+        line,
+        stderr: err,
+    });
 }
+
+/// Something a line can be pushed into: the outlet itself, or the tap its heat
+/// callback is handed. Two types for one verb because a tap must not count as
+/// a handle (`crate::sluice::Tap`).
+trait Pour {
+    fn pour(&self, line: LogLine);
+}
+impl Pour for Outlet {
+    fn pour(&self, line: LogLine) {
+        self.push(line);
+    }
+}
+impl Pour for crate::sluice::Tap<LogLine> {
+    fn pour(&self, line: LogLine) {
+        self.push(line);
+    }
+}
+
+/// Open a run's outlet: batched `server:log`, and the flood watch.
+///
+/// `alive` is the run's own `polling` flag, and it is what keeps an old run's
+/// outlet — whose flusher outlives a restart by up to a period — from writing
+/// its flood into the *new* run's record or, worse, stopping it.
+fn outlet(app: &AppHandle, trace: &Traces, group_id: &str, alive: &Arc<AtomicBool>) -> Outlet {
+    let emit_app = app.clone();
+    let emit_id = group_id.to_string();
+    let app = app.clone();
+    let trace = trace.clone();
+    let group_id = group_id.to_string();
+    let alive = alive.clone();
+    let stopping = Arc::new(AtomicBool::new(false));
+    crate::sluice::Sluice::open(
+        crate::sluice::Spec {
+            name: "server:log",
+            /* The wall's own scrollback (`MAX_LOG` in `skein.svelte.ts`), so
+               nothing is left out of a batch that the wall would have kept. */
+            cap: Some(WALL_LOG),
+            period: OUTLET_PERIOD,
+            flood: Some(FLOOD),
+        },
+        move |lines, skipped| {
+            /* Only to `main`. The peek window listens to nothing but its own
+               items, and an emit to every webview is an evaluation in every
+               one of them — half this cost was going to a window that threw
+               it away. */
+            let _ = emit_app.emit_to(
+                "main",
+                "server:log",
+                ServerLogs {
+                    group_id: emit_id.clone(),
+                    lines,
+                    skipped,
+                },
+            );
+        },
+        move |heat, tap| {
+            /* Not a run any more, or one already being stopped for this — a
+               reading now would overwrite the "stopped by the wall" the stop
+               is about to send with an ordinary "flooding". */
+            if !alive.load(Ordering::SeqCst) || stopping.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Ok(mut map) = trace.lock() {
+                if let Some(t) = map.get_mut(&group_id) {
+                    t.flood = heat.flooding.then_some(heat.rate);
+                }
+            }
+            let _ = app.emit_to(
+                "main",
+                "server:flood",
+                ServerFlood {
+                    group_id: group_id.clone(),
+                    flooding: heat.flooding,
+                    rate: heat.rate,
+                    stops_in: heat
+                        .flooding
+                        .then(|| FLOOD_STOP.saturating_sub(heat.hot_for).as_secs()),
+                    stopped: false,
+                },
+            );
+            if heat.flooding && heat.hot_for >= FLOOD_STOP && !stopping.swap(true, Ordering::SeqCst) {
+                /* On a thread of its own: `stop` kills a tree and waits for it,
+                   and this is the flusher — the one thread that must keep
+                   draining while the tree dies. */
+                let app = app.clone();
+                let trace = trace.clone();
+                let group_id = group_id.clone();
+                let alive = alive.clone();
+                let tap = tap.clone();
+                let rate = heat.rate;
+                std::thread::spawn(move || {
+                    let why = format!(
+                        "volery stopped this group: it printed about {rate} lines a second \
+                         for a minute, which nothing can read and which starves the wall. \
+                         The last of it is above; start it again once the cause is fixed."
+                    );
+                    if !alive.load(Ordering::SeqCst) {
+                        return; /* restarted or stopped in the meantime */
+                    }
+                    let _ = app.emit_to(
+                        "main",
+                        "server:flood",
+                        ServerFlood {
+                            group_id: group_id.clone(),
+                            flooding: true,
+                            rate,
+                            stops_in: None,
+                            stopped: true,
+                        },
+                    );
+                    let servers = app.state::<Servers>();
+                    if stop_run(&app, &servers, &group_id, Some(&alive)) {
+                        /* After the stop, so it is the last line rather than
+                           one more in a 400-line batch of the flood it is
+                           about, where the next eviction would take it. */
+                        say_line(&trace, &tap, &group_id, "volery", why, true);
+                        crate::chronicle::note(
+                            &app,
+                            None,
+                            "volery",
+                            "bad",
+                            "stopped a dev server group that was flooding its log",
+                            &format!("~{rate} lines/s for a minute"),
+                        );
+                    }
+                });
+            }
+        },
+    )
+}
+
+/// The wall's scrollback per group — `MAX_LOG` in `skein.svelte.ts`, and the
+/// most an outlet hands over in one batch.
+const WALL_LOG: usize = 400;
 
 /// Whether the wall has this group started, to the wall and to nobody else.
 ///
@@ -588,6 +784,7 @@ fn spawn_one(
     group_id: &str,
     spec: &ServerSpec,
     cwd: &str,
+    out: &Outlet,
 ) -> Result<PipeServer, String> {
     /* Shell out, because a dev server command is written for a shell:
        `npm run dev`, `cargo watch -x run`, chained &&. `cmd` rather than the
@@ -650,33 +847,13 @@ fn spawn_one(
         let left = left.clone();
         let stopped = stopped.clone();
         let trace = trace.clone();
+        let out = out.clone();
         std::thread::spawn(move || {
             pump_lines(&mut stream, |text| {
-                /* Recorded before it is emitted, and the order is not
-                   arbitrary: the emit crosses a thread boundary into the event
-                   loop and lands whenever the main thread next drains, so a
-                   card that asked immediately after a line was drawn on the
-                   wall could otherwise be answered without it. Writing first
-                   makes the record the earlier of the two readings, which is
-                   the direction that cannot surprise anybody. */
-                if let Ok(mut map) = trace.lock() {
-                    map.entry(group_id.clone()).or_default().push(Said {
-                        label: label.clone(),
-                        line: text.clone(),
-                        stderr: is_err,
-                        at: crate::store::now(),
-                    });
-                }
-                let _ = app.emit(
-                    "server:log",
-                    ServerLog {
-                        group_id: group_id.clone(),
-                        label: label.clone(),
-                        line: text,
-                        stderr: is_err,
-                    },
-                );
+                say_line(&trace, &out, &group_id, &label, text, is_err);
             });
+            /* The server's last words go out before anything says it died. */
+            out.flush();
             exit_if_last(&app, &trace, &group_id, &label, &left, &stopped);
         });
     }
@@ -758,15 +935,17 @@ fn exit_if_last(
     );
 }
 
+/// Off the main thread, because a restart kills a tree and waits for it while
+/// holding `running` — and `group_running` takes the same lock from the main
+/// thread. See the `off_main` rule in `CLAUDE.md`: a lock shared with slow work
+/// is slow work.
 #[tauri::command]
-pub fn start_group(
-    app: AppHandle,
-    servers: State<'_, Servers>,
-    group: ServerGroup,
-    cwd: String,
-) -> Result<(), String> {
-    start(&app, &servers, &group, &cwd);
-    Ok(())
+pub async fn start_group(app: AppHandle, group: ServerGroup, cwd: String) -> Result<(), String> {
+    crate::off_main(move || {
+        let servers = app.state::<Servers>();
+        start(&app, &servers, &group, &cwd);
+    })
+    .await
 }
 
 /// Bring a group up, replacing whatever of it was already running.
@@ -786,6 +965,7 @@ pub fn start_group(
 /// gives of one that spawned and then died, and is more use than an error that
 /// abandons the group's other four.
 pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd: &str) {
+    let _one = servers.turnstile.lock().unwrap_or_else(|p| p.into_inner());
     /* Inline rather than calling `stop` — a restart must fully release the old
        tree before the new one binds ports, and doing it here keeps that inside
        the one function that promises it. */
@@ -816,10 +996,15 @@ pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd
         map.insert(group.id.clone(), Trace::default());
     }
 
+    /* Made first, because the run's outlet keys its flood watch off it: a
+       flood from this run may only ever stop this run. */
+    let polling = Arc::new(AtomicBool::new(true));
+    let out = outlet(app, &servers.trace, &group.id, &polling);
+
     let mut running = Vec::new();
     for spec in &group.servers {
         say_state(app, &servers.trace, &group.id, &spec.label, "starting");
-        match spawn_one(app, &servers.trace, &group.id, spec, cwd) {
+        match spawn_one(app, &servers.trace, &group.id, spec, cwd, &out) {
             Ok(s) => running.push(s),
             Err(e) => {
                 say_state(app, &servers.trace, &group.id, &spec.label, "exited");
@@ -827,12 +1012,14 @@ pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd
                    reason a server would not start is in the log a card reads
                    back rather than only on the wall — it is usually the whole
                    answer ("The system cannot find the file specified"). */
-                say_line(app, &servers.trace, &group.id, &spec.label, e, true);
+                say_line(&servers.trace, &out, &group.id, &spec.label, e, true);
             }
         }
     }
+    /* This handle goes; the pumps hold theirs, and the outlet closes — last
+       batch out — when the last of them ends. */
+    drop(out);
 
-    let polling = Arc::new(AtomicBool::new(true));
     servers.running.lock().unwrap().insert(
         group.id.clone(),
         RunningGroup {
@@ -919,13 +1106,12 @@ fn health_pass(
 /// (`say_running`), which it never had to while the front end was the only
 /// thing that could ask for one and set its own flag optimistically.
 #[tauri::command]
-pub fn stop_group(
-    app: AppHandle,
-    servers: State<'_, Servers>,
-    group_id: String,
-) -> Result<(), String> {
-    stop(&app, &servers, &group_id);
-    Ok(())
+pub async fn stop_group(app: AppHandle, group_id: String) -> Result<(), String> {
+    crate::off_main(move || {
+        let servers = app.state::<Servers>();
+        stop(&app, &servers, &group_id);
+    })
+    .await
 }
 
 /// Take a group down, and say so.
@@ -936,12 +1122,38 @@ pub fn stop_group(
 /// something false about the machine, and it is exactly the sort of false thing
 /// an agent then reasons from.
 pub(crate) fn stop(app: &AppHandle, servers: &Servers, group_id: &str) -> bool {
+    stop_run(app, servers, group_id, None)
+}
+
+/// `stop`, optionally only if the group is still the run `only` belongs to —
+/// which is how a flood stops the run that flooded and never the one a restart
+/// put in its place a moment later.
+fn stop_run(app: &AppHandle, servers: &Servers, group_id: &str, only: Option<&Arc<AtomicBool>>) -> bool {
+    let _one = servers.turnstile.lock().unwrap_or_else(|p| p.into_inner());
+    let taken = {
+        let mut running = servers.running.lock().unwrap();
+        match (running.get(group_id), only) {
+            (Some(g), Some(run)) if !Arc::ptr_eq(&g.polling, run) => None,
+            _ => running.remove(group_id),
+        }
+    };
+    /* The run's licence to speak goes before anything slow — the store write
+       below, the kill — so neither its health poll nor its flood watch says
+       one more thing about a group on its way down. */
+    if let Some(g) = &taken {
+        g.polling.store(false, Ordering::SeqCst);
+    }
+    if only.is_some() && taken.is_none() {
+        return false;
+    }
     /* Before the early return, because what is written down is what was
        *asked*, not what was killed. A stop aimed at a group that is already
        down still says "leave this one alone next time", and that is the whole
-       of what the next launch reads. */
+       of what the next launch reads. A flood's stop is written down too: a
+       group the wall had to stop must not come back by itself at the next
+       launch and do it again. */
     remember(app, group_id, false);
-    let Some(mut g) = servers.running.lock().unwrap().remove(group_id) else {
+    let Some(mut g) = taken else {
         return false;
     };
     /* First, and before anything is killed: a poll that reads a port between
@@ -968,6 +1180,7 @@ pub(crate) fn stop(app: &AppHandle, servers: &Servers, group_id: &str) -> bool {
     if let Ok(mut map) = servers.trace.lock() {
         if let Some(t) = map.get_mut(group_id) {
             t.health.clear();
+            t.flood = None;
         }
     }
     say_running(app, group_id, false);
@@ -1507,6 +1720,13 @@ fn do_servers(app: &AppHandle, caller: &str) -> String {
                    that is not running rather than a confident zero. */
                 "memory": bytes.map(crate::load::size),
                 "memory_note": bytes.and_then(crate::load::group_weight_note),
+                /* Absent unless it is happening. A group printing this fast is
+                   almost always failing the same way over and over — a missing
+                   module, a crash loop — and its `last` line is the cause. */
+                "flooding": t.and_then(|t| t.flood).map(|rate| format!(
+                    "printing ~{rate} lines a second; the wall stops a group that keeps \
+                     this up for a minute. Its last line is usually the cause."
+                )),
                 "servers": g.servers.iter().map(|s| json!({
                     "label": s.label,
                     "command": s.command,

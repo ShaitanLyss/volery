@@ -7,7 +7,7 @@
  * either would turn a green run into a lie:
  *
  *  1. **Drive the app's own seams, not its internals.** Injecting a stream event
- *     goes out as a real `conv:event` and comes back through Rust to the same
+ *     goes out as a real `conv:events` and comes back through Rust to the same
  *     listener the supervisor talks to. A dropped file goes out as a real
  *     `tauri://drag-drop`. So these ops exercise the wiring, not a parallel
  *     path built to be easy to test.
@@ -2105,14 +2105,17 @@ export class Control {
             : [];
         if (!events.length) throw new Error("feed needs `event` or `events`");
         for (const event of events) {
-          await asRust("conv:event", { id: c.id, event });
+          /* One per batch, so each still settles on its own — the wire now
+             carries batches (`supervisor.rs`'s outlet), and a batch of one is
+             exactly what a slow stream produces. */
+          await asRust("conv:events", { id: c.id, events: [event] });
         }
         return { id: c.id, fed: events.length, tier: c.tier, activity: c.activity };
       },
 
       stderr: async (op) => {
         const c = this.#card(op);
-        await asRust("conv:stderr", { id: c.id, line: String(op.line ?? "") });
+        await asRust("conv:stderr", { id: c.id, lines: [String(op.line ?? "")], skipped: 0 });
         return { id: c.id };
       },
 
@@ -2181,9 +2184,8 @@ export class Control {
       "server.log": async (op) => {
         await asRust("server:log", {
           group_id: String(op.groupId ?? ""),
-          label: String(op.label ?? ""),
-          line: String(op.line ?? ""),
-          stderr: !!op.stderr,
+          lines: [{ label: String(op.label ?? ""), line: String(op.line ?? ""), stderr: !!op.stderr }],
+          skipped: Number(op.skipped ?? 0),
         });
         return {};
       },

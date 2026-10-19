@@ -260,6 +260,66 @@ export function decodeKept(raw: string | null): Kept {
   return out;
 }
 
+/* ── the outbox ─────────────────────────────────────────────────────────────
+ *
+ * A prompt between Enter and the wire. The field is cleared the moment you
+ * send, and the line is drawn `pending` in the transcript — but that line is
+ * memory, and so is the call carrying it. On 2026-10-19 the wall froze behind
+ * a flooding dev server and was restarted, and anything sent in that window
+ * would have existed nowhere at all: not in the field, not in the transcript,
+ * not on disk. (Nothing was lost that time — the freeze stopped the typing
+ * too — which is luck rather than design.)
+ *
+ * So a send is written here first and taken out when it settles, delivered or
+ * refused alike: a refusal is drawn as "not sent" on the line, which is the
+ * account you need while the app is up. What is left here at the next launch
+ * is a send the app died holding, and it goes back into that card's draft —
+ * never re-sent on its own, because whether the agent got it is exactly what
+ * nobody can say.
+ *
+ * One honest limit: WebView2 commits `localStorage` to disk a few seconds
+ * behind the write, so a process killed in the same instant as the Enter can
+ * still take it. A freeze — the case this is for — lasts far longer than that.
+ */
+
+export const OUTBOX_KEY = "skein.outbox";
+
+/** Sends in flight, by a ticket of their own. */
+export type Outbox = Record<string, { card: string; text: string; at: number }>;
+
+export function decodeOutbox(raw: string | null): Outbox {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Outbox = {};
+  for (const [ticket, v] of Object.entries(parsed as Record<string, unknown>)) {
+    const e = v as { card?: unknown; text?: unknown; at?: unknown } | null;
+    if (e && typeof e.card === "string" && typeof e.text === "string" && e.text.trim()) {
+      out[ticket] = { card: e.card, text: e.text, at: typeof e.at === "number" ? e.at : 0 };
+    }
+  }
+  return out;
+}
+
+/** What was kept, with every send the last run died holding put back in front
+ *  of its card's draft — oldest first, since that is the order they were
+ *  said, and ahead of whatever was typed after them. */
+export function withOutbox(kept: Kept, outbox: Outbox): Kept {
+  const out: Kept = { ...kept };
+  const sends = Object.values(outbox).sort((a, b) => a.at - b.at);
+  const back: Record<string, string[]> = {};
+  for (const s of sends) (back[s.card] ??= []).push(s.text);
+  for (const [card, texts] of Object.entries(back)) {
+    out[card] = [...texts, ...(out[card] ? [out[card]] : [])].join("\n\n");
+  }
+  return out;
+}
+
 export class Drafts {
   /** Card id (or `WALL`) → the unsent draft. Only non-empty ones are kept, so a
    *  wall you have clicked across all afternoon holds nothing.

@@ -80,11 +80,12 @@ export class Journal {
          here — the same line arriving twice is two rows, where a missing one is
          the diagnosis somebody is looking for. Deduplication would cost a key
          these lines do not have, and the window is a few milliseconds. */
-      this.#unlisten = await listen<LogLine>("app:log", (e) => {
+      /* A batch, never a line — `applog.rs` sends through a sluice. */
+      this.#unlisten = await listen<LogLine[]>("app:log", (e) => {
         /* A fresh array rather than `push`, because `$state` invalidates on
            value identity — the trap CLAUDE.md records against the editor grid,
            which painted once and never again. */
-        const next = [...this.lines, e.payload];
+        const next = [...this.lines, ...e.payload];
         this.lines = next.length > KEEP ? next.slice(next.length - KEEP) : next;
       });
       const held = await invoke<LogLine[]>("app_log");

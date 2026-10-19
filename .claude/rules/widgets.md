@@ -732,7 +732,7 @@ is it so quiet" sitting in a line nobody could read.
 
 ##### What it is, and the three bounds
 
-`applog.rs` is a `log::Log` over a bounded ring plus an event; `applog.ts` is pure and decides
+`applog.rs` is a `log::Log` over a bounded ring plus an event (batched through `crate::sluice`, and since 2026-10-19 also written to `logs/volery.log` in the data folder, rolled at 2 MB — a post-mortem is always about a process that is gone); `applog.ts` is pure and decides
 what a line *means*; `journal.svelte.ts` is the one subscription behind however many faces.
 
 - **`KEEP` lines and no more**, front and back, and deliberately the same number. A front end

@@ -27,6 +27,7 @@ import {
 import { waterfall } from "./waterfall.svelte";
 import { listen } from "@tauri-apps/api/event";
 import { reapedNote, type Reaped } from "./perf";
+import { foldLog, type Flood, type LogLine } from "./serverlog";
 import {
   NO_ANSWER_NOTE,
   blankAnswers,
@@ -256,7 +257,13 @@ export class GroupRuntime {
   readonly group: ServerGroup;
   running = $state(false);
   health = $state<Record<string, ServerHealth>>({});
-  log = $state<{ label: string; line: string; stderr: boolean }[]>([]);
+  /* Raw, and replaced rather than pushed into: a deep `$state` proxied every
+     line, and the old fold re-sliced all 400 per line — at 32,000 lines a
+     second that was most of what froze the wall (`crate::sluice`). */
+  log = $state.raw<LogLine[]>([]);
+  /** Set while the group floods its log, and kept — `stopped` — once the wall
+   *  has stopped it for that, until somebody starts it again. */
+  flood = $state<Flood | null>(null);
 
   constructor(group: ServerGroup) {
     this.group = group;
@@ -793,6 +800,28 @@ export class Skein {
     c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
   }
 
+  /** One event off a card's stream, into the card and everything that reads it. */
+  #fold(c: Conversation, event: any) {
+    c.ingest(event);
+    this.#persistConv(c, event);
+    this.#writeJobs(c);
+    this.#writeGates(c);
+    /* After the persist, deliberately. The turn that just broke is a `turn`
+       row like any other and belongs in the ledger whether or not it is
+       about to be tried again — a retry that swallowed the failed attempt
+       would make the day's figure understate what the wall actually
+       spent. */
+    /* Before `#heal`, which is the ordering the old in-`#heal` call had for
+       the same reason: `choose` must have stopped offering the refused
+       account by the time anything re-sends. */
+    this.#spend(c, event);
+    this.#lapseHeld(c);
+    this.#heal(c);
+    this.#nudge(c);
+    this.#drain(c);
+    this.#settleRepair(c);
+  }
+
   #wire() {
     const keep = this.#listeners.keep.bind(this.#listeners);
 
@@ -804,32 +833,31 @@ export class Skein {
     keep(listen("accounts:changed", () => void waterfall.refresh()));
 
     keep(
-      listen<{ id: string; event: any }>("conv:event", (e) => {
+      /* A batch, in stream order, at most twenty a second per card — the
+         supervisor's outlet, which is lossless — folded one event at a time
+         exactly as each was when it arrived alone. */
+      listen<{ id: string; events: any[] }>("conv:events", (e) => {
         const c = this.#byId.get(e.payload.id);
         if (!c) return;
-        c.ingest(e.payload.event);
-        this.#persistConv(c, e.payload.event);
-        this.#writeJobs(c);
-        this.#writeGates(c);
-        /* After the persist, deliberately. The turn that just broke is a `turn`
-           row like any other and belongs in the ledger whether or not it is
-           about to be tried again — a retry that swallowed the failed attempt
-           would make the day's figure understate what the wall actually
-           spent. */
-        /* Before `#heal`, which is the ordering the old in-`#heal` call had for
-           the same reason: `choose` must have stopped offering the refused
-           account by the time anything re-sends. */
-        this.#spend(c, e.payload.event);
-        this.#lapseHeld(c);
-        this.#heal(c);
-        this.#nudge(c);
-        this.#drain(c);
-        this.#settleRepair(c);
+        /* One at a time and each on its own: when every event was its own
+           listener call, one that threw cost only itself, and a batch must not
+           let it take the `result` behind it — a card stuck reading working. */
+        for (const event of e.payload.events) {
+          try {
+            this.#fold(c, event);
+          } catch (err) {
+            console.error("folding a card event failed", err);
+          }
+        }
       }),
     );
     keep(
-      listen<{ id: string; line: string }>("conv:stderr", (e) => {
-        this.#byId.get(e.payload.id)?.noteStderr(e.payload.line);
+      /* A batch, like everything else a child prints (`supervisor.rs`). */
+      listen<{ id: string; lines: string[]; skipped: number }>("conv:stderr", (e) => {
+        const c = this.#byId.get(e.payload.id);
+        if (!c) return;
+        if (e.payload.skipped) c.noteStderr(`… ${e.payload.skipped} lines of stderr went by too fast to keep`);
+        for (const line of e.payload.lines) c.noteStderr(line);
       }),
     );
     keep(
@@ -1213,17 +1241,23 @@ export class Skein {
     );
 
     keep(
-      listen<{ group_id: string; label: string; line: string; stderr: boolean }>(
-        "server:log",
+      /* A batch, never a line, and at most ten a second per group whatever
+         the group prints — `servers.rs`'s outlet. */
+      listen<{ group_id: string; lines: LogLine[]; skipped: number }>("server:log", (e) => {
+        const g = this.groups.find((g) => g.group.id === e.payload.group_id);
+        if (!g) return;
+        g.log = foldLog(g.log, e.payload.lines, e.payload.skipped, MAX_LOG);
+      }),
+    );
+    keep(
+      listen<{ group_id: string; flooding: boolean; rate: number; stops_in: number | null; stopped?: boolean }>(
+        "server:flood",
         (e) => {
           const g = this.groups.find((g) => g.group.id === e.payload.group_id);
           if (!g) return;
-          g.log.push({
-            label: e.payload.label,
-            line: e.payload.line,
-            stderr: e.payload.stderr,
-          });
-          if (g.log.length > MAX_LOG) g.log = g.log.slice(-MAX_LOG);
+          if (e.payload.stopped) g.flood = { rate: e.payload.rate, stopsIn: null, stopped: true };
+          else if (e.payload.flooding) g.flood = { rate: e.payload.rate, stopsIn: e.payload.stops_in, stopped: false };
+          else if (!g.flood?.stopped) g.flood = null;
         },
       ),
     );
@@ -1255,6 +1289,10 @@ export class Skein {
         if (!g) return;
         g.running = e.payload.running;
         if (!e.payload.running) g.health = {};
+        /* Up again is a fresh start: whatever it was flooding about is the
+           question this run answers. Down keeps a flood that stopped it, which
+           is the one thing the face then has to say. */
+        if (e.payload.running || !g.flood?.stopped) g.flood = null;
       }),
     );
   }
@@ -5285,6 +5323,7 @@ export class Skein {
     }
     g.running = false;
     g.health = {};
+    g.flood = null;
   }
 
   /** `was` is for a group being put back rather than made — an imported layout

@@ -28,13 +28,14 @@
 import type { Conversation, PendingAsk } from "./conversation.svelte";
 import type { Elsewhere, Shadow } from "./shadows.svelte";
 import type { Skein } from "./skein.svelte";
+import { OUTBOX_KEY, decodeOutbox } from "./drafts";
 import type { CardFace } from "./Card.svelte";
 import type { Readable } from "./transcript";
 import { allowanceReset, allowanceStop, waitsOnYou, type Notice } from "./notice";
 import { gistOf, type Gist } from "./gist";
 import { restedOf } from "./chatview";
 import type { MenuTarget } from "./menu";
-import type { Reach, Turn } from "./attach";
+import { dropToken, type Reach, type Turn } from "./attach";
 import type { Timeline } from "./timeline";
 import { actFor, canDo, carriesTo, dockHints, verbsFor, whyNot, type Can, type Remote, type Said, type Verb } from "./handle";
 import { closeWarnings } from "./closing";
@@ -316,7 +317,14 @@ export class LocalCard implements CardHandle {
     return "yes";
   }
   async say(text: string, turn: Turn) {
-    await this.#skein.send(this.conv, text, turn, { yours: true });
+    /* In the outbox until it settles, so an app that dies holding it gives it
+       back as this card's draft (`drafts.ts`). */
+    const ticket = toOutbox(this.conv.id, withoutPictures(text, turn));
+    try {
+      await this.#skein.send(this.conv, text, turn, { yours: true });
+    } finally {
+      fromOutbox(ticket);
+    }
   }
   stir() {
     this.#skein.stir(this.conv);
@@ -621,4 +629,40 @@ export class Cards {
       this.walls.shadows.reduce((n, s) => n + s.open.length + s.notices.filter(waitsOnYou).length, 0)
     );
   }
+}
+
+/* The outbox's two writes. Plain `localStorage`, synchronous on purpose: the
+   whole point is to be on disk before the send that might never return. */
+function toOutbox(card: string, text: string): string | null {
+  try {
+    const ticket = crypto.randomUUID();
+    const box = decodeOutbox(localStorage.getItem(OUTBOX_KEY));
+    box[ticket] = { card, text, at: Date.now() };
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(box));
+    return ticket;
+  } catch {
+    return null;
+  }
+}
+
+function fromOutbox(ticket: string | null) {
+  if (!ticket) return;
+  try {
+    const box = decodeOutbox(localStorage.getItem(OUTBOX_KEY));
+    delete box[ticket];
+    if (Object.keys(box).length) localStorage.setItem(OUTBOX_KEY, JSON.stringify(box));
+    else localStorage.removeItem(OUTBOX_KEY);
+  } catch {
+    /* A full or disabled store: the send already happened, and a ticket left
+       behind costs one draft restored that you can delete. */
+  }
+}
+
+/** The sentence without its picture tokens — the pictures are never written to
+ *  disk (`attach.md`), so a restored `[image 1]` would point at nothing. The
+ *  same thing `drafts.ts` does to a kept draft. */
+function withoutPictures(text: string, turn: Turn | undefined): string {
+  let out = text;
+  for (const s of turn?.shots ?? []) out = dropToken(out, s.name);
+  return out;
 }

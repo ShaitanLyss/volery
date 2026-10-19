@@ -144,9 +144,13 @@
     Drafts,
     KEEP_AFTER_MS,
     KEPT_KEY,
+    OUTBOX_KEY,
     decodeKept,
     decodeKeptFiles,
     withoutGoneFiles,
+    decodeOutbox,
+    withOutbox,
+    type Kept,
     encodeKept,
     mergeDraft,
     type Draft,
@@ -1084,7 +1088,7 @@
      anything is drawn, so the restore lands under the focus effect below
      rather than racing it. See `drafts.ts`: the pictures do not come back, and
      their tokens come out with them. */
-  const keptRaw = readKept();
+  const keptRaw = reclaimOutbox(readKept());
   drafts.restore(decodeKept(keptRaw), decodeKeptFiles(keptRaw));
   /* The wall's own bucket is handed over here rather than by the focus effect
      below, which cannot do it: nothing has moved, so `holds(null)` is already
@@ -1116,6 +1120,31 @@
       skein.fault = `${dropped === 1 ? "a file" : `${dropped} files`} attached before the restart ${dropped === 1 ? "is" : "are"} not there any more, and came out of the draft`;
     }
   })();
+  /** Put any send the last run died holding back into its card's draft, and
+   *  write that down *before* the outbox is emptied — the other order is a
+   *  crash between the two that loses the very text this exists to keep. See
+   *  the outbox note in `drafts.ts`. Works on the stored string so whatever
+   *  else the keeping carries (the files a draft named, `KEPT_FILES`) is
+   *  carried through untouched. */
+  function reclaimOutbox(raw: string | null): string | null {
+    try {
+      const outbox = decodeOutbox(localStorage.getItem(OUTBOX_KEY));
+      if (!Object.keys(outbox).length) return raw;
+      let all: Record<string, unknown> = {};
+      try {
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) all = parsed;
+      } catch {
+        /* a damaged keeping is no keeping — `decodeKept` would say the same */
+      }
+      const back = JSON.stringify({ ...all, ...withOutbox(decodeKept(raw), outbox) });
+      localStorage.setItem(KEPT_KEY, back);
+      localStorage.removeItem(OUTBOX_KEY);
+      return back;
+    } catch {
+      return raw;
+    }
+  }
   function readKept(): string | null {
     try {
       return localStorage.getItem(KEPT_KEY);
@@ -2832,6 +2861,7 @@
       servers: g.group.servers.map((s) => ({ label: s.label, port: s.port })),
       health: g.health,
       log: g.log,
+      flood: g.flood,
     }));
   }
 
