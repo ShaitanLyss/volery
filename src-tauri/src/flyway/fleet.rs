@@ -270,6 +270,18 @@ pub struct Facts {
     /// direction to be wrong in: an `away` field would have read an older wall
     /// as present, and parked a question for nobody.
     pub present: bool,
+    /// How fast this machine is burning tokens: per minute, over the last ten
+    /// minutes, as its own transcripts say (`rate.ts::rateAt`, the burn-rate
+    /// widget's reading). `None` when nothing here is reading them — which is
+    /// not zero, and a peer's widget leaves it out of the sum rather than adding
+    /// a 0 nobody measured. Each wall's widget adds every peer's to its own
+    /// (`usage.md`), so the needle is the flyway's speed rather than one
+    /// machine's. Read by nothing else.
+    pub rate: Option<u64>,
+    /// Somebody here has a burn-rate widget up. What makes the *other* walls
+    /// read their transcripts and say their `rate` — so nothing walks a week of
+    /// transcripts unless someone, somewhere on the flyway, is looking.
+    pub wants_rate: bool,
 }
 
 /// Whether the person is at some other wall right now, by the roster: one
@@ -2035,6 +2047,10 @@ fn clean_territory(t: Territory) -> Territory {
 }
 
 fn clean_facts(mut f: Facts) -> Facts {
+    /* A rate past any one machine's reach is a broken wall, and a needle
+       pinned by it would be the flyway's speed lying. */
+    const MOST_RATE: u64 = 1_000_000_000;
+    f.rate = f.rate.filter(|r| *r <= MOST_RATE);
     f.territories = f.territories.into_iter().map(clean_territory).collect();
     f.can = f.can.iter().map(|c| sc(c)).collect();
     f.holds = words(f.holds);
@@ -2163,6 +2179,21 @@ fn span(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The burn rate rides the facts every wall already announces; a wall from
+    /// before it says nothing, which is none rather than zero, and a figure no
+    /// machine could reach is a broken wall's and is dropped.
+    #[test]
+    fn a_wall_says_its_burn_rate_and_an_older_one_says_none() {
+        let f = Facts { rate: Some(42_000), wants_rate: true, ..Facts::default() };
+        let back: Facts = serde_json::from_value(serde_json::to_value(&f).unwrap()).unwrap();
+        assert_eq!((back.rate, back.wants_rate), (Some(42_000), true));
+        let older: Facts = serde_json::from_value(serde_json::json!({ "accepting": true })).unwrap();
+        assert_eq!((older.rate, older.wants_rate), (None, false));
+        let wild = clean_facts(Facts { rate: Some(u64::MAX), ..Facts::default() });
+        assert_eq!(wild.rate, None);
+        assert_eq!(clean_facts(f).rate, Some(42_000));
+    }
     use std::collections::BTreeSet;
 
     fn t(identity: &str, name: &str) -> Territory {

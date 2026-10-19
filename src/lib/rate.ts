@@ -428,3 +428,64 @@ export function sayIdle(ms: number): string {
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
 }
+
+/* ── the flyway's speed ─────────────────────────────────────────────────── */
+
+/** A wall on the flyway, as the roster row says it — its burn rate per
+ *  minute (`Facts::rate`) and how long since it was heard. */
+export type Peer = { host: string; me?: boolean; quietMs: number; rate?: number | null; wantsRate?: boolean };
+
+/** Past this a wall's word about itself is history, the fleet's own bound
+ *  (`fleet.rs::QUIET_AFTER_MS`, `shadow.ts`'s copy). */
+const PEER_QUIET_MS = 90_000;
+
+/** The flyway's burn rate: this wall's own reading plus every other wall's,
+ *  each in `per`, with where it came from.
+ *
+ *  Lyss, 2026-10-19: *"the tokenometer (token usage speed) should count all the
+ *  usage across the flyway, not only the local usage."* Every wall reads its
+ *  own machine's transcripts — the only place a turn's tokens are written —
+ *  and says the figure in its announcement; this adds them up. A wall heard
+ *  from more than ninety seconds ago, or one that has left (it is gone from the
+ *  roster), stops counting: a laptop in a bag is not burning anything this
+ *  wall can vouch for. One that says no rate — an older build, or nothing
+ *  there reading — is left out rather than counted as zero, and `silent` says
+ *  how many were, so the total can say it is not the whole flyway. */
+export function fleetRate(
+  local: number,
+  peers: readonly Peer[],
+  per: Per = "minute",
+): { total: number; parts: { host: string | null; rate: number }[]; silent: string[] } {
+  const scale = PER[per] / MINUTE;
+  const parts: { host: string | null; rate: number }[] = [{ host: null, rate: local }];
+  const silent: string[] = [];
+  for (const p of peers) {
+    if (p.me || p.quietMs > PEER_QUIET_MS) continue;
+    if (typeof p.rate !== "number" || !Number.isFinite(p.rate) || p.rate < 0) silent.push(p.host);
+    else parts.push({ host: p.host, rate: p.rate * scale });
+  }
+  return { total: parts.reduce((n, x) => n + x.rate, 0), parts, silent };
+}
+
+/** Whether any other wall heard lately has somebody looking at a burn rate —
+ *  what makes this wall read its transcripts to say its own. */
+export function rateWanted(peers: readonly Peer[]): boolean {
+  return peers.some((p) => !p.me && p.wantsRate === true && p.quietMs <= PEER_QUIET_MS);
+}
+
+/** Where the flyway's figure came from, for the hover: each wall's share,
+ *  this one first, and the walls that said nothing. */
+export function sayParts(r: ReturnType<typeof fleetRate>, unit: string): string {
+  const lines = r.parts.map((p) => `${p.host ?? "this wall"} ${sayRate(p.rate)}${unit}`);
+  if (r.silent.length) lines.push(`not counted — said no rate: ${r.silent.join(", ")}`);
+  return lines.join("\n");
+}
+
+/** The dial's full scale with the flyway in it. This wall's own scale is marked
+ *  off its own busiest pace, which says nothing about the other machines; so
+ *  once any of them is counted, the face is widened to hold the sum rather than
+ *  pinning on it — the over-range mark is this wall's past, and other walls are
+ *  not a reading past it. Alone, the scale is exactly what it was. */
+export function fleetScale(local: number, r: ReturnType<typeof fleetRate>): number {
+  return r.parts.length > 1 ? Math.max(local, snapUp(r.total)) : local;
+}

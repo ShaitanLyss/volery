@@ -11,6 +11,10 @@ import {
   busyRates,
   fracOf,
   fullScale,
+  fleetRate,
+  fleetScale,
+  rateWanted,
+  sayParts,
   idleFor,
   lastAt,
   over,
@@ -418,5 +422,53 @@ describe("saying it", () => {
     expect(sayTick(1_500_000)).toBe("1.5M");
     expect(sayTick(2_000_000)).toBe("2M");
     expect(sayTick(200_000)).toBe("200k");
+  });
+});
+
+describe("the flyway's speed", () => {
+  /* Lyss, 2026-10-19: "the tokenometer (token usage speed) should count all
+     the usage across the flyway, not only the local usage." */
+  const peers = [
+    { host: "QUEERISFREEDOM", me: true, quietMs: 0, rate: 9_999 },
+    { host: "AU-LT-288", quietMs: 20_000, rate: 120_000 },
+    { host: "lab", quietMs: 200_000, rate: 1_000_000 },
+    { host: "old", quietMs: 5_000 },
+    { host: "nothing", quietMs: 5_000, rate: null },
+  ];
+
+  test("this wall's reading plus every peer heard lately, each said where it came from", () => {
+    const r = fleetRate(30_000, peers);
+    expect(r.total).toBe(150_000);
+    expect(r.parts).toEqual([
+      { host: null, rate: 30_000 },
+      { host: "AU-LT-288", rate: 120_000 },
+    ]);
+    /* Its own row is never counted twice; a wall quiet past ninety seconds is
+       history; one that says no rate is named, never counted as zero. */
+    expect(r.silent).toEqual(["old", "nothing"]);
+    expect(sayParts(r, "/min")).toBe("this wall 30.0k/min\nAU-LT-288 120k/min\nnot counted — said no rate: old, nothing");
+  });
+
+  test("a peer's per-minute figure is put in the dial's unit", () => {
+    expect(fleetRate(0, [{ host: "a", quietMs: 0, rate: 6_000 }], "second").total).toBe(100);
+    expect(fleetRate(0, [{ host: "a", quietMs: 0, rate: 60 }], "hour").total).toBe(3_600);
+  });
+
+  test("a wall gone from the roster or gone quiet simply stops adding", () => {
+    expect(fleetRate(500, []).total).toBe(500);
+    expect(fleetRate(500, [{ host: "a", quietMs: 91_000, rate: 7 }]).parts).toHaveLength(1);
+  });
+
+  test("the dial widens to hold the flyway, and is untouched alone", () => {
+    expect(fleetScale(200_000, fleetRate(10_000, []))).toBe(200_000);
+    expect(fleetScale(200_000, fleetRate(10_000, [{ host: "a", quietMs: 0, rate: 900_000 }]))).toBeGreaterThanOrEqual(910_000);
+    expect(fleetScale(2_000_000, fleetRate(10_000, [{ host: "a", quietMs: 0, rate: 9 }]))).toBe(2_000_000);
+  });
+
+  test("this wall reads for the flyway only while a peer heard lately is looking", () => {
+    expect(rateWanted([{ host: "a", quietMs: 0, wantsRate: true }])).toBe(true);
+    expect(rateWanted([{ host: "a", quietMs: 100_000, wantsRate: true }])).toBe(false);
+    expect(rateWanted([{ host: "me", me: true, quietMs: 0, wantsRate: true }])).toBe(false);
+    expect(rateWanted([{ host: "a", quietMs: 0 }])).toBe(false);
   });
 });

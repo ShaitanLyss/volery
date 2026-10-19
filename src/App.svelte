@@ -407,6 +407,8 @@
      until one attaches, which matters more here than for the sampler: the first
      reading walks every session file written in the past week. */
   const ledger = new Ledger();
+  /* The burn rate is the flyway's, not this machine's alone (`usage.md`). */
+  ledger.fly(() => elsewhere.roster);
   /* The one connection to Azure DevOps, behind however many pipelines and
      reviews widgets are up. Idle — and holding no credential — until one of them
      attaches, which matters more here than for either of the other two: this is

@@ -19,6 +19,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Slice } from "./usage";
 import { binding, pct, resetIn, said, until, type Report } from "./limits";
 import { allowanceCrossing } from "./chronicle";
+import { rateAt, rateWanted, type Peer } from "./rate";
+import { untrack } from "svelte";
+
+/** The watcher the flyway counts as, when another wall wants this one's burn
+ *  rate. Not a widget: it says nothing about anyone looking *here*. */
+const FLYWAY = "flyway";
 
 /** Slow, because nothing here moves fast: a five-hour window shifts by a ninth
  *  of a percent in this long, and every pass after the first reads only the
@@ -86,6 +92,58 @@ export class Ledger {
     return this.#watchers.size;
   }
 
+  /* ── the flyway's half of the burn rate ──────────────────────────────────
+   *
+   * Every wall reads its own machine's transcripts, and only its own — the
+   * turns another laptop takes are written on that laptop. So the burn-rate
+   * widget sums this wall's reading with every peer's (`rate.ts::fleetRate`),
+   * and each wall says its own in its announcement (`Facts::rate`), noted to
+   * Rust after every pass. Bounded the way the reader already is: a wall reads
+   * for the flyway only while a peer heard lately says somebody there is
+   * looking (`wants_rate`), so a flyway with no burn-rate widget anywhere
+   * walks no transcripts at all. */
+
+  /** The other walls as the roster has them, rates and all — handed in by the
+   *  app once the flyway is wired (`fly`). */
+  #roster = $state<() => readonly Peer[]>(() => []);
+  /** How many widgets *here* are reading the spend — the flyway's own watcher
+   *  left out, since another wall asking is not anybody here looking. */
+  #looking = $state(0);
+  #flying: (() => void) | null = null;
+  #noted = "";
+
+  /** The flyway's walls, for the widget to add up. */
+  get peers(): readonly Peer[] {
+    return this.#roster();
+  }
+
+  /** Wire the flyway in: read for it while a peer wants a rate, and say this
+   *  wall's after every pass. Once; a second call only swaps the roster. */
+  fly(roster: () => readonly Peer[]) {
+    this.#roster = roster;
+    if (this.#flying) return;
+    this.#flying = $effect.root(() => {
+      $effect(() => {
+        const asked = rateWanted(this.#roster());
+        untrack(() => (asked ? this.attach(FLYWAY, "spend") : this.detach(FLYWAY)));
+      });
+      $effect(() => {
+        void this.at;
+        const looking = this.#looking > 0;
+        const reading = looking || rateWanted(this.#roster());
+        const rate = reading && this.ready ? Math.round(rateAt(this.slices, Date.now(), "minute")) : null;
+        untrack(() => this.#note(rate, looking));
+      });
+    });
+  }
+
+  #note(rate: number | null, wants: boolean) {
+    const key = `${rate}:${wants}`;
+    if (key === this.#noted) return;
+    this.#noted = key;
+    void invoke("flyway_note_rate", { rate, wants }).catch(() => {});
+  }
+
   /** Whether anything on the wall is reading the transcripts. */
   get scanning(): boolean {
     return this.#timer !== null;
@@ -110,12 +168,20 @@ export class Ledger {
   attach(id: string, wants: Wants) {
     if (this.#watchers.get(id) === wants) return;
     this.#watchers.set(id, wants);
+    this.#count();
     this.#retime();
   }
 
   detach(id: string) {
     if (!this.#watchers.delete(id)) return;
+    this.#count();
     this.#retime();
+  }
+
+  #count() {
+    let n = 0;
+    for (const [id, w] of this.#watchers) if (w === "spend" && id !== FLYWAY) n++;
+    this.#looking = n;
   }
 
   /** Run exactly the readers something is looking at, and no others. */
@@ -156,6 +222,8 @@ export class Ledger {
    *  slices are kept rather than cleared: a widget hung straight back up should
    *  draw the reading it already had instead of blanking for twenty seconds. */
   stop() {
+    this.#flying?.();
+    this.#flying = null;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     if (this.#allowanceTimer) clearInterval(this.#allowanceTimer);

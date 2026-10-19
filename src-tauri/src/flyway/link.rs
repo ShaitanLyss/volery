@@ -198,6 +198,9 @@ pub struct Link {
     waiting: StdMutex<HashMap<String, Waiter>>,
     /// Cards being opened for other walls, by the card's id here.
     opening: StdMutex<HashMap<String, Opening>>,
+    /// This wall's burn rate and whether anyone here is reading it, as the
+    /// front end last noted them (`flyway_note_rate`) — said in `Facts`.
+    rate: StdMutex<(Option<u64>, bool)>,
     /// Prompts this wall sent, by request id, until they are answered.
     prompts_out: StdMutex<HashMap<String, PromptOut>>,
     /// Prompts handed to cards here, by the asker's host and request id.
@@ -366,6 +369,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         failing: StdMutex::new(HashMap::new()),
         waiting: StdMutex::new(HashMap::new()),
         opening: StdMutex::new(HashMap::new()),
+        rate: StdMutex::new((None, false)),
         prompts_out: StdMutex::new(HashMap::new()),
         prompts_in: StdMutex::new(HashMap::new()),
         pictured_out: StdMutex::new(std::collections::HashSet::new()),
@@ -552,6 +556,7 @@ impl Link {
            decides this wall's own filing now (`presence::nobody_to_ask`),
            since questions lost their deadline; `idle_away` has why. */
         f.present = !crate::presence::away_here(&self.app) && !crate::machine::idle_away();
+        (f.rate, f.wants_rate) = self.rate.lock().map(|r| *r).unwrap_or_default();
         /* Outside the store lock: two vault reads, and the wall's cards do not
            wait on the credential manager. Names only — `creds::holdings`. */
         (f.holds, f.lacks) = crate::creds::holdings();
@@ -2193,6 +2198,8 @@ impl Link {
                     opens: e.facts.can.iter().any(|c| c == super::opening::WORD),
                     pictures: e.facts.can.iter().any(|c| c == fleet::CAN_PICTURES),
                     files: e.facts.can.iter().any(|c| c == crate::attachments::CAN_FILES),
+                    rate: e.facts.rate,
+                    wants_rate: e.facts.wants_rate,
                 }
             })
             .collect()
@@ -2550,6 +2557,10 @@ pub struct RosterRow {
     /// It opens a card a person here asks for with no brief
     /// (`opening::WORD`) — what a section's menu reads to offer one.
     opens: bool,
+    /// Its burn rate, tokens per minute (`Facts::rate`), or none said.
+    rate: Option<u64>,
+    /// Somebody there is looking at a burn rate (`Facts::wants_rate`).
+    wants_rate: bool,
 }
 
 #[derive(Serialize)]
@@ -2594,6 +2605,19 @@ pub fn flyway_linked(app: AppHandle) -> bool {
 #[tauri::command]
 pub fn flyway_roster(app: AppHandle) -> Vec<RosterRow> {
     current(&app).map(|l| l.roster()).unwrap_or_default()
+}
+
+/// This wall's burn rate and whether anyone here is reading it, for the next
+/// announcement (`Facts::rate`). Noted by the front end, which is where the
+/// transcripts are read into a rate; a wall not on a flyway drops it. Its own
+/// mutex, held for an assignment, so nothing here waits on the main thread.
+#[tauri::command]
+pub fn flyway_note_rate(app: AppHandle, rate: Option<u64>, wants: bool) {
+    if let Some(l) = current(&app) {
+        if let Ok(mut r) = l.rate.lock() {
+            *r = (rate, wants);
+        }
+    }
 }
 
 /// Take a wall off the roster.

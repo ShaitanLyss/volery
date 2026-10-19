@@ -37,12 +37,15 @@
     START_DEG,
     WINDOW_MS,
     angleFor,
+    fleetRate,
+    fleetScale,
     fracOf,
     fullScale,
     idleFor,
     over,
     perOf,
     rateAt,
+    sayParts,
     sayIdle,
     sayRate,
     sayTick,
@@ -77,8 +80,14 @@
   $effect(() => () => ledger.detach(widget.id));
 
   const slices = $derived(ledger.slices);
-  const value = $derived(rateAt(slices, now, per));
-  const scale = $derived(fullScale(slices, now, per));
+  /* The flyway's speed: this machine's reading and every other wall's, each
+     read off its own transcripts and said in its announcement
+     (`rate.ts::fleetRate`, `usage.md`). A wall quiet past ninety seconds, or
+     gone, stops counting; the hover says where the figure came from. */
+  const fleet = $derived(fleetRate(rateAt(slices, now, per), ledger.peers, per));
+  const value = $derived(fleet.total);
+  const scale = $derived(fleetScale(fullScale(slices, now, per), fleet));
+  const whence = $derived(fleet.parts.length > 1 || fleet.silent.length ? sayParts(fleet, shortUnit(per)) : undefined);
   const frac = $derived(fracOf(value, scale));
   const past = $derived(over(value, scale));
   const unit = $derived(shortUnit(per));
@@ -93,6 +102,13 @@
     if (ms === null) return ledger.ready ? "nothing yet" : null;
     return ms > WINDOW_MS ? `quiet ${sayIdle(ms)}` : null;
   });
+
+  /** The line under the reading: across how many walls, once others count —
+   *  where this wall's own lull would say "quiet" about a flyway that is not —
+   *  else this wall's quiet. */
+  const caption = $derived(
+    fleet.parts.length > 1 ? `across ${fleet.parts.length} walls` : quiet,
+  );
 
   /** The odometer: what these five hours have burned. The same figure the
    *  `usage` widget's block reading carries, deliberately — a speed and a
@@ -210,11 +226,11 @@
       <circle cx={CX} cy={CY} r="4.4" class="hub" />
     </svg>
     <div class="readout">
-      <span class="big">{sayRate(value)}</span><span class="suffix">{unit}</span>
+      <span class="big" title={whence}>{sayRate(value)}</span><span class="suffix">{unit}</span>
     </div>
     <div class="foot">
       {#if wantOdometer}<span class="trip">{count(odometer)} these five hours</span>{/if}
-      {#if quiet}<span class="rest">{quiet}</span>{/if}
+      {#if caption}<span class="rest" title={whence}>{caption}</span>{/if}
     </div>
 
   {:else if variant === "bar"}
@@ -222,7 +238,7 @@
          position on a track, and the number beside it. -->
     <div class="linear">
       <div class="figure">
-        <span class="big">{sayRate(value)}</span><span class="suffix">{unit}</span>
+        <span class="big" title={whence}>{sayRate(value)}</span><span class="suffix">{unit}</span>
       </div>
       <div class="rail" style:--v={frac}>
         <div class="fill"></div>
@@ -232,7 +248,7 @@
       </div>
       <div class="ends">
         <span>0</span>
-        {#if quiet}<span class="rest">{quiet}</span>
+        {#if caption}<span class="rest" title={whence}>{caption}</span>
         {:else if wantOdometer}<span class="trip">{count(odometer)} this block</span>{/if}
         <span>{sayTick(scale)}</span>
       </div>
@@ -244,7 +260,7 @@
          makes it a face rather than a skin. -->
     <div class="linear">
       <div class="figure">
-        <span class="big">{sayRate(value)}</span><span class="suffix">{unit}</span>
+        <span class="big" title={whence}>{sayRate(value)}</span><span class="suffix">{unit}</span>
       </div>
       <svg class="graph" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         {#if area}
@@ -266,7 +282,7 @@
       </svg>
       <div class="ends">
         <span>an hour ago</span>
-        {#if quiet}<span class="rest">{quiet}</span>
+        {#if caption}<span class="rest" title={whence}>{caption}</span>
         {:else if wantOdometer}<span class="trip">{count(odometer)} this block</span>{/if}
         <span>now</span>
       </div>
@@ -278,8 +294,8 @@
     <div class="plain">
       <span class="huge">{sayRate(value)}</span>
       <span class="under-unit">tokens {unit}</span>
-      {#if quiet}
-        <span class="rest">{quiet}</span>
+      {#if caption}
+        <span class="rest" title={whence}>{caption}</span>
       {:else if wantOdometer}
         <span class="trip">{count(odometer)} these five hours</span>
       {/if}

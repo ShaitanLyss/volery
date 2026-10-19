@@ -137,6 +137,10 @@ export type RosterRow = {
   /** It takes a person's prompt with pictures in it (`fleet::CAN_PICTURES`).
    *  Absent from an older build, which is a no. */
   pictures?: boolean;
+  /** Its burn rate, tokens per minute (`Facts::rate`) — none from an older
+   *  build or a wall reading nothing — and whether anyone there is looking. */
+  rate?: number | null;
+  wantsRate?: boolean;
   /** It announced `files`: it pulls a prompt's files from the wall that sent
    *  them (`attachments::CAN_FILES`). */
   files?: boolean;

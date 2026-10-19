@@ -616,3 +616,34 @@ the `turn` table rather than the transcripts, and its window is the **local day*
   millisecond.
 - **`snapshot.spendSince` is reported beside `spend`**, because a day's total and a session's
   are the same lone number from outside and only the cutoff says which window this one is.
+
+## The burn rate is the flyway's
+
+Lyss, 2026-10-19: *"the tokenometer (token usage speed) should count all the usage across the
+flyway, not only the local usage."* The burn-rate widget (`Speedo.svelte`, `rate.ts`) read this
+machine's transcripts and nothing else, and they are the only place a turn's tokens are written
+— a turn on the other laptop is in that laptop's files. So each wall says its own figure and
+every widget adds them.
+
+- **Said in the announcement every wall already makes.** `Facts::rate` is tokens per minute over
+  the last ten minutes (`rateAt`), `Facts::wants_rate` that a burn-rate widget is up there; both
+  ride every tick's roster (`RosterRow`, `Elsewhere.roster`) with no frame of their own, so a
+  figure is at most a tick and a hop old against a ten-minute window that already smooths it.
+  `#[serde(default)]` makes an older wall's facts read as no rate.
+- **Noted by the front end, where the rate is made.** `Ledger.fly` notes this wall's rate to
+  Rust after every pass (`flyway_note_rate`, its own mutex), and only when it changed.
+- **Read only while someone is looking — anywhere.** A wall reads its transcripts for the flyway
+  only while a peer heard lately says `wants_rate` (`rateWanted`, attached as the `flyway`
+  watcher, which does not count as anybody looking *here*). A flyway with no burn-rate widget up
+  walks no transcripts at all, which is the bargain the ledger has always struck, one hop wider.
+- **What counts** (`rate.ts::fleetRate`): this wall's reading plus every other wall's, put in the
+  dial's unit. A wall quiet past ninety seconds (the fleet's bound) or gone from the roster stops
+  counting at once; one that says no rate — an older build — is named in the hover and never
+  counted as zero. Its own roster row is never counted twice.
+- **Drawn honestly**: the reading is the total; its hover says each wall's share and who said
+  nothing (`sayParts`); the caption under it says *across N walls* in place of this machine's
+  *quiet*, which would be a lull reported about a flyway that is not in one. The dial widens to
+  hold the sum once a peer counts (`fleetScale`) rather than pinning, since the over-range mark is
+  this wall's own past.
+- **Two labs on one machine double it**: they read the same transcripts. Real walls are separate
+  machines; labs fly on keys of their own and never join the installed wall's flyway.
