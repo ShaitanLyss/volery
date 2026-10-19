@@ -36,15 +36,16 @@ const rows = [
 const gs = groups(rows, NOW);
 
 describe("a project's conversations", () => {
-  test("only this wall's, of this project, live first", () => {
-    expect(rowsOf(gs, "portfolio").map((p) => p.row.id)).toEqual(["ask", "work", "done", "old"]);
+  test("every wall's conversations of this project, live first — a card elsewhere is one of them", () => {
+    expect(rowsOf(gs, "portfolio").map((p) => p.row.id)).toEqual(["ask", "work", "done", "far", "old"]);
+    expect(rowsOf(gs, "portfolio").find((p) => p.row.id === "far")!.aside).toBe("portfolio · on laptop");
   });
 
   test("filters by state, everything not live counting as finished", () => {
     const mine = rowsOf(gs, "portfolio");
-    expect(countsOf(mine)).toEqual({ all: 4, needs: 1, working: 1, finished: 2 });
-    expect(filtered(mine, "finished").map((p) => p.row.id)).toEqual(["done", "old"]);
-    expect(filtered(mine, "all")).toHaveLength(4);
+    expect(countsOf(mine)).toEqual({ all: 5, needs: 1, working: 1, finished: 3 });
+    expect(filtered(mine, "finished").map((p) => p.row.id)).toEqual(["done", "far", "old"]);
+    expect(filtered(mine, "all")).toHaveLength(5);
     expect(filterOf(mine[0]!)).toBe("needs");
   });
 

@@ -371,19 +371,31 @@ describe("walking the sidebar", () => {
 });
 
 describe("projects and search", () => {
-  test("each project counts its conversations and dots its live ones", () => {
+  test("each project counts its conversations, on every wall, and dots its live ones", () => {
     const rows = [
       row("a", { working: true }),
       row("b", { asking: { text: "q", nth: 1, of: 1 } }),
       row("c"),
       row("d", { project: "recipes" }),
-      row("e", { project: "recipes", host: "laptop" }),
+      row("e", { project: "recipes", host: "laptop", working: true }),
     ];
     expect(projectsOf(rows, ["portfolio", "recipes", "empty"], NOW)).toEqual([
       { name: "portfolio", count: 3, live: ["work", "ask"] },
-      { name: "recipes", count: 1, live: [] },
+      { name: "recipes", count: 2, live: ["work"] },
       { name: "empty", count: 0, live: [] },
     ]);
+  });
+
+  test("needs you is ordered by how long each has waited, wherever it runs", () => {
+    /* It was the wall's own order — this wall's cards, then every other's —
+       with `far` putting another wall's behind at the same tier. */
+    const rows = [
+      row("here-new", { notice: { kind: "question", text: "?" }, since: NOW - 60_000 }),
+      row("far-old", { host: "QUEERISFREEDOM", notice: { kind: "question", text: "?" }, since: NOW - 3_600_000 }),
+      row("here-ask", { asking: { text: "q", nth: 1, of: 1 }, since: NOW - 10_000 }),
+      row("far-ask", { host: "QUEERISFREEDOM", asking: { text: "q", nth: 1, of: 1 }, since: NOW - 20_000 }),
+    ];
+    expect(ids(rows, "needs")).toEqual(["far-ask", "here-ask", "far-old", "here-new"]);
   });
 
   test("a search finds every word in the title, the place or the last words", () => {

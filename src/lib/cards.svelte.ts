@@ -102,6 +102,13 @@ export interface CardHandle {
    *  the card is listed and never queued as waiting on you
    *  (`notice.ts::allowanceStop`). */
   readonly allowance: Allowance | null;
+  /** When it came to rest, in ms on this wall's clock, or null while it works
+   *  or when nothing says. What chat view's history is dated by, so a card on
+   *  another wall lands in the same day a card here would. */
+  readonly restedAt: number | null;
+  /** When the turn under way began, on this wall's clock, or null between
+   *  turns — what a working row is ordered and aged by. */
+  readonly turnSince: number | null;
   answer(ask: PendingAsk): void;
   defer(ask: PendingAsk): Promise<void> | void;
   /** What has been answered of the sheet in front of you, kept in case the
@@ -322,6 +329,16 @@ export class LocalCard implements CardHandle {
   get notices(): readonly Notice[] {
     return this.#skein.noticeQueue.filter((n) => n.conversationId === this.conv.id);
   }
+  /* This session's rest, else the store's last activity — a card restored
+     dormant has no other clock. */
+  get restedAt(): number | null {
+    const c = this.conv;
+    if (c.working) return null;
+    return Math.max(c.restingSince ?? 0, c.lastActive ?? 0) || null;
+  }
+  get turnSince(): number | null {
+    return this.conv.working ? this.conv.turnSince : null;
+  }
   /* Held for an account first — the prompt is kept and goes when one frees —
      then a standing refusal, then one this process heard and raised no notice
      for (a card you were watching, a heal that had nowhere to go). */
@@ -470,6 +487,23 @@ export class RemoteCard implements CardHandle {
   }
   get notices(): readonly Notice[] {
     return this.shadow.notices;
+  }
+  /* Its idle, which `shadow.ts::idleOf` reckons without comparing two
+     machines' clocks, put back as a moment here. Null where its wall sent no
+     rest — then the card's age is unknown, and is not "now". */
+  get restedAt(): number | null {
+    const s = this.shadow;
+    if (s.working || s.digest.restingSince === null) return null;
+    return Date.now() - s.idleSeconds * 1000;
+  }
+  /* The digest says *that* a card works, not since when — so since this wall
+     first saw it working, kept here because a handle lives as long as its
+     card. A plain field, written while it is read: it is a memory of the
+     stream, as `Front`'s `#seen` is, and no reader depends on it changing. */
+  #working: number | null = null;
+  get turnSince(): number | null {
+    if (!this.shadow.working) return (this.#working = null);
+    return (this.#working ??= Date.now());
   }
   /* Its wall's queue travels in the digest, refusal and all; a hold does not,
      so a card held there reads as an ordinary rest — which is not false. */

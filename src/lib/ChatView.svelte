@@ -155,7 +155,6 @@
   function rowOf(h: CardHandle): ChatRow {
     const f = h.face;
     const conv = h.conv;
-    const resting = (f as { restingSince?: number | null }).restingSince ?? null;
     /* The first notice that waits on you — the dock's queue, by its one rule
        (`Cards.noticing`): an allowance stop is said as `allowance` instead. */
     const notice = h.notices.find(waitsOnYou) ?? null;
@@ -163,9 +162,11 @@
     /* Which of how many a multi-question call is on: the first one not yet
        answered. */
     const nth = ask ? Math.min(ask.questions.length, ask.answers.filter((a) => a !== null).length + 1) : 1;
-    const lastAt = f.working
-      ? clock.t
-      : Math.max(resting ?? 0, conv?.lastActive ?? 0) || clock.t;
+    /* Off the handle, which answers it for a card anywhere (`restedAt`): a
+       card on another wall used to read no rest at all here, and so was dated
+       *now* — every one of them "today", however long it had been quiet. An
+       age nothing says reads as the oldest, never as now. */
+    const lastAt = f.working ? clock.t : (h.restedAt ?? 0);
     return {
       id: h.id,
       title: cardName(f.title, "").text || "new conversation",
@@ -194,7 +195,10 @@
       allowance: h.allowance,
       aside: f.aside,
       lastAt,
-      turnAt: f.working ? (conv?.turnSince ?? null) : null,
+      turnAt: h.turnSince,
+      /* When what it needs you for began waiting, which orders *needs you*
+         wherever the card runs (`queueOrder`). */
+      since: ask ? ask.since : (notice?.raisedAt ?? null),
       lastWords: f.lastWords ?? "",
       parent: parentOf.get(h.id) ?? null,
     };
@@ -202,6 +206,14 @@
 
   const rows = $derived(cards.all.map(rowOf));
   const gs = $derived(groups(rows, clock.t, unseen));
+  /** The rows in the sidebar's order, every group, set aside last — what
+   *  Ctrl+K lists before anything is typed and breaks a tie by. `cards.all`
+   *  is this wall's cards and then every other's, which put a card here ahead
+   *  of an equal match on another wall. */
+  const ordered = $derived.by(() => {
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return walkOrder(gs, true).flatMap((id) => byId.get(id) ?? []);
+  });
   /* The chat home is a territory so that "no project" has an address
      (`store::chat_home`), and is no project: its conversations say *chat*. */
   const folders = $derived(
@@ -799,7 +811,7 @@
   {/if}
   {#if looking}
     <Lookup
-      {rows}
+      rows={ordered}
       projects={folders.map((f) => f.name)}
       chords={CHORDS}
       commands={COMMANDS.filter((c) => c.by === "skein")}

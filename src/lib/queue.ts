@@ -40,9 +40,17 @@ export type Waiting = {
    *  make a *fresh* choice; nothing already in front of you is ever displaced
    *  by a lower tier arriving. */
   tier: 0 | 1;
-  /** On another wall. Behind this wall's own at the same tier, unless it is
-   *  the card in the ring. */
-  far: boolean;
+  /** When it began waiting, in ms **on this wall's clock** — a card on
+   *  another wall has its question's and its notice's moment carried across
+   *  by `shadow.ts::askedAt`, which compares no two machines' clocks. Older
+   *  first at the same tier.
+   *
+   *  This replaced `far`, which put every card on another wall behind every
+   *  card here at the same tier. Lyss, 2026-10-19: *"all conversations should
+   *  be considered the same regardless of if they're shadow or not, shadow
+   *  just adds something that are shadow specific."* Where a card runs is not
+   *  a reason it can wait longer; how long it has waited is. */
+  since: number;
 };
 
 /** What the dock is holding: the item, and the card it was about — kept so
@@ -54,8 +62,9 @@ export type Hold = { key: string; card: string };
  *
  *  Questions before notices, since an agent is stopped on a question; within
  *  a tier, the card in the ring first — you went to it, so that is what you
- *  meant — then this wall's before another's, then the order the queue was
- *  given in. Stable, so two items that tie keep the caller's order.
+ *  meant — then whatever has waited longest, wherever it runs, then the order
+ *  the queue was given in. Stable, so two items that tie keep the caller's
+ *  order.
  *
  *  **This is never the order something already drawn is kept in.** It decides
  *  only what to draw when nothing is held, when the held item has gone, or
@@ -71,7 +80,7 @@ export function queueOrder<T extends Waiting>(
       (a, b) =>
         a.item.tier - b.item.tier ||
         Number(ringed(b.item)) - Number(ringed(a.item)) ||
-        Number(a.item.far) - Number(b.item.far) ||
+        a.item.since - b.item.since ||
         a.i - b.i,
     )
     .map(({ item }) => item);

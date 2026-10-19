@@ -98,15 +98,14 @@ export class Front {
      for the same question wakes everything reading it. */
   readonly items: Item[] = $derived.by((): Item[] => {
     const out: Item[] = [];
-    /* `far` is the one thing the queue asks about where a card runs: this
-       wall's before another's at the same tier, unless it is the card in the
-       ring (`queueOrder`). */
+    /* Nothing here asks where a card runs: `since` is when it began waiting,
+       on this wall's clock for a card anywhere (`queueOrder`). */
     for (const of of this.#cards.asking) {
       const ask = of.ask;
-      if (ask) out.push({ kind: "ask", key: `ask:${ask.askId}`, card: of.id, tier: 0, far: !of.conv, of, ask });
+      if (ask) out.push({ kind: "ask", key: `ask:${ask.askId}`, card: of.id, tier: 0, since: ask.since, of, ask });
     }
     for (const { card: of, notice } of this.#cards.noticing) {
-      out.push({ kind: "notice", key: `notice:${notice.id}`, card: of.id, tier: 1, far: !of.conv, of, notice });
+      out.push({ kind: "notice", key: `notice:${notice.id}`, card: of.id, tier: 1, since: notice.raisedAt, of, notice });
     }
     const kept = steady(this.#lastItems, out);
     this.#lastItems = new Map(kept.map((t) => [t.key, t]));

@@ -12,28 +12,28 @@ import {
 } from "../src/lib/queue";
 import { textUnder, withReply, type Replies } from "../src/lib/replies";
 
-/* Every kind of thing the dock's queue holds, as `Dock.svelte::items` builds
-   them — a question or a notice, from a card here or on another wall (`far`):
-   the key is the one the panel keeps its reply under. A new kind belongs in
-   this list, and the matrix below then covers it without another line. The
-   far two are the dock's `ask` and `notice` with `far` set, since a card
-   elsewhere is the same item from a different handle (`cards.svelte.ts`). */
+/* Every kind of thing the dock's queue holds, as `Front.items` builds them —
+   a question or a notice, from a card here or on another wall: the key is the
+   one the panel keeps its reply under. A new kind belongs in this list, and
+   the matrix below then covers it without another line. The far two are the
+   same items on a card elsewhere — the same item from a different handle
+   (`cards.svelte.ts`), and since 2026-10-19 nothing in the item says so. */
 const KINDS = {
-  ask: { tier: 0, far: false, prefix: "ask" },
-  notice: { tier: 1, far: false, prefix: "notice" },
-  "far-ask": { tier: 0, far: true, prefix: "ask" },
-  "far-notice": { tier: 1, far: true, prefix: "notice" },
+  ask: { tier: 0, prefix: "ask" },
+  notice: { tier: 1, prefix: "notice" },
+  "far-ask": { tier: 0, prefix: "ask" },
+  "far-notice": { tier: 1, prefix: "notice" },
 } as const;
 type Kind = keyof typeof KINDS;
 const kinds = Object.keys(KINDS) as Kind[];
 
 type Item = Waiting & { kind: Kind };
-const item = (kind: Kind, id: string, card: string): Item => ({
+const item = (kind: Kind, id: string, card: string, since = 0): Item => ({
   kind,
   key: `${KINDS[kind].prefix}:${id}`,
   card,
   tier: KINDS[kind].tier,
-  far: KINDS[kind].far,
+  since,
 });
 
 /** The dock's effect, as a function of what it is shown: the ring it last saw
@@ -166,12 +166,17 @@ describe("when the held item goes", () => {
     expect(view([other, item("ask", "2", "x")])).toBe("ask:2");
   });
 
-  test("then by the queue's order: questions, the ring's first, this wall's before another's", () => {
+  test("then by the queue's order: questions, the ring's first, then whatever waited longest, wherever it runs", () => {
     const view = dock();
     const gone = item("notice", "gone", "x");
     expect(view([gone], "r")).toBe(gone.key);
-    const rest = [item("far-notice", "fn", "far-a"), item("notice", "n", "b"), item("far-ask", "fq", "far-c"), item("ask", "q", "d")];
-    expect(view(rest)).toBe("ask:q");
+    const rest = [
+      item("far-notice", "fn", "far-a", 100),
+      item("notice", "n", "b", 200),
+      item("far-ask", "fq", "far-c", 300),
+      item("ask", "q", "d", 400),
+    ];
+    expect(view(rest)).toBe("ask:fq");
   });
 
   test("an empty queue holds nothing, and the next arrival is drawn", () => {
@@ -183,22 +188,32 @@ describe("when the held item goes", () => {
 });
 
 describe("queueOrder", () => {
-  test("tier, then the ring's card, then here before elsewhere, then as given", () => {
+  test("tier, then the ring's card, then oldest first wherever it runs, then as given", () => {
     const q = [
-      item("notice", "n1", "a"),
-      item("far-ask", "fq", "far"),
-      item("ask", "q1", "a"),
-      item("notice", "n2", "r"),
-      item("ask", "q2", "b"),
+      item("notice", "n1", "a", 10),
+      item("far-ask", "fq", "far", 5),
+      item("ask", "q1", "a", 20),
+      item("notice", "n2", "r", 30),
+      item("ask", "q2", "b", 20),
     ];
     expect(queueOrder(q, "r").map((t) => t.key)).toEqual([
+      "ask:fq",
       "ask:q1",
       "ask:q2",
-      "ask:fq",
       "notice:n2",
       "notice:n1",
     ]);
     expect(queueOrder(q, "far")[0].key).toBe("ask:fq");
+  });
+
+  test("a card on another wall is not ranked behind this wall's: the item has no word for where it runs", () => {
+    /* Lyss, 2026-10-19: "all conversations should be considered the same
+       regardless of if they're shadow or not". It used to carry `far`, and an
+       older question elsewhere waited behind every newer one here. */
+    const here = item("ask", "here", "a", 2_000);
+    const there = item("far-ask", "there", "elsewhere:lab:b", 1_000);
+    expect(queueOrder([here, there], null).map((t) => t.key)).toEqual(["ask:there", "ask:here"]);
+    expect(Object.keys(here)).not.toContain("far");
   });
 });
 

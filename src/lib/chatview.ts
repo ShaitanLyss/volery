@@ -56,6 +56,10 @@ export type ChatRow = {
   lastWords: string;
   /** The conversation that started it, if one did. */
   parent: string | null;
+  /** When what it needs you for began waiting — its question asked, its
+   *  notice raised — in ms on this wall's clock wherever it runs. What *needs
+   *  you* is ordered by; null reads as the oldest. */
+  since?: number | null;
 };
 
 /** Which group, in the order they are drawn. */
@@ -284,14 +288,14 @@ export function subtitleOf(r: ChatRow, group: GroupKey, now = Date.now()): strin
  *  conversation you click does not jump to the top (`queueOrder`'s own
  *  comment: it is never the order something already drawn is kept in).
  *  Questions an agent is stopped on first, then everything else that waits,
- *  each tier in the order the rows came — which is the wall's own order, so
- *  it holds still while nothing changes. */
+ *  each tier by how long it has waited — wherever the card runs, as the
+ *  dock's queue is — so it holds still while nothing changes. */
 function needsOrder(rows: ChatRow[]): ChatRow[] {
   const items: (Waiting & { row: ChatRow })[] = rows.map((row) => ({
     key: row.id,
     card: row.id,
     tier: row.asking ? 0 : 1,
-    far: !!row.host,
+    since: row.since ?? 0,
     row,
   }));
   return queueOrder(items, null).map((i) => i.row);
@@ -429,7 +433,9 @@ export type ProjectRow = { name: string; count: number; live: Tone[] };
  *  it is a folder you opened, and its page is where a conversation starts. */
 export function projectsOf(rows: readonly ChatRow[], names: readonly string[], now: number): ProjectRow[] {
   return names.map((name) => {
-    const mine = rows.filter((r) => r.project === name && !r.host);
+    /* Every wall's conversations in a project of this name — a card on
+       another wall counts as one here does (`projectview.ts::rowsOf`). */
+    const mine = rows.filter((r) => r.project === name);
     const live = mine
       .map((r) => ({ r, g: groupOf(r, now) }))
       .filter(({ g }) => g === "needs" || g === "working")

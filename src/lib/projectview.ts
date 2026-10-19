@@ -24,14 +24,19 @@ export function filterOf(p: Placed): Exclude<Filter, "all"> {
 
 /** One project's conversations out of the sidebar's groups, live first and
  *  then by recency — the order the groups already put them in — each once,
- *  and only this wall's (a card on another wall belongs to that wall's
- *  project of the same name, not this folder). */
+ *  from every wall. A card on another wall in a project of this name is one
+ *  of its conversations, drawn as any is, its row saying where it runs: the
+ *  page left them out, and so did the sidebar's count, which made a project
+ *  worked on from two laptops look half as busy as it was (Lyss, 2026-10-19:
+ *  *"all conversations should be considered the same regardless of if they're
+ *  shadow or not"*). The folder, its instructions and its actions are still
+ *  this wall's. */
 export function rowsOf(gs: readonly Group[], project: string): Placed[] {
   const seen = new Set<string>();
   const out: Placed[] = [];
   for (const g of gs)
     for (const p of g.rows) {
-      if (p.row.project !== project || p.row.host || seen.has(p.row.id)) continue;
+      if (p.row.project !== project || seen.has(p.row.id)) continue;
       seen.add(p.row.id);
       out.push(p);
     }
