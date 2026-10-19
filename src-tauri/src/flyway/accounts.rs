@@ -128,6 +128,19 @@ pub struct Chain {
     pub age_ms: u64,
 }
 
+/// One account as its own wall says it, for a person at another wall to see
+/// what could be signed in from there. The label is that wall's name for it;
+/// `state` is `signed in`, `not signed in`, `lapsed` or `copied`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Seat {
+    pub label: String,
+    #[serde(default)]
+    pub identity: String,
+    #[serde(default)]
+    pub email: String,
+    pub state: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "msg", rename_all = "snake_case")]
 pub enum AccountsMsg {
@@ -141,11 +154,96 @@ pub enum AccountsMsg {
         readings: Vec<Reading>,
         #[serde(default)]
         chains: Vec<Chain>,
+        #[serde(default)]
+        seats: Vec<Seat>,
+    },
+    /// A person at another wall starting a sign-in of one of this wall's
+    /// accounts. Answered on the same stream with `SigninBegun`.
+    SigninBegin { id: String, label: String },
+    /// The address to finish it at — the CLI's own manual authorize URL, which
+    /// carries a PKCE challenge and a state and nothing anybody could spend —
+    /// or why there is none.
+    SigninBegun {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+    },
+    /// The `code#state` the platform page showed the person, for this wall's
+    /// waiting `claude auth login` to exchange with its own verifier.
+    SigninCode { id: String, label: String, code: String },
+    /// How it ended: `signed in`, `refused` or `pending`, as a string for
+    /// `act::ActMsg`'s reason — a newer build's word reads as a refusal here.
+    SigninDone {
+        id: String,
+        outcome: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
     },
 }
 
 /// Every `msg` this vocabulary writes, for `frame::KNOWN`.
-pub const TAGS: [&str; 1] = ["accounts"];
+pub const TAGS: [&str; 5] = ["accounts", "signin_begin", "signin_begun", "signin_code", "signin_done"];
+
+/// What a wall announces in `Facts::can` when it can be signed in from another
+/// wall. Apart from `WORD` so an account picture and a sign-in can be told
+/// apart by a peer from a build that has one and not the other.
+pub const SIGNIN_WORD: &str = "signin";
+
+const URL_MOST: usize = 4_096;
+const CODE_MOST: usize = 4_096;
+const WHY_MOST: usize = 1_000;
+const SEATS_MOST: usize = IDENTITIES_MOST;
+
+/// The last authorize URL in what a `claude auth login` has printed — the
+/// manual one, which is the only one a browser on another machine can finish
+/// (its redirect is the platform's page that shows a code, never this
+/// machine's localhost). Matched on the durable half, `oauth/authorize`, as
+/// `signin.ts` does. Pure, so the matching is tested here.
+pub fn authorize_url(out: &str) -> Option<String> {
+    out.split(|c: char| c.is_whitespace())
+        .filter(|w| (w.starts_with("https://") || w.starts_with("http://")) && w.contains("oauth/authorize"))
+        .map(|w| w.trim_end_matches(['.', ',', ')', '"', '\'']).to_string())
+        .next_back()
+}
+
+/// An authorize URL off the wire, held to its shape before it is put in front
+/// of a person as a link: https, an authorize path, bounded, no control
+/// characters.
+pub fn admit_url(u: &str) -> Option<String> {
+    let u = u.trim();
+    (u.starts_with("https://") && u.contains("oauth/authorize") && u.len() <= URL_MOST && !u.chars().any(char::is_control))
+        .then(|| u.to_string())
+}
+
+/// A pasted code off the wire, held to its shape before it is written to a
+/// child's stdin: one line, bounded, no control characters.
+pub fn admit_code(c: &str) -> Option<String> {
+    let c = c.trim();
+    (!c.is_empty() && c.len() <= CODE_MOST && !c.chars().any(char::is_control)).then(|| c.to_string())
+}
+
+/// A refusal from another wall, held to a sentence.
+pub fn admit_why(w: &str) -> String {
+    crate::clip::preview(&crate::clean::scrub(w.trim()), WHY_MOST)
+}
+
+/// The seats a picture carries, bounded and held to shape.
+pub fn admitted_seats(seats: &[Seat]) -> Vec<Seat> {
+    const STATES: [&str; 4] = ["signed in", "not signed in", "lapsed", "copied"];
+    seats
+        .iter()
+        .take(SEATS_MOST)
+        .filter(|s| crate::accounts::is_label(&s.label) && STATES.contains(&s.state.as_str()))
+        .map(|s| Seat {
+            label: s.label.clone(),
+            identity: if is_identity(&s.identity) { s.identity.clone() } else { String::new() },
+            email: crate::clip::preview(&crate::clean::scrub(s.email.trim()), 200),
+            state: s.state.clone(),
+        })
+        .collect()
+}
 
 /// The stamp a change made now takes: the wall clock, unless this wall has
 /// already seen a stamp at or past it.
@@ -205,7 +303,7 @@ pub fn admit(r: &Register) -> Option<Register> {
 
 /// What a wall's picture may say, bounded: the registers that may travel, and
 /// the readings, each list cut at its ceiling.
-pub fn say(host: &str, settings: Vec<Register>, readings: Vec<Reading>, chains: Vec<Chain>) -> AccountsMsg {
+pub fn say(host: &str, settings: Vec<Register>, readings: Vec<Reading>, chains: Vec<Chain>, seats: Vec<Seat>) -> AccountsMsg {
     let settings = settings
         .into_iter()
         .filter(|r| is_identity(&r.identity) && r.at > 0)
@@ -213,7 +311,8 @@ pub fn say(host: &str, settings: Vec<Register>, readings: Vec<Reading>, chains: 
         .collect();
     let readings = readings.into_iter().filter(|r| is_identity(&r.identity)).take(READINGS_MOST).collect();
     let chains = chains.into_iter().filter(admit_chain).take(READINGS_MOST).collect();
-    AccountsMsg::Accounts { host: host.to_string(), settings, readings, chains }
+    let seats = seats.into_iter().take(SEATS_MOST).collect();
+    AccountsMsg::Accounts { host: host.to_string(), settings, readings, chains, seats }
 }
 
 /// The registers a picture carries that may be taken, in the order given —
@@ -376,8 +475,9 @@ mod tests {
             ],
             vec![],
             vec![],
+            vec![],
         );
-        let AccountsMsg::Accounts { settings, .. } = m;
+        let AccountsMsg::Accounts { settings, .. } = m else { panic!() };
         assert_eq!(settings.len(), 1);
         assert_eq!(settings[0].field, "caps");
         assert!(admit(&reg("label:lyss", "enabled", json!(true), 9, "x")).is_none());
@@ -418,12 +518,13 @@ mod tests {
             vec![reg(X, "enabled", json!(false), 5, "desk")],
             vec![Reading { identity: X.into(), age_ms: 30_000, report: json!({ "windows": [] }) }],
             vec![Chain { identity: X.into(), digest: "0".repeat(32), age_ms: 5 }, Chain { identity: X.into(), digest: "nope".into(), age_ms: 5 }],
+            vec![Seat { label: "lyss".into(), identity: X.into(), email: "l@example.com".into(), state: "lapsed".into() }],
         );
         let text = serde_json::to_string(&m).unwrap();
         assert!(text.contains("\"msg\":\"accounts\""));
         let back: AccountsMsg = serde_json::from_str(&text).unwrap();
         assert_eq!(back, m);
-        let AccountsMsg::Accounts { chains, .. } = &back;
+        let AccountsMsg::Accounts { chains, .. } = &back else { panic!() };
         assert_eq!(chains.len(), 1, "a digest not of the shape written is not said");
         /* A wall from a later build adding a field to the picture is still read. */
         let later = r#"{"msg":"accounts","host":"x","settings":[],"readings":[],"chains":[],"signins":[{"what":"new"}]}"#;
@@ -440,6 +541,37 @@ mod tests {
         assert!(is_the_copy(day, week, "LAPTOP", "DESK"), "the laptop's store is younger: it is the copy");
         assert!(!is_the_copy(week, day, "DESK", "LAPTOP"), "and the desk keeps its sign-in");
         assert_ne!(is_the_copy(5, 5, "a", "b"), is_the_copy(5, 5, "b", "a"), "a tie still has one copy");
+    }
+
+    /// The manual authorize URL is read out of what `auth login` printed, the
+    /// last one if there were several, without the punctuation around it.
+    #[test]
+    fn the_authorize_url_is_the_last_one_printed() {
+        let out = "Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=abc\nPaste code here if prompted > ";
+        assert_eq!(authorize_url(out).as_deref(), Some("https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=abc"));
+        assert_eq!(authorize_url("visit (https://a.example/oauth/authorize?s=1). or https://b.example/oauth/authorize?s=2.").as_deref(), Some("https://b.example/oauth/authorize?s=2"));
+        assert!(authorize_url("Paste code here if prompted > ").is_none());
+        assert!(authorize_url("https://claude.com/login").is_none());
+    }
+
+    /// What crosses is held to its shape on the way in: a URL a person will
+    /// click, a code a child will read, a seat a panel will draw.
+    #[test]
+    fn what_a_sign_in_carries_is_held_to_its_shape() {
+        assert!(admit_url("https://claude.com/cai/oauth/authorize?x=1").is_some());
+        assert!(admit_url("http://claude.com/cai/oauth/authorize?x=1").is_none(), "https only");
+        assert!(admit_url("https://evil.example/login").is_none());
+        assert!(admit_url("https://claude.com/cai/oauth/authorize?x=1\u{7}").is_none());
+        assert_eq!(admit_code(" abc#def \n").as_deref(), Some("abc#def"));
+        assert!(admit_code("a\nb").is_none(), "one line, or the child reads two answers");
+        assert!(admit_code("").is_none());
+        let seats = admitted_seats(&[
+            Seat { label: "lyss".into(), identity: X.into(), email: "l@example.com".into(), state: "copied".into() },
+            Seat { label: "../x".into(), identity: X.into(), email: String::new(), state: "lapsed".into() },
+            Seat { label: "ok".into(), identity: "nope".into(), email: String::new(), state: "dancing".into() },
+        ]);
+        assert_eq!(seats.len(), 1);
+        assert_eq!(seats[0].state, "copied");
     }
 
     #[test]

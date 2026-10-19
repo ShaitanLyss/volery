@@ -851,9 +851,14 @@ impl Link {
             heard.into_iter().partition(|f| matches!(f, Frame::Tail(TailMsg::Tail { .. })));
         let (acts, rest): (Vec<Frame>, Vec<Frame>) =
             rest.into_iter().partition(|f| matches!(f, Frame::Act(ActMsg::Act { .. })));
+        /* A sign-in asked for from another wall (`accounting.rs`): like an
+           act, it blocks on this wall and is done for a named wall only. */
+        let (signins, rest): (Vec<Frame>, Vec<Frame>) = rest.into_iter().partition(|f| {
+            matches!(f, Frame::Accounts(super::accounts::AccountsMsg::SigninBegin { .. } | super::accounts::AccountsMsg::SigninCode { .. }))
+        });
         /* Which wall asked, before `answer` consumes the frames: an act is
            done for a named wall or not at all. */
-        let from = if acts.is_empty() { None } else { self.who_is(&rest, who) };
+        let from = if acts.is_empty() && signins.is_empty() { None } else { self.who_is(&rest, who) };
         let mut out = self.answer(rest, who);
         if who.current {
             for f in asks.into_iter().take(TAILS_PER_EXCHANGE) {
@@ -865,6 +870,13 @@ impl Link {
                 if let Frame::Act(ActMsg::Act { id, card, verb, args, from_card }) = f {
                     if let Some(m) = self.act_here(id, card, verb, args, from_card, from.as_deref()).await {
                         out.push(Frame::Act(m));
+                    }
+                }
+            }
+            for f in signins.into_iter().take(1) {
+                if let Frame::Accounts(m) = f {
+                    if let Some(r) = self.signin_here(m, from.clone()).await {
+                        out.push(Frame::Accounts(r));
                     }
                 }
             }

@@ -25,6 +25,9 @@ import {
   keptThrough,
   sayStale,
   sayIdentity,
+  saySeat,
+  seatsToSign,
+  SEAT_QUIET_MS,
   COPIED,
   usable,
   saySynced,
@@ -1442,5 +1445,26 @@ describe("a copied sign-in is refused, not warned about", () => {
     expect(choose([copy], {}, {}).kind).not.toBe("ok");
     const rust = readFileSync(join(import.meta.dir, "../src-tauri/src/accounts.rs"), "utf8");
     expect(rust).toContain(`"${COPIED}"`);
+  });
+});
+
+describe("signing in an account on another wall", () => {
+  const seat = (state: string, quietMs = 1_000) => ({
+    host: "QUEERISFREEDOM",
+    label: "lyss",
+    identity: "",
+    email: "l@example.com",
+    state,
+    quietMs,
+  });
+
+  test("only what wants signing in, on a wall heard from lately, is offered", () => {
+    const seats = [seat("signed in"), seat("lapsed"), seat("copied"), seat("not signed in"), seat("lapsed", SEAT_QUIET_MS + 1)];
+    expect(seatsToSign(seats).map((s) => s.state)).toEqual(["lapsed", "copied", "not signed in"]);
+  });
+
+  test("the row names the account, the wall and why it wants signing in", () => {
+    expect(saySeat(seat("lapsed"))).toBe("lyss (l@example.com) on QUEERISFREEDOM — its sign-in has lapsed");
+    expect(saySeat({ ...seat("copied"), email: "" })).toContain("retired so neither logs the other out");
   });
 });

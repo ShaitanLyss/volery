@@ -171,6 +171,15 @@ pub fn begin_signin(
     state: State<'_, Signins>,
     label: String,
 ) -> Result<(), String> {
+    start(&app, &state, label)
+}
+
+/// Start one sign-in. The command above, and a sign-in another wall asked for
+/// (`begin_for_afar`), both come through here, so a sign-in started from the
+/// other laptop is the same child, the same pipes and the same events as one
+/// started from this panel — and this wall's panel draws it as it goes.
+fn start(app: &AppHandle, state: &Signins, label: String) -> Result<(), String> {
+    let app = app.clone();
     if !crate::accounts::is_label(&label) {
         return Err("an account name may use letters, digits, dot, dash and underscore".into());
     }
@@ -296,6 +305,17 @@ pub fn begin_signin(
            exit 0 having written nothing, and that is a sign-in that did not
            happen however politely it ended. */
         let signed_in = crate::accounts::signed_in(&app, &label);
+        /* Who it now signs in as, while the token is as fresh as it will ever
+           be: that is what the other walls match the account on, and what lets
+           this row take the settings they agreed while it could not be told
+           apart (`accountsync::adopt_identity`). This thread is off the main
+           one already. A failure costs a line under the row, and the next
+           allowance read asks again. */
+        if signed_in {
+            if let Err(e) = crate::limits::learn_now(&app, &label) {
+                log::debug!("accounts: could not learn who '{label}' is after its sign-in: {e}");
+            }
+        }
         if let Ok(mut map) = app.state::<Signins>().0.lock() {
             if let Some(s) = map.get_mut(&label) {
                 s.running = false;
@@ -316,6 +336,156 @@ pub fn begin_signin(
     });
 
     Ok(())
+}
+
+/* ── signed in from another wall ───────────────────────────────────────────
+ *
+ * The replacement for carrying a sign-in between machines, which is gone
+ * because a refresh token rotates (accounts.md, *A sign-in never leaves its
+ * machine*). A person at another wall asks this one to sign an account in; this
+ * wall runs its own `claude auth login` exactly as its panel would, and hands
+ * back the address the CLI printed — the **manual** authorize URL, whose
+ * redirect is the platform's page that shows a code, since this machine's
+ * localhost is unreachable from a browser on the other one. The person signs in
+ * there and pastes the `code#state` into their own panel; it comes back here
+ * and goes into the child's stdin, the paste fallback this file already has.
+ *
+ * **The PKCE verifier never leaves this machine** — it is in the child's memory
+ * and nowhere else — so what crossed (a challenge and a state out, a one-time
+ * code back) is useless anywhere but here, and the token pair the CLI then
+ * writes is this machine's own chain. Nothing about a credential crosses.
+ *
+ * Both halves are a person's and answered on the same stream
+ * (`link/accounting.rs`); no tool reaches them. Each waits a bounded while on
+ * the child, inside the asker's twenty-second exchange, and says so if the
+ * child is slower than that rather than guessing.
+ */
+
+/// How long to wait for the child to print its address.
+const URL_WITHIN: std::time::Duration = std::time::Duration::from_secs(12);
+/// How long to wait for the child to finish once it has the code.
+const DONE_WITHIN: std::time::Duration = std::time::Duration::from_secs(14);
+
+/// Sign `label` in on this machine for a person at `host`, and hand back the
+/// address to finish it at. Refuses an account this wall does not have; picks
+/// up a sign-in already running for it rather than racing a second one.
+pub fn begin_for_afar(app: &AppHandle, label: &str, host: &str) -> Result<String, String> {
+    let known = app
+        .try_state::<crate::store::Store>()
+        .and_then(|s| s.0.lock().ok().map(|c| crate::accounts::registry(app, &c)))
+        .unwrap_or_default();
+    if !known.iter().any(|s| s.label == label) {
+        let names: Vec<&str> = known.iter().map(|s| s.label.as_str()).collect();
+        return Err(format!("there is no account called {label:?} on this wall — it has {}", if names.is_empty() { "none".to_string() } else { names.join(", ") }));
+    }
+    let state = app.state::<Signins>();
+    let running = state.0.lock().map(|m| m.get(label).is_some_and(|s| s.running)).unwrap_or(false);
+    if !running {
+        start(app, &state, label.to_string())?;
+        log::info!("accounts: a sign-in for '{label}' was started from {host}");
+    }
+    let until = std::time::Instant::now() + URL_WITHIN;
+    loop {
+        let (out, still) = state
+            .0
+            .lock()
+            .map(|m| m.get(label).map(|s| (s.out.clone(), s.running)).unwrap_or_default())
+            .unwrap_or_default();
+        if let Some(url) = crate::flyway::accounts::authorize_url(&out) {
+            return Ok(url);
+        }
+        if !still {
+            return Err(format!("the sign-in for {label} ended before it printed an address{}", last_line(&out)));
+        }
+        if std::time::Instant::now() >= until {
+            return Err(format!(
+                "the sign-in for {label} started but printed no address in time — its row in the accounts panel on that wall shows what it is doing"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// Hand a code pasted at another wall to the sign-in waiting here, and say how
+/// it ended: `signed in`, `refused` (with the CLI's own last words), or
+/// `pending` if the child is still exchanging it.
+pub fn code_for_afar(app: &AppHandle, label: &str, code: &str) -> (String, Option<String>) {
+    let state = app.state::<Signins>();
+    let written = (|| -> Result<(), String> {
+        let mut map = state.0.lock().map_err(|_| "the sign-ins are wedged".to_string())?;
+        let session = map
+            .get_mut(label)
+            .filter(|s| s.running)
+            .ok_or_else(|| format!("{label} is not signing in on this wall any more — start it again"))?;
+        let w = session.stdin.as_mut().ok_or_else(|| "that sign-in is not taking input".to_string())?;
+        w.write_all(format!("{code}\n").as_bytes())
+            .and_then(|_| w.flush())
+            .map_err(|e| format!("could not hand the code over: {e}"))
+    })();
+    if let Err(why) = written {
+        return ("refused".into(), Some(why));
+    }
+    let until = std::time::Instant::now() + DONE_WITHIN;
+    loop {
+        let (out, still) = state
+            .0
+            .lock()
+            .map(|m| m.get(label).map(|s| (s.out.clone(), s.running)).unwrap_or_default())
+            .unwrap_or_default();
+        if !still {
+            return if crate::accounts::signed_in(app, label) {
+                ("signed in".into(), None)
+            } else {
+                ("refused".into(), Some(format!("the sign-in did not take{}", last_line(&out))))
+            };
+        }
+        if std::time::Instant::now() >= until {
+            return ("pending".into(), Some("still exchanging the code — the row will say when it is done".into()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// The last thing the child said, as a clause — what a refusal is worth
+/// quoting, since the CLI answers a bad code with a bare "Invalid code".
+///
+/// **Never a line with an address in it.** The authorize URL carries a live PKCE
+/// challenge and state, which go to the screen they are for and nowhere else
+/// (*What must not be logged*, accounts.md) — and a refusal is sent to another
+/// wall. The first cut quoted the URL line as the reason, found on the lab run:
+/// the CLI answers a pasted code on the *same* line as its unterminated prompt,
+/// so the line that held the answer was the one filtered out as "the prompt",
+/// and the last line left was the address. So what follows the last prompt is
+/// read first.
+fn last_line(out: &str) -> String {
+    const PROMPT: &str = "prompted >";
+    let lower = out.to_ascii_lowercase();
+    let after = lower.rfind(PROMPT).map(|i| out[i + PROMPT.len()..].trim()).unwrap_or("");
+    let said = if !after.is_empty() && !after.contains("http") {
+        Some(after.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" "))
+    } else {
+        out.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.to_ascii_lowercase().contains("paste code") && !l.contains("http"))
+            .next_back()
+            .map(str::to_string)
+    };
+    said.map(|l| format!(": {}", crate::clip::preview(&l, 300))).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod last_line_tests {
+    use super::last_line;
+
+    #[test]
+    fn a_refusal_quotes_the_cli_and_never_the_address() {
+        let out = "Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?state=SECRET\nPaste code here if prompted > OAuth error: Invalid code\n";
+        assert_eq!(last_line(out), ": OAuth error: Invalid code");
+        let silent = "Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?state=SECRET\nPaste code here if prompted > ";
+        assert_eq!(last_line(silent), ": Opening browser to sign in…");
+        assert!(!last_line(silent).contains("SECRET"));
+        assert_eq!(last_line(""), "");
+    }
 }
 
 /* ── the fallback ──────────────────────────────────────────────────────────*/

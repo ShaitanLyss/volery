@@ -901,6 +901,60 @@ after which the store held a credential and the global
 `~/.claude/.credentials.json` was byte-identical. `tools/probe-store.ps1` is that
 probe, kept because it is the check to re-run if a CLI update ever moves this.
 
+### Signing in from another wall
+
+The replacement for carrying a sign-in between machines, which is gone because a
+refresh token rotates (*A sign-in never leaves its machine*, below). Asked for on
+2026-10-19 with that constraint stated first: each machine gets a token pair of its
+own, and the browser step happens wherever Lyss is.
+
+**It needed no new protocol knowledge**, which is the reason it was cheap. The
+fallback above already exists: `claude auth login` on pipes prints the **manual**
+authorize URL — redirecting to the platform's page that shows a `code#state`, not
+to this machine's localhost — and waits on stdin for that code. A browser on the
+other laptop can reach the platform page and can never reach this machine's
+localhost, so the manual path is the only path, and it is the one the CLI prints.
+
+- **The owning wall runs its own sign-in.** `signin::begin_for_afar` goes through
+  the same `start` the panel's button does — the same child, pipes, job object and
+  `signin:out` events, so the sign-in is drawn on its own wall as it goes — waits up
+  to twelve seconds for the URL (`flyway::accounts::authorize_url`, the last
+  `…oauth/authorize…` printed) and hands it back. One already running for the
+  label is picked up rather than raced.
+- **The person finishes it where they are.** The asking panel opens the URL in this
+  machine's browser, says to use a private window if this machine is not theirs to
+  keep a claude.ai session on (`REMOTE_SIGNIN_ADVICE` — the browser keeps cookies,
+  never the tokens), and takes the pasted code through the same `codeFrom` the local
+  field uses.
+- **The code goes back into the waiting child** (`signin::code_for_afar`), which
+  exchanges it with **its own PKCE verifier**. That verifier is in the child's memory
+  on the owning machine and nowhere else, so what crossed — a challenge and a state
+  out, a single-use code back — is useless anywhere but there, and the tokens the
+  CLI writes are that machine's own chain. Nothing about a credential crosses. The
+  answer is `signed in`, `refused` with the CLI's own last words (a bad code is a
+  bare "Invalid code"), or `pending` if the exchange outlives the fourteen seconds
+  the owner waits inside the asker's twenty-second exchange.
+- **The identity is learned as the child exits**, in Rust (`limits::learn_now`,
+  called from `signin.rs`'s wait thread), for a local sign-in and a remote one alike
+  — so a newly signed-in account adopts the settings the other walls agreed for it
+  straight away, and the asking wall's panel shows who it signs in as by the next
+  picture.
+- **What the asking wall sees** is each other wall's accounts as that wall said them
+  (`Seat` in the accounts frame: label, identity, address, and `signed in`, `not
+  signed in`, `lapsed` or `copied`), read by `afar_seats`. The panel offers *sign it
+  in from here* for the ones that want it on a wall heard from inside
+  `SEAT_QUIET_MS` (`seatsToSign`).
+- **A person's, never an agent's, and never queued.** Two exchanges on `act`'s shape
+  (`signin_begin` / `signin_begun`, `signin_code` / `signin_done`), answered on the
+  same stream off the worker pool, sent only by two Tauri commands the panel calls.
+  An owning wall refuses one from a wall the handshake did not name; the asking wall
+  refuses at once a wall that is unknown, quiet or does not announce `signin` in
+  `Facts::can`. Every URL is held to `https` and an authorize path before it is put
+  in front of a person, every code to one line before it reaches a child's stdin.
+- **Known roughness**: the CLI opens a browser on the owning machine as it starts,
+  as it always does. On an unattended laptop that is a tab nobody sees; with both
+  walls on one machine it is a second tab. Nothing in the CLI's argv turns it off.
+
 ### One account is not a choice
 
 Everything this feature draws **on the wall** is gated on there being more than
@@ -1002,7 +1056,7 @@ nineteen days to run, almost certainly by AU-LT-288 refreshing a carried copy.
 Lyss: *"I don't want machines to log each other out."* A warning was not enough;
 the answer is that nothing here can make the copy.
 
-The replacement is signing a machine in **from another wall** (below, *Signing
+The replacement is signing a machine in **from another wall** (above, *Signing
 in from another wall*): each machine runs its own `claude auth login`, keeps its
 own PKCE verifier, and gets a chain of its own. What crosses the flyway is a URL
 and a one-time code — never a token.

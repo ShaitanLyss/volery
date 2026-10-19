@@ -89,6 +89,51 @@ export type Account = {
   copied?: boolean;
 };
 
+/** One account on another wall, as that wall said it
+ *  (`link/accounting.rs::AfarSeat`): its label there, who it signs in as, and
+ *  whether it can take work. */
+export type AfarSeat = {
+  host: string;
+  label: string;
+  identity: string;
+  email: string;
+  state: "signed in" | "not signed in" | "lapsed" | "copied" | string;
+  quietMs: number;
+};
+
+/** How long a wall may go unheard and still be offered a sign-in from here —
+ *  the fleet's `QUIET_AFTER_MS`, past which the flyway refuses any exchange
+ *  with it anyway. */
+export const SEAT_QUIET_MS = 90_000;
+
+/** The accounts on other walls that want signing in, and that could be signed
+ *  in from here right now: not signed in, lapsed, or a retired copy, on a wall
+ *  heard from lately. A signed-in account is left out — signing it in again
+ *  from afar is a thing nobody needs to be offered every time the panel opens.
+ *  Order is Rust's, by wall and label. */
+export function seatsToSign(seats: AfarSeat[]): AfarSeat[] {
+  return seats.filter((s) => s.state !== "signed in" && s.quietMs <= SEAT_QUIET_MS);
+}
+
+/** What a row on another wall says about the account, in the panel's words. */
+export function saySeat(s: AfarSeat): string {
+  const why =
+    s.state === "copied"
+      ? "its sign-in is a copy of another machine's, retired so neither logs the other out"
+      : s.state === "lapsed"
+        ? "its sign-in has lapsed"
+        : "not signed in";
+  const who = s.email ? ` (${s.email})` : "";
+  return `${s.label}${who} on ${s.host} — ${why}`;
+}
+
+/** The advice under a sign-in started for another wall. Said every time,
+ *  because the browser it is finished in is this machine's: it keeps a claude.ai
+ *  session (cookies, never the tokens), and on a machine that is not yours to
+ *  sign in on, a private window keeps even that off it. */
+export const REMOTE_SIGNIN_ADVICE =
+  "open it here and sign in — in a private window if this machine is not yours to keep a claude.ai session on. the tokens are made on the other wall and stay there; then paste the code the page shows.";
+
 /** What a copied sign-in is told — `accounts.rs::COPIED`, word for word, held
  *  equal by a test. */
 export const COPIED =

@@ -26,6 +26,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  type AfarSeat,
   choose,
   keptThrough,
   refuse,
@@ -94,6 +95,9 @@ export class Waterfall {
    *  which deliberately does not delete the store. The panel offers them rather
    *  than adopting them silently. */
   unregistered = $state<string[]>([]);
+  /** Every other wall's accounts as it last said them (`afar_seats`), for the
+   *  panel's rows that can sign one in from here. Empty off a flyway. */
+  afar = $state<AfarSeat[]>([]);
   fault = $state<string | null>(null);
   /** Whether a first pass has landed, so "no accounts" and "still looking" are
    *  distinguishable — the same reason `Ledger.ready` exists. */
@@ -181,11 +185,13 @@ export class Waterfall {
   async refresh() {
     if (this.#standIn) return;
     try {
-      const [list, stored, claude] = await Promise.all([
+      const [list, stored, claude, afar] = await Promise.all([
         invoke<Account[]>("list_accounts"),
         invoke<string[]>("stored_accounts"),
         invoke<Presence>("find_claude"),
+        invoke<AfarSeat[]>("afar_seats").catch(() => [] as AfarSeat[]),
       ]);
+      this.afar = afar;
       this.list = list;
       this.claude = claude;
       const known = new Set(list.map((a) => a.label));

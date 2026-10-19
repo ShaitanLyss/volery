@@ -127,7 +127,7 @@ const KNOWN: &[&str] = &[
     "hello", "events", "roster", "ask", "answer", "prompt", "pictured", "recall", "close", "cards", "tail", "tailed",
     "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
     "act", "acted", "board", "unpost", "unposted", "leaving",
-    "accounts",
+    "accounts", "signin_begin", "signin_begun", "signin_code", "signin_done",
 ];
 
 #[cfg(test)]

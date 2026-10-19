@@ -1053,13 +1053,16 @@ fn learn_if_due(app: &AppHandle, label: &str, token: &Token) {
 /// said rather than thrown, since nothing waits on it but a line in the panel.
 #[tauri::command]
 pub async fn learn_identity(app: AppHandle, label: String) -> Result<Option<String>, String> {
-    crate::off_main(move || {
-        let token = token(&app, Some(&label))?;
-        let id = profile(&token)?;
-        record_identity(&app, &label, &id)?;
-        Ok(Some(id.email))
-    })
-    .await?
+    crate::off_main(move || learn_now(&app, &label).map(Some)).await?
+}
+
+/// The same, blocking — for a thread that is already off the main one, which
+/// is where `signin.rs` hears a sign-in finish. Answers the address learned.
+pub fn learn_now(app: &AppHandle, label: &str) -> Result<String, String> {
+    let token = token(app, Some(label))?;
+    let id = profile(&token)?;
+    record_identity(app, label, &id)?;
+    Ok(id.email)
 }
 
 /// Forget the reading and the credential's whereabouts. Called when the last

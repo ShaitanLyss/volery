@@ -22,6 +22,9 @@
     sayBlocked,
     sayImported,
     sayIdentity,
+    saySeat,
+    seatsToSign,
+    REMOTE_SIGNIN_ADVICE,
     sayStale,
     saySynced,
     sayTier,
@@ -113,12 +116,8 @@
            browser leaves the row exactly as it was. */
         void waterfall.refresh();
         say(signedIn ? `${label} is signed in` : `${label} was not signed in`);
-        /* The token is as fresh now as it will ever be, so this is the moment
-           to learn who the account is — which is what the other walls match it
-           on, and what lets it adopt the settings they agreed while this wall
-           could not tell (`accountsync::adopt_identity`). A failure costs only
-           the line under the row; the next allowance read asks again. */
-        if (signedIn) void invoke("learn_identity", { label }).catch(() => {});
+        /* Who it now signs in as is learned in Rust as the child exits
+           (`signin.rs`), for a sign-in started from here or from afar alike. */
       }),
     );
 
@@ -298,6 +297,49 @@
       say(String(err));
     }
     signinRunning = { ...signinRunning, [label]: false };
+  }
+
+  /* ── signing in an account on another wall ──────────────────────────────
+     The replacement for carrying a sign-in between machines: the other wall
+     runs its own `claude auth login` and sends back the manual address; it is
+     finished in this machine's browser, and the code the page shows goes back
+     there. Nothing about a token crosses — accounts.md, *Signing in from
+     another wall*. Keyed by wall and label; held only while the panel is up. */
+  type Remote = { id: string; url: string; code: string; busy: boolean; said: string };
+  let remote = $state<Record<string, Remote>>({});
+  const keyOf = (host: string, label: string) => JSON.stringify([host, label]);
+
+  async function remoteBegin(host: string, label: string) {
+    const key = keyOf(host, label);
+    remote = { ...remote, [key]: { id: "", url: "", code: "", busy: true, said: `asking ${host}…` } };
+    try {
+      const b = await invoke<{ id: string; url: string }>("flyway_signin_begin", { host, label });
+      remote = { ...remote, [key]: { id: b.id, url: b.url, code: "", busy: false, said: "" } };
+      void openAuthorize(b.url);
+    } catch (err) {
+      remote = { ...remote, [key]: { id: "", url: "", code: "", busy: false, said: String(err) } };
+    }
+  }
+
+  async function remoteCode(host: string, label: string) {
+    const key = keyOf(host, label);
+    const r = remote[key];
+    const code = r ? codeFrom(r.code) : null;
+    if (!r || !code) return;
+    remote = { ...remote, [key]: { ...r, busy: true, said: `handing it to ${host}…` } };
+    try {
+      const f = await invoke<{ outcome: string; why: string | null }>("flyway_signin_code", { host, id: r.id, label, code });
+      const said =
+        f.outcome === "signed in"
+          ? `${label} is signed in on ${host}`
+          : f.outcome === "pending"
+            ? (f.why ?? "still finishing over there")
+            : (f.why ?? "it did not take");
+      remote = { ...remote, [key]: { ...r, busy: false, code: f.outcome === "refused" ? r.code : "", said } };
+      if (f.outcome === "signed in") void waterfall.refresh();
+    } catch (err) {
+      remote = { ...remote, [key]: { ...r, busy: false, said: String(err) } };
+    }
   }
 
   async function openAuthorize(url: string) {
@@ -720,6 +762,50 @@
         </div>
       {/each}
 
+      <!-- ── accounts on other walls that want signing in ─────────────────
+           Signed in from here, each machine still getting a chain of its own:
+           the other wall runs the sign-in, this browser finishes it. -->
+      {#if seatsToSign(waterfall.afar).length > 0}
+        <div class="afar">
+          <span class="dim">on other walls:</span>
+          {#each seatsToSign(waterfall.afar) as seat (keyOf(seat.host, seat.label))}
+            {@const r = remote[keyOf(seat.host, seat.label)]}
+            <div class="afar-row">
+              <span class="dim">{saySeat(seat)}</span>
+              <span class="grow"></span>
+              <button
+                class="chip"
+                disabled={r?.busy}
+                onclick={() => remoteBegin(seat.host, seat.label)}
+                title="start the sign-in on {seat.host} and finish it in this machine's browser"
+              >{r?.url ? "start again" : "sign it in from here"}</button>
+            </div>
+            {#if r?.url}
+              <div class="signin">
+                <span class="dim">{REMOTE_SIGNIN_ADVICE}</span>
+                <div class="signin-row">
+                  <button class="chip" onclick={() => openAuthorize(r.url)}>open the sign-in page</button>
+                  <input
+                    class="codein"
+                    placeholder="paste the code, or the whole callback url"
+                    value={r.code}
+                    oninput={(e) => (remote = { ...remote, [keyOf(seat.host, seat.label)]: { ...r, code: e.currentTarget.value } })}
+                    onkeydown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void remoteCode(seat.host, seat.label);
+                      }
+                    }}
+                  />
+                  <button class="chip" disabled={r.busy || !r.code.trim()} onclick={() => remoteCode(seat.host, seat.label)}>hand it over</button>
+                </div>
+              </div>
+            {/if}
+            {#if r?.said}<span class="dim">{r.said}</span>{/if}
+          {/each}
+        </div>
+      {/if}
+
       <!-- ── accounts signed in but not in the order ───────────────────── -->
       {#if waterfall.unregistered.length > 0}
         <div class="loose">
@@ -1029,6 +1115,18 @@
     color: var(--paper-faint);
   }
 
+  .afar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    border-top: 1px dashed var(--rule);
+    padding-top: 0.45rem;
+  }
+  .afar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
   .who {
     display: flex;
     flex-wrap: wrap;

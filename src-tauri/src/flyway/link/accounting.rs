@@ -21,7 +21,7 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use super::{current, Frame, Link, CARDS_EVERY};
-use crate::flyway::accounts::{self as wire, AccountsMsg, Chain, Reading};
+use crate::flyway::accounts::{self as wire, AccountsMsg, Chain, Reading, Seat};
 
 /// One reading another wall took: which wall, the report as it said it, when
 /// this wall heard it, and how old it was then.
@@ -33,10 +33,10 @@ pub(super) struct Heard {
 }
 
 /// Every reading other walls have said, by identity — the freshest per
-/// account. In memory only, as a shadow is: a restart forgets them and the next
-/// exchange says them again.
+/// account — and each wall's accounts as it last said them. In memory only, as
+/// a shadow is: a restart forgets them and the next exchange says them again.
 #[derive(Default)]
-pub(super) struct Afar(HashMap<String, Heard>);
+pub(super) struct Afar(HashMap<String, Heard>, HashMap<String, Vec<Seat>>);
 
 impl Afar {
     fn take(&mut self, host: &str, readings: &[Reading], now: i64) {
@@ -127,14 +127,45 @@ impl Link {
                 Some(Reading { identity, age_ms: (now - at).max(0) as u64, report })
             })
             .collect();
-        Some(wire::say(&self.me, settings, readings, chains))
+        Some(wire::say(&self.me, settings, readings, chains, self.seats_here()))
+    }
+
+    /// This wall's accounts, for a person at another wall to see which of
+    /// them could be signed in from there: label, who it signs in as, and
+    /// whether it can take work. Labels are this wall's own names, and are not
+    /// matched on by anybody — only shown.
+    fn seats_here(&self) -> Vec<Seat> {
+        let Some(store) = self.store() else { return Vec::new() };
+        let Ok(conn) = store.0.lock() else { return Vec::new() };
+        crate::accounts::registry(&self.app, &conn)
+            .into_iter()
+            .map(|s| {
+                let (identity, email): (String, String) = conn
+                    .query_row(
+                        "SELECT identity, identity_email FROM account WHERE label = ?1",
+                        rusqlite::params![s.label],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap_or_default();
+                let state = if s.copied {
+                    "copied"
+                } else if !s.signed_in {
+                    "not signed in"
+                } else if crate::accounts::lapsed(&self.app, &s.label) {
+                    "lapsed"
+                } else {
+                    "signed in"
+                };
+                Seat { label: s.label, identity, email, state: state.into() }
+            })
+            .collect()
     }
 
     /// Another wall's account picture: every register that beats what is held
     /// is taken and applied, and its readings are kept. Only from a wall that
     /// announced the word — anything else passing for one is not read.
     pub(super) fn on_accounts(&self, m: AccountsMsg, from: Option<&str>) {
-        let AccountsMsg::Accounts { host, settings, readings, chains } = m;
+        let AccountsMsg::Accounts { host, settings, readings, chains, seats } = m else { return };
         /* The host the handshake vouched for, where there is one — a picture
            naming another wall is read as the dialler's. */
         let host = from.map(str::to_string).unwrap_or(host);
@@ -151,11 +182,23 @@ impl Link {
             moved |= self.retire_copies(&conn, &host, &chains);
             moved
         };
-        if let Ok(mut a) = self.afar_accounts.lock() {
-            a.take(&host, &readings, self.now());
-        }
+        let seats = wire::admitted_seats(&seats);
+        let seated = match self.afar_accounts.lock() {
+            Ok(mut a) => {
+                a.take(&host, &readings, self.now());
+                let news = a.1.get(&host) != Some(&seats);
+                a.1.insert(host.clone(), seats);
+                news
+            }
+            Err(_) => false,
+        };
         if moved {
             crate::accounts::changed(&self.app);
+        } else if seated {
+            /* Only this wall's readers: another wall's account list is nothing
+               to say to a third. */
+            use tauri::Emitter;
+            let _ = self.app.emit("accounts:changed", ());
         }
     }
 
@@ -185,6 +228,86 @@ impl Link {
             }
         }
         retired
+    }
+
+    /// A person at another wall asking this one to sign an account in, or
+    /// handing over the code that finishes it — answered on the same stream.
+    /// Both block on the child (`signin.rs`), so they go to the pool built for
+    /// that rather than holding a worker. Refused outright from a wall the
+    /// handshake did not name, and from a card: no tool sends these.
+    pub(super) async fn signin_here(self: &Arc<Self>, m: AccountsMsg, from: Option<String>) -> Option<AccountsMsg> {
+        let Some(host) = from else {
+            let id = match &m {
+                AccountsMsg::SigninBegin { id, .. } | AccountsMsg::SigninCode { id, .. } => id.clone(),
+                _ => return None,
+            };
+            let why = format!("{} could not tell which wall asked — try again in a minute", self.me);
+            return Some(match m {
+                AccountsMsg::SigninBegin { .. } => AccountsMsg::SigninBegun { id, url: None, why: Some(why) },
+                _ => AccountsMsg::SigninDone { id, outcome: "refused".into(), why: Some(why) },
+            });
+        };
+        let app = self.app.clone();
+        match m {
+            AccountsMsg::SigninBegin { id, label } => {
+                if !super::act::is_id(&id) {
+                    return None;
+                }
+                let r = tauri::async_runtime::spawn_blocking(move || crate::signin::begin_for_afar(&app, &label, &host))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("the sign-in did not start: {e}")));
+                Some(match r {
+                    Ok(url) => AccountsMsg::SigninBegun { id, url: Some(url), why: None },
+                    Err(why) => AccountsMsg::SigninBegun { id, url: None, why: Some(why) },
+                })
+            }
+            AccountsMsg::SigninCode { id, label, code } => {
+                if !super::act::is_id(&id) {
+                    return None;
+                }
+                let Some(code) = wire::admit_code(&code) else {
+                    return Some(AccountsMsg::SigninDone { id, outcome: "refused".into(), why: Some("that is not a code".into()) });
+                };
+                let (outcome, why) =
+                    tauri::async_runtime::spawn_blocking(move || crate::signin::code_for_afar(&app, &label, &code))
+                        .await
+                        .unwrap_or_else(|e| ("refused".into(), Some(format!("the code was not handed over: {e}"))));
+                Some(AccountsMsg::SigninDone { id, outcome, why })
+            }
+            _ => None,
+        }
+    }
+
+    /// Ask `host` for one exchange about a sign-in, and keep its answer out of
+    /// the rest of what it says back. Never touches `failing`, for
+    /// `read_tail`'s reason. Refused at once for a wall unknown, quiet or too
+    /// old — never queued: a sign-in is somebody waiting in front of a browser.
+    async fn signin_exchange(self: &Arc<Self>, host: &str, ask: AccountsMsg, id: &str) -> Result<AccountsMsg, String> {
+        self.reachable(host, wire::SIGNIN_WORD, "cannot be signed in from another wall — update it, or sign in there")?;
+        let peer = self.wire.peer(host)?;
+        let back = self
+            .wire
+            .exchange(peer, vec![Frame::Accounts(ask)], true)
+            .await
+            .map_err(|e| format!("did not hear back from {host} ({e})"))?;
+        let mut answer = None;
+        let mut rest = Vec::new();
+        for f in back {
+            match f {
+                Frame::Accounts(m @ (AccountsMsg::SigninBegun { .. } | AccountsMsg::SigninDone { .. })) => {
+                    let mine = match &m {
+                        AccountsMsg::SigninBegun { id: i, .. } | AccountsMsg::SigninDone { id: i, .. } => i == id,
+                        _ => false,
+                    };
+                    if mine {
+                        answer = Some(m);
+                    }
+                }
+                other => rest.push(other),
+            }
+        }
+        self.take(rest, Some(host));
+        answer.ok_or_else(|| format!("{host} answered without saying how the sign-in went"))
     }
 
     /// The accounts changed here: say the new picture to every wall that can
@@ -229,7 +352,96 @@ pub(super) fn words() -> Vec<String> {
     if cfg!(debug_assertions) && std::env::var("VOLERY_LAB_NO_ACCOUNTS").is_ok_and(|v| v.trim() == "1") {
         return Vec::new();
     }
-    vec![wire::WORD.to_string()]
+    vec![wire::WORD.to_string(), wire::SIGNIN_WORD.to_string()]
+}
+
+/// One account on another wall, as this wall's panel draws it.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AfarSeat {
+    pub host: String,
+    pub label: String,
+    pub identity: String,
+    pub email: String,
+    pub state: String,
+    /// How long that wall has gone unheard — the roster's word.
+    pub quiet_ms: u64,
+}
+
+/// Every other wall's accounts as it last said them, for the panel's *on other
+/// walls* rows.
+#[tauri::command]
+pub fn afar_seats(app: AppHandle) -> Vec<AfarSeat> {
+    let Some(link) = current(&app) else { return Vec::new() };
+    let now = link.now();
+    let seats: Vec<(String, Seat)> = link
+        .afar_accounts
+        .lock()
+        .map(|a| a.1.iter().flat_map(|(h, v)| v.iter().map(move |s| (h.clone(), s.clone()))).collect())
+        .unwrap_or_default();
+    let fleet = link.fleet.lock().ok();
+    let mut out: Vec<AfarSeat> = seats
+        .into_iter()
+        .map(|(host, s)| AfarSeat {
+            quiet_ms: fleet.as_ref().and_then(|f| f.entry(&host).map(|e| e.quiet_for(now))).unwrap_or(u64::MAX),
+            host,
+            label: s.label,
+            identity: s.identity,
+            email: s.email,
+            state: s.state,
+        })
+        .collect();
+    out.sort_by(|a, b| (a.host.to_lowercase(), a.label.to_lowercase()).cmp(&(b.host.to_lowercase(), b.label.to_lowercase())));
+    out
+}
+
+/// What a sign-in started from here came back with.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Begun {
+    pub id: String,
+    pub url: String,
+}
+
+/// Start signing `label` in on `host`, from here: the address comes back to
+/// be opened in this machine's browser. A person's gesture from the accounts
+/// panel; no tool reaches it.
+#[tauri::command]
+pub async fn flyway_signin_begin(app: AppHandle, host: String, label: String) -> Result<Begun, String> {
+    if !crate::accounts::is_label(&label) {
+        return Err("that is not an account name".into());
+    }
+    let link = current(&app).ok_or("this wall is not on a flyway")?;
+    let id = crate::store::uuid_v4();
+    let m = link.signin_exchange(&host, AccountsMsg::SigninBegin { id: id.clone(), label }, &id).await?;
+    match m {
+        AccountsMsg::SigninBegun { url: Some(url), .. } => {
+            wire::admit_url(&url).map(|url| Begun { id, url }).ok_or_else(|| format!("{host} sent back an address that is not a sign-in page"))
+        }
+        AccountsMsg::SigninBegun { why, .. } => Err(why.map(|w| wire::admit_why(&w)).unwrap_or_else(|| format!("{host} did not start the sign-in"))),
+        _ => Err(format!("{host} answered something else")),
+    }
+}
+
+/// How a code handed to another wall ended.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Finished {
+    pub outcome: String,
+    pub why: Option<String>,
+}
+
+/// Hand the `code#state` the platform page showed to the sign-in waiting on
+/// `host`, and say how it ended there.
+#[tauri::command]
+pub async fn flyway_signin_code(app: AppHandle, host: String, id: String, label: String, code: String) -> Result<Finished, String> {
+    let code = wire::admit_code(&code).ok_or("that is not a code — it is one line, usually two parts joined by a #")?;
+    let link = current(&app).ok_or("this wall is not on a flyway")?;
+    let m = link.signin_exchange(&host, AccountsMsg::SigninCode { id: id.clone(), label, code }, &id).await?;
+    match m {
+        AccountsMsg::SigninDone { outcome, why, .. } => Ok(Finished { outcome, why: why.map(|w| wire::admit_why(&w)) }),
+        _ => Err(format!("{host} answered something else")),
+    }
 }
 
 /// Tell the link the accounts changed, if there is a link.

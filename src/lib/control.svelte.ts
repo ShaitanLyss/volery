@@ -2509,11 +2509,20 @@ export class Control {
         if (label !== null && op.caps && typeof op.caps === "object") await waterfall.setCaps(label, op.caps as Record<string, number>);
         if (label !== null && op.priority !== undefined) await waterfall.setPriority(label, Number(op.priority));
         if (label !== null && op.learn) await invoke("learn_identity", { label });
+        /* The panel's remote sign-in, both halves — what its two buttons call. */
+        const host = op.host === undefined ? null : String(op.host);
+        if (host !== null && label !== null && op.signin) {
+          return { begun: await invoke("flyway_signin_begin", { host, label }) };
+        }
+        if (host !== null && label !== null && op.code !== undefined) {
+          return { finished: await invoke("flyway_signin_code", { host, id: String(op.id ?? ""), label, code: String(op.code) }) };
+        }
         if (op.refresh) await waterfall.refresh();
         return {
           list: waterfall.list,
           allowances: waterfall.allowances,
           usable: waterfall.usable.map((a) => a.label),
+          afar: waterfall.afar,
         };
       },
 
