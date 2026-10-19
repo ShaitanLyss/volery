@@ -1499,8 +1499,17 @@ the heard-time and `#reconcile` takes the shadows down.
 `flyway_forget` shares `Link::drop_wall` now, which fixed a neighbour: forgetting a quiet wall
 used to leave its cards in the link and its shadows on the wall.
 
-Demonstrated 2026-10-19 between two frozen labs (`a`, `b --peer a`): see the commit message for
-what was read off the snapshot's `elsewhere.roster`.
+Demonstrated 2026-10-19 between two frozen labs (`a`, `b --peer a`), driven through the Flyway
+panel (`<space> k`, "leave the flyway") and read off the snapshot's new `elsewhere.roster`:
+with a card open on `a` and drawn as a shadow on `b`, **leave on `a`** left `a` with no roster
+and no heard-times, and `b` — within three seconds, no restart — with its own row only: no `a`
+row, no `heardAt`, no shadow, and still none 45 seconds (a tick and a half) later. `a`'s log said
+*left — said goodbye to 1 of 1 wall(s)*. **Rejoining** (`a` joins with the invite naming `b`)
+had both rosters carrying both walls within one tick. **A crash** (`taskkill /F` on `a`, no
+goodbye) left `a` on `b`'s roster, its quiet time climbing past the 90 s line to 170 s, and its
+shadow still drawn — a shut lid is still not a departure. One trap in the harness, not the
+product: `.flyway .act.go` matches *start a flyway* before *join*, so a join clicked by that
+selector starts a flyway of its own and reads exactly like a rejoin that never converged.
 
 
 ### Accounts are one set of settings, whichever wall you are at
