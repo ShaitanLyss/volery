@@ -9,7 +9,7 @@
   import { flip } from "svelte/animate";
   import { cubicInOut } from "svelte/easing";
   import Icon from "./Icon.svelte";
-  import type { Group, Placed, ProjectRow } from "./chatview";
+  import type { Ghost, Group, Placed, ProjectRow } from "./chatview";
 
   let {
     groups,
@@ -17,6 +17,7 @@
     selected,
     account = null,
     onselect,
+    onparent,
     onnew,
     onsearch,
     onproject,
@@ -29,6 +30,9 @@
     /** Who is signed in and what binds them, for the foot (§5.7). */
     account?: { name: string; line: string } | null;
     onselect: (id: string) => void;
+    /** The parent named above a child: select it, or bring a closed one back
+     *  (`chatview.ts::Ghost`). */
+    onparent: (g: Ghost) => void;
     onnew: () => void;
     onsearch: () => void;
     onproject: (name: string) => void;
@@ -36,8 +40,22 @@
     onaccount?: () => void;
   } = $props();
 
-  /** Set aside starts folded: it is the end of the list on purpose. */
+  /** Set aside starts folded: it is the end of the list on purpose — and
+   *  opens by itself when what you selected is in it, which a parent named
+   *  above its child, or Ctrl+K, can land you on. */
   let asideOpen = $state(false);
+  $effect(() => {
+    if (selected && groups.some((g) => g.key === "aside" && g.rows.some((p) => p.row.id === selected))) asideOpen = true;
+  });
+
+  /** What a parent's label offers: the parent itself, its recorded session
+   *  brought back, or nothing — a card closed on another wall, or a wall not
+   *  heard from, is named and cannot be reached from here. */
+  function reaches(g: Ghost): string | null {
+    if (g.state === "here") return `open “${g.label}”, the conversation that started this one`;
+    if (g.state === "closed" && g.host === null) return "bring back the conversation that started this one, from its recorded session";
+    return null;
+  }
 
   /** How long a row's travel takes, or nothing when the wall is asked to keep
    *  still. Read when the move happens rather than once, so changing the
@@ -124,7 +142,15 @@
 
 {#snippet row(p: Placed)}
   {#if p.ghost}
-    <div class="ghost" aria-hidden="true">{p.ghost}</div>
+    {@const g = p.ghost}
+    {@const reach = reaches(g)}
+    {#if reach}
+      <button type="button" class="ghost" class:gone={g.state !== "here"} title={reach} aria-label={reach} onclick={() => onparent(g)}
+        >{g.label}{#if g.state !== "here"}<span class="act"> · open it</span>{/if}</button
+      >
+    {:else}
+      <div class="ghost gone" title={g.state === "unseen" ? "its wall has not been heard from" : "closed on its own wall"}>{g.label}</div>
+    {/if}
   {/if}
   <button
     type="button"
@@ -344,12 +370,27 @@
     border-bottom-left-radius: 6px;
   }
   .ghost {
+    display: block;
+    width: 100%;
     padding: 2px 10px 0 34px;
     font-size: 12px;
     color: var(--cv-note, var(--paper-mute));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    border-radius: 6px;
+  }
+  button.ghost:hover {
+    color: var(--paper-dim);
+    text-decoration: underline;
+    text-decoration-color: var(--paper-faint);
+    text-underline-offset: 3px;
+  }
+  .ghost.gone {
+    font-style: italic;
+  }
+  .ghost .act {
+    font-style: normal;
   }
 
   /* Status: the dot carries the colour, and a working one breathes. The breath

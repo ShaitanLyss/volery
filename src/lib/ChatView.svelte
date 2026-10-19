@@ -22,7 +22,7 @@
   import type { Front } from "./front.svelte";
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
-  import { groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow } from "./chatview";
+  import { groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Ghost } from "./chatview";
   import { scopeFiles, scopePictures } from "./paths.svelte";
   import { selectionMarkdown } from "./copy";
   import { stepBy, landing } from "./outline";
@@ -96,8 +96,9 @@
     bang: Bang;
     /** The conversation in front of you — the wall's focus. */
     selected: string | null;
-    /** Who started whom (`Elsewhere.kin`), child to parent. */
-    kin: readonly { child: string; parent: string }[];
+    /** Who started whom (`Elsewhere.kin`), child to parent — `unseen` naming
+     *  the wall of a parent this wall holds no word from. */
+    kin: readonly { child: string; parent: string; unseen?: string }[];
     /** The reading size the wall's panel is set at (ctrl+wheel), shared. */
     reading?: number;
     /** Whether the window is in front — the follow re-pins on coming back, and
@@ -145,6 +146,9 @@
   /* ── the sidebar's rows ─────────────────────────────────────────────── */
 
   const parentOf = $derived(new Map(kin.map((k) => [k.child, k.parent])));
+  /** Parents on a wall this one holds no word from: named as out of reach,
+   *  never as closed (`chatview.ts::Ghost`). */
+  const unseen = $derived(new Set(kin.filter((k) => k.unseen !== undefined).map((k) => k.parent)));
 
   /** One card, as the sidebar sees it. The rules are `chatview.ts`'s; this
    *  only reads the handle. */
@@ -197,7 +201,7 @@
   }
 
   const rows = $derived(cards.all.map(rowOf));
-  const gs = $derived(groups(rows, clock.t));
+  const gs = $derived(groups(rows, clock.t, unseen));
   /* The chat home is a territory so that "no project" has an address
      (`store::chat_home`), and is no project: its conversations say *chat*. */
   const folders = $derived(
@@ -221,6 +225,32 @@
     page = null;
     drawer = false;
     onselect(id);
+  }
+
+  /** The parent named above a child in the sidebar. Listed, it is selected;
+   *  a card of this wall's that was closed is brought back from its recorded
+   *  session — `adopt`'s road, the one a timeline's *pick it back up* takes —
+   *  and selected; anything else says why it cannot be opened from here. */
+  async function openParent(g: Ghost) {
+    if (cards.find(g.id)) return choose(g.id);
+    if (g.host !== null || g.state !== "closed") {
+      skein.fault =
+        g.state === "unseen"
+          ? `the conversation that started this one is on ${g.host ?? "another wall"}, which has not been heard from`
+          : `the conversation that started this one was closed on ${g.host}`;
+      return;
+    }
+    const s = (await skein.importable()).find((x) => x.id === g.id);
+    if (!s) {
+      skein.fault = "the conversation that started this one was closed, and its session is no longer on disk";
+      return;
+    }
+    const got = await skein.importSession(s);
+    if (typeof got === "string") {
+      skein.fault = got;
+      return;
+    }
+    choose(got.id);
   }
 
   /** The sidebar's *projects* group, and Ctrl+K's projects. */
@@ -616,6 +646,7 @@
         {selected}
         {account}
         onselect={choose}
+        onparent={openParent}
         {onnew}
         onsearch={search}
         onproject={openProject}
@@ -630,6 +661,7 @@
       {selected}
       {account}
       onselect={choose}
+      onparent={openParent}
       {onnew}
       onsearch={search}
       onproject={openProject}

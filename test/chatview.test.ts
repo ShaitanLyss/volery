@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { SKEIN_SPAWN_TOOL } from "../src/lib/classify";
+import { shadowKey } from "../src/lib/shadow";
 import {
   spawnedHandle,
   cardByHandle,
@@ -11,6 +12,8 @@ import {
   settles,
   settledByReading,
   allowanceLine,
+  hostOfKey,
+  goneGhost,
   dayOf,
   groups,
   matches,
@@ -191,7 +194,7 @@ describe("children sit under their parent", () => {
   test("a working child of a parent in history stays in working, under its parent's greyed title", () => {
     const rows = [row("p", { title: "the refactor" }), row("k", { working: true, turnAt: NOW, parent: "p" })];
     const g = groups(rows, NOW).find((x) => x.key === "working")!;
-    expect(g.rows[0]).toMatchObject({ depth: 1, ghost: "the refactor" });
+    expect(g.rows[0]).toMatchObject({ depth: 1, ghost: { id: "p", label: "the refactor", state: "here", host: null } });
     expect(ids(rows, "today")).toEqual(["p"]);
   });
 
@@ -209,8 +212,48 @@ describe("children sit under their parent", () => {
     ]);
   });
 
-  test("a parent that is not on the list leaves its child at the top", () => {
-    expect(groups([row("k", { parent: "gone" })], NOW)[0].rows[0]).toMatchObject({ depth: 0, ghost: null });
+  test("a parent that is not on the list is named as closed, never left out", () => {
+    /* Drawn at the top with nothing above it, a child reads as one a person
+       started — and the parent was a gesture away that nothing offered. */
+    expect(groups([row("k", { parent: "gone" })], NOW)[0].rows[0]).toMatchObject({
+      depth: 1,
+      ghost: { id: "gone", label: "started by a closed conversation", state: "closed", host: null },
+    });
+  });
+
+  test("a parent closed on another wall says where, and one on a wall not heard from says so", () => {
+    const far = shadowKey("QUEERISFREEDOM", "4f1c2b9e-0000-4000-8000-000000000000");
+    const closed = groups([row("k", { parent: far })], NOW)[0].rows[0].ghost;
+    expect(closed).toEqual({ id: far, label: "started by a conversation closed on QUEERISFREEDOM", state: "closed", host: "QUEERISFREEDOM" });
+    const out = groups([row("k", { parent: far })], NOW, new Set([far]))[0].rows[0].ghost;
+    expect(out).toMatchObject({ state: "unseen", label: "started on QUEERISFREEDOM — not heard from", host: "QUEERISFREEDOM" });
+  });
+
+  test("a parent on another wall that is listed is a real row, named and reachable like any", () => {
+    const far = shadowKey("QUEERISFREEDOM", "4f1c2b9e-0000-4000-8000-000000000000");
+    const rows = [row(far, { title: "RISE Coordinator", host: "QUEERISFREEDOM" }), row("k", { working: true, turnAt: NOW, parent: far })];
+    const g = groups(rows, NOW).find((x) => x.key === "working")!;
+    expect(g.rows[0].ghost).toEqual({ id: far, label: "RISE Coordinator", state: "here", host: "QUEERISFREEDOM" });
+    expect(ids(rows, "today")).toEqual([far]);
+  });
+
+  test("a parent set aside is named above its child, and so is a live parent above a child set aside", () => {
+    const a = groups([row("p", { title: "the plan", aside: true }), row("k", { parent: "p" })], NOW);
+    expect(a.find((g) => g.key === "today")!.rows[0]).toMatchObject({ depth: 1, ghost: { id: "p", state: "here" } });
+    const b = groups([row("p", { title: "the plan" }), row("k", { parent: "p", aside: true })], NOW);
+    expect(b.find((g) => g.key === "aside")!.rows[0]).toMatchObject({ depth: 1, ghost: { id: "p", state: "here" } });
+    /* Both set aside: nested, as anywhere else. */
+    const c = groups([row("p", { aside: true }), row("k", { parent: "p", aside: true })], NOW);
+    expect(c[0].rows.map((x) => [x.row.id, x.depth, x.ghost])).toEqual([
+      ["p", 0, null],
+      ["k", 1, null],
+    ]);
+  });
+
+  test("the wall in a shadow's id is read as shadow.ts writes it", () => {
+    expect(hostOfKey(shadowKey("lab-b.queerisfreedom", "abc"))).toBe("lab-b.queerisfreedom");
+    expect(hostOfKey("4f1c2b9e-0000-4000-8000-000000000000")).toBeNull();
+    expect(goneGhost("x", false).state).toBe("closed");
   });
 
   test("a cycle in the lineage cannot hang the grouping", () => {

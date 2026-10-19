@@ -93,10 +93,10 @@ export type Placed = {
   group: GroupKey;
   /** How far it is indented under the conversation that started it. */
   depth: number;
-  /** When it sits in a livelier group than its parent, the parent's title,
-   *  drawn greyed above it — so the delegation tree is never broken by the
-   *  grouping (§5.1). Null otherwise. */
-  ghost: string | null;
+  /** The conversation that started it, drawn greyed above it, when it is not
+   *  the row above — so the delegation tree is never broken by the grouping
+   *  (§5.1). Null when it is drawn under its parent, or a person started it. */
+  ghost: Ghost | null;
   tone: Tone;
   /** The line under the title, or null for none. */
   sub: string | null;
@@ -106,6 +106,53 @@ export type Placed = {
 };
 
 export type Group = { key: GroupKey; label: string; rows: Placed[] };
+
+/** The parent a child is drawn under when the parent is not the row above it.
+ *
+ *  It was a title and nothing else — greyed text no click reached, so the
+ *  conversation that started a working child could not be opened from beside
+ *  it (Lyss, 2026-10-19: *"I couldn't select the parent conversation of some
+ *  of the child conversation"*). Now it says which of three things the parent
+ *  is, because each wants a different gesture:
+ *
+ *  - `here` — listed, in a quieter group (or folded away in *set aside*):
+ *    the label is the parent's title and selects it.
+ *  - `closed` — not on any wall this one holds. `host` null is this wall's
+ *    own card, whose recorded session may be adopted back and opened; a
+ *    `host` is a card its wall closed, and nothing here can reopen it.
+ *  - `unseen` — on a wall this one holds no word from (`lineage.ts`'s
+ *    stray). Real, and out of reach. */
+export type Ghost = {
+  id: string;
+  /** What the label reads. */
+  label: string;
+  state: "here" | "closed" | "unseen";
+  /** The wall it is on, when that is not this one. */
+  host: string | null;
+};
+
+/** The wall a card on another wall runs on, read off its id
+ *  (`shadow.ts::shadowKey`, `elsewhere:<host>:<card>`), or null for this
+ *  wall's own. Restated rather than imported so this file reads nothing of
+ *  the flyway's; held equal by a test. */
+export function hostOfKey(id: string): string | null {
+  if (!id.startsWith("elsewhere:")) return null;
+  const rest = id.slice("elsewhere:".length);
+  const cut = rest.lastIndexOf(":");
+  return cut > 0 ? rest.slice(0, cut) : null;
+}
+
+/** What a parent the list does not hold is drawn as. */
+export function goneGhost(id: string, unseen: boolean): Ghost {
+  const host = hostOfKey(id);
+  if (unseen) return { id, label: `started on ${host ?? "another wall"} — not heard from`, state: "unseen", host };
+  return {
+    id,
+    label: host ? `started by a conversation closed on ${host}` : "started by a closed conversation",
+    state: "closed",
+    host,
+  };
+}
 
 /** Does this conversation need you — is something on it that only a person
  *  can answer, now?
@@ -256,9 +303,15 @@ function needsOrder(rows: ChatRow[]): ChatRow[] {
  *  A child goes where its parent is, nested under it — unless it is in a
  *  livelier group of its own (asking while its parent rests, working while its
  *  parent is history), where it stays, under a greyed copy of the parent's
- *  title. A set-aside row never follows a parent out of *set aside*, and
- *  nothing follows a parent into it. */
-export function groups(rows: readonly ChatRow[], now: number): Group[] {
+ *  title that selects the parent. A set-aside row never follows a parent out
+ *  of *set aside*, and nothing follows a parent into it; either way the other
+ *  is named above it. A parent the list does not hold is named too, as what it
+ *  is (`Ghost`), never left out — a child drawn at the top with nothing above
+ *  it reads as one a person started.
+ *
+ *  `unseen` is the parents on a wall this one holds no word from
+ *  (`Kin.unseen`), which are drawn as out of reach rather than as closed. */
+export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySet<string> = new Set()): Group[] {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const own = new Map(rows.map((r) => [r.id, groupOf(r, now)]));
   const rank = (g: GroupKey) => ORDER.indexOf(g);
@@ -270,12 +323,13 @@ export function groups(rows: readonly ChatRow[], now: number): Group[] {
     const done = seen.get(r.id);
     if (done) return done;
     const mine = own.get(r.id)!;
-    const parent = r.parent ? byId.get(r.parent) : undefined;
+    const parent = r.parent && r.parent !== r.id ? byId.get(r.parent) : undefined;
     let out = { group: mine, ghost: false };
-    if (parent && !trail.has(r.id)) {
+    if (r.parent && r.parent !== r.id && !parent) out = { group: mine, ghost: true };
+    else if (parent && !trail.has(r.id)) {
       trail.add(r.id);
       const theirs = placeOf(parent, trail).group;
-      if (mine === "aside" || theirs === "aside") out = { group: mine, ghost: false };
+      if (mine === "aside" || theirs === "aside") out = { group: mine, ghost: mine !== theirs };
       else if (rank(mine) < rank(theirs)) out = { group: mine, ghost: true };
       else out = { group: theirs, ghost: false };
     }
@@ -283,6 +337,11 @@ export function groups(rows: readonly ChatRow[], now: number): Group[] {
     return out;
   };
   for (const r of rows) placeOf(r);
+
+  const ghostOf = (id: string): Ghost => {
+    const p = byId.get(id);
+    return p ? { id, label: p.title, state: "here", host: p.host ?? null } : goneGhost(id, unseen.has(id));
+  };
 
   const out: Group[] = [];
   for (const key of ORDER) {
@@ -302,7 +361,7 @@ export function groups(rows: readonly ChatRow[], now: number): Group[] {
           ? [...tops].sort((a, b) => (b.turnAt ?? b.lastAt) - (a.turnAt ?? a.lastAt))
           : [...tops].sort((a, b) => b.lastAt - a.lastAt);
     const placed: Placed[] = [];
-    const visit = (r: ChatRow, depth: number, ghost: string | null) => {
+    const visit = (r: ChatRow, depth: number, ghost: Ghost | null) => {
       placed.push({
         row: r,
         group: key,
@@ -319,7 +378,7 @@ export function groups(rows: readonly ChatRow[], now: number): Group[] {
       }
     };
     for (const r of ordered) {
-      const ghost = seen.get(r.id)!.ghost && r.parent ? (byId.get(r.parent)?.title ?? null) : null;
+      const ghost = seen.get(r.id)!.ghost && r.parent ? ghostOf(r.parent) : null;
       visit(r, ghost ? 1 : 0, ghost);
     }
     out.push({ key, label: GROUP_LABEL[key], rows: placed });
