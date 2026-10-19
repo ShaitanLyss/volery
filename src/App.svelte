@@ -1261,8 +1261,12 @@
   /* In chat view the conversation in front of you is always open — selecting it
      is the only way to see it — so being selected with the window in front is
      being watched, and it raises no notice (`docs/chat-mode.md` §5.2). */
-  /* The away pile reads the notices raised while you were out. */
-  presence.notices = () => skein.noticeQueue;
+  /* The away pile reads the notices raised while you were out — the ones that
+     wait on you, by `Cards.noticing`, the rule the dock and chat view read
+     too: an allowance stop is owed by nobody, and the pile was the last place
+     that still listed it as owed. This wall's cards only, as the pile always
+     was (a far card's notices are its own wall's pile's). */
+  presence.notices = () => cards.noticing.flatMap(({ card, notice }) => (card.conv ? [notice] : []));
 
   /** The project whose card you touched last, which is the one whose shell the
    *  panel shows. Sticky: letting go of the wall — Escape, the ground click,

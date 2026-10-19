@@ -211,6 +211,12 @@ a rest you watched happen is seen, even if its notice went up a moment after you
 error notice about an allowance is folded into its account's one row, which neither shows per
 card nor rings as a notice.
 
+**What you owe is one reading, `Cards.noticing`.** It leaves an allowance stop out
+(`notice.ts::waitsOnYou`) for the dock, its count, chat view's *needs you*, the toasts and the
+away pile alike — the pile read the raw queue until 2026-10-19 and so still listed one as owed.
+The peek's per-account row above is the one other reader, and it says something else: an account
+ran out. `test/notice.test.ts` names every reader of the raw queue and fails a new one.
+
 ### The register
 
 One row per notice except `error` (the turn already wrote one with the CLI's sentence). With

@@ -233,3 +233,46 @@ describe("an allowance stop waits on no one", () => {
     expect(allowanceReset({ text: "You've hit your monthly spend limit" })).toBeNull();
   });
 });
+
+describe("what you owe is read through one rule", () => {
+  /* The dock and chat view read `Cards.noticing`, which leaves an allowance
+     stop out (`waitsOnYou`); the away pile read `skein.noticeQueue` raw and so
+     still listed one as owed — the same disagreement, one surface over. So the
+     raw queue has exactly these readers, each named for its reason, and
+     anything new that asks "what is waiting on you" goes through
+     `Cards.noticing` or fails here. */
+  const { readFileSync, readdirSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const lib = join(import.meta.dir, "../src/lib");
+  const files: [string, string][] = [
+    ...readdirSync(lib)
+      .filter((f) => /\.(ts|svelte)$/.test(f))
+      .map((f): [string, string] => [f, readFileSync(join(lib, f), "utf8")]),
+    ["App.svelte", readFileSync(join(import.meta.dir, "../src/App.svelte"), "utf8")],
+  ];
+  const ALLOWED: Record<string, number> = {
+    /* Where it is made, and where a card's own notices are read whole. */
+    "skein.svelte.ts": Infinity,
+    "cards.svelte.ts": Infinity,
+    /* A diagnostic snapshot, which reports the queue as it is. */
+    "control.svelte.ts": Infinity,
+    /* The peek's rows, which fold an allowance stop into one row per account
+       — "an account ran out", a different statement from owing. */
+    "App.svelte": 1,
+    /* The peek's own account of what it is handed — a comment. */
+    "attention.svelte.ts": 1,
+  };
+
+  test("only the named places read the raw queue", () => {
+    const over = files.flatMap(([f, src]) => {
+      const n = (src.match(/\bnoticeQueue\b(?!\()/g) ?? []).length;
+      return n > (ALLOWED[f] ?? 0) ? [`${f}: ${n}`] : [];
+    });
+    expect(over).toEqual([]);
+  });
+
+  test("the away pile is fed by Cards.noticing", () => {
+    const app = files.find(([f]) => f === "App.svelte")![1];
+    expect(app).toMatch(/presence\.notices = \(\) => cards\.noticing/);
+  });
+});
