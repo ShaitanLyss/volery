@@ -3954,6 +3954,7 @@ mod tests {
     /// is a hook's own output rather than a tool result, and nothing in it names
     /// a tool.
     const SPEAKING_SOURCES: &[(&str, &str)] = &[
+        ("accounts.rs", include_str!("accounts.rs")),
         ("ask.rs", include_str!("ask.rs")),
         ("board.rs", include_str!("board.rs")),
         ("chronicle.rs", include_str!("chronicle.rs")),

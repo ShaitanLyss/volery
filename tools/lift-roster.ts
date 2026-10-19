@@ -293,6 +293,11 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "fn reason_schema",
     ],
   },
+  /* `set_account`, deferred beside `accounts` (2026-10-19). */
+  {
+    file: "src-tauri/src/accounts.rs",
+    items: ["const SET_ACCOUNT_TOOL", "fn set_account_schema"],
+  },
   {
     file: "src-tauri/src/selector.rs",
     items: ["const RECORDS_TOOL", "const PUT_ON_TOOL", "fn records_schema", "fn put_on_schema"],
@@ -505,6 +510,7 @@ function serdeJsonRlib(): string {
  *  `crate::x::y` resolves to the `y` sitting beside it. `crate::` is this
  *  file's own root here, which is what makes it work at all. */
 const MODULES = [
+  "accounts",
   "ask",
   "board",
   "clean",
