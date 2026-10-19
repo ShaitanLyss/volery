@@ -63,7 +63,8 @@
 //! **A sign-in never leaves its machine.** This file once carried the stores to
 //! a second machine in a file, and that was taken out on 2026-10-19 because a
 //! refresh token rotates: a copy is two machines spending one chain, and the
-//! second to refresh is signed out (see the note where the carry used to be).
+//! second to refresh is signed out. The bottom of this file is what replaced it —
+//! the check that finds a copy made before, and the gate that refuses one.
 //!
 //! Nothing here logs or formats a credential, and `Account` — the struct that
 //! crosses into the webview on every ordinary read — carries no secret and no
@@ -200,6 +201,29 @@ pub struct Account {
     /// The idle-reserve failure: a store nothing runs on is `signed_in` by the
     /// file check for weeks after it is dead.
     pub lapsed: bool,
+    /// Who it signs in as — learned off its own credential
+    /// (`limits::learn_identity`), empty until then. The address and organisation
+    /// are for the panel to say; the identity is what other walls match on.
+    pub identity: String,
+    pub identity_email: String,
+    pub identity_org: String,
+    /// Who last changed each synced field, and when — one entry per field that
+    /// has ever been changed under `accountsync`, which is what the panel's
+    /// sync line reads. Empty for a row nobody has touched since the upgrade.
+    pub synced: Vec<Synced>,
+    /// The sign-in is a retired copy of another machine's chain, refused until
+    /// it is signed in again here ([`is_copy`]).
+    pub copied: bool,
+}
+
+/// One synced field's last write, as the panel reads it. The value is on the
+/// row; this is only whose word it is.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Synced {
+    pub field: String,
+    pub at: i64,
+    pub host: String,
 }
 
 #[tauri::command]
@@ -207,8 +231,8 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
     let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT label, rank, enabled, caps, priority FROM account
-             ORDER BY priority, rank, label",
+            "SELECT label, rank, enabled, caps, priority, identity, identity_email, identity_org
+             FROM account ORDER BY priority, rank, label",
         )
         .map_err(|e| format!("read accounts: {e}"))?;
     let rows = stmt
@@ -221,13 +245,14 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
                 r.get::<_, i64>(2)?,
                 caps,
                 r.get::<_, i64>(4)?,
+                (r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?),
             ))
         })
         .map_err(|e| format!("read accounts: {e}"))?;
 
     let mut out = Vec::new();
     for row in rows {
-        let (label, rank, enabled, caps, priority) =
+        let (label, rank, enabled, caps, priority, (identity, identity_email, identity_org)) =
             row.map_err(|e| format!("read accounts: {e}"))?;
         let has = signed_in(&app, &label);
         out.push(Account {
@@ -238,7 +263,20 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
             priority,
             rank,
             enabled: enabled != 0,
+            identity,
+            identity_email,
+            identity_org,
+            synced: Vec::new(),
+            copied: false,
         });
+    }
+    drop(stmt);
+    for a in &mut out {
+        a.synced = crate::accountsync::registers_of(&conn, &a.label)
+            .into_iter()
+            .map(|r| Synced { field: r.field, at: r.at, host: r.host })
+            .collect();
+        a.copied = a.signed_in && is_copy(&app, &conn, &a.label);
     }
     Ok(out)
 }
@@ -264,7 +302,7 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
 pub fn usable_labels(app: &AppHandle, conn: &rusqlite::Connection) -> Vec<String> {
     registry(app, conn)
         .into_iter()
-        .filter(|s| s.enabled && s.signed_in)
+        .filter(|s| s.enabled && s.signed_in && !s.copied)
         .map(|s| s.label)
         .collect()
 }
@@ -279,6 +317,9 @@ pub struct Seat {
     pub priority: i64,
     pub enabled: bool,
     pub signed_in: bool,
+    /// A retired copy of another machine's sign-in — signed in by the file, and
+    /// refused all the same ([`usable_store`]).
+    pub copied: bool,
 }
 
 /// Every registered account, in the order work falls through them. Degrades to
@@ -298,6 +339,7 @@ pub fn registry(app: &AppHandle, conn: &rusqlite::Connection) -> Vec<Seat> {
     };
     rows.filter_map(Result::ok)
         .map(|(label, enabled, priority)| Seat {
+            copied: is_copy(app, conn, &label),
             signed_in: signed_in(app, &label),
             enabled: enabled != 0,
             priority,
@@ -377,20 +419,18 @@ pub fn sign_out(app: AppHandle, label: String) -> Result<(), String> {
 /// it is written as one transaction rather than a rank per call. A reorder that
 /// half-applied would leave two accounts claiming the same rank and the tie
 /// broken by label, which is a wall quietly spending the wrong subscription.
+/// And under one stamp (`accountsync::stamp_all`), so on every other wall the
+/// whole order wins or loses as a unit too.
 #[tauri::command]
-pub fn reorder_accounts(store: State<'_, Store>, labels: Vec<String>) -> Result<(), String> {
-    let mut conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("reorder accounts: {e}"))?;
-    for (i, label) in labels.iter().enumerate() {
-        tx.execute(
-            "UPDATE account SET rank = ?1 WHERE label = ?2",
-            rusqlite::params![i as i64, label],
-        )
-        .map_err(|e| format!("reorder accounts: {e}"))?;
+pub fn reorder_accounts(app: AppHandle, store: State<'_, Store>, labels: Vec<String>) -> Result<(), String> {
+    {
+        let mut conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let writes: Vec<(String, &str, serde_json::Value)> =
+            labels.iter().enumerate().map(|(i, l)| (l.clone(), "rank", serde_json::json!(i as i64))).collect();
+        crate::accountsync::stamp_all(&mut conn, &writes, &crate::flyway::key::host_name(), crate::store::now())
+            .map_err(|e| format!("reorder accounts: {e}"))?;
     }
-    tx.commit().map_err(|e| format!("reorder accounts: {e}"))?;
+    changed(&app);
     Ok(())
 }
 
@@ -412,63 +452,50 @@ pub fn reorder_accounts(store: State<'_, Store>, labels: Vec<String>) -> Result<
 /// `min="1"`, and a zero arriving from anywhere else is somebody meaning "first"
 /// — refusing it would leave a row in a tier nobody can name.
 #[tauri::command]
-pub fn set_account_priority(
-    store: State<'_, Store>,
-    label: String,
-    priority: i64,
-) -> Result<(), String> {
-    store
-        .0
-        .lock()
-        .map_err(|_| "the store is wedged".to_string())?
-        .execute(
-            "UPDATE account SET priority = ?1 WHERE label = ?2",
-            rusqlite::params![priority.max(1), label],
-        )
-        .map_err(|e| format!("set priority: {e}"))?;
-    Ok(())
+pub fn set_account_priority(app: AppHandle, label: String, priority: i64) -> Result<(), String> {
+    set_field(&app, &label, "priority", serde_json::json!(priority.clamp(1, 1_000)))
 }
 
 #[tauri::command]
-pub fn set_account_enabled(
-    store: State<'_, Store>,
-    label: String,
-    enabled: bool,
-) -> Result<(), String> {
-    store
-        .0
-        .lock()
-        .map_err(|_| "the store is wedged".to_string())?
-        .execute(
-            "UPDATE account SET enabled = ?1 WHERE label = ?2",
-            rusqlite::params![enabled as i64, label],
-        )
-        .map_err(|e| format!("set account: {e}"))?;
-    Ok(())
+pub fn set_account_enabled(app: AppHandle, label: String, enabled: bool) -> Result<(), String> {
+    set_field(&app, &label, "enabled", serde_json::json!(enabled))
 }
 
 /// Set the ceilings for one account. `caps` is `{ "session": 80 }` and friends;
 /// an empty object means no ceiling of yours on any window, which leaves the
 /// server's.
 #[tauri::command]
-pub fn set_account_caps(
-    store: State<'_, Store>,
-    label: String,
-    caps: serde_json::Value,
-) -> Result<(), String> {
+pub fn set_account_caps(app: AppHandle, label: String, caps: serde_json::Value) -> Result<(), String> {
     if !caps.is_object() {
         return Err("caps must be an object of window kind to percentage".into());
     }
-    store
-        .0
-        .lock()
-        .map_err(|_| "the store is wedged".to_string())?
-        .execute(
-            "UPDATE account SET caps = ?1 WHERE label = ?2",
-            rusqlite::params![caps.to_string(), label],
-        )
-        .map_err(|e| format!("set caps: {e}"))?;
+    set_field(&app, &label, "caps", caps)
+}
+
+/// One synced setting of one account, written the one way such a setting is
+/// written: stamped (`accountsync::stamp`), so every wall on the flyway hears it,
+/// and announced, so every reader on this one does. The panel's setters and a
+/// card's agreed `set_account` both land here — two routes to one write, so the
+/// tool cannot do something the panel would not.
+pub fn set_field(app: &AppHandle, label: &str, field: &str, value: serde_json::Value) -> Result<(), String> {
+    {
+        let store = app.try_state::<Store>().ok_or("the store is not open")?;
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        crate::accountsync::stamp(&conn, label, field, &value, &crate::flyway::key::host_name(), crate::store::now())?;
+    }
+    changed(app);
     Ok(())
+}
+
+/// The accounts changed — here, or because another wall said so. Every reader
+/// re-reads: the waterfall (`waterfall.svelte.ts` listens for this and calls
+/// `refresh`, so a cached registry cannot go on choosing an account switched off
+/// on the other laptop), the panel through it, and the flyway, which says the
+/// new picture to the walls it flies with.
+pub fn changed(app: &AppHandle) {
+    use tauri::Emitter;
+    let _ = app.emit("accounts:changed", ());
+    crate::flyway::link::accounting::changed(app);
 }
 
 /// Labels with a credential store that no registered account claims. Lets the
@@ -508,32 +535,406 @@ pub fn stored_accounts(app: AppHandle) -> Result<Vec<String>, String> {
    is not that: it is `process.stdout.write` and a readline, so the window it
    was given was inherited rather than needed. See that module's header. */
 
+/* ── a sign-in never leaves its machine ────────────────────────────────────
+ *
+ * This module used to be able to write every store into a
+ * sign-ins file and install one from it on the other machine — the
+ * one place it handled a credential deliberately. It cannot any more, and the
+ * reason is a measurement rather than a preference: **a refresh token rotates on
+ * use.** Read out of the CLI's own refresh code first (accounts.md, *Does a
+ * refresh token rotate on use?*), then seen on 2026-10-19 — `tools/
+ * probe-rotation.ts` found all four stores on QUEERISFREEDOM had come back from
+ * a refresh holding a new refresh token. So a copy on a second machine is two
+ * machines spending one chain, and whichever refreshes second is refused and
+ * signed out: `lyss` there was found that morning with its tokens cleared by
+ * the CLI, nineteen days before its own refresh stamp ran out. Lyss: *"I don't
+ * want machines to log each other out."* The carry is gone; signing a machine in
+ * from another wall replaces it, and each machine gets a chain of its own.
+ *
+ * What is left here is the half that finds a copy made before the carry went.
+ * **A copy is the same chain on two machines**, and that is exactly what can be
+ * compared without moving a token: each wall says, per identity, a digest of the
+ * refresh token its store holds ([`chain_digest`] — salted, truncated, not
+ * reversible into anything spendable) and how long ago its store was last
+ * written. Two walls holding the same digest hold one chain. The two only stay
+ * equal until either refreshes — after which one of them is already dead — so
+ * this catches every copy that is still a hazard and none that is not: two
+ * chains that differ are two sign-ins, which is the arrangement wanted.
+ *
+ * **Which of the two is the copy** is told by the file, not guessed. While the
+ * digests match neither store has refreshed since the copy was made, so the
+ * original was last written by its own sign-in or refresh and the copy by the
+ * install, which came after. The store written more recently is the copy
+ * (`flyway::accounts::is_the_copy`), and only that wall retires its sign-in. The
+ * comparison is of two ages, each on its own wall's clock, so no two clocks are
+ * compared; installs come days after the sign-ins they copied, so a few seconds
+ * of drift in an age cannot flip it, and an exact tie goes by host name so the
+ * two walls still agree.
+ *
+ * **Retired means refused**, by construction rather than by a warning: the row
+ * records the digest it was retired at (`copied_digest`, schema v56), and
+ * [`usable_store`] — what every spawn asks — refuses a store still holding that
+ * chain. Signing in again here starts a new chain, the digest no longer matches,
+ * and the account is usable again with nothing to clear.
+ */
+
 /// One account's credential off the disk, or `None` if there is not one there.
 ///
 /// Deliberately not public: everything outside this module that wants to know
-/// about a credential wants `signed_in` or `lapsed`, and a helper handing back
-/// the whole thing is a helper somebody reaches for by accident.
+/// about a credential wants `signed_in`, a digest or an age, and a helper handing
+/// back the whole thing is a helper somebody reaches for by accident.
 fn read_credential(app: &AppHandle, label: &str) -> Option<serde_json::Value> {
     let text = std::fs::read_to_string(credential_path(app, label).ok()?).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-/* ── a sign-in never leaves its machine ────────────────────────────────────
+/// A digest of the refresh-token chain `label`'s store holds, for telling a
+/// copy of a sign-in from a sign-in of its own. `None` with no refresh token.
+pub fn chain_digest(app: &AppHandle, label: &str, identity: &str) -> Option<String> {
+    let cred = read_credential(app, label)?;
+    let o = cred.get("claudeAiOauth").unwrap_or(&cred);
+    let token = o.get("refreshToken").and_then(|v| v.as_str()).filter(|t| !t.is_empty())?;
+    Some(digest_of(identity, token))
+}
+
+/// Salted with the identity so one digest names one account's chain, and cut to
+/// 128 bits, which is plenty to tell two chains apart and nothing to spend.
+fn digest_of(identity: &str, token: &str) -> String {
+    let mut input = Vec::with_capacity(32 + identity.len() + token.len());
+    input.extend_from_slice(b"volery-chain\0");
+    input.extend_from_slice(identity.as_bytes());
+    input.push(0);
+    input.extend_from_slice(token.as_bytes());
+    let d = ring::digest::digest(&ring::digest::SHA256, &input);
+    d.as_ref()[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// How long ago `label`'s store was last written.
+pub fn store_age_ms(app: &AppHandle, label: &str) -> Option<u64> {
+    let modified = std::fs::metadata(credential_path(app, label).ok()?).ok()?.modified().ok()?;
+    Some(std::time::SystemTime::now().duration_since(modified).map(|d| d.as_millis() as u64).unwrap_or(0))
+}
+
+/// Whether `label`'s store holds a sign-in retired as a copy of another
+/// machine's: the row recorded a chain, and the store still holds it.
+pub fn is_copy(app: &AppHandle, conn: &rusqlite::Connection, label: &str) -> bool {
+    let row: Option<(Option<String>, String)> = conn
+        .query_row(
+            "SELECT copied_digest, identity FROM account WHERE label = ?1",
+            rusqlite::params![label],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    match row {
+        Some((Some(copied), identity)) => chain_digest(app, label, &identity).as_deref() == Some(copied.as_str()),
+        _ => false,
+    }
+}
+
+/// Retire `label`'s sign-in as a copy of another machine's chain.
+pub fn retire_copy(conn: &rusqlite::Connection, label: &str, digest: &str) -> Result<bool, String> {
+    conn.execute(
+        "UPDATE account SET copied_digest = ?1 WHERE label = ?2 AND copied_digest IS NOT ?1",
+        rusqlite::params![digest, label],
+    )
+    .map(|n| n > 0)
+    .map_err(|e| format!("retire a copied sign-in: {e}"))
+}
+
+/// What a copied sign-in is told, everywhere one is refused.
+pub const COPIED: &str =
+    "this sign-in was copied from another machine and using it would log that machine out — sign in here instead";
+
+/// Whether a child may be spawned on `label`'s store: signed in, and not a
+/// retired copy. What `spawn_now` and an aside ask before naming a store to a
+/// child, so a copy is refused by construction rather than warned about.
+pub fn usable_store(app: &AppHandle, label: &str) -> Result<(), String> {
+    if !signed_in(app, label) {
+        return Err(format!("'{label}' is not signed in — sign in to it in the accounts panel"));
+    }
+    let copied = app
+        .try_state::<Store>()
+        .and_then(|s| s.0.lock().ok().map(|c| is_copy(app, &c, label)))
+        .unwrap_or(false);
+    if copied {
+        return Err(format!("'{label}': {COPIED}"));
+    }
+    Ok(())
+}
+
+
+/* ── a card asking to change an account ────────────────────────────────────
  *
- * This module used to be able to write every store into a sign-ins file and
- * install one from it on the other machine — the one place it handled a
- * credential deliberately. It cannot any more, and the reason is a measurement
- * rather than a preference: **a refresh token rotates on use.** Read out of the
- * CLI's own refresh code first (accounts.md, *Does a refresh token rotate on
- * use?*), then seen on 2026-10-19 — `tools/probe-rotation.ts` found all four
- * stores on QUEERISFREEDOM had come back from a refresh holding a new refresh
- * token. So a copy on a second machine is two machines spending one chain, and
- * whichever refreshes second is refused and signed out: `lyss` there was found
- * that morning with its tokens cleared by the CLI, nineteen days before its own
- * refresh stamp ran out. Lyss: *"I don't want machines to log each other out."*
- * Signing a machine in from another wall replaces the carry, and each machine
- * gets a chain of its own.
+ * `set_account`: switch an account on or off, or move its caps, on the user's
+ * yes. It was missing in exactly the way that bit on 2026-10-19 — `lyss` was
+ * switched off on QUEERISFREEDOM, Lyss was at AU-LT-288, and neither she nor
+ * any card could switch it back on from there, because the only way to write
+ * the row was the panel on the machine it lived on.
+ *
+ * **It asks, always.** An account is money and a reserve somebody chose to
+ * guard; a card deciding on its own to spend the reserve is the thing the tiers
+ * exist to stop. So the call parks on a confirmation, the docket's shape
+ * (`docket::Writing::Ask`), and because it is a `Settle::new` with evidence it
+ * travels to whichever wall Lyss is at with nothing added to any list
+ * (`ask::Confirm`, elsewhere.md, *Every confirmation travels*).
+ *
+ * **On a yes it is the panel's own write** — `set_field`, stamped by
+ * `accountsync` — so the change reaches every wall on the flyway that knows the
+ * account, and the tool cannot do anything the panel would not. Caps are merged
+ * into the ones already set rather than replacing them, with `null` taking one
+ * away, so a card asked to cap the week does not silently lift the cap on the
+ * session. Re-read at the moment of the yes, so an answer given ten minutes
+ * later writes against the account as it stands then.
  */
+
+pub const SET_ACCOUNT_TOOL: &str = "set_account";
+
+/// The two words a click sends, and the only two `approved` reads.
+const CHANGE_IT: &str = "change it";
+const LEAVE_IT: &str = "leave it as it is";
+
+const REASON_MOST: usize = 600;
+
+pub fn set_account_schema() -> serde_json::Value {
+    serde_json::json!({
+        "name": SET_ACCOUNT_TOOL,
+        "description":
+            "Ask the user to switch one of this wall's Claude accounts on or off, or to change its \
+             caps — the percentage of a usage window past which no new work starts on it. The call \
+             parks on a confirmation that reaches the user on whichever machine they are at, and \
+             nothing changes unless they say yes.\n\n\
+             Use it when the user asks for it, or when work is held for want of an account and the \
+             user would plainly want a switched-off one back on — and then say why in `reason`, \
+             since that sentence is what they decide on. Never to get round a cap they set: a cap \
+             is a reserve they chose to keep.\n\n\
+             A change is made the way the accounts panel makes it, so it reaches every wall on the \
+             flyway that knows the account. `account` is a label from `mcp__skein__accounts`. \
+             `caps` is merged into the caps already set: `{\"session\": 80}` caps the five-hour \
+             window at 80% and leaves the others, `null` for a window takes its cap away.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account": { "type": "string", "description": "The account's label on this wall." },
+                "enabled": { "type": "boolean", "description": "Switch it on (true) or off (false)." },
+                "caps": {
+                    "type": "object",
+                    "description": "Window kind to percentage ceiling 0–100, or null to remove that cap. Kinds as the accounts listing names them: session, weekly_all, weekly_scoped.",
+                    "additionalProperties": { "type": ["number", "null"] }
+                },
+                "reason": { "type": "string", "description": "Why — the sentence the user decides on." }
+            },
+            "required": ["account", "reason"]
+        }
+    })
+}
+
+/// What one call asks to change, read and checked against the row as it is.
+#[derive(Debug, Clone, PartialEq)]
+struct Change {
+    label: String,
+    enabled: Option<bool>,
+    /// The whole caps object after the merge, if caps were asked about.
+    caps: Option<serde_json::Value>,
+}
+
+/// One account's settings as they stand: on/off, the caps, who it signs in as.
+fn standing(conn: &rusqlite::Connection, label: &str) -> Option<(bool, serde_json::Value, String, String)> {
+    conn.query_row(
+        "SELECT enabled, caps, identity, identity_email FROM account WHERE label = ?1",
+        rusqlite::params![label],
+        |r| {
+            let caps: String = r.get(1)?;
+            Ok((
+                r.get::<_, i64>(0)? != 0,
+                serde_json::from_str(&caps).unwrap_or_else(|_| serde_json::json!({})),
+                r.get(2)?,
+                r.get(3)?,
+            ))
+        },
+    )
+    .ok()
+}
+
+/// The arguments, held to their shape: a reason, and at least one thing that
+/// would actually change. Pure over the row, so every refusal is tested
+/// without a store.
+fn read_change(args: &serde_json::Value, now_enabled: bool, now_caps: &serde_json::Value) -> Result<Change, String> {
+    let label = args.get("account").and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_string();
+    let enabled = match args.get("enabled") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_bool().ok_or("`enabled` is true or false")?),
+    };
+    let caps = match args.get("caps") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(asked)) => {
+            let mut merged = now_caps.as_object().cloned().unwrap_or_default();
+            for (kind, v) in asked {
+                match v {
+                    serde_json::Value::Null => {
+                        merged.remove(kind);
+                    }
+                    n => {
+                        let pct = n.as_f64().filter(|p| p.is_finite() && (0.0..=100.0).contains(p)).ok_or_else(|| {
+                            format!("a cap is a percentage from 0 to 100, or null to remove it — {kind} was {n}")
+                        })?;
+                        merged.insert(kind.clone(), serde_json::json!(pct));
+                    }
+                }
+            }
+            let merged = serde_json::Value::Object(merged);
+            Some(crate::flyway::accounts::normal("caps", &merged).ok_or("those caps name a window kind that is not one")?)
+        }
+        Some(_) => return Err("`caps` is an object of window kind to percentage".into()),
+    };
+    let enabled = enabled.filter(|e| *e != now_enabled);
+    let caps = caps.filter(|c| crate::flyway::accounts::normal("caps", now_caps).as_ref() != Some(c));
+    if enabled.is_none() && caps.is_none() {
+        return Err("nothing to change — the account already stands as asked, so the user has not been asked".into());
+    }
+    Ok(Change { label, enabled, caps })
+}
+
+/// The change in words, for the question and the evidence.
+fn say_change(c: &Change, now_caps: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(e) = c.enabled {
+        parts.push(if e {
+            "switch it on — it can take work again".to_string()
+        } else {
+            "switch it off — no new work starts on it".to_string()
+        });
+    }
+    if let Some(caps) = &c.caps {
+        let pct = |v: Option<&serde_json::Value>| {
+            v.and_then(|n| n.as_f64()).map(|p| format!("{p:.0}%")).unwrap_or_else(|| "no cap".into())
+        };
+        let num = |v: Option<&serde_json::Value>| v.and_then(|n| n.as_f64());
+        let mut kinds: Vec<String> = caps
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.keys().cloned())
+            .chain(now_caps.as_object().into_iter().flat_map(|o| o.keys().cloned()))
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        let moved: Vec<String> = kinds
+            .iter()
+            .filter(|k| num(caps.get(k.as_str())) != num(now_caps.get(k.as_str())))
+            .map(|k| format!("{k} {} → {}", pct(now_caps.get(k.as_str())), pct(caps.get(k.as_str()))))
+            .collect();
+        parts.push(format!("caps: {}", moved.join(", ")));
+    }
+    parts.join("; ")
+}
+
+fn change_question(label: &str, who: &str, change: &str, reason: &str, reaches: &str) -> serde_json::Value {
+    serde_json::json!({
+        "questions": [{
+            "header": format!("account {label}"),
+            "question": format!(
+                "A card asks to change the **{label}** account{who}.\n\n**The change:** {change}\n\n\
+                 **It says:**\n\n---\n\n{reason}\n\n---\n\n{reaches}"
+            ),
+            "options": [
+                { "label": CHANGE_IT, "detail": "Made as the accounts panel would make it." },
+                { "label": LEAVE_IT, "detail": "Nothing changes. The card is told you said no." }
+            ]
+        }]
+    })
+}
+
+/// The tool, as `ask.rs` calls it — `docket::writes`' contract.
+pub(crate) fn writes(app: &AppHandle, _caller: &str, tool: &str, args: &serde_json::Value) -> Option<crate::docket::Writing> {
+    use crate::docket::Writing;
+    if tool != SET_ACCOUNT_TOOL {
+        return None;
+    }
+    let reason = args.get("reason").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+    if reason.is_empty() {
+        return Some(Writing::Now(
+            "say why in `reason` — it is the sentence the user decides on, so nothing was asked.".into(),
+        ));
+    }
+    let reason = crate::clip::preview(&crate::clean::scrub(reason), REASON_MOST);
+    let label = args.get("account").and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_string();
+    let Some(store) = app.try_state::<Store>() else {
+        return Some(Writing::Now("the wall's store is unavailable, so nothing was asked.".into()));
+    };
+    let Some((now_enabled, now_caps, identity, email)) = store.0.lock().ok().and_then(|c| standing(&c, &label)) else {
+        return Some(Writing::Now(format!(
+            "there is no account called {label:?} on this wall — `mcp__skein__accounts` lists the labels. Nothing was asked."
+        )));
+    };
+    let change = match read_change(args, now_enabled, &now_caps) {
+        Ok(c) => c,
+        Err(why) => return Some(Writing::Now(why)),
+    };
+    let said = say_change(&change, &now_caps);
+    let who = if email.is_empty() { String::new() } else { format!(" ({email})") };
+    let reaches = if identity.is_empty() {
+        "Its sign-in has not been identified yet, so the change is made on this wall alone.".to_string()
+    } else {
+        "The change reaches every wall on the flyway that knows this account.".to_string()
+    };
+    let stakes = match change.enabled {
+        Some(true) => "Work may start spending this subscription straight away.",
+        Some(false) => "Nothing new starts on it; cards already on it move at their next turn.",
+        None => "The caps decide when the wall stops sending work to it.",
+    };
+    let confirm = crate::ask::Confirm::new(format!("change the {label} account"))
+        .fact("account", if email.is_empty() { label.clone() } else { format!("{label} — {email}") })
+        .fact("the change", said.clone())
+        .fact("where", reaches.clone())
+        .why(Some(&reason))
+        .stakes(stakes);
+    let question = change_question(&label, &who, &said, &reason, &reaches);
+    Some(Writing::Ask {
+        question,
+        settle: crate::ask::Settle::new(confirm, move |app, answer| settle_change(app, answer, &change, &reaches)),
+    })
+}
+
+/// What a yes, a no or silence does — re-reading the account at the moment of
+/// the answer, which may be long after the question.
+fn settle_change(app: &AppHandle, answer: Option<&str>, change: &Change, reaches: &str) -> String {
+    let label = &change.label;
+    let Some(answer) = answer else {
+        return "nobody answered, so the account was not changed. Carry on without it and say that you asked.".into();
+    };
+    if !crate::docket::approved(answer, CHANGE_IT) {
+        return if crate::docket::approved(answer, LEAVE_IT) {
+            format!("the user said no, so {label} is as it was. Do not ask again for the same thing.")
+        } else {
+            format!(
+                "the user pressed neither button. They said: {:?}. Nothing was changed; act on what they said.",
+                answer.trim()
+            )
+        };
+    }
+    let current = app.try_state::<Store>().and_then(|s| s.0.lock().ok().and_then(|c| standing(&c, label)));
+    let Some((now_enabled, now_caps, _, _)) = current else {
+        return format!("the user agreed, but {label} is no longer on this wall, so nothing was changed.");
+    };
+    let mut done = Vec::new();
+    if let Some(e) = change.enabled.filter(|e| *e != now_enabled) {
+        if let Err(why) = set_field(app, label, "enabled", serde_json::json!(e)) {
+            return format!("the user agreed, but the change could not be written: {why}");
+        }
+        done.push(if e { "switched on" } else { "switched off" });
+    }
+    if let Some(caps) = change.caps.clone() {
+        if crate::flyway::accounts::normal("caps", &now_caps).as_ref() != Some(&caps) {
+            if let Err(why) = set_field(app, label, "caps", caps) {
+                return format!("the user agreed, but the caps could not be written: {why}");
+            }
+            done.push("caps changed");
+        }
+    }
+    if done.is_empty() {
+        return format!("the user agreed, and {label} already stood as asked — somebody changed it in the meantime.");
+    }
+    format!("the user agreed: {label} is {}. {reaches}", done.join(" and "))
+}
 
 #[cfg(test)]
 mod tests {
@@ -594,6 +995,59 @@ mod tests {
         // Absence is not a lapse.
         assert!(!lapsed_in(&cred(None, None, "r"), now));
         assert!(!lapsed_in(&serde_json::json!({}), now));
+    }
+
+
+    /// What a card may ask, read against the row as it stands: a merge into the
+    /// caps already set, `null` taking one away, and nothing asked of the user
+    /// when nothing would change.
+    #[test]
+    fn a_change_is_merged_into_what_stands_and_refused_when_it_moves_nothing() {
+        let now = serde_json::json!({ "session": 80.0, "weekly_all": 90.0 });
+        let c = read_change(&serde_json::json!({ "account": "lyss", "caps": { "weekly_all": 70, "session": null } }), true, &now).unwrap();
+        assert_eq!(c.caps, Some(serde_json::json!({ "weekly_all": 70.0 })));
+        assert_eq!(c.enabled, None);
+        assert_eq!(say_change(&c, &now), "caps: session 80% → no cap, weekly_all 90% → 70%");
+
+        let on = read_change(&serde_json::json!({ "account": "lyss", "enabled": true }), false, &now).unwrap();
+        assert_eq!(on.enabled, Some(true));
+        assert!(say_change(&on, &now).starts_with("switch it on"));
+
+        /* Already as asked: refused, so nobody is interrupted to agree to nothing. */
+        assert!(read_change(&serde_json::json!({ "account": "lyss", "enabled": true }), true, &now).is_err());
+        assert!(read_change(&serde_json::json!({ "account": "lyss", "caps": { "session": 80 } }), true, &now).is_err());
+        assert!(read_change(&serde_json::json!({ "account": "lyss" }), true, &now).is_err());
+        /* Out of shape. */
+        assert!(read_change(&serde_json::json!({ "account": "lyss", "caps": { "session": 140 } }), true, &now).is_err());
+        assert!(read_change(&serde_json::json!({ "account": "lyss", "caps": 80 }), true, &now).is_err());
+        assert!(read_change(&serde_json::json!({ "account": "lyss", "enabled": "yes" }), true, &now).is_err());
+    }
+
+    /// The labels the question offers are the ones the settle reads, and the
+    /// question parks with a confirmation block so it reaches the user's wall.
+    #[test]
+    fn the_question_offers_the_words_the_settle_reads() {
+        let q = change_question("lyss", " (l@example.com)", "switch it on", "held for an account", "reaches");
+        let labels: Vec<&str> = q["questions"][0]["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, vec![CHANGE_IT, LEAVE_IT]);
+        assert!(crate::docket::approved("Change it ", CHANGE_IT));
+        let schema = set_account_schema();
+        assert_eq!(schema["name"], SET_ACCOUNT_TOOL);
+        assert_eq!(schema["inputSchema"]["required"], serde_json::json!(["account", "reason"]));
+    }
+    /// A digest names one chain of one account, is the same wherever it is
+    /// computed, and carries nothing of the token: a different token or a
+    /// different account gives a different digest, and none of the token's
+    /// bytes appear in it.
+    #[test]
+    fn a_chain_digest_tells_chains_apart_and_spends_nothing() {
+        let token = "sk-ant-ort01-secretsecretsecret";
+        let a = digest_of("acct:org", token);
+        assert_eq!(a, digest_of("acct:org", token), "the same chain reads the same on both walls");
+        assert_ne!(a, digest_of("acct:org", "sk-ant-ort01-rotated"), "a refresh is a new chain");
+        assert_ne!(a, digest_of("other:org", token), "salted by the account it belongs to");
+        assert_eq!(a.len(), 32);
+        assert!(!a.contains("secret") && !a.contains("sk-ant"));
     }
 
 }

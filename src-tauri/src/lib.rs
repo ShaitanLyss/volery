@@ -9,6 +9,7 @@ mod asana;
 mod aside;
 mod ask;
 mod accounts;
+mod accountsync;
 mod bang;
 mod browser;
 /// Where the `claude` binary is. Public so `examples/slash-probe.rs` can find
@@ -937,6 +938,7 @@ pub fn run() {
             signin::cancel_signin,
             signin::signin_states,
             limits::read_allowances,
+            limits::learn_identity,
             store::set_conversation_account,
             store::set_conversation_bypass,
             store::set_conversation_hold,

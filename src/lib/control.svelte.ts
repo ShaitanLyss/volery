@@ -2493,6 +2493,28 @@ export class Control {
         return ledgerSnapshot(h);
       },
 
+      /** The registry as the panel holds it, and the panel's own gestures on
+       *  it — `add`, `enabled`, `caps`, `priority` (each with `label`) go
+       *  through the very `Waterfall` methods the accounts panel calls, so a
+       *  change made here is stamped and travels exactly as a click would
+       *  (`accountsync.rs`). `refresh` re-reads first. Answers every row with
+       *  its identity and who last changed what, which is how a lab run sees a
+       *  setting arrive from another wall. */
+      accounts: async (op) => {
+        const label = op.label === undefined ? null : String(op.label);
+        if (op.add !== undefined) await waterfall.add(String(op.add));
+        if (label !== null && op.enabled !== undefined) await waterfall.setEnabled(label, !!op.enabled);
+        if (label !== null && op.caps && typeof op.caps === "object") await waterfall.setCaps(label, op.caps as Record<string, number>);
+        if (label !== null && op.priority !== undefined) await waterfall.setPriority(label, Number(op.priority));
+        if (label !== null && op.learn) await invoke("learn_identity", { label });
+        if (op.refresh) await waterfall.refresh();
+        return {
+          list: waterfall.list,
+          allowances: waterfall.allowances,
+          usable: waterfall.usable.map((a) => a.label),
+        };
+      },
+
       /** An allowance in any state, without spending one. A lab cannot run an
        *  account down, and chat view draws three things off how far down one
        *  is (`docs/chat-mode.md` §5.7).

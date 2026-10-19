@@ -24,6 +24,10 @@ import {
   sayImported,
   keptThrough,
   sayStale,
+  sayIdentity,
+  COPIED,
+  usable,
+  saySynced,
   sayTier,
   sayUnmeasured,
   sayUnsigned,
@@ -1389,5 +1393,54 @@ describe("an idle account whose credential has lapsed", () => {
     const list = [acct("lapsed", { lapsed: true, rank: 0 }), acct("live", { rank: 1 })];
     const c = choose(list, { live: spent(60) }, {});
     expect(c).toEqual({ kind: "use", label: "live", swapFrom: null });
+  });
+});
+
+describe("one account, every wall — what the panel says about it", () => {
+  const X = "8ebb2352-0000-4000-8000-000000000001:10340709-0000-4000-8000-000000000002";
+  const NOW = 1_800_000_000_000;
+
+  test("who an account signs in as, and nothing before it is known", () => {
+    expect(sayIdentity(acct("lyss"))).toBeNull();
+    expect(sayIdentity(acct("lyss", { identity: X, identityEmail: "l@example.com", identityOrg: "Studio" }))).toBe(
+      "signs in as l@example.com · Studio",
+    );
+    expect(sayIdentity(acct("lyss", { identity: X }))).toBe("identified");
+  });
+
+  test("the last change names the wall that made it, and how long ago", () => {
+    const a = acct("lyss", {
+      identity: X,
+      enabled: false,
+      synced: [
+        { field: "caps", at: NOW - 3_600_000, host: "QUEERISFREEDOM" },
+        { field: "enabled", at: NOW - 180_000, host: "AU-LT-288" },
+      ],
+    });
+    expect(saySynced(a, "QUEERISFREEDOM", NOW, true)).toBe("switched off on AU-LT-288 · 3m ago");
+    /* Made here: the person looking already knows. */
+    expect(saySynced(a, "au-lt-288", NOW, true)).toBeNull();
+    /* Never changed under the sync: nothing to say. */
+    expect(saySynced(acct("lyss", { identity: X }), "x", NOW, true)).toBeNull();
+    expect(saySynced(acct("lyss", { identity: X, priority: 2, synced: [{ field: "priority", at: NOW, host: "b" }] }), "a", NOW, true)).toBe(
+      "moved to priority 2 on b · just now",
+    );
+  });
+
+  test("an account nobody has identified says it is not in step — only where there is something to be in step with", () => {
+    expect(saySynced(acct("lyss"), "a", NOW, true)).toBe("not identified yet — its settings stay on this wall until it is used");
+    expect(saySynced(acct("lyss"), "a", NOW, false)).toBeNull();
+    expect(saySynced(acct("lyss", { signedIn: false }), "a", NOW, true)).toBeNull();
+  });
+});
+
+describe("a copied sign-in is refused, not warned about", () => {
+  test("the waterfall will not choose it and the row says why, in Rust's words", () => {
+    const copy = acct("lyss", { copied: true });
+    expect(standingOf(copy, undefined, false)).toEqual({ state: "unusable", label: "lyss", why: COPIED });
+    expect(usable([copy, acct("work")]).map((a) => a.label)).toEqual(["work"]);
+    expect(choose([copy], {}, {}).kind).not.toBe("ok");
+    const rust = readFileSync(join(import.meta.dir, "../src-tauri/src/accounts.rs"), "utf8");
+    expect(rust).toContain(`"${COPIED}"`);
   });
 });

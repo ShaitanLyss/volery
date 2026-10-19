@@ -370,7 +370,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 55;
+const SCHEMA_VERSION: i64 = 56;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -431,6 +431,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (53, migrate_v53),
     (54, migrate_v54),
     (55, migrate_v55),
+    (56, migrate_v56),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3045,6 +3046,51 @@ fn migrate_v55(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v55: {e}"))
+}
+
+/// One account's settings, kept in step across the walls of a flyway
+/// (`accountsync.rs`, `flyway/accounts.rs`, `.claude/rules/accounts.md`).
+///
+/// **Who an account signs in as** is four columns on the row, learned from
+/// `/api/oauth/profile` with that store's own token and never guessed: `claude
+/// auth status` was probed for it and answers every store with the *same*
+/// identity, because it reads the shared `~/.claude.json` rather than the store
+/// (2026-10-19). `identity` is `<account uuid>:<organisation uuid>` — the same
+/// login in two organisations is two subscriptions, which is how the allowance
+/// is billed. Empty until learned; nothing about a row changes by its absence.
+///
+/// `copied_digest` marks a sign-in found to be a **copy of another machine's**:
+/// the same refresh-token chain held on two walls at once, where the first
+/// refresh on either logs the other out (accounts.md, *A sign-in never leaves
+/// its machine*). Null on every row this rung touches — nothing before it could
+/// tell, and retiring a sign-in on a guess would stop a wall spending.
+///
+/// `account_sync` is the register store: one row per (identity, field), the
+/// value as JSON and the stamp that wrote it, for **every** identity heard —
+/// registered here or not — so a wall passes on what it holds. Empty after this
+/// rung on purpose: a value that existed before it carries no stamp and is
+/// never sent, so upgrading two walls cannot let one silently overwrite the
+/// other's on/off or caps. A schema change may not move money, and this one
+/// moves nothing until a person changes a setting under the new build.
+fn migrate_v56(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "account", "identity", "TEXT NOT NULL DEFAULT ''")?;
+    add_column(conn, "account", "identity_email", "TEXT NOT NULL DEFAULT ''")?;
+    add_column(conn, "account", "identity_org", "TEXT NOT NULL DEFAULT ''")?;
+    add_column(conn, "account", "identity_at", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column(conn, "account", "copied_digest", "TEXT")?;
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS account_sync (
+            identity TEXT NOT NULL,
+            field    TEXT NOT NULL,
+            value    TEXT NOT NULL,
+            at       INTEGER NOT NULL,
+            host     TEXT NOT NULL,
+            PRIMARY KEY (identity, field)
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v56: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,

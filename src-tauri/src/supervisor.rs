@@ -1470,11 +1470,10 @@ fn spawn_now(
        the wrong subscription — quietly, and precisely the one being held in
        reserve. */
     if let Some(label) = account_label.as_deref().filter(|s| !s.is_empty()) {
-        if !crate::accounts::signed_in(&app, label) {
-            return Err(format!(
-                "'{label}' is not signed in — sign in to it in the accounts panel"
-            ));
-        }
+        /* Not signed in, or holding a sign-in retired as a copy of another
+           machine's — whose use would log that machine out (`accounts.rs`,
+           *a sign-in never leaves its machine*). */
+        crate::accounts::usable_store(&app, label)?;
         let dir = crate::accounts::store_dir(&app, label)?;
         cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
         /* Cleared rather than left alone: the CLI reads this ahead of any

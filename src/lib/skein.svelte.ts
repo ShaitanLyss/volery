@@ -796,6 +796,13 @@ export class Skein {
   #wire() {
     const keep = this.#listeners.keep.bind(this.#listeners);
 
+    /* An account changed — in the panel, through a card's agreed
+       `set_account`, or because another wall on the flyway said so
+       (`accountsync.rs`). The waterfall caches the registry, and a cached one
+       would go on choosing an account switched off on the other laptop until
+       somebody pressed something here; so it re-reads, and the panel with it. */
+    keep(listen("accounts:changed", () => void waterfall.refresh()));
+
     keep(
       listen<{ id: string; event: any }>("conv:event", (e) => {
         const c = this.#byId.get(e.payload.id);

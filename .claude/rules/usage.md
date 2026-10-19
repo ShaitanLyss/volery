@@ -179,6 +179,13 @@ limits: [ { kind: "session",       group: "session", percent: 27, severity: "nor
   trailing `±HH:MM` properly. The offset is zero today and reading it anyway is the only thing
   standing between "harmless" and a countdown wrong by a timezone, which is precisely the
   failure this widget exists to prevent.
+- **A reading another wall took is as good as one taken here** (2026-10-19). The allowance is
+  the account's, so walls on one flyway share their own readings by account identity, with an
+  age rather than a clock time, and `read_allowances` uses one wherever it is fresher than its
+  own or it has none — skipping the request entirely when a peer read the account under three
+  minutes ago, so several walls' polls collapse into one. It arrives dated here (`at = now −
+  age`), saying `read on <host>`, with rolled windows already dropped, so the staleness rules
+  above read it exactly as a reading of that age. `accounts.md`, *Readings travel as ages*.
 - **What it still cannot know is another machine** — but far less than before. The cost reading
   can only see turns taken here; the allowance is the *account's*, so a turn taken on a laptop
   counts against the percentages this draws. That is the single biggest thing the reversal

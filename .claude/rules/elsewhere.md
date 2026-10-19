@@ -1502,3 +1502,26 @@ used to leave its cards in the link and its shadows on the wall.
 Demonstrated 2026-10-19 between two frozen labs (`a`, `b --peer a`): see the commit message for
 what was read off the snapshot's `elsewhere.roster`.
 
+
+### Accounts are one set of settings, whichever wall you are at
+
+An account is the same subscription on every machine, so its on/off, caps, priority and rank
+travel (2026-10-19) — and unlike everything above, which one wall owns and the others draw,
+**every wall writes them**. So they converge rather than being pictured: a register per field,
+last write wins on a hybrid logical clock, a value nobody has changed under that build never
+sent, matched across walls by who the account signs in as rather than by its label. The frame
+(`accounts`) rides every exchange and a push a second after a change, only to a wall announcing
+`accounts` in `Facts::can`, and carries the readings each wall took itself, by age, so a wall
+that has not polled an account still knows it is at 90%. `accounts.md`, *One account, every
+wall*, is the design; `flyway/accounts.rs`, `accountsync.rs` and `link/accounting.rs` are the
+code.
+
+**What a token never does is cross.** The one credential-derived thing in the frame is a salted,
+truncated digest of each store's refresh-token chain, which finds a sign-in copied between
+machines — the same chain on two walls, where the first refresh on either signs the other out —
+and retires the copy (`accounts.md`, *A sign-in never leaves its machine*). `flyway/mod.rs`'s
+rule, *the wire carries work, never secrets*, is kept to the letter: a digest is not a secret,
+and nothing could spend one.
+
+**Older walls are left alone.** A wall that does not announce the word is sent nothing and read
+for nothing, and keeps its own settings.

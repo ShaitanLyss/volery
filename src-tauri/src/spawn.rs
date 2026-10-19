@@ -1777,7 +1777,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         let seats = crate::accounts::registry(app, &conn);
         let seats: Vec<(&str, bool, bool)> = seats
             .iter()
-            .map(|s| (s.label.as_str(), s.enabled, s.signed_in))
+            .map(|s| (s.label.as_str(), s.enabled, s.signed_in && !s.copied))
             .collect();
         match asked_account(args, &seats) {
             Ok(a) => a,

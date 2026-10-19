@@ -607,6 +607,7 @@
       if (verb.what === "pile") presence.openPile();
       else if (verb.what === "flyway") showFlyway = true;
       else if (verb.what === "themes") showThemes = !showThemes;
+      else if (verb.what === "accounts") showAccounts = !showAccounts;
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -4770,7 +4771,7 @@
       {
         key: "accounts",
         label: "accounts",
-        title: "Which Claude subscriptions this wall spends, and in what order",
+        title: "Which Claude subscriptions this wall spends, and in what order (space then u)",
         on: showAccounts,
         press: () => (showAccounts = !showAccounts),
       },
@@ -5065,7 +5066,7 @@
   {/if}
 
   {#if showAccounts}
-    <Accounts onclose={() => (showAccounts = false)} />
+    <Accounts onclose={() => (showAccounts = false)} me={elsewhere.me} flying={elsewhere.roster.some((r) => !r.me)} />
   {/if}
 
   {#if showThemes}

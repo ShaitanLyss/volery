@@ -286,9 +286,7 @@ fn ask(
        rather than a silent fall-through to whoever is signed in — an aside must
        not quietly spend the account being held in reserve. */
     if let Some(label) = account.filter(|s| !s.trim().is_empty()) {
-        if !crate::accounts::signed_in(app, &label) {
-            return Err(format!("'{label}' is not signed in"));
-        }
+        crate::accounts::usable_store(app, &label)?;
         let dir = crate::accounts::store_dir(app, &label)?;
         cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
         cmd.env_remove("CLAUDE_CODE_OAUTH_TOKEN");

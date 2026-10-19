@@ -95,7 +95,7 @@ bun run lab <name>       # a lab wall of your own, up to three at once: identifi
                          # traps it closes are in `.claude/rules/control.md`
 
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
-                              # chronicle.rs,
+                              # chronicle.rs, accountsync.rs,
                               # aside.rs,
                               # remove.rs,
                               # later.rs, pin.rs, presence.rs, sketch.rs, spawn.rs,

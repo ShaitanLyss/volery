@@ -213,6 +213,10 @@ export const SKEIN_AWAY_TOOL = "mcp__skein__away";
 export const SKEIN_NOTICE_TOOL = "mcp__skein__notice";
 /** Every account on the wall by label, for `spawn`'s `account`. */
 export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
+/** A card asking the user to switch an account on or off, or move its caps —
+ *  `accounts.rs::writes`. Parks on a confirmation, so the line says what is
+ *  asked rather than that it happened. */
+export const SKEIN_SET_ACCOUNT_TOOL = "mcp__skein__set_account";
 /** Whether Claude itself is up — the agent's half of the status widget.
  *
  *  Beside `allowance` because they are the same shape of question: both ask
@@ -764,6 +768,11 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_ACCOUNTS_TOOL:
       return "listed the accounts";
+    case SKEIN_SET_ACCOUNT_TOOL: {
+      const who = arg(input?.account);
+      const what = input?.enabled === true ? "switch on" : input?.enabled === false ? "switch off" : "change the caps of";
+      return who ? `asks to ${what} ${clip(who, 24)}` : "asks to change an account";
+    }
     /* Deliberately says what was *asked*, not what came back. Every other line
        here names the gesture, and this one has a stronger reason than symmetry:
        the answer changes minute to minute, so a line reading "claude is up"

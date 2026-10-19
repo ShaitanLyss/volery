@@ -190,6 +190,10 @@ describe("away mode has two spellings of one verb", () => {
     expect(chord("c", "g")).toMatchObject({ kind: "fire", verb: { kind: "card", act: "glass" } });
   });
 
+
+  test("u opens the accounts panel — which had no key until its settings travelled", () => {
+    expect(chord("", "u")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "accounts" } });
+  });
   test("i alone is a prefix rather than a chord", () => {
     expect(chord("", "i")).toMatchObject({ kind: "pending", open: "i" });
   });
@@ -242,6 +246,7 @@ describe("the which-key hint", () => {
       { keys: "tk", label: "croquis" },
       { keys: "tm", label: "motus" },
       { keys: "ts", label: "synth" },
+      { keys: "u", label: "the accounts panel" },
       { keys: "v0", label: "the wall as its skin is" },
       { keys: "vj", label: "the wall dimmer" },
       { keys: "vk", label: "the wall brighter" },

@@ -111,6 +111,7 @@ use super::tail::{self, TailMsg};
 use super::wire::{Dialler, Fault, Wire};
 use crate::store::Store;
 
+pub(crate) mod accounting;
 mod billboard;
 mod leaving;
 mod moves;
@@ -216,6 +217,11 @@ pub struct Link {
     /// own is said under (`boards.rs`, `link/billboard.rs`).
     boards: StdMutex<Boards>,
     board_due: AtomicBool,
+    /// Readings other walls took of the accounts, by identity, and whether a
+    /// push of this wall's account picture is already due
+    /// (`flyway/accounts.rs`, `link/accounting.rs`).
+    afar_accounts: StdMutex<accounting::Afar>,
+    accounts_due: AtomicBool,
     /// Closed by `shutdown` when this wall leaves, and read by every task this
     /// link started (`leaving.rs`).
     tenure: Tenure,
@@ -368,6 +374,8 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         cards_due: AtomicBool::new(false),
         boards: StdMutex::new(Boards::new(&me, board_v)),
         board_due: AtomicBool::new(false),
+        afar_accounts: StdMutex::new(accounting::Afar::default()),
+        accounts_due: AtomicBool::new(false),
         tenure: Tenure::new(),
         left: StdMutex::new(BTreeSet::new()),
     });
@@ -526,6 +534,7 @@ impl Link {
                         boards::WORD.to_string(),
                     ])
                     .chain(act::words())
+                    .chain(accounting::words())
                     .collect(),
                 ..Facts::default()
             };
@@ -690,7 +699,7 @@ impl Link {
         }
         let peer = self.wire.peer(host)?;
         let mut current = !self.speaks_older(host);
-        let back = match self.wire.exchange(peer, self.greeting(current)?, current).await {
+        let back = match self.wire.exchange(peer, self.greeting_for(host, current)?, current).await {
             Ok(b) => b,
             Err(Fault::Older(why)) if current => {
                 log::info!("flyway: {host} speaks the older language ({why}); syncing its sink only");
@@ -813,6 +822,7 @@ impl Link {
                 /* And a look's (`read_look`), and an act's (`read_act`). */
                 Frame::Look(_) | Frame::Act(_) => {}
                 Frame::Board(m @ BoardMsg::Board { .. }) => self.on_board(m),
+                Frame::Accounts(m) => self.on_accounts(m, from),
                 /* An unpost's answer is read by the exchange that asked
                    (`unpost_there`); an ask is only ever answered, never taken. */
                 Frame::Board(_) => {}
@@ -902,6 +912,7 @@ impl Link {
                     out.push(Frame::Look(self.look_here(&id, &card, &ask, &want)));
                 }
                 Frame::Board(m @ BoardMsg::Board { .. }) if who.current => self.on_board(m),
+                Frame::Accounts(m) if who.current => self.on_accounts(m, from.as_deref()),
                 /* A notice of this wall's taken down from another — decided
                    here, against this wall's own ladder (`board.rs`). Not gated
                    by "take work from other walls": it starts nothing. */
@@ -925,6 +936,8 @@ impl Link {
             if let Some(b) = self.board_say() {
                 out.push(Frame::Board(b));
             }
+            /* And its accounts, to a wall that says them (`accounting.rs`). */
+            out.extend(self.accounts_for(from.as_deref()));
         }
         if fleet_spoke {
             self.emit_roster();

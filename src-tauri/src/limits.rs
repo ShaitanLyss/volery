@@ -68,7 +68,7 @@
 //! close enough to be worth a colour and how a reset is worded are `limits.ts`'s,
 //! which is pure and tested.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
@@ -146,7 +146,7 @@ struct Cache {
 /// unchanged, because the same words come back in the `anthropic-ratelimit-*`
 /// headers when a limit is actually hit. A window you were watching and the
 /// window that stopped you should be nameable as the same thing.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Window {
     kind: String,
@@ -173,14 +173,14 @@ pub struct Window {
 /// Usage past the plan's allowance, when the account has it turned on. Carried
 /// because without it a window pinned at 100% is a lie in the other direction:
 /// work is still going through, it is simply being billed.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Overage {
     enabled: bool,
     used: Option<f64>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     windows: Vec<Window>,
@@ -695,13 +695,121 @@ pub async fn read_allowances(
         labels
             .into_iter()
             .filter(|l| !l.is_empty())
-            .map(|label| match report_with(&app, &state, &label) {
-                Ok(report) => Allowance { label, report: Some(report), fault: None },
-                Err(fault) => Allowance { label, report: None, fault: Some(fault) },
+            .map(|label| {
+                let now = now_ms();
+                let afar = afar_for(&app, &label, now);
+                /* A peer read this account moments ago: that answer is as good
+                   as asking, and costs the endpoint nothing. Unless this wall
+                   holds one newer still. */
+                if let Some(a) = afar.as_ref().filter(|a| now - a.at < SHARED_FRESH_MS) {
+                    let held = state.0.lock().ok().and_then(|all| all.get(&label).and_then(|c| c.last.as_ref().map(|r| r.at)));
+                    if held.is_none_or(|at| at < a.at) {
+                        return Allowance { label, report: Some(a.clone()), fault: None };
+                    }
+                }
+                match pick(report_with(&app, &state, &label), afar) {
+                    Ok(report) => Allowance { label, report: Some(report), fault: None },
+                    Err(fault) => Allowance { label, report: None, fault: Some(fault) },
+                }
             })
             .collect()
     })
     .await
+}
+
+/* ── a reading another wall took ───────────────────────────────────────────
+ *
+ * An account's allowance is the account's, whichever machine asked, so a wall
+ * flying with others is told their readings (`flyway/accounts.rs`, by identity,
+ * with an age rather than a clock time) and uses one wherever it is fresher than
+ * its own — or wherever it has none, which is the case worth the feature: a wall
+ * that has not polled an account, or whose sign-in for it has expired, still
+ * knows it is at 90%.
+ *
+ * It comes back as an ordinary `Report`, dated on *this* wall's clock
+ * (`at = now − age`) and saying where it was read, so everything downstream —
+ * `keptThrough`, `sayStale`, the caps — treats it exactly as a reading taken
+ * here that long ago. It is held to `keptThrough`'s own rule before it is
+ * handed on: a window that has rolled since it was read is a floor on nothing
+ * and is dropped, and so is one naming no reset. A reading with nothing left
+ * is not a reading.
+ */
+
+/// How fresh a peer's reading must be for this wall to use it instead of
+/// asking. The waterfall's own cadence: anything this fresh is what a pass of
+/// ours would have found.
+const SHARED_FRESH_MS: i64 = 3 * 60_000;
+
+const AFAR_WINDOWS_MOST: usize = 24;
+const AFAR_WORD_MOST: usize = 80;
+
+/// This wall's own last reading of one account, for the flyway to say. Never
+/// one heard from another wall — those live with the link and are not passed
+/// on, since the age they carry is only the reading wall's to vouch for.
+pub fn own_reading(app: &AppHandle, label: &str) -> Option<(serde_json::Value, i64)> {
+    let state = app.try_state::<Limits>()?;
+    let all = state.0.lock().ok()?;
+    let r = all.get(label)?.last.as_ref()?;
+    Some((serde_json::to_value(r).ok()?, r.at))
+}
+
+/// The freshest reading another wall said of the account `label` signs in as.
+fn afar_for(app: &AppHandle, label: &str, now: i64) -> Option<Report> {
+    let identity = app
+        .try_state::<crate::store::Store>()?
+        .0
+        .lock()
+        .ok()
+        .and_then(|c| crate::accountsync::key_of(&c, label))
+        .filter(|k| crate::flyway::accounts::is_identity(k))?;
+    let (host, report, age) = crate::flyway::link::accounting::afar_reading(app, &identity)?;
+    afar_report(&report, &host, age, now)
+}
+
+/// A reading off the wire, held to this file's shape and `keptThrough`'s rule,
+/// dated on this clock. Pure, so what another build may put on this wall is
+/// tested here.
+fn afar_report(v: &serde_json::Value, host: &str, age_ms: u64, now: i64) -> Option<Report> {
+    let r: Report = serde_json::from_value(v.clone()).ok()?;
+    let word = |s: &str| crate::clip::preview(&crate::clean::scrub(s.trim()), AFAR_WORD_MOST);
+    let windows: Vec<Window> = r
+        .windows
+        .into_iter()
+        .take(AFAR_WINDOWS_MOST)
+        .filter(|w| w.used.is_finite() && w.resets_at.is_some_and(|t| t > now))
+        .map(|w| Window {
+            kind: word(&w.kind),
+            group: word(&w.group),
+            used: w.used.clamp(0.0, 100.0),
+            severity: word(&w.severity),
+            resets_at: w.resets_at,
+            scope: w.scope.as_deref().map(word),
+            active: w.active,
+        })
+        .collect();
+    if windows.is_empty() {
+        return None;
+    }
+    let age = i64::try_from(age_ms).ok()?;
+    Some(Report {
+        windows,
+        overage: r.overage.map(|o| Overage { enabled: o.enabled, used: o.used.filter(|u| u.is_finite()) }),
+        at: now.saturating_sub(age),
+        source: format!("read on {}", word(host)),
+        plan: r.plan.as_deref().map(word),
+    })
+}
+
+/// This wall's answer against a peer's: the newer of two readings, or the
+/// peer's where this wall could not ask — a failed ask is not evidence, and a
+/// reading in hand from elsewhere is.
+fn pick(own: Result<Report, String>, afar: Option<Report>) -> Result<Report, String> {
+    match (own, afar) {
+        (Ok(r), Some(a)) if a.at > r.at => Ok(a),
+        (Ok(r), _) => Ok(r),
+        (Err(_), Some(a)) => Ok(a),
+        (Err(f), None) => Err(f),
+    }
 }
 
 /// How full this wall's allowance is, for the flyway's roster to announce:
@@ -793,6 +901,12 @@ fn report_with(app: &AppHandle, state: &Limits, label: &str) -> Result<Report, S
         }
     };
 
+    /* The token just answered, so it is the moment to ask who it belongs to —
+       once a day at most, and never a reason this reading fails. */
+    if !label.is_empty() {
+        learn_if_due(app, label, &token);
+    }
+
     let report = Report {
         windows: windows(&doc),
         overage: overage(&doc),
@@ -812,6 +926,140 @@ fn report_with(app: &AppHandle, state: &Limits, label: &str) -> Result<Report, S
     cache.quiet_until = 0;
     cache.hush_say = String::new();
     Ok(report)
+}
+
+
+/* ── who an account signs in as ────────────────────────────────────────────
+ *
+ * The one fact the flyway matches an account on across machines
+ * (`flyway/accounts.rs`). Labels are local — what *this* machine calls a
+ * subscription — so two walls can only agree that `lyss` here is `work` there by
+ * asking the account itself.
+ *
+ * **Not `claude auth status`.** It was probed for exactly this, 2026-10-19
+ * against claude 2.1.301, under `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to each
+ * store in turn: every store answered the *same* email and org id, hashed
+ * af1691… for both `lyss` and `tx-team`, and neither matched what `tx-team`'s
+ * own token said it was. The CLI reads the identity out of the shared
+ * `~/.claude.json` (`oauthAccount`), which is written by whichever sign-in ran
+ * last — so it is a fact about the config directory the stores share, and
+ * matching on it would have declared every account on the wall to be one. The
+ * credential file names nobody either (`claudeAiOauth` is tokens, two stamps, a
+ * plan and a tier).
+ *
+ * `/api/oauth/profile` with the store's own access token is the source that
+ * answers per store: 200 in about 350ms, `account.uuid`, `account.email`,
+ * `organization.uuid`, `organization.name`. The identity is the pair of uuids —
+ * one login in two organisations is two subscriptions, billed apart.
+ *
+ * Asked rarely, and only with a token already in hand: once after a sign-in
+ * (`learn_identity`, from the panel's `signin:done`), and otherwise after an
+ * allowance read that just succeeded with the same token, at most once a day per
+ * account (`IDENTITY_EVERY_MS`). An account whose token has expired and that
+ * nothing has used since stays unidentified — and therefore unsynced, keeping
+ * its own settings — until a card uses it or it is signed in again. That gap is
+ * accepted rather than papered over with the label: a guess here moves one
+ * subscription's on/off onto another.
+ */
+
+const PROFILE: &str = "https://api.anthropic.com/api/oauth/profile";
+
+/// How long a learned identity is trusted before an allowance read asks again.
+/// A store is re-signed-in rarely, and `learn_identity` after a sign-in does not
+/// wait on this.
+const IDENTITY_EVERY_MS: i64 = 24 * 60 * 60_000;
+
+/// Who one credential signs in as.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Identity {
+    /// `<account uuid>:<organisation uuid>`.
+    pub key: String,
+    pub email: String,
+    pub org: String,
+}
+
+/// The identity in a profile answer, or `None` if it does not name both uuids.
+/// Pure, so the shape is held by a test rather than by a live account.
+fn identity_from(doc: &serde_json::Value) -> Option<Identity> {
+    let s = |p: &str| doc.pointer(p).and_then(|v| v.as_str()).map(str::trim).unwrap_or("").to_string();
+    let key = format!("{}:{}", s("/account/uuid"), s("/organization/uuid"));
+    crate::flyway::accounts::is_identity(&key).then(|| Identity {
+        key,
+        email: s("/account/email"),
+        org: s("/organization/name"),
+    })
+}
+
+fn profile(token: &Token) -> Result<Identity, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .build();
+    let doc: serde_json::Value = agent
+        .get(PROFILE)
+        .set("Authorization", &format!("Bearer {}", token.value))
+        .set("Accept", "application/json")
+        .set("anthropic-beta", "oauth-2025-04-20")
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("the profile endpoint answered {code}"),
+            other => format!("could not reach the profile endpoint: {other}"),
+        })?
+        .into_json()
+        .map_err(|e| format!("unreadable profile: {e}"))?;
+    identity_from(&doc).ok_or_else(|| "the profile named no account and organisation".to_string())
+}
+
+/// Record who `label` signs in as, and bring its settings up to what the other
+/// walls agreed for that identity (`accountsync::adopt_identity`). Announces a
+/// change if the row moved or the identity is new.
+fn record_identity(app: &AppHandle, label: &str, id: &Identity) -> Result<(), String> {
+    let store = app.try_state::<crate::store::Store>().ok_or("the store is not open")?;
+    let (new, moved) = {
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let before = crate::accountsync::key_of(&conn, label).unwrap_or_default();
+        let moved = crate::accountsync::adopt_identity(&conn, label, &id.key, &id.email, &id.org, now_ms())?;
+        (before != id.key, moved)
+    };
+    if new || moved {
+        crate::accounts::changed(app);
+    }
+    Ok(())
+}
+
+/// After an allowance read that worked: ask who the account is, if nobody has
+/// for a day. Failure is silent — the identity is a nicety of the next read,
+/// never a reason this one failed.
+fn learn_if_due(app: &AppHandle, label: &str, token: &Token) {
+    let due = app
+        .try_state::<crate::store::Store>()
+        .and_then(|s| s.0.lock().ok().map(|c| crate::accountsync::identity_at(&c, label)))
+        .is_some_and(|at| now_ms() - at > IDENTITY_EVERY_MS);
+    if !due {
+        return;
+    }
+    match profile(token) {
+        Ok(id) => {
+            if let Err(e) = record_identity(app, label, &id) {
+                log::debug!("accounts: could not record who '{label}' is: {e}");
+            }
+        }
+        Err(e) => log::debug!("accounts: could not ask who '{label}' is: {e}"),
+    }
+}
+
+/// Learn who one account signs in as, now — after a sign-in, when the token is
+/// as fresh as it will ever be. Answers whether it was learned; a failure is
+/// said rather than thrown, since nothing waits on it but a line in the panel.
+#[tauri::command]
+pub async fn learn_identity(app: AppHandle, label: String) -> Result<Option<String>, String> {
+    crate::off_main(move || {
+        let token = token(&app, Some(&label))?;
+        let id = profile(&token)?;
+        record_identity(&app, &label, &id)?;
+        Ok(Some(id.email))
+    })
+    .await?
 }
 
 /// Forget the reading and the credential's whereabouts. Called when the last
@@ -954,22 +1202,50 @@ struct Seat<'a> {
     priority: i64,
     enabled: bool,
     signed_in: bool,
-    /// The last reading `Limits` holds for it, if any.
+    /// The last reading for it — this wall's, or another wall's where that is
+    /// fresher (`pick`), which then says where it was read.
     reading: Option<&'a Report>,
+    /// A retired copy of another machine's sign-in (`accounts::is_copy`).
+    copied: bool,
+    /// Who it signs in as, where that is known.
+    who: Option<&'a str>,
+    /// The last change to its synced settings made on another wall, said.
+    synced: Option<String>,
 }
 
 fn do_accounts(app: &AppHandle, caller: &str) -> String {
-    let (seats, mine) = app
+    let me = crate::flyway::key::host_name();
+    type Extra = (String, Option<String>);
+    type Read = (Vec<crate::accounts::Seat>, Option<String>, std::collections::HashMap<String, Extra>);
+    let (seats, mine, extra): Read = app
         .try_state::<crate::store::Store>()
         .and_then(|s| {
             s.0.lock().ok().map(|conn| {
-                (
-                    crate::accounts::registry(app, &conn),
-                    crate::store::account_of(&conn, caller),
-                )
+                let seats = crate::accounts::registry(app, &conn);
+                /* Who each signs in as, and the last change another wall made
+                   to it — the synced half, read under the same lock. */
+                let extra = seats
+                    .iter()
+                    .map(|seat| {
+                        let email: String = conn
+                            .query_row(
+                                "SELECT identity_email FROM account WHERE label = ?1",
+                                rusqlite::params![seat.label],
+                                |r| r.get(0),
+                            )
+                            .unwrap_or_default();
+                        let last = crate::accountsync::registers_of(&conn, &seat.label)
+                            .into_iter()
+                            .filter(|r| !r.host.eq_ignore_ascii_case(&me))
+                            .max_by_key(|r| r.at)
+                            .map(|r| format!("{} last set on {} {} ago", r.field, r.host, soon(now_ms() - r.at)));
+                        (seat.label.clone(), (email, last))
+                    })
+                    .collect();
+                (seats, crate::store::account_of(&conn, caller), extra)
             })
         })
-        .unwrap_or((Vec::new(), None));
+        .unwrap_or((Vec::new(), None, std::collections::HashMap::new()));
     /* Cloned out under the lock and read after it, so a slow format never holds
        the mutex every poll and every card's `allowance` goes through. */
     let held: std::collections::HashMap<String, Report> = app
@@ -982,14 +1258,30 @@ fn do_accounts(app: &AppHandle, caller: &str) -> String {
                 .collect()
         })
         .unwrap_or_default();
+    /* Another wall's reading where it is fresher than this wall's, or where
+       this wall has none — still no request, since the link already holds it. */
+    let now = now_ms();
+    let held: std::collections::HashMap<String, Report> = seats
+        .iter()
+        .filter_map(|s| {
+            let own = held.get(&s.label).cloned().ok_or_else(String::new);
+            pick(own, afar_for(app, &s.label, now)).ok().map(|r| (s.label.clone(), r))
+        })
+        .collect();
     let rows: Vec<Seat> = seats
         .iter()
-        .map(|s| Seat {
-            label: &s.label,
-            priority: s.priority,
-            enabled: s.enabled,
-            signed_in: s.signed_in,
-            reading: held.get(&s.label),
+        .map(|s| {
+            let (email, synced) = extra.get(&s.label).cloned().unwrap_or_default();
+            Seat {
+                label: &s.label,
+                priority: s.priority,
+                enabled: s.enabled,
+                signed_in: s.signed_in,
+                reading: held.get(&s.label),
+                copied: s.copied,
+                who: extra.get(&s.label).map(|(e, _)| e.as_str()).filter(|_| !email.is_empty()),
+                synced,
+            }
         })
         .collect();
     say_accounts(&rows, mine.as_deref(), now_ms())
@@ -1012,6 +1304,7 @@ fn say_accounts(rows: &[Seat], mine: Option<&str>, now: i64) -> String {
         let standing = match (r.enabled, r.signed_in) {
             (false, _) => "switched off — takes no work".to_string(),
             (true, false) => "not signed in — takes no work".to_string(),
+            (true, true) if r.copied => format!("takes no work — {}", crate::accounts::COPIED),
             (true, true) => match r.reading {
                 None => "usable, not read yet".to_string(),
                 Some(rep) if rep.windows.is_empty() => {
@@ -1024,13 +1317,16 @@ fn say_accounts(rows: &[Seat], mine: Option<&str>, now: i64) -> String {
                         .map(|w| format!("{} {:.0}%", w.kind, w.used))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("usable, {used} used (read {} ago)", soon(now - rep.at))
+                    let place = rep.source.strip_prefix("read on ").map(|h| format!(" on {h}")).unwrap_or_default();
+                    format!("usable, {used} used (read{place} {} ago)", soon(now - rep.at))
                 }
             },
         };
         let here = if Some(r.label) == mine { " — this card is on it" } else { "" };
+        let who = r.who.map(|w| format!(" · signs in as {w}")).unwrap_or_default();
+        let synced = r.synced.as_deref().map(|s| format!(" · {s}")).unwrap_or_default();
         out.push_str(&format!(
-            "- {} · priority {} · {standing}{here}\n",
+            "- {} · priority {} · {standing}{here}{who}{synced}\n",
             r.label, r.priority
         ));
     }
@@ -1041,7 +1337,9 @@ fn say_accounts(rows: &[Seat], mine: Option<&str>, now: i64) -> String {
         "\nTo start a card on one, pass its label as `account` to `mcp__skein__spawn`; left out, the \
          ladder picks. These are figures, not a verdict: whether an account has room is the \
          user's caps against them, which the wall applies and this listing does not — and a \
-         card named onto an account without room goes down the ladder anyway.",
+         card named onto an account without room goes down the ladder anyway. On/off and \
+         caps are the same on every wall of the flyway that knows an account; to change one, \
+         `mcp__skein__set_account` asks the user.",
     );
     out
 }
@@ -1289,6 +1587,77 @@ fn advice_for(worst: f64, others: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn afar(windows: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "windows": windows, "overage": null, "at": 1, "source": "the 'lyss' account", "plan": "team" })
+    }
+
+    /// A peer's reading comes back dated on this clock and naming where it
+    /// was read, with `keptThrough`'s rule already applied: a window that has
+    /// rolled, or names no reset, is a floor on nothing.
+    #[test]
+    fn a_reading_from_another_wall_is_dated_here_and_thinned() {
+        let now = 10_000_000;
+        let v = afar(serde_json::json!([
+            { "kind": "session", "group": "session", "used": 90.4, "severity": "normal", "resetsAt": now + 60_000, "scope": null, "active": true },
+            { "kind": "weekly_all", "group": "weekly", "used": 50, "severity": "normal", "resetsAt": now - 1, "scope": null, "active": false },
+            { "kind": "weekly_scoped", "group": "weekly", "used": 0, "severity": "normal", "resetsAt": null, "scope": "Fable", "active": false },
+            { "kind": "x", "group": "session", "used": 140, "severity": "normal", "resetsAt": now + 1, "scope": null, "active": false }
+        ]));
+        let r = afar_report(&v, "AU-LT-288", 120_000, now).unwrap();
+        assert_eq!(r.at, now - 120_000);
+        assert_eq!(r.source, "read on AU-LT-288");
+        assert_eq!(r.windows.len(), 2);
+        assert_eq!(r.windows[0].used, 90.4);
+        assert_eq!(r.windows[1].used, 100.0, "clamped, never past the real limit");
+        /* Nothing left is not a reading. */
+        let rolled = afar(serde_json::json!([
+            { "kind": "session", "group": "session", "used": 90, "severity": "normal", "resetsAt": now - 5, "scope": null, "active": true }
+        ]));
+        assert!(afar_report(&rolled, "x", 0, now).is_none());
+        assert!(afar_report(&serde_json::json!({ "windows": "nope" }), "x", 0, now).is_none());
+    }
+
+    /// The newer of two readings, and a peer's wherever this wall could not
+    /// ask — a failed ask is not evidence.
+    #[test]
+    fn the_fresher_reading_wins_and_a_fault_yields_to_one_in_hand() {
+        let now = 10_000_000;
+        let at = |t: i64| {
+            let mut r = afar_report(
+                &afar(serde_json::json!([{ "kind": "session", "group": "session", "used": 1, "severity": "normal", "resetsAt": now + 9, "scope": null, "active": true }])),
+                "h",
+                0,
+                t,
+            )
+            .unwrap();
+            r.at = t;
+            r
+        };
+        assert_eq!(pick(Ok(at(5)), Some(at(9))).unwrap().at, 9);
+        assert_eq!(pick(Ok(at(9)), Some(at(5))).unwrap().at, 9);
+        assert_eq!(pick(Err("down".into()), Some(at(5))).unwrap().at, 5);
+        assert!(pick(Err("down".into()), None).is_err());
+    }
+
+    /// The profile answer's shape, as `/api/oauth/profile` returned it on
+    /// 2026-10-19 (values invented): the identity is both uuids, and an answer
+    /// missing either names nobody rather than half an account.
+    #[test]
+    fn an_identity_is_the_account_and_its_organisation() {
+        let doc = serde_json::json!({
+            "account": { "uuid": "8ebb2352-1111-4000-8000-000000000001", "email": "l@example.com", "full_name": "L" },
+            "organization": { "uuid": "10340709-2222-4000-8000-000000000002", "name": "Studio", "organization_type": "claude_team" },
+            "application": { "uuid": "ffff", "name": "Claude Code" }
+        });
+        let id = identity_from(&doc).unwrap();
+        assert_eq!(id.key, "8ebb2352-1111-4000-8000-000000000001:10340709-2222-4000-8000-000000000002");
+        assert_eq!(id.email, "l@example.com");
+        assert_eq!(id.org, "Studio");
+        assert!(identity_from(&serde_json::json!({ "account": { "uuid": "abc" } })).is_none());
+        assert!(identity_from(&serde_json::json!({ "organization": { "uuid": "abc" } })).is_none());
+        assert!(identity_from(&serde_json::json!({ "account": { "uuid": "x y" }, "organization": { "uuid": "abc" } })).is_none());
+    }
 
     /// The exact body the endpoint returned on 2026-08-17, trimmed to the parts
     /// this module reads — including the null codenamed windows, which are the
@@ -1586,13 +1955,17 @@ mod tests {
             plan: None,
         };
         let rows = [
-            Seat { label: "work", priority: 1, enabled: true, signed_in: true, reading: Some(&read) },
-            Seat { label: "spare", priority: 1, enabled: true, signed_in: true, reading: None },
-            Seat { label: "off", priority: 2, enabled: false, signed_in: true, reading: None },
-            Seat { label: "new", priority: 3, enabled: true, signed_in: false, reading: None },
+            Seat { label: "work", priority: 1, enabled: true, signed_in: true, reading: Some(&read), copied: false, who: Some("w@example.com"), synced: None },
+            Seat { label: "spare", priority: 1, enabled: true, signed_in: true, reading: None, copied: false, who: None, synced: None },
+            Seat { label: "off", priority: 2, enabled: false, signed_in: true, reading: None, copied: false, who: None, synced: Some("enabled last set on AU-LT-288 3m ago".into()) },
+            Seat { label: "new", priority: 3, enabled: true, signed_in: false, reading: None, copied: false, who: None, synced: None },
+            Seat { label: "copy", priority: 3, enabled: true, signed_in: true, reading: None, copied: true, who: None, synced: None },
         ];
         let said = say_accounts(&rows, Some("work"), 1_000 + 120_000);
-        assert!(said.contains("- work · priority 1 · usable, session 42% used (read 2m ago) — this card is on it"), "{said}");
+        assert!(said.contains("- work · priority 1 · usable, session 42% used (read 2m ago) — this card is on it · signs in as w@example.com"), "{said}");
+        assert!(said.contains("- off · priority 2 · switched off — takes no work · enabled last set on AU-LT-288 3m ago"), "{said}");
+        assert!(said.contains("- copy · priority 3 · takes no work — this sign-in was copied"), "{said}");
+        assert!(said.contains("mcp__skein__set_account"), "{said}");
         assert!(said.contains("- spare · priority 1 · usable, not read yet\n"), "{said}");
         assert!(said.contains("- off · priority 2 · switched off"), "{said}");
         assert!(said.contains("- new · priority 3 · not signed in"), "{said}");

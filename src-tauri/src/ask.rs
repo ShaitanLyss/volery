@@ -2154,6 +2154,15 @@ pub(crate) fn roster() -> Vec<Value> {
              model an agent runs on, haiku sonnet opus, which account or \
              subscription it spends",
         ),
+        /* Deferred, and asked for by name in the `accounts` listing's own
+           receipt: a card reaches for it only once an account is the problem —
+           work held for want of one, or the user saying "switch lyss back on". */
+        found_by(
+            crate::accounts::set_account_schema(),
+            "switch a claude account on or off, turn an account back on, enable or \
+             disable a subscription, change account caps, raise or lower a usage cap, \
+             work held because every account is off",
+        ),
         found_by(
             reads_only(crate::limits::accounts_schema()),
             "which claude accounts or subscriptions are on this wall, list account \
@@ -3701,6 +3710,13 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             crate::docket::writes(&app, &conversation_id, &tool, &args)
                                 .or_else(|| {
                                     crate::lend::writes(&app, &conversation_id, &tool, &args)
+                                })
+                                /* `set_account`: an account switched on or off,
+                                   or its caps moved, on the user's yes — and
+                                   then the panel's own stamped write, so it
+                                   reaches every wall (`accounts.rs`). */
+                                .or_else(|| {
+                                    crate::accounts::writes(&app, &conversation_id, &tool, &args)
                                 })
                         {
                             match writing {

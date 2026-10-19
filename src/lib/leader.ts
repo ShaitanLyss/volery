@@ -97,7 +97,7 @@ export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance";
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" }
+  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" | "accounts" }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
@@ -167,6 +167,14 @@ export const CHORDS: readonly Chord[] = [
      whole of what a flyway is — starting, joining and leaving all happen in the
      one panel it opens. */
   { keys: "k", label: "flyway key", verb: { kind: "open", what: "flyway" } },
+  /* `u` for the accounts panel — which subscriptions the wall spends, in what
+     order, and what each has left of its usage. A place you go, on `a`'s
+     argument, and the panel had no key at all until the settings in it began
+     travelling between walls (2026-10-19), when it became the place you go to
+     switch an account back on from the other laptop. `a` was the letter and is
+     the archive's; `u` is the half of "usage" the panel draws beside each row,
+     and nothing else here begins with it. Toggles, like `vv`. */
+  { keys: "u", label: "the accounts panel", verb: { kind: "open", what: "accounts" } },
   /* `w` is the window, after nvim's `<C-w>` family: what the studio window
      itself does rather than anything on the wall. A family rather than a
      letter, because placing a window is several verbs (maximise, minimise,

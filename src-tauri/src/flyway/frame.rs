@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::act::ActMsg;
+use super::accounts::AccountsMsg;
 use super::boards::BoardMsg;
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
@@ -70,6 +71,9 @@ pub enum Frame {
     /// A wall's billboard, said whole on every exchange, and a notice taken
     /// down from another wall (`boards.rs`), answered on the same stream.
     Board(BoardMsg),
+    /// A wall's account settings and readings (`accounts.rs`), said on every
+    /// exchange to a wall that announces `accounts`.
+    Accounts(AccountsMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -123,6 +127,7 @@ const KNOWN: &[&str] = &[
     "hello", "events", "roster", "ask", "answer", "prompt", "pictured", "recall", "close", "cards", "tail", "tailed",
     "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
     "act", "acted", "board", "unpost", "unposted", "leaving",
+    "accounts",
 ];
 
 #[cfg(test)]
@@ -302,6 +307,7 @@ mod tests {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
         }
         written.extend(crate::flyway::boards::TAGS.map(str::to_string));
+        written.extend(crate::flyway::accounts::TAGS.map(str::to_string));
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();

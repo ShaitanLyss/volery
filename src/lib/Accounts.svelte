@@ -21,7 +21,9 @@
     mergeAccounts,
     sayBlocked,
     sayImported,
+    sayIdentity,
     sayStale,
+    saySynced,
     sayTier,
     sayUnmeasured,
     sayUnsigned,
@@ -33,7 +35,10 @@
   import { Listeners } from "./listeners";
   import { codeFrom, looksLikeCode, readSignin } from "./signin";
 
-  let { onclose }: { onclose: () => void } = $props();
+  /* `me` is this wall's flyway name and `flying` whether it flies with any
+     other wall: the sync line says which wall changed a setting, and keeps
+     quiet about changes made here or with nobody to keep in step with. */
+  let { onclose, me = "", flying = false }: { onclose: () => void; me?: string; flying?: boolean } = $props();
 
   const WATCHER = "accounts-panel";
 
@@ -108,6 +113,12 @@
            browser leaves the row exactly as it was. */
         void waterfall.refresh();
         say(signedIn ? `${label} is signed in` : `${label} was not signed in`);
+        /* The token is as fresh now as it will ever be, so this is the moment
+           to learn who the account is — which is what the other walls match it
+           on, and what lets it adopt the settings they agreed while this wall
+           could not tell (`accountsync::adopt_identity`). A failure costs only
+           the line under the row; the next allowance read asks again. */
+        if (signedIn) void invoke("learn_identity", { label }).catch(() => {});
       }),
     );
 
@@ -560,6 +571,18 @@
                   >{account.enabled ? "on" : "off"}</button>
                 </div>
 
+                <!-- Who it signs in as, and whose word its settings are. The
+                     identity is what the other walls match it on, so it is said
+                     where the label is; the sync line names the wall that last
+                     changed something, since a setting changed at the other
+                     laptop is otherwise a setting that changed by itself. -->
+                {#if sayIdentity(account) || saySynced(account, me, now, flying)}
+                  <div class="who">
+                    {#if sayIdentity(account)}<span class="dim">{sayIdentity(account)}</span>{/if}
+                    {#if saySynced(account, me, now, flying)}<span class="dim">{saySynced(account, me, now, flying)}</span>{/if}
+                  </div>
+                {/if}
+
                 <!-- ── the ceilings ─────────────────────────────────────────── -->
                 {#if account.signedIn}
                   <div class="caps">
@@ -1006,6 +1029,12 @@
     color: var(--paper-faint);
   }
 
+  .who {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.9rem;
+    padding-left: 1.5ch;
+  }
   .caps {
     display: flex;
     flex-wrap: wrap;

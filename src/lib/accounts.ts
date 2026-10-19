@@ -73,7 +73,77 @@ export type Account = {
    *  unmeasured` — which `spentOf` reads as *empty*, so inside its tier it was
    *  the account preferred for the next turn. See `standingOf`. */
   lapsed?: boolean;
+  /** Who it signs in as: `<account uuid>:<organisation uuid>`, learned off its
+   *  own credential and empty until then (`limits.rs::learn_identity`). What other
+   *  walls on the flyway match it on — never the label, which is this
+   *  machine's name for it. Optional, as `lapsed` is. */
+  identity?: string;
+  identityEmail?: string;
+  identityOrg?: string;
+  /** Whose word each synced setting is: one entry per field changed under the
+   *  sync (`accountsync.rs`). Empty for a row nobody has touched since the
+   *  upgrade, which keeps its own settings and sends none. */
+  synced?: Synced[];
+  /** The sign-in is a retired copy of another machine's: refused until it is
+   *  signed in again here. Mirrors `accounts.rs::is_copy`. */
+  copied?: boolean;
 };
+
+/** What a copied sign-in is told — `accounts.rs::COPIED`, word for word, held
+ *  equal by a test. */
+export const COPIED =
+  "this sign-in was copied from another machine and using it would log that machine out — sign in here instead";
+
+/** One synced field's last write — which wall, and when. */
+export type Synced = { field: string; at: number; host: string };
+
+/** Who an account signs in as, in the panel's words, or `null` before that is
+ *  known. */
+export function sayIdentity(a: Account): string | null {
+  if (!a.identity) return null;
+  const who = [a.identityEmail, a.identityOrg].filter((s) => s && s.trim()).join(" · ");
+  return who ? `signs in as ${who}` : "identified";
+}
+
+/** The last change to one account's synced settings, said as a sentence for
+ *  the row: what changed, on which wall, how long ago. `null` when there is
+ *  nothing worth saying — nobody has changed it under the sync, or the last
+ *  change was made on this wall (`me`), which the person looking already knows.
+ *
+ *  An account with no identity yet says so instead, once there is a flyway to
+ *  keep in step with (`flying`): its settings are changed here and nowhere
+ *  else until the account is used or signed in again, and a person who has
+ *  just switched it off at the other laptop needs to know this one did not
+ *  hear. */
+export function saySynced(a: Account, me: string | null, now: number, flying: boolean): string | null {
+  if (!a.identity) {
+    return flying && a.signedIn ? "not identified yet — its settings stay on this wall until it is used" : null;
+  }
+  const last = [...(a.synced ?? [])].sort((x, y) => y.at - x.at)[0];
+  if (!last) return null;
+  if (me && last.host.toLowerCase() === me.toLowerCase()) return null;
+  const what =
+    last.field === "enabled"
+      ? a.enabled
+        ? "switched on"
+        : "switched off"
+      : last.field === "caps"
+        ? "caps changed"
+        : last.field === "priority"
+          ? `moved to priority ${a.priority}`
+          : "reordered";
+  return `${what} on ${last.host} · ${agoOf(now - last.at)}`;
+}
+
+function agoOf(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 /** The last allowance reading for one account, or why there isn't one. Mirrors
  *  what `read_allowances` hands over per account: a fault is not the same as an
@@ -386,6 +456,12 @@ export function standingOf(
   if (account.lapsed) {
     return { state: "unusable", label, why: "sign-in has lapsed — sign in to this account again" };
   }
+  /* A copy of another machine's sign-in: the same refresh-token chain on two
+     machines, where using it here would log that one out (`accounts.rs`, *a
+     sign-in never leaves its machine*). Rust refuses to spawn on it whatever this
+     says; this is what keeps the waterfall from choosing it and the panel saying
+     why. */
+  if (account.copied) return { state: "unusable", label, why: COPIED };
   if (!allowance) {
     return { state: "ready", label, unmeasured: "its allowance has not been read yet" };
   }
@@ -402,7 +478,7 @@ export function standingOf(
  *  and a switched-off one will not be asked to, so neither is a subscription
  *  this wall is choosing between. */
 export function usable(accounts: Account[]): Account[] {
-  return accounts.filter((a) => a.enabled && a.signedIn && !a.lapsed);
+  return accounts.filter((a) => a.enabled && a.signedIn && !a.lapsed && !a.copied);
 }
 
 /* ── remembering a refusal ───────────────────────────────────────────────*/

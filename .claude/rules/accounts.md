@@ -7,6 +7,9 @@ paths:
   - "src-tauri/src/claude.rs"
   - "src-tauri/src/signin.rs"
   - "src/lib/signin.ts"
+  - "src-tauri/src/accountsync.rs"
+  - "src-tauri/src/flyway/accounts.rs"
+  - "src-tauri/src/flyway/link/accounting.rs"
 ---
 
 # More than one subscription, in priority order
@@ -118,7 +121,9 @@ label, the rank and the caps, so deleting it still costs no credentials.
 
 For a while that needed a qualifier — the sign-ins could be carried to a second
 machine in a file — and it no longer does: a sign-in never leaves its machine
-(*Carrying a waterfall — and why a sign-in never travels*, near the end).
+(*Carrying a waterfall — and why a sign-in never travels*, near the end). The
+one credential-derived thing that crosses the flyway is a salted digest used to
+find a copy, which nothing could spend.
 
 The one thing this arrangement rests on that could move under us is an
 undocumented environment variable. If it ever stops being read, the failure is
@@ -970,7 +975,10 @@ moment of the paste and `sayUnsigned` for as long as it stays true, which is
 `sayUnmeasured`'s rule. `signedIn` is deliberately absent from the document
 rather than merely unused: it is not a stored field, it is computed by looking
 for a file on *this* machine, so writing it down would be a claim about a disk
-the document is about to leave.
+the document is about to leave. Between walls of one flyway the clipboard is no
+longer needed for the settings at all — they travel by themselves (*One
+account, every wall*, below) — and it stays for setting up a wall that is not on
+one.
 
 ### A sign-in never leaves its machine
 
@@ -994,8 +1002,8 @@ nineteen days to run, almost certainly by AU-LT-288 refreshing a carried copy.
 Lyss: *"I don't want machines to log each other out."* A warning was not enough;
 the answer is that nothing here can make the copy.
 
-The replacement is signing a machine in **from another wall**, built next: each
-machine runs its own `claude auth login`, keeps its
+The replacement is signing a machine in **from another wall** (below, *Signing
+in from another wall*): each machine runs its own `claude auth login`, keeps its
 own PKCE verifier, and gets a chain of its own. What crosses the flyway is a URL
 and a one-time code — never a token.
 
@@ -1003,6 +1011,173 @@ and a one-time code — never a token.
 commands are gone from `accounts.rs`, from the handler list and from the panel,
 and that a pasted document still carrying an old `signIn` has it dropped on the
 way in.
+
+#### A copy made before that is found, and retired
+
+Taking the carry out stops new copies. A copy already installed is still a
+hazard every time either machine refreshes, so it is found and refused:
+
+- **A copy is the same chain on two machines**, and that can be compared without
+  moving a token. Each wall's account picture carries, per identity, a digest of
+  the refresh token its store holds (`accounts::chain_digest`: SHA-256 over a
+  fixed prefix, the identity and the token, cut to 128 bits — it tells two chains
+  apart and spends nothing) and how long ago that store was written. Two walls
+  holding one digest hold one chain.
+- **It catches every copy that is still a hazard and none that is not.** The
+  digests stay equal only until either side refreshes, and after that one of the
+  two is already dead. Two live chains that differ are two sign-ins — the
+  arrangement wanted.
+- **Which one is the copy is read off the files.** While the digests match,
+  neither store has refreshed since the copy, so the original was last written by
+  its own sign-in or refresh and the copy by the install, which came after: the
+  store written more recently is the copy (`flyway::accounts::is_the_copy`). Two
+  ages, each on its own wall's clock, so no clocks are compared; installs land
+  days after the sign-ins they copy, so seconds of drift cannot flip it, and an
+  exact tie goes by host name so both walls still agree.
+- **Retired means refused, by construction.** The copy's row records the chain it
+  was retired at (`copied_digest`, schema v56). `accounts::usable_store` — what
+  `spawn_now` and an aside ask before naming a store to a child — refuses a store
+  still holding that chain, `registry`/`usable_labels` count it unusable, and
+  `standingOf` makes it `unusable` with `COPIED` as the reason, word for word what
+  Rust says (held equal by a test). Signing in again here starts a new chain; the
+  digest no longer matches and the account is usable again with nothing to clear.
+- **What it cannot see**: a copy on a wall that is not on the flyway with the
+  original, and a copy whose twin has already refreshed. The first is outside
+  what any wall can know; the second has already done its damage, and the dead
+  store reads `lapsed`.
+
+## One account, every wall
+
+Lyss, 2026-10-19: *"I wish … my account settings would sync when I'm on the
+flyway to control all my accounts from one place, it doesn't make sense to have
+different account limits and on/off per machine since account are shared."* The
+trigger was `lyss` switched off on QUEERISFREEDOM while she sat at AU-LT-288,
+where neither she nor a card could switch it back on: the only way to write the
+row was the panel on its own machine, and the front end's `Waterfall` cached the
+registry until somebody pressed something.
+
+`flyway/accounts.rs` holds the argument for the merge, `accountsync.rs` is the
+store's half, `flyway/link/accounting.rs` the wiring.
+
+### Who an account is, learned and never guessed
+
+Accounts are matched across machines by **who they sign in as**, never by label —
+a label is this machine's name for a subscription. The identity is
+`<account uuid>:<organisation uuid>`: one login in two organisations is two
+subscriptions, billed apart.
+
+- **Not `claude auth status`.** Probed 2026-10-19: under
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` every store answered the *same* email and org
+  id, and neither matched what `tx-team`'s own token said it was. The CLI reads
+  the identity out of the shared `~/.claude.json` (`oauthAccount`), written by
+  whichever sign-in ran last. Matching on it would have declared every account on
+  the wall to be one. The credential file names nobody either.
+- **`/api/oauth/profile` with the store's own token** is the source that answers
+  per store (about 350ms): `account.uuid`, `account.email`, `organization.uuid`,
+  `organization.name`. Asked in `limits.rs`, still the only file that opens a
+  credential: after a sign-in (`learn_identity`, from the panel's
+  `signin:done`), and otherwise after an allowance read that just succeeded with
+  the same token, at most once a day per account.
+- **Cached on the row** (`identity`, `identity_email`, `identity_org`,
+  `identity_at` — schema v56), because a store whose access token has expired can
+  answer nothing, and a switched-off account is exactly one nothing refreshes.
+- **The gap, stated.** An idle account whose access token has expired and that
+  nothing has used since the upgrade stays unidentified — and so unsynced,
+  keeping its own settings — until a card uses it or it is signed in again. No
+  label fallback: a guess here moves one subscription's on/off onto another,
+  which is money moving. The panel says *not identified yet* on such a row while
+  the wall flies with others.
+
+### A register per field, last write wins, on a hybrid clock
+
+Each `(identity, field)` — `enabled`, `caps`, `priority`, `rank` — is a register
+holding its value and the stamp `(at, host)` that wrote it, and only ever moves to
+a higher stamp. That is a state-based CRDT: whole tables exchanged in any order,
+any number of times, end the same (`any_order_of_any_exchanges_agrees` walks all
+720 orders of six registers).
+
+- **Per field, not per account**, so "switched off here" and "capped at 80 there"
+  made while apart both survive. Per account would keep the later and silently
+  drop the other.
+- **The stamp is a hybrid logical clock**: `at = max(now, highest stamp seen +
+  1)`, ties to the host name. A change made after hearing another always beats
+  it, whatever either clock says — the flyway compares no two machines' clocks
+  anywhere else. For genuinely concurrent changes the wall clock decides, which
+  is the only honest reading of "last".
+- **A value nobody has changed under this build is never sent.** Rows from before
+  `migrate_v56` carry no register, so an upgrade moves nothing; sending them at
+  stamp zero would have left first contact to a tie broken by host name, one
+  wall's caps silently replacing the other's. A field travels the first time a
+  person changes it.
+- **A change before identification is kept.** It is stamped under
+  `label:<label>`, never sent, and folded into the identity by the same rule when
+  it is learned (`accountsync::adopt_identity`) — which is also how a wall that has
+  just signed an account in adopts the on/off the others agreed while it could
+  not tell which account it was.
+- **Every write goes through `accountsync::stamp`.** The panel's four setters,
+  `set_account`'s settle and a peer's register all land there; the commands in
+  `accounts.rs` have no SQL of their own for those columns. A setter writing the
+  column directly would be a change no other wall ever hears of.
+- **The register table holds every identity heard**, registered here or not, so a
+  wall passes on what it holds: B coming back while A is down still learns A's
+  change from C.
+- **Rank** is synced too, and a reorder stamps every rank at once so a whole order
+  wins as a unit. Walls holding different sets of accounts can collide on a rank;
+  `ordered` breaks the tie by label, as it always has.
+
+### On the wire
+
+`{"msg":"accounts", host, settings, readings, chains}` — every register that may
+travel, the readings this wall took, and the chains for copy detection. Said in
+every greeting and answer, and pushed about a second after a change
+(`accounts_changed`, coalesced like the board), so a toggle on one wall is on the
+other's panel almost at once and a push that fails costs a tick, never the
+change.
+
+- **Only to walls that announce `accounts` in `Facts::can`**, and only read from
+  them. An older wall never meets the frame — it would skip it as an unknown word
+  anyway (`frame::take`) — and keeps its own settings, untouched. The first
+  exchange with a wall not yet announced carries none; the next tick does.
+- **Every value is held to the shape a local write is** (`accounts::normal`), a
+  placeholder or an unstamped register is refused, and every list is bounded.
+
+### Readings travel as ages
+
+An account's allowance is the account's, so a wall shares the readings **it took
+itself** — never one it heard — each with how long ago it was taken; the holder
+keeps the freshest per identity on its own clock (`accounting::Afar`, in memory).
+`limits::read_allowances` then uses a peer's reading wherever it is fresher than
+its own or it has none, and **does not ask the endpoint at all** when a peer read
+the account under three minutes ago. The reading comes back as an ordinary
+`Report`, dated on this wall's clock (`at = now − age`) with `source: "read on
+<host>"`, after `keptThrough`'s rule — a window rolled since, or naming no
+reset, is dropped — so `keptThrough`, `sayStale` and the caps treat it exactly
+as a reading taken here that long ago. A wall that has not polled, or whose own
+sign-in has expired, still knows the account is at 90%.
+
+### Every reader re-reads
+
+Every write — panel, tool, or a merge from a peer — emits `accounts:changed`, and
+`Skein` answers it with `waterfall.refresh()`, which re-reads the registry and
+polls (picking up a peer's reading as it goes). The panel draws through the same
+`Waterfall`. Each row now says who the account signs in as (`sayIdentity`) and
+which wall last changed it and when (`saySynced` — quiet about a change made on
+this wall, since the person looking made it).
+
+### A card asking to change one
+
+`set_account` (deferred tier, found by its hint): `{account, enabled?, caps?,
+reason}`. It parks on a confirmation — `docket::Writing::Ask` with a
+`Settle::new(Confirm)` — so it reaches Lyss on whichever wall she is at with
+nothing added to any list. Caps are merged into the ones already set, `null`
+removing one. On a yes it re-reads the account and writes through `set_field`,
+the panel's own stamped write, so it can do nothing the panel could not and the
+change reaches every wall that knows the account. A call that would change
+nothing is refused before anybody is asked. `mcp__skein__accounts` gains, per
+row, who the account signs in as, the last change another wall made, a peer's
+reading where it is the fresher one, and a retired copy's reason.
+
+The accounts panel has a key at last: `<space> u`.
 
 ### Does a refresh token rotate on use? Read the client, not the wire
 
