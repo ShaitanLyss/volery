@@ -9,6 +9,8 @@ import {
   afterClose,
   ageOf,
   settles,
+  settledByReading,
+  allowanceLine,
   dayOf,
   groups,
   matches,
@@ -68,11 +70,60 @@ describe("the sidebar's groups", () => {
       row("b", { deferred: "later" }),
       row("c", { notice: { kind: "question", text: "shall I?" } }),
       row("d", { notice: { kind: "own", text: "look" } }),
-      row("e", { failed: true }),
+      row("e", { failed: true, notice: { kind: "failed", text: "API Error: 529 overloaded" } }),
       row("f", { notice: { kind: "done", text: "fine" } }),
     ];
     expect(ids(rows, "needs").sort()).toEqual(["a", "b", "c", "d", "e"]);
     expect(ids(rows, "finished")).toEqual(["f"]);
+  });
+
+  test("a card that reads rust with no notice is not asking for anything: the tier is never the reason", () => {
+    /* The wall Lyss's screenshot was of, as its own store had it on
+       2026-10-19: seven cards whose last turn ended in an error, the oldest on
+       14 September, and an empty notice queue. Every one of them was in
+       *needs you*, as "stopped: it gave up". None is. */
+    const day = 24 * H;
+    const rust = [
+      row("mover-harness", { failed: true, lastAt: NOW - 6 * day }),
+      row("slide-anim", { failed: true, lastAt: NOW - 37 * day }),
+      row("network-day", { failed: true, lastAt: NOW - 37 * day }),
+      row("store-production", { failed: true, lastAt: NOW - 13 * day }),
+      row("ai-testing", { failed: true, lastAt: NOW - 5 * day }),
+      row("eos-dashboard", { failed: true, lastAt: NOW - 3 * H }),
+      row("accounts-synced", { failed: true, lastAt: NOW - 3 * H, host: "QUEERISFREEDOM" }),
+    ];
+    expect(ids(rust, "needs")).toEqual([]);
+    expect(keys(rust)).toEqual(["today", "week", "earlier"]);
+    /* Still drawn as what they are. */
+    expect(groups(rust, NOW).flatMap((g) => g.rows).every((p) => p.tone === "fail")).toBe(true);
+  });
+
+  test("a card waiting for allowance is quiet: not in needs you, not rust, and says when", () => {
+    const held = row("held", { failed: true, allowance: { until: null, reset: "3:30pm" } });
+    const waiting = row("waiting", { allowance: { until: NOW + 2 * H, reset: null } });
+    const p = groups([held, waiting], NOW).flatMap((g) => g.rows);
+    expect(ids([held, waiting], "needs")).toEqual([]);
+    expect(p.map((x) => x.tone)).toEqual(["rest", "rest"]);
+    expect(p.find((x) => x.row.id === "held")!.sub).toBe("waiting for allowance · resets 3:30pm");
+    expect(p.find((x) => x.row.id === "waiting")!.sub).toBe("waiting for allowance · back in 2h");
+    expect(allowanceLine({ until: null, reset: null }, NOW)).toBe("waiting for allowance");
+  });
+
+  test("a card on another wall is folded by the same rule", () => {
+    const far = (over: Partial<ChatRow>) => row("f", { host: "QUEERISFREEDOM", ...over });
+    expect(ids([far({ failed: true })], "needs")).toEqual([]);
+    expect(ids([far({ failed: true, notice: { kind: "failed", text: "API Error: 529 overloaded" } })], "needs")).toEqual(["f"]);
+    expect(ids([far({ notice: { kind: "question", text: "shall I?" } })], "needs")).toEqual(["f"]);
+  });
+
+  test("reading settles a finished turn and a failure, and nothing that waits on an answer", () => {
+    expect(settledByReading({ kind: "done", text: "fine" })).toBe(true);
+    expect(settledByReading({ kind: "error", text: "API Error: 529 overloaded" })).toBe(true);
+    expect(settledByReading({ kind: "question", text: "shall I?" })).toBe(false);
+    expect(settledByReading({ kind: "card", text: "found a bug" })).toBe(false);
+    expect(settledByReading({ kind: "card", text: "wait for me", askId: "a1" })).toBe(false);
+    expect(settledByReading({ kind: "done", text: "fine", askId: "a1" })).toBe(false);
+    expect(settledByReading({ kind: "error", text: "You've hit your session limit · resets 2:30pm" })).toBe(false);
   });
 
   test("a question you put off stays in needs you while the agent works on", () => {
@@ -83,7 +134,7 @@ describe("the sidebar's groups", () => {
     const rows = [
       row("n1", { notice: { kind: "question", text: "?" } }),
       row("q1", { asking: { text: "q", nth: 1, of: 1 } }),
-      row("n2", { failed: true }),
+      row("n2", { failed: true, notice: { kind: "failed", text: "API Error: 529 overloaded" } }),
       row("q2", { asking: { text: "q", nth: 1, of: 2 } }),
     ];
     expect(ids(rows, "needs")).toEqual(["q1", "q2", "n1", "n2"]);
@@ -177,7 +228,9 @@ describe("what a row says", () => {
   });
 
   test("a failure says it stopped", () => {
-    expect(subtitleOf(row("x", { failed: true, lastWords: "API error 529" }), "needs")).toBe("stopped: API error 529");
+    expect(subtitleOf(row("x", { failed: true, notice: { kind: "failed", text: "API error 529\n\nhalfway" } }), "needs")).toBe(
+      "stopped: API error 529",
+    );
   });
 
   test("a working row says what it is doing and where", () => {
@@ -264,7 +317,7 @@ describe("walking the sidebar", () => {
   });
 
   test("alt+down goes to the next that needs you, wrapping", () => {
-    const two = [row("a", { asking: { text: "q", nth: 1, of: 1 } }), row("b", { failed: true }), row("c")];
+    const two = [row("a", { asking: { text: "q", nth: 1, of: 1 } }), row("b", { failed: true, notice: { kind: "failed", text: "API Error: 529 overloaded" } }), row("c")];
     const gs = groups(two, NOW);
     expect(nextNeeding(gs, null)).toBe("a");
     expect(nextNeeding(gs, "a")).toBe("b");

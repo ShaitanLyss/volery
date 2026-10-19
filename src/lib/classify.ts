@@ -2586,6 +2586,24 @@ export function wasRateLimited(result: any): boolean {
   );
 }
 
+/** Does this sentence say the account ran out — read off **text alone**, for
+ *  the places that have only the words: a notice's opening line, which is the
+ *  CLI's own refusal (`restNotice` puts `lastError` first), on this wall or
+ *  carried from another in a digest, where no `api_error_status` travels.
+ *
+ *  `wasRateLimited`'s two signals become one here, and the status gate is
+ *  replaced by *where* the sentence is: the caller hands in the first line of
+ *  an error notice, which only the CLI writes. A card that quoted a refusal
+ *  in its closing message has it after the blank line, never in front. The
+ *  composed sentence is matched at `hit your` for the reason given above —
+ *  the window's name is a list that grows — and a raw 429 that came through
+ *  unmediated still counts when it names a limit. */
+export function isAllowanceRefusal(line: string): boolean {
+  const said = line.toLowerCase().replace(/’/g, "'");
+  if (said.includes("you've hit your") || said.includes("out of usage credits")) return true;
+  return said.includes("429") && (said.includes("rate_limit") || said.includes("usage limit") || said.includes("rate limit"));
+}
+
 /** The link under the turn gave out: no status, and the CLI's own sentence.
  *
  * **Read out of claude 2.1.241's bundle and confirmed against all 292 session

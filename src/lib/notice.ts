@@ -2,7 +2,7 @@
  * what a reply to one says. Pure — the rune-holding half is in
  * `skein.svelte.ts`, and Rust (`notice.rs`) holds the queue and the three
  * holds only the wall can answer. See `.claude/rules/notice.md`. */
-import { endsOnQuestion, type Ending } from "./classify";
+import { endsOnQuestion, isAllowanceRefusal, type Ending } from "./classify";
 
 export type NoticeKind = "done" | "question" | "error" | "card";
 
@@ -94,6 +94,44 @@ export function noticeQueue(notices: Notice[]): Notice[] {
 
 /* Which notice the dock draws — and whether it draws a notice at all, with a
    question waiting too — is `queue.ts`'s, over every kind at once. */
+
+/** Is this an error notice about an account running out, rather than a card
+ *  that broke?
+ *
+ *  An allowance stop asks nothing of a person. On a managed wall the card's
+ *  prompt is held and goes again when an account frees up (`accounts.md`,
+ *  being held); where nothing will resume it, it is a conversation nobody has
+ *  gone back to, and the reset time is the whole of the news. Lyss,
+ *  2026-10-19: *"lack of allowance doesn't need my attention, it's supposed to
+ *  autoresume, and if it doesn't, it's because it's an old conversation that I
+ *  haven't worked on in forever."* So it is said quietly where the card is
+ *  listed — *waiting for allowance* — and never queued as waiting on you.
+ *
+ *  Read off the notice's first line, which `restNotice` makes the CLI's own
+ *  sentence (`lastError`), so the same answer comes from a notice raised here
+ *  and one carried from another wall in a digest. */
+export function allowanceStop(n: Pick<Notice, "kind" | "text">): boolean {
+  if (n.kind !== "error") return false;
+  const first = n.text.split("\n").find((l) => l.trim()) ?? "";
+  return isAllowanceRefusal(first);
+}
+
+/** Does this notice wait on you — is it in the queue the dock draws, the count
+ *  "more waiting on you" gives, and chat view's *needs you*? One predicate for
+ *  every reader of the queue, so the dock and the sidebar cannot disagree
+ *  about what is waiting (`cards.svelte.ts::Cards.noticing`). */
+export function waitsOnYou(n: Pick<Notice, "kind" | "text">): boolean {
+  return !allowanceStop(n);
+}
+
+/** The reset clause of an allowance refusal, for a row to say quietly: the
+ *  CLI writes `You've hit your session limit · resets 3:30pm (Australia/…)`,
+ *  and the time is the only part a person wants. Null when it names none. */
+export function allowanceReset(n: Pick<Notice, "text">): string | null {
+  const first = n.text.split("\n").find((l) => l.trim()) ?? "";
+  const m = /resets\s+([^(·]+?)\s*(?:\(|·|$)/i.exec(first);
+  return m ? m[1].trim() : null;
+}
 
 /** What the panel calls it, and what its reply box says. */
 export function noticeWords(n: Pick<Notice, "kind" | "askId" | "waited">): {

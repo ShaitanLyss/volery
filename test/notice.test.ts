@@ -13,6 +13,9 @@ import {
   raiseAt,
   restNotice,
   seesRest,
+  allowanceReset,
+  allowanceStop,
+  waitsOnYou,
   type Notice,
 } from "../src/lib/notice";
 
@@ -169,5 +172,64 @@ describe("isCloseKey", () => {
     expect(isCloseKey(k({ ctrlKey: false }))).toBe(false);
     expect(isCloseKey(k({ altKey: true }))).toBe(false);
     expect(isCloseKey(k({ key: "q" }))).toBe(false);
+  });
+});
+
+describe("an allowance stop waits on no one", () => {
+  /* The CLI's own refusals, verbatim from this machine's transcripts
+     (2026-10-19: b22ee072 and e6bbb8b7 on QUEERISFREEDOM), as `restNotice`
+     makes them into an error notice: the refusal first, what it said after. */
+  const limited = (said = "") =>
+    restNotice("error", said, { lastError: "You've hit your session limit · resets 2:30pm (Australia/Sydney)" })!;
+
+  test("an error notice opening on the CLI's refusal is an allowance stop, and does not wait on you", () => {
+    const r = limited("I was halfway through the migration.");
+    expect(r.kind).toBe("error");
+    expect(allowanceStop(r)).toBe(true);
+    expect(waitsOnYou(r)).toBe(false);
+  });
+
+  test("every window the CLI names, a curly apostrophe, and the credits wording", () => {
+    for (const line of [
+      "You've hit your weekly limit · resets Aug 23, 3pm (Australia/Sydney)",
+      "You’ve hit your Opus limit · resets 9pm",
+      "You've hit your monthly spend limit",
+      "You're out of usage credits",
+      "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
+    ]) {
+      expect(allowanceStop({ kind: "error", text: line })).toBe(true);
+    }
+  });
+
+  test("a card that broke for another reason still waits on you", () => {
+    for (const line of [
+      "Failed to authenticate: OAuth session expired and could not be refreshed",
+      "API Error: 529 overloaded",
+      "the turn ended in an error",
+    ]) {
+      const r = { kind: "error" as const, text: line };
+      expect(allowanceStop(r)).toBe(false);
+      expect(waitsOnYou(r)).toBe(true);
+    }
+  });
+
+  test("a refusal the agent quoted in its closing words is not one: only the first line is the CLI's", () => {
+    const r = restNotice("error", "The other service said: You've hit your session limit.", {
+      lastError: "API Error: 529 overloaded",
+    })!;
+    expect(allowanceStop(r)).toBe(false);
+  });
+
+  test("only an error notice can be one", () => {
+    expect(allowanceStop({ kind: "done", text: "You've hit your session limit" })).toBe(false);
+    expect(allowanceStop({ kind: "question", text: "You've hit your session limit — shall I wait?" })).toBe(false);
+    expect(waitsOnYou({ kind: "done", text: "fine" })).toBe(true);
+  });
+
+  test("the reset is read out of the refusal, and is null when it names none", () => {
+    expect(allowanceReset(limited())).toBe("2:30pm");
+    expect(allowanceReset({ text: "You've hit your weekly limit · resets Aug 23, 3pm (Australia/Sydney)" })).toBe("Aug 23, 3pm");
+    expect(allowanceReset({ text: "You've hit your session limit · resets 9:10pm · progress saved" })).toBe("9:10pm");
+    expect(allowanceReset({ text: "You've hit your monthly spend limit" })).toBeNull();
   });
 });

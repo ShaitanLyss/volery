@@ -50,7 +50,8 @@
   import Notice from "./Notice.svelte";
   import Toasts from "./Toasts.svelte";
   import { tick } from "svelte";
-  import { settles, DWELL_MS } from "./chatview";
+  import { settles, settledByReading, DWELL_MS } from "./chatview";
+  import { waitsOnYou } from "./notice";
   import Icon from "./Icon.svelte";
   import WindowControls from "./WindowControls.svelte";
   import SidePane from "./SidePane.svelte";
@@ -151,7 +152,9 @@
     const f = h.face;
     const conv = h.conv;
     const resting = (f as { restingSince?: number | null }).restingSince ?? null;
-    const notice = h.notices[0] ?? null;
+    /* The first notice that waits on you — the dock's queue, by its one rule
+       (`Cards.noticing`): an allowance stop is said as `allowance` instead. */
+    const notice = h.notices.find(waitsOnYou) ?? null;
     const ask = h.ask;
     /* Which of how many a multi-question call is on: the first one not yet
        answered. */
@@ -184,6 +187,7 @@
           }
         : null,
       failed: f.tier === "fail",
+      allowance: h.allowance,
       aside: f.aside,
       lastAt,
       turnAt: f.working ? (conv?.turnSince ?? null) : null,
@@ -358,9 +362,10 @@
   /* ── settling a finished conversation by reading it (§5.4) ─────────────
      The dwell: selected, the window in front, not away, and its last message on
      screen for two seconds — `chatview.ts::settles`. Measured by an observer on
-     the last line, so nothing polls, and only while a `done` notice stands on
-     the conversation in front of you. */
-  const done = $derived(card?.notices.find((n) => n.kind === "done") ?? null);
+     the last line, so nothing polls, and only while a notice that reading
+     settles — a finished turn, or a failure it gave up on — stands on the
+     conversation in front of you (`chatview.ts::settledByReading`). */
+  const done = $derived(card?.notices.find(settledByReading) ?? null);
   $effect(() => {
     const n = done;
     const c = card;

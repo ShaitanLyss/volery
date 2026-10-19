@@ -30,7 +30,7 @@ import type { Elsewhere, Shadow } from "./shadows.svelte";
 import type { Skein } from "./skein.svelte";
 import type { CardFace } from "./Card.svelte";
 import type { Readable } from "./transcript";
-import type { Notice } from "./notice";
+import { allowanceReset, allowanceStop, waitsOnYou, type Notice } from "./notice";
 import type { MenuTarget } from "./menu";
 import type { Reach, Turn } from "./attach";
 import type { Timeline } from "./timeline";
@@ -94,8 +94,14 @@ export interface CardHandle {
   readonly ask: PendingAsk | null;
   /** How many questions it is parked on in all. */
   readonly asking: number;
-  /** Its notices still standing. */
+  /** Its notices still standing — every one, an allowance stop included. What
+   *  waits on you is `Cards.noticing`, which leaves those out. */
   readonly notices: readonly Notice[];
+  /** Stopped for want of allowance rather than broken, or null: held until an
+   *  account frees up, or stopped on the CLI's own refusal. Said quietly where
+   *  the card is listed and never queued as waiting on you
+   *  (`notice.ts::allowanceStop`). */
+  readonly allowance: Allowance | null;
   answer(ask: PendingAsk): void;
   defer(ask: PendingAsk): Promise<void> | void;
   /** What has been answered of the sheet in front of you, kept in case the
@@ -104,6 +110,17 @@ export interface CardHandle {
   /** Take a notice down: an empty reply acknowledges it, anything else is a
    *  follow-up sent to the card. */
   acknowledge(n: Notice, reply: string): void | boolean | Promise<boolean | void>;
+}
+
+/** Why a card is waiting for allowance, as far as anything here knows:
+ *  `until`, when a hold expects an account back, on this wall's clock;
+ *  `reset`, the refusal's own words for when it resets. Either may be null. */
+export type Allowance = { until: number | null; reset: string | null };
+
+/** The allowance stop among a card's standing notices, as a row says it. */
+function stoppedFor(notices: readonly Notice[]): Allowance | null {
+  const n = notices.find(allowanceStop);
+  return n ? { until: null, reset: allowanceReset(n) } : null;
 }
 
 /** What `App.svelte` lends the handles: the gestures whose state is the
@@ -305,6 +322,19 @@ export class LocalCard implements CardHandle {
   get notices(): readonly Notice[] {
     return this.#skein.noticeQueue.filter((n) => n.conversationId === this.conv.id);
   }
+  /* Held for an account first — the prompt is kept and goes when one frees —
+     then a standing refusal, then one this process heard and raised no notice
+     for (a card you were watching, a heal that had nowhere to go). */
+  get allowance(): Allowance | null {
+    const c = this.conv;
+    if (c.held?.waiting === "allowance") return { until: c.held.until, reset: null };
+    const stopped = stoppedFor(this.notices);
+    if (stopped) return stopped;
+    if (c.tier === "fail" && c.lastFault === "limited") {
+      return { until: null, reset: allowanceReset({ text: c.lastError ?? "" }) };
+    }
+    return null;
+  }
   answer() {
     void this.#skein.answerAsk(this.conv);
   }
@@ -441,6 +471,11 @@ export class RemoteCard implements CardHandle {
   get notices(): readonly Notice[] {
     return this.shadow.notices;
   }
+  /* Its wall's queue travels in the digest, refusal and all; a hold does not,
+     so a card held there reads as an ordinary rest — which is not false. */
+  get allowance(): Allowance | null {
+    return stoppedFor(this.shadow.notices);
+  }
   answer(ask: PendingAsk) {
     void this.#walls.answer(this.shadow, ask);
   }
@@ -508,25 +543,31 @@ export class Cards {
     return [...this.skein.blocked.map((c) => this.#ofConv(c)), ...this.walls.shadows.filter((s) => s.open.length).map((s) => this.#ofShadow(s))];
   }
 
-  /** Every notice standing, with its card: this wall's queue in its order,
-   *  then every other wall's. */
+  /** Every notice standing that waits on you, with its card: this wall's
+   *  queue in its order, then every other wall's. An allowance stop is left
+   *  out here, once, for every reader — the dock, its count, chat view's
+   *  *needs you*, the toasts — so none of them can disagree about it
+   *  (`notice.ts::waitsOnYou`). A card on another wall is folded by the same
+   *  rule off the notices its digest carries, whatever build that wall runs. */
   get noticing(): { card: CardHandle; notice: Notice }[] {
     const out: { card: CardHandle; notice: Notice }[] = [];
     for (const n of this.skein.noticeQueue) {
+      if (!waitsOnYou(n)) continue;
       const c = this.skein.convs.find((x) => x.id === n.conversationId);
       if (c) out.push({ card: this.#ofConv(c), notice: n });
     }
-    for (const s of this.walls.shadows) for (const n of s.notices) out.push({ card: this.#ofShadow(s), notice: n });
+    for (const s of this.walls.shadows)
+      for (const n of s.notices) if (waitsOnYou(n)) out.push({ card: this.#ofShadow(s), notice: n });
     return out;
   }
 
   /** Everything waiting on you, counted: every question — a card can be
-   *  parked on several — and every notice. */
+   *  parked on several — and every notice that waits on you. */
   get waitingOnYou(): number {
     return (
       this.skein.pendingAsks +
-      this.skein.noticeQueue.length +
-      this.walls.shadows.reduce((n, s) => n + s.open.length + s.notices.length, 0)
+      this.skein.noticeQueue.filter(waitsOnYou).length +
+      this.walls.shadows.reduce((n, s) => n + s.open.length + s.notices.filter(waitsOnYou).length, 0)
     );
   }
 }

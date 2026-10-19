@@ -14,6 +14,7 @@
  * list in; what comes back is drawn. */
 
 import { queueOrder, type Waiting } from "./queue";
+import { waitsOnYou } from "./notice";
 
 /** One conversation, as far as the sidebar is concerned. */
 export type ChatRow = {
@@ -37,8 +38,15 @@ export type ChatRow = {
    *  `question` one that ended on a question; `own` a notice the card raised
    *  itself; `failed` a card that gave up on an error. */
   notice: { kind: "done" | "question" | "own" | "failed"; text: string } | null;
-  /** Its tier is `fail`: it broke, whether or not a notice says so. */
+  /** Its tier is `fail`: it broke, whether or not a notice says so. Drawn
+   *  (the dot is rust), and never by itself a reason it needs you — see
+   *  `needsYou`. */
   failed: boolean;
+  /** Stopped for want of allowance rather than broken, or null — held until
+   *  an account frees up, or stopped on the CLI's own refusal
+   *  (`cards.svelte.ts::Allowance`). Said quietly under the title; never
+   *  *needs you*. */
+  allowance?: { until: number | null; reset: string | null } | null;
   aside: boolean;
   /** When it was last active, in ms since the epoch. */
   lastAt: number;
@@ -99,16 +107,32 @@ export type Placed = {
 
 export type Group = { key: GroupKey; label: string; rows: Placed[] };
 
-/** Does this conversation need you? A parked question, one you put off, a
- *  notice it is waiting on you about, a turn that ended on a question, or a
- *  card that gave up. */
+/** Does this conversation need you — is something on it that only a person
+ *  can answer, now?
+ *
+ *  A parked question, one you put off, and a standing notice that asks: a
+ *  turn that ended on a question (`notice.md`'s detector), news the card
+ *  sent itself, or a failure it gave up on. **Nothing else, and the tier is
+ *  not on the list.** It was, as `failed`, and that put every card whose
+ *  *stored* ending is an error into *needs you* for good: a card restored off
+ *  disk comes back rust from a turn that broke last month, and a card on
+ *  another wall arrives rust in its digest. Lyss, 2026-10-19, eight rows of
+ *  "stopped: it gave up", most of them from QUEERISFREEDOM: *"it lists old
+ *  stopped conversations as needs my attention."* On that wall seven cards
+ *  read rust — the oldest stopped on 14 September, two on an exhausted
+ *  session limit, one on an expired sign-in — and its notice queue held none.
+ *
+ *  The notice is the honest reading of "a failure you have not seen", because
+ *  of how it lives: raised only when the card has given up (never while a
+ *  heal is pending), never for a card you were watching, taken down by the
+ *  card's next turn, by your acknowledging it — and by reading it here
+ *  (`settles`). So nothing in *needs you* is older than your last look at
+ *  it. And it is the dock's own reading — `Cards.noticing` is the queue both
+ *  draw — so the two cannot disagree, which the tier did. An allowance stop
+ *  is not in that queue at all (`notice.ts::waitsOnYou`); the row says
+ *  *waiting for allowance* instead. */
 export function needsYou(r: ChatRow): boolean {
-  return (
-    r.asking !== null ||
-    r.deferred !== null ||
-    r.failed ||
-    (r.notice !== null && r.notice.kind !== "done")
-  );
+  return r.asking !== null || r.deferred !== null || (r.notice !== null && r.notice.kind !== "done");
 }
 
 /** The group a row belongs in on its own account, before lineage. */
@@ -165,26 +189,36 @@ function firstLine(text: string): string {
 }
 
 function tone(r: ChatRow, group: GroupKey): Tone {
-  if (r.failed || r.notice?.kind === "failed") return "fail";
+  if (r.notice?.kind === "failed") return "fail";
   if (group === "needs") return "ask";
   if (r.working) return "work";
+  /* Out of allowance is not broken: nothing about the card is wrong. */
+  if (r.allowance) return "rest";
+  if (r.failed) return "fail";
   if (group === "finished") return "done";
   return "rest";
 }
 
+/** What a row says of a card waiting for allowance: when it comes back, in the
+ *  refusal's own words where there are some, else the hold's, else nothing. */
+export function allowanceLine(a: { until: number | null; reset: string | null }, now: number): string {
+  if (a.reset) return `waiting for allowance · resets ${a.reset}`;
+  if (a.until !== null && a.until > now) return `waiting for allowance · back in ${ageOf(a.until - now)}`;
+  return "waiting for allowance";
+}
+
 /** What is said under the title. In *needs you* it is what the conversation
  *  is asking; in *working*, what it is doing and where; in *finished*, the
- *  first line of what it said. History rows carry none: their place is beside
- *  the title. */
-export function subtitleOf(r: ChatRow, group: GroupKey): string | null {
+ *  first line of what it said. History rows carry none — their place is
+ *  beside the title — unless the card is waiting for allowance, which any
+ *  row at rest says, since it is why the card is quiet. */
+export function subtitleOf(r: ChatRow, group: GroupKey, now = Date.now()): string | null {
   if (group === "needs") {
     if (r.asking) {
       const of = r.asking.of > 1 ? ` · ${r.asking.nth} of ${r.asking.of}` : "";
       return `asks: ${firstLine(r.asking.text)}${of}`;
     }
-    if (r.notice?.kind === "failed" || r.failed) {
-      return `stopped: ${firstLine(r.notice?.text ?? r.lastWords) || "it gave up"}`;
-    }
+    if (r.notice?.kind === "failed") return `stopped: ${firstLine(r.notice.text) || "it gave up"}`;
     if (r.notice?.kind === "question") return firstLine(r.notice.text) || null;
     if (r.notice?.kind === "own") return firstLine(r.notice.text) || null;
     if (r.deferred !== null) return `answer later: ${firstLine(r.deferred)}`;
@@ -194,6 +228,7 @@ export function subtitleOf(r: ChatRow, group: GroupKey): string | null {
     const doing = r.doing.trim();
     return doing ? `${doing} · ${whereOf(r)}` : whereOf(r);
   }
+  if (r.allowance) return allowanceLine(r.allowance, now);
   if (group === "finished") return firstLine(r.lastWords) || null;
   return null;
 }
@@ -274,7 +309,7 @@ export function groups(rows: readonly ChatRow[], now: number): Group[] {
         depth,
         ghost,
         tone: tone(r, key),
-        sub: subtitleOf(r, key),
+        sub: subtitleOf(r, key, now),
         aside: key === "working" && r.turnAt !== null ? ageOf(now - r.turnAt) : whereOf(r),
       });
       for (const kid of members) {
@@ -363,9 +398,9 @@ export const DWELL_MS = 2000;
  *  Ctrl+Tab skimming past a row, the selection a view switch lands on, the
  *  card selected after a close, a launch with nobody at the keyboard — each
  *  would have acknowledged rests nobody read, and taken them out of the away
- *  pile. Only a `done` notice settles this way; a turn that ended on a
- *  question stays until it is answered, because reading a question is not
- *  answering it. */
+ *  pile. Only a finished turn and a failure settle this way
+ *  (`settledByReading`); a turn that ended on a question stays until it is
+ *  answered, because reading a question is not answering it. */
 export function settles(s: {
   /** The notice's conversation is the one in front of you. */
   selected: boolean;
@@ -377,6 +412,20 @@ export function settles(s: {
   seenFor: number;
 }): boolean {
   return s.selected && s.focused && !s.away && s.seenFor >= DWELL_MS;
+}
+
+/** Which notices reading settles: a finished turn, and a failure the card gave
+ *  up on. Reading a failure is having seen it, and *needs you* holds a
+ *  failure only until you have (`needsYou`) — left standing, an error you read
+ *  this morning was still asking for you next week. The card stays rust, which
+ *  is the fact: reading mended nothing (`notice.md`). Not a turn that ended on
+ *  a question, which reading does not answer; not a card's own news, which has
+ *  its own acknowledge; not one parked on a tool call, whose acknowledgement
+ *  is an answer to the agent; and not an allowance stop, which waits on no one. */
+export function settledByReading(n: { kind: string; askId?: string; text: string }): boolean {
+  if (n.askId) return false;
+  if (n.kind === "done") return true;
+  return n.kind === "error" && waitsOnYou({ kind: "error", text: n.text });
 }
 
 /* ── conversations that start conversations (§5.5) ─────────────────────── */
