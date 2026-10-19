@@ -736,18 +736,28 @@ pub struct DeferredRow {
     pub asked_at: i64,
 }
 
+/// Off the main thread, as the two beside it are: all three take the store
+/// lock, and at launch that lock is held by whatever is rousing every card —
+/// so a sync command here waited on the main thread behind the whole rouse, and
+/// the pile's count came up long after the wall did (sink `3dabd5c1`, *"it took
+/// a long time to show up"*). CLAUDE.md's rule about a command that shares a
+/// mutex with something slow.
 #[tauri::command]
-pub fn deferred_asks(store: State<'_, Store>) -> Vec<DeferredRow> {
-    let Ok(conn) = store.0.lock() else { return Vec::new() };
-    crate::store::deferred_asks(&conn)
-        .into_iter()
-        .map(|d| DeferredRow {
-            id: d.id,
-            conversation_id: d.conversation_id,
-            ask: serde_json::from_str(&d.ask_json).unwrap_or_else(|_| json!({})),
-            asked_at: d.asked_at,
-        })
-        .collect()
+pub async fn deferred_asks(app: AppHandle) -> Result<Vec<DeferredRow>, String> {
+    crate::off_main(move || {
+        let Some(store) = app.try_state::<Store>() else { return Vec::new() };
+        let Ok(conn) = store.0.lock() else { return Vec::new() };
+        crate::store::deferred_asks(&conn)
+            .into_iter()
+            .map(|d| DeferredRow {
+                id: d.id,
+                conversation_id: d.conversation_id,
+                ask: serde_json::from_str(&d.ask_json).unwrap_or_else(|_| json!({})),
+                asked_at: d.asked_at,
+            })
+            .collect()
+    })
+    .await
 }
 
 /// Claim one, so it cannot be answered twice.
@@ -756,9 +766,13 @@ pub fn deferred_asks(store: State<'_, Store>) -> Vec<DeferredRow> {
 /// ordering and its reasoning: an interruption between the two loses an answer,
 /// where the other order hands a card the same decision twice.
 #[tauri::command]
-pub fn take_deferred_ask(store: State<'_, Store>, id: String) -> bool {
-    let Ok(conn) = store.0.lock() else { return false };
-    crate::store::take_deferred_ask(&conn, &id)
+pub async fn take_deferred_ask(app: AppHandle, id: String) -> Result<bool, String> {
+    crate::off_main(move || {
+        let Some(store) = app.try_state::<Store>() else { return false };
+        let Ok(conn) = store.0.lock() else { return false };
+        crate::store::take_deferred_ask(&conn, &id)
+    })
+    .await
 }
 
 /// A card is going, or has been cleared. Its queued questions go with it —
@@ -1126,19 +1140,24 @@ pub struct DeferredActRow {
     pub asked_at: i64,
 }
 
+/// Off the main thread for `deferred_asks`' reason.
 #[tauri::command]
-pub fn deferred_acts(store: State<'_, Store>) -> Vec<DeferredActRow> {
-    let Ok(conn) = store.0.lock() else { return Vec::new() };
-    crate::store::deferred_acts(&conn)
-        .into_iter()
-        .map(|d| DeferredActRow {
-            id: d.id,
-            conversation_id: d.conversation_id,
-            tool: d.tool,
-            question: serde_json::from_str(&d.question_json).unwrap_or_else(|_| json!({})),
-            asked_at: d.asked_at,
-        })
-        .collect()
+pub async fn deferred_acts(app: AppHandle) -> Result<Vec<DeferredActRow>, String> {
+    crate::off_main(move || {
+        let Some(store) = app.try_state::<Store>() else { return Vec::new() };
+        let Ok(conn) = store.0.lock() else { return Vec::new() };
+        crate::store::deferred_acts(&conn)
+            .into_iter()
+            .map(|d| DeferredActRow {
+                id: d.id,
+                conversation_id: d.conversation_id,
+                tool: d.tool,
+                question: serde_json::from_str(&d.question_json).unwrap_or_else(|_| json!({})),
+                asked_at: d.asked_at,
+            })
+            .collect()
+    })
+    .await
 }
 
 /// Answer one. Answers back with what came of it, for the panel to show.
