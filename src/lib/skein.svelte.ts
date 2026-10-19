@@ -2098,6 +2098,10 @@ export class Skein {
          is set directly rather than round-tripped through 200k. */
       conv.contextWindow = window;
       conv.ctxTokens = s.ctx_tokens;
+      /* When it last did anything is the session's own last record, which is
+         in hand — the store's reading of it waits for the next launch, and
+         without it an adopted card had no age at all. */
+      conv.lastActive = s.last_at ? Date.parse(s.last_at) || null : null;
 
       this.#byId.set(conv.id, conv);
       this.convs = [...this.convs, conv];

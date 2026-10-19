@@ -13,6 +13,7 @@ import {
   settledByReading,
   allowanceLine,
   hostOfKey,
+  restedOf,
   goneGhost,
   dayOf,
   groups,
@@ -450,5 +451,17 @@ describe("conversations that start conversations", () => {
     expect(cardByHandle("deadbeef", ids)).toBeNull();
     expect(cardByHandle("", ids)).toBeNull();
     expect(cardByHandle("ab12", ids)).toBeNull();
+  });
+});
+
+describe("a card here always has an age", () => {
+  test("its rest, else its last recorded activity, else when it was opened — never the oldest", () => {
+    const opened = NOW - 60_000;
+    expect(restedOf({ working: false, restingSince: NOW - 5 * H, lastActive: NOW - 9 * H }, opened)).toBe(NOW - 5 * H);
+    expect(restedOf({ working: false, restingSince: null, lastActive: NOW - 9 * H }, opened)).toBe(NOW - 9 * H);
+    /* Adopted or opened this session with nothing on record: it was the oldest. */
+    expect(restedOf({ working: false, restingSince: null, lastActive: null }, opened)).toBe(opened);
+    expect(dayOf(restedOf({ working: false, restingSince: null, lastActive: null }, opened)!, NOW)).toBe("today");
+    expect(restedOf({ working: true, restingSince: NOW, lastActive: NOW }, opened)).toBeNull();
   });
 });

@@ -32,6 +32,7 @@ import type { CardFace } from "./Card.svelte";
 import type { Readable } from "./transcript";
 import { allowanceReset, allowanceStop, waitsOnYou, type Notice } from "./notice";
 import { gistOf, type Gist } from "./gist";
+import { restedOf } from "./chatview";
 import type { MenuTarget } from "./menu";
 import type { Reach, Turn } from "./attach";
 import type { Timeline } from "./timeline";
@@ -342,10 +343,11 @@ export class LocalCard implements CardHandle {
   /* This session's rest, else the store's last activity — a card restored
      dormant has no other clock. */
   get restedAt(): number | null {
-    const c = this.conv;
-    if (c.working) return null;
-    return Math.max(c.restingSince ?? 0, c.lastActive ?? 0) || null;
+    return restedOf(this.conv, this.#opened);
   }
+  /* When the card was opened, near enough: a handle is made the first time
+     anything asks for the card (`chatview.ts::restedOf`). */
+  readonly #opened = Date.now();
   get turnSince(): number | null {
     return this.gist.turnSince;
   }

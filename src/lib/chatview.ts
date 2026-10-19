@@ -195,6 +195,21 @@ export function groupOf(r: ChatRow, now: number): GroupKey {
   return dayOf(r.lastAt, now);
 }
 
+/** When a card here came to rest, for the day it is listed under: this
+ *  session's rest, else the store's last activity (all a card restored dormant
+ *  has), else — a card with no record at all was opened this session and has
+ *  done nothing yet — when it was opened. Null only while it works. Never
+ *  unknown for a card here: an unknown age is filed with the oldest, which for
+ *  a card opened a minute ago is plainly wrong (found driving a lab: a card
+ *  adopted back from its session sat in *earlier*). */
+export function restedOf(
+  c: { working: boolean; restingSince: number | null; lastActive: number | null },
+  opened: number,
+): number | null {
+  if (c.working) return null;
+  return Math.max(c.restingSince ?? 0, c.lastActive ?? 0) || opened;
+}
+
 /** Today, yesterday, this week or earlier, by the local calendar — not by
  *  twenty-four-hour windows, which would call last night's work "today" at
  *  nine in the morning. "This week" is the six days before yesterday. */
