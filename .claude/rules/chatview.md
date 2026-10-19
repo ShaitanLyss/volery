@@ -357,3 +357,49 @@ Every card that captures a lab improvises a `PrintWindow` script (sink `90058cb7
 eleven). The one trap they share: PowerShell is not DPI-aware, so `GetWindowRect` returns
 scaled coordinates while `PrintWindow` draws physical pixels — at 150% the bitmap is two thirds
 of the window and the panel is simply not in it. Call `SetProcessDPIAware()` first.
+
+### What needs you, the parent above a child, and a card elsewhere (2026-10-19)
+
+Lyss, from AU-LT-288, with a screenshot of *needs you 8*, nearly all *stopped: it gave up* on
+QUEERISFREEDOM: old stopped conversations counted as needing her — mostly allowance stops,
+which resume by themselves — the parent of some children could not be selected, and cards on
+other walls were parked lower.
+
+**Needs you is a person needed, and it is the dock's own reading** (`chatview.ts::needsYou`):
+a parked question, one put off, or a standing notice that asks — ended on a question, the card's
+own news, a failure it gave up on. **The tier is never the reason**: it was, as `failed`, and a
+card restored off disk or arriving in a digest reads rust from whatever turn last broke, so every
+card that ever failed stood there for good. QUEERISFREEDOM's own store had seven such cards, the
+oldest from 14 September, and an empty notice queue: the dock showed none, the sidebar all
+seven. A notice is the honest "failure you have not seen" — raised only once a heal gives up,
+never for a card you watched, gone with the card's next turn or your acknowledging it — and
+reading a failure here for the dwell now settles it as a finished turn does
+(`settledByReading`), so nothing in *needs you* is older than your last look. The dot stays rust.
+
+**An allowance stop waits on no one** (`notice.ts::allowanceStop`, the error notice's first line
+being the CLI's own refusal): `Cards.noticing` leaves it out for every reader at once — the dock,
+its count, the toasts, *needs you* — on this wall's notices and a digest's alike, and the row
+says *waiting for allowance · resets 3:30pm* (`CardHandle.allowance`: a hold, a standing refusal,
+or one this process heard).
+
+**The parent named above a child is a `Ghost`, and a button where it can be**: `here` selects it
+(and opens *set aside* if that is where it is), `closed` on this wall brings its recorded session
+back (`importSession`, a timeline's pick-up road) and selects it — or says the session is gone —
+and one closed on another wall, or on a wall not heard from, is named and is not a button. A
+parent the list does not hold is never left out: a child at the top with nothing above it reads
+as one a person started.
+
+**One ordering for every card** (`queue.ts::Waiting.since` replaced `far`): *needs you* and the
+dock order by how long each has waited, on this wall's clock wherever the card runs; history
+dates a shadow off `CardHandle.restedAt` (it read *now* before, so every shadow sat in *today*);
+Ctrl+K's resting order is the sidebar's; a project's page and count include its cards on other
+walls. A row's title keeps its room — the place (`proj · on HOST`) is capped and ellipsed.
+
+Proved in three frozen labs (`cva`; `cvb --peer cva` on this build; `cv0 --peer cva` serving
+`0b584c4`'s front end), the cases staged with `feed` so each notice was raised by the app's own
+rule: the same five cards read *needs you 4* on `cv0` (the allowance stop as *stopped: You've hit
+your session limit*, the acknowledged failure as *stopped: it gave up*) and *needs you 2* on
+`cvb`; the dock's *more* skipped the allowance stop; a far parent's label selected its shadow; a
+closed parent with a real session came back from its child's label. Not driven: the dwell
+settling a failure (it needs the window in front), and Ctrl+K and the project page with shadows,
+which rest on their tests.
