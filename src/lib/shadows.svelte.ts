@@ -48,6 +48,7 @@ import {
   faceOf,
   idleOf,
   keepHost,
+  withoutWall,
   placedOf,
   spotsOf,
   NO_SPOTS,
@@ -635,6 +636,7 @@ export class Elsewhere {
     const l = this.#listeners;
     l.keep(listen<{ host: string; ageMs: number; snapshot: unknown }>("flyway:cards", (e) => this.#arrived(e.payload)));
     l.keep(listen<RosterRow[]>("flyway:roster", (e) => this.#heard(e.payload)));
+    l.keep(listen<{ host: string | null }>("flyway:left", (e) => this.#left(e.payload?.host ?? null)));
     l.keep(listen<{ id: string }>("flyway:prompt-left", (e) => this.#fold(e.payload.id, { kind: "left" })));
     l.keep(
       listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) => {
@@ -824,6 +826,25 @@ export class Elsewhere {
         continue;
       }
       this.#hear(r.host, r.quietMs);
+    }
+  }
+
+  /** A wall said it is leaving the flyway (`host`), or this wall did (`null`).
+   *  Not a quiet wall: it is taken off at once, its shadows come down, and the
+   *  glass spots and views that pointed at its cards are let go of the way a
+   *  closed card's are. See `withoutWall`. */
+  #left(host: string | null) {
+    const gone = host === null ? Object.keys(this.walls) : [host];
+    const held = withoutWall({ walls: this.walls, heardAt: this.heardAt, roster: this.roster }, host);
+    this.walls = held.walls;
+    this.heardAt = held.heardAt;
+    this.roster = [...held.roster];
+    this.#reconcile();
+    for (const h of gone) {
+      const kept = keepHost(this.glass, h, new Set());
+      if (kept !== this.glass) this.glass = kept;
+      void invoke("keep_shadow_glass", { host: h, alive: [] }).catch(() => {});
+      this.onHeard(h, new Set());
     }
   }
 

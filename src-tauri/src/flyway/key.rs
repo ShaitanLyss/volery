@@ -241,8 +241,18 @@ pub fn invite() -> Option<String> {
     crate::vault::read_at(target())
 }
 
-/// Leave the flyway. The key goes; what it reached does not follow by itself,
-/// which is why the caller is expected to close what was born over it.
+/// Whether this process may leave at all — a lab flying on the installed wall's
+/// key may not. Asked before anything is said or closed, so a refused leave has
+/// changed nothing (`link/leaving.rs`).
+pub fn can_leave() -> Result<(), String> {
+    may_write()
+}
+
+/// Forget the key. Only the vault entry: ending the link that was flying on it
+/// is `link::leave`'s; calling this alone is the
+/// bug that left a wall on the flyway until it was restarted. What the key
+/// reached does not follow by itself either, which is why the caller is
+/// expected to close what was born over it.
 pub fn leave() -> Result<(), String> {
     may_write()?;
     crate::vault::clear_at(target())
@@ -312,9 +322,11 @@ pub async fn flyway_invite() -> Result<String, String> {
     crate::off_main(|| invite().ok_or_else(|| "this wall is not in a flyway".to_string())).await?
 }
 
+/// Leave the flyway — **now**, not at the next launch: goodbye to every wall,
+/// the link ended, the key cleared (`link::leave`).
 #[tauri::command]
-pub async fn flyway_leave() -> Result<(), String> {
-    crate::off_main(leave).await?
+pub async fn flyway_leave(app: tauri::AppHandle) -> Result<(), String> {
+    super::link::leave(app).await
 }
 
 /// What this machine calls itself, so the sink can say where a finding came

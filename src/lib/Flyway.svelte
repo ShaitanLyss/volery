@@ -54,6 +54,11 @@
       if (held) {
         accepting = (await invoke<{ accepting: boolean }>("flyway_setup")).accepting;
         walls = await invoke<Wall[]>("flyway_roster");
+      } else {
+        /* Not in a flyway, so no wall to list — and nothing left over from the
+           one just left, which `leave` used to leave drawn until a restart. */
+        walls = [];
+        accepting = null;
       }
     } catch (e) {
       fault = flywayError(e);
@@ -149,6 +154,7 @@
     act(async () => {
       await invoke("flyway_leave");
       phrase = "";
+      walls = [];
     });
 
   async function copy() {

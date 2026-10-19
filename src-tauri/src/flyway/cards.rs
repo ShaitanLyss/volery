@@ -86,12 +86,15 @@ pub struct Cards {
     mine: Option<Held>,
     last_version: u64,
     theirs: BTreeMap<String, Held>,
+    /// Walls that said goodbye, with the version of the snapshot they had
+    /// then. See `depart`.
+    gone: BTreeMap<String, u64>,
 }
 
 impl Cards {
     /// `last_version` is what `version()` returned the last time this wall ran.
     pub fn new(me: &str, last_version: u64) -> Self {
-        Self { me: me.to_string(), mine: None, last_version, theirs: BTreeMap::new() }
+        Self { me: me.to_string(), mine: None, last_version, theirs: BTreeMap::new(), gone: BTreeMap::new() }
     }
 
     pub fn version(&self) -> u64 {
@@ -142,6 +145,14 @@ impl Cards {
         if self.theirs.get(&host).is_some_and(|h| h.version >= version) {
             return None;
         }
+        /* A snapshot from before the goodbye, still on its way when it was
+           said — the exchange that carried it outran the one that did not —
+           is not a wall coming back. Only a newer one is, and a wall that
+           rejoins publishes one (`publish`'s version only ever rises). */
+        if self.gone.get(&host).is_some_and(|v| *v >= version) {
+            return None;
+        }
+        self.gone.remove(&host);
         let snapshot = scrubbed(snapshot);
         let published_at = now.saturating_sub(age_ms.min(i64::MAX as u64) as i64);
         self.theirs.insert(host.clone(), Held { version, published_at, snapshot: snapshot.clone() });
@@ -159,6 +170,16 @@ impl Cards {
     /// Take a wall off — when a person forgets it from the roster.
     pub fn forget(&mut self, host: &str) {
         self.theirs.remove(host);
+    }
+
+    /// A wall said it is leaving: its cards come down, and a snapshot of its
+    /// that was already on the way does not put them back. `forget` is not this
+    /// — a quiet wall that wakes up re-says the same snapshot, which must be
+    /// drawn, where one that said goodbye re-saying it is a straggler.
+    pub fn depart(&mut self, host: &str) {
+        if let Some(h) = self.theirs.remove(host) {
+            self.gone.insert(host.to_string(), h.version);
+        }
     }
 }
 
@@ -255,6 +276,27 @@ mod tests {
         let huge = json!({ "cards": ["x".repeat(MAX_SNAPSHOT)] });
         assert!(desk.publish(huge, 1).is_err());
         assert_eq!(desk.say(1).map(|m| match m { CardsMsg::Cards { snapshot, .. } => snapshot }), Some(snap(1)));
+    }
+
+    /// A goodbye takes the cards down and keeps a straggling snapshot from
+    /// putting them back, but a wall that rejoins — newer — is drawn again.
+    /// Silence is not this: a forgotten wall re-saying what it said is news.
+    #[test]
+    fn a_departed_walls_cards_stay_down_until_it_publishes_something_newer() {
+        let mut desk = Cards::new("desk", 0);
+        let mut lap = Cards::new("lap", 0);
+        desk.publish(snap(1), 100).unwrap();
+        let said = desk.say(100).unwrap();
+        assert!(lap.on(said.clone(), 200).is_some());
+        lap.depart("desk");
+        assert!(lap.theirs(300).is_empty(), "its cards come down");
+        assert!(lap.on(said.clone(), 300).is_none(), "a snapshot already on its way is not a wall returning");
+        desk.publish(snap(2), 400).unwrap();
+        assert!(lap.on(desk.say(400).unwrap(), 500).is_some(), "a rejoin publishes something newer");
+        assert_eq!(lap.theirs(500).len(), 1);
+        /* `forget` is the other word: the same snapshot, said again, is news. */
+        lap.forget("desk");
+        assert!(lap.on(desk.say(600).unwrap(), 600).is_some());
     }
 
     #[test]

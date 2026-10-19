@@ -122,7 +122,7 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
 const KNOWN: &[&str] = &[
     "hello", "events", "roster", "ask", "answer", "prompt", "pictured", "recall", "close", "cards", "tail", "tailed",
     "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
-    "act", "acted", "board", "unpost", "unposted",
+    "act", "acted", "board", "unpost", "unposted", "leaving",
 ];
 
 #[cfg(test)]
@@ -204,6 +204,30 @@ mod tests {
         assert!(got.is_empty());
     }
 
+    /// A goodbye round-trips as itself here, and an older wall — whose list has
+    /// no `leaving` — passes it over like any newer word, so nothing else in the
+    /// exchange is lost and nothing is refused on the leaver's side. That is why
+    /// it carries no `Facts::can` word: there is nothing a sender would do
+    /// differently for a wall that cannot read it, except what an older wall
+    /// already does for itself.
+    #[test]
+    fn a_goodbye_reads_here_and_is_only_a_newer_word_to_an_older_wall() {
+        let bye = Frame::Fleet(FleetMsg::Leaving { host: "lap".into() });
+        assert_eq!(round(bye.clone()), bye);
+        let bytes = serde_json::to_vec(&bye).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap()["msg"], "leaving");
+        assert!(KNOWN.contains(&"leaving"), "this build must not pass over its own word as 'newer'");
+        /* What a build from before it reads is `a_word_from_a_newer_build_…`:
+           no word in its list, so `Unknown` and skipped — held here as the
+           loop's rule, with the sink frame beside it still arriving. */
+        let mut got = Vec::new();
+        let hello = serde_json::to_vec(&Frame::Sink(Msg::Hello { host: "lap".into(), watermark: BTreeMap::new() })).unwrap();
+        for p in [bytes, hello] {
+            take(&p, &mut got).expect("a goodbye never ends an exchange");
+        }
+        assert!(got.iter().any(|f| matches!(f, Frame::Sink(Msg::Hello { .. }))));
+    }
+
     #[test]
     fn a_word_from_a_newer_build_is_skipped_not_fatal() {
         let newer = br#"{"msg":"carry","id":"x"}"#;
@@ -261,6 +285,9 @@ mod tests {
         /* `ask` and `answer` want whole structs to build; their tags are the
            variant names under `rename_all = "snake_case"`. */
         written.extend(["ask", "answer", "prompt", "pictured", "recall", "close"].map(str::to_string));
+        written.push(
+            serde_json::to_value(FleetMsg::Leaving { host: String::new() }).unwrap()["msg"].as_str().unwrap().to_string(),
+        );
         written.extend(crate::flyway::moving::TAGS.map(str::to_string));
         for m in [
             LookMsg::Look { id: String::new(), card: String::new(), ask: String::new(), want: vec![] },

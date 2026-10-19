@@ -34,6 +34,7 @@ import {
   sectionOrder,
   stickShadow,
   keepHost,
+  withoutWall,
   spotsOf,
   NO_SPOTS,
   type CardDigest,
@@ -961,5 +962,45 @@ describe("opening a card in a section of another wall", () => {
     expect(landingNow(l, true, null, 2000)).toBe("drop");
     expect(landingNow(l, true, "here-1", 1001 + LAND_WITHIN_MS)).toBe("drop");
     expect(landingNow({ ...l, focusWas: null }, true, null, 2000)).toBe("focus");
+  });
+});
+
+describe("a wall that leaves", () => {
+  const row = (host: string) => ({ host, quietMs: 0 });
+  const held = () => ({
+    walls: { lap: { n: 1 }, desk: { n: 2 } } as Record<string, { n: number }>,
+    heardAt: { lap: 10, desk: 20 } as Record<string, number>,
+    roster: [row("me"), row("lap"), row("desk")],
+  });
+
+  test("is taken off the roster, the snapshots and the heard times — and only it", () => {
+    const next = withoutWall(held(), "lap");
+    expect(Object.keys(next.walls)).toEqual(["desk"]);
+    expect(Object.keys(next.heardAt)).toEqual(["desk"]);
+    expect(next.roster.map((r) => r.host)).toEqual(["me", "desk"]);
+  });
+
+  test("leaves the input alone, so a reader is told by an assignment", () => {
+    const before = held();
+    withoutWall(before, "lap");
+    expect(Object.keys(before.walls)).toEqual(["lap", "desk"]);
+  });
+
+  test("answers the same objects for a wall that was never drawn", () => {
+    const before = held();
+    const next = withoutWall(before, "stranger");
+    expect(next.walls).toBe(before.walls);
+    expect(next.heardAt).toBe(before.heardAt);
+    expect(next.roster).toBe(before.roster);
+  });
+
+  test("this wall leaving takes every other wall with it", () => {
+    const next = withoutWall(held(), null);
+    expect(next.walls).toEqual({});
+    expect(next.heardAt).toEqual({});
+    expect(next.roster).toEqual([]);
+    /* And leaving with nothing drawn costs no redraw. */
+    const empty = { walls: {}, heardAt: {}, roster: [] as { host: string }[] };
+    expect(withoutWall(empty, null).walls).toBe(empty.walls);
   });
 });

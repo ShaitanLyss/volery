@@ -878,6 +878,11 @@ export class Control {
       elsewhere: {
         me: h.elsewhere.me,
         heardAt: { ...h.elsewhere.heardAt },
+        /* The link's roster as this wall holds it — the half of "who is on the
+           flyway" a goodbye changes and a silence does not: a wall that left is
+           gone from this list, one that merely went quiet is on it with a
+           `quietMs`. */
+        roster: h.elsewhere.roster.map((r) => ({ host: r.host, me: !!r.me, quietMs: r.quietMs })),
         shadows: h.elsewhere.shadows.map((s) => ({
           id: s.id,
           host: s.host,

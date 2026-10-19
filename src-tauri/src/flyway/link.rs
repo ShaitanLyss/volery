@@ -112,7 +112,10 @@ use super::wire::{Dialler, Fault, Wire};
 use crate::store::Store;
 
 mod billboard;
+mod leaving;
 mod moves;
+
+use leaving::{tick_hosts, tick_until_closed, Tenure};
 
 /// How often a wall asks the others what it has missed — and says what it is.
 /// See the module note on why this is the roster's period.
@@ -213,6 +216,12 @@ pub struct Link {
     /// own is said under (`boards.rs`, `link/billboard.rs`).
     boards: StdMutex<Boards>,
     board_due: AtomicBool,
+    /// Closed by `shutdown` when this wall leaves, and read by every task this
+    /// link started (`leaving.rs`).
+    tenure: Tenure,
+    /// Walls that said goodbye and have not been heard from since — not dialled
+    /// on the strength of a stale `heard` entry or the invite's seed.
+    left: StdMutex<BTreeSet<String>>,
 }
 
 /// One of this wall's prompts to another wall's card.
@@ -359,6 +368,8 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         cards_due: AtomicBool::new(false),
         boards: StdMutex::new(Boards::new(&me, board_v)),
         board_due: AtomicBool::new(false),
+        tenure: Tenure::new(),
+        left: StdMutex::new(BTreeSet::new()),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
     if let Some((snapshot, at)) = state.early_cards.lock().ok().and_then(|mut e| e.take()) {
@@ -373,6 +384,12 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
     let serving = link.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(incoming) = serving.wire.next_dial().await {
+            /* A wall that has left answers nobody: a dial landing while the
+               endpoint closes is dropped, and the dialler reads a wall that is
+               not there — which, now, it is not. */
+            if serving.tenure.is_closed() {
+                break;
+            }
             let l = serving.clone();
             tauri::async_runtime::spawn(async move {
                 let me = l.clone();
@@ -396,14 +413,20 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
        half a minute. `arrive` is called when a key is entered as well as at
        launch, so the ask-first order is also what makes pasting an invite
        produce an answer on the spot. */
-    let asking = app.clone();
+    let asking = link.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            if let Err(e) = pull(asking.clone()).await {
-                log::debug!("flyway: nothing came back this time: {e}");
+        /* Until the link is closed, and on *this* link rather than whichever is
+           current: a wall that left and came back has a new one, and the old
+           loop must not go on ticking beside it. */
+        tick_until_closed(&asking.tenure, EVERY, || {
+            let l = asking.clone();
+            async move {
+                if let Err(e) = l.tick().await {
+                    log::debug!("flyway: nothing came back this time: {e}");
+                }
             }
-            tokio::time::sleep(EVERY).await;
-        }
+        })
+        .await;
     });
 
     Ok(true)
@@ -415,19 +438,7 @@ pub async fn pull(app: AppHandle) -> Result<usize, String> {
     let Some(link) = current(&app) else {
         return Err("this wall is not on a flyway".to_string());
     };
-    link.housekeep();
-    let mut dials = Vec::new();
-    for host in link.due_peers() {
-        let l = link.clone();
-        dials.push(tauri::async_runtime::spawn(async move { l.dial(&host).await }));
-    }
-    let mut news = 0;
-    for d in dials {
-        if let Ok(Ok(n)) = d.await {
-            news += n;
-        }
-    }
-    Ok(news)
+    link.tick().await
 }
 
 /// What to say to a wall that dialled us, against a connection rather than an
@@ -538,6 +549,29 @@ impl Link {
         f
     }
 
+    /// One tick: say what this wall is, tidy what is too old to matter, and
+    /// dial every peer at once. Nothing at all once the link is closed — a tick
+    /// already under way when a wall leaves finishes its dials, which fail
+    /// against the closed endpoint, and starts no more.
+    async fn tick(self: &Arc<Self>) -> Result<usize, String> {
+        if self.tenure.is_closed() {
+            return Err("this wall has left the flyway".to_string());
+        }
+        self.housekeep();
+        let mut dials = Vec::new();
+        for host in self.due_peers() {
+            let l = self.clone();
+            dials.push(tauri::async_runtime::spawn(async move { l.dial(&host).await }));
+        }
+        let mut news = 0;
+        for d in dials {
+            if let Ok(Ok(n)) = d.await {
+                news += n;
+            }
+        }
+        Ok(news)
+    }
+
     /// The tick's bookkeeping: announce, keep the version, forget what is too
     /// old, and settle what nobody is going to settle.
     fn housekeep(self: &Arc<Self>) {
@@ -598,17 +632,11 @@ impl Link {
     /// Every wall worth dialling this tick.
     fn due_peers(&self) -> Vec<String> {
         let now = self.now();
-        let mut hosts: BTreeSet<String> = BTreeSet::new();
-        if let Some(seed) = key::joined_peer() {
-            hosts.insert(seed);
-        }
-        if let Ok(f) = self.fleet.lock() {
-            hosts.extend(f.roster().map(|e| e.host.clone()));
-        }
-        if let Ok(h) = self.heard.lock() {
-            hosts.extend(h.iter().cloned());
-        }
-        hosts.retain(|h| !h.eq_ignore_ascii_case(&self.me));
+        let roster: Vec<String> =
+            self.fleet.lock().map(|f| f.roster().map(|e| e.host.clone()).collect()).unwrap_or_default();
+        let heard = self.heard.lock().map(|h| h.clone()).unwrap_or_default();
+        let left = self.left.lock().map(|l| l.clone()).unwrap_or_default();
+        let hosts = tick_hosts(&self.me, &roster, &heard, key::joined_peer().as_deref(), &left);
         let failing = self.failing.lock().map(|f| f.clone()).unwrap_or_default();
         hosts.into_iter().filter(|h| failing.get(h).is_none_or(|(_, next)| now >= *next)).collect()
     }
@@ -657,6 +685,9 @@ impl Link {
 
     /// One pull from one wall, and the push its answer shows is owed.
     async fn dial(self: &Arc<Self>, host: &str) -> Result<usize, String> {
+        if self.tenure.is_closed() {
+            return Err("this wall has left the flyway".to_string());
+        }
         let peer = self.wire.peer(host)?;
         let mut current = !self.speaks_older(host);
         let back = match self.wire.exchange(peer, self.greeting(current)?, current).await {
@@ -720,7 +751,7 @@ impl Link {
 
     /// Say something to one wall now, and take whatever it says back.
     fn push(self: &Arc<Self>, host: String, frames: Vec<Frame>) {
-        if host.eq_ignore_ascii_case(&self.me) || frames.is_empty() {
+        if host.eq_ignore_ascii_case(&self.me) || frames.is_empty() || self.tenure.is_closed() {
             return;
         }
         let l = self.clone();
@@ -839,6 +870,10 @@ impl Link {
                     let Ok(conn) = store.0.lock() else { continue };
                     out.extend(answer_with(&conn, vec![m]).into_iter().map(Frame::Sink));
                 }
+                /* A wall saying it is leaving — taken off at once, but only if
+                   it is who the handshake proved. Not `hear`d: the roster
+                   cannot check a name against a connection (`leaving.rs`). */
+                Frame::Fleet(FleetMsg::Leaving { host }) if who.current => self.departed(&host, who),
                 /* An old wall never sends these; a frame that is somehow here
                    from one is answered as though it had not been, since an
                    answer it cannot read would cost it the sink frames beside. */
@@ -911,6 +946,10 @@ impl Link {
                     if let Ok(mut heard) = self.heard.lock() {
                         heard.insert(h.clone());
                     }
+                    /* Heard from, so no longer a wall that said goodbye. */
+                    if let Ok(mut left) = self.left.lock() {
+                        left.remove(&h);
+                    }
                 }
                 return Some(h);
             }
@@ -955,7 +994,7 @@ impl Link {
                 | FleetMsg::Recall { ask, .. }
                 | FleetMsg::Close { ask, .. } => Some(ask.to.clone()),
                 FleetMsg::Answer { answer, .. } => Some(answer.asked_by.clone()),
-                FleetMsg::Roster { .. } => None,
+                FleetMsg::Roster { .. } | FleetMsg::Leaving { .. } => None,
             };
             if let Some(to) = to {
                 if to != self.me && except != Some(to.as_str()) {
@@ -2517,6 +2556,13 @@ pub async fn flyway_arrive(app: AppHandle) -> Result<bool, String> {
     arrive(app).await
 }
 
+/// Leave the flyway, now: say goodbye to every wall, stop dialling and
+/// answering, close the endpoint, and clear the key. See `leaving.rs`. The
+/// command is `key::flyway_leave`, which is where it has always been registered.
+pub async fn leave(app: AppHandle) -> Result<(), String> {
+    leaving::leave(app).await
+}
+
 /// Ask the others now rather than at the next tick, and say how much was news.
 #[tauri::command]
 pub async fn flyway_pull(app: AppHandle) -> Result<usize, String> {
@@ -2583,12 +2629,10 @@ pub async fn flyway_forget(app: AppHandle, host: String) -> Result<(), String> {
         }
         f.forget(&host);
     }
-    /* Its notices go with it: a wall nobody will hear from again has nobody to
-       take them down. */
-    if let Ok(mut b) = link.boards.lock() {
-        b.forget(&host);
-    }
-    crate::board::heard_from_afar(&app);
+    /* Its notices go with it — a wall nobody will hear from again has nobody
+       to take them down — and so do its cards, which this used to leave in the
+       link and on the wall as shadows of a wall that was no longer there. */
+    link.drop_wall(&host, false);
     crate::chronicle::note(
         &app,
         None,

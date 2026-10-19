@@ -158,6 +158,14 @@ impl Wire {
         Ok(Self { endpoint, key: Arc::new(key), room })
     }
 
+    /// Let go of the endpoint: every connection ends and `next_dial` answers
+    /// `None`, which is what stops the accept loop. A wall that has left the
+    /// flyway does this, and a wall that did not would go on answering as a
+    /// member of it (`link/leaving.rs`).
+    pub async fn close(&self) {
+        self.endpoint.close().await;
+    }
+
     /// Who this wall is, to anybody dialling it.
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()

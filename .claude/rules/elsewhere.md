@@ -13,6 +13,7 @@ paths:
   - "src-tauri/src/flyway/opening.rs"
   - "src/lib/moveall.ts"
   - "src/lib/Exodus.svelte"
+  - "src-tauri/src/flyway/link/leaving.rs"
 ---
 
 # Cards on other walls
@@ -1389,3 +1390,76 @@ switch (*not taking work from other walls*). **Not shown:** a wall too old to an
 `act:stop` (the unit tests hold the refusal), Enter on a menu row (a synthetic key does not
 press a button; the click it stands for was), and a far question or notice in the dock, whose
 drawing is the queue test's and was not changed beyond the handle it carries.
+
+## Leaving the flyway
+
+Reported 2026-10-19: *"leaving the flyway didn't actually leave until volery was closed and
+reopened, and other machines just thought it went quiet instead of it being gone."* Two bugs
+with one root: leaving was a **setting**, not an event.
+
+### Why it did not leave
+
+`key::leave` cleared the vault entry and nothing else. `link::arrive` had started three things
+that each held the endpoint and the key in memory — the accept loop, the tick `loop {}` and
+the pushes — and none of them was ever asked whether to go on. So the wall kept dialling,
+answering, announcing and publishing its cards as a member until the process closed. The
+front end made it worse: the panel's roster and `Elsewhere.walls` were only ever *added to*,
+so even a wall that did stop left its rows and shadows drawn.
+
+`link/leaving.rs` is the repair, and its centre is `Tenure` — closed once, read by every task a
+link starts. **A task that lives as long as a link owes the link a way to end it.** The tick is
+`tick_until_closed`, a pure-ish loop so "a left wall stops dialling" is held by a test rather
+than trusted; the accept loop checks it; `push`, `dial` and `tick` refuse once it is closed;
+and `Wire::close` ends the endpoint, which ends `next_dial` and every connection. The tick used
+to call `pull(app)`, which looks up *whichever link is current* — so a wall that left and came
+back would have had two loops ticking. It ticks its own link now.
+
+The order in `leaving::leave`, each step is why the next is safe: read whom to tell (the
+invite's seed is in the vault) → **clear the key** (the one step that can refuse — a lab on
+the installed wall's key may not — so a refused leave has changed nothing) → take the link out
+and close its tenure → say goodbye → close the endpoint → tell the front end. What the wall was
+itself waiting on (`waiting`, `prompts_out`) is settled with `nobody_answered`, so a parked tool
+call is answered rather than dropped.
+
+### The goodbye, and why silence is still quiet
+
+`FleetMsg::Leaving { host }`, `msg: "leaving"`, said once to every wall the leaver flies with
+(`farewell_to`: the roster's walls that are not quiet, plus anyone who dialled in or seeded the
+invite and is not on it; never itself, never a wall on the v1 language, never a wall already
+quiet — saying it to an empty room costs a whole timeout). A wall that receives it
+(`Link::departed`) takes the wall off **at once**: `Fleet::depart` (forget, held against stale
+gossip), `Cards::depart`, the board's copy, `heard`/`failing`/`older`, then `flyway:left
+{host}` and a roster redraw; the front end's `withoutWall` removes the row, the snapshot and
+the heard-time and `#reconcile` takes the shadows down.
+
+- **A wall that went quiet without a word still reads quiet**, with its cards, exactly as
+  before: a shut lid is not a departure, and that is `Fleet`'s test
+  `a_goodbye_takes_a_wall_off_where_silence_only_makes_it_quiet`.
+- **Who said it is the handshake's to prove, not the frame's.** The word names a host, and
+  `departed` acts only if that name derives the identity the connection proved
+  (`Wire::peer`). `Fleet::on` does nothing with a `Leaving` for exactly that reason — it
+  cannot check a name against a connection.
+- **Not gated on a `Facts::can` word, deliberately.** A capability word lets the *sender*
+  refuse something the receiver would mishandle. A goodbye has nothing to refuse: an older wall
+  skips the unknown `msg` (`frame::take`) and reads the leaver as quiet, as before.
+- **Said once, never queued, never relayed.** A peer that was asleep when it was said reads
+  quiet (the leaver can no more tell it than the peers could have). A goodbye delivered a week
+  late would take a wall that had since rejoined off the roster.
+- **A straggler is not a return.** `Cards::depart` remembers the version the wall had, so a
+  snapshot already on the way when the goodbye landed does not put the cards back; only
+  something newer does, and a wall that rejoins publishes one. `Cards::forget` (a person
+  removing a quiet wall) deliberately does *not* remember: a quiet wall that wakes up re-says
+  the same snapshot, and that must be drawn.
+- **Rejoining is nothing special.** The leaver's announcement version only rises, so the first
+  one after it passes the version `Fleet::forget` holds. `Link.left` keeps a goodbye-sayer out
+  of the *heard*/seed dialling until it is heard from again, but never out of the roster's — a
+  wall that announces is back on it, and that is what makes it dialled.
+- **Not closed by leaving:** cards other walls opened here. Leaving ends the link; a card is a
+  conversation somebody may still want. `key.rs` has always said the caller deals with them.
+
+`flyway_forget` shares `Link::drop_wall` now, which fixed a neighbour: forgetting a quiet wall
+used to leave its cards in the link and its shadows on the wall.
+
+Demonstrated 2026-10-19 between two frozen labs (`a`, `b --peer a`): see the commit message for
+what was read off the snapshot's `elsewhere.roster`.
+

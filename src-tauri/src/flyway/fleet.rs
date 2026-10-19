@@ -942,6 +942,19 @@ pub enum FleetMsg {
     /// Take a card off its wall. Answered `Opened { card }` when the wall is
     /// taking it off — no new outcome, for `Prompt`'s reason — or a refusal.
     Close { ask: Ask, age_ms: u64 },
+    /// This wall is leaving the flyway — said once, to every peer it can reach,
+    /// on the way out. A wall that says it is **gone**, which is not the same
+    /// as one that went quiet: a shut lid is somebody's laptop asleep and stays
+    /// on the roster drawn as quiet, where a goodbye takes the wall off at once
+    /// (`Fleet::depart`).
+    ///
+    /// `host` is a claim, and the wiring checks it against the connection's
+    /// proven identity before acting (`Link::departed`) — a frame sealed with
+    /// the wall key proves only that somebody holding it sent it. Not gossiped
+    /// and not relayed: a wall that was offline when it was said reads the
+    /// leaver as quiet, which is as it was before this word existed. An older
+    /// build skips the unknown `msg` (`frame::take`) and does the same.
+    Leaving { host: String },
 }
 
 /// A card this wall has agreed to open. Handed to the wiring, which opens it
@@ -1259,6 +1272,21 @@ impl Fleet {
         if let Some(e) = self.roster.remove(host) {
             self.forgotten.insert(host.to_string(), e.version);
         }
+    }
+
+    /// A wall said it is leaving: off the roster now, and held off it against
+    /// gossip until it announces something newer — which a wall that rejoins
+    /// does, since its version only ever rises (`announce`).
+    ///
+    /// `forget`, and whether the wall was on the roster at all: a goodbye from
+    /// a wall nobody had heard of changes nothing and is not worth a redraw.
+    /// What an ask already made of it does is not settled here — it gives up
+    /// at `GIVE_UP_MS` as it would for any wall that stopped answering, which
+    /// is late but never wrong.
+    pub fn depart(&mut self, host: &str) -> bool {
+        let known = self.roster.contains_key(host);
+        self.forget(host);
+        known
     }
 
     /// The walls that could host a card in this territory, best first.
@@ -1632,6 +1660,11 @@ impl Fleet {
                 }
                 self.hear_ask(ask, age_ms, now, here, &mut reply);
             }
+
+            /* Heard by the wiring, which alone can say who sent it — see
+               `Link::departed`. Nothing a roster can do with a name it has not
+               checked against the connection. */
+            FleetMsg::Leaving { .. } => {}
 
             FleetMsg::Answer { answer, age_ms } => {
                 let answer = clean_answer(answer);
@@ -2474,6 +2507,43 @@ mod tests {
         assert!(me.f.entry("old").is_none(), "a peer's stale copy does not undo it");
         me.hear(announced("old", 6, 0, 0), 2_000);
         assert!(me.f.entry("old").is_some());
+    }
+
+    /// **A goodbye and a silence are different words.** A wall that said it is
+    /// leaving is off the roster at once and stays off against a peer's stale
+    /// copy; one that merely stopped announcing stays on it, drawn quiet — a
+    /// shut lid is not a departure. And a wall that leaves and comes back
+    /// (version only rises) is simply learned again.
+    #[test]
+    fn a_goodbye_takes_a_wall_off_where_silence_only_makes_it_quiet() {
+        let mut me = Node::new("me", open_facts());
+        me.hear(announced("gone", 5, 0, 0), 0);
+        me.hear(announced("asleep", 5, 0, 0), 0);
+        let later = QUIET_AFTER_MS + 1;
+        /* Silence: still there, and quiet. */
+        assert!(matches!(me.f.entry("asleep").unwrap().standing(later), Standing::Quiet { .. }));
+        /* A goodbye: gone. */
+        assert!(me.f.depart("gone"), "it was on the roster");
+        assert!(me.f.entry("gone").is_none());
+        /* A peer that had not heard yet gossips the old entry; it does not undo it. */
+        me.hear(announced("gone", 5, 0, 0), 1_000);
+        assert!(me.f.entry("gone").is_none(), "gossip does not bring back a wall that said goodbye");
+        /* The wall coming back says something newer, and is on the roster again. */
+        me.hear(announced("gone", 6, 0, 0), 2_000);
+        assert!(me.f.entry("gone").is_some(), "a rejoin is a wall announcing again");
+        /* A goodbye from a wall this one never knew changes nothing. */
+        assert!(!me.f.depart("stranger"));
+    }
+
+    /// The word itself is a frame of its own and costs the roster nothing when
+    /// it reaches `on`: who sent it is the wiring's to prove.
+    #[test]
+    fn a_leaving_word_does_nothing_to_the_roster_until_the_wiring_has_checked_who_said_it() {
+        let mut me = Node::new("me", open_facts());
+        me.hear(announced("lap", 5, 0, 0), 0);
+        let said = me.hear(FleetMsg::Leaving { host: "lap".into() }, 1);
+        assert!(said.is_empty());
+        assert!(me.f.entry("lap").is_some(), "`on` cannot tell a forged goodbye from a real one");
     }
 
     /// An ask, a card, an answer: the whole round trip, and the card knows

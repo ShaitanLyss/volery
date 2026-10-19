@@ -1064,6 +1064,33 @@ export function keepHost(spots: Spots, host: string, alive: ReadonlySet<string>)
   return next;
 }
 
+/** What a wall that has *left* takes with it — and what a wall that merely went
+ *  quiet does not. A quiet wall keeps its row, its snapshot and its shadows,
+ *  drawn quiet, because a shut lid is not a departure; one that said goodbye
+ *  (`flyway:left`) is gone from the roster, from every snapshot held, and from
+ *  the last time it was heard, so nothing here can draw it again until it is
+ *  heard afresh. `host: null` is *this* wall leaving the flyway, which takes
+ *  every other wall with it.
+ *
+ *  Pure, and a copy: the caller assigns what it returns, so a reader of any of
+ *  the three is told. Answers the same objects when there is nothing to
+ *  remove, so a goodbye from a wall never drawn here redraws nothing. */
+export function withoutWall<W, R extends { host: string }>(
+  held: { walls: Record<string, W>; heardAt: Record<string, number>; roster: readonly R[] },
+  host: string | null,
+): { walls: Record<string, W>; heardAt: Record<string, number>; roster: readonly R[] } {
+  const without = <T>(rec: Record<string, T>): Record<string, T> => {
+    if (host === null) return Object.keys(rec).length ? {} : rec;
+    if (!(host in rec)) return rec;
+    const next = { ...rec };
+    delete next[host];
+    return next;
+  };
+  const roster =
+    host === null ? (held.roster.length ? [] : held.roster) : held.roster.some((r) => r.host === host) ? held.roster.filter((r) => r.host !== host) : held.roster;
+  return { walls: without(held.walls), heardAt: without(held.heardAt), roster };
+}
+
 /* ── getting your attention ─────────────────────────────────────────── */
 
 /** A question parked on another wall, in the attention ladder's words — one
