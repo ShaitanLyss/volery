@@ -67,6 +67,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
     compactFrac: null,
     turnSince: null,
     holding: null,
+    timeline: null,
     lines: [
       { kind: "you", text: "go" },
       { kind: "text", text: "first" },
@@ -109,6 +110,7 @@ describe("making a digest", () => {
       turnSince: null,
       held: null,
       holding: null,
+      timeline: null,
       said: "done — the ring no longer pegs",
       jobs: 0,
       wakes: [],

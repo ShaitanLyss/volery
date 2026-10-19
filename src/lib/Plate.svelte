@@ -11,6 +11,7 @@
   import { planOf } from "./plates";
   import { variantOf, type Widget } from "./widgets";
   import type { Timelines } from "./timelines.svelte";
+  import { isAfarTimeline } from "./gist";
 
   let {
     widget,
@@ -26,7 +27,12 @@
   /* Null only for a frame or two: a plate exists because its plan is on the
      glass (`Widgets.house`), and comes down when it is not (`Widgets.evict`). */
   const t = $derived(timelines.byId(planOf(widget)));
-  const owner = $derived(t ? timelines.ownerOf(t.ownerId) : null);
+  /* Wherever the owner runs: a plan drawn by a card on another wall wears that
+     card's status like any (`Timelines.readingOf`). */
+  const owner = $derived(t ? timelines.readingOf(t.ownerId) : null);
+  /* A step's write is found in the transcript this wall holds, which for a
+     card elsewhere is only its tail — so the jump is a card here's. */
+  const jumps = $derived(!!owner && !!t && !isAfarTimeline(t.id));
 </script>
 
 {#if t}
@@ -34,7 +40,7 @@
     {t}
     tier={owner?.tier ?? "rest"}
     handle={owner?.handle ?? t.ownerId.slice(0, 8)}
-    canJump={!!owner}
+    canJump={jumps}
     compact={variantOf(widget) !== "wide"}
     onjump={(rev) => timelines.jumpTo(t.ownerId, t.id, rev)}
     onarchive={() => void timelines.archive(t.id)}

@@ -756,6 +756,82 @@ fn render(t: &Row) -> String {
     out
 }
 
+/* ── a card on another wall ──────────────────────────────────────────────── */
+
+/// The plan of a card on another wall, read out of the snapshot its wall last
+/// sent — the gist's `timeline`, which the owning wall's front end made by the
+/// same function its own plates are drawn from (`gist.ts`). Reading is
+/// wall-wide here, and an orchestrator with children on the other laptop is
+/// the case it was always for. None when `want` names no card elsewhere, so
+/// the caller says what it would have said.
+fn afar_read(app: &AppHandle, want: &str) -> Option<String> {
+    let want = want.trim();
+    if want.len() < 8 || !want.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let link = crate::flyway::link::link(app)?;
+    let mut found: Vec<(String, Value)> = Vec::new();
+    for w in link.walls_seen() {
+        if w.host == link.me() {
+            continue;
+        }
+        let Some(snap) = &w.snapshot else { continue };
+        for c in snap.get("cards").and_then(Value::as_array).into_iter().flatten() {
+            let id = c.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() && id.starts_with(want) {
+                found.push((w.host.clone(), c.clone()));
+            }
+        }
+    }
+    match found.as_slice() {
+        [] => None,
+        [(host, card)] => Some(plan_afar(host, card)),
+        _ => Some(format!(
+            "{want:?} names a card on more than one wall ({}) — use the card's full id",
+            found.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+/// One card's plan off its digest, in the words `render` uses for a plan here.
+/// Lenient about the shape, as everything read off another wall is: a field
+/// missing or of the wrong type is a plan that cannot be read, said as such,
+/// never a guess.
+fn plan_afar(host: &str, card: &Value) -> String {
+    let text = |v: &Value, k: &str| -> String {
+        crate::clean::scrub(v.get(k).and_then(Value::as_str).unwrap_or("")).chars().take(120).collect()
+    };
+    let title = text(card, "title");
+    let Some(t) = card.get("timeline").filter(|t| t.is_object()) else {
+        return format!(
+            "{title:?} on {host} has no live timeline — or its wall runs a build from before plans travelled."
+        );
+    };
+    let Ok(plan) = serde_json::from_value::<Plan>(t.get("plan").cloned().unwrap_or(Value::Null)) else {
+        return format!("{title:?} on {host} has a timeline this build cannot read.");
+    };
+    let row = Row {
+        id: text(t, "id"),
+        owner_id: text(card, "id"),
+        session_id: None,
+        cwd: String::new(),
+        project: text(card, "project"),
+        source: title.clone(),
+        title: text(t, "title"),
+        plan,
+        state: "live".into(),
+        archived_at: None,
+        glass_x: None,
+        glass_y: None,
+        born_at: 0,
+        updated_at: 0,
+        ended_at: None,
+    };
+    format!("{}
+
+(on {host} — read off its last snapshot)", render(&row))
+}
+
 /* ── the tools ───────────────────────────────────────────────────────────── */
 
 const SUB_SCHEMA: &str = "A sub-step: a short title string, or {\"title\", \"state\"} with \
@@ -775,7 +851,7 @@ pub fn read_schema() -> Value {
             "properties": {
                 "card": {
                     "type": "string",
-                    "description": "Another card's handle or title. Omit for your own."
+                    "description": "Another card's handle or title — a card on another wall by its handle. Omit for your own."
                 }
             }
         }
@@ -908,7 +984,10 @@ fn do_read(app: &AppHandle, caller: &str, args: &Value) -> String {
             let rows = crate::store::roster(&conn, None).unwrap_or_default();
             match crate::relay::resolve(&rows, &want) {
                 Ok(r) => (r.id.clone(), r.title.clone()),
-                Err(e) => return e,
+                /* Not a card here: perhaps one on another wall, whose live plan
+                   rides its digest. Only an id or a handle reaches across —
+                   titles collide between machines (`reach.rs`). */
+                Err(e) => return afar_read(app, &want).unwrap_or(e),
             }
         }
     };
@@ -1286,6 +1365,41 @@ pub fn resume_timeline(app: AppHandle, id: String, owner_id: String) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a card on another wall's digest carries, as the front end there
+    /// writes it (`gist.ts`), read back into this file's words.
+    #[test]
+    fn a_plan_on_another_wall_reads_like_one_here() {
+        let card = json!({
+            "id": "4f1c2b9e-0000-4000-8000-000000000000",
+            "title": "the chat view fixes",
+            "project": "skein",
+            "timeline": {
+                "id": "t-1",
+                "title": "four fixes",
+                "bornAt": 1000,
+                "updatedAt": 2000,
+                "plan": { "rev": 3, "steps": [
+                    { "title": "needs you", "about": "", "state": "done", "strands": [] },
+                    { "title": "the parent", "about": "", "state": "todo",
+                      "strands": [{ "subs": [{ "title": "ghost", "state": "active" }] }] }
+                ] }
+            }
+        });
+        let out = plan_afar("QUEERISFREEDOM", &card);
+        assert!(out.starts_with("\"four fixes\""), "{out}");
+        assert!(out.contains("1 of 2 steps done"), "{out}");
+        assert!(out.contains("2.1"), "{out}");
+        assert!(out.contains("on QUEERISFREEDOM"), "{out}");
+    }
+
+    #[test]
+    fn a_card_elsewhere_with_no_plan_or_an_unreadable_one_says_so() {
+        let none = plan_afar("lab", &json!({ "id": "x", "title": "idle" }));
+        assert!(none.contains("has no live timeline"), "{none}");
+        let bad = plan_afar("lab", &json!({ "id": "x", "title": "odd", "timeline": { "plan": "nope" } }));
+        assert!(bad.contains("cannot read"), "{bad}");
+    }
 
     fn plan(v: Value) -> Plan {
         plan_of(&v).expect("a plan").0

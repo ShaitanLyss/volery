@@ -29,6 +29,18 @@
  * way every other moment in a digest is, so no two machines' clocks are ever
  * compared. Pure; tested in `test/gist.test.ts`. */
 
+import type { Plan, Timeline } from "./timeline";
+
+/** A card's live plan, as far as drawing it goes (`timeline.md`). The plan is
+ *  `timeline.rs`'s, written by the owner alone; what crosses is the reading. */
+export type GistTimeline = {
+  id: string;
+  title: string;
+  plan: Plan;
+  bornAt: number;
+  updatedAt: number;
+};
+
 /** A prompt waiting for an account, or behind a round already out. */
 export type GistHeld = {
   why: string;
@@ -63,6 +75,10 @@ export type Gist = {
   held: GistHeld | null;
   /** Processes it holds beyond what it booted with (`perf.rs`). */
   holding: { excess: number; fleet: number } | null;
+  /** Its live plan (`timeline.md`) — the frise on the wall, the strip and the
+   *  pane in chat view. Lyss, 2026-10-19: *"I noticed timelines don't seem to
+   *  travel across the flyway."* */
+  timeline: GistTimeline | null;
 };
 
 /** What a `Conversation` hands `gistOf` — its own field names, which differ
@@ -86,8 +102,10 @@ export type GistSource = {
 };
 
 /** The one function a gist is made by, for the face here and the digest that
- *  carries it to every other wall. */
-export function gistOf(c: GistSource): Gist {
+ *  carries it to every other wall. `live` is the card's live timeline, which
+ *  the wall's `Timelines` holds rather than the card — passed, never
+ *  defaulted, so a caller cannot forget it and draw a card with no plan. */
+export function gistOf(c: GistSource, live: Timeline | null): Gist {
   return {
     kind: c.kind,
     planning: c.gear === "planning",
@@ -103,7 +121,46 @@ export function gistOf(c: GistSource): Gist {
     turnSince: c.working ? c.turnSince : null,
     held: c.held ? { why: c.held.why, until: c.held.until, waiting: c.held.waiting, queue: c.held.queue.length } : null,
     holding: c.holding,
+    timeline: live
+      ? { id: live.id, title: live.title, plan: live.plan, bornAt: live.bornAt, updatedAt: live.updatedAt }
+      : null,
   };
+}
+
+/** A card on another wall's plan, as this wall's `Timelines` holds one: the
+ *  same `Timeline` a plate, the plan strip and the pane draw, under an id no
+ *  row of this wall's can have (`elsewhere:<host>:<id>`, the shadow's own
+ *  spelling) and owned by the shadow, so `liveFor(shadow.id)` finds it. It has
+ *  no session, no path and no spot: it is a reading of a plan, and the owner
+ *  alone writes, archives or picks it up. */
+export function afarTimeline(owner: { id: string; host: string; project: string; title: string }, g: GistTimeline): Timeline {
+  return {
+    id: afarTimelineId(owner.host, g.id),
+    ownerId: owner.id,
+    sessionId: null,
+    cwd: "",
+    project: owner.project,
+    source: owner.title,
+    title: g.title,
+    plan: g.plan,
+    state: "live",
+    archivedAt: null,
+    glassX: null,
+    glassY: null,
+    bornAt: g.bornAt,
+    updatedAt: g.updatedAt,
+    endedAt: null,
+  };
+}
+
+export function afarTimelineId(host: string, id: string): string {
+  return `elsewhere:${host}:${id}`;
+}
+
+/** Is this a plan drawn by a card on another wall — one this wall cannot
+ *  archive, hang back up or hand to a card? */
+export function isAfarTimeline(id: string): boolean {
+  return id.startsWith("elsewhere:");
 }
 
 /** A count as a surface says it: the number, or `—` for one nothing measured. */

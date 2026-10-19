@@ -20,6 +20,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Tier } from "./classify";
 import { timelineOf, type Timeline } from "./timeline";
+import { isAfarTimeline } from "./gist";
 import { archiveDue, type Hang } from "./plates";
 
 /** `Array.prototype.with`, which ES2022 does not have. */
@@ -37,9 +38,33 @@ export const FADE_MS = 600;
 const GAP_MS = 5_000;
 
 export class Timelines {
-  /** Everything on the glass — live and complete, not yet archived — in the
-   *  order they were drawn, which is the order the stack reads in. */
-  shown = $state<Timeline[]>([]);
+  /** This wall's plans on the glass — live and complete, not yet archived — in
+   *  the order they were drawn, which is the order the stack reads in. */
+  here = $state<Timeline[]>([]);
+  /** The live plans of cards on other walls, as their digests carry them
+   *  (`gist.ts::afarTimeline`). A function the flyway hands in
+   *  (`Elsewhere`), held as state so handing it in is heard. */
+  #afar = $state<() => Timeline[]>(() => []);
+  #afarOwner = $state<(ownerId: string) => { tier: Tier; handle: string } | null>(() => null);
+  /** Everything a plate, the plan strip and the pane can draw: this wall's,
+   *  then every other wall's live ones. One list, so a card elsewhere's plan is
+   *  housed, drawn and found (`liveFor`) by the very code a card here's is —
+   *  Lyss, 2026-10-19: *"I noticed timelines don't seem to travel across the
+   *  flyway."* Only this wall's are ever written, archived or swept. */
+  shown = $derived.by((): Timeline[] => [...this.here, ...this.#afar()]);
+
+  /** Where other walls' plans come from, and how their owning cards read. */
+  fromElsewhere(read: () => Timeline[], owner: (ownerId: string) => { tier: Tier; handle: string } | null) {
+    this.#afar = read;
+    this.#afarOwner = owner;
+  }
+
+  /** The owning card's reading, wherever it runs — the plate's colour and the
+   *  handle it names. A card here through `ownerOf`, one elsewhere through
+   *  what the flyway handed in. */
+  readingOf(ownerId: string): { tier: Tier; handle: string } | null {
+    return this.ownerOf(ownerId) ?? this.#afarOwner(ownerId);
+  }
   /** The archive, newest first. Read once at load and then folded like the
    *  glass, so the header knows whether there is anything to offer. */
   archived = $state<Timeline[]>([]);
@@ -84,7 +109,7 @@ export class Timelines {
         invoke<unknown[]>("read_timelines"),
         invoke<unknown[]>("archived_timelines"),
       ]);
-      this.shown = shown.map(timelineOf).filter((t): t is Timeline => !!t);
+      this.here = shown.map(timelineOf).filter((t): t is Timeline => !!t);
       this.archived = archived.map(timelineOf).filter((t): t is Timeline => !!t);
       this.archivedCount = this.archived.length;
       this.fault = null;
@@ -100,11 +125,11 @@ export class Timelines {
     const id = t?.id ?? payload?.id;
     if (!id) return;
     const onGlass = !!t && t.archivedAt === null;
-    const at = this.shown.findIndex((x) => x.id === id);
+    const at = this.here.findIndex((x) => x.id === id);
     if (onGlass) {
-      this.shown = at === -1 ? [...this.shown, t!] : swap(this.shown, at, t!);
+      this.here = at === -1 ? [...this.here, t!] : swap(this.here, at, t!);
     } else if (at !== -1) {
-      this.shown = this.shown.filter((x) => x.id !== id);
+      this.here = this.here.filter((x) => x.id !== id);
     }
     const was = this.archived.findIndex((x) => x.id === id);
     if (t && !onGlass) {
@@ -135,6 +160,14 @@ export class Timelines {
   }
 
   async archive(id: string) {
+    /* Another wall's plan is its card's to finish: archiving it from here
+       would be writing it, and only the owner writes. Its plate comes down when
+       the card finishes or closes and its digest stops carrying it. */
+    if (isAfarTimeline(id)) {
+      const t = this.byId(id);
+      this.fault = `that plan is drawn by a card on another wall — it comes down when ${t ? `“${t.source || t.title}”` : "the card"} finishes it or is closed`;
+      return;
+    }
     await this.#call("archive_timeline", { id });
   }
 

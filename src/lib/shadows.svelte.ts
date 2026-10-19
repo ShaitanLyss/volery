@@ -71,7 +71,7 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import type { Effort } from "./commands";
-import type { Gist } from "./gist";
+import { afarTimeline, type Gist } from "./gist";
 import { actRefusal, carriesTo, panelNotes, type Remote, type Said, type Verb } from "./handle";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
@@ -281,6 +281,12 @@ export class Shadow {
       turnSince: unheard || !this.face.working ? null : here(d.turnSince),
       held: unheard || !d.held ? null : { ...d.held, until: here(d.held.until) },
       holding: unheard ? null : d.holding,
+      /* Structure, not status: a plan is as true of a card on a laptop in a
+         bag as of one streaming now, so it stays while the wall is unheard —
+         its live markers take the shadow's tier, which is `rest` then. */
+      timeline: d.timeline
+        ? { ...d.timeline, bornAt: here(d.timeline.bornAt) ?? d.timeline.bornAt, updatedAt: here(d.timeline.updatedAt) ?? d.timeline.updatedAt }
+        : null,
     };
   });
 
@@ -642,6 +648,20 @@ export class Elsewhere {
 
   constructor(skein: Skein) {
     this.#skein = skein;
+    /* Every other wall's live plans, as this wall's `Timelines` holds them —
+       read off the shadows' gists, so a plan goes when its card or its wall
+       does, with nothing to clear by hand. */
+    skein.timelines.fromElsewhere(
+      () =>
+        this.shadows.flatMap((s) => {
+          const g = s.gist.timeline;
+          return g ? [afarTimeline({ id: s.id, host: s.host, project: s.project, title: s.title }, g)] : [];
+        }),
+      (id) => {
+        const s = this.find(id);
+        return s ? { tier: s.tier, handle: s.card.slice(0, 8) } : null;
+      },
+    );
     this.#stopEffects = $effect.root(() => {
       $effect(() => {
         if (!this.#skein.loaded) return;
@@ -790,6 +810,7 @@ export class Elsewhere {
       compactFrac: c.compactFrac,
       turnSince: c.turnSince,
       holding: c.holding,
+      timeline: this.#skein.timelines.liveFor(c.id),
       lines: c.lines,
       jobs: c.jobs,
       pendingWakes: c.pendingWakes,

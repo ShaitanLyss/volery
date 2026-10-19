@@ -337,7 +337,7 @@ export class LocalCard implements CardHandle {
     return this.#skein.noticeQueue.filter((n) => n.conversationId === this.conv.id);
   }
   get gist(): Gist {
-    return gistOf(this.conv);
+    return gistOf(this.conv, this.#skein.timelines.liveFor(this.conv.id));
   }
   /* This session's rest, else the store's last activity — a card restored
      dormant has no other clock. */

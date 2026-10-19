@@ -258,3 +258,30 @@ to *search their tools for `timeline`*. It names a search rather than a tool, so
 pointing at an identifier whose schema was withheld, and ToolSearch is loaded. The user's limit
 — not for small tasks or open-ended experimenting — is in that sentence and in `timeline_set`'s
 description both.
+
+### A plan travels with its card's shadow
+
+Lyss, 2026-10-19: *"I noticed timelines don't seem to travel across the flyway."* A card on
+another wall drew no frise, no plan strip and no pane, and `timeline <card>` could not name it.
+The plan rides the card's gist (`gist.ts`, `elsewhere.md` — *What is drawn is one shape*): the
+live one, as `{ id, title, plan, bornAt, updatedAt }`, made by `gistOf` from the wall's own
+`Timelines.liveFor`, read by `GIST_READ.timeline` and held to `shadow.ts::capPlan`'s bounds (24
+steps, 8 strands, 200 sub-steps across the plan, every word scrubbed and capped — tens of
+kilobytes at worst, since every snapshot carries every card's). Never its path or session: those
+name the owning machine.
+
+- **One list on this wall.** `Timelines.shown` is this wall's plans (`here`) then every other
+  wall's live ones (`gist.ts::afarTimeline`, id `elsewhere:<host>:<id>`, owned by the shadow), so
+  a plate is housed, a strip drawn and `liveFor(shadow.id)` answered by the code a local plan
+  uses. The plate takes the shadow's tier through `Timelines.readingOf`, so its live markers go
+  quiet with the wall.
+- **Only the owner writes.** `Timelines.archive` refuses a far plan and says so; its plate comes
+  down when the card finishes or closes and its digest stops carrying it, or when its wall leaves.
+  A step's jump to its write is a card here's (the transcript a far card has here is a tail).
+  The sweep never touches a far plan: only `live` ones travel.
+- **Read from a card here**: `timeline` given another wall's card by its handle reads the plan out
+  of the snapshot that wall last sent (`timeline.rs::afar_read`), in `render`'s words, saying it
+  is from that snapshot. Titles never reach across, `reach.rs`'s reason.
+- **Placement is not kept across a relaunch.** Before the far wall's first snapshot arrives the
+  plan is not shown, so its plate is evicted and housed afresh in the stack — a plate you moved
+  comes back to the stack. Not built: keeping a far plate's spot.

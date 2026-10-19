@@ -65,7 +65,8 @@ import {
   type Removal,
 } from "./afar";
 import type { Spot } from "./glass";
-import { gistOf, type Gist, type GistHeld, type GistSource } from "./gist";
+import { gistOf, type Gist, type GistHeld, type GistSource, type GistTimeline } from "./gist";
+import { planOf, type Plan, type Timeline } from "./timeline";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
  *  newer wall's digest is drawn from whatever fields this build understands. */
@@ -250,6 +251,8 @@ export function capText(s: string, n: number): string {
  *  territory's name, which a card carries only as an id. Structural, so the
  *  test hands it a plain object and this file imports no runes. */
 export type DigestSource = GistSource & {
+  /** Its live timeline, out of the wall's `Timelines` (`gistOf`'s `live`). */
+  timeline: Timeline | null;
   id: string;
   title: string;
   project: string;
@@ -329,7 +332,7 @@ export function digestOf(c: DigestSource): CardDigest {
     territory: capText(c.territory, TITLE_CAP),
     /* Every fact a surface draws, by the function a card here is drawn by —
        so the digest cannot leave one out (`gist.ts`). */
-    ...wireGist(gistOf(c)),
+    ...wireGist(gistOf(c, c.timeline)),
     tier: c.tier,
     ending: c.ending,
     dormant: c.dormant,
@@ -474,7 +477,51 @@ export const GIST_READ: { [K in keyof Gist]: (v: unknown) => Gist[K] } = {
     const fleet = count(r.fleet);
     return excess === null || fleet === null ? null : { excess: Math.floor(excess), fleet: Math.floor(fleet) };
   },
+  timeline: (v): GistTimeline | null => {
+    if (!v || typeof v !== "object") return null;
+    const r = v as Record<string, unknown>;
+    const id = str(r.id, PLAN_ID_CAP).trim();
+    const bornAt = stamp(r.bornAt);
+    const updatedAt = stamp(r.updatedAt);
+    if (!id || bornAt === null || updatedAt === null) return null;
+    return { id, title: str(r.title, PLAN_TEXT_CAP) || "untitled", plan: capPlan(planOf(r.plan)), bornAt, updatedAt };
+  },
 };
+
+/* A plan's bounds as it travels. A plan is usually a few kilobytes; these hold
+   the worst case to tens of them, since the snapshot carries every card's and
+   is re-sent whenever any of them changes. */
+const PLAN_ID_CAP = 64;
+const PLAN_TEXT_CAP = 120;
+const PLAN_ABOUT_CAP = 400;
+const PLAN_STEPS_CAP = 24;
+const PLAN_STRANDS_CAP = 8;
+/** Sub-steps across the whole plan, not per strand, so a wide plan and a deep
+ *  one cost the same at most. */
+const PLAN_SUBS_CAP = 200;
+
+/** A plan held to its bounds, every word scrubbed (`capText`): the far wall's
+ *  agent wrote it, and it goes into this wall's frise and a card's context. */
+export function capPlan(p: Plan): Plan {
+  let subs = PLAN_SUBS_CAP;
+  return {
+    rev: p.rev,
+    steps: p.steps.slice(0, PLAN_STEPS_CAP).map((s) => ({
+      ...s,
+      title: capText(s.title, PLAN_TEXT_CAP),
+      about: capText(s.about, PLAN_ABOUT_CAP),
+      strands: s.strands.slice(0, PLAN_STRANDS_CAP).map((k) => {
+        const kept = k.subs.slice(0, Math.max(0, subs));
+        subs -= kept.length;
+        return {
+          ...k,
+          ...(k.name !== undefined ? { name: capText(k.name, PLAN_TEXT_CAP) } : {}),
+          subs: kept.map((x) => ({ ...x, title: capText(x.title, PLAN_TEXT_CAP) })),
+        };
+      }),
+    })),
+  };
+}
 
 /** Every key a gist has, read off the table that must cover them all. */
 export const GIST_KEYS = Object.keys(GIST_READ) as (keyof Gist)[];
@@ -500,6 +547,9 @@ export function wireGist(g: Gist): Gist {
     costUsd: g.costUsd === null ? null : Math.round(g.costUsd * 100) / 100,
     compactFrac: g.compactFrac === null ? null : Math.round(clamp01(g.compactFrac) * 20) / 20,
     held: g.held ? { ...g.held, why: capText(g.held.why, HELD_WHY_CAP) } : null,
+    timeline: g.timeline
+      ? { ...g.timeline, id: capText(g.timeline.id, PLAN_ID_CAP), title: capText(g.timeline.title, PLAN_TEXT_CAP), plan: capPlan(g.timeline.plan) }
+      : null,
   };
 }
 
