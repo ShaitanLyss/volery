@@ -39,7 +39,7 @@
   } = $props();
 
   const working = $derived(!!card && (card.face.working || card.can("stop") === "yes"));
-  const planning = $derived(card?.conv?.gear === "planning");
+  const planning = $derived(card?.gist.planning ?? false);
   const asking = $derived(!!card?.ask);
   const empty = $derived(!field.text.trim());
   const targets = $derived(card?.conv ? [card.conv] : []);

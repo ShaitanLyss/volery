@@ -71,6 +71,7 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import type { Effort } from "./commands";
+import type { Gist } from "./gist";
 import { actRefusal, carriesTo, panelNotes, type Remote, type Said, type Verb } from "./handle";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
@@ -255,6 +256,34 @@ export class Shadow {
     return faceOf(this.digest, this.host, this.quietMs, this.#idle);
   }
 
+  /** What every surface draws about it (`gist.ts`): the digest's gist, read
+   *  key by key off the wire, with its two moments moved onto this wall's clock
+   *  by the snapshot's own `at`. What its wall did not send is `null` — drawn
+   *  as unknown, never as a number. While the wall is unheard a turn cannot be
+   *  claimed as running nor a hold as standing, `face`'s honesty. */
+  gist = $derived.by((): Gist => {
+    const d = this.digest;
+    const w = this.#walls.walls[this.host];
+    const here = (at: number | null) => (at === null ? null : w ? hereAt(at, w.at, w.madeAt) : at);
+    const unheard = this.face.unheard;
+    return {
+      kind: d.kind,
+      planning: d.planning,
+      model: d.model,
+      effort: d.effort,
+      account: d.account,
+      bypassCaps: d.bypassCaps,
+      ctx: d.ctx,
+      ctxTokens: d.ctxTokens,
+      turns: d.turns,
+      costUsd: d.costUsd,
+      compactFrac: unheard ? null : d.compactFrac,
+      turnSince: unheard || !this.face.working ? null : here(d.turnSince),
+      held: unheard || !d.held ? null : { ...d.held, until: here(d.held.until) },
+      holding: unheard ? null : d.holding,
+    };
+  });
+
   /* ── what `Card.svelte` reads ─────────────────────────────────────── */
 
   get title() {
@@ -394,15 +423,16 @@ export class Shadow {
     return this.digest.said ? [{ kind: "text", text: this.digest.said }] : [];
   });
 
-  /* The rest of what `Transcript.svelte` reads. A shadow answers each with the
-     empty value rather than a plausible one, which is the bargain `Readable`
-     names: the compiler asks the question, and where there is no honest answer
-     the panel is told nothing rather than told something made up. Occupancy is
-     the exception — `ctx` is a real reading the digest carries, and the token
-     count behind it is not, so the ring is right and the number beside it is
-     absent rather than invented. */
+  /* The rest of what `Transcript.svelte` reads. What a surface *draws* about
+     the conversation — its tokens, turns, cost, kind — is the gist above, and
+     a constant here would be a number nobody measured (`test/gist.test.ts`
+     fails one). What is left is the panel's bookkeeping for a column this wall
+     only holds the tail of: no scrollback of its own, no stream, no path on
+     this disk. */
   readonly cwd = "";
-  readonly kind = "project" as const;
+  get kind() {
+    return this.gist.kind;
+  }
   readonly history: Line[] = [];
   get historyState() {
     return this.tailState;
@@ -414,10 +444,7 @@ export class Shadow {
   get activity() {
     return this.digest.doing;
   }
-  readonly turns = 0;
   readonly dropped = 0;
-  readonly costUsd = 0;
-  readonly ctxTokens = 0;
   get model() {
     return this.digest.model ?? undefined;
   }
@@ -431,8 +458,13 @@ export class Shadow {
   get bypassCaps() {
     return this.digest.bypassCaps;
   }
-  readonly compactFrac = null;
-  readonly holding = null;
+  get compactFrac() {
+    return this.gist.compactFrac;
+  }
+  get holding() {
+    return this.gist.holding;
+  }
+  /* A path on the owning machine, so not a fact this wall can draw or open. */
   readonly planDoc = null;
   get elsewhere() {
     return { host: this.host, unheard: this.face.unheard };
@@ -747,8 +779,17 @@ export class Elsewhere {
       held: c.held,
       stalled: c.stalled,
       unacknowledged: c.unacknowledged,
-      restingSince: c.restingSince,
+      /* A card restored dormant has no rest of this session's; the store's
+         last activity is when it came to rest. Without it another wall could
+         not date the card at all, and chat view there read it as *now*. */
+      restingSince: c.restingSince ?? (c.working ? null : c.lastActive),
       ctx: c.ctx,
+      ctxTokens: c.ctxTokens,
+      turns: c.turns,
+      costUsd: c.costUsd,
+      compactFrac: c.compactFrac,
+      turnSince: c.turnSince,
+      holding: c.holding,
       lines: c.lines,
       jobs: c.jobs,
       pendingWakes: c.pendingWakes,

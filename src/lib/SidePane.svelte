@@ -56,7 +56,7 @@
   let unread = $state(false);
   /** Whose files `files` are. */
   let filesOf = "";
-  const turns = $derived(card.face.working ? -1 : (card.readable.turns ?? 0));
+  const turns = $derived(card.face.working ? -1 : (card.gist.turns ?? 0));
   $effect(() => {
     const id = card.id;
     if (tab !== "files" || !trail || !card.conv) return;

@@ -31,6 +31,7 @@ import type { Skein } from "./skein.svelte";
 import type { CardFace } from "./Card.svelte";
 import type { Readable } from "./transcript";
 import { allowanceReset, allowanceStop, waitsOnYou, type Notice } from "./notice";
+import { gistOf, type Gist } from "./gist";
 import type { MenuTarget } from "./menu";
 import type { Reach, Turn } from "./attach";
 import type { Timeline } from "./timeline";
@@ -53,6 +54,12 @@ export interface CardHandle {
   readonly face: CardFace;
   /** What the transcript reads: the wrapped object itself. */
   readonly readable: Readable;
+  /** Every fact a surface draws about the conversation, one shape for a card
+   *  anywhere (`gist.ts`): a card here's off its `Conversation`, a card
+   *  elsewhere's off its digest — which its wall made by the same function.
+   *  Unknown is `null`. A surface reads this, never `conv`, for anything it
+   *  draws; `test/gist.test.ts` holds that. */
+  readonly gist: Gist;
   /** The wall it runs on, when that is not this one. */
   readonly remote: Remote | null;
   /** Its project as a panel heads it — `skein`, or `skein · on lab`. */
@@ -329,6 +336,9 @@ export class LocalCard implements CardHandle {
   get notices(): readonly Notice[] {
     return this.#skein.noticeQueue.filter((n) => n.conversationId === this.conv.id);
   }
+  get gist(): Gist {
+    return gistOf(this.conv);
+  }
   /* This session's rest, else the store's last activity — a card restored
      dormant has no other clock. */
   get restedAt(): number | null {
@@ -337,7 +347,7 @@ export class LocalCard implements CardHandle {
     return Math.max(c.restingSince ?? 0, c.lastActive ?? 0) || null;
   }
   get turnSince(): number | null {
-    return this.conv.working ? this.conv.turnSince : null;
+    return this.gist.turnSince;
   }
   /* Held for an account first — the prompt is kept and goes when one frees —
      then a standing refusal, then one this process heard and raised no notice
@@ -488,6 +498,9 @@ export class RemoteCard implements CardHandle {
   get notices(): readonly Notice[] {
     return this.shadow.notices;
   }
+  get gist(): Gist {
+    return this.shadow.gist;
+  }
   /* Its idle, which `shadow.ts::idleOf` reckons without comparing two
      machines' clocks, put back as a moment here. Null where its wall sent no
      rest — then the card's age is unknown, and is not "now". */
@@ -496,18 +509,20 @@ export class RemoteCard implements CardHandle {
     if (s.working || s.digest.restingSince === null) return null;
     return Date.now() - s.idleSeconds * 1000;
   }
-  /* The digest says *that* a card works, not since when — so since this wall
-     first saw it working, kept here because a handle lives as long as its
-     card. A plain field, written while it is read: it is a memory of the
-     stream, as `Front`'s `#seen` is, and no reader depends on it changing. */
+  /* Its gist says since when; a wall from before `turnSince` travelled says
+     only *that* it works, so then since this wall first saw it working, kept
+     here because a handle lives as long as its card. A plain field, written
+     while it is read: a memory of the stream, as `Front`'s `#seen` is. */
   #working: number | null = null;
   get turnSince(): number | null {
     if (!this.shadow.working) return (this.#working = null);
-    return (this.#working ??= Date.now());
+    return this.gist.turnSince ?? (this.#working ??= Date.now());
   }
-  /* Its wall's queue travels in the digest, refusal and all; a hold does not,
-     so a card held there reads as an ordinary rest — which is not false. */
+  /* A hold travels in its gist, and its wall's queue in the digest, refusal
+     and all. */
   get allowance(): Allowance | null {
+    const held = this.gist.held;
+    if (held?.waiting === "allowance") return { until: held.until, reset: null };
     return stoppedFor(this.shadow.notices);
   }
   answer(ask: PendingAsk) {

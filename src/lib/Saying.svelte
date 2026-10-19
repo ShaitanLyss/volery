@@ -47,7 +47,7 @@
      glance and the transcript — the scope is the one thing a surface says for
      itself, and a pin that forgot it would draw the same words as plain text.
      A card on another wall has no directory here, and so no links. */
-  scopeFiles(() => (card?.conv?.kind === "project" ? card.conv.cwd : null) ?? null);
+  scopeFiles(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
 
   const face = $derived(card?.face ?? null);
   const said = $derived(face ? lastMessage(face) : "");

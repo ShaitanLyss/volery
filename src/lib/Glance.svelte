@@ -27,7 +27,7 @@
   /* A path in the message counts from the card's own directory, never from
      the focused card's — the dock's rule, for its reason. A card on another
      wall has no directory here, so its paths stay words. */
-  scopeFiles(() => (card?.conv?.kind === "project" ? card.conv.cwd : null) ?? null);
+  scopeFiles(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
 
   let box = $state<HTMLElement | null>(null);
   let reader = $state<HTMLElement | null>(null);

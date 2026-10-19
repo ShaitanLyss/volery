@@ -65,6 +65,7 @@ import {
   type Removal,
 } from "./afar";
 import type { Spot } from "./glass";
+import { gistOf, type Gist, type GistHeld, type GistSource } from "./gist";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
  *  newer wall's digest is drawn from whatever fields this build understands. */
@@ -86,8 +87,10 @@ export type DigestWake = { at: number | null; note: string; from: "wall" | "sess
 /** A wall with more open cards than this is drawn with the first this many. */
 export const CARDS_CAP = 400;
 
-/** One card, as its own wall describes it to the others. */
-export type CardDigest = {
+/** One card, as its own wall describes it to the others: its `Gist` — every
+ *  fact a surface draws, made by the same `gistOf` a card here is drawn from,
+ *  and spread in whole (`digestOf`) — and what only crossing needs. */
+export type CardDigest = Gist & {
   /** The card's id **on the wall that owns it** — what a prompt is addressed
    *  to. It means nothing here. */
   id: string;
@@ -97,23 +100,12 @@ export type CardDigest = {
   /** The grouping it stands in, by name. Drawn, never matched on: a territory's
    *  identity on one machine is not a folder on another. */
   territory: string;
-  kind: "project" | "chat";
   /** As the owning wall computed it. */
   tier: Tier;
   ending: Ending | null;
   dormant: boolean;
   working: boolean;
   aside: boolean;
-  planning: boolean;
-  /** Which model, how hard it is asked to think, which account pays for it and
-   *  whether it is ignoring that account's caps — as the owning wall has them.
-   *  Words and a flag, read by nothing in Rust: a newer build's value costs no
-   *  migration, and an older wall sends none of them, which reads as unknown.
-   *  Published so a shadow's panel can state them the way a local card's does. */
-  model: string | null;
-  effort: string | null;
-  account: string | null;
-  bypassCaps: boolean;
   /** The activity line, without the idle suffix — that is added on the far
    *  side, off its own clock. */
   doing: string;
@@ -128,8 +120,6 @@ export type CardDigest = {
    *  `at`, so two machines whose clocks disagree still agree how long a card
    *  has been quiet. */
   restingSince: number | null;
-  /** Context occupancy, 0–1. */
-  ctx: number;
   /** The last thing the agent said, from the front — what the card face draws.
    *  The settled last message rather than the one streaming, since streaming
    *  changes per token and the face is not worth a snapshot per token. */
@@ -259,31 +249,22 @@ export function capText(s: string, n: number): string {
 /** What a digest is made from: the fields of a `Conversation` it reads, plus the
  *  territory's name, which a card carries only as an id. Structural, so the
  *  test hands it a plain object and this file imports no runes. */
-export type DigestSource = {
+export type DigestSource = GistSource & {
   id: string;
   title: string;
   project: string;
   territory: string;
-  kind: "project" | "chat";
   tier: Tier;
   ending: Ending | null;
   dormant: boolean;
   working: boolean;
   aside: boolean;
-  gear: string;
-  /** Optional, so a caller with none to hand says nothing. */
-  model?: string | null;
-  effort?: string | null;
-  accountLabel?: string | null;
-  bypassCaps?: boolean;
   /** The card's word for what it is doing, and the three states that qualify
    *  it — see `steadyDoing` for why these rather than `Conversation.doing`. */
   activity: string;
-  held: { why: string } | null;
   stalled: boolean;
   unacknowledged: boolean;
   restingSince: number | null;
-  ctx: number;
   lines: readonly { kind: string; text: string }[];
   jobs: readonly unknown[];
   /** `Conversation.pendingWakes` — off no clock, which is why it rather than
@@ -346,20 +327,16 @@ export function digestOf(c: DigestSource): CardDigest {
     title: capText(c.title, TITLE_CAP),
     project: capText(c.project, TITLE_CAP),
     territory: capText(c.territory, TITLE_CAP),
-    kind: c.kind,
+    /* Every fact a surface draws, by the function a card here is drawn by —
+       so the digest cannot leave one out (`gist.ts`). */
+    ...wireGist(gistOf(c)),
     tier: c.tier,
     ending: c.ending,
     dormant: c.dormant,
     working: c.working,
     aside: c.aside,
-    planning: c.gear === "planning",
-    model: c.model ? capText(c.model, MODEL_CAP) : null,
-    effort: c.effort ? capText(c.effort, MODEL_CAP) : null,
-    account: c.accountLabel ? capText(c.accountLabel, TITLE_CAP) : null,
-    bypassCaps: c.bypassCaps === true,
     doing: capText(steadyDoing(c), DOING_CAP),
     restingSince: c.working ? null : c.restingSince,
-    ctx: Math.round(clamp01(c.ctx) * 1000) / 1000,
     said: capText(lastSaid(c.lines), SAID_CAP),
     jobs: c.jobs.length,
     wakes: c.pendingWakes
@@ -448,6 +425,84 @@ function stamp(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+/** A count off the wire: a non-negative finite number, or null for absent —
+ *  never zero for absent, which would draw a number nobody measured. */
+function count(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+const HELD_WHY_CAP = DOING_CAP;
+
+/** How each fact of a gist is read off the wire, one reader per key. A mapped
+ *  type over `Gist`, so a key added there is a compile error here until it is
+ *  read — the half of "the digest carries every drawn field" that is on the
+ *  receiving wall. A wall from before a key sends nothing, and every reader
+ *  answers that as unknown. */
+export const GIST_READ: { [K in keyof Gist]: (v: unknown) => Gist[K] } = {
+  kind: (v) => (v === "chat" ? "chat" : "project"),
+  planning: (v) => v === true,
+  model: (v) => str(v, MODEL_CAP) || null,
+  effort: (v) => str(v, MODEL_CAP) || null,
+  account: (v) => str(v, TITLE_CAP) || null,
+  bypassCaps: (v) => v === true,
+  ctx: (v) => clamp01(typeof v === "number" ? v : 0),
+  ctxTokens: (v) => {
+    const n = count(v);
+    return n === null ? null : Math.round(n);
+  },
+  turns: (v) => {
+    const n = count(v);
+    return n === null ? null : Math.floor(n);
+  },
+  costUsd: count,
+  compactFrac: (v) => (typeof v === "number" && Number.isFinite(v) ? clamp01(v) : null),
+  turnSince: stamp,
+  held: (v): GistHeld | null => {
+    if (!v || typeof v !== "object") return null;
+    const r = v as Record<string, unknown>;
+    return {
+      why: str(r.why, HELD_WHY_CAP),
+      until: stamp(r.until),
+      waiting: r.waiting === "turn" ? "turn" : "allowance",
+      queue: Math.min(99, Math.floor(count(r.queue) ?? 0)),
+    };
+  },
+  holding: (v) => {
+    if (!v || typeof v !== "object") return null;
+    const r = v as Record<string, unknown>;
+    const excess = count(r.excess);
+    const fleet = count(r.fleet);
+    return excess === null || fleet === null ? null : { excess: Math.floor(excess), fleet: Math.floor(fleet) };
+  },
+};
+
+/** Every key a gist has, read off the table that must cover them all. */
+export const GIST_KEYS = Object.keys(GIST_READ) as (keyof Gist)[];
+
+/** A gist off the wire, every key through its reader. */
+export function readGist(r: Record<string, unknown>): Gist {
+  const out = {} as Record<keyof Gist, unknown>;
+  for (const k of GIST_KEYS) out[k] = GIST_READ[k](r[k]);
+  return out as Gist;
+}
+
+/** A gist as it is sent: capped, and rounded where a value moves faster than
+ *  it is worth publishing — `sameCards` ships a snapshot whenever a digest
+ *  would draw differently, so a ratio that changed per token or a compaction's
+ *  per-second estimate would be a snapshot per tick. */
+export function wireGist(g: Gist): Gist {
+  return {
+    ...g,
+    model: g.model ? capText(g.model, MODEL_CAP) : null,
+    effort: g.effort ? capText(g.effort, MODEL_CAP) : null,
+    account: g.account ? capText(g.account, TITLE_CAP) : null,
+    ctx: Math.round(clamp01(g.ctx) * 1000) / 1000,
+    costUsd: g.costUsd === null ? null : Math.round(g.costUsd * 100) / 100,
+    compactFrac: g.compactFrac === null ? null : Math.round(clamp01(g.compactFrac) * 20) / 20,
+    held: g.held ? { ...g.held, why: capText(g.held.why, HELD_WHY_CAP) } : null,
+  };
+}
+
 function readWakes(v: unknown): DigestWake[] {
   if (!Array.isArray(v)) return [];
   const out: DigestWake[] = [];
@@ -482,20 +537,14 @@ export function readDigest(raw: unknown): CardDigest | null {
     title: str(r.title, TITLE_CAP),
     project: str(r.project, TITLE_CAP),
     territory: str(r.territory, TITLE_CAP),
-    kind: r.kind === "chat" ? "chat" : "project",
+    ...readGist(r),
     tier,
     ending,
     dormant: r.dormant === true,
     working: r.working === true,
     aside: r.aside === true,
-    planning: r.planning === true,
-    model: str(r.model, MODEL_CAP) || null,
-    effort: str(r.effort, MODEL_CAP) || null,
-    account: str(r.account, TITLE_CAP) || null,
-    bypassCaps: r.bypassCaps === true,
     doing: str(r.doing, DOING_CAP),
     restingSince: stamp(r.restingSince),
-    ctx: clamp01(typeof r.ctx === "number" ? r.ctx : 0),
     said: str(r.said, SAID_CAP),
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
     wakes: readWakes(r.wakes),

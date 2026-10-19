@@ -29,22 +29,26 @@
   } = $props();
 
   let open = $state(false);
-  const conv = $derived(card?.conv ?? null);
+  /* What the card runs, off its gist — so a card on another wall states its
+     model here too, and is switched by the same `/model` line, which its wall
+     carries out as if typed there (`card.say`). It used to read `card.conv`,
+     and a card elsewhere drew no chip at all. */
+  const runs = $derived(card ? { model: card.gist.model, effort: card.gist.effort } : null);
 
   /** The family a model is, for matching a preset to what a card runs. */
   const family = (m: string | null | undefined) => modelSaid(m).split(" ")[0] ?? "";
 
   const chip = $derived(
-    conv ? chipSaid(conv.model ?? null, conv.effort ?? null) : chipSaid(starter.resolved?.model, starter.resolved?.effort),
+    runs ? chipSaid(runs.model, runs.effort) : chipSaid(starter.resolved?.model, starter.resolved?.effort),
   );
 
   const rows = $derived<PickRow[]>(
     presetRows()
-      .filter((r) => !conv || r.id !== "")
+      .filter((r) => !runs || r.id !== "")
       .map((r, i) => {
         const p = presetById(r.id);
-        const on = conv
-          ? !!p && family(p.model) === family(conv.model) && (p.effort ?? null) === (conv.effort ?? null)
+        const on = runs
+          ? !!p && family(p.model) === family(runs.model) && (p.effort ?? null) === (runs.effort ?? null)
           : r.id === (starter.preset === null ? (starter.resolved?.id ?? "") : starter.preset);
         return { id: r.id, label: r.label, aside: r.chip, on, sep: r.id === "" && i > 0 };
       }),
@@ -55,7 +59,6 @@
      message box's — and whichever is up is the one meant. */
   function onWindowKey(e: KeyboardEvent) {
     if (!e.altKey || e.ctrlKey || e.metaKey || (e.key !== "m" && e.key !== "M")) return;
-    if (card && !conv) return;
     e.preventDefault();
     open = !open;
   }
@@ -74,26 +77,24 @@
 
 <svelte:window onkeydown={onWindowKey} />
 
-{#if !card || conv}
-  <span class="wrap">
-    <button
-      type="button"
-      class="model"
-      aria-haspopup="menu"
-      aria-expanded={open}
-      title={card ? "the model and how hard it thinks — sends /model and /effort (alt+M)" : "what this conversation opens as (alt+M)"}
-      onclick={() => (open = !open)}
-    >
-      <span class="full">{chip}</span><span class="short">{chip.split(" ")[0]}</span><Icon
-        name="chev-d"
-        small
-      />
-    </button>
-    {#if open}
-      <PickMenu {rows} {up} label="model and effort" onpick={(id) => void pick(id)} onclose={() => (open = false)} />
-    {/if}
-  </span>
-{/if}
+<span class="wrap">
+  <button
+    type="button"
+    class="model"
+    aria-haspopup="menu"
+    aria-expanded={open}
+    title={card ? "the model and how hard it thinks — sends /model and /effort (alt+M)" : "what this conversation opens as (alt+M)"}
+    onclick={() => (open = !open)}
+  >
+    <span class="full">{chip}</span><span class="short">{chip.split(" ")[0]}</span><Icon
+      name="chev-d"
+      small
+    />
+  </button>
+  {#if open}
+    <PickMenu {rows} {up} label="model and effort" onpick={(id) => void pick(id)} onclose={() => (open = false)} />
+  {/if}
+</span>
 
 <style>
   .wrap {

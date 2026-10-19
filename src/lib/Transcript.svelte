@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import type { Line } from "./conversation.svelte";
   import Jobs from "./Jobs.svelte";
+  import { countSaid } from "./gist";
   import Rail from "./Rail.svelte";
   import { nudgeReading } from "./layout";
   import { scopeFiles, scopePictures } from "./paths.svelte";
@@ -674,12 +675,17 @@
   <footer class="meta-bar">
     <span>{Math.round(conv.ctx * 100)}% context</span>
     <span class="sep">·</span>
-    <span>{conv.ctxTokens.toLocaleString()} tok</span>
+    <!-- Off the gist, which a card anywhere answers (`gist.ts`): a card on
+         another wall drew "0 tok · 0 turns" here off constants. What its wall
+         did not send is said as unknown, never as a number. -->
+    <span title={card.gist.ctxTokens === null ? "its wall does not say" : undefined}>{countSaid(card.gist.ctxTokens)} tok</span>
     <span class="sep">·</span>
-    <span>{conv.turns} {conv.turns === 1 ? "turn" : "turns"}</span>
-    {#if conv.costUsd > 0}
+    <span title={card.gist.turns === null ? "its wall does not say" : undefined}
+      >{countSaid(card.gist.turns)} {card.gist.turns === 1 ? "turn" : "turns"}</span
+    >
+    {#if card.gist.costUsd}
       <span class="sep">·</span>
-      <span>${conv.costUsd.toFixed(3)}</span>
+      <span>${card.gist.costUsd.toFixed(3)}</span>
     {/if}
     <span class="grow"></span>
     <!-- Where the conversation is, for a card on another wall: said once, in

@@ -220,6 +220,45 @@ publisher hears, so the next snapshot carries it. Re-warming here would be a sec
 the ladder in `Conversation.tier`, and gets the held card wrong — the owner keeps a card
 holding a prompt at `rest` on purpose.
 
+### What is drawn is one shape, and the digest is that shape spread
+
+Lyss, 2026-10-19: *"remote cards report 0 tok and 0 turns, it shouldn't have been possible, we
+need a structural fix."* The panel's footer read `turns`, `ctxTokens` and `costUsd` off
+`Readable`, which a shadow answered with constants (`readonly turns = 0`); the digest had never
+carried them, and nothing anywhere failed while it was so. The same audit found six more: a far
+chat card drawn as a project, no *planning* chip, no model chip, no allowance band for a card
+held over there, no compaction, no held processes. Each was a field one list (what a surface
+draws) had and another list (what the digest carries) did not, kept in step by hand.
+
+So the facts a surface draws are **one type, `gist.ts::Gist`**, and both kinds produce it:
+`CardHandle.gist` is `gistOf(conv)` for a card here and `Shadow.gist` for one elsewhere. The
+digest **spreads `wireGist(gistOf(c))`** — the very function the local face is made by — and
+`shadow.ts::GIST_READ` is a mapped type over `Gist` with one reader per key, so a key added to
+the shape is a compile error in `gistOf` and in the reader until both carry it. Wire names are
+the gist's keys, which were already the digest's (`kind`, `planning`, `model`, `account`…), so
+an older wall reads every field it ever read.
+
+- **Unknown is `null`, drawn `—`, never zero.** A wall from before a field sends nothing and
+  every reader answers that as unknown (`countSaid`). A default would be a number nobody
+  measured, which is the bug.
+- **What changes per token or per second is rounded before it is sent** (`wireGist`: cost to
+  the cent, a compaction to a twentieth), because `sameCards` ships a snapshot whenever a
+  digest would draw differently.
+- **Moments are on the maker's clock** and `Shadow.gist` moves them here by the snapshot's own
+  `at` (`turnSince`, a hold's `until`); while the wall is unheard it claims no turn, hold,
+  compaction or held processes — `faceOf`'s honesty.
+- **A path is not a fact** (`planDoc`, `cwd`): it names a file on the owning machine, so it
+  stays on `Conversation`, read through `.conv` only for a gesture.
+- **The guard is `test/gist.test.ts`**, in `finding.test.ts`'s shape: every component, so a new
+  surface is covered without a list; it fails a drawn field read through `.conv` or through a
+  name given to it (`const conv = $derived(card?.conv …)` is how `ModelMenu` hid it), a gist key
+  that is a constant on `Shadow`, and a digest or reader that leaves a key out. Each was checked
+  to fail with its bug put back by hand.
+
+A card restored dormant on its own wall also published no rest (`restingSince` null, it had no
+rest of this session's), so the far side could not date it at all; the source now falls back to
+the store's last activity.
+
 ### Published by folding, never by a clock
 
 CLAUDE.md names three places this app goes and looks. This is not a fourth. The snapshot is an

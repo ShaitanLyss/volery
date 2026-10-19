@@ -72,11 +72,8 @@ export type Readable = {
   everSpoke: boolean;
   activity: string;
   doing: string;
-  turns: number;
   dropped: number;
-  costUsd: number;
   ctx: number;
-  ctxTokens: number;
   compactFrac: number | null;
   model: string | undefined;
   effort: Effort | undefined;

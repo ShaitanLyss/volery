@@ -170,7 +170,7 @@
     return {
       id: h.id,
       title: cardName(f.title, "").text || "new conversation",
-      project: conv ? (conv.kind === "chat" ? null : f.project) : f.project || null,
+      project: h.gist.kind === "chat" ? null : f.project || null,
       host: h.remote?.host ?? null,
       working: f.working,
       doing: f.working ? f.doing : "",
@@ -456,8 +456,8 @@
   /* Paths in what it says count from its directory; its pictures are read off
      this disk only when it is here. The scopes are the mounter's to set, as
      the panel sets them (`chatview.md`), and they default to off. */
-  scopeFiles(() => (card?.conv?.kind === "project" ? card.conv.cwd : null) ?? null);
-  scopePictures(() => (card?.conv?.kind === "project" ? card.conv.cwd : null) ?? null);
+  scopeFiles(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
+  scopePictures(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
 
   let scroller: HTMLDivElement | undefined = $state();
   let thread = $state<ReturnType<typeof Thread> | undefined>();
@@ -529,7 +529,7 @@
   );
   const ctx = $derived(card ? Math.round((card.face.ctx ?? 0) * 100) : 0);
   const place = $derived(
-    project ? "project" : !card ? null : card.conv?.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
+    project ? "project" : !card ? null : card.gist.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
   );
   /* The account this conversation spends, for the foot. A card on no named
      account is on whatever Claude Code itself is signed in as, which is the
@@ -604,9 +604,9 @@
     <div class="where" data-tauri-drag-region>
       <span class="title" data-tauri-drag-region>{title}</span>
       {#if place}
-        <span class="chip"><Icon name={card?.conv?.kind === "chat" ? "globe" : "folder"} small />{place}</span>
+        <span class="chip"><Icon name={card?.gist.kind === "chat" ? "globe" : "folder"} small />{place}</span>
       {/if}
-      {#if card?.conv?.gear === "planning"}
+      {#if card?.gist.planning}
         <span class="chip plan">planning</span>
       {/if}
     </div>

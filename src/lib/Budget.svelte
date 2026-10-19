@@ -30,7 +30,9 @@
     onusage: () => void;
   } = $props();
 
-  const held = $derived(card.conv?.held ?? null);
+  /* Off the gist, so a card on another wall held for an account says so too
+     (`gist.ts`); its hold's moment is already on this wall's clock. */
+  const held = $derived(card.gist.held);
   const out = $derived(outOf(held, clock.t, windows));
   const low = $derived(out ? null : lowOf(windows, clock.t));
 </script>
@@ -41,7 +43,7 @@
     <div class="acts">
       <button type="button" class="btn" onclick={onaccounts}>use another account</button>
       <button type="button" class="link" onclick={onusage}>see usage</button>
-      {#if held?.queue.length}
+      {#if held?.queue && card.conv}
         <button
           type="button"
           class="link"
