@@ -58,6 +58,7 @@ import {
   sameCards,
   shadowKey,
   shows,
+  QUIET_AFTER_MS,
   stickShadow,
   tailOf,
   weave,
@@ -76,12 +77,40 @@ import { actRefusal, carriesTo, panelNotes, type Remote, type Said, type Verb } 
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
-import { DEFER_ANSWER, closingHere, confirmHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
+import {
+  DEFER_ANSWER,
+  closingHere,
+  confirmHere,
+  heldDue,
+  HELD_CAP,
+  noticeAnswer,
+  noticeHere,
+  NOTICE_AFAR_ACK,
+  pileAnswer,
+  pileRefusal,
+  PILE_DROP,
+  readHeld,
+  removalHere,
+  type HeldAnswer,
+} from "./afar";
+import type { Deferred } from "./presence";
 import type { Notice } from "./notice";
 import { Attachments, attachedIn, turnFrom } from "./attach.svelte";
 import { MANIFEST, manifestEntry, readManifest, turnOf, type Attachment, type Carried, type FileRef, type Turn } from "./attach";
 
 const SECTIONS_KEY = "skein.sections.v1";
+
+/** Answers to another wall's filed questions, given while it was not heard
+ *  from (`afar.ts::HeldAnswer`). Kept across a restart: something you wrote. */
+const HELD_KEY = "skein.flyway.held.v1";
+function loadHeld(): HeldAnswer[] {
+  try {
+    const raw = localStorage.getItem(HELD_KEY);
+    return raw ? readHeld(JSON.parse(raw)) : [];
+  } catch {
+    return [];
+  }
+}
 function loadSections(): Placed {
   try {
     const raw = localStorage.getItem(SECTIONS_KEY);
@@ -177,6 +206,12 @@ export class Shadow {
    *  has been answered of a sheet survives the next snapshot arriving — the
    *  local panel keeps `answers` on the ask for the same reason. */
   sheets = $state<PendingAsk[]>([]);
+  /** The questions it left in its wall's pile — filed while she was away
+   *  everywhere — as sheets the pile here fills in (`Vigil.svelte`). Kept as
+   *  the same objects across snapshots, as `sheets` are, and **not** hidden
+   *  while the wall is unheard: a filed question does not run out, and an
+   *  answer to one waits here for the wall to come back (`Elsewhere.answerFiled`). */
+  filed = $state<PendingAsk[]>([]);
   /** Questions answered from here whose answer has not been refused. Hidden
    *  from the panel while the answer is on its way: drawn as still waiting, a
    *  question you have just answered would invite a second answer. */
@@ -609,6 +644,28 @@ export class Elsewhere {
    *  and the same rule, that lets go of a closed card's glass spot. */
   onHeard: (host: string, alive: ReadonlySet<string>) => void = () => {};
 
+  /** This wall's own pile, for the two things another wall needs of it: what
+   *  each card here has filed, which rides the digest, and the claim an answer
+   *  from there makes before it is sent. Set by the app, since the pile is
+   *  `Presence`'s and neither class may own the other. Off until it is set — a
+   *  wall that cannot read its pile publishes none and refuses an answer to it,
+   *  rather than guessing either way. */
+  pile = $state.raw<{
+    /** Whether the pile has been read at all — until it has, what this wall
+     *  publishes says *unknown* rather than *nothing filed*. */
+    known: () => boolean;
+    asks: () => readonly Deferred[];
+    claim: (id: string) => Promise<boolean>;
+    refresh: () => Promise<void>;
+  }>({ known: () => false, asks: () => [], claim: async () => false, refresh: async () => {} });
+
+  /** Answers to other walls' filed questions waiting for their wall to be
+   *  heard from again. See `afar.ts::HeldAnswer` for why only these wait. */
+  held = $state<HeldAnswer[]>(loadHeld());
+  /** Answers to filed questions on their way, by request id, until their
+   *  wall says — what a refusal is matched against to give the sheet back. */
+  #filing = new Map<string, HeldAnswer>();
+
   #skein: Skein;
   #byId = new Map<string, Shadow>();
   /** Where a prompt's events go: its shadow, even after the card has left the
@@ -693,16 +750,24 @@ export class Elsewhere {
     l.keep(listen<{ host: string; ageMs: number; snapshot: unknown }>("flyway:cards", (e) => this.#arrived(e.payload)));
     l.keep(listen<RosterRow[]>("flyway:roster", (e) => this.#heard(e.payload)));
     l.keep(listen<{ host: string | null }>("flyway:left", (e) => this.#left(e.payload?.host ?? null)));
-    l.keep(listen<{ id: string }>("flyway:prompt-left", (e) => this.#fold(e.payload.id, { kind: "left" })));
+    l.keep(listen<{ id: string }>("flyway:prompt-left", (e) => this.#fold(this.#lineOf(e.payload.id), { kind: "left" })));
     l.keep(
       listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) => {
         if (this.#closed(e.payload.id, e.payload.outcome, e.payload.why)) return;
+        if (this.#filedSettled(e.payload.id, e.payload.outcome, e.payload.why)) return;
         this.#noticed(e.payload.id, e.payload.outcome, e.payload.why);
         this.#fold(e.payload.id, { kind: "answer", outcome: e.payload.outcome, why: e.payload.why });
       }),
     );
     l.keep(
-      listen<{ id: string; from: { host: string; card: string | null }; card: string; text: string; notice?: string }>(
+      listen<{
+        id: string;
+        from: { host: string; card: string | null };
+        card: string;
+        text: string;
+        notice?: string;
+        deferred?: string;
+      }>(
         "flyway:prompt",
         (e) => void this.#take(e.payload),
       ),
@@ -819,6 +884,7 @@ export class Elsewhere {
       jobs: c.jobs,
       pendingWakes: c.pendingWakes,
       asks: c.asks,
+      filed: this.pile.known() ? this.pile.asks().filter((a) => !a.host && a.conversationId === c.id) : undefined,
       notices: this.#skein.notices,
       parent: this.#parentOf(c.id),
     };
@@ -878,6 +944,7 @@ export class Elsewhere {
     const at = Date.now() - Math.max(0, quietMs);
     const was = this.heardAt[host];
     if (was === undefined || at > was) this.heardAt[host] = at;
+    if (quietMs <= QUIET_AFTER_MS && this.held.length) this.#sendHeld(host);
   }
 
   #heard(rows: RosterRow[]) {
@@ -933,6 +1000,7 @@ export class Elsewhere {
        relay them — so one arriving is that wall being heard. */
     if (live) this.#hear(p.host, 0);
     this.#reconcile(live ? p.host : null);
+    if (live) this.#sendHeld(p.host);
   }
 
   /** Keep each shadow as the same object across snapshots, so the prompts said
@@ -1076,7 +1144,26 @@ export class Elsewhere {
       });
     }
     if (now.length !== s.sheets.length || now.some((a, i) => a !== s.sheets[i])) s.sheets = now;
-    const live = new Set(now.map((a) => a.askId));
+    /* The pile's rows: the same reader, the same sheet kept across snapshots
+       and the same pull, so a filed question with a design brings it here as
+       a parked one does (`presence::filed_args` answers the look). */
+    const wasFiled = new Map(s.filed.map((a) => [a.askId, a]));
+    /* Null is a wall that has not read its own pile yet — just started — and
+       says nothing about what is filed: the sheets stand as they were. */
+    const filed = s.digest.filed === null ? s.filed : s.digest.filed.map((a) => {
+      if (heard && shows(a) && !s.face.unheard) this.#look(s, a);
+      return (
+        wasFiled.get(a.askId) ?? {
+          askId: a.askId,
+          questions: askHere(a, s.host),
+          answers: blankAnswers(askHere(a, s.host)),
+          ours: false,
+          since: askedAt(a, w.at, w.madeAt),
+        }
+      );
+    });
+    if (filed.length !== s.filed.length || filed.some((a, i) => a !== s.filed[i])) s.filed = filed;
+    const live = new Set([...now, ...filed].map((a) => a.askId));
     this.#forgetLooks(s.id, live);
     if (s.answering.some((id) => !live.has(id))) s.answering = s.answering.filter((id) => live.has(id));
     const standing = new Set(s.digest.notices.map((n) => n.id));
@@ -1112,7 +1199,7 @@ export class Elsewhere {
     /* Whether it was drawn: false when the sheet has gone or is being answered,
        so the pull is not counted as having landed. */
     const redraw = (questions: AskQuestion[]): boolean => {
-      const sheet = s.sheets.find((x) => x.askId === a.askId);
+      const sheet = s.sheets.find((x) => x.askId === a.askId) ?? s.filed.find((x) => x.askId === a.askId);
       if (!sheet || s.answering.includes(a.askId)) return false;
       const answers = carryAnswers(sheet.questions, sheet.answers, questions);
       if (answers !== sheet.answers) sheet.answers = answers;
@@ -1206,6 +1293,222 @@ export class Elsewhere {
    *  carrying it. */
   async defer(s: Shadow, sheet: PendingAsk) {
     await this.answer(s, sheet, DEFER_ANSWER);
+  }
+
+  /** Every question another wall's cards have filed in their pile, as this
+   *  wall's pile draws them (`Presence.afar`): keyed on the shadow, on this
+   *  wall's clock, and the same sheet objects across snapshots, so what has been
+   *  answered of one survives the next snapshot. One whose answer is on its way
+   *  is left out; one whose answer is held for a wall not heard from stays,
+   *  marked, so the answer is visibly waiting rather than gone. */
+  filedHere(): Deferred[] {
+    return this.shadows.flatMap((s) =>
+      s.filed.flatMap((sheet): Deferred[] => {
+        const held =
+          s.face.unheard && this.held.some((h) => h.host === s.host && h.card === s.card && h.row === sheet.askId);
+        if (!held && s.answering.includes(sheet.askId)) return [];
+        return [
+          {
+            id: sheet.askId,
+            conversationId: s.id,
+            questions: sheet.questions,
+            answers: sheet.answers,
+            askedAt: sheet.since,
+            host: s.host,
+            ...(held ? { held: true } : {}),
+          },
+        ];
+      }),
+    );
+  }
+
+  /** Answer a question a card on another wall left in its pile — or, with
+   *  `PILE_DROP`, take it off unanswered — from this wall's pile.
+   *
+   *  The text is what the pile there would have sent (`answerEnvelope`), and it
+   *  rides the prompt wire naming the row (`afar.ts::pileAnswer`). The owning
+   *  wall claims the row and only then hands the answer to the card, so an
+   *  answer given there first, or from a third wall, makes this one a refusal
+   *  rather than a second answer — and that claim is the *only* dedup, which is
+   *  why every try goes under a fresh request id: the fleet refuses a reused one
+   *  once its time to live is past (`fleet::reach`).
+   *
+   *  **Words are kept until the owning wall says** (`held`, in storage), so
+   *  neither a link that gives up nor this wall restarting loses one. Into a
+   *  wall not heard from it waits rather than being refused — the one exception
+   *  to *refused now, never queued for later*, and `HeldAnswer` says why — and
+   *  goes the next time that wall is heard.
+   *
+   *  Answers a reason when nothing was sent and nothing is kept, so the pile
+   *  can keep the sheet; null otherwise. */
+  async answerFiled(s: Shadow, sheet: PendingAsk, text: string): Promise<string | null> {
+    const drop = text === PILE_DROP;
+    const carrying = drop ? { text } : await this.#carrying(s, text, `ask:${sheet.askId}`);
+    if ("refused" in carrying) return carrying.refused;
+    const pictures = carrying.pictures;
+    if (s.face.unheard && pictures) {
+      return `${s.host} has not been heard from, and an answer carrying pictures or files cannot wait for it — send it when ${s.host} is back, or without them`;
+    }
+    if (!pictures && this.held.length >= HELD_CAP) {
+      return `${HELD_CAP} answers are already waiting to reach other walls — let some of them land first`;
+    }
+    const id = crypto.randomUUID();
+    const about = sheet.questions[0]?.header || "a question";
+    const h: HeldAnswer = { id, host: s.host, card: s.card, row: sheet.askId, text: carrying.text, about, at: Date.now() };
+    /* A drop says nothing to the card, so it is not drawn among what was said
+       to it — as the pile's own button sends nothing. */
+    if (!drop) {
+      s.sent.push({ id, text, at: Date.now(), state: "queued", askId: sheet.askId, about });
+      this.#byPrompt.set(id, s);
+    }
+    s.answering = [...s.answering, sheet.askId];
+    /* Pictures cannot be kept, so an answer carrying them goes now or not at
+       all; words are kept first and only then sent. */
+    if (!pictures) this.#hold(h);
+    if (s.face.unheard) {
+      this.#heldLine(h.id, true);
+      return null;
+    }
+    await this.#sendFiled(s, h, pictures);
+    return null;
+  }
+
+  /** Take back an answer held for a wall not heard from: the sheet comes back
+   *  as it was filled in, and nothing goes. Not one already on its way. */
+  unhold(s: Shadow, row: string) {
+    const h = this.held.find((x) => x.host === s.host && x.card === s.card && x.row === row);
+    if (!h || this.#inFlight(h)) return;
+    this.#unhold(h);
+    s.answering = s.answering.filter((a) => a !== row);
+    this.#fold(h.id, { kind: "unsent", why: "taken back before it was sent" });
+  }
+
+  #inFlight(h: HeldAnswer): boolean {
+    for (const x of this.#filing.values()) if (x.id === h.id) return true;
+    return false;
+  }
+
+  /** One try at an answer, under a request id of its own. `h.id` is the line
+   *  it drew and the key it is kept under; the link only ever hears the try's
+   *  id, which `#filing` maps back. */
+  async #sendFiled(s: Shadow, h: HeldAnswer, pictures?: { name: string; mediaType: string; data: string }[]) {
+    const request = crypto.randomUUID();
+    this.#filing.set(request, h);
+    if (s.sent.some((x) => x.id === h.id)) this.#byPrompt.set(h.id, s);
+    this.#heldLine(h.id, false);
+    try {
+      await invoke("flyway_prompt", {
+        id: request,
+        to: h.host,
+        card: h.card,
+        text: h.text,
+        askId: pileAnswer(h.row),
+        pictures,
+      });
+    } catch (e) {
+      this.#filing.delete(request);
+      /* The wall went quiet between the click and the write: words wait for
+         it. Anything else the link said is an answer, and is said. */
+      if (!pictures && s.face.unheard) return this.#heldLine(h.id, true);
+      const why = String(e) || "the link would not take it";
+      this.#unhold(h);
+      s.answering = s.answering.filter((a) => a !== h.row);
+      this.#fold(h.id, { kind: "unsent", why });
+      this.#skein.fault = `your answer to ${h.about} did not reach ${h.host}: ${why}`;
+    }
+  }
+
+  /** A try at an answer to a filed question settled. Taken, it is done — the
+   *  owning wall's next snapshot no longer files the row. Refused by a wall
+   *  that is talking, it is final and said, and the sheet comes back so the
+   *  reason can be read beside it. Refused while its wall is not heard — the
+   *  link gave up on a wall that went quiet — the words are still kept, and go
+   *  again when it is heard; if that first try did land, the claim it made is
+   *  what turns the second into a refusal rather than a second answer. */
+  #filedSettled(request: string, outcome: "taken" | "refused", why?: string): boolean {
+    const h = this.#filing.get(request);
+    if (!h) return false;
+    this.#filing.delete(request);
+    const s = this.find(shadowKey(h.host, h.card));
+    if (outcome === "refused" && s?.face.unheard && this.held.some((x) => x.id === h.id)) {
+      this.#heldLine(h.id, true);
+      return true;
+    }
+    this.#unhold(h);
+    if (outcome === "refused" && s) {
+      s.answering = s.answering.filter((a) => a !== h.row);
+      this.#skein.fault = `${h.host} did not take your answer to ${h.about}: ${why || "refused"}`;
+    }
+    this.#fold(h.id, { kind: "answer", outcome, why });
+    return true;
+  }
+
+  /** The line a try at a filed answer drew, for the link's word about the try. */
+  #lineOf(request: string): string {
+    return this.#filing.get(request)?.id ?? request;
+  }
+
+  #hold(h: HeldAnswer) {
+    if (!this.held.some((x) => x.id === h.id)) this.held = [...this.held, h];
+    this.#keepHeld();
+  }
+
+  /** Mark the line an answer drew as held, or as sent now — which restarts
+   *  its clock, since the give-up reading is about a send and not about how
+   *  long the wall was away. */
+  #heldLine(id: string, held: boolean) {
+    const s = this.#byPrompt.get(id);
+    const i = s ? s.sent.findIndex((x) => x.id === id) : -1;
+    if (!s || i < 0) return;
+    const line = s.sent[i]!;
+    if (!!line.held === held) return;
+    s.sent[i] = held ? { ...line, held: true } : { ...line, held: undefined, at: Date.now() };
+  }
+
+  #unhold(h: HeldAnswer) {
+    if (this.held.some((x) => x.id === h.id)) this.held = this.held.filter((x) => x.id !== h.id);
+    this.#keepHeld();
+  }
+
+  #keepHeld() {
+    try {
+      if (this.held.length) localStorage.setItem(HELD_KEY, JSON.stringify(this.held));
+      else localStorage.removeItem(HELD_KEY);
+    } catch {
+      /* A browser refusing storage costs the answers a restart, not the send. */
+    }
+  }
+
+  /** A wall is talking: send what is kept for it, and let go of — saying so —
+   *  what it no longer files. Asked when its snapshot arrives and when the
+   *  roster says it is heard again, since a wall coming back with nothing
+   *  changed sends no new snapshot — and nothing changing is the normal case,
+   *  the asking card being asleep on this very answer. Never on a clock.
+   *
+   *  **Nothing is decided off a pile that wall has not read yet** (`filed`
+   *  null): a wall just started publishes its cards before its pile, and
+   *  taking that for "nothing filed" would throw away every answer kept for
+   *  it. */
+  #sendHeld(host: string) {
+    const mine = this.held.filter((h) => h.host === host && !this.#inFlight(h));
+    if (!mine.length) return;
+    const theirs = this.shadows.filter((s) => s.host === host);
+    if (!theirs.length || theirs.some((s) => s.digest.filed === null || s.face.unheard)) return;
+    const filed = new Set(theirs.flatMap((s) => (s.digest.filed ?? []).map((a) => `${s.card}\n${a.askId}`)));
+    const { send, gone } = heldDue(mine, host, filed);
+    for (const h of gone) {
+      this.#unhold(h);
+      this.#fold(h.id, { kind: "answer", outcome: "refused", why: `no longer waiting on ${host}` });
+      this.#skein.fault =
+        `your answer to ${h.about} was not sent: it is no longer waiting on ${host} — answered there or ` +
+        `from another wall (an earlier try of this one, if its reply was lost), or its card has gone`;
+    }
+    for (const h of send) {
+      const s = this.find(shadowKey(h.host, h.card));
+      if (!s) continue;
+      if (!s.answering.includes(h.row)) s.answering = [...s.answering, h.row];
+      void this.#sendFiled(s, h);
+    }
   }
 
   /** Take down a notice standing in another wall's queue — acknowledged with
@@ -1453,6 +1756,8 @@ export class Elsewhere {
     pictures?: (Carried | { name: string; mediaType: string; data: string })[];
     /** The question this answers, when the answer carries pictures or files. */
     answers?: string;
+    /** The row in this wall's pile this answers (`presence::afar`). */
+    deferred?: string;
   }) {
     /* A redelivered frame gets the answer the first one got, and never a
        second send. The link already drops repeats; this is the second lock on
@@ -1486,6 +1791,12 @@ export class Elsewhere {
     /* An answer to one of this card's questions that carries pictures or
        files (`ask::afar_may_attach` let it through): gathered as a prompt's
        are, then given through `answer_ask` as a click here would. */
+    /* An answer to a question this card left in the pile, given at another
+       wall: the pile's own gesture (`Vigil.svelte`'s `deliver`) — claimed
+       first, then sent as a turn, waking the card if it sleeps. The claim is
+       the whole of why two walls cannot both answer it. */
+    if (p.deferred) return this.#takeFiled(p, conv, p.deferred);
+
     if (p.answers) {
       const list = await this.#gather(p, conv);
       if (typeof list === "string") return this.#settle(p, "refused", list);
@@ -1541,6 +1852,53 @@ export class Elsewhere {
       p,
       sent ? "taken" : "refused",
       sent ? undefined : `${this.me || "that wall"} could not deliver it — ${conv.activity}`,
+    );
+  }
+
+  async #takeFiled(
+    p: {
+      id: string;
+      from: { host: string; card: string | null };
+      text: string;
+      pictures?: (Carried | { name: string; mediaType: string; data: string })[];
+    },
+    conv: Conversation,
+    row: string,
+  ) {
+    const me = this.me || "that wall";
+    const gone = () => pileRefusal([], conv.id, row, me)!;
+    let refusal = pileRefusal(this.pile.asks(), conv.id, row, me);
+    /* The pile may not have been read yet — a wall just started, or a row
+       filed a moment ago. Read once more before saying it is gone. */
+    if (refusal) {
+      await this.pile.refresh();
+      refusal = pileRefusal(this.pile.asks(), conv.id, row, me);
+    }
+    if (refusal) return this.#settle(p, "refused", refusal);
+    if (p.text.trim() === PILE_DROP) {
+      const took = await this.pile.claim(row);
+      return this.#settle(p, took ? "taken" : "refused", took ? undefined : gone());
+    }
+    let turn: Turn | undefined;
+    if (p.pictures?.length) {
+      const list = await this.#gather(p, conv);
+      if (typeof list === "string") return this.#settle(p, "refused", list);
+      const made = await turnFrom(p.text, list, { chat: conv.kind === "chat", afar: false }, conv.id);
+      if ("refused" in made) return this.#settle(p, "refused", `${me} could not give it to the card: ${made.refused}`);
+      turn = made;
+    }
+    if (!(await this.pile.claim(row))) return this.#settle(p, "refused", gone());
+    conv.note(`answered from ${p.from.host}`);
+    let sent = false;
+    try {
+      sent = await this.#skein.send(conv, turn?.text ?? p.text, turn);
+    } catch {
+      sent = false;
+    }
+    this.#settle(
+      p,
+      sent ? "taken" : "refused",
+      sent ? undefined : `${me} took it off the pile but could not hand it to the card — ${conv.activity}`,
     );
   }
 

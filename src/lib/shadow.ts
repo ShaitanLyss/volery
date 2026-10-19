@@ -138,6 +138,21 @@ export type CardDigest = Gist & {
   /** Questions the card is parked on, oldest first — what lets a card asking
    *  on one machine be answered from another. See `DigestAsk`. */
   asks: DigestAsk[];
+  /** Questions the card asked while she was away everywhere, filed in its own
+   *  wall's pile (`deferred_ask`) rather than parked — the same shape as `asks`,
+   *  `askId` being the pile row's id. What lets her answer them at whichever
+   *  wall she comes back to (sinks `52c0affa`, `3368f78f`): the pile is hers,
+   *  not a machine's. Unlike `asks` these do not expire and a quiet wall's are
+   *  still worth drawing, so an answer to one is held until its wall is heard
+   *  again rather than refused (`Elsewhere.answerFiled`).
+   *
+   *  **`null` is unknown, never "nothing filed"**: a wall that has just started
+   *  publishes its cards before it has read its pile, and a far wall taking that
+   *  for empty would clear every sheet and let go of every answer it was keeping
+   *  for this wall. An older wall sends nothing here, which reads as null too —
+   *  it never filed anything another wall could see, so keeping what was drawn
+   *  costs nothing. */
+  filed: DigestAsk[] | null;
   /** Volery's own removal confirmations the card is parked on, each with the
    *  evidence a person at another machine needs (`afar.ts`). A field of its own rather than part of
    *  `asks`, so a wall from before it sees nothing rather than a bare path. */
@@ -200,6 +215,15 @@ export const OPTION_CAP = 300;
 export const OPTIONS_CAP = 24;
 export const QUESTIONS_CAP = 12;
 export const ASKS_CAP = 6;
+/** `presence::MAX_PER_CARD`: as many as a card may leave in its pile. */
+export const FILED_CAP = 8;
+/** What one card's filed questions may spend of a snapshot, in characters of
+ *  JSON. A pile grows all night where parked questions do not, and a snapshot
+ *  past `cards.rs::MAX_SNAPSHOT` is refused whole — every card on that wall
+ *  frozen at its last state on every other, at exactly the moment she comes
+ *  back to look. Past the budget a question travels lean (`leanly`) and the far
+ *  wall pulls the rest through the look, as it does a design. */
+export const FILED_BUDGET = 6_000;
 
 /** Everything one wall says about its cards, replaced wholesale on every
  *  publish. A card missing from the next one has been closed — there are no
@@ -291,6 +315,9 @@ export type DigestSource = GistSource & {
     /** The generic block every confirmation carries (`ask::Confirm`). */
     confirm?: Confirm | null;
   }[];
+  /** What this card left in the wall's pile — `Presence.asks`, this card's.
+   *  Optional so a caller with no pile to hand says nothing. */
+  filed?: readonly { id: string; askedAt: number; questions: readonly AskQuestion[] }[] | null;
   /** The wall's notice queue — this card's are picked out of it. */
   notices?: readonly Notice[];
   /** Who opened it: `Skein.kin` for a card here, `flyway_birth` for one another
@@ -348,19 +375,10 @@ export function digestOf(c: DigestSource): CardDigest {
     asks: c.asks
       .filter((a) => !a.ours)
       .slice(0, ASKS_CAP)
-      .map((a) => ({
-        askId: a.askId,
-        since: a.since,
-        questions: a.questions.slice(0, QUESTIONS_CAP).map((q) => ({
-          header: capText(q.header, TITLE_CAP),
-          question: capText(q.question, QUESTION_CAP),
-          options: q.options.slice(0, OPTIONS_CAP).map((o) => ({
-            label: capText(o.label, OPTION_CAP),
-            detail: o.detail ? capText(o.detail, OPTION_CAP) : null,
-          })),
-          shows: !!(q.preview || q.file || q.options.some((o) => o.preview || o.file)),
-        })),
-      })),
+      .map((a) => travelling(a.askId, a.since, a.questions)),
+    /* The pile's own rows, by the same mapping a parked question takes — so
+       the far wall draws one through the same reader, panel and pull. */
+    filed: c.filed ? filedOf(c.filed) : null,
     removals: removalsOf(c.asks).slice(0, ASKS_CAP),
     closings: closingsOf(c.asks).slice(0, ASKS_CAP),
     confirms: confirmsOf(c.asks).slice(0, ASKS_CAP),
@@ -369,6 +387,53 @@ export function digestOf(c: DigestSource): CardDigest {
       ? { host: c.parent.host ? capText(c.parent.host, TITLE_CAP) : null, card: capText(c.parent.card, ID_CAP) }
       : null,
   };
+}
+
+/** A question as it travels: its words, capped, and whether a design or a file
+ *  goes with it — one mapping for a parked question and a filed one alike. */
+function travelling(askId: string, since: number, questions: readonly AskQuestion[]): DigestAsk {
+  return {
+    askId,
+    since,
+    questions: questions.slice(0, QUESTIONS_CAP).map((q) => ({
+      header: capText(q.header, TITLE_CAP),
+      question: capText(q.question, QUESTION_CAP),
+      options: q.options.slice(0, OPTIONS_CAP).map((o) => ({
+        label: capText(o.label, OPTION_CAP),
+        detail: o.detail ? capText(o.detail, OPTION_CAP) : null,
+      })),
+      shows: !!(q.preview || q.file || q.options.some((o) => o.preview || o.file)),
+    })),
+  };
+}
+
+/** A card's pile as it travels, inside `FILED_BUDGET`: whole while it fits, and
+ *  past that each question's words cut short, its details left behind and
+ *  `shows` set — so the far wall pulls the call whole (`flyway/look.rs`, which
+ *  `presence::filed_args` answers for a filed one) and draws it through the
+ *  same `normalizeAsk` it would have. The labels stay: they are what an answer
+ *  reads as until the pull lands. */
+function filedOf(rows: NonNullable<DigestSource["filed"]>): DigestAsk[] {
+  let spent = 0;
+  return rows.slice(0, FILED_CAP).map((a) => {
+    const whole = travelling(a.id, a.askedAt, a.questions);
+    const cost = JSON.stringify(whole).length;
+    if (spent + cost <= FILED_BUDGET) {
+      spent += cost;
+      return whole;
+    }
+    const lean: DigestAsk = {
+      ...whole,
+      questions: whole.questions.map((q) => ({
+        header: q.header,
+        question: capText(q.question, 200),
+        options: q.options.map((o) => ({ label: capText(o.label, 80), detail: null })),
+        shows: true,
+      })),
+    };
+    spent += JSON.stringify(lean).length;
+    return lean;
+  });
 }
 
 /** A model id or an effort word as it travels: a bound, not a format. */
@@ -599,6 +664,7 @@ export function readDigest(raw: unknown): CardDigest | null {
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
     wakes: readWakes(r.wakes),
     asks: readAsks(r.asks),
+    filed: Array.isArray(r.filed) ? readAsks(r.filed, FILED_CAP) : null,
     removals: readRemovals(r.removals),
     closings: readClosings(r.closings),
     confirms: readConfirms(r.confirms),
@@ -610,10 +676,10 @@ export function readDigest(raw: unknown): CardDigest | null {
 /** The parked questions off the wire. A question with no words and an ask with
  *  no id or no questions are dropped — there is nothing to answer — and an
  *  older wall that sends no `asks` at all is a card asking nothing. */
-function readAsks(raw: unknown): DigestAsk[] {
+function readAsks(raw: unknown, cap = ASKS_CAP): DigestAsk[] {
   if (!Array.isArray(raw)) return [];
   const out: DigestAsk[] = [];
-  for (const a of raw.slice(0, ASKS_CAP)) {
+  for (const a of raw.slice(0, cap)) {
     if (!a || typeof a !== "object") continue;
     const r = a as Record<string, unknown>;
     const askId = typeof r.askId === "string" ? scrub(r.askId).trim().slice(0, 80) : "";
@@ -883,6 +949,10 @@ export type Sent = {
   /** The thumbnails of the pictures it carried, drawn under the line as a
    *  local prompt's are — never the pictures, which left with the send. */
   shots?: { name: string; thumb: string }[];
+  /** An answer to a filed question, held here until its wall is heard from
+   *  again (`afar.ts::HeldAnswer`) — not a send that is late, so not read as
+   *  one that never left. */
+  held?: boolean;
 };
 
 export type SentEvent =
@@ -933,6 +1003,7 @@ export function sentReading(s: Sent, host: string, now: number): SentReading {
     case "refused":
       return { look: "failed", words: `not delivered — ${s.why ?? "refused"}` };
     case "queued":
+      if (s.held) return { look: "pending", words: `waiting for ${host} to be heard from — goes when it is` };
       return over
         ? { look: "failed", words: "never left this wall" }
         : { look: "pending", words: "not left this wall yet" };

@@ -934,6 +934,16 @@ been decided — do not decide it yourself*) — and a wall that does recognise 
 local defer does (`ask::answer_from_afar` → `presence::defer_one`), after the same gates an answer
 passes. `test/afar.test.ts` reads the string out of `ask.rs` so the two cannot drift.
 
+### And so does a question filed while she was away everywhere
+
+A question an agent asked with nobody present anywhere is filed in its wall's pile rather than parked
+(`away.md`), and the pile is the person's: the rows ride the digest as `filed`, the far wall draws them
+in its own pile, and the answer comes back down this prompt wire naming the row (`deferred:<row>`), to
+be claimed and sent as a turn on the owning wall. The one difference from a parked question is the one
+that matters: **a filed question does not run out, so it is still drawn while its wall is quiet, and an
+answer to it is held until that wall is heard** rather than refused. The whole of it, and the run on two
+labs, is `away.md`, *The pile is hers, not a machine's*.
+
 ### Roots run between walls
 
 Lyss: *"tentacles should draw always between parent and children, regardless of where they

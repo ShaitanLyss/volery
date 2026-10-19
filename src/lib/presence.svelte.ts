@@ -77,6 +77,14 @@ export class Presence {
 
   /** Everything owed an answer. */
   asks = $state<Deferred[]>([]);
+  /** Whether `asks` has been read at all. Until it has, an empty list means
+   *  *not yet*, and what this wall tells other walls about its pile says so
+   *  (`shadow.ts`, `filed: null`). */
+  loaded = $state(false);
+  /** Rows claimed since the last read, so a read that started before a claim
+   *  and lands after it cannot put the row back — a ghost that would then be
+   *  published to every other wall and refused when answered. */
+  #claimed = new Set<string>();
   /** Everything owed a decision — the three things Volery asks about itself.
    *  Apart from `asks` because answering one re-enters the decision in Rust
    *  rather than handing words to an agent; see `presence.ts::Act`. */
@@ -138,8 +146,16 @@ export class Presence {
   notices = $state<() => Notice[]>(() => []);
   #awayNotices = $derived(this.notices().filter((n) => n.away));
 
-  pile = $derived(pileOf(this.asks, this.acts, this.#awayNotices));
-  waiting = $derived(waitingCount(this.asks, this.acts, this.#awayNotices));
+  /** What cards on other walls left in *their* piles (`Elsewhere.filedHere`),
+   *  each marked with its `host`. The pile is the person's, not a machine's:
+   *  she was away everywhere, and comes back at whichever wall she comes back
+   *  to (sinks `52c0affa`, `3368f78f`). Injected by `App.svelte` for
+   *  `notices`' reason. */
+  afar = $state<() => Deferred[]>(() => []);
+  #everyAsk = $derived([...this.asks, ...this.afar()]);
+
+  pile = $derived(pileOf(this.#everyAsk, this.acts, this.#awayNotices));
+  waiting = $derived(waitingCount(this.#everyAsk, this.acts, this.#awayNotices));
 
   async #load() {
     try {
@@ -178,13 +194,18 @@ export class Presence {
       ),
     );
     keep(listen("act:deferred", () => void this.refresh()));
+    /* A card cleared or closed takes its pile with it (`presence::clear_for`),
+       which says so only as a notice change. Without this the rows went on
+       being drawn — and published to every other wall — until something else
+       happened to refresh. */
+    keep(listen("notice:changed", () => void this.refresh()));
   }
 
   /** Re-read the pile. Cheap — it is a table with tens of rows at worst, and
    *  the bound in `presence::MAX_PER_CARD` is what keeps that true. */
   async refresh() {
     try {
-      const rows = await invoke<DeferredRow[]>("deferred_asks");
+      const rows = (await invoke<DeferredRow[]>("deferred_asks")).filter((r) => !this.#claimed.has(r.id));
       /* Normalized here, exactly as a live `ask:opened` is: Rust decides
          nothing about what a question is, and a row written by an older build
          degrades rather than refusing. See `normalizeAsk`. */
@@ -202,6 +223,7 @@ export class Presence {
           askedAt: r.asked_at,
         };
       });
+      this.loaded = true;
     } catch {
       /* Leave the pile as it was. An empty list here would read as "nothing
          was asked", which is the one wrong answer. */
@@ -238,7 +260,7 @@ export class Presence {
     try {
       const said = await invoke<string>("answer_deferred_act", { id, answer });
       this.acts = this.acts.filter((a) => a.id !== id);
-      if (!this.asks.length && !this.acts.length) this.showing = false;
+      if (!this.waiting) this.showing = false;
       return said;
     } catch (err) {
       this.acts = this.acts.filter((a) => a.id !== id);
@@ -274,8 +296,7 @@ export class Presence {
       await this.#load();
     }
     await this.refresh();
-    const anything =
-      this.asks.length > 0 || this.acts.length > 0 || this.#awayNotices.length > 0;
+    const anything = this.waiting > 0;
     this.showing = anything;
     return anything;
   }
@@ -298,7 +319,7 @@ export class Presence {
    *  one is not a smaller version of this panel. Returns whether it opened,
    *  which is what lets a caller say so. */
   openPile(): boolean {
-    this.showing = pileOpens(this.showing, this.asks, this.acts, this.#awayNotices);
+    this.showing = pileOpens(this.showing, this.#everyAsk, this.acts, this.#awayNotices);
     return this.showing;
   }
 
@@ -309,8 +330,13 @@ export class Presence {
   async claim(id: string): Promise<boolean> {
     try {
       const took = await invoke<boolean>("take_deferred_ask", { id });
-      if (took) this.asks = this.asks.filter((a) => a.id !== id);
-      if (!this.asks.length && !this.acts.length) this.showing = false;
+      this.#claimed.add(id);
+      this.asks = this.asks.filter((a) => a.id !== id);
+      /* Not taken: somebody else's claim won — another wall's answer, or this
+         one's a moment ago. Read the pile again rather than trusting a list
+         that just turned out to be behind. */
+      if (!took) void this.refresh();
+      if (!this.waiting) this.showing = false;
       return took;
     } catch {
       return false;

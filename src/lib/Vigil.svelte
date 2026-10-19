@@ -27,7 +27,14 @@
    * it, and the agent picks up the thing it had held back. That is deliberate
    * and it is the one expensive gesture in this panel — a process and an API
    * turn per card — which is why the pile says how many cards it is about to
-   * wake before you start. */
+   * wake before you start.
+   *
+   * **And it is the person's pile, not this machine's.** A card on another wall
+   * that filed a question while she was away everywhere is drawn here too
+   * (`Elsewhere.filedHere`, sinks `52c0affa`, `3368f78f`), through the same
+   * `Ask` panel, and answered over the flyway: the wall it is on claims the row
+   * and sends the turn, exactly as `deliver` does here. Into a wall not heard
+   * from, the answer is held and goes when it is back. */
 
   import { attachedIn, forgetAttachments, turnFrom } from "./attach.svelte";
   import Ask from "./Ask.svelte";
@@ -39,22 +46,27 @@
   import type { Presence } from "./presence.svelte";
   import { actVerb, answerEnvelope, lasted, stood, type Act, type Deferred } from "./presence";
   import type { Skein } from "./skein.svelte";
+  import type { Elsewhere } from "./shadows.svelte";
+  import { PILE_DROP } from "./afar";
   import { isComplete } from "./asking";
   import { replies } from "./replies.svelte";
 
   let {
     presence,
     skein,
+    elsewhere,
     onclose,
     onselect,
   }: {
     presence: Presence;
     skein: Skein;
+    /** The other walls, for a question filed on one of them. */
+    elsewhere: Elsewhere;
     onclose: () => void;
     /** Put the asking card in the ring, so its transcript is behind the panel
      *  while you decide. The one gesture here that is about context rather than
-     *  about answering. */
-    onselect?: (conv: Conversation) => void;
+     *  about answering. By id, since the card may be on another wall. */
+    onselect?: (id: string) => void;
   } = $props();
 
   /** The card whose questions are in hand. Null until the pile resolves, then
@@ -89,9 +101,42 @@
    *  same degradation `relayFrom` makes for a closed sender. */
   function whoOf(id: string): { project: string; title: string } {
     const c = convOf(id);
-    return c
-      ? { project: c.project, title: c.title }
-      : { project: "", title: `a card that has gone (${id.slice(0, 8)})` };
+    if (c) return { project: c.project, title: c.title };
+    /* A card on another wall is said the way the dock says one: its project,
+       and the wall it is on. */
+    const s = elsewhere.find(id);
+    if (s) return { project: `${s.project} · on ${s.host}`, title: s.title };
+    return { project: "", title: `a card that has gone (${id.slice(0, 8)})` };
+  }
+
+  /** Whether a panel drawn for one of its questions may run scripts — the
+   *  card's kind, wherever it is. */
+  function scriptsOf(id: string): boolean {
+    const c = convOf(id);
+    if (c) return c.kind !== "chat";
+    return elsewhere.find(id)?.digest.kind !== "chat";
+  }
+
+  /** A question filed on another wall, answered — or dropped — from here.
+   *  `answerFiled` says a reason when nothing went and nothing is held, and
+   *  the sheet stays as it was filled in. */
+  async function deliverAfar(d: Deferred, text: string) {
+    const s = elsewhere.find(d.conversationId);
+    const sheet = s?.filed.find((x) => x.askId === d.id);
+    if (!s || !sheet) {
+      fault = `that question is no longer on ${d.host ?? "its wall"}`;
+      return;
+    }
+    sending = d.id;
+    try {
+      const why = await elsewhere.answerFiled(s, sheet, text);
+      if (why) fault = why;
+      else forgetAttachments(`ask:${d.id}`);
+    } catch (err) {
+      fault = String(err);
+    } finally {
+      sending = null;
+    }
   }
 
   /** How long the whole pile has been standing, counted from the oldest
@@ -111,6 +156,11 @@
   async function deliver(d: Deferred) {
     if (sending) return;
     fault = null;
+    if (d.host) {
+      await deliverAfar(d, answerEnvelope(d.questions, d.answers, clock.t - d.askedAt));
+      if (!presence.waiting) onclose();
+      return;
+    }
     const conv = convOf(d.conversationId);
     if (!conv) {
       /* Nothing to hand it to. Taking it off the pile is the only honest move
@@ -132,7 +182,10 @@
         fault = turn.refused;
         return;
       }
-      if (!(await presence.claim(d.id))) return;
+      if (!(await presence.claim(d.id))) {
+        fault = "that question was answered already — from another wall, or a moment ago here";
+        return;
+      }
       await skein.send(conv, turn?.text ?? words, turn);
       forgetAttachments(`ask:${d.id}`);
     } catch (err) {
@@ -165,11 +218,25 @@
    *  real answer and is why it is offered rather than only achievable by
    *  closing the panel and letting it sit for ever. */
   async function drop(d: Deferred) {
+    if (sending) return;
+    if (d.host) {
+      fault = null;
+      await deliverAfar(d, PILE_DROP);
+      if (fault) return;
+    } else {
+      await presence.claim(d.id);
+    }
     /* And anything half-typed into it, which nothing will draw again. */
     replies.forget(`ask:${d.id}`);
     forgetAttachments(`ask:${d.id}`);
-    await presence.claim(d.id);
     if (!presence.waiting) onclose();
+  }
+
+  /** Take back an answer held for a wall not heard from: the sheet comes back
+   *  as it was, and nothing goes. */
+  function unhold(d: Deferred) {
+    const s = elsewhere.find(d.conversationId);
+    if (s) elsewhere.unhold(s, d.id);
   }
 
   /** How many cards this pile will wake. Said before you start, because that
@@ -258,10 +325,7 @@
                   elsewhere={true}
                   onack={() => void skein.acknowledgeNotice(n)}
                   onfollow={(text) => skein.followUpNotice(n, text)}
-                  onselect={() => {
-                    const c = convOf(n.conversationId);
-                    if (c) onselect?.(c);
-                  }}
+                  onselect={() => onselect?.(n.conversationId)}
                 />
               </FileScope>
             </div>
@@ -297,6 +361,24 @@
           {/each}
           {#each here.asks as d (d.id)}
             {@const who = whoOf(d.conversationId)}
+            {#if d.held}
+              <!-- Answered from here into a wall not heard from: the answer is
+                   on its way rather than gone, and it can still be taken back. -->
+              <div class="act">
+                <div class="actbar">
+                  <span class="verb">answered — waiting for {d.host}</span>
+                  <span class="when">{stood(clock.t - d.askedAt)}</span>
+                </div>
+                <p class="asked">{d.questions[0]?.question ?? ""}</p>
+                <div class="foot">
+                  <span class="caveat">
+                    {d.host} has not been heard from; your answer goes to the card when it is
+                  </span>
+                  <span class="grow"></span>
+                  <button class="drop" onclick={() => unhold(d)}>take it back</button>
+                </div>
+              </div>
+            {:else}
             <div class="one" class:sending={sending === d.id}>
               <!-- Each row is a different card's question, so the directory a
                    path in it counts from is that card's and not the pile's.
@@ -313,19 +395,19 @@
                 card={d.conversationId}
                 project={who.project}
                 title={who.title}
-                scripts={convOf(d.conversationId)?.kind !== "chat"}
+                scripts={scriptsOf(d.conversationId)}
                 parked={false}
                 elsewhere={true}
                 onanswer={() => void deliver(d)}
-                onselect={() => {
-                  const c = convOf(d.conversationId);
-                  if (c) onselect?.(c);
-                }}
+                onselect={() => onselect?.(d.conversationId)}
               />
               </FileScope>
               <div class="foot">
                 {#if isComplete(d.answers)}
                   <span class="ready">answered — send it to wake the card</span>
+                {/if}
+                {#if d.host && elsewhere.find(d.conversationId)?.face.unheard}
+                  <span class="caveat">{d.host} has not been heard from — an answer waits here until it is</span>
                 {/if}
                 <span class="grow"></span>
                 <button class="drop" onclick={() => void drop(d)}
@@ -334,6 +416,7 @@
                 </button>
               </div>
             </div>
+            {/if}
           {/each}
           {#if !here.asks.length && !here.acts.length && !here.notices.length}
             <p class="note">this card is settled.</p>

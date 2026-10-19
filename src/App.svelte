@@ -1267,6 +1267,17 @@
      that still listed it as owed. This wall's cards only, as the pile always
      was (a far card's notices are its own wall's pile's). */
   presence.notices = () => cards.noticing.flatMap(({ card, notice }) => (card.conv ? [notice] : []));
+  /* The pile is the person's, not this machine's (sinks `52c0affa`,
+     `3368f78f`): what other walls' cards filed is drawn in this one's, and
+     what this wall's cards filed rides the digest to every other — with the
+     claim an answer from there makes before it is sent. */
+  presence.afar = () => elsewhere.filedHere();
+  elsewhere.pile = {
+    known: () => presence.loaded,
+    asks: () => presence.asks,
+    claim: (id) => presence.claim(id),
+    refresh: () => presence.refresh(),
+  };
 
   /** The project whose card you touched last, which is the one whose shell the
    *  panel shows. Sticky: letting go of the wall — Escape, the ground click,
@@ -5213,10 +5224,16 @@
     <Vigil
       {presence}
       {skein}
+      {elsewhere}
       onclose={() => (presence.showing = false)}
-      onselect={(c) => {
-        focusedId = c.id;
-        studio.selectOnly(c.id);
+      onselect={(id) => {
+        if (skein.convs.some((c) => c.id === id)) {
+          focusedId = id;
+          studio.selectOnly(id);
+          return;
+        }
+        const c = cards.find(id);
+        if (c) focusCard(c);
       }}
     />
   {/if}

@@ -1644,6 +1644,40 @@ impl Link {
                         notice,
                         pictures: d.pictures,
                         answers: None,
+                        deferred: None,
+                    },
+                );
+            }
+            /* An answer to a question in this wall's pile — filed while she was
+               away everywhere, and answered at whichever wall she came back to
+               (sinks `52c0affa`, `3368f78f`). Nothing is parked, so there is no
+               call to hand it to: it goes the way the pile here sends one, to the
+               front end, which claims the row and sends the answer as a turn
+               (`Elsewhere.#take`, `Vigil.svelte`'s `deliver`). The claim is what
+               makes an answer from two walls one answer, so it is made there, on
+               the machine holding the row, and nowhere else. A person's only. */
+            Act::Prompt if crate::presence::afar(d.answers.as_deref()).is_some() => {
+                if d.asked_by.card.is_some() {
+                    return refuse(self, "a question is answered by a person, not by another card".into());
+                }
+                if let Err(why) = crate::attach::carried_fit(&d.pictures, &d.text) {
+                    return refuse(self, format!("{} would not take its pictures: {why}", self.me));
+                }
+                let deferred = crate::presence::afar(d.answers.as_deref()).map(str::to_string);
+                if let Ok(mut p) = self.prompts_in.lock() {
+                    p.insert((host.clone(), request.clone()), now);
+                }
+                let _ = self.app.emit(
+                    "flyway:prompt",
+                    PromptHere {
+                        id: request,
+                        from: PromptFrom { host, card: None },
+                        card: row.id,
+                        text: d.text,
+                        notice: None,
+                        pictures: d.pictures,
+                        answers: None,
+                        deferred,
                     },
                 );
             }
@@ -1679,6 +1713,7 @@ impl Link {
                         notice: None,
                         pictures: d.pictures,
                         answers: Some(ask_id),
+                        deferred: None,
                     },
                 );
             }
@@ -1726,6 +1761,7 @@ impl Link {
                         notice: None,
                         pictures: d.pictures,
                         answers: None,
+                        deferred: None,
                     },
                 );
             }
@@ -2506,6 +2542,10 @@ struct PromptHere {
     /// answers the question through `answer_ask` (`ask::afar_may_attach`).
     #[serde(skip_serializing_if = "Option::is_none")]
     answers: Option<String>,
+    /// The row in this wall's pile this answers (`presence::afar`), when it
+    /// answers a question filed while she was away rather than a parked one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deferred: Option<String>,
 }
 
 #[derive(Serialize, Clone)]

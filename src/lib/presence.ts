@@ -27,6 +27,14 @@ export type Deferred = {
    *  answers for the identical reason. */
   answers: Answers;
   askedAt: number;
+  /** The wall it is filed on, when that is not this one — then
+   *  `conversationId` is the shadow's id and answering it goes over the
+   *  flyway (`Elsewhere.answerFiled`). Absent for this wall's own. */
+  host?: string;
+  /** Answered from here and held until `host` is heard from again. Drawn in
+   *  the pile so the answer is visibly on its way, and not counted: nothing is
+   *  waiting on you any more. */
+  held?: boolean;
 };
 
 /** One thing a card asked Volery to *do* while you were out.
@@ -135,7 +143,7 @@ export function waitingCount(
   acts: Act[] = [],
   notices: PileNotice[] = [],
 ): number {
-  return asks.reduce((n, a) => n + a.questions.length, 0) + acts.length + notices.length;
+  return asks.reduce((n, a) => n + (a.held ? 0 : a.questions.length), 0) + acts.length + notices.length;
 }
 
 /** Whether the pile button, or the `p` chord, opens anything.

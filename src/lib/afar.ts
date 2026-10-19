@@ -684,3 +684,123 @@ export function remoteNotices(
     ];
   });
 }
+
+/* ── the pile ─────────────────────────────────────────────────────────── */
+
+/** `presence::AFAR_PREFIX`, which the owning wall reads: an answer naming a
+ *  row in its pile — a question filed while she was away everywhere — rather
+ *  than a parked call (sinks `52c0affa`, `3368f78f`). `test/filed.test.ts`
+ *  reads it out of the Rust so the two cannot drift. */
+export const PILE_AFAR_PREFIX = "deferred:";
+
+/** What "not worth answering" sends: the owning wall takes the row off its
+ *  pile and tells the card nothing, as the button does there. Read only by a
+ *  wall that knows the prefix — an older one refuses the whole answer as no
+ *  longer waiting, since nothing it holds is parked under that id. */
+export const PILE_DROP = "not worth answering";
+
+/** What an answer to a filed question names on the prompt wire. */
+export function pileAnswer(row: string): string {
+  return `${PILE_AFAR_PREFIX}${row}`;
+}
+
+/** An answer to another wall's filed question, given while that wall was not
+ *  heard from, and held here until it is.
+ *
+ *  **The one thing on the prompt wire that waits for a wall to come back**, and
+ *  the asymmetry is the point. A prompt, an answer to a *parked* question and
+ *  every confirmation are refused into a quiet wall (`elsewhere.md`, *refused
+ *  now, never queued for later*): each is only worth delivering while somebody
+ *  is waiting on it, and a lid lifted eight hours later would deliver something
+ *  you have since changed your mind about. A filed question is the opposite
+ *  case by construction — the card was told the answer comes later, as a new
+ *  message, whenever you get to it — so holding the answer is exactly what was
+ *  promised. What makes it safe is the claim on the owning wall: the row is
+ *  taken before the answer is sent, so an answer from here that arrives after
+ *  one given there is refused rather than delivered twice.
+ *
+ *  Words only. A picture can be megabytes, and a held answer is kept across a
+ *  restart of this wall, in `localStorage`; one that carries attachments to a
+ *  quiet wall is refused with its sheet left filled in. */
+export type HeldAnswer = {
+  /** The prompt's request id, minted once and reused for every try — what
+   *  makes a resend after a lost reply one answer rather than two. */
+  id: string;
+  host: string;
+  /** The card's id on its own wall. */
+  card: string;
+  /** The pile row it answers. */
+  row: string;
+  text: string;
+  /** The question's header, for the line that says what it answered. */
+  about: string;
+  /** This wall's clock when it was given. */
+  at: number;
+};
+
+/** As many as are kept: eight a card, for a handful of cards, with room. */
+export const HELD_CAP = 64;
+
+/** Held answers back out of storage. Anything malformed is dropped rather than
+ *  sent: a held answer is something a person wrote, and a guess at one is not. */
+export function readHeld(raw: unknown): HeldAnswer[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HeldAnswer[] = [];
+  const word = (v: unknown, cap: number) => (typeof v === "string" ? scrub(v).trim().slice(0, cap) : "");
+  for (const h of raw.slice(0, HELD_CAP)) {
+    if (!h || typeof h !== "object") continue;
+    const r = h as Record<string, unknown>;
+    const id = word(r.id, 80);
+    const host = word(r.host, 200);
+    const card = word(r.card, 80);
+    const row = word(r.row, 80);
+    const text = typeof r.text === "string" ? r.text : "";
+    const at = typeof r.at === "number" && Number.isFinite(r.at) ? r.at : null;
+    if (!id || !host || !card || !row || !text.trim() || at === null) continue;
+    if (out.some((x) => x.host === host && x.card === card && x.row === row)) continue;
+    out.push({ id, host, card, row, text, about: word(r.about, 300) || "a question", at });
+  }
+  return out;
+}
+
+/** A wall has just been heard: which of the answers held for it go now, and
+ *  which have nothing left to answer.
+ *
+ *  `filed` is what that wall's own snapshot says each card still has in its
+ *  pile, keyed `card\nrow`. A row still filed is sent; a row no longer filed
+ *  was answered there, or from a third wall, or its card is gone — and an
+ *  answer sent to it would only be refused, so it is let go and said. Only off
+ *  a snapshot the wall itself sent: a stored copy says nothing about now. */
+export function heldDue(
+  held: readonly HeldAnswer[],
+  host: string,
+  filed: ReadonlySet<string>,
+): { send: HeldAnswer[]; gone: HeldAnswer[] } {
+  const send: HeldAnswer[] = [];
+  const gone: HeldAnswer[] = [];
+  for (const h of held) {
+    if (h.host !== host) continue;
+    (filed.has(`${h.card}\n${h.row}`) ? send : gone).push(h);
+  }
+  return { send, gone };
+}
+
+/** Why an answer to one of this wall's filed questions, arriving from another
+ *  wall, cannot be taken — or null when it can. Pure over what the pile holds,
+ *  so the one judgement both walls depend on is asserted without either: the
+ *  row has to be in this wall's pile **and** belong to the card the answer was
+ *  addressed to. The claim that follows is what stops a second answer; this is
+ *  what stops an answer reaching the wrong card. */
+export function pileRefusal(
+  pile: readonly { id: string; conversationId: string }[],
+  card: string,
+  row: string,
+  me: string,
+): string | null {
+  const d = pile.find((x) => x.id === row);
+  if (!d) {
+    return `that question is no longer waiting on ${me || "that wall"} — it was answered there or from another wall, or its card has gone`;
+  }
+  if (d.conversationId !== card) return "that question belongs to another card on that wall";
+  return null;
+}

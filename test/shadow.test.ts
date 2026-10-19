@@ -115,6 +115,7 @@ describe("making a digest", () => {
       jobs: 0,
       wakes: [],
       asks: [],
+      filed: null,
       removals: [],
       closings: [],
       confirms: [],

@@ -134,6 +134,39 @@ pub fn is_deferral(answer: &str) -> bool {
         || answer.starts_with(crate::notice::QUEUED_OPENING)
 }
 
+/// What `Ask::answers` starts with when an answer from another wall names a
+/// row in this wall's pile rather than a parked question (sinks `52c0affa`,
+/// `3368f78f`). `notice::AFAR_PREFIX`'s arrangement, and the same argument for
+/// a prefix rather than a field: an older wall reads a new field as absent,
+/// which would make this an answer to a parked question it does not hold — and
+/// that wall refuses it as "no longer waiting", which is the right answer from
+/// a wall that never published its pile. `afar.ts::PILE_AFAR_PREFIX` is the
+/// same string, held by a test.
+pub const AFAR_PREFIX: &str = "deferred:";
+
+/// The pile row an answer from another wall names, if it names one.
+pub fn afar(answers: Option<&str>) -> Option<&str> {
+    answers
+        .and_then(|a| a.strip_prefix(AFAR_PREFIX))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+/// A filed question's arguments, for the wall a person is at — the pile's
+/// half of `ask::args_for_afar`, so a question filed while she was away
+/// brings its design and its files to the other wall exactly as a parked one
+/// does (`flyway/look.rs`). The files were resolved to `(root, path)` pairs
+/// before the question was filed (`attach_files` runs ahead of the away
+/// branch), so what is stored is what the look reads.
+pub(crate) fn filed_args(app: &AppHandle, card: &str, id: &str) -> Option<Value> {
+    let store = app.try_state::<Store>()?;
+    let conn = store.0.lock().ok()?;
+    crate::store::deferred_asks(&conn)
+        .into_iter()
+        .find(|d| d.id == id && d.conversation_id == card)
+        .and_then(|d| serde_json::from_str(&d.ask_json).ok())
+}
+
 /// What the asking card is told. The whole contract with the agent is in here
 /// rather than in the tool's schema, and that is deliberate: `ask_user` is an
 /// `alwaysLoad` tool, so every byte of its description is paid on every spawn of
@@ -1237,6 +1270,20 @@ fn tell_late(app: &AppHandle, card: &str, tool: &str, said: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pile's prefix is read the way a notice's is, and is not one: an
+    /// answer naming a pile row must never be taken for a notice taken down,
+    /// nor slip past the switch as anything but an answer.
+    #[test]
+    fn an_answer_from_afar_names_a_pile_row_by_its_prefix() {
+        assert_eq!(afar(Some("deferred:row-1")), Some("row-1"));
+        assert_eq!(afar(Some("deferred: row-1 ")), Some("row-1"));
+        assert_eq!(afar(Some("deferred:")), None);
+        assert_eq!(afar(Some("row-1")), None);
+        assert_eq!(afar(None), None);
+        assert_eq!(crate::notice::afar(Some("deferred:row-1")), None);
+        assert!(crate::notice::answer_starts_nothing("deferred:row-1", "the answer"));
+    }
 
     #[test]
     fn a_deferred_call_tells_the_agent_all_four_things() {

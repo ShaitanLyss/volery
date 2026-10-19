@@ -1123,7 +1123,17 @@ pub(crate) fn args_for_afar(app: &AppHandle, card: &str, ask_id: &str) -> Result
     let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
     let pending = asks.pending.lock().map_err(|_| "this wall's questions are wedged".to_string())?;
     match pending.get(ask_id) {
-        None => Err("that question is no longer waiting — it was answered on its own wall, or filed into its pile".into()),
+        /* Not parked: it may be in the pile, filed while she was away, and
+           drawn on the wall she came back to (`presence::filed_args`). Only an
+           agent's question is ever filed there, so the gate below has nothing
+           to add for one. */
+        None => {
+            drop(pending);
+            crate::presence::filed_args(app, card, ask_id).ok_or_else(|| {
+                "that question is no longer waiting — it was answered on its own wall, or its card has gone"
+                    .to_string()
+            })
+        }
         Some(p) if p.conversation_id != card => Err("that question belongs to another card on this wall".into()),
         Some(p) if p.ours || p.act.is_some() => {
             Err("that question is this wall's own, and travels by its evidence rather than its arguments".into())

@@ -382,9 +382,73 @@ switch alone, rather than parked for an empty room. **Going away while she is pr
 files only those**: what travels stays parked where it reaches her, and the notices stay up,
 since they travel too (`take_parked_questions(…, staying_only)`).
 
-What is **not** done, and should not be mistaken for done: she is away everywhere, the question is
-filed, and she comes back on the *other* machine. The pile does not cross the flyway; that is sink
-`3368f78f`.
+The remaining case was the pile itself: she is away everywhere, the question is filed, and she comes
+back on the *other* machine. That is the next section.
+
+### The pile is hers, not a machine's (sinks `52c0affa`, `3368f78f`)
+
+2026-10-20: three nova cards on `AU-LT-288` filed four questions while she was away; she came back at
+`QUEERISFREEDOM` and saw none of them. The coordinator restated them in its own transcript and relayed
+her answers by `send`, which lost the options and the previews. Her words: *"deferred questions should
+be sent and synced across the flyway"*. The fix is the parked question's shape (`elsewhere.md`, *a
+question asked over there is answered from here*) applied to the pile, and every half of it reuses
+something that already existed:
+
+- **The rows ride the digest** as `CardDigest.filed`, through the same mapping and reader a parked
+  question takes (`shadow.ts::travelling`, `readAsks`), sourced from `Presence.asks` through an
+  injected `Elsewhere.pile`. A design or a file is pulled by the same look: `ask::args_for_afar` falls
+  back to the row (`presence::filed_args`) when nothing is parked, and the files were resolved before
+  the question was filed, so the stored arguments are what the look reads.
+- **The far wall draws them in its own pile**, not its dock — `Presence.afar` is
+  `Elsewhere.filedHere()`, merged into `pile` and `waiting`, so `Vigil.svelte` groups them under the
+  card (*project · on host*) and answers them through the same `Ask` panel. The local pile does not go
+  in the dock either; a far one does not get a door a local one lacks.
+- **The answer is the local answer.** The far wall composes `answerEnvelope` exactly as `deliver` does,
+  and sends it down the prompt wire naming the row (`deferred:<row>`, `presence::AFAR_PREFIX`). The
+  owning wall's link hands it to its front end (`flyway:prompt` with `deferred`), and
+  `Elsewhere.#takeFiled` does what `deliver` does: check the row is this card's, **claim it, then send
+  it as a turn**, waking the card. *Not worth answering* is `PILE_DROP`, a claim with nothing sent.
+- **The claim is the only dedup, and it is enough.** `take_deferred_ask` is a `DELETE` under the store
+  lock, so whichever answer reaches it first wins — the owning wall's own pile, this wall, a third — and
+  every other is refused as no longer waiting. Which is also why every try goes under a fresh request
+  id: the fleet refuses a reused one once its time to live is past (`fleet::reach`), and nothing else
+  needs the id to repeat.
+- **`filed: null` is unknown, never empty.** A wall that has just started publishes its cards before
+  its pile is read (`Presence.loaded`); read as "nothing filed", that snapshot cleared every far sheet
+  and let go of every answer held for the wall. The red-team review caught it before it shipped. An
+  older wall sends no field, which reads as null too.
+- **A pile grows all night**, so it travels inside `FILED_BUDGET` per card; past it a question goes
+  lean with `shows` set and is pulled whole. A snapshot over `cards.rs::MAX_SNAPSHOT` is refused
+  whole, which would freeze every card on that wall at exactly the moment she comes back to look.
+
+**Into a wall not heard from, the answer waits** — the one thing on the prompt wire that does, against
+*refused now, never queued for later*, and the asymmetry is the argument. A prompt, a parked answer and
+a confirmation are only worth delivering while somebody is waiting on them. A filed question is the
+opposite by construction: the card was told the answer comes later, as a message, whenever she gets to
+it. So `Elsewhere.held` keeps every answer's words until the owning wall says (`localStorage`, so a
+restart of this wall loses nothing; pictures cannot be kept and are refused into a quiet wall), and
+`#sendHeld` sends them when that wall is talking — on its snapshot *and* on the roster saying it is
+heard, since a wall coming back with nothing changed sends no new snapshot, and nothing changing is the
+normal case with the asking card asleep on this very answer. A row the wall no longer files is let go
+and said, never sent.
+
+Demonstrated 2026-10-20 on two labs of one build (`qa`, `qb`, on one private key), with a real card on
+qb switching qb away and asking through `ask_user`, and qa switched away so nobody was present:
+
+1. The question was filed on qb and drawn in qa's pile with its options, *on lab-qb*. `teal` pressed in
+   qa's pile reached the card as the local envelope (`answered from lab-qa`), and it replied `TEAL`;
+   both piles emptied.
+2. A second question, then qb closed. Past the quiet bound qa still drew it, saying *has not been heard
+   from — an answer waits here until it is*; `square` was held, qb relaunched, and the card replied
+   `SQUARE` with qa's line *taken*.
+3. A third, answered `large` on qa while qb was down and held; qa closed; qb relaunched alone and
+   `small` answered in its own pile (`SMALL`); qa relaunched, read its held answer back out of storage,
+   found the row gone, and said so — nothing reached the card twice.
+
+**Not done:** deferred *acts* (close, unpost, remove) still stay in their wall's pile. Their question is
+the owning wall's prose and carries no evidence, since the away path files it before `Settle::stamp`
+runs, and `elsewhere.md`'s rule is that the far wall composes a decision from fields, never from that
+prose. Sink item *Deferred acts don't cross the flyway* has the shape.
 
 ### Nobody at the keyboard (2026-10-16)
 

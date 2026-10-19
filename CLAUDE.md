@@ -75,7 +75,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
-                         # chattokens, starting, allowance, search, projectview, gist
+                         # chattokens, starting, allowance, search, projectview, gist, filed
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
