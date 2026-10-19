@@ -116,11 +116,9 @@ one place one is read is `limits.rs`, asking the allowance endpoint the same
 question about the same file the CLI reads. The database still holds only the
 label, the rank and the caps, so deleting it still costs no credentials.
 
-That was once true without the qualifier, and the qualifier is load-bearing now:
-carrying the sign-ins to a second machine writes and reads them deliberately.
-See *Carrying a waterfall, and then carrying the sign-ins* at the end of this
-file for what bounds it — the short version being that the front end still
-never sees a token.
+For a while that needed a qualifier — the sign-ins could be carried to a second
+machine in a file — and it no longer does: a sign-in never leaves its machine
+(*Carrying a waterfall — and why a sign-in never travels*, near the end).
 
 The one thing this arrangement rests on that could move under us is an
 undocumented environment variable. If it ever stops being read, the failure is
@@ -960,10 +958,7 @@ around, one degree worse — not an ambiguity resolved the wrong way but one tha
 cannot be resolved at all. `skein.svelte.ts` does the swapping and the holding,
 because sending is a Rust call and a `Conversation` never makes one.
 
-## Carrying a waterfall, and then carrying the sign-ins
-
-Two documents, two carriers, and the difference between them is the whole of the
-design.
+## Carrying a waterfall — and why a sign-in never travels
 
 **The waterfall** — the order, the ceilings, which rows are switched on — goes on
 the **clipboard**, `theme.ts::exportThemes`'s precedent followed decision for
@@ -977,54 +972,37 @@ rather than merely unused: it is not a stored field, it is computed by looking
 for a file on *this* machine, so writing it down would be a claim about a disk
 the document is about to leave.
 
-**The sign-ins** go in a **file**, `.volery-accounts.json`, and never on the
-clipboard — Windows keeps a clipboard history and can sync it to another device,
-which is the argument in one line. It is its own row in the panel and its own
-suffix on disk, because a document you can paste into a chat and one holding
-three live bearer tokens must not be the same artefact or the same gesture.
+### A sign-in never leaves its machine
 
-### What was given up to make it work, and what was kept
+**This section used to describe the opposite**, and the reversal is the point.
+From 2026-08-22 the panel could write every store into a `.volery-accounts.json`
+and install one from it on the other machine — three subscriptions signed in
+here were three browser round trips to repeat over there, and the file saved
+them. It was taken out on 2026-10-19, and so were `save_accounts_file`,
+`load_accounts_file`, `install_signin`, `Carried`, `signin_ages` and the policy
+over them (`planSignins`, `fresher`, `sayLife`).
 
-The absolute form of *Skein holds no credential* is gone. What replaced it is
-three bounds, and they are the part worth keeping true:
+**Because a refresh token rotates on use**, which the section below settles from
+the client and which was then seen on this machine the same day:
+`tools/probe-rotation.ts`, against a reading 44 days old, found all four stores
+had refreshed and **every one had a new refresh token**. A copy on a second
+machine is two machines spending one chain, and whichever refreshes second is
+refused and signed out — the CLI clears `accessToken`, `refreshToken` and
+`expiresAt` on `invalid_grant`. That is exactly what was found on QUEERISFREEDOM:
+`lyss`'s store cleared at 00:17 that morning while its refresh stamp still had
+nineteen days to run, almost certainly by AU-LT-288 refreshing a carried copy.
+Lyss: *"I don't want machines to log each other out."* A warning was not enough;
+the answer is that nothing here can make the copy.
 
-- **The front end never sees a token.** Rust splices the credentials in on the
-  way out and takes them straight back out on the way in; `Summary` — two
-  timestamps and a plan name — is all that crosses into the webview. The webview
-  is the part of this app that renders untrusted content, so this is worth a
-  command rather than a convenience, and `a_summary_carries_no_token_at_all` is
-  the assertion that holds it.
-- **Nothing is installed without being asked for**, and *which* installs may
-  skip the asking is policy in `accounts.ts::planSignins` rather than a rule in
-  Rust or in the panel. Nothing signed in at that account, or a file whose
-  credential is demonstrably newer, goes in on its own; older, identical or
-  incomparable waits for a press.
-- **What is parked is dropped.** `Carried` is emptied when the panel closes.
+The replacement is signing a machine in **from another wall**, built next: each
+machine runs its own `claude auth login`, keeps its
+own PKCE verifier, and gets a chain of its own. What crosses the flyway is a URL
+and a one-time code — never a token.
 
-And the cost no code can remove, said in the panel before the file is written
-rather than after: **the file is plaintext, and anyone who can read it can spend
-those subscriptions until you sign out.** A passphrase was offered and a file was
-chosen.
-
-### The two rules that are different from the waterfall's, and why
-
-**A colliding row that carries a sign-in is *matched*, not renamed.** The rename
-rule is right about a configuration and wrong about a credential. Two rows called
-`lyss` and `lyss-2` holding different caps is a disagreement worth being able to
-see; two rows holding two credentials for the same subscription is nothing
-anybody wants — one is stale, the wall spends whichever ranks first, and the fix
-is a removal nobody was warned about. So a colliding credential-bearing row lands
-on the row already here, changing nothing about that row's caps, rank or
-switched-off-ness, and offering only its credential. That is the case this exists
-to serve twice over: a refresh token rotates, the copy on the other machine goes
-stale, and the fix is meant to be one file rather than a browser.
-
-**Freshness is compared on the refresh stamp before the access stamp.** The
-access token lapses in hours and refreshes itself, so a file copied this morning
-is "older" by it within the day on a credential that is otherwise identical —
-which would put a press in front of the one case the feature is for. The refresh
-stamp is what decides whether a sign-in survives at all, so it is what decides
-whether one file is newer than another.
+`test/accounts.test.ts`, *a sign-in never leaves its machine*, holds that the
+commands are gone from `accounts.rs`, from the handler list and from the panel,
+and that a pasted document still carrying an old `signIn` has it dropped on the
+way in.
 
 ### Does a refresh token rotate on use? Read the client, not the wire
 
@@ -1106,6 +1084,7 @@ still across a rewrite is a refresh that did not rotate. It writes SHA-256 and
 never a value, which is the same rule `limits.rs::source` and `accounts.rs::Summary`
 keep.
 
-Everything above is built so that the answer costs one file either way: a newer
-credential installs itself, and `sayLife` says how long what you just imported has
-left.
+**And then it was seen.** 2026-10-19, against a reading 44 days old: four stores
+refreshed, four new refresh tokens. The client was built for rotation and the
+server rotates — which is why the carry that this section was once written to
+reassure is gone (*A sign-in never leaves its machine*, above).
