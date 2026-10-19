@@ -448,7 +448,7 @@ qb switching qb away and asking through `ask_user`, and qa switched away so nobo
 **Not done:** deferred *acts* (close, unpost, remove) still stay in their wall's pile. Their question is
 the owning wall's prose and carries no evidence, since the away path files it before `Settle::stamp`
 runs, and `elsewhere.md`'s rule is that the far wall composes a decision from fields, never from that
-prose. Sink item *Deferred acts don't cross the flyway* has the shape.
+prose. Sink `91c5a729` has the shape.
 
 ### Nobody at the keyboard (2026-10-16)
 
