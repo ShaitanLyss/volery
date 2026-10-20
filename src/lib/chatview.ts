@@ -186,12 +186,33 @@ export function needsYou(r: ChatRow): boolean {
   return r.asking !== null || r.deferred !== null || (r.notice !== null && r.notice.kind !== "done");
 }
 
-/** The group a row belongs in on its own account, before lineage. */
-export function groupOf(r: ChatRow, now: number): GroupKey {
+/** How long a conversation that came to rest stays in *finished*, above the
+ *  projects, whether or not its notice is up yet or has been read.
+ *
+ *  *Finished* was a turn with a `done` notice standing, and nothing else — so
+ *  a card fell out of the live groups into the day's history the moment it
+ *  stopped working, and came back up only when its notice rose. A notice very
+ *  often rises late or never: it is held while a young job, a card it opened
+ *  or an armed wake might still stir it (`notice.md`, *Holds*), and none is
+ *  raised for the card you were watching. Lyss, 2026-10-20: *"they just
+ *  shouldn't vanish from the top between working and finished"* — and the card
+ *  that vanished was the one she was working with. So *finished* is a rest
+ *  that is recent; the notice decides only the hollow dot, which reading still
+ *  settles. An hour is a sitting: past it, the card is history. */
+export const RECENT_MS = 60 * 60_000;
+
+/** The group a row belongs in on its own account, before lineage.
+ *
+ *  `delegating` is a row with a conversation it started — at any depth — still
+ *  working: its own turn is over, its work is not, and it is filed with the
+ *  work (Lyss: *"my ai testing card that keeps going even though it still has
+ *  children (n deep) working"*). `groups` works it out; alone, a row has no
+ *  children to ask. */
+export function groupOf(r: ChatRow, now: number, delegating = false): GroupKey {
   if (r.aside && !needsYou(r) && !r.working) return "aside";
   if (needsYou(r)) return "needs";
-  if (r.working) return "working";
-  if (r.notice?.kind === "done") return "finished";
+  if (r.working || delegating) return "working";
+  if (r.notice?.kind === "done" || now - r.lastAt < RECENT_MS) return "finished";
   return dayOf(r.lastAt, now);
 }
 
@@ -261,7 +282,9 @@ function tone(r: ChatRow, group: GroupKey): Tone {
   /* Out of allowance is not broken: nothing about the card is wrong. */
   if (r.allowance) return "rest";
   if (r.failed) return "fail";
-  if (group === "finished") return "done";
+  /* The hollow dot is a rest you have not read: the notice, not the group,
+     since *finished* also holds a recent rest whose notice is held or read. */
+  if (r.notice?.kind === "done") return "done";
   return "rest";
 }
 
@@ -316,12 +339,43 @@ function needsOrder(rows: ChatRow[]): ChatRow[] {
   return queueOrder(items, null).map((i) => i.row);
 }
 
+/** How many working conversations each row started, at any depth — its
+ *  children, theirs, and so on down. Rows with none are absent. A parent the
+ *  list does not hold breaks the chain there, and a cycle (which `relay.rs`
+ *  should never let exist) is walked once. */
+export function workingUnder(rows: readonly ChatRow[]): Map<string, number> {
+  const kids = new Map<string, ChatRow[]>();
+  for (const r of rows) {
+    if (!r.parent || r.parent === r.id) continue;
+    const list = kids.get(r.parent);
+    if (list) list.push(r);
+    else kids.set(r.parent, [r]);
+  }
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    let n = 0;
+    const seen = new Set([r.id]);
+    const walk = (id: string) => {
+      for (const k of kids.get(id) ?? []) {
+        if (seen.has(k.id)) continue;
+        seen.add(k.id);
+        if (k.working) n++;
+        walk(k.id);
+      }
+    };
+    walk(r.id);
+    if (n) out.set(r.id, n);
+  }
+  return out;
+}
+
 /** Every group with something in it, in the order they are drawn, each row
  *  placed under the conversation that started it.
  *
  *  A child goes where its parent is, nested under it — unless it is in a
- *  livelier group of its own (asking while its parent rests, working while its
- *  parent is history), where it stays, under a greyed copy of the parent's
+ *  livelier group of its own (asking while its parent rests; a working child
+ *  brings its parent into *working* instead, `groupOf`'s `delegating`), where
+ *  it stays, under a greyed copy of the parent's
  *  title that selects the parent. A set-aside row never follows a parent out
  *  of *set aside*, and nothing follows a parent into it; either way the other
  *  is named above it. A parent the list does not hold is named too, as what it
@@ -332,7 +386,8 @@ function needsOrder(rows: ChatRow[]): ChatRow[] {
  *  (`Kin.unseen`), which are drawn as out of reach rather than as closed. */
 export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySet<string> = new Set()): Group[] {
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const own = new Map(rows.map((r) => [r.id, groupOf(r, now)]));
+  const working = workingUnder(rows);
+  const own = new Map(rows.map((r) => [r.id, groupOf(r, now, (working.get(r.id) ?? 0) > 0)]));
   const rank = (g: GroupKey) => ORDER.indexOf(g);
 
   /** Where a row is drawn, and whether under a ghost. Walks up the chain, so a
@@ -387,7 +442,10 @@ export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySe
         depth,
         ghost,
         tone: tone(r, key),
-        sub: subtitleOf(r, key, now),
+        sub:
+          key === "working" && !r.working
+            ? `waiting on ${working.get(r.id)} it started · ${whereOf(r)}`
+            : subtitleOf(r, key, now),
         aside: key === "working" && r.turnAt !== null ? ageOf(now - r.turnAt) : whereOf(r),
       });
       for (const kid of members) {

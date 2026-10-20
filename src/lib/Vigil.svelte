@@ -36,7 +36,6 @@
    * and sends the turn, exactly as `deliver` does here. Into a wall not heard
    * from, the answer is held and goes when it is back. */
 
-  import { attachedIn, forgetAttachments, turnFrom } from "./attach.svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
   import type { Conversation } from "./conversation.svelte";
@@ -44,12 +43,11 @@
   import { nameBesideProject } from "./naming";
   import FileScope from "./FileScope.svelte";
   import type { Presence } from "./presence.svelte";
-  import { actVerb, answerEnvelope, lasted, stood, type Act, type Deferred } from "./presence";
+  import { actVerb, lasted, stood, type Act, type Deferred } from "./presence";
+  import { answerPutOff, dropPutOff } from "./putoff.svelte";
   import type { Skein } from "./skein.svelte";
   import type { Elsewhere } from "./shadows.svelte";
-  import { PILE_DROP } from "./afar";
   import { isComplete } from "./asking";
-  import { replies } from "./replies.svelte";
 
   let {
     presence,
@@ -117,28 +115,6 @@
     return elsewhere.find(id)?.digest.kind !== "chat";
   }
 
-  /** A question filed on another wall, answered — or dropped — from here.
-   *  `answerFiled` says a reason when nothing went and nothing is held, and
-   *  the sheet stays as it was filled in. */
-  async function deliverAfar(d: Deferred, text: string) {
-    const s = elsewhere.find(d.conversationId);
-    const sheet = s?.filed.find((x) => x.askId === d.id);
-    if (!s || !sheet) {
-      fault = `that question is no longer on ${d.host ?? "its wall"}`;
-      return;
-    }
-    sending = d.id;
-    try {
-      const why = await elsewhere.answerFiled(s, sheet, text);
-      if (why) fault = why;
-      else forgetAttachments(`ask:${d.id}`);
-    } catch (err) {
-      fault = String(err);
-    } finally {
-      sending = null;
-    }
-  }
-
   /** How long the whole pile has been standing, counted from the oldest
    *  question rather than from when away mode started — they are usually the
    *  same evening, and when they are not it is the question that waited. */
@@ -147,53 +123,15 @@
   let sending = $state<string | null>(null);
   let fault = $state<string | null>(null);
 
-  /** Hand one answered sheet to the card that asked for it.
-   *
-   *  Claimed before it is sent — `later::serve_due`'s ordering and its
-   *  reasoning. An interruption between the two loses an answer, where the
-   *  other way round hands a card the same decision twice, and a card prompted
-   *  twice with the same decision is the worse failure. */
+  /** Hand one answered sheet to the card that asked for it — the one path
+   *  chat view's own drawing of the question takes too (`putoff.svelte.ts`). */
   async function deliver(d: Deferred) {
     if (sending) return;
     fault = null;
-    if (d.host) {
-      await deliverAfar(d, answerEnvelope(d.questions, d.answers, clock.t - d.askedAt));
-      if (!presence.waiting) onclose();
-      return;
-    }
-    const conv = convOf(d.conversationId);
-    if (!conv) {
-      /* Nothing to hand it to. Taking it off the pile is the only honest move
-         left — the question stood for a card that is no longer on the wall. */
-      await presence.claim(d.id);
-      return;
-    }
     sending = d.id;
-    try {
-      /* What was attached in its answer boxes goes with it, as it would with
-         a prompt — made ready before the claim, so a refusal leaves it on the
-         pile with the answers on it. */
-      const words = answerEnvelope(d.questions, d.answers, clock.t - d.askedAt);
-      const attached = attachedIn(`ask:${d.id}`);
-      const turn = attached.length
-        ? await turnFrom(words, attached, { chat: conv.kind === "chat", afar: false }, conv.id)
-        : undefined;
-      if (turn && "refused" in turn) {
-        fault = turn.refused;
-        return;
-      }
-      if (!(await presence.claim(d.id))) {
-        fault = "that question was answered already — from another wall, or a moment ago here";
-        return;
-      }
-      await skein.send(conv, turn?.text ?? words, turn);
-      forgetAttachments(`ask:${d.id}`);
-    } catch (err) {
-      fault = String(err);
-    } finally {
-      sending = null;
-    }
-    if (!presence.waiting) onclose();
+    fault = await answerPutOff({ presence, skein, elsewhere }, d);
+    sending = null;
+    if (!fault && !presence.waiting) onclose();
   }
 
   /** What came of an act, once decided. Keyed by the act's id and kept after
@@ -213,23 +151,12 @@
     deciding = null;
   }
 
-  /** Leave one unanswered and gone. The agent was told nothing is decided, so
-   *  dropping a question is the user saying it is not worth one — which is a
-   *  real answer and is why it is offered rather than only achievable by
-   *  closing the panel and letting it sit for ever. */
+  /** Leave one unanswered and gone (`dropPutOff`). */
   async function drop(d: Deferred) {
     if (sending) return;
-    if (d.host) {
-      fault = null;
-      await deliverAfar(d, PILE_DROP);
-      if (fault) return;
-    } else {
-      await presence.claim(d.id);
-    }
-    /* And anything half-typed into it, which nothing will draw again. */
-    replies.forget(`ask:${d.id}`);
-    forgetAttachments(`ask:${d.id}`);
-    if (!presence.waiting) onclose();
+    fault = null;
+    fault = await dropPutOff({ presence, skein, elsewhere }, d);
+    if (!fault && !presence.waiting) onclose();
   }
 
   /** Take back an answer held for a wall not heard from: the sheet comes back

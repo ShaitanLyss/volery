@@ -153,6 +153,12 @@ export class Presence {
    *  `notices`' reason. */
   afar = $state<() => Deferred[]>(() => []);
   #everyAsk = $derived([...this.asks, ...this.afar()]);
+  /** Every question put off, on this wall or another — what chat view's
+   *  *needs you* reads, so a conversation holding one is listed as needing
+   *  you rather than as whatever its turn last was. */
+  get filed(): readonly Deferred[] {
+    return this.#everyAsk;
+  }
 
   pile = $derived(pileOf(this.#everyAsk, this.acts, this.#awayNotices));
   waiting = $derived(waitingCount(this.#everyAsk, this.acts, this.#awayNotices));

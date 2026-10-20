@@ -403,3 +403,43 @@ your session limit*, the acknowledged failure as *stopped: it gave up*) and *nee
 closed parent with a real session came back from its child's label. Not driven: the dwell
 settling a failure (it needs the window in front), and Ctrl+K and the project page with shadows,
 which rest on their tests.
+
+### The top of the sidebar is what you are working with (2026-10-20)
+
+Lyss: a card left the top the moment it stopped working and reappeared once its notice rose —
+*"they just shouldn't vanish from the top between working and finished"* — and an orchestrator
+whose children were still working sat in the day's history. Three readings changed, all in
+`chatview.ts` and `ChatView.svelte::rowOf`:
+
+- **Background work is working.** The row reads `working || busy`; a turn that launched an
+  `Agent` (which backgrounds by default), a test run or a monitor has ended its turn and not its
+  work, and the wall already paints it celadon. Its subtitle is the job's label.
+- **A card with a working descendant, at any depth, is in *working*** (`workingUnder`,
+  `groupOf`'s `delegating`), so the tree nests under it instead of hanging off a greyed title in
+  *working* while the parent sits in *today*. Its own dot stays achromatic — it is not itself
+  working — and its subtitle says *waiting on N it started*.
+- ***Finished* is a recent rest** (`RECENT_MS`, an hour), not only a standing `done` notice.
+  The notice rises late or never — `notice.md`'s holds, and none for the card you were
+  watching — and reading it took the row out at once, so the card you had just read dropped
+  below the projects. Now the notice decides the hollow dot (`tone` reads the notice, not the
+  group) and the row does not move when it rises or is read. Past the hour it is history.
+
+**A question put off needs you, and is answered where it was asked.** `rowOf` passed
+`deferred: null` for every card from the first build, so `needsYou`'s `deferred` arm — written,
+tested, in the spec — was never reached, and a conversation holding a question Lyss had put off
+sat wherever its turn left it. It reads `Presence.filed` now (this wall's pile and every other
+wall's, less answers held for a quiet wall), says *answer later: …*, and draws each question at
+the foot of the conversation's thread through `Ask.svelte` with *not worth answering* beside it
+(Lyss: *"the deferred questions could be shown in the chat"*). The answer and the drop are
+`putoff.svelte.ts`, lifted out of `Vigil.svelte` so the pile and the thread share one claim-then-
+send — a second copy is a second place to get that order backwards. `presence` and `elsewhere`
+are required props, so a mount cannot leave every put-off question out of *needs you* silently.
+
+Lab (`bun run lab sb --frozen`, synthetic events, one Haiku turn): a finished card stayed in
+*finished* before its notice rose and did not move when it did (the dot went hollow); a turn that
+launched an `Agent` sat in *working* under the agent's description and went to *finished* when
+its `<task-notification>` landed; a three-generation tree staged with `kin` drew in *working*,
+nested, *waiting on 1 it started* on both ancestors, and left together when the grandchild
+finished; a real `ask_user` parked over `/mcp/<id>`, put off with the panel's *defer*, moved the
+row to *needs you* as *answer later: …* and drew in the thread without its *defer* button;
+answering it there reached the card as the pile's envelope, and *not worth answering* emptied it.

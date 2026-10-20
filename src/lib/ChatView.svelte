@@ -60,6 +60,10 @@
   import { provideOthers } from "./others.svelte";
   import { cardByHandle } from "./chatview";
   import { view } from "./view.svelte";
+  import type { Presence } from "./presence.svelte";
+  import type { Elsewhere } from "./shadows.svelte";
+  import type { Deferred } from "./presence";
+  import { answerPutOff, dropPutOff } from "./putoff.svelte";
 
   let {
     skein,
@@ -73,6 +77,8 @@
     reading = 1,
     watching = true,
     away = false,
+    presence,
+    elsewhere,
     sidebar = $bindable(true),
     onselect,
     onwall,
@@ -106,6 +112,13 @@
     watching?: boolean;
     /** Away mode is on: nothing is settled by a window nobody is at. */
     away?: boolean;
+    /** The questions put off (`Presence.filed`): a conversation holding one
+     *  needs you, and the pile is where it is answered. Required, so a mount
+     *  cannot leave every one of them out of *needs you* without saying so. */
+    presence: Presence;
+    /** The other walls — a question put off on one of them is answered over
+     *  the flyway (`putoff.svelte.ts`). */
+    elsewhere: Elsewhere;
     sidebar?: boolean;
     onselect: (id: string) => void;
     onwall: () => void;
@@ -146,6 +159,20 @@
   /* ── the sidebar's rows ─────────────────────────────────────────────── */
 
   const parentOf = $derived(new Map(kin.map((k) => [k.child, k.parent])));
+  /** Each conversation's oldest question put off, the pile's own order. */
+  const filedOf = $derived.by(() => {
+    const out = new Map<string, { text: string; at: number; n: number }>();
+    for (const d of presence.filed) {
+      /* Answered from here and held for a wall not heard from: nothing waits
+         on you any more (`Deferred.held`). */
+      if (d.held) continue;
+      const had = out.get(d.conversationId);
+      const text = d.questions[0]?.question ?? "a question";
+      if (!had || d.askedAt < had.at) out.set(d.conversationId, { text, at: d.askedAt, n: (had?.n ?? 0) + 1 });
+      else had.n++;
+    }
+    return out;
+  });
   /** Parents on a wall this one holds no word from: named as out of reach,
    *  never as closed (`chatview.ts::Ghost`). */
   const unseen = $derived(new Set(kin.filter((k) => k.unseen !== undefined).map((k) => k.parent)));
@@ -159,6 +186,7 @@
        (`Cards.noticing`): an allowance stop is said as `allowance` instead. */
     const notice = h.notices.find(waitsOnYou) ?? null;
     const ask = h.ask;
+    const filed = filedOf.get(h.id);
     /* Which of how many a multi-question call is on: the first one not yet
        answered. */
     const nth = ask ? Math.min(ask.questions.length, ask.answers.filter((a) => a !== null).length + 1) : 1;
@@ -167,17 +195,32 @@
        *now* — every one of them "today", however long it had been quiet. An
        age nothing says reads as the oldest, never as now. */
     const lastAt = f.working ? clock.t : (h.restedAt ?? 0);
+    /* Background work is work: a turn that launched an agent, a test run or a
+       monitor and ended has not finished anything, and the wall already paints
+       such a card celadon (`turns.md`, *Work that outlives a turn*). Read off
+       `working` alone, a card that sent off a sub-agent left *working* the
+       moment its turn closed and was filed in the day's history. */
+    const busy = !f.working && f.busy;
     return {
       id: h.id,
       title: cardName(f.title, "").text || "new conversation",
       project: h.gist.kind === "chat" ? null : f.project || null,
       host: h.remote?.host ?? null,
-      working: f.working,
-      doing: f.working ? f.doing : "",
+      working: f.working || f.busy,
+      doing: f.working
+        ? f.doing
+        : busy
+          ? f.jobs.length === 1
+            ? f.jobs[0].label
+            : `${f.jobs.length} running in the background`
+          : "",
       asking: ask
         ? { text: ask.questions[nth - 1]?.question ?? "a question", nth, of: ask.questions.length }
         : null,
-      deferred: null,
+      /* A question you put off is still yours to answer, whatever the card has
+         done since — the agent's call returned long ago. It was always `null`
+         here, so *needs you* could never hold one (Lyss, 2026-10-20). */
+      deferred: filed?.text ?? null,
       notice: notice
         ? {
             kind:
@@ -198,7 +241,7 @@
       turnAt: h.turnSince,
       /* When what it needs you for began waiting, which orders *needs you*
          wherever the card runs (`queueOrder`). */
-      since: ask ? ask.since : (notice?.raisedAt ?? null),
+      since: ask ? ask.since : (notice?.raisedAt ?? filed?.at ?? null),
       lastWords: f.lastWords ?? "",
       parent: parentOf.get(h.id) ?? null,
     };
@@ -223,6 +266,40 @@
       clock.t,
     ),
   );
+
+  /* ── questions put off, drawn where they were asked ───────────────────── */
+
+  /** The questions the conversation in front of you put off, oldest first —
+   *  drawn at the foot of its thread and answered there (Lyss, 2026-10-20:
+   *  *"the deferred questions could be shown in the chat"*), as well as in the
+   *  pile. */
+  const putOff = $derived(
+    card ? presence.filed.filter((d) => d.conversationId === card.id).sort((a, b) => a.askedAt - b.askedAt) : [],
+  );
+  let sending = $state<string | null>(null);
+  let putOffFault = $state<{ id: string; why: string } | null>(null);
+
+  async function answerHere(d: Deferred) {
+    if (sending) return;
+    putOffFault = null;
+    sending = d.id;
+    const why = await answerPutOff({ presence, skein, elsewhere }, d);
+    sending = null;
+    if (why) putOffFault = { id: d.id, why };
+  }
+
+  async function dropHere(d: Deferred) {
+    if (sending) return;
+    putOffFault = null;
+    const why = await dropPutOff({ presence, skein, elsewhere }, d);
+    if (why) putOffFault = { id: d.id, why };
+  }
+
+  /** Take back an answer held for a wall not heard from (`Elsewhere.unhold`). */
+  function unholdHere(d: Deferred) {
+    const s = elsewhere.find(d.conversationId);
+    if (s) elsewhere.unhold(s, d.id);
+  }
 
   /* ── a project's page, and ctrl+K ───────────────────────────────────── */
 
@@ -765,6 +842,42 @@
                   />
                 </div>
               {/if}
+              {#each putOff as d (d.id)}
+                {#if d.held}
+                  <p class="ended">
+                    answered — waiting for {d.host} to be heard from, then it goes to the card
+                    <button type="button" onclick={() => unholdHere(d)}>take it back</button>
+                  </p>
+                {:else}
+                  <!-- A question put off is the same payload a live one is, so
+                       it is the same panel — `Vigil.svelte`'s argument — and
+                       answered by the same path (`putoff.svelte.ts`). -->
+                  <div class="inline" class:sending={sending === d.id}>
+                    <Ask
+                      ask={{ askId: d.id, questions: d.questions, answers: d.answers, ours: false, since: d.askedAt }}
+                      card={card.id}
+                      project={card.where}
+                      title={card.face.title}
+                      scripts={card.scripts}
+                      parked={false}
+                      onanswer={() => void answerHere(d)}
+                    />
+                  </div>
+                  <p class="ended">
+                    you put this off{#if d.host && card.face.elsewhere?.unheard}
+                      — {d.host} has not been heard from, so an answer waits here until it is{/if}
+                    <button
+                      type="button"
+                      onclick={() => void dropHere(d)}
+                      title="take it off without answering — the agent was told nothing was decided"
+                      >not worth answering</button
+                    >
+                  </p>
+                  {#if putOffFault && putOffFault.id === d.id}
+                    <p class="ended fault">{putOffFault.why}</p>
+                  {/if}
+                {/if}
+              {/each}
               {#if endedOnQuestion && endedOnQuestion.kind === "notice"}
                 {@const q = endedOnQuestion.notice}
                 <p class="ended">
@@ -1276,6 +1389,13 @@
     font-family: var(--cv-ui, var(--util));
     font-size: 12.5px;
     color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim));
+  }
+  .ended.fault {
+    color: var(--st-fail);
+  }
+  .sending {
+    opacity: 0.6;
+    pointer-events: none;
   }
   .ended button {
     margin-left: 6px;

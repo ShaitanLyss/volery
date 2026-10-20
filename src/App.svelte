@@ -5322,6 +5322,8 @@
       reading={reading}
       watching={attention.focused}
       away={presence.away}
+      {presence}
+      {elsewhere}
       bind:sidebar={view.sidebar}
       onselect={(id) => {
         const c = cards.find(id);

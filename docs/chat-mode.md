@@ -299,9 +299,13 @@ Groups, in this order, each drawn only when it has something in it:
    is *what it is asking* (`asks: which dates work for you?`, with *1 of 2* for a multi-question
    call). A failed card's dot and subtitle are rust.
 2. **working** — mid-turn or holding background jobs. A breathing celadon dot, the age of the
-   turn, and the subtitle is `conv.activity` plus the project.
-3. **finished** — a `done` rest notice standing and not yet settled (§5.4). A hollow dot, the
-   title at weight 500, the subtitle the first line of what it said.
+   turn, and the subtitle is `conv.activity` plus the project. A conversation whose own turn is
+   over but which started one still working, at any depth, is here too, with what it started
+   nested under it and *waiting on 2 it started* as its subtitle (2026-10-20).
+3. **finished** — a `done` rest notice standing, or a rest under an hour old
+   (`chatview.ts::RECENT_MS`) whether its notice is up yet, was never raised, or has been read
+   (2026-10-20, see §5.4). A hollow dot while the notice stands, the title at weight 500, the
+   subtitle the first line of what it said.
 4. **projects** — each project with its count and a dot per live conversation in it, in its
    status colour. Opens the project page.
 5. **today**, **yesterday**, **this week**, **earlier** — everything else, by last activity, with
@@ -309,7 +313,8 @@ Groups, in this order, each drawn only when it has something in it:
 6. **set aside** — folded, at the very end.
 
 Children sit under their parent wherever the parent is, joined by a hairline, and carry their
-own dot. A child whose parent is in *history* while it works stays in *working*, indented under a
+own dot. A child working brings its parent into *working* with it (above); a child in a livelier
+group than its parent otherwise — asking while the parent rests — stays there, indented under a
 greyed copy of the parent's title, so the delegation tree is never broken by grouping.
 
 Rows move between groups with a FLIP animation (§9.2), never by jumping. Inside *needs you* the
@@ -394,7 +399,15 @@ The wall's notice queue is what chat view's *finished* group shows. Two readings
   `CardHandle.acknowledge(n, "")` — `Skein.acknowledgeNotice`, which deletes the notice row,
   persists `rest_seen` (guarded `WHERE interrupted = 0`, `notice.md`) and emits
   `notice:changed`. For a card on another wall it sends that wall one acknowledgement over the
-  flyway, exactly as the dock does. The row moves to history.
+  flyway, exactly as the dock does. The dot stops being hollow; the row stays in *finished*
+  until its rest is an hour old, then moves to history.
+
+*Finished* was the notice and nothing else until 2026-10-20, and a card fell out of the live
+groups the moment its turn ended: the notice is held while a young job, a card it opened or an
+armed wake might still stir it, it is never raised for the conversation you were watching, and
+it went with the reading. So the row dropped below the projects into *today* and came back up
+when the notice rose — Lyss: *"they just shouldn't vanish from the top between working and
+finished."* A recent rest now holds the row, and the notice only decides its dot.
 
 The dwell is the whole rule, and every shortcut around it was a bug the review found:
 Ctrl+Tab skimming through rows, the selection a view switch lands on, the card selected after

@@ -23,6 +23,8 @@ import {
   step,
   subtitleOf,
   walkOrder,
+  workingUnder,
+  RECENT_MS,
   type ChatRow,
 } from "../src/lib/chatview";
 
@@ -163,12 +165,36 @@ describe("the sidebar's groups", () => {
       row("last-night", { lastAt: NOW - 14 * H }),
       row("monday", { lastAt: NOW - 50 * H }),
       row("earlier", { lastAt: NOW - 20 * 24 * H }),
-      row("just-now", { lastAt: NOW - 60_000 }),
+      row("lunch", { lastAt: NOW - 90 * 60_000 }),
     ];
-    expect(ids(rows, "today")).toEqual(["just-now", "this-morning"]);
+    expect(ids(rows, "today")).toEqual(["lunch", "this-morning"]);
     expect(ids(rows, "yesterday")).toEqual(["last-night"]);
     expect(ids(rows, "week")).toEqual(["monday"]);
     expect(ids(rows, "earlier")).toEqual(["earlier"]);
+  });
+
+  test("a card that came to rest within the hour stays in finished, notice or not", () => {
+    /* Lyss, 2026-10-20: a card vanished from the top between working and
+       finished — its notice was held, or never raised because she was
+       watching, and the rest filed it in today's history below the projects. */
+    const rows = [
+      row("held", { lastAt: NOW - 30_000 }),
+      row("read", { lastAt: NOW - 40 * 60_000 }),
+      row("noticed", { lastAt: NOW - 3 * H, notice: { kind: "done", text: "done" } }),
+      row("past", { lastAt: NOW - H - 1 }),
+    ];
+    expect(ids(rows, "finished")).toEqual(["held", "read", "noticed"]);
+    expect(ids(rows, "today")).toEqual(["past"]);
+    /* The notice decides the hollow dot, and only that. */
+    const tones = groups(rows, NOW).find((g) => g.key === "finished")!.rows.map((p) => p.tone);
+    expect(tones).toEqual(["rest", "rest", "done"]);
+    expect(RECENT_MS).toBe(H);
+  });
+
+  test("a notice rising on a recent rest does not move the row", () => {
+    const before = [row("a", { lastAt: NOW - 60_000 }), row("b", { lastAt: NOW - 120_000 })];
+    const after = [row("a", { lastAt: NOW - 60_000 }), row("b", { lastAt: NOW - 120_000, notice: { kind: "done", text: "x" } })];
+    expect(ids(after, "finished")).toEqual(ids(before, "finished"));
   });
 
   test("a set-aside row that needs you is still in needs you", () => {
@@ -192,9 +218,48 @@ describe("children sit under their parent", () => {
     expect(ids(rows, "today")).toEqual([]);
   });
 
-  test("a working child of a parent in history stays in working, under its parent's greyed title", () => {
+  test("a parent whose child works is filed with the work, the child nested under it", () => {
+    /* Lyss: "my ai testing card that keeps going even though it still has
+       children (n deep) working" — its turn is over, its work is not. */
     const rows = [row("p", { title: "the refactor" }), row("k", { working: true, turnAt: NOW, parent: "p" })];
     const g = groups(rows, NOW).find((x) => x.key === "working")!;
+    expect(g.rows.map((p) => [p.row.id, p.depth, p.ghost])).toEqual([
+      ["p", 0, null],
+      ["k", 1, null],
+    ]);
+    expect(g.rows[0]).toMatchObject({ tone: "rest", sub: "waiting on 1 it started · portfolio" });
+    expect(ids(rows, "today")).toEqual([]);
+  });
+
+  test("…at any depth, counting every working descendant", () => {
+    const rows = [
+      row("p"),
+      row("k", { parent: "p" }),
+      row("g1", { working: true, turnAt: NOW, parent: "k" }),
+      row("g2", { working: true, turnAt: NOW, parent: "k" }),
+    ];
+    const g = groups(rows, NOW).find((x) => x.key === "working")!;
+    expect(g.rows.map((p) => [p.row.id, p.depth])).toEqual([
+      ["p", 0],
+      ["k", 1],
+      ["g1", 2],
+      ["g2", 2],
+    ]);
+    expect(g.rows[0].sub).toBe("waiting on 2 it started · portfolio");
+    expect(workingUnder(rows)).toEqual(new Map([["p", 2], ["k", 2]]));
+    /* Once they are done, so is it: back to its own rest. */
+    const done = rows.map((r) => ({ ...r, working: false }));
+    expect(ids(done, "working")).toEqual([]);
+  });
+
+  test("a cycle in the lineage is walked once", () => {
+    const rows = [row("a", { parent: "b" }), row("b", { parent: "a", working: true, turnAt: NOW })];
+    expect(workingUnder(rows)).toEqual(new Map([["a", 1]]));
+  });
+
+  test("a child asking while its parent rests stays in needs you, under its parent's greyed title", () => {
+    const rows = [row("p", { title: "the refactor" }), row("k", { asking: { text: "q", nth: 1, of: 1 }, parent: "p" })];
+    const g = groups(rows, NOW).find((x) => x.key === "needs")!;
     expect(g.rows[0]).toMatchObject({ depth: 1, ghost: { id: "p", label: "the refactor", state: "here", host: null } });
     expect(ids(rows, "today")).toEqual(["p"]);
   });
@@ -232,8 +297,8 @@ describe("children sit under their parent", () => {
 
   test("a parent on another wall that is listed is a real row, named and reachable like any", () => {
     const far = shadowKey("QUEERISFREEDOM", "4f1c2b9e-0000-4000-8000-000000000000");
-    const rows = [row(far, { title: "RISE Coordinator", host: "QUEERISFREEDOM" }), row("k", { working: true, turnAt: NOW, parent: far })];
-    const g = groups(rows, NOW).find((x) => x.key === "working")!;
+    const rows = [row(far, { title: "RISE Coordinator", host: "QUEERISFREEDOM" }), row("k", { asking: { text: "q", nth: 1, of: 1 }, parent: far })];
+    const g = groups(rows, NOW).find((x) => x.key === "needs")!;
     expect(g.rows[0].ghost).toEqual({ id: far, label: "RISE Coordinator", state: "here", host: "QUEERISFREEDOM" });
     expect(ids(rows, "today")).toEqual([far]);
   });
