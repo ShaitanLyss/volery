@@ -2118,6 +2118,18 @@ pub(crate) fn roster() -> Vec<Value> {
              the fallback, stop being woken later, unschedule a reminder I set, \
              I am done and a wake is still armed",
         ),
+        /* Deferred for `cancel_wake`'s reason one row up: the moment it is
+           wanted is reached by the reply that queued the question, which names
+           this tool in full beside the row's id — a tool result, free per turn.
+           The hint carries the situation, since a card reaching for it is
+           holding "they already answered that in chat", not "withdraw". */
+        found_by(
+            crate::presence::withdraw_schema(),
+            "cancel a queued question, the question I put off was answered, the user \
+             answered in chat, another card sent me the answer, take back a deferred \
+             ask_user, remove my question from the pile, no longer relevant, withdraw a \
+             queued notice",
+        ),
         found_by(
             crate::pin::repin_schema(),
             "update or move or remove an image already on the wall, replace a \

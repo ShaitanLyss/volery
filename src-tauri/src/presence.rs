@@ -30,6 +30,11 @@ use crate::store::Store;
 /// What a card calls to put the wall into away mode.
 pub const AWAY_TOOL: &str = "away";
 
+/// What a card calls to take back a question it put off — one that was filed
+/// while nobody was there and has since been answered some other way. See
+/// [`withdraw_schema`].
+pub const WITHDRAW_TOOL: &str = "withdraw";
+
 /// The most questions one card may have waiting at once.
 ///
 /// A bound rather than a courtesy. An agent that asks, is told it was queued,
@@ -180,11 +185,21 @@ pub(crate) fn filed_args(app: &AppHandle, card: &str, id: &str) -> Option<Value>
 /// a *message* rather than as this call's result (or the agent waits for a
 /// return value that already came), and asking again queues a second copy (or
 /// the morning pile is the same question eleven times).
-fn deferred_note(queued: usize, why: Queued) -> String {
+///
+/// **And a fifth, since 2026-10-20: the row's id, and what to do with it.** The
+/// agent often learns the answer some other way first — the user types it into
+/// the card, or another card `send`s it — and a question left standing in the
+/// pile then asks her something already settled, and answering it hands the
+/// card a stale turn. Only the card can know that happened, so it is handed
+/// the id in the sentence that says the question was kept, and told the one
+/// move that takes it back (`withdraw`). Said here rather than in a schema for
+/// the reason above: it costs nothing until the one turn it is true of.
+fn deferred_note(queued: usize, why: Queued, id: &str) -> String {
     let (opening, because) = (why.opening(), why.because());
     format!(
         "{opening} {because} — nothing was \
-         lost. There are now {queued} of your questions waiting.\n\n\
+         lost, and it is filed under id `{id}`. There are now {queued} of your \
+         questions waiting.\n\n\
          Nothing has been decided. When the user returns they will be shown \
          every question that piled up, and their answer will arrive in this \
          conversation as a new message naming the question it answers.\n\n\
@@ -193,7 +208,23 @@ fn deferred_note(queued: usize, why: Queued) -> String {
          decide it unilaterally — it was worth asking, and it is still worth \
          asking. Do not ask it again: a second call queues a second copy of the \
          same question, and the user reads the pile by hand. If everything you \
-         have left depends on this answer, stop here and say so."
+         have left depends on this answer, stop here and say so.\n\n\
+         {withdraw}",
+        withdraw = withdraw_line("it", id),
+    )
+}
+
+/// The one sentence every filing reply ends on: how to take the filing back.
+/// One function so the question, the rest of a sheet and a waiting notice say
+/// it in the same words and name the tool the same way. The name is spelled out
+/// rather than interpolated from `WITHDRAW_TOOL`, so `supervisor`'s guard that
+/// every `mcp__skein__…` in a result is advertised can read it and catch a rename.
+pub(crate) fn withdraw_line(what: &str, id: &str) -> String {
+    format!(
+        "If {what} gets answered some other way before then — the user tells you \
+         in this conversation, another card sends you the answer — or stops \
+         mattering, withdraw it with `mcp__skein__withdraw` and the id \
+         `{id}`, so the user is not asked something already settled."
     )
 }
 
@@ -210,18 +241,21 @@ fn deferred_note(queued: usize, why: Queued) -> String {
 /// reply as four decisions has to work out which of the two to believe, and the
 /// cautious reading throws the four away, which is the loss this exists to
 /// prevent arriving by a politer route.
-fn rest_note(queued: usize, why: Queued) -> String {
+fn rest_note(queued: usize, why: Queued, id: &str) -> String {
     let partway = why.partway();
     format!(
         "{partway} Volery queued the questions marked `not reached` for them to \
-         answer later — nothing about those was lost, and nothing about them has \
-         been decided. There are now {queued} of your questions waiting.\n\n\
+         answer later, together under id `{id}` — nothing about those was lost, \
+         and nothing about them has been decided. There are now {queued} of your \
+         questions waiting.\n\n\
          The answers above are the user's own and they stand: act on them now. \
          Answers to the ones not reached will arrive in this conversation as a \
          new message naming them. Until then, carry on with whatever they do not \
          gate, and say in your closing line what you are holding back and why. \
          Do not decide them unilaterally, and do not ask them again: a second \
-         call queues a second copy, and the user reads the pile by hand."
+         call queues a second copy, and the user reads the pile by hand.\n\n\
+         {withdraw}",
+        withdraw = withdraw_line("the rest", id),
     )
 }
 
@@ -273,7 +307,16 @@ pub struct Presence {
     /// it was said, and a restart that forgets it costs a line on a screen
     /// nobody was reading.
     note: Mutex<Option<String>>,
+    /// Pile rows a person claimed (`take_deferred_ask`), newest last, as
+    /// `(row, card)` — what lets `withdraw` say *already answered* rather than
+    /// *no such question* about a row that is gone. Memory only and bounded:
+    /// after a restart the two read alike, and the reply says both.
+    taken: Mutex<Vec<(String, String)>>,
 }
+
+/// How many claimed rows `Presence::taken` remembers. A pile is bounded at
+/// `MAX_PER_CARD` a card, so this is many nights of answers.
+const TAKEN_KEPT: usize = 256;
 
 impl Presence {
     pub fn since(&self) -> Option<i64> {
@@ -285,6 +328,18 @@ impl Presence {
     fn set(&self, at: Option<i64>, note: Option<String>) {
         *self.since.lock().unwrap() = at;
         *self.note.lock().unwrap() = note;
+    }
+    fn remember_taken(&self, row: &str, card: &str) {
+        let Ok(mut t) = self.taken.lock() else { return };
+        t.push((row.to_string(), card.to_string()));
+        if t.len() > TAKEN_KEPT {
+            let over = t.len() - TAKEN_KEPT;
+            t.drain(..over);
+        }
+    }
+    fn was_taken(&self, asked: &str, card: &str) -> bool {
+        let Ok(t) = self.taken.lock() else { return false };
+        t.iter().any(|(row, c)| c == card && names(row, asked))
     }
 }
 
@@ -412,11 +467,11 @@ fn note_filed_at_ask(app: &AppHandle) {
 pub fn defer_at_ask(app: &AppHandle, conversation_id: &str, args: &Value) -> String {
     let why = absent_why(app);
     match file(app, conversation_id, args) {
-        Some(queued) => {
+        Some((queued, id)) => {
             if why == Queued::Unattended {
                 note_filed_at_ask(app);
             }
-            deferred_note(queued, why)
+            deferred_note(queued, why, &id)
         }
         None => pile_full(why),
     }
@@ -562,7 +617,7 @@ fn flip(
 /// your questions waiting" means by it.
 pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value, why: Queued) -> String {
     match file(app, conversation_id, args) {
-        Some(queued) => deferred_note(queued, why),
+        Some((queued, id)) => deferred_note(queued, why, &id),
         None => pile_full(why),
     }
 }
@@ -586,7 +641,7 @@ pub fn defer_rest(
 ) -> String {
     let Some(rest) = rest else { return said.to_string() };
     let note = match file(app, conversation_id, rest) {
-        Some(queued) => rest_note(queued, why),
+        Some((queued, id)) => rest_note(queued, why, &id),
         None => rest_full(why),
     };
     rest_reply(said, &note)
@@ -601,8 +656,9 @@ fn rest_reply(said: &str, note: &str) -> String {
 }
 
 /// Write one question into the pile, and say how many this card now has
-/// there — or `None` when it could not be kept, for whatever reason.
-fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<usize> {
+/// there and the row's id — or `None` when it could not be kept, for whatever
+/// reason. The id goes back to the card in its note, so it can withdraw it.
+fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<(usize, String)> {
     /* No store is no queue, and a note promising the question was kept would
        be a lie told to the one party that cannot check. */
     let store = app.try_state::<Store>()?;
@@ -626,11 +682,11 @@ fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<usize> {
         "ask:deferred",
         AskDeferred {
             conversation_id: conversation_id.to_string(),
-            id,
+            id: id.clone(),
             asked_at: at,
         },
     );
-    Some(queued)
+    Some((queued, id))
 }
 
 /// Turn every question *already* on the wall into a deferred one.
@@ -798,12 +854,29 @@ pub async fn deferred_asks(app: AppHandle) -> Result<Vec<DeferredRow>, String> {
 /// Called *before* the answer is sent to the card, `later::serve_due`'s
 /// ordering and its reasoning: an interruption between the two loses an answer,
 /// where the other order hands a card the same decision twice.
+///
+/// What it took is remembered (`Presence::taken`), so a card that tries to
+/// withdraw the same question afterwards is told it was already answered —
+/// the answer being the message on its way — rather than that it never was.
 #[tauri::command]
 pub async fn take_deferred_ask(app: AppHandle, id: String) -> Result<bool, String> {
     crate::off_main(move || {
         let Some(store) = app.try_state::<Store>() else { return false };
-        let Ok(conn) = store.0.lock() else { return false };
-        crate::store::take_deferred_ask(&conn, &id)
+        let card = {
+            let Ok(conn) = store.0.lock() else { return false };
+            let card = crate::store::deferred_asks(&conn)
+                .into_iter()
+                .find(|d| d.id == id)
+                .map(|d| d.conversation_id);
+            if !crate::store::take_deferred_ask(&conn, &id) {
+                return false;
+            }
+            card
+        };
+        if let (Some(card), Some(p)) = (card, app.try_state::<Presence>()) {
+            p.remember_taken(&id, &card);
+        }
+        true
     })
     .await
 }
@@ -870,6 +943,9 @@ pub fn schema() -> Value {
 
 /// Route a `tools/call` that belongs here.
 pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) -> Option<String> {
+    if tool == WITHDRAW_TOOL {
+        return Some(do_withdraw(app, conversation_id, args));
+    }
     if tool != AWAY_TOOL {
         return None;
     }
@@ -911,6 +987,311 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
              answer."
         )),
         Err(e) => Some(format!("the wall could not be put into away mode: {e}")),
+    }
+}
+
+/* ── taking a filed question back ─────────────────────────────────────────── */
+
+/// Lyss, 2026-10-20: *"agents need to have a way to cancel deferred questions
+/// when no longer relevant … useful for example when the question got answered
+/// some other way like plain text or through another card sending messages."*
+///
+/// A filed question is the card's, and only the card can know it went stale:
+/// the user typed the answer into the conversation, or another card `send`s it.
+/// Left standing, it asks her something already settled — in the pile, in chat
+/// view's *needs you*, and on every other wall the digest carries it to — and
+/// answering it hands the card a stale turn. So every filing reply names the row
+/// (`withdraw_line`) and this takes it back.
+///
+/// **Deferred tier, found by the words of the problem**, for `cancel_wake`'s
+/// argument: the reflex it answers is reached by the reply that filed the
+/// question, which names this tool in full beside the id — a tool result, which
+/// costs nothing per turn.
+pub fn withdraw_schema() -> Value {
+    json!({
+        "name": WITHDRAW_TOOL,
+        "description":
+            "Take back a question you asked with `mcp__skein__ask_user` that was \
+             **queued** rather than put to the user (they were away, or nobody was at \
+             the keyboard), or a waiting `notice` that was queued the same way. The \
+             reply that queued it gave you its id.\n\n\
+             Use it the moment the question stops needing an answer from the pile: \
+             the user answered it in this conversation in plain text, another card \
+             sent you the answer, or the work it was about went another way. \
+             Otherwise they will be asked something already settled, and answering \
+             it hands you a stale message.\n\n\
+             Only your own queued questions can be withdrawn. One the user has \
+             already answered cannot — its answer is on its way to you as a message.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The id the queueing reply gave you."
+                },
+                "reason": {
+                    "type": "string",
+                    "description":
+                        "Optional. Why it no longer needs asking, in a few words — \
+                         'answered in chat', 'the orchestrator decided'. Shown on the \
+                         wall's chronicle, so a question leaving the pile is not a \
+                         mystery."
+                }
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// What a filed row is, for the withdrawal's purposes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Filing {
+    /// A row of `deferred_ask`: an `ask_user` question, or the rest of a sheet.
+    Question,
+    /// A card's own notice in `pending_notice` — a waiting one queued while
+    /// nobody was there, whose id its reply named.
+    Notice,
+}
+
+impl Filing {
+    fn noun(self) -> &'static str {
+        match self {
+            Filing::Question => "question",
+            Filing::Notice => "notice",
+        }
+    }
+}
+
+/// One thing a withdrawal could name.
+#[derive(Clone, Debug)]
+pub(crate) struct Filed {
+    pub id: String,
+    pub card: String,
+    pub what: Filing,
+    /// A line saying what it asks, for a listing.
+    pub about: String,
+}
+
+/// What a withdrawal named. Pure, so the gate is asserted without a wall.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Withdrawal {
+    /// The caller's own, at this index.
+    Take(usize),
+    /// Filed by another card — this one, whose row is never touched.
+    NotYours(String),
+    /// More than one of the caller's own rows start with what was given.
+    Ambiguous,
+    /// Nothing filed matches: answered already, never filed, or a typo.
+    Gone,
+}
+
+/// The id as given, folded: trimmed, out of backticks, lower case.
+fn fold_id(asked: &str) -> String {
+    asked.trim().trim_matches('`').trim().to_ascii_lowercase()
+}
+
+/// Whether `asked` (already folded) names `row`: the whole id, or a prefix of
+/// at least eight characters — the handle length every id on this wall is
+/// quoted at, and enough that a wall-wide pile cannot collide by accident.
+fn names(row: &str, asked: &str) -> bool {
+    let row = row.to_ascii_lowercase();
+    row == asked || (asked.len() >= 8 && row.starts_with(asked))
+}
+
+/// Which filed row the caller means, and whether it may take it.
+///
+/// **Its own only.** A card that could take another card's question off the
+/// pile could silence a question somebody else is waiting on; the refusal names
+/// the owner so the stale question can be raised with that card instead.
+/// Mine first: an id that names one of the caller's rows is the caller's even
+/// if, as a prefix, it also names another card's.
+pub(crate) fn pick_withdrawal(filed: &[Filed], caller: &str, asked: &str) -> Withdrawal {
+    let asked = fold_id(asked);
+    if asked.is_empty() {
+        return Withdrawal::Gone;
+    }
+    let hits: Vec<usize> = (0..filed.len()).filter(|&i| names(&filed[i].id, &asked)).collect();
+    let mine: Vec<usize> = hits.iter().copied().filter(|&i| filed[i].card == caller).collect();
+    match (mine.as_slice(), hits.first()) {
+        ([one], _) => Withdrawal::Take(*one),
+        ([_, _, ..], _) => Withdrawal::Ambiguous,
+        ([], Some(&i)) => Withdrawal::NotYours(filed[i].card.clone()),
+        ([], None) => Withdrawal::Gone,
+    }
+}
+
+/// A line out of a filed question's arguments, for a listing: the first
+/// question's header or text, whichever form it was asked in.
+fn about_ask(ask_json: &str) -> String {
+    let v: Value = serde_json::from_str(ask_json).unwrap_or(Value::Null);
+    let first = v["questions"].get(0).cloned().unwrap_or(Value::Null);
+    let line = [&v["question"], &first["header"], &first["question"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or("a question");
+    crate::clip::preview(line.lines().next().unwrap_or(line), 90)
+}
+
+/// What the caller still has filed, one line each, for a reply that could not
+/// do what was asked and owes the agent the ids it could have used.
+fn listing(filed: &[Filed], caller: &str) -> String {
+    let mine: Vec<String> = filed
+        .iter()
+        .filter(|f| f.card == caller)
+        .map(|f| format!("- `{}` ({}) {}", f.id, f.what.noun(), f.about))
+        .collect();
+    if mine.is_empty() {
+        "You have nothing queued for the user now.".into()
+    } else {
+        format!("What you have queued now:\n{}", mine.join("\n"))
+    }
+}
+
+/// Everything a withdrawal could name: every filed question on the wall, and
+/// every card's own notice. Notices of the other kinds are the wall's about a
+/// rest, not something a card filed, and never named to one.
+fn filed_rows(conn: &rusqlite::Connection) -> Vec<Filed> {
+    let mut rows: Vec<Filed> = crate::store::deferred_asks(conn)
+        .into_iter()
+        .map(|d| Filed {
+            about: about_ask(&d.ask_json),
+            id: d.id,
+            card: d.conversation_id,
+            what: Filing::Question,
+        })
+        .collect();
+    rows.extend(crate::store::queued_notices(conn).into_iter().filter(|n| n.kind == "card").map(
+        |n| Filed {
+            about: crate::clip::preview(n.text.lines().next().unwrap_or(""), 90),
+            id: n.id,
+            card: n.conversation_id,
+            what: Filing::Notice,
+        },
+    ));
+    rows
+}
+
+/// The tool. Claims under the store lock with the same DELETE an answer takes
+/// (`store::take_deferred_ask`), so whichever of the two arrives first wins and
+/// the other is told plainly what happened.
+fn do_withdraw(app: &AppHandle, caller: &str, args: &Value) -> String {
+    let asked = args.get("id").and_then(Value::as_str).unwrap_or("");
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(|r| crate::clip::keep(r.trim(), 300).kept)
+        .filter(|r| !r.is_empty());
+    let Some(store) = app.try_state::<Store>() else {
+        return "Nothing was withdrawn — the wall has no store to read the pile from.".into();
+    };
+    let Ok(conn) = store.0.lock() else {
+        return "Nothing was withdrawn — the wall's store did not answer. Try again in a moment."
+            .into();
+    };
+    let filed = filed_rows(&conn);
+    if fold_id(asked).is_empty() {
+        return format!(
+            "Nothing was withdrawn: name it by `id` — the one the reply that queued it gave \
+             you.\n\n{}",
+            listing(&filed, caller)
+        );
+    }
+    let row = match pick_withdrawal(&filed, caller, asked) {
+        Withdrawal::Take(i) => filed[i].clone(),
+        Withdrawal::NotYours(card) => {
+            let handle = &card[..card.len().min(8)];
+            return format!(
+                "Nothing was withdrawn: `{asked}` was queued by another card (`{handle}`), not \
+                 by you. A card may withdraw only what it queued itself — if that question is \
+                 stale, tell its card (`mcp__skein__send`), which can withdraw it.\n\n{}",
+                listing(&filed, caller)
+            );
+        }
+        Withdrawal::Ambiguous => {
+            return format!(
+                "Nothing was withdrawn: `{asked}` starts more than one id of yours. Use the \
+                 whole id.\n\n{}",
+                listing(&filed, caller)
+            );
+        }
+        Withdrawal::Gone => {
+            let left = listing(&filed, caller);
+            drop(conn);
+            let answered = app
+                .try_state::<Presence>()
+                .is_some_and(|p| p.was_taken(&fold_id(asked), caller));
+            return withdraw_gone(answered, asked, &left);
+        }
+    };
+    let took = match row.what {
+        Filing::Question => crate::store::take_deferred_ask(&conn, &row.id),
+        Filing::Notice => crate::store::take_notice(&conn, &row.id).is_some(),
+    };
+    let left = listing(&filed_rows(&conn), caller);
+    let source = crate::store::roster_one(&conn, caller);
+    drop(conn);
+    if !took {
+        /* The read and the delete are under one hold of the lock, so a person's
+           claim cannot land between them — the race with an answer is decided
+           by who takes the lock first. What is left is the store refusing. */
+        return format!(
+            "Nothing was withdrawn: the wall's store refused to take `{}` off the pile. It is \
+             still queued; try once more, and if it fails again say so in your closing line.\
+             \n\n{left}",
+            row.id
+        );
+    }
+    /* The pile and every reader of it re-read on a notice change — the event
+       `clear_for` already sends when a card's rows go — and the digest other
+       walls draw the pile from is folded from that read, so a far wall stops
+       drawing it on its next snapshot and lets go of any answer it was holding
+       for it (`Elsewhere.#sendHeld`). */
+    crate::notice::changed(app, Some(caller));
+    let (project, from) = match source {
+        Some(r) if !r.title.trim().is_empty() => {
+            (Some(r.project_id), format!("{} · {}", r.project, r.title.trim()))
+        }
+        Some(r) => (Some(r.project_id), r.project),
+        None => (None, format!("card {}", &caller[..caller.len().min(8)])),
+    };
+    let noun = row.what.noun();
+    /* `note` takes the store lock, so it runs after `drop(conn)` above —
+       `chronicle.md`'s placement trap. */
+    crate::chronicle::note(
+        app,
+        project.as_deref(),
+        &from,
+        "note",
+        &format!("withdrew a queued {noun}: {}", row.about),
+        reason.as_deref().unwrap_or("no longer needs asking"),
+    );
+    format!(
+        "Withdrawn: the {noun} `{}` is off the user's pile, and nothing will come back for it. \
+         If another wall was holding an answer to it, that answer is let go rather than sent.\
+         \n\n{left}",
+        row.id
+    )
+}
+
+/// The reply for a row that is not there to take.
+fn withdraw_gone(answered: bool, asked: &str, left: &str) -> String {
+    if answered {
+        format!(
+            "Nothing to withdraw: the user already took `{asked}` off the pile. If they answered \
+             it, the answer is on its way to you as a message naming the question — or has \
+             already arrived. Read it against what you now know rather than acting on it twice.\
+             \n\n{left}"
+        )
+    } else {
+        format!(
+            "Nothing was withdrawn: no question or notice of yours is queued under `{asked}`. \
+             It may already have been answered (its answer then reaches you as a message), the \
+             id may be mistyped, or the wall may have restarted since it was answered, which \
+             forgets which.\n\n{left}"
+        )
     }
 }
 
@@ -1287,7 +1668,7 @@ mod tests {
 
     #[test]
     fn a_deferred_call_tells_the_agent_all_four_things() {
-        let note = deferred_note(3, Queued::Away);
+        let note = deferred_note(3, Queued::Away, "row-1");
         assert!(note.starts_with(DEFERRED_OPENING), "the park matches on this");
         /* Not lost; nothing decided; the answer comes as a message; do not
            re-ask. Each of these is a way the feature fails without it. */
@@ -1314,7 +1695,7 @@ mod tests {
        be holding two stories. */
     #[test]
     fn an_unattended_question_is_queued_without_claiming_the_wall_is_away() {
-        let note = deferred_note(1, Queued::Unattended);
+        let note = deferred_note(1, Queued::Unattended, "row-1");
         assert!(note.starts_with(UNATTENDED_OPENING));
         assert!(!note.contains("away mode"), "nobody switched the wall away");
         assert!(note.contains("Nobody has touched"));
@@ -1329,8 +1710,8 @@ mod tests {
        answer by asking this and nothing else. */
     #[test]
     fn either_opening_reads_as_a_deferral() {
-        assert!(is_deferral(&deferred_note(1, Queued::Away)));
-        assert!(is_deferral(&deferred_note(1, Queued::Unattended)));
+        assert!(is_deferral(&deferred_note(1, Queued::Away, "row-1")));
+        assert!(is_deferral(&deferred_note(1, Queued::Unattended, "row-1")));
         assert!(is_deferral(&pile_full(Queued::Unattended)));
         assert!(!is_deferral("green, the second one"));
     }
@@ -1359,7 +1740,7 @@ mod tests {
     #[test]
     fn the_rest_of_a_sheet_says_the_answers_stand_and_the_rest_waits() {
         for why in [Queued::Unattended, Queued::Away] {
-            let note = rest_note(2, why);
+            let note = rest_note(2, why, "row-1");
             assert!(note.starts_with(why.partway()), "says why it stopped");
             assert!(note.contains("`not reached`"), "points at the slots it is about");
             assert!(note.contains("they stand"), "the answers above are decisions");
@@ -1372,8 +1753,8 @@ mod tests {
                avoid. */
             assert!(!note.contains("Nothing has been decided"));
         }
-        assert!(rest_note(1, Queued::Away).contains("left the wall"));
-        assert!(rest_note(1, Queued::Unattended).contains("not been at the machine"));
+        assert!(rest_note(1, Queued::Away, "row-1").contains("left the wall"));
+        assert!(rest_note(1, Queued::Unattended, "row-1").contains("not been at the machine"));
     }
 
     #[test]
@@ -1391,7 +1772,7 @@ mod tests {
     /// happened: the user read it and put it off.
     #[test]
     fn a_defer_is_told_as_a_timeout_is_with_its_own_reason() {
-        let note = deferred_note(2, Queued::Deferred);
+        let note = deferred_note(2, Queued::Deferred, "row-1");
         assert!(is_deferral(&note), "the park must read it as a deferral, not an answer");
         assert!(note.starts_with(UNATTENDED_OPENING), "{note}");
         assert!(note.contains("chose to answer it later"), "{note}");
@@ -1401,14 +1782,14 @@ mod tests {
         assert!(note.contains("Nothing has been decided"));
         assert!(note.contains("new message"));
         assert!(note.contains("Do not ask it again"));
-        let timeout = deferred_note(2, Queued::Unattended);
+        let timeout = deferred_note(2, Queued::Unattended, "row-1");
         assert_eq!(
             note.replace(Queued::Deferred.because(), ""),
             timeout.replace(Queued::Unattended.because(), ""),
             "everything but the reason is one text"
         );
         /* A sheet partly answered, and an act, and a full pile, all say so. */
-        assert!(rest_note(1, Queued::Deferred).contains("chose to leave the rest for later"));
+        assert!(rest_note(1, Queued::Deferred, "row-1").contains("chose to leave the rest for later"));
         assert!(pile_full(Queued::Deferred).starts_with(UNATTENDED_OPENING));
         let act = act_note("closing that card", Queued::Deferred);
         assert!(is_deferral(&act), "{act}");
@@ -1423,11 +1804,148 @@ mod tests {
     #[test]
     fn a_partial_reply_opens_with_the_answers_and_is_not_a_deferral() {
         let said = "Answering each in turn:\n1. A: yes\n2. B: not reached\n\n— skein: …";
-        let reply = rest_reply(said, &rest_note(1, Queued::Unattended));
+        let reply = rest_reply(said, &rest_note(1, Queued::Unattended, "row-1"));
         assert!(reply.starts_with(said));
         assert!(!is_deferral(&reply));
         /* No marker of its own: `answerNote` cuts at the last one, and that has
            to stay the panel's, or Rust's note would be drawn as your words. */
         assert_eq!(reply.matches("\n\n— skein: ").count(), 1);
+    }
+
+    /* ── taking a filed question back (2026-10-20) ─────────────────────── */
+
+    /// Every road into the pile hands the card the row's id and the tool that
+    /// takes it back — in the reply, where it costs nothing until it is true.
+    #[test]
+    fn every_filing_reply_names_its_row_and_how_to_withdraw_it() {
+        let id = "3f2a9c1e-0000-4000-8000-000000000001";
+        for why in [Queued::Away, Queued::Unattended, Queued::Deferred] {
+            for note in [deferred_note(1, why, id), rest_note(1, why, id)] {
+                assert!(note.contains(&format!("id `{id}`")), "{note}");
+                assert!(note.contains("`mcp__skein__withdraw`"), "{note}");
+                assert!(note.contains("another card sends you the answer"), "{note}");
+            }
+            /* The id is in the sentence that says it was kept, not tacked on
+               somewhere the agent might read as a second filing. */
+            let note = deferred_note(1, why, id);
+            let first = note.split("\n\n").next().unwrap();
+            assert!(first.contains("nothing was lost") && first.contains(id), "{first}");
+            assert!(is_deferral(&note), "the opening the park matches on is unmoved");
+        }
+        /* A full pile filed nothing, so it names nothing to withdraw. */
+        assert!(!pile_full(Queued::Away).contains("withdraw"));
+        assert!(!rest_full(Queued::Away).contains("withdraw"));
+    }
+
+    fn row(id: &str, card: &str, what: Filing) -> Filed {
+        Filed { id: id.into(), card: card.into(), what, about: format!("about {id}") }
+    }
+
+    /// The gate: a card takes its own row and nothing else, and every way of
+    /// not finding one says which.
+    #[test]
+    fn a_card_withdraws_its_own_queued_question_and_no_other_cards() {
+        let filed = [
+            row("aaaa1111-0000-4000-8000-000000000001", "card-a", Filing::Question),
+            row("bbbb2222-0000-4000-8000-000000000002", "card-b", Filing::Question),
+            row("aaaa1111-9999-4000-8000-000000000003", "card-a", Filing::Notice),
+            row("cccc3333-0000-4000-8000-000000000004", "card-a", Filing::Notice),
+        ];
+        let take = |asked: &str| pick_withdrawal(&filed, "card-a", asked);
+        assert_eq!(take("aaaa1111-0000-4000-8000-000000000001"), Withdrawal::Take(0));
+        assert_eq!(take("cccc3333-0000-4000-8000-000000000004"), Withdrawal::Take(3));
+        /* Folded as quoted: backticks, case and whitespace. */
+        assert_eq!(take(" `AAAA1111-0000-4000-8000-000000000001` "), Withdrawal::Take(0));
+        /* A prefix of eight or more works where it names one of the caller's. */
+        assert_eq!(take("cccc3333"), Withdrawal::Take(3));
+        assert_eq!(take("aaaa1111-0"), Withdrawal::Take(0));
+        /* …and is refused, not guessed, where it names two. */
+        assert_eq!(take("aaaa1111"), Withdrawal::Ambiguous);
+        /* Shorter than a handle names nothing — a pile is wall-wide. */
+        assert_eq!(take("cccc333"), Withdrawal::Gone);
+        /* Another card's row is refused by name and never taken. */
+        assert_eq!(
+            take("bbbb2222-0000-4000-8000-000000000002"),
+            Withdrawal::NotYours("card-b".into())
+        );
+        assert_eq!(take("bbbb2222"), Withdrawal::NotYours("card-b".into()));
+        /* The other card can take its own. */
+        assert_eq!(
+            pick_withdrawal(&filed, "card-b", "bbbb2222-0000-4000-8000-000000000002"),
+            Withdrawal::Take(1)
+        );
+        /* Unknown, and empty. */
+        assert_eq!(take("dddd4444-0000-4000-8000-000000000005"), Withdrawal::Gone);
+        assert_eq!(take(""), Withdrawal::Gone);
+        assert_eq!(take("``"), Withdrawal::Gone);
+    }
+
+    /// Mine first: an id that is the caller's whole id is the caller's even if a
+    /// prefix of it happens to name another card's row too.
+    #[test]
+    fn an_id_that_is_mine_is_not_refused_for_resembling_somebody_elses() {
+        let filed = [
+            row("eeee5555-0000-4000-8000-000000000001", "card-b", Filing::Question),
+            row("eeee5555-0000-4000-8000-000000000002", "card-a", Filing::Question),
+        ];
+        assert_eq!(
+            pick_withdrawal(&filed, "card-a", "eeee5555-0000-4000-8000-000000000002"),
+            Withdrawal::Take(1)
+        );
+        assert_eq!(pick_withdrawal(&filed, "card-a", "eeee5555"), Withdrawal::Take(1));
+    }
+
+    /// A row a person already claimed reads as answered, for the card that
+    /// asked it only, and the memory of it stays bounded.
+    #[test]
+    fn a_question_already_answered_reads_as_answered_not_as_unknown() {
+        let p = Presence::default();
+        let id = "ffff6666-0000-4000-8000-000000000001";
+        assert!(!p.was_taken(id, "card-a"));
+        p.remember_taken(id, "card-a");
+        assert!(p.was_taken(id, "card-a"));
+        assert!(p.was_taken("ffff6666", "card-a"), "as a prefix, like the gate");
+        assert!(!p.was_taken(id, "card-b"), "another card's answer is not this one's");
+        for i in 0..TAKEN_KEPT {
+            p.remember_taken(&format!("row-{i:04}-padding"), "card-z");
+        }
+        assert!(!p.was_taken(id, "card-a"), "the oldest are forgotten past the bound");
+        assert_eq!(p.taken.lock().unwrap().len(), TAKEN_KEPT);
+
+        let answered = withdraw_gone(true, id, "You have nothing queued for the user now.");
+        assert!(answered.contains("already took"), "{answered}");
+        assert!(answered.contains("on its way to you as a message"), "{answered}");
+        let unknown = withdraw_gone(false, id, "You have nothing queued for the user now.");
+        assert!(unknown.contains("no question or notice of yours"), "{unknown}");
+        assert!(unknown.contains("nothing queued"), "says what is left: {unknown}");
+    }
+
+    #[test]
+    fn a_listing_names_the_callers_rows_by_whole_id_and_what_they_ask() {
+        let ask = json!({ "questions": [{ "header": "landing", "question": "how?" }] });
+        assert_eq!(about_ask(&ask.to_string()), "landing");
+        assert_eq!(about_ask(&json!({ "question": "  which colour?\nmore" }).to_string()), "which colour?");
+        assert_eq!(about_ask("not json"), "a question");
+        let filed = [
+            row("aaaa1111-0000-4000-8000-000000000001", "card-a", Filing::Question),
+            row("bbbb2222-0000-4000-8000-000000000002", "card-b", Filing::Notice),
+        ];
+        let l = listing(&filed, "card-a");
+        assert!(l.contains("`aaaa1111-0000-4000-8000-000000000001` (question)"), "{l}");
+        assert!(!l.contains("bbbb2222"), "another card's rows are not listed: {l}");
+        assert_eq!(listing(&filed, "card-c"), "You have nothing queued for the user now.");
+    }
+
+    #[test]
+    fn the_withdraw_tool_takes_an_id_and_an_optional_reason_and_nothing_else() {
+        let s = withdraw_schema();
+        assert_eq!(s["name"], json!(WITHDRAW_TOOL));
+        assert_eq!(s["inputSchema"]["required"], json!(["id"]));
+        let props = s["inputSchema"]["properties"].as_object().unwrap();
+        assert_eq!(props.len(), 2);
+        assert!(props.contains_key("id") && props.contains_key("reason"));
+        assert_eq!(s["inputSchema"]["additionalProperties"], json!(false));
+        let d = s["description"].as_str().unwrap();
+        assert!(d.contains("Only your own"), "{d}");
     }
 }

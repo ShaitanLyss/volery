@@ -125,12 +125,76 @@ has to say, each a way the feature fails without it:
 | **nothing has been decided** | a non-answer is read as consent |
 | the answer comes as a **new message** | the agent waits for a return value that already came |
 | **do not ask it again** | the morning pile is one question eleven times |
+| the row's **id**, and that `withdraw` takes it back | a question answered some other way still asks her, and her answer lands as a stale turn |
 
 `MAX_PER_CARD` bounds the pile at eight per card, and past it the tool says so and tells the
 card to decide for itself. That is a bound rather than a courtesy: an agent that asks, is told
 it was queued, and asks again is a loop with nobody awake to notice, and what it produces is a
 pile nobody can read — the one way this fails *worse* than the timeout it replaces, since a
 timeout at least forgets.
+
+### Taking a filed question back (2026-10-20)
+
+Lyss: *"agents need to have a way to cancel deferred questions when no longer relevant … useful
+for example when the question got answered some other way like plain text or through another
+card sending messages."* A filed question goes stale in a way only its card can see: she types
+the answer into the conversation, or another card `send`s it. Left standing, the row goes on
+asking her in the pile, in chat view's *needs you* and on every wall the digest carries it to,
+and answering it hands the card a turn about something already settled.
+
+- **The reply names the row, in the sentence that says it was kept** (`deferred_note`,
+  `rest_note`, and `notice::queued_note` for a waiting notice), and ends on `withdraw_line` —
+  one function, so every road says it in the same words. Every road into the pile goes through
+  `presence::file`, which now hands back the id it minted, so the direct filing, the conversion
+  of a parked question, the unattended one and *defer* are covered by construction. A waiting
+  notice queued while nobody was there is the same situation one table over (its reply may
+  reach the card some other way), so it gets the id too; a plain `wait: false` notice is news,
+  not a wait, and does not. A full pile filed nothing and names nothing.
+- **`mcp__skein__withdraw` is deferred**, found by the words of the problem (*"the question I
+  put off was answered"*, *"the user answered in chat"*), for `cancel_wake`'s argument: the
+  reflex is reached by the reply that queued the question, which names the tool in full beside
+  the id — a tool result, free per turn. Nothing was added to the loaded tier. The name is
+  spelled out in `withdraw_line` rather than interpolated, because `supervisor`'s guard that
+  every `mcp__skein__…` in a result is advertised reads literals and caught the first cut.
+- **Own rows only** (`pick_withdrawal`, pure): another card's id is refused naming that card,
+  so the stale question can be raised with it instead. An id is matched whole or by a prefix of
+  at least eight characters (the handle length every id here is quoted at), and a prefix naming
+  two of the caller's rows is refused rather than guessed. Mine first: an id that is the
+  caller's is not refused because a prefix of it resembles somebody else's.
+- **The claim is the answer's claim.** `store::take_deferred_ask` — the same DELETE under the
+  store lock that a person's answer takes, read and deleted under one hold — so whichever lands
+  first wins. The loser is told plainly: a card withdrawing a question she already answered is
+  told the answer is on its way as a message. To tell *already answered* from *no such
+  question*, the `take_deferred_ask` command remembers what it took (`Presence::taken`, memory
+  only, 256 rows); after a restart the two read alike and the reply says both. Every refusal
+  ends with the caller's own queued rows and their ids, since the agent may simply have the
+  wrong one.
+- **The pile hears it as a notice change** (`notice::changed`), the event `clear_for` already
+  sends when a card's rows go and `presence.svelte.ts` already refreshes on — no new listener.
+  The digest other walls draw the pile from is folded from that read, so a far wall stops
+  drawing it on its next snapshot, and an answer it was holding for the row is let go by
+  `#sendHeld`'s existing *no longer files it* arm, whose sentence now names a withdrawal among
+  the reasons. Nothing new crosses the flyway.
+- **A chronicle row**, under the card's name, *withdrew a queued question: …* with the
+  agent's optional `reason` as its detail — so a question leaving the pile is never a mystery.
+  It is the one thing here that is the card's own gesture told to her rather than hers told to
+  her, and the register's rule (*what happened to you*) admits it: the pile changed under her.
+- **Acts are not withdrawable**, deliberately: `act_note` already tells the card there is
+  nothing to cancel, because answering one re-enters the decision against the wall as it is.
+
+Demonstrated 2026-10-20 on a frozen lab (`wd`) with a real Haiku card: it put the wall away with
+its own `away` tool and called `ask_user`, which filed row `82b72f47…`; its reply quoted *filed
+under id `82b72f47-…`*. A `withdraw` of that id posted to the MCP endpoint as a second card on
+the same wall was refused (*queued by another card (`9ac99e7f`), not by you*) and the row stood.
+The card was then told the answer had come in chat and to take the queued copy back *"the way
+the queueing reply told you to"*. It was not told the tool's name. It found `withdraw` from the
+reply alone, the row went, the chrome's pile count dropped from 2 to 1 (the one left was its own
+*finished* notice), and the chronicle read *withdrew a queued question: Which colour should the
+lab banner be?* with the reason *answered in chat*. A second withdrawal of the same id said
+nothing was queued under it. **Not shown:** the *already answered* reading (it needs a person's
+claim racing the card, so `a_question_already_answered_reads_as_answered_not_as_unknown` holds
+it), a far wall letting go of a held answer (that path is `#sendHeld`'s existing arm, which
+this change only rewords), and a queued waiting notice withdrawn (same gate, unit-tested).
 
 ### The tool can say you are gone and cannot say you are back
 

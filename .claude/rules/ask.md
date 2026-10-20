@@ -305,7 +305,7 @@ can answer it.
 | `credential` / `asana_token` | settle / none | **yes, since this item** — names and reach only; the credential stays where it is held |
 | `unpost` of a dead card's notice | settle / `unpost` | **yes, since the billboard crossed** — `confirms`; a notice on another wall is decided by that wall (`board.md`) |
 | `update_volery`, a card restarting its own wall onto the newest release | settle / none | **yes, by construction** — `confirms`; the case it exists for is a card on the far laptop updating its wall while she sits at the near one, and a yes consents for the close too (`Quit::consent`), since `quit.rs`'s dialog never crosses (`update.md`) |
-| anything filed while **away** — the deferred pile (`deferred_ask`, `deferred_act`) | not parked | **no** — the pile is the owning wall's alone (sink `3368f78f`, `4a3f859b`) |
+| anything filed while **away** — the deferred pile (`deferred_ask`, `deferred_act`) | not parked | **yes, since 2026-10-20** for questions — digest `filed` (`away.md`, *The pile is hers*); a question can also be withdrawn by the card that filed it (`mcp__skein__withdraw`), which every wall drawing it hears on the next snapshot. Acts stay local (sink `91c5a729`) |
 | a deferred act re-entered from the pile | not parked; the settle runs from `answer_deferred_act` | no — it never parks, so no travelling rule reaches it |
 
 Two more things the audit turned up, filed rather than fixed here: the pile's approve button sends

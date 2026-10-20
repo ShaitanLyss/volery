@@ -1501,7 +1501,8 @@ export class Elsewhere {
       this.#fold(h.id, { kind: "answer", outcome: "refused", why: `no longer waiting on ${host}` });
       this.#skein.fault =
         `your answer to ${h.about} was not sent: it is no longer waiting on ${host} — answered there or ` +
-        `from another wall (an earlier try of this one, if its reply was lost), or its card has gone`;
+        `from another wall (an earlier try of this one, if its reply was lost), withdrawn by the card ` +
+        `that asked it, or its card has gone`;
     }
     for (const h of send) {
       const s = this.find(shadowKey(h.host, h.card));

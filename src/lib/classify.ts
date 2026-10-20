@@ -209,6 +209,9 @@ export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
  *  the one place a reader would otherwise go looking for the cause of a wall
  *  that had gone quiet by itself. */
 export const SKEIN_AWAY_TOOL = "mcp__skein__away";
+/** A card taking back a question it put off — one queued while nobody was
+ *  there and since answered some other way (`presence::withdraw_schema`). */
+export const SKEIN_WITHDRAW_TOOL = "mcp__skein__withdraw";
 /** A card putting a notice in the user's queue — see `notice.rs`. */
 export const SKEIN_NOTICE_TOOL = "mcp__skein__notice";
 /** Every account on the wall by label, for `spawn`'s `account`. */
@@ -756,6 +759,10 @@ export function describeTool(name: string, input: any): string {
     case SKEIN_AWAY_TOOL: {
       const note = arg(input?.note);
       return note ? `put the wall away — ${clip(note, 30)}` : "put the wall into away mode";
+    }
+    case SKEIN_WITHDRAW_TOOL: {
+      const why = arg(input?.reason);
+      return why ? `withdrew a queued question — ${clip(why, 26)}` : "withdrew a queued question";
     }
     /* `wants you to see`, not `told you`, while it waits: a waiting notice
        parks like a question, so at the moment the call lands nothing has been

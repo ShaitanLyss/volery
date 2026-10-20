@@ -288,6 +288,10 @@ describe("describeTool degrades before arguments arrive", () => {
        panel whose whole register is lowercase prose. */
     expect(describeTool("mcp__skein__recall", { card: "1b06f3da" })).toBe("read 1b06f3da's words");
     expect(describeTool("mcp__skein__recall", {})).toBe("read another card's words");
+    expect(describeTool("mcp__skein__withdraw", { id: "x", reason: "answered in chat" })).toBe(
+      "withdrew a queued question — answered in chat",
+    );
+    expect(describeTool("mcp__skein__withdraw", { id: "x" })).toBe("withdrew a queued question");
     expect(describeTool("mcp__skein__pin", { path: "a/b/chart.png" })).toBe("pinned chart.png");
     expect(describeTool("mcp__skein__repin", { image: "last", remove: true })).toBe(
       "took an image down",

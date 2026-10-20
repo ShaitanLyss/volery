@@ -118,14 +118,26 @@ pub(crate) fn changed(app: &AppHandle, conversation_id: Option<&str>) {
 /// a wall. `parent_live` is a parent with a process — a dormant one gets no
 /// settle relay (`spawn::sweep` delivers only to a live stdin), so a dormant
 /// parent is no reason to keep the notice from you.
-pub(crate) fn held(wakes_armed: i64, children_busy: bool, parent_live: bool) -> Option<&'static str> {
+///
+/// `by_person` is a turn a person opened — her prompt, typed into the card —
+/// and then the parent hold does not apply. The parent is told when the work
+/// *it* asked for settles; it is not who is waiting on a turn she started, and
+/// once it has been told about this child's stop `spawn::arms_stop` sends it
+/// nothing more, so holding her notice for it meant nobody heard at all (Lyss,
+/// 2026-10-20: no notice for the answer to her last prompt).
+pub(crate) fn held(
+    wakes_armed: i64,
+    children_busy: bool,
+    parent_live: bool,
+    by_person: bool,
+) -> Option<&'static str> {
     if wakes_armed > 0 {
         return Some("a wake is armed");
     }
     if children_busy {
         return Some("a card it opened is still working");
     }
-    if parent_live {
+    if parent_live && !by_person {
         return Some("the card that opened it is told instead");
     }
     None
@@ -144,11 +156,19 @@ pub async fn notice_raise(
     conversation_id: String,
     kind: String,
     text: String,
+    by_person: Option<bool>,
 ) -> Result<bool, String> {
-    crate::off_main(move || raise(&app, conversation_id, kind, text)).await?
+    let by_person = by_person.unwrap_or(false);
+    crate::off_main(move || raise(&app, conversation_id, kind, text, by_person)).await?
 }
 
-fn raise(app: &AppHandle, conversation_id: String, kind: String, text: String) -> Result<bool, String> {
+fn raise(
+    app: &AppHandle,
+    conversation_id: String,
+    kind: String,
+    text: String,
+    by_person: bool,
+) -> Result<bool, String> {
     if !REST_KINDS.contains(&kind.as_str()) {
         return Err(format!("not a notice kind: {kind}"));
     }
@@ -183,7 +203,7 @@ fn raise(app: &AppHandle, conversation_id: String, kind: String, text: String) -
     if sup.liveness(&conversation_id).1 {
         return Ok(false);
     }
-    if held(wakes, children_busy, parent_live).is_some() {
+    if held(wakes, children_busy, parent_live, by_person).is_some() {
         return Ok(false);
     }
 
@@ -371,7 +391,7 @@ pub(crate) fn queue(app: &AppHandle, conversation_id: &str, text: &str, why: Que
         }
     }
     changed(app, Some(conversation_id));
-    queued_note(why)
+    queued_note(why, &n.id)
 }
 
 /// Whether a card may leave another notice — checked before a waiting notice
@@ -393,7 +413,12 @@ pub(crate) fn full_note() -> String {
 /// What the card reads. Like `presence::deferred_note`, the contract lives in
 /// the reply rather than in the schema: it costs nothing until the one turn it
 /// is true of, and it lands at the moment the agent needs it.
-pub(crate) fn queued_note(why: Queued) -> String {
+///
+/// A waiting notice that was queued is handed its row's id and the way to take
+/// it back, for `presence::deferred_note`'s fifth thing: the reply it waited
+/// for may reach the card some other way first. A plain send is news rather
+/// than a wait, so it is not.
+pub(crate) fn queued_note(why: Queued, id: &str) -> String {
     match why {
         Queued::Sent => "Your notice is in the user's queue, beside their other notices and \
                          questions, and it will ring for them. Carry on — nothing comes back \
@@ -413,12 +438,15 @@ pub(crate) fn queued_note(why: Queued) -> String {
                 ),
             };
             format!(
-                "{because} — nothing was lost. When they read it they can acknowledge it \
-                 or follow it up. A follow-up arrives in this conversation as a new message \
-                 naming your notice; an acknowledgement alone sends nothing.\n\n\
+                "{because} — nothing was lost, and it is filed under id `{id}`. When they \
+                 read it they can acknowledge it or follow it up. A follow-up arrives in this \
+                 conversation as a new message naming your notice; an acknowledgement alone \
+                 sends nothing.\n\n\
                  What to do now: carry on with whatever does not depend on their reply, and \
                  say in your closing line what you are holding back. Do not send the notice \
-                 again — it is already in their queue."
+                 again — it is already in their queue.\n\n\
+                 {withdraw}",
+                withdraw = crate::presence::withdraw_line("it", id),
             )
         }
     }
@@ -470,10 +498,19 @@ mod tests {
 
     #[test]
     fn a_rest_is_held_by_a_wake_by_working_children_and_by_a_live_parent() {
-        assert_eq!(held(0, false, false), None);
-        assert!(held(1, false, false).is_some());
-        assert!(held(0, true, false).is_some());
-        assert!(held(0, false, true).is_some());
+        assert_eq!(held(0, false, false, false), None);
+        assert!(held(1, false, false, false).is_some());
+        assert!(held(0, true, false, false).is_some());
+        assert!(held(0, false, true, false).is_some());
+    }
+
+    #[test]
+    fn a_turn_she_opened_is_hers_whoever_opened_the_card() {
+        /* The parent is told about work it asked for, not about her prompt. */
+        assert_eq!(held(0, false, true, true), None);
+        /* The other holds are about the card stirring again, and still hold. */
+        assert!(held(1, false, true, true).is_some());
+        assert!(held(0, true, true, true).is_some());
     }
 
     #[test]
@@ -496,9 +533,21 @@ mod tests {
         /* The park closes a call whose answer opens with a queueing note as
            *deferred* rather than answered; both waiting cases must, and the
            plain send must not be mistaken for one if it ever reached a park. */
-        assert!(crate::presence::is_deferral(&queued_note(Queued::Away)));
-        assert!(crate::presence::is_deferral(&queued_note(Queued::Unattended)));
-        assert!(!crate::presence::is_deferral(&queued_note(Queued::Sent)));
+        assert!(crate::presence::is_deferral(&queued_note(Queued::Away, "n-1")));
+        assert!(crate::presence::is_deferral(&queued_note(Queued::Unattended, "n-1")));
+        assert!(!crate::presence::is_deferral(&queued_note(Queued::Sent, "n-1")));
+    }
+
+    /// A waiting notice that was queued is handed its id and the way to take it
+    /// back; a plain send is news, not a wait, and is not.
+    #[test]
+    fn a_queued_waiting_notice_names_its_id_and_how_to_withdraw_it() {
+        for why in [Queued::Away, Queued::Unattended] {
+            let note = queued_note(why, "n-1");
+            assert!(note.contains("id `n-1`"), "{note}");
+            assert!(note.contains("`mcp__skein__withdraw`"), "{note}");
+        }
+        assert!(!queued_note(Queued::Sent, "n-1").contains("withdraw"));
     }
 
     #[test]
