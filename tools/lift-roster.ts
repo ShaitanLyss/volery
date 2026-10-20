@@ -174,8 +174,13 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "enum Queued",
       "impl Queued",
       "fn deferred_note",
+      /* Every filing note ends on it, and the roster carries `withdraw` beside
+         `away` — the tool the note names. */
+      "fn withdraw_line",
       "fn pile_full",
       "fn schema",
+      "const WITHDRAW_TOOL",
+      "fn withdraw_schema",
     ],
   },
   {

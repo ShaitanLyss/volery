@@ -59,17 +59,34 @@ const ITEMS: string[] = [
   "impl Queued",
   "fn is_deferral",
   "fn deferred_note",
+  "fn rest_note",
+  "fn rest_full",
+  "fn withdraw_line",
   "fn pile_full",
+  /* The withdrawal's gate (2026-10-20): which row a card's `withdraw` names and
+     whether it may take it. A wrong answer either silences another card's
+     question or refuses a card its own, and neither shows to a typecheck. */
+  "enum Filing",
+  "impl Filing",
+  "struct Filed",
+  "enum Withdrawal",
+  "fn fold_id",
+  "fn names",
+  "fn pick_withdrawal",
+  "fn withdraw_gone",
 ];
 
-/** Nothing is declared inside `mod tests` here. */
-const TEST_ITEMS: string[] = [];
+/** The tests' own row-maker for the gate. */
+const TEST_ITEMS: string[] = ["fn row"];
 
 const TESTS: string[] = [
   "a_deferred_call_tells_the_agent_all_four_things",
   "a_full_pile_reads_as_a_timeout_rather_than_as_a_queue",
   "an_unattended_question_is_queued_without_claiming_the_wall_is_away",
   "either_opening_reads_as_a_deferral",
+  "every_filing_reply_names_its_row_and_how_to_withdraw_it",
+  "a_card_withdraws_its_own_queued_question_and_no_other_cards",
+  "an_id_that_is_mine_is_not_refused_for_resembling_somebody_elses",
 ];
 
 const lines = readFileSync(SRC, "utf8").split(/\r?\n/);
