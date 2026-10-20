@@ -13,6 +13,10 @@
   import { isDataPicture, pictureMarkdown, type Inline } from "./markdown";
   import { fullPath, namedPath, pathsIn } from "./finding";
   import { paths, symbolLine, useFiles, useLinks, usePictureRoot } from "./paths.svelte";
+  import { useCardLinks } from "./cardlinks.svelte";
+  import { handlesIn } from "./chatview";
+  import { cardName } from "./naming";
+  import type { CardHandle } from "./cards.svelte";
 
   let { kids }: { kids: Inline[] } = $props();
 
@@ -62,24 +66,42 @@
     return map;
   });
 
-  /** A text node cut into plain runs and paths. Built for every text node up
-   *  front rather than per render, so the template holds no logic. */
+  /** Cards named by handle in the prose (`cardlinks.svelte.ts`), or null
+   *  where nothing provided them — then a handle is the text it is. */
+  const links = useCardLinks();
+  /** The card a code span names, when the whole span is a handle the wall
+   *  knows. */
+  const cardOf = (v: string): CardHandle | null => (links && /^[0-9a-f]{8}$/.test(v) ? links.find(v) : null);
+
+  type Run = { text: string; at: At | null; card: CardHandle | null };
+  /** A text node cut into plain runs, paths and cards. Built for every text
+   *  node up front rather than per render, so the template holds no logic. A
+   *  handle is only looked for in what is not a path. */
   const textRuns = $derived.by(() => {
-    const map = new Map<number, { text: string; at: At | null }[]>();
-    if (!files) return map;
+    const map = new Map<number, Run[]>();
+    if (!files && !links) return map;
     for (const [i, k] of kids.entries()) {
       if (k.t !== "text") continue;
-      const found = pathsIn(k.v);
-      if (!found.length) continue;
-      const runs: { text: string; at: At | null }[] = [];
+      const runs: Run[] = [];
+      const plain = (text: string) => {
+        let from = 0;
+        for (const h of links ? handlesIn(text) : []) {
+          const card = links!.find(h.handle);
+          if (!card) continue;
+          if (h.from > from) runs.push({ text: text.slice(from, h.from), at: null, card: null });
+          runs.push({ text: h.handle, at: null, card });
+          from = h.to;
+        }
+        if (from < text.length) runs.push({ text: text.slice(from), at: null, card: null });
+      };
       let from = 0;
-      for (const f of found) {
-        if (f.from > from) runs.push({ text: k.v.slice(from, f.from), at: null });
-        runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line, symbol: f.symbol } });
+      for (const f of files ? pathsIn(k.v) : []) {
+        if (f.from > from) plain(k.v.slice(from, f.from));
+        runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line, symbol: f.symbol }, card: null });
         from = f.to;
       }
-      if (from < k.v.length) runs.push({ text: k.v.slice(from), at: null });
-      map.set(i, runs);
+      if (from < k.v.length) plain(k.v.slice(from));
+      if (runs.some((r) => r.at || r.card)) map.set(i, runs);
     }
     return map;
   });
@@ -166,7 +188,7 @@
         data-dir={dir ? "1" : null}
         title={hint(to.path, dir, at.symbol)}
         onclick={(e) => go(e, to.path, at)}>{run.text}</button
-      >{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
+      >{:else if run.card}{@render card(run.card)}{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code" && cardOf(k.v)}{@render card(cardOf(k.v)!)}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
         spanPath.get(i)!}{@const to = targetOf(at)!}{@const dir = to.kind === "dir"}<button
       type="button"
       class="path code"
@@ -193,7 +215,60 @@
       onclick={() => onlink?.(k.href)}><Self kids={k.kids} /></button
     >{/if}{/each}
 
+<!-- A card named by its handle, drawn as the card: its name, and its live dot
+     in the one colour the wall gives status. A button reading as prose, like a
+     path — this app noticed it, the author did not write a link. -->
+{#snippet card(c: CardHandle)}<button
+    type="button"
+    class="cardlink"
+    data-card={c.id}
+    onclick={() => links?.open(c)}
+    ><i
+      class="st"
+      class:work={c.face.working}
+      class:ask={!!c.ask}
+      class:fail={c.face.tier === "fail"}
+      aria-hidden="true"
+    ></i>{cardName(c.face.title, "").text || "a conversation"}</button
+  >{/snippet}
+
 <style>
+  .cardlink {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-color: var(--paper-faint);
+    text-underline-offset: 2px;
+  }
+  .cardlink:hover,
+  .cardlink:focus-visible {
+    color: var(--paper);
+    text-decoration-color: var(--paper);
+  }
+  .cardlink .st {
+    display: inline-block;
+    width: 0.42em;
+    height: 0.42em;
+    margin: 0 0.3em 0.12em 0.05em;
+    border-radius: 50%;
+    vertical-align: middle;
+    background: var(--st-rest);
+  }
+  .cardlink .st.work {
+    background: var(--st-work);
+  }
+  .cardlink .st.ask {
+    background: var(--st-ask);
+  }
+  .cardlink .st.fail {
+    background: var(--st-fail);
+  }
   code {
     font-family: var(--mono);
     font-size: 0.86em;

@@ -58,6 +58,7 @@
   import PlanStrip from "./PlanStrip.svelte";
   import PlanDoc from "./PlanDoc.svelte";
   import { provideOthers } from "./others.svelte";
+  import { provideCardLinks } from "./cardlinks.svelte";
   import { cardByHandle } from "./chatview";
   import { view } from "./view.svelte";
   import type { Presence } from "./presence.svelte";
@@ -160,6 +161,11 @@
   provideOthers({
     find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
     open: (id) => choose(id),
+  });
+  /* A card named in prose opens here as a conversation, not on the wall. */
+  provideCardLinks({
+    find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
+    open: (c) => choose(c.id),
   });
 
   /* ── the sidebar's rows ─────────────────────────────────────────────── */

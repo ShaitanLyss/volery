@@ -5,6 +5,7 @@ import { shadowKey } from "../src/lib/shadow";
 import {
   spawnedHandle,
   cardByHandle,
+  handlesIn,
   SPAWN_TOOL,
   DWELL_MS,
   afterClose,
@@ -545,5 +546,23 @@ describe("a row's title keeps its room", () => {
     expect(aside).toContain("text-overflow: ellipsis");
     expect(aside).toContain("max-width");
     expect(src).toContain('<span class="aside" title={p.aside}>');
+  });
+});
+
+describe("a card named by its handle in prose", () => {
+  test("eight hex characters standing as a word of their own", () => {
+    expect(handlesIn("fc5cb712: taking the build").map((h) => h.handle)).toEqual(["fc5cb712"]);
+    expect(handlesIn("notice af3c1345 from 9h ago, and (15555efd)").map((h) => h.handle)).toEqual(["af3c1345", "15555efd"]);
+  });
+  test("not inside a longer word, a uuid, a colour or a capitalised hash", () => {
+    expect(handlesIn("ab12cd34ef")).toEqual([]);
+    expect(handlesIn("ab12cd34-1111-2222")).toEqual([]);
+    expect(handlesIn("#ab12cd34")).toEqual([]);
+    expect(handlesIn("AB12CD34")).toEqual([]);
+  });
+  test("a card on another wall answers to its own handle, and this wall's comes first", () => {
+    const far = shadowKey("QUEERISFREEDOM", "ab12cd34-0000-4000-8000-000000000000");
+    expect(cardByHandle("ab12cd34", [far])).toBe(far);
+    expect(cardByHandle("ab12cd34", ["ab12cd34-1111-2222", far])).toBe("ab12cd34-1111-2222");
   });
 });

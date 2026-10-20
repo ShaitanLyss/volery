@@ -594,5 +594,23 @@ export const SPAWN_TOOL = "mcp__skein__spawn";
  *  the only one. Used for a spawn's child and a relay's sender alike. */
 export function cardByHandle(handle: string, ids: readonly string[]): string | null {
   if (!/^[0-9a-f]{8}$/.test(handle)) return null;
-  return ids.find((id) => id.startsWith(handle)) ?? null;
+  /* A card on another wall is keyed `elsewhere:<host>:<card>`, and its handle
+     is its own card id's — so the match is on that part. This wall's cards
+     come first in every list handed here, so a handle both would answer to is
+     the one standing here. */
+  return ids.find((id) => (hostOfKey(id) ? id.slice(id.lastIndexOf(":") + 1) : id).startsWith(handle)) ?? null;
+}
+
+/** Where a card's handle stands in a run of prose — eight hex characters as a
+ *  word of their own, which is how every card here is named to an agent and
+ *  how agents name one another back (`fc5cb712: taking the build`, *board
+ *  notice af3c1345*). Only the shape: whether a card answers to it is the
+ *  wall's to say (`cardlinks.svelte.ts`), so a commit hash or a colour that
+ *  happens to look like one is never drawn as a card. */
+export function handlesIn(text: string): { from: number; to: number; handle: string }[] {
+  const out: { from: number; to: number; handle: string }[] = [];
+  for (const m of text.matchAll(/(?<![0-9A-Za-z_#-])[0-9a-f]{8}(?![0-9A-Za-z_-])/g)) {
+    out.push({ from: m.index, to: m.index + 8, handle: m[0] });
+  }
+  return out;
 }

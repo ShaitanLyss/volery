@@ -13,6 +13,8 @@
   import { causeOf } from "./lib/peeking";
   import { Presence } from "./lib/presence.svelte";
   import { lasted } from "./lib/presence";
+  import { cardByHandle } from "./lib/chatview";
+  import { provideCardLinks } from "./lib/cardlinks.svelte";
   import Tooltip from "./lib/Tooltip.svelte";
   import Vigil from "./lib/Vigil.svelte";
   import Away from "./lib/Away.svelte";
@@ -2277,6 +2279,13 @@
      `Spyglass` had written its own copy, whose comment said "the same call the
      transcript makes" — a copy admitting it is a copy. */
   provideLinkOpener((href) => void skein.openLink(href));
+  /* A card named by its handle in any prose is the card, and opens it
+     (`cardlinks.svelte.ts`) — on the wall by landing on it, as a click does.
+     Chat view provides its own `open`. */
+  provideCardLinks({
+    find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
+    open: (c) => focusCard(c),
+  });
 
   function reveal(full: string) {
     void invoke("show_in_explorer", { path: full }).catch((e) => (skein.fault = String(e)));
