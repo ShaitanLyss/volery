@@ -178,3 +178,28 @@ export function relayCap(text: string): string {
 export function handleOf(id: string): string {
   return id.slice(0, 8);
 }
+
+/** Must agree with `classify.ts::SKEIN_SEND_TOOL`; restated rather than
+ *  imported for `chatview.ts::SPAWN_TOOL`'s reason, and held by a test. */
+export const SEND_TOOL = "mcp__skein__send";
+
+/** What a `send` call said and to whom, read off its arguments — or null when
+ *  the call is something else. `to` is as the agent wrote it: a handle, a
+ *  title, `project` or `skein`, or a list of those. `delivered` is null while
+ *  no result has landed, then whether the wall took it. */
+export function sentOf(call: { name: string; input: unknown; result?: { text: string; failed?: true } } | undefined): {
+  to: string[];
+  message: string;
+  delivered: boolean | null;
+  why: string;
+} | null {
+  if (!call || call.name !== SEND_TOOL) return null;
+  const input = (call.input ?? {}) as { to?: unknown; message?: unknown };
+  const to = (Array.isArray(input.to) ? input.to : [input.to])
+    .filter((t): t is string => typeof t === "string" && t.trim() !== "")
+    .map((t) => t.trim());
+  const message = typeof input.message === "string" ? input.message : "";
+  const delivered = call.result ? !call.result.failed : null;
+  const why = call.result?.failed ? (call.result.text.split("\n").find((l) => l.trim()) ?? "").trim() : "";
+  return { to, message, delivered, why };
+}

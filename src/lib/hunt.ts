@@ -26,6 +26,7 @@
  * erased at build.
  */
 
+import { sentOf } from "./relay";
 import { nameOf, shownOf } from "./showing";
 import type { Block } from "./transcript";
 
@@ -86,6 +87,11 @@ export function textOf(b: Block): string {
   if (b.kind === "shown") {
     const s = shownOf(b.line.call ?? { name: "", input: {} });
     return [nameOf(s.path), s.caption].filter(Boolean).join("\n");
+  }
+  /* A letter draws the message and who it went to, never the call's line. */
+  if (b.kind === "sent") {
+    const m = sentOf(b.line.call);
+    return m ? [...m.to, m.message].join("\n") : b.line.text;
   }
   return b.line.text;
 }

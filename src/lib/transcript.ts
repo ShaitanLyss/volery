@@ -149,7 +149,15 @@ export type Block =
    *  a cap reading `3 tool calls`, which is `pin`'s old failure (the picture a
    *  screen away from the sentence about it) arriving from the other side. See
    *  `.claude/rules/showing.md`. */
-  | { kind: "shown"; key: string; line: Line };
+  | { kind: "shown"; key: string; line: Line }
+  /** A message this conversation sent another card (`mcp__skein__send`),
+   *  standing where it was sent rather than inside a run of calls. Only where
+   *  the caller asks (`blocksOf`'s `apart`) — chat view, which draws it as a
+   *  letter (Lyss, 2026-10-20: *"messages sent or received are displayed as
+   *  plain text instead of having a nice ui"*). Folded, what one card said to
+   *  another was a line reading *messaged fc5cb712* and nothing of the words;
+   *  a message is the turn saying something, which is `shown`'s argument. */
+  | { kind: "sent"; key: string; line: Line };
 
 /** Whether a line is a picture an agent showed — see the `shown` block. */
 export const isShown = (line: Line): boolean =>
@@ -192,7 +200,7 @@ const LONG: Line["kind"][] = ["summary", "skill", "relay"];
  *  becomes an *absolute* position — stable by construction, which is the same
  *  property the group keys buy by other means. Defaulting to zero keeps every
  *  other caller right: history is folded once and never sliced. */
-export function blocksOf(lines: Line[], tag = "l", base = 0): Block[] {
+export function blocksOf(lines: Line[], tag = "l", base = 0, apart?: (line: Line) => boolean): Block[] {
   const out: Block[] = [];
   const seen = new Map<string, number>();
   /* Counted apart from `seen`, which is keyed on a tool line's own words: a run
@@ -287,10 +295,15 @@ export function blocksOf(lines: Line[], tag = "l", base = 0): Block[] {
       out.push({ kind: "shown", key: `${tag}${base + i}`, line });
       continue;
     }
+    if (apart?.(line)) {
+      out.push({ kind: "sent", key: `${tag}${base + i}`, line });
+      continue;
+    }
     let end = i;
     /* A shown picture breaks a run the way speech does, so the calls either
-       side of it fold on their own and the picture stands between them. */
-    while (end < lines.length && lines[end].kind === "tool" && !isShown(lines[end])) end++;
+       side of it fold on their own and the picture stands between them — and
+       so does a message sent, where the caller stands those apart. */
+    while (end < lines.length && lines[end].kind === "tool" && !isShown(lines[end]) && !apart?.(lines[end])) end++;
     const run = lines.slice(i, end);
     if (run.length < MIN_FOLD) {
       out.push({ kind: "line", key: `${tag}${base + i}`, line });

@@ -532,3 +532,13 @@ describe("what a run of machinery came to (chat view)", () => {
     expect(runSummary([call("Read", { file_path: "a" }, 1_000, 2_000)]).worked).toBe(1_000);
   });
 });
+
+describe("a message sent stands apart from the run it was sent in", () => {
+  const send = (to: string): Line => ({ kind: "tool", text: `messaged ${to}`, call: { name: "mcp__skein__send", input: { to, message: "hi" } } });
+  const isSent = (l: Line) => l.call?.name === "mcp__skein__send";
+  test("only where the caller asks", () => {
+    const lines = [tool("read a"), tool("read b"), send("x"), tool("read c"), tool("read d")];
+    expect(blocksOf(lines).map((b) => b.kind)).toEqual(["tools"]);
+    expect(blocksOf(lines, "l", 0, isSent).map((b) => b.kind)).toEqual(["tools", "sent", "tools"]);
+  });
+});

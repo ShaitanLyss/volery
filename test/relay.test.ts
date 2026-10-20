@@ -8,7 +8,10 @@ import {
   relayBody,
   relayCap,
   relayFrom,
+  sentOf,
+  SEND_TOOL,
 } from "../src/lib/relay";
+import { SKEIN_SEND_TOOL } from "../src/lib/classify";
 import { isResumePrompt } from "../src/lib/rousing";
 
 /* Written by hand rather than imported, because the other end of this is in
@@ -225,5 +228,31 @@ describe("handles", () => {
   test("are the head of the id", () => {
     expect(handleOf("aaaaaaaa-1111-4111-8111-111111111111")).toBe("aaaaaaaa");
     expect(handleOf("short")).toBe("short");
+  });
+});
+
+describe("a message this card sent, as a letter draws it", () => {
+  const call = (input: unknown, result?: { text: string; failed?: true }) => ({ name: SEND_TOOL, input, result });
+  test("the tool name is classify.ts's", () => {
+    expect(SEND_TOOL).toBe(SKEIN_SEND_TOOL);
+  });
+  test("who it went to and what it said", () => {
+    expect(sentOf(call({ to: "fc5cb712", message: "taking the build" }, { text: "delivered" }))).toEqual({
+      to: ["fc5cb712"],
+      message: "taking the build",
+      delivered: true,
+      why: "",
+    });
+    expect(sentOf(call({ to: ["a", " b "], message: "x" }))?.to).toEqual(["a", "b"]);
+  });
+  test("not yet landed, and refused, say so", () => {
+    expect(sentOf(call({ to: "a", message: "x" }))?.delivered).toBeNull();
+    const r = sentOf(call({ to: "a", message: "x" }, { text: "\nno card answers to a\nmore", failed: true }));
+    expect(r?.delivered).toBe(false);
+    expect(r?.why).toBe("no card answers to a");
+  });
+  test("any other call is not a message", () => {
+    expect(sentOf({ name: "Bash", input: {} })).toBeNull();
+    expect(sentOf(undefined)).toBeNull();
   });
 });

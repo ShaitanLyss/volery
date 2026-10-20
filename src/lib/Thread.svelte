@@ -58,7 +58,8 @@
   import { RELEASE } from "./follow.svelte";
   import { others } from "./others.svelte";
   import { spawnedHandle } from "./chatview";
-  import { relayBody, relayFrom } from "./relay";
+  import { relayBody, relayFrom, sentOf } from "./relay";
+  import { ageOf } from "./chatview";
   import { cardName } from "./naming";
 
   let { card }: { card: CardHandle } = $props();
@@ -84,6 +85,27 @@
      drawn there and nowhere else (`others.svelte.ts`). */
   const reach = others();
 
+  /** A message longer than this is cut to a few lines until opened. */
+  const LETTER_LONG = 520;
+  /** A card as a letter names it. */
+  function nameOf(c: CardHandle): string {
+    return cardName(c.face.title, "").text || "a conversation";
+  }
+  /** Who a sent message went to, as the agent wrote it: a handle that is a
+   *  card here becomes that card, the two broadcast words are said as words,
+   *  and anything else is shown as written. */
+  function recipient(to: string): { name: string; card: CardHandle | null } {
+    const word = to.toLowerCase();
+    if (word === "project") return { name: "every card in this project", card: null };
+    if (word === "skein") return { name: "every card on the wall", card: null };
+    const c = reach?.find(to) ?? null;
+    return { name: c ? nameOf(c) : to, card: c };
+  }
+  /** How long ago, coarse, or nothing for a line that never had a time. */
+  function when(at: number | undefined): string {
+    return at ? `${ageOf(clock.t - at)} ago` : "";
+  }
+
   /* The agent speaks markdown — headings, lists, fenced code, tables — and it
      used to arrive here as literal asterisks and hashes. Parsed per line rather
      than once per render: `lines` only ever grows, so a line is folded the once.
@@ -105,12 +127,15 @@
   /* Runs of tool calls fold into one line each — see transcript.ts for why, and
      for why the two columns are folded separately. Both are cheap: a fold is one
      pass over an array that only grows at the end. */
-  const past = $derived(blocksOf(conv.history, "h"));
+  /* In chat view a message this card sent stands where it was sent, as a
+     letter, rather than inside the run of calls around it (`Block` "sent"). */
+  const apart = $derived(chat ? (l: Line) => sentOf(l.call) !== null : undefined);
+  const past = $derived(blocksOf(conv.history, "h", 0, apart));
   /* `conv.dropped` is what makes a live line's key its absolute position rather
      than its index in a window that slides — without it the whole column is
      rebuilt on every message past the cap, and the reading goes with it. See
      `Conversation.dropped`. */
-  const live = $derived(blocksOf(conv.lines, "l", conv.dropped));
+  const live = $derived(blocksOf(conv.lines, "l", conv.dropped, apart));
 
   /** Which folded groups are open, by key. Every group starts closed — the
    *  space they were taking is the whole point — and each is its own decision,
@@ -449,6 +474,51 @@
   {/if}
 {/snippet}
 
+<!-- A message between two conversations, either way (Lyss, 2026-10-20: *"messages
+     sent or received are displayed as plain text instead of having a nice
+     ui"*). The spawn link's family — a bordered card with the other card's
+     name, its live dot and the way into it — so a thread reads as one house.
+     A long one is cut to a few lines until opened, with the folds' own
+     toggle, so a coordinator's brief does not bury the round you came for. -->
+{#snippet letter(key: string, dir: "in" | "out", who: { name: string; card: CardHandle | null }[], sub: string, body: string)}
+  {@const long = body.length > LETTER_LONG}
+  {@const one = who.length === 1 ? who[0].card : null}
+  <div class="letter" class:out={dir === "out"} data-nav="msg">
+    <div class="hd">
+      <svg class="i" viewBox="0 0 16 16" aria-hidden="true"
+        >{#if dir === "in"}<path d="M10 3 4 8l6 5" /><path d="M4 8h9" />{:else}<path d="M6 3l6 5-6 5" /><path
+            d="M12 8H3"
+          />{/if}</svg
+      >
+      <span class="who">
+        <span class="t"
+          >{#if dir === "out"}<span class="to">to{" "}</span>{/if}{#each who as w, i (i)}{#if i}<span class="to">,{" "}</span>{/if}{#if w.card}{@const c = w.card}<button
+                type="button"
+                class="name"
+                onclick={() => reach?.open(c.id)}
+                title="open {w.name}">{w.name}</button
+              >{:else}{w.name}{/if}{/each}</span
+        >
+        <span class="sub">{sub}</span>
+      </span>
+      {#if one}
+        {@const c = one}
+        <button type="button" class="go" onclick={() => reach?.open(c.id)}
+          ><i class="st" class:work={c.face.working} class:ask={!!c.ask} class:fail={c.face.tier === "fail"}></i>open</button
+        >
+      {/if}
+    </div>
+    <div class="bd md" class:cut={long && !open[key]}>
+      <Markdown blocks={parseMarkdown(body)} />
+    </div>
+    {#if long}
+      <button type="button" class="more" aria-expanded={open[key] ? "true" : "false"} onclick={() => toggle(key)}
+        >{open[key] ? "show less" : "show all"}</button
+      >
+    {/if}
+  </div>
+{/snippet}
+
 <!-- A column of blocks: lines, and runs of tool calls folded into one cap each.
      Nothing navigable is ever inside a fold — a tool call carries no `data-nav` —
      so the rails list the same places whatever is open. -->
@@ -472,21 +542,42 @@
       {#if b.line.call}{@render linked([b.line])}{/if}
     {:else if b.kind === "long" && chat && b.line.kind === "relay"}
       <!-- In chat view a relay is a message *from* whoever sent it, not a fold
-           of machinery and never your own words (§5.5) — the sender named, and
-           openable where they are on the wall. The envelope's note to the model
-           stays out, as `relayBody` keeps it out everywhere. -->
+           of machinery and never your own words (§5.5) — a letter: the sender
+           named and openable where they are on the wall, then what they said.
+           The envelope's note to the model stays out, as `relayBody` keeps it
+           out everywhere. -->
       {@const from = relayFrom(b.line.text)}
       {@const sender = from?.handle && reach ? reach.find(from.handle) : null}
-      <div class="line text md from" data-nav="msg">
-        <div class="by">
-          {#if sender}
-            <button type="button" onclick={() => reach?.open(sender.id)} title="open {from?.name}">{from?.name}</button>
-          {:else}
-            {from?.name ?? "another conversation"}
-          {/if}
-        </div>
-        <Markdown blocks={parseMarkdown(relayBody(b.line.text))} />
-      </div>
+      {@render letter(
+        b.key,
+        "in",
+        [{ name: sender ? nameOf(sender) : (from?.name ?? "another conversation"), card: sender }],
+        ["sent this conversation a message", from?.handle, when(b.line.at)].filter(Boolean).join(" · "),
+        relayBody(b.line.text),
+      )}
+    {:else if b.kind === "sent"}
+      <!-- A message this conversation sent, out of the run it was sent in —
+           the same letter the other way round, marked by a dashed edge and an
+           outgoing arrow so the two directions never read alike. -->
+      {@const m = sentOf(b.line.call)}
+      {#if m}
+        {@render letter(
+          b.key,
+          "out",
+          m.to.map(recipient),
+          [
+            m.delivered === false
+              ? `not delivered — ${m.why || "the wall refused it"}`
+              : m.delivered === null
+                ? "sending…"
+                : "this conversation sent",
+            when(b.line.at),
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          m.message,
+        )}
+      {/if}
     {:else if b.kind === "long"}
       <!-- What a compaction carried forward, the whole of a skill the agent
            invoked, the prompt rousing sent a card whose turn was cut off, or
@@ -1131,21 +1222,105 @@
   .linked .st.fail {
     background: var(--st-fail);
   }
-  /* A message from another conversation: set as the agent's own prose is, under
-     the sender's name — never in your bubble. */
-  .line.from .by {
-    margin-bottom: 4px;
+  /* A message between conversations: a letter, in the spawn link's family. */
+  .letter {
+    padding: 12px 16px 14px;
+    border-radius: var(--cv-r-m, 12px);
+    border: 1px solid var(--cv-hair, var(--edge));
+    background: color-mix(in oklab, var(--surface) 50%, transparent);
+  }
+  /* Sent, the other way: the edge dashed and no fill, so the two directions
+     never read alike even with the arrows out of sight. */
+  .letter.out {
+    border-style: dashed;
+    background: none;
+  }
+  .letter .hd {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 8px;
     font-family: var(--cv-ui, var(--util));
-    font-size: 12.5px;
+  }
+  .letter .i {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: var(--paper-mute);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .letter .who {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .letter .t {
+    font-size: 13.5px;
+    color: var(--paper);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .letter .to {
     color: var(--paper-mute);
   }
-  .line.from .by button {
+  .letter .sub {
+    font-size: 12px;
+    color: var(--paper-mute);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .letter button {
     font: inherit;
-    color: var(--paper-dim);
+    color: inherit;
     background: none;
     border: 0;
     padding: 0;
     cursor: pointer;
+  }
+  .letter .name:hover,
+  .letter .name:focus-visible {
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+  }
+  .letter .go {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--paper-dim);
+  }
+  .letter .st {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--st-rest);
+  }
+  .letter .st.work {
+    background: var(--st-work);
+  }
+  .letter .st.ask {
+    background: var(--st-ask);
+  }
+  .letter .st.fail {
+    background: var(--st-fail);
+  }
+  /* Cut to a few lines, fading out rather than stopping on a hard edge. */
+  .letter .bd.cut {
+    max-height: 9.5em;
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, black 60%, transparent);
+  }
+  .letter .more {
+    margin-top: 6px;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 12px;
+    color: var(--paper-mute);
     text-decoration: underline;
     text-decoration-color: var(--rule);
     text-underline-offset: 3px;
