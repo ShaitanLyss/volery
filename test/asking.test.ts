@@ -30,6 +30,7 @@ import {
   type AskFile,
   type AskPreview,
   type AskQuestion,
+  arrowStep,
 } from "../src/lib/asking";
 
 const file = (path = "shot.png", root = "C:/atelier/skein"): AskFile => ({ root, path });
@@ -1014,5 +1015,25 @@ describe("the keys inside a question", () => {
     expect(askKey({ key: "1", ctrl: true }, two)).toBeNull();
     expect(askKey({ key: "ArrowDown", alt: true }, two)).toBeNull();
     expect(askKey({ key: " " }, two)).toBeNull();
+  });
+});
+
+describe("arrows while looking closer", () => {
+  /* Lyss, 2026-10-20: look closer, close, look closer on the next — she wanted
+     the arrows to go to the next one. */
+  const at = (key: string, o: Partial<{ at: number; of: number; design: boolean; fit: boolean }> = {}) =>
+    arrowStep({ key, at: 0, of: 3, design: false, fit: true, ...o });
+  test("left and right go to the neighbours, wrapping", () => {
+    expect(at("ArrowRight")).toBe(1);
+    expect(at("ArrowLeft")).toBe(2);
+    expect(at("ArrowRight", { at: 2 })).toBe(0);
+  });
+  test("a zoomed design keeps its arrows for panning; at fit it gives them up", () => {
+    expect(at("ArrowRight", { design: true, fit: false })).toBeNull();
+    expect(at("ArrowRight", { design: true, fit: true })).toBe(1);
+  });
+  test("nothing to go to, or not an arrow, is nothing", () => {
+    expect(at("ArrowRight", { of: 1 })).toBeNull();
+    expect(at("ArrowUp")).toBeNull();
   });
 });

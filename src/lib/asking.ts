@@ -478,6 +478,24 @@ export function lookLabel(panels: LookPanel[]): string {
  *  that is not obvious from looking — the size the designs were composed at,
  *  which is what makes three of them comparable and is mentioned only when
  *  there are designs to which it applies. */
+/** Where ← or → goes while looking closer at one panel: the index of the
+ *  previous or next, wrapping — or null, when the key is not an arrow, there is
+ *  nothing else to go to, or the arrows are the zoomed design's to pan.
+ *
+ *  Lyss, 2026-10-20: *"I have to look closer on one, close it, then look
+ *  closer on next one instead of just having arrows to go to the next one."*
+ *  At fit a design has nowhere to pan to, so the arrows were doing nothing at
+ *  exactly the moment they were wanted; zoomed in they still pan, since a
+ *  design you went into to read is one you want to move around in. A file
+ *  scrolls itself up and down and has no zoom of ours, so left and right are
+ *  free there. */
+export function arrowStep(o: { key: string; at: number; of: number; design: boolean; fit: boolean }): number | null {
+  if (o.key !== "ArrowLeft" && o.key !== "ArrowRight") return null;
+  if (o.of < 2 || (o.design && !o.fit)) return null;
+  const by = o.key === "ArrowLeft" ? -1 : 1;
+  return (o.at + by + o.of) % o.of;
+}
+
 export function galleryHint(panels: LookPanel[]): string {
   const { designs, files } = countsOf(panels);
   const parts: string[] = [];

@@ -16,7 +16,7 @@
    * HTTP request and gets one reply. So nothing is sent until the last question
    * is answered, and `composeAnswer` puts the sheet back together. */
 
-  import { untrack } from "svelte";
+  import { getAllContexts, mount, unmount, untrack } from "svelte";
   import type { PendingAsk } from "./conversation.svelte";
   import { clock } from "./conversation.svelte";
   import { nameBesideProject } from "./naming";
@@ -373,6 +373,51 @@
     showing = false;
     give(label);
   }
+
+  /* The gallery covers the window, so it is mounted into the studio root
+     rather than drawn here — `looking.svelte.ts`'s arrangement for the
+     lightbox, and for the same reason. A question is drawn inside boxes that
+     own a `position: fixed` child: chat view draws it in the thread, whose
+     arrival animates `transform` (a filling transform animation makes an
+     element the containing block for every fixed descendant) and whose
+     scroller is masked (a mask clips whatever is painted inside it, fixed or
+     not). So in chat view the gallery was a column-wide box scrolling with the
+     thread, its top under the title bar (Lyss, 2026-10-20). Mounted at the
+     root nothing above it can do that, and the contexts this question was
+     drawn under — the file scope, the link opener — go with it.
+
+     `scripts` is decided by what kind of card asked and never by the payload —
+     the same rule `spawn_conversation` follows when it reads `kind_of` rather
+     than taking a capability as an argument. */
+  const contexts = getAllContexts();
+  const galleryUp = $derived(showing && panels.length > 0);
+  $effect(() => {
+    if (!galleryUp) return;
+    const target = document.querySelector(".studio") ?? document.body;
+    const app = untrack(() =>
+      mount(Gallery, {
+        target,
+        context: contexts,
+        props: {
+          get panels() {
+            return panels;
+          },
+          get header() {
+            return current.header;
+          },
+          get options() {
+            return current.options;
+          },
+          get scripts() {
+            return scripts;
+          },
+          onchoose: chose,
+          onclose: () => (showing = false),
+        },
+      }),
+    );
+    return () => void unmount(app);
+  });
 </script>
 
 <!-- A group with keys of its own: the listbox's, and Alt+D/Alt+R from
@@ -615,21 +660,6 @@
 
 </div>
 
-{#if showing && panels.length}
-  <!-- A sibling of the panel rather than a child: it is `position: fixed` and
-       covers the whole window, and nothing about it belongs inside a box that
-       scrolls. `scripts` is decided by what kind of card asked and never by the
-       payload — the same rule `spawn_conversation` follows when it reads
-       `kind_of` rather than taking a capability as an argument. -->
-  <Gallery
-    {panels}
-    header={current.header}
-    options={current.options}
-    {scripts}
-    onchoose={chose}
-    onclose={() => (showing = false)}
-  />
-{/if}
 
 <style>
   .ask {

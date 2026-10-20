@@ -32,7 +32,7 @@
   import { onMount, untrack } from "svelte";
   import {
     PREVIEW_VIEWPORT,
-    galleryHint,
+    galleryHint, arrowStep,
     isScriptBuilt,
     previewDoc,
     type AskFile,
@@ -273,6 +273,13 @@
       queueMicrotask(() => reading?.focus());
     }
   };
+  /** The previous or next panel, wrapping — the bar's buttons. */
+  const stepBig = (by: 1 | -1) => {
+    if (big === null || panels.length < 2) return;
+    openBig((big + by + panels.length) % panels.length);
+  };
+  const typing = (t: EventTarget | null) =>
+    t instanceof HTMLElement && !!t.closest("input, textarea, select, [contenteditable]");
   const closeBig = () => {
     big = null;
     fitted = null;
@@ -428,6 +435,24 @@
         if (big !== null) closeBig();
         else onclose();
         return;
+      }
+      /* ← and → go to the next attachment while looking closer, unless a
+         zoomed design wants them to pan (`asking.ts::arrowStep`) — or the key
+         is being typed into something. */
+      if (big !== null && !e.ctrlKey && !e.metaKey && !e.altKey && !typing(e.target)) {
+        const to = arrowStep({
+          key: e.key,
+          at: big,
+          of: panels.length,
+          design: !!panels[big]?.preview,
+          fit: isFit(view, stage, PREVIEW_VIEWPORT),
+        });
+        if (to !== null) {
+          e.stopPropagation();
+          e.preventDefault();
+          openBig(to);
+          return;
+        }
       }
       /* A file brings its own scrolling and has no composed size for a zoom
          to be a percentage of, so the whole ladder below is a design's. */
@@ -693,6 +718,14 @@
 
         {/if}
 
+        {#if panels.length > 1 && big !== null}
+          <div class="zoom">
+            <button class="z" onclick={() => stepBig(-1)} title="The previous one (←)">‹</button>
+            <span class="pc">{big + 1} of {panels.length}</span>
+            <button class="z" onclick={() => stepBig(1)} title="The next one (→)">›</button>
+          </div>
+        {/if}
+
         <button class="x" onclick={closeBig} title="Back to the gallery (Escape)">
           back
         </button>
@@ -782,7 +815,7 @@
               {glassed
                 ? "scroll to zoom · drag to pan · double-click for 100%"
                 : "running its script, so the pointer is the design's"} · arrows,
-              +, −, 0 and 1 work either way
+              +, −, 0 and 1 work either way{panels.length > 1 ? " · ← → for the others at fit" : ""}
             </span>
           {/if}
         </div>
