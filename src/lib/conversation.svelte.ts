@@ -1216,6 +1216,12 @@ export class Conversation {
    *  `Opener`). The licence was always "only what this window sent"; what was
    *  missing was "for the turn that broke". */
   #opener: Opener = null;
+  /** Did a person open the turn now running (or just ended) — a prompt from a
+   *  dock, not a relay, a wake or the CLI waking itself. Asked when a turn
+   *  ends, for whether its notice is hers (`notice.rs`'s parent hold). */
+  get openedByYou(): boolean {
+    return this.#opener?.by === "you";
+  }
 
   /** When each line `echo` drew was drawn — the one fact `queuedBehind` needs
    *  that a `Line` does not carry. Weak, so a line sliced off the front of

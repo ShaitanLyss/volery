@@ -4678,6 +4678,8 @@ export class Skein {
     if (!want) return;
     const rested = Date.now();
     const turns = c.turns;
+    /* Read now: by the time the timer fires a relay may have opened the next. */
+    const byPerson = c.openedByYou;
     const delay = raiseAt(rested, c.jobs) - rested;
     this.#noticeTimers.set(
       c.id,
@@ -4691,6 +4693,7 @@ export class Skein {
           conversationId: c.id,
           kind: want.kind,
           text: want.text,
+          byPerson,
         }).catch(() => {});
       }, delay),
     );

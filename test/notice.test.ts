@@ -17,6 +17,8 @@ import {
   allowanceStop,
   waitsOnYou,
   type Notice,
+  looking,
+  LOOK_MS,
 } from "../src/lib/notice";
 
 const n = (over: Partial<Notice>): Notice => ({
@@ -274,5 +276,20 @@ describe("what you owe is read through one rule", () => {
   test("the away pile is fed by Cards.noticing", () => {
     const app = files.find(([f]) => f === "App.svelte")![1];
     expect(app).toMatch(/presence\.notices = \(\) => cards\.noticing/);
+  });
+});
+
+describe("looking is the window in front and touched lately", () => {
+  /* Lyss, 2026-10-20: a selected card finished while she was looking
+     elsewhere, with the window still in front, and raised nothing. */
+  const now = 1_000_000;
+  test("in front and touched a moment ago is looking", () => {
+    expect(looking({ focused: true, touchedAt: now - 5_000, now })).toBe(true);
+  });
+  test("in front of a desk nobody has touched for a minute is not", () => {
+    expect(looking({ focused: true, touchedAt: now - LOOK_MS, now })).toBe(false);
+  });
+  test("behind another window is not, however lately touched", () => {
+    expect(looking({ focused: false, touchedAt: now, now })).toBe(false);
   });
 });

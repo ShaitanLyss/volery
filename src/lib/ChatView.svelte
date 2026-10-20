@@ -76,6 +76,7 @@
     kin,
     reading = 1,
     watching = true,
+    present,
     away = false,
     presence,
     elsewhere,
@@ -110,6 +111,11 @@
     /** Whether the window is in front — the follow re-pins on coming back, and
      *  a finished conversation is only settled by reading it while it is. */
     watching?: boolean;
+    /** Somebody is looking — in front and touched lately (`Attention.looking`).
+     *  What settling a finished conversation by reading it asks, since a
+     *  window in front of an empty desk reads nothing. Required: a default
+     *  either way would settle notices nobody read or none at all. */
+    present: boolean;
     /** Away mode is on: nothing is settled by a window nobody is at. */
     away?: boolean;
     /** The questions put off (`Presence.filed`): a conversation holding one
@@ -490,7 +496,7 @@
     const c = card;
     const el = scroller;
     if (!n || !c || !el) return;
-    const focused = watching;
+    const focused = present;
     const gone = away;
     let since: number | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;

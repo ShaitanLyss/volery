@@ -50,8 +50,27 @@ described is over. A card's own notices accumulate and only an acknowledgement c
 A follow-up to a rest is simply your next message; to a card's notice it quotes the notice,
 since that may be hours old. No relay mark on either — they are your words.
 
-**No notice for the card you are watching** — selected, panel open, window focused
-(`Skein.watching`, set in `App.svelte`). You saw it finish.
+**No notice for the card you are watching** — selected, panel open, window in front *and
+touched within a minute* (`Skein.watching`, set in `App.svelte`, over `Attention.looking`). You
+saw it finish.
+
+The minute is the part that was missing until 2026-10-20. Watching was *focused*, asked once
+when the raise fires, and the window in front is the ordinary way to walk away from the desk
+(*focus is not presence*, `attention.svelte.ts`). Lyss: a card she had sent a prompt to stayed
+selected, finished while she was looking elsewhere, and raised nothing — *"when a card gets
+finished or ended on a question, and I'm not looking at it at that specific moment, then I
+should get a notice."* `notice.ts::looking` is the rule: in front, and a key, click, wheel or
+pointer move inside `LOOK_MS`. A minute, because a streaming answer is read with the hands
+still; the wrong side of it costs a chime for a card you did watch, the other side costs the
+work. Chat view's settle-by-reading asks the same reading (`ChatView`'s `present`), or a
+notice that did rise was settled within two seconds by a screen nobody was in front of.
+
+**And a turn she opened is hers whoever opened the card.** `notice_raise` held every rest of
+a card whose parent has a process, on the argument that the parent is told instead
+(`spawn::settling`). But the parent is told only about a stop it has not already heard of
+(`spawn::arms_stop`): a turn Lyss prompted in a child that had already reported went to
+nobody. The front end now says who opened the turn (`Conversation.openedByYou`, read when
+the turn ends, sent as `byPerson`), and `held` skips the parent hold for hers.
 
 ### Acknowledging one puts its card to rest
 

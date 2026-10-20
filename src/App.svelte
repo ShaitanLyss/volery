@@ -1255,9 +1255,10 @@
   const focused = $derived(card?.conv ?? null);
   /* A card you are looking at finishing is something you watched, so it raises
      no notice — the user's choice. All three facts live here, so this is where
-     the question is answered for `Skein`. */
+     the question is answered for `Skein`. *Looking*, not focused: the window in
+     front of a desk nobody is at watched nothing (`notice.ts::LOOK_MS`). */
   skein.watching = (id) =>
-    id === focusedId && (view.current === "chat" || showDetail) && attention.focused;
+    id === focusedId && (view.current === "chat" || showDetail) && attention.looking;
   /* In chat view the conversation in front of you is always open — selecting it
      is the only way to see it — so being selected with the window in front is
      being watched, and it raises no notice (`docs/chat-mode.md` §5.2). */
@@ -5321,6 +5322,7 @@
       kin={elsewhere.kin}
       reading={reading}
       watching={attention.focused}
+      present={attention.looking}
       away={presence.away}
       {presence}
       {elsewhere}

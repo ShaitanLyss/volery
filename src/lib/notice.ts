@@ -35,6 +35,27 @@ export function seesRest(n: Notice): boolean {
   return !n.askId && (n.kind === "done" || n.kind === "question");
 }
 
+/** How long after you last touched the window you still count as looking at it.
+ *
+ *  A notice is not raised for the conversation you are watching, and chat view
+ *  settles a finished one by your reading it. Both asked only *selected, with
+ *  the window in front* — and the window in front is the ordinary way to walk
+ *  away from the desk (`attention.svelte.ts`: *focus is not presence*). Lyss,
+ *  2026-10-20: a card she had sent a prompt to stayed selected, finished while
+ *  she was looking elsewhere, and raised nothing — *"when a card gets finished
+ *  or ended on a question, and I'm not looking at it at that specific moment,
+ *  then I should get a notice."* A touch — a key, a click, the wheel, the
+ *  pointer moving — is the evidence of looking this window has. A minute,
+ *  because reading a streaming answer is done with the hands still; past it, a
+ *  notice you did not need costs a chime, where one you did need and never got
+ *  costs the work. */
+export const LOOK_MS = 60_000;
+
+/** Is somebody looking at the window: it is in front, and was touched lately. */
+export function looking(s: { focused: boolean; touchedAt: number; now: number }): boolean {
+  return s.focused && s.now - s.touchedAt < LOOK_MS;
+}
+
 /** How long a rest must last before it raises anything.
  *
  *  Measured on 926 real rests (2026-10-07): a card rests between a turn and a

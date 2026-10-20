@@ -27,6 +27,7 @@ import type { Conversation } from "./conversation.svelte";
 import { clock } from "./conversation.svelte";
 import { Listeners } from "./listeners";
 import { nameBesideProject } from "./naming";
+import { looking } from "./notice";
 import { ring } from "./timing";
 import {
   causeOf,
@@ -49,6 +50,11 @@ const EDGE = 18;
 /** Matches the peek window size declared in tauri.conf.json. */
 const PEEK_W = 420;
 const PEEK_H = 210;
+
+/** How finely `touchedAt` moves. Against `LOOK_MS`'s minute, five seconds is
+ *  nothing, and it keeps a pointer sweeping the window from being a write per
+ *  event. */
+const TOUCH_STEP_MS = 5_000;
 
 /** A card must want you for this long before the peek appears. Without it,
  *  every finished turn would throw a window at you the moment you looked away. */
@@ -79,6 +85,15 @@ export class Attention {
   enabled = $state(true);
 
   focused = $state(true);
+  /** When the window was last touched — a key, a click, the wheel, the pointer
+   *  moving — kept coarse (`TOUCH_STEP_MS`), since it is written from
+   *  `pointermove` and every reader of it would otherwise re-run per pixel. */
+  touchedAt = $state(Date.now());
+  /** Somebody is looking: the window is in front and was touched within
+   *  `LOOK_MS` (`notice.ts::looking`). Focus alone is the desk you walked
+   *  away from. What decides that a finishing card was *watched* — and so
+   *  raises no notice — and what lets reading settle one. */
+  looking = $derived(looking({ focused: this.focused, touchedAt: this.touchedAt, now: clock.t }));
   #listeners = new Listeners();
   #peek: Window | null = null;
   #shown = false;
@@ -160,6 +175,8 @@ export class Attention {
     keep(
       main.onFocusChanged(({ payload }) => {
         this.focused = payload;
+        /* Bringing the window to the front is a touch of it. */
+        if (payload) this.touchedAt = Date.now();
         this.#blurredAt = payload ? null : Date.now();
         /* Coming back to the studio is itself the acknowledgement. */
         if (payload) void this.hide();
@@ -182,6 +199,18 @@ export class Attention {
         /* Nothing to write down: everything the peek was showing is already
            in `#announced`, so it stays away until something new arrives. */
         this.#shown = false;
+      }),
+    );
+
+    const touch = () => {
+      const t = Date.now();
+      if (t - this.touchedAt >= TOUCH_STEP_MS) this.touchedAt = t;
+    };
+    const kinds = ["pointerdown", "pointermove", "keydown", "wheel"] as const;
+    for (const k of kinds) window.addEventListener(k, touch, { capture: true, passive: true });
+    keep(
+      Promise.resolve(() => {
+        for (const k of kinds) window.removeEventListener(k, touch, { capture: true });
       }),
     );
 
