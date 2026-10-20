@@ -9,6 +9,7 @@
   import { flip } from "svelte/animate";
   import { cubicInOut } from "svelte/easing";
   import Icon from "./Icon.svelte";
+  import { fullTitle } from "./tipped.svelte";
   import type { Ghost, Group, Placed, ProjectRow } from "./chatview";
 
   let {
@@ -162,6 +163,7 @@
     aria-current={p.row.id === selected ? "true" : undefined}
     aria-label={nameOf(p)}
     onclick={() => onselect(p.row.id)}
+    {@attach fullTitle(() => p.row.title, (el) => el.querySelector<HTMLElement>(".t"))}
     oncontextmenu={(e) => {
       e.preventDefault();
       onmenu(e, p.row.id);

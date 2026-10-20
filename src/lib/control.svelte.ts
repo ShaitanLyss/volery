@@ -3404,6 +3404,21 @@ export class Control {
         return { clicked: el.className?.toString() ?? el.tagName };
       },
 
+      /** Rest the pointer on an element, or take it off with `leave: true`:
+       *  `pointerenter` and a `pointermove` with no button down at its centre,
+       *  or `pointerleave`. Rung one, like `click` — it proves a hover handler
+       *  is bound (the full title on settle, `tipped.svelte.ts`), not that
+       *  Chromium would deliver a real pointer there. Nothing here moves the
+       *  real cursor, which is the user's. */
+      hover: (op) => {
+        const el = this.#el(op);
+        const r = el.getBoundingClientRect();
+        const at = { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, buttons: 0, pointerType: "mouse" };
+        const kinds = op.leave ? ["pointerleave"] : ["pointerenter", "pointermove"];
+        for (const k of kinds) el.dispatchEvent(new PointerEvent(k, { ...at, bubbles: k === "pointermove" }));
+        return { hovered: el.className?.toString() ?? el.tagName, left: !!op.leave };
+      },
+
       key: (op) => {
         const target: EventTarget =
           op.selector ? this.#el(op) : (document.querySelector("textarea") ?? window);

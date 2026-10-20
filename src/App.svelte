@@ -13,6 +13,7 @@
   import { causeOf } from "./lib/peeking";
   import { Presence } from "./lib/presence.svelte";
   import { lasted } from "./lib/presence";
+  import Tooltip from "./lib/Tooltip.svelte";
   import Vigil from "./lib/Vigil.svelte";
   import Away from "./lib/Away.svelte";
   import Gate from "./lib/Gate.svelte";
@@ -5098,6 +5099,9 @@
   {/if}
 
   <Glance />
+
+  <!-- The whole of a title a card or a row cut short (`tip.ts`). -->
+  <Tooltip />
 
   {#if menu}
     <ContextMenu

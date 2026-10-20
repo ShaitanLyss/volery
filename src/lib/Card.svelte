@@ -63,6 +63,7 @@
   import { clock } from "./conversation.svelte";
   import { glance } from "./glancing.svelte";
   import { hasSaid } from "./glance";
+  import { fullTitle } from "./tipped.svelte";
 
   import type { Lod } from "./studio.svelte";
 
@@ -232,6 +233,7 @@
     data-aside={conv.aside ? "" : undefined}
     data-gear={conv.gear === "planning" ? "planning" : undefined}
     onclick={onfocus}
+    {@attach fullTitle(() => name.text, (el) => el.querySelector<HTMLElement>(".title"))}
   >
     <span class="top">
     <span class="id">
