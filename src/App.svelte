@@ -518,6 +518,12 @@
   /* Holds no subscription, so unlike `Skein`/`Attention`/`Control` it wants no
      place in `Listeners` — same as `Ink`, which it is shaped after. */
   const motion = new Motion();
+  /* The wall's motion setting holds only on the wall; chat view paints full
+     motion (`motion.ts::paintedMotion`). Re-painted as the view switches. */
+  $effect(() => {
+    void view.current;
+    motion.repaint();
+  });
   /* The machine the wall runs on: held awake on mains, and reopened after a
      restart. Holds one subscription, released below. See `machine.rs`. */
   const machine = new Machine();
@@ -2540,114 +2546,7 @@
          card are about. One repo can carry three regions, so the folder can no
          longer stand for the region — and the region id can never stand for the
          folder. See `layout.ts`'s `Territory`. */
-      const terr = regionEl.dataset.territory ?? cwd;
-      target = {
-        kind: "region",
-        empty: !skein.convs.some((c) => c.cwd === cwd),
-        moved: territoryMoved(terr),
-        /* Whether taking it off the wall would leave its cards nowhere to
-           stand — the store refuses that, and the menu does not draw an item
-           whose only answer is a refusal. */
-        lone:
-          skein.territories.filter(
-            (t) =>
-              t.projectId ===
-              skein.territories.find((q) => q.id === terr)?.projectId,
-          ).length < 2,
-        /* Offered when it would *do* something, which is stricter than "has a
-           width stored": an imported layout can carry a count that happens to
-           equal the default, and so can a future change of default. Both would
-           be a menu item that visibly does nothing.
-
-           Both read the *territory*, which is where v43 moved its width and its
-           glass spot. They used to read the project row, whose columns v43 left
-           behind as a fossil — kept for an older build, never written again —
-           so a region stuck before the move offered "back on the wall" for
-           ever, and the item went to a toggle keyed on the folder that no
-           territory id could match. */
-        sized: colsOf(skein.territories.find((t) => t.id === terr)) !== REGION_COLS,
-        glass: !!spotOf(skein.territories.find((t) => t.id === terr)),
-        chat: skein.isChatHome(cwd),
-        nowhere: adrift.has(cwd),
-        offers: offersOf(),
-        /* The same five the `+` offers, so `new conversation as…` and the `+`'s
-           right-click cannot come to disagree about what a card costs. The
-           default rides along only to be *marked* — the row above opens on it,
-           and this is the list that says which one that is. */
-        presets: presetPicks(),
-        presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
-        pools: skein.pools[cwd] ?? [],
-        /* Where its cards could all go: the card menu's `move` filter, for
-           this territory's project. */
-        walls: skein.isChatHome(cwd)
-          ? []
-          : wallsHolding(
-              skein.projects.find(
-                (p) => p.id === skein.territories.find((q) => q.id === terr)?.projectId,
-              )?.name ?? "",
-            ),
-      };
-      /* The menu is drawn from the cache, and the cache is refreshed behind it:
-         a project added this session, or a `.mcp.json` written since load,
-         shows up the next time its territory is right-clicked. */
-      void skein.refreshPools(cwd);
-      act = (id) => {
-        if (id === "glass") canvas?.toggleGlass("region", terr);
-        else if (id.startsWith("pool:")) void skein.togglePool(cwd, id.slice(5));
-        else if (id.startsWith("moveall:")) askMoveAll(terr, id.slice(8));
-        else if (id === "explorer") void skein.showInExplorer(cwd);
-        else if (id === "chat") void openChat();
-        else if (id === "new") void openIn(cwd);
-        /* `newas:` with nothing after it is "as claude code is set up", and it
-           has to reach `openIn` as `null` rather than `undefined`: undefined
-           means "nobody said, use the wall's default", which is the one thing
-           this row is for *not* doing. Same distinction `Skein.open` draws and
-           the same one the `+`'s handler makes a few lines up. */
-        else if (id.startsWith("newas:")) {
-          const chosen = id.slice(6);
-          void openIn(cwd, undefined, chosen === "" ? null : presetById(chosen));
-        } else if (id === "new-worktree") canvas?.startBranch(cwd);
-        else if (id === "adopt") void openImport();
-        else if (id === "image") void pickImage(where);
-        else if (id.startsWith("widget:")) hangWidget(id.slice(7), where);
-        else if (id === "reflow") {
-          const before = stands();
-          skein.placeTerritory(terr, null, null);
-          undo.did("settling a territory back in", moved(before));
-        } else if (id === "rewidth") {
-          const before = stands();
-          skein.sizeTerritory(terr, null);
-          undo.did("resizing a territory", moved(before));
-        } else if (id === "guidance") {
-          /* Opened on this territory, by id — the panel speaks the store's
-             vocabulary and the wall speaks paths. A territory with no row is
-             not a case: the region was drawn from one. */
-          const p = skein.projects.find((x) => x.root_path === cwd);
-          guiding = { focus: p?.id ?? null };
-        } else if (id === "new-grouping") {
-          const t = skein.territories.find((q) => q.id === terr);
-          if (t) {
-            void skein.makeTerritory(t.projectId, "new grouping").then((made) => {
-              /* Straight into the handle, selected — see `nameTerritory`. The
-                 placeholder is never what anybody wants, and a region you have
-                 to go and find a second gesture to name is a region most people
-                 would leave called "new grouping". */
-              if (made) canvas?.nameTerritory(made, "new grouping");
-            });
-          }
-        } else if (id === "rename-grouping") {
-          const t = skein.territories.find((q) => q.id === terr);
-          if (t) canvas?.nameTerritory(t.id, t.name);
-        } else if (id === "drop-grouping") {
-          undo.drop("territory", terr);
-          void skein.forgetTerritory(terr);
-        } else if (id === "forget") {
-          /* Same reasoning as a card being closed: the project row is gone, so
-             an act about where its territory stood can never be applied. */
-          undo.drop("territory", terr);
-          void skein.forgetProject(cwd);
-        }
-      };
+      ({ target, act } = regionMenu(regionEl.dataset.territory ?? cwd, cwd, where));
     } else if (el.closest(".surface")) {
       target = {
         kind: "ground",
@@ -4246,6 +4145,138 @@
 
   /** A card's menu, at a point. `keyed` when the keyboard opened it, so the
    *  first row is lit for the arrows. */
+  /** A territory's menu — its target and what each row does — for the wall's
+   *  right-click on a region and for a project in chat view's sidebar alike.
+   *  One function, so a row added to one is in the other (`menu.ts`'s
+   *  `region` case says which rows chat view leaves out). `terr` is the
+   *  grouping, `cwd` the folder its cards work in, `where` the wall point an
+   *  image or a widget is hung at. */
+  function regionMenu(terr: string, cwd: string, where: { x: number; y: number }) {
+    const target: MenuTarget = {
+      kind: "region",
+      view: view.current,
+      empty: !skein.convs.some((c) => c.cwd === cwd),
+      moved: territoryMoved(terr),
+      /* Whether taking it off the wall would leave its cards nowhere to
+         stand — the store refuses that, and the menu does not draw an item
+         whose only answer is a refusal. */
+      lone:
+        skein.territories.filter(
+          (t) =>
+            t.projectId ===
+            skein.territories.find((q) => q.id === terr)?.projectId,
+        ).length < 2,
+      /* Offered when it would *do* something, which is stricter than "has a
+         width stored": an imported layout can carry a count that happens to
+         equal the default, and so can a future change of default. Both would
+         be a menu item that visibly does nothing.
+
+         Both read the *territory*, which is where v43 moved its width and its
+         glass spot. They used to read the project row, whose columns v43 left
+         behind as a fossil — kept for an older build, never written again —
+         so a region stuck before the move offered "back on the wall" for
+         ever, and the item went to a toggle keyed on the folder that no
+         territory id could match. */
+      sized: colsOf(skein.territories.find((t) => t.id === terr)) !== REGION_COLS,
+      glass: !!spotOf(skein.territories.find((t) => t.id === terr)),
+      chat: skein.isChatHome(cwd),
+      nowhere: adrift.has(cwd),
+      offers: offersOf(),
+      /* The same five the `+` offers, so `new conversation as…` and the `+`'s
+         right-click cannot come to disagree about what a card costs. The
+         default rides along only to be *marked* — the row above opens on it,
+         and this is the list that says which one that is. */
+      presets: presetPicks(),
+      presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
+      pools: skein.pools[cwd] ?? [],
+      /* Where its cards could all go: the card menu's `move` filter, for
+         this territory's project. */
+      walls: skein.isChatHome(cwd)
+        ? []
+        : wallsHolding(
+            skein.projects.find(
+              (p) => p.id === skein.territories.find((q) => q.id === terr)?.projectId,
+            )?.name ?? "",
+          ),
+    };
+    /* The menu is drawn from the cache, and the cache is refreshed behind it:
+       a project added this session, or a `.mcp.json` written since load,
+       shows up the next time its territory is right-clicked. */
+    void skein.refreshPools(cwd);
+    const act = (id: string) => {
+      if (id === "glass") canvas?.toggleGlass("region", terr);
+      else if (id.startsWith("pool:")) void skein.togglePool(cwd, id.slice(5));
+      else if (id.startsWith("moveall:")) askMoveAll(terr, id.slice(8));
+      else if (id === "explorer") void skein.showInExplorer(cwd);
+      else if (id === "chat") void openChat();
+      else if (id === "new") void openIn(cwd);
+      /* `newas:` with nothing after it is "as claude code is set up", and it
+         has to reach `openIn` as `null` rather than `undefined`: undefined
+         means "nobody said, use the wall's default", which is the one thing
+         this row is for *not* doing. Same distinction `Skein.open` draws and
+         the same one the `+`'s handler makes a few lines up. */
+      else if (id.startsWith("newas:")) {
+        const chosen = id.slice(6);
+        void openIn(cwd, undefined, chosen === "" ? null : presetById(chosen));
+      } else if (id === "new-worktree") canvas?.startBranch(cwd);
+      else if (id === "adopt") void openImport();
+      else if (id === "image") void pickImage(where);
+      else if (id.startsWith("widget:")) hangWidget(id.slice(7), where);
+      else if (id === "reflow") {
+        const before = stands();
+        skein.placeTerritory(terr, null, null);
+        undo.did("settling a territory back in", moved(before));
+      } else if (id === "rewidth") {
+        const before = stands();
+        skein.sizeTerritory(terr, null);
+        undo.did("resizing a territory", moved(before));
+      } else if (id === "guidance") {
+        /* Opened on this territory, by id — the panel speaks the store's
+           vocabulary and the wall speaks paths. A territory with no row is
+           not a case: the region was drawn from one. */
+        const p = skein.projects.find((x) => x.root_path === cwd);
+        guiding = { focus: p?.id ?? null };
+      } else if (id === "new-grouping") {
+        const t = skein.territories.find((q) => q.id === terr);
+        if (t) {
+          void skein.makeTerritory(t.projectId, "new grouping").then((made) => {
+            /* Straight into the handle, selected — see `nameTerritory`. The
+               placeholder is never what anybody wants, and a region you have
+               to go and find a second gesture to name is a region most people
+               would leave called "new grouping". */
+            if (made) canvas?.nameTerritory(made, "new grouping");
+          });
+        }
+      } else if (id === "rename-grouping") {
+        const t = skein.territories.find((q) => q.id === terr);
+        if (t) canvas?.nameTerritory(t.id, t.name);
+      } else if (id === "drop-grouping") {
+        undo.drop("territory", terr);
+        void skein.forgetTerritory(terr);
+      } else if (id === "forget") {
+        /* Same reasoning as a card being closed: the project row is gone, so
+           an act about where its territory stood can never be applied. */
+        undo.drop("territory", terr);
+        void skein.forgetProject(cwd);
+      }
+    };
+    return { target, act };
+  }
+
+  /** A project's menu, from chat view's sidebar: the territory menu for the
+   *  project's first grouping (`regionMenu`), which under chat view leaves out
+   *  every row that arranges the wall. Nothing is hung anywhere from here, so
+   *  the wall point is never read. */
+  function projectMenuAt(name: string, at: { x: number; y: number }, keyed: boolean) {
+    const p = skein.projects.find((q) => q.name === name && !skein.isChatHome(q.root_path));
+    if (!p) return;
+    const terr = skein.territories.find((t) => t.projectId === p.id);
+    const { target, act } = regionMenu(terr?.id ?? p.root_path, p.root_path, { x: 0, y: 0 });
+    const items = menuFor(target);
+    if (!items.length) return;
+    menu = { x: at.x, y: at.y, items, act, keyed };
+  }
+
   function menuAt(c: CardHandle, x: number, y: number, keyed: boolean) {
     const items = menuFor(c.menu());
     if (!items.length) return;
@@ -5143,6 +5174,7 @@
       y={menu.y}
       items={menu.items}
       keyed={menu.keyed}
+      look={chat ? "chat" : "wall"}
       onpick={(id, mod) => {
         menu?.act(id, mod);
         menu = null;
@@ -5371,10 +5403,11 @@
         if (c) ring(c);
       }}
       onwall={() => void switchView("wall")}
-      onmenu={(e, id) => {
+      onmenu={(id, at, keyed) => {
         const c = cards.find(id);
-        if (c) menuAt(c, e.clientX, e.clientY, false);
+        if (c) menuAt(c, at.x, at.y, keyed);
       }}
+      onprojectmenu={projectMenuAt}
       {starter}
       {actions}
       {ledger}

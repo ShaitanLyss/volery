@@ -34,6 +34,7 @@
     onselect,
     onnew,
     onwall,
+    onmenu,
   }: {
     skein: Skein;
     actions: Actions;
@@ -44,6 +45,10 @@
     onnew: () => void;
     /** *Show it on the wall*. */
     onwall: () => void;
+    /** The project's menu, opened under the `⋯` — the same one its sidebar row
+     *  gives on a right-click, so a mouse that never right-clicks still finds
+     *  it. */
+    onmenu?: (at: { x: number; y: number }, keyed: boolean) => void;
   } = $props();
 
   let filter = $state<Filter>("all");
@@ -114,6 +119,22 @@
     <button type="button" class="primary" onclick={onnew} title="a new conversation in this folder (ctrl+shift+O)">
       <Icon name="plus" small />new conversation here
     </button>
+    {#if onmenu}
+      <!-- The project's menu. `detail` is zero for a press made with the
+           keyboard (Enter or space on the focused button), which is the one
+           that puts the first row under the keys. -->
+      <button
+        type="button"
+        class="moreb"
+        aria-label="more for {project.name}"
+        aria-haspopup="menu"
+        title="more for this project — or right-click it in the sidebar"
+        onclick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          onmenu({ x: r.right - 220, y: r.bottom + 6 }, e.detail === 0);
+        }}><Icon name="more" small /></button
+      >
+    {/if}
   </header>
 
   <section class="convs" aria-label="its conversations">
@@ -304,6 +325,23 @@
     color: var(--cv-sheet, var(--ink));
     background: var(--paper);
     white-space: nowrap;
+  }
+  .moreb {
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    border: 1px solid var(--cv-hair, var(--edge));
+    background: color-mix(in oklab, var(--raised) 70%, transparent);
+    color: var(--paper-dim);
+    cursor: pointer;
+  }
+  .moreb:hover,
+  .moreb:focus-visible {
+    color: var(--paper);
+    background: color-mix(in oklab, var(--paper) 6%, transparent);
+    outline: none;
   }
   .filters {
     display: flex;

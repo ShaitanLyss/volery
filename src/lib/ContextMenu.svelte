@@ -36,7 +36,18 @@
    * out of it. A menu opened by a chord — the card's own, `<space> c m` — puts
    * the first row under the keyboard at once; one opened by the mouse leaves
    * the focus where it was, so the editable menu's copy and paste still act on
-   * the field you right-clicked, and the first arrow is what takes the keys. */
+   * the field you right-clicked, and the first arrow is what takes the keys.
+   *
+   * ## Two looks, one menu
+   *
+   * Chat view draws its menus the way it draws everything else — the system's
+   * own face at 13px, rounded, a soft tint under the pointer, dropping in —
+   * and the wall draws them as the wall's chrome. `look` is that and nothing
+   * else: the rows, the keys, the submenu and its placement are this file's
+   * once, so a fix to any of them reaches both rooms (Lyss, 2026-10-21: *"a
+   * proper one designed and styled respecting chat view's direction, with the
+   * same features (dry)"*). The chat look is `PickMenu`'s, chat view's own
+   * picker, read off its stylesheet rather than invented here. */
 
   import { tick } from "svelte";
   import type { MenuItem } from "./menu";
@@ -46,6 +57,7 @@
     y,
     items,
     keyed = false,
+    look = "wall",
     onpick,
     onclose,
   }: {
@@ -55,6 +67,8 @@
     items: MenuItem[];
     /** Opened from the keyboard, so the first row takes the focus. */
     keyed?: boolean;
+    /** Which room it is drawn for — see "Two looks, one menu" above. */
+    look?: "wall" | "chat";
     /** `mod` is ctrl (or cmd) held at the moment of the click — a second thing
      *  a row can mean, for the one menu that needs one. Optional, and every
      *  other call site simply takes the id and ignores it. */
@@ -204,6 +218,7 @@
 <div class="catch" onpointerdown={onclose} oncontextmenu={onclose} role="presentation">
   <div
     class="menu"
+    class:chat={look === "chat"}
     bind:this={el}
     style:left="calc({left}px - var(--span-x, 0px))"
     style:top="calc({top}px - var(--span-y, 0px))"
@@ -245,6 +260,7 @@
           {#if open === it.id}
             <div
               class="menu sub"
+              class:chat={look === "chat"}
               class:placed
               class:flip
               style:--lift="{lift}px"
@@ -462,5 +478,88 @@
     height: 1px;
     margin: 0.22rem 0.3rem;
     background: var(--edge);
+  }
+  /* ── the chat look ─────────────────────────────────────────────────────
+     `PickMenu`'s, chat view's own picker: the chrome face, 13px, a 12px radius
+     on the panel and 9px on a row, a 5% paper tint under the pointer, and the
+     same short drop in. Colour stays status — the one warm thing is still a
+     destructive row, and still only under the pointer. */
+  .menu.chat {
+    min-width: 220px;
+    padding: 6px;
+    border-radius: var(--cv-r-m, 12px);
+    border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 9%);
+    background: color-mix(in oklab, var(--raised) 97%, transparent);
+    box-shadow: 0 24px 50px -20px color-mix(in srgb, var(--shade) 95%, transparent);
+    font-family: var(--cv-ui, var(--util));
+    animation: cv-drop var(--dur-quick, 160ms) var(--ease-out, ease-out) both;
+  }
+  .menu.chat.sub {
+    /* The panel's own padding, so the list's first row lines up with its
+       opener, as the wall's does. */
+    top: calc(-6px - var(--lift, 0px));
+    margin-left: 4px;
+    animation: none;
+  }
+  .menu.chat.sub.flip {
+    margin-left: 0;
+    margin-right: 4px;
+  }
+  @keyframes cv-drop {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .menu.chat {
+      animation-name: cv-fade;
+    }
+  }
+  @keyframes cv-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  .menu.chat .row {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 7px 10px;
+    border-radius: 9px;
+    color: var(--paper-dim);
+  }
+  .menu.chat .row:hover,
+  .menu.chat .row:focus-visible,
+  .menu.chat .more.open {
+    background: color-mix(in oklab, var(--paper) 6%, transparent);
+    color: var(--paper);
+    outline: none;
+  }
+  .menu.chat .row.pick {
+    padding-left: 26px;
+  }
+  .menu.chat .row.pick.on::before {
+    left: 11px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    background: var(--paper);
+  }
+  .menu.chat .note {
+    font-family: inherit;
+    font-size: 11px;
+    color: var(--cv-note, var(--paper-mute));
+  }
+  .menu.chat .hint {
+    font-size: 11.5px;
+    padding: 4px 10px 2px;
+    color: var(--cv-note, var(--paper-mute));
+  }
+  .menu.chat .sep {
+    margin: 5px 4px;
+    background: var(--cv-hair, var(--edge));
+  }
+  .menu.chat .chev {
+    border-left-color: var(--paper-mute);
   }
 </style>

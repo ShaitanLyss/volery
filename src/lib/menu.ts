@@ -603,7 +603,17 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         t.moved ? item("reline", "put it back in line") : null,
       ]);
 
-    case "region":
+    /* A territory on the wall, and a project in chat view's sidebar — one
+       list, for `cardRows`' reason: a verb added here reaches both rooms by
+       being added once. Under chat view the wall is offstage, so the rows that
+       arrange it go: the glass, settling it back in, its width, its groupings,
+       pinning an image or hanging a widget on it, and the worktree opening,
+       whose branch name is typed into the wall's own handle. What is left is
+       about the *project* — opening work in it, where it is on disk, what it
+       tells its cards, its shared servers, carrying its cards elsewhere, and
+       forgetting it. */
+    case "region": {
+      const wall = t.view !== "chat";
       return tidy([
         t.chat ? item("chat", "new chat conversation") : null,
         t.chat ? null : item("new", "new conversation here"),
@@ -647,29 +657,29 @@ export function menuFor(t: MenuTarget): MenuItem[] {
                 ...(t.presetDefault === undefined ? {} : { on: t.presetDefault === "" }),
               },
             ]),
-        t.chat ? null : item("new-worktree", "new conversation in a worktree"),
+        t.chat || !wall ? null : item("new-worktree", "new conversation in a worktree"),
         sep,
         item("adopt", "adopt a recorded session…"),
         /* Dropping a file in from outside was the only way to pin something up,
            which is fine until the thing you want is not already in a window you
            can drag from. */
-        item("image", "pin up an image…"),
-        ...offerItems(t.offers ?? []),
+        wall ? item("image", "pin up an image…") : null,
+        ...(wall ? offerItems(t.offers ?? []) : []),
         sep,
         /* A territory on the glass takes its cards with it — it is a place on
            the wall and a place is where its work is standing, so a region box
            on its own would be an empty rectangle. Grouped with `reflow`: both
            are answers to "where does this territory live", and unlike `reflow`
            this one is always offered, since it has a way back of its own. */
-        glassItem(t.glass),
+        wall ? glassItem(t.glass) : null,
         /* The way back from carrying a territory off somewhere — a card's "let it
            flow again", one level up. Offered only when it would move something:
            a territory still standing where it was packed has nothing to tidy. */
-        t.moved ? item("reflow", "settle it back in") : null,
+        wall && t.moved ? item("reflow", "settle it back in") : null,
         /* And the way back from widening one, which is the same offer about the
            territory's other two numbers. Withheld on the same test: a territory
            standing at the width every other one is has nothing to give back. */
-        t.sized ? item("rewidth", "back to its usual width") : null,
+        wall && t.sized ? item("rewidth", "back to its usual width") : null,
         /* Another region over the same checkout. This is the gesture the whole
            of v42 exists for, and it sits with the two above because all three
            answer "how is this folder's work arranged on the wall" — not with
@@ -681,7 +691,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            project, and a second grouping of nothing is furniture with nothing
            to put in it. */
         sep,
-        t.chat
+        t.chat || !wall
           ? null
           : {
               kind: "item" as const,
@@ -691,7 +701,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
                  and the rule that a gesture with a key says so. */
               note: "space then g n",
             },
-        t.chat
+        t.chat || !wall
           ? null
           : {
               kind: "item" as const,
@@ -702,7 +712,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         /* Offered only where it would do something. The last grouping of a
            project is refused by the store, and a menu entry whose only answer
            is a refusal is one this file's standing rule says not to draw. */
-        t.chat || t.lone ? null : item("drop-grouping", "take this grouping off the wall", true),
+        t.chat || t.lone || !wall ? null : item("drop-grouping", "take this grouping off the wall", true),
         /* Every card standing here, to another machine — the card menu's
            `move it to another machine`, run over the grouping one card at a
            time behind a question first (`moveall.ts`). Offered where the card
@@ -772,6 +782,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         t.empty ? sep : null,
         t.empty ? item("forget", "forget this project", true) : null,
       ].filter(Boolean) as MenuItem[]);
+    }
 
     case "ground":
       return tidy([

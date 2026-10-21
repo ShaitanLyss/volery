@@ -82,6 +82,7 @@
     onselect,
     onwall,
     onmenu,
+    onprojectmenu,
     onnew,
     onaccount,
     starter,
@@ -118,7 +119,10 @@
     sidebar?: boolean;
     onselect: (id: string) => void;
     onwall: () => void;
-    onmenu: (e: MouseEvent, id: string) => void;
+    onmenu: (id: string, at: { x: number; y: number }, keyed: boolean) => void;
+    /** A project's menu — the territory's, less the rows that arrange the wall
+     *  (`menu.ts`'s `region` case). */
+    onprojectmenu: (name: string, at: { x: number; y: number }, keyed: boolean) => void;
     onnew: () => void;
     onaccount?: () => void;
     /** The empty state's choices and its first send (`starting.svelte.ts`). */
@@ -716,6 +720,7 @@
         onsearch={search}
         onproject={openProject}
         {onmenu}
+        {onprojectmenu}
         onaccount={() => (pop = !pop)}
       />
     </div>
@@ -731,6 +736,7 @@
       onsearch={search}
       onproject={openProject}
       {onmenu}
+      {onprojectmenu}
       onaccount={() => (pop = !pop)}
     />
   {/if}
@@ -760,6 +766,7 @@
           onnew();
         }}
         onwall={() => onshowwall(project.name)}
+        onmenu={(at, keyed) => onprojectmenu(project.name, at, keyed)}
       />
     {:else}
     <div class="split">

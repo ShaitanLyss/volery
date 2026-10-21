@@ -23,6 +23,7 @@
     onsearch,
     onproject,
     onmenu,
+    onprojectmenu,
     onaccount,
   }: {
     groups: Group[];
@@ -37,9 +38,27 @@
     onnew: () => void;
     onsearch: () => void;
     onproject: (name: string) => void;
-    onmenu: (e: MouseEvent, id: string) => void;
+    /** A conversation's menu, opened at `at` — by a right-click, or from the
+     *  keyboard (`keyed`), which puts the first row under the keys. */
+    onmenu: (id: string, at: At, keyed: boolean) => void;
+    /** A project's menu, the same way. */
+    onprojectmenu: (name: string, at: At, keyed: boolean) => void;
     onaccount?: () => void;
   } = $props();
+
+  type At = { x: number; y: number };
+
+  /* A row's menu has two ways in, and the keyboard one is the house rule (a
+     button with no key is unfinished): the context-menu key or Shift+F10 on a
+     focused row, opened under the row with the first item focused. The
+     keyboard's own `contextmenu` event arrives as well, on Windows at keyup,
+     and is let go — a real right-click is the one with `button === 2` — so a
+     key press opens one menu, not two. */
+  const menuKey = (e: KeyboardEvent) => e.key === "ContextMenu" || (e.shiftKey && e.key === "F10");
+  function under(el: HTMLElement): At {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + 14, y: r.bottom - 2 };
+  }
 
   /** Set aside starts folded: it is the end of the list on purpose — and
    *  opens by itself when what you selected is in it, which a parent named
@@ -166,7 +185,12 @@
     {@attach fullTitle(() => p.row.title, (el) => el.querySelector<HTMLElement>(".t"))}
     oncontextmenu={(e) => {
       e.preventDefault();
-      onmenu(e, p.row.id);
+      if (e.button === 2) onmenu(p.row.id, { x: e.clientX, y: e.clientY }, false);
+    }}
+    onkeydown={(e) => {
+      if (!menuKey(e)) return;
+      e.preventDefault();
+      onmenu(p.row.id, under(e.currentTarget), true);
     }}
   >
     <i class="st {p.tone}" aria-hidden="true"></i>
@@ -183,7 +207,21 @@
       <ul>
         {#each projects as f (f.name)}
           <li>
-            <button type="button" class="row folder" onclick={() => onproject(f.name)} aria-label="{f.name}, {f.count} conversations">
+            <button
+              type="button"
+              class="row folder"
+              onclick={() => onproject(f.name)}
+              oncontextmenu={(e) => {
+                e.preventDefault();
+                if (e.button === 2) onprojectmenu(f.name, { x: e.clientX, y: e.clientY }, false);
+              }}
+              onkeydown={(e) => {
+                if (!menuKey(e)) return;
+                e.preventDefault();
+                onprojectmenu(f.name, under(e.currentTarget), true);
+              }}
+              aria-label="{f.name}, {f.count} conversations"
+            >
               <Icon name="folder" small />
               <span class="t">{f.name}</span>
               <span class="aside">

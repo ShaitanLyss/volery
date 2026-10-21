@@ -80,3 +80,22 @@ export function nextMotion(id: unknown, dir: number = 1): MotionId {
 export function moves(id: unknown): boolean {
   return motionFor(id) !== "still";
 }
+
+/** What the stylesheets are told, which is the setting on the wall and full
+ *  motion in chat view.
+ *
+ *  The setting is a GPU knob about the *wall*: every working card's glow made
+ *  the whole window present at display rate (the table at the top of this
+ *  file). Chat view takes the wall offstage — `display: none`, nothing on it
+ *  painted — and what is left is one conversation's handful of marks: a tool
+ *  call's pip, the shimmer on a turn being written, a sidebar dot. Holding
+ *  those still to save a cost that is not being paid was Lyss's report of
+ *  2026-10-21: *"the animations on chat view are not working … because they're
+ *  still tied to the motion setting of the wall, which they shouldn't"*.
+ *
+ *  `prefers-reduced-motion` is untouched by this: it is asked of the OS in
+ *  every stylesheet that moves anything, in both views, and a person who set
+ *  it is not overruled by a view. */
+export function paintedMotion(id: unknown, view: "wall" | "chat"): MotionId {
+  return view === "chat" ? FULL : motionFor(id);
+}

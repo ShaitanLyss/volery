@@ -891,3 +891,61 @@ describe("a card's menu under chat view", () => {
     for (const id of ["keep:wall", "regroup", "unpin"]) expect(all("wall")).toContain(id);
   });
 });
+
+describe("a project's menu in chat view", () => {
+  /* The territory's menu, less every row that arranges the wall — chat view
+     takes the wall offstage, so those would act where nobody can see. */
+  const full = {
+    kind: "region" as const,
+    moved: true,
+    sized: true,
+    glass: false,
+    empty: true,
+    walls: ["lab"],
+    pools: [{ name: "rise", shared: false }],
+    presets: [{ id: "deep", label: "deep work", note: "opus[1m] · xhigh" }],
+    offers: [{ id: "clock", label: "hang up a clock" }],
+  };
+  const flat = (items: MenuItem[]): string[] =>
+    items.flatMap((i) => (i.kind === "item" ? [i.id] : i.kind === "more" ? [i.id] : []));
+
+  test("keeps what is about the project", () => {
+    const got = flat(menuFor({ ...full, view: "chat" }));
+    for (const id of ["new", "new-as", "adopt", "explorer", "guidance", "pools", "forget"]) {
+      expect(got, id).toContain(id);
+    }
+  });
+
+  test("drops what arranges the wall", () => {
+    const got = flat(menuFor({ ...full, view: "chat" }));
+    for (const id of [
+      "glass",
+      "reflow",
+      "rewidth",
+      "image",
+      "widget:clock",
+      "new-grouping",
+      "rename-grouping",
+      "drop-grouping",
+      "new-worktree",
+    ]) {
+      expect(got, id).not.toContain(id);
+    }
+  });
+
+  test("the wall's menu is unchanged by the view field's absence", () => {
+    const wall = flat(menuFor(full));
+    for (const id of ["glass", "reflow", "rewidth", "image", "new-grouping", "new-worktree"]) {
+      expect(wall, id).toContain(id);
+    }
+  });
+
+  test("leaves no rule leading, trailing or doubled", () => {
+    const items = menuFor({ ...full, view: "chat" });
+    expect(items[0]!.kind).not.toBe("sep");
+    expect(items[items.length - 1]!.kind).not.toBe("sep");
+    for (let i = 1; i < items.length; i++) {
+      expect(items[i]!.kind === "sep" && items[i - 1]!.kind === "sep").toBe(false);
+    }
+  });
+});

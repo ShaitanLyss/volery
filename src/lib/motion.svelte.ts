@@ -11,7 +11,8 @@
  * appears, so a divergence cannot outlive one notification — the same trade
  * `Ink` documents and for the same reason. */
 
-import { FULL, motionFor, nextMotion, type MotionId } from "./motion";
+import { FULL, motionFor, nextMotion, paintedMotion, type MotionId } from "./motion";
+import { view } from "./view.svelte";
 
 const MOTION_KEY = "skein.motion";
 
@@ -19,7 +20,8 @@ const MOTION_KEY = "skein.motion";
  *  read by stylesheets in five components and a prop threaded through all of
  *  them is five chances to forget one. */
 function paint(id: MotionId) {
-  document.documentElement.dataset.motion = id;
+  /* The setting is the wall's; chat view paints full motion (`paintedMotion`). */
+  document.documentElement.dataset.motion = paintedMotion(id, view.current);
 }
 
 export class Motion {
@@ -44,6 +46,13 @@ export class Motion {
     try {
       localStorage.setItem(MOTION_KEY, this.id);
     } catch {}
+  }
+
+  /** Paint again for the view now up — called when the view switches, since
+   *  what the stylesheets are told depends on it and the setting has not
+   *  moved. */
+  repaint() {
+    paint(this.id);
   }
 
   cycle(dir: number = 1) {

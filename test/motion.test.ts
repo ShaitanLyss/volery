@@ -4,6 +4,7 @@ import {
   MOTIONS,
   motionAt,
   motionFor,
+  paintedMotion,
   moves,
   nextMotion,
 } from "../src/lib/motion";
@@ -112,5 +113,15 @@ describe("where it is reachable", () => {
     expect(ids(without)).not.toContain("motion:full");
     expect(without[0]?.kind).not.toBe("sep");
     expect(without.at(-1)?.kind).not.toBe("sep");
+  });
+});
+
+describe("the setting is the wall's", () => {
+  test("chat view paints full motion whatever the wall is set to", () => {
+    for (const m of MOTIONS) expect(paintedMotion(m.id, "chat")).toBe("full");
+  });
+  test("the wall paints what was chosen, and a stray value as full", () => {
+    for (const m of MOTIONS) expect(paintedMotion(m.id, "wall")).toBe(m.id);
+    expect(paintedMotion("sideways", "wall")).toBe("full");
   });
 });
