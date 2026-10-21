@@ -14,7 +14,9 @@
   import { fullPath, namedPath, pathsIn } from "./finding";
   import { paths, symbolLine, useFiles, useLinks, usePictureRoot } from "./paths.svelte";
   import { useCardLinks } from "./cardlinks.svelte";
-  import { handlesIn } from "./chatview";
+  import { useRefLinks } from "./reflinks.svelte";
+  import { candidatesIn, refText, refTip, whollyAn, type Candidate, type Ref } from "./refs";
+  import { refs } from "./refs.svelte";
   import { cardName } from "./naming";
   import { whois } from "./whois.svelte";
   import { handleTip, whoIs } from "./whois";
@@ -71,44 +73,92 @@
   /** Cards named by handle in the prose (`cardlinks.svelte.ts`), or null
    *  where nothing provided them — then a handle is the text it is. */
   const links = useCardLinks();
-  /** The card a code span names, when the whole span is a handle the wall
-   *  knows. */
-  const cardOf = (v: string): CardHandle | null => (links && /^[0-9a-f]{8}$/.test(v) ? links.find(v) : null);
+  /** What else an id can name — a sink item, a notice, a commit — and what a
+   *  press on one does (`reflinks.svelte.ts`). Null where nothing provided it:
+   *  then those ids are the text they are, since a chip nothing can open is a
+   *  link that goes nowhere. */
+  const reflinks = useRefLinks();
 
-  type Run = { text: string; at: At | null; card: CardHandle | null; gone?: string };
-  /** A text node cut into plain runs, paths and cards. Built for every text
-   *  node up front rather than per render, so the template holds no logic. A
-   *  handle is only looked for in what is not a path. */
+  /** What an id turned out to be. At most one of `card`, `gone` and `ref`. */
+  type Hit = { card: CardHandle | null; gone?: string; ref: Ref | null };
+
+  /** What one candidate is, or null for "text" — which is also what it is
+   *  while the answer is still on its way, so nothing flickers into a chip and
+   *  back out of one (`known.ts`'s rule). Asked in the order `RefKind` states:
+   *  a card on the wall, a card the store remembers, a row the store holds, a
+   *  commit in this prose's repository. Reads only reactive answers, so it is
+   *  safe inside a `$derived` and re-runs when one lands. */
+  function classify(c: Candidate): Hit | null {
+    if (c.key.length === 8) {
+      const card = links ? links.find(c.key) : null;
+      if (card) return { card, ref: null };
+      /* A card that has left the wall is not a link — there is nothing to open
+         — but the store still knows what it was called, and its handle names
+         nothing to a person (`whois.ts`). Only an id the store confirms is a
+         card's: a commit hash stays a hash. */
+      if (links) {
+        const gone = whois.stored(c.key);
+        if (gone) return { card: null, gone: whoIs(gone), ref: null };
+        if (gone === undefined) return null;
+      }
+      if (reflinks) {
+        const other = refs.other(c.key);
+        if (other) return { card: null, ref: other };
+        if (other === undefined) return null;
+      }
+    }
+    if (reflinks && files?.root) {
+      const commit = refs.commit(files.root, c.key);
+      if (commit) return { card: null, ref: commit };
+    }
+    return null;
+  }
+
+  /** Whether any of this is worth looking for in a text at all. */
+  const looksForIds = !!(links || reflinks);
+
+  /** The whole of a code span, when it is exactly one id this app knows. */
+  const spanHit = $derived.by(() => {
+    const map = new Map<number, Hit>();
+    if (!looksForIds) return map;
+    for (const [i, k] of kids.entries()) {
+      if (k.t !== "code") continue;
+      const c = whollyAn(k.v);
+      const hit = c ? classify(c) : null;
+      if (hit) map.set(i, hit);
+    }
+    return map;
+  });
+
+  type Run = { text: string; at: At | null; hit: Hit | null };
+  /** A text node cut into plain runs, paths and ids. Built for every text
+   *  node up front rather than per render, so the template holds no logic. An
+   *  id is only looked for in what is not a path. */
   const textRuns = $derived.by(() => {
     const map = new Map<number, Run[]>();
-    if (!files && !links) return map;
+    if (!files && !looksForIds) return map;
     for (const [i, k] of kids.entries()) {
       if (k.t !== "text") continue;
       const runs: Run[] = [];
       const plain = (text: string) => {
         let from = 0;
-        for (const h of links ? handlesIn(text) : []) {
-          const card = links!.find(h.handle);
-          /* A card that has left the wall is not a link — there is nothing to
-             open — but the store still knows what it was called, and its
-             handle names nothing to a person (`whois.ts`). Only a handle the
-             store confirms is a card's: a commit hash stays a hash. */
-          const gone = card ? null : whois.stored(h.handle);
-          if (!card && !gone) continue;
-          if (h.from > from) runs.push({ text: text.slice(from, h.from), at: null, card: null });
-          runs.push({ text: h.handle, at: null, card, gone: gone ? whoIs(gone) : undefined });
-          from = h.to;
+        for (const c of looksForIds ? candidatesIn(text) : []) {
+          const hit = classify(c);
+          if (!hit) continue;
+          if (c.from > from) runs.push({ text: text.slice(from, c.from), at: null, hit: null });
+          runs.push({ text: c.text, at: null, hit });
+          from = c.to;
         }
-        if (from < text.length) runs.push({ text: text.slice(from), at: null, card: null });
+        if (from < text.length) runs.push({ text: text.slice(from), at: null, hit: null });
       };
       let from = 0;
       for (const f of files ? pathsIn(k.v) : []) {
         if (f.from > from) plain(k.v.slice(from, f.from));
-        runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line, symbol: f.symbol }, card: null });
+        runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line, symbol: f.symbol }, hit: null });
         from = f.to;
       }
       if (from < k.v.length) plain(k.v.slice(from));
-      if (runs.some((r) => r.at || r.card || r.gone)) map.set(i, runs);
+      if (runs.some((r) => r.at || r.hit)) map.set(i, runs);
     }
     return map;
   });
@@ -195,7 +245,7 @@
         data-dir={dir ? "1" : null}
         title={hint(to.path, dir, at.symbol)}
         onclick={(e) => go(e, to.path, at)}>{run.text}</button
-      >{:else if run.card}{@render card(run.card)}{:else if run.gone}<span class="cardgone" title="{handleTip(run.text)} — no longer on the wall">{run.gone}</span>{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code" && cardOf(k.v)}{@render card(cardOf(k.v)!)}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
+      >{:else if run.hit}{@render hit(run.hit, run.text)}{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code" && spanHit.has(i)}{@render hit(spanHit.get(i)!, "`" + k.v + "`")}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
         spanPath.get(i)!}{@const to = targetOf(at)!}{@const dir = to.kind === "dir"}<button
       type="button"
       class="path code"
@@ -222,22 +272,39 @@
       onclick={() => onlink?.(k.href)}><Self kids={k.kids} /></button
     >{/if}{/each}
 
-<!-- A card named by its handle, drawn as the card: its name, and its live dot
-     in the one colour the wall gives status. A button reading as prose, like a
-     path — this app noticed it, the author did not write a link. -->
-{#snippet card(c: CardHandle)}<button
-    type="button"
-    class="cardlink"
-    data-card={c.id}
-    onclick={() => links?.open(c)}
-    ><i
-      class="st"
-      class:work={c.face.working}
-      class:ask={!!c.ask}
-      class:fail={c.face.tier === "fail"}
-      aria-hidden="true"
-    ></i>{cardName(c.face.title, "").text || "a conversation"}</button
-  >{/snippet}
+<!-- An id drawn as the thing it names: a card by its name and its live dot, a
+     sink item, a notice or a commit by its title or subject behind a small
+     shape of its own. A button reading as prose, like a path — this app noticed
+     it, the author did not write a link — and `data-md` carries the id as it
+     was written, so a copy gives back what the agent said and not what this
+     window drew in its place (`copy.ts`).
+
+     The shape is the kind, and it is never a colour: a card's dot is a status
+     and the only coloured thing here, while a sink item is a square, a notice a
+     hairline square and a commit a diamond. Colour on this wall is status. -->
+{#snippet hit(h: Hit, md: string)}{#if h.card}{@const c = h.card}<button
+      type="button"
+      class="cardlink"
+      data-card={c.id}
+      data-md={md}
+      onclick={() => links?.open(c)}
+      ><i
+        class="st"
+        class:work={c.face.working}
+        class:ask={!!c.ask}
+        class:fail={c.face.tier === "fail"}
+        aria-hidden="true"
+      ></i>{cardName(c.face.title, "").text || "a conversation"}</button
+    >{:else if h.gone}<span class="cardgone" data-md={md} title="{handleTip(md.replaceAll('`', ''))} — no longer on the wall">{h.gone}</span>{:else if h.ref}{@const r = h.ref}<button
+      type="button"
+      class="cardlink refchip {r.kind}"
+      class:settled={r.kind === "sink" && r.settled}
+      data-ref={r.kind}
+      data-md={md}
+      title={refTip(r)}
+      onclick={() => reflinks?.open(r)}
+      ><i class="shape" aria-hidden="true"></i>{refText(r)}</button
+    >{/if}{/snippet}
 
 <style>
   /* A card that has left the wall: named, set as the prose around it, and no
@@ -282,6 +349,27 @@
   }
   .cardlink .st.fail {
     background: var(--st-fail);
+  }
+  /* The kind of a chip is a shape drawn beside its words, in the ink the words
+     are in. */
+  .refchip .shape {
+    display: inline-block;
+    width: 0.42em;
+    height: 0.42em;
+    margin: 0 0.3em 0.12em 0.05em;
+    vertical-align: middle;
+    background: var(--paper-mute);
+  }
+  .refchip.notice .shape {
+    background: none;
+    border: 1px solid var(--paper-mute);
+  }
+  .refchip.commit .shape {
+    transform: rotate(45deg) scale(0.9);
+  }
+  /* A settled sink item is dealt with: the words stay, quieter. */
+  .refchip.settled {
+    color: var(--paper-mute);
   }
   code {
     font-family: var(--mono);

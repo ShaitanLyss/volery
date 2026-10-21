@@ -25,6 +25,8 @@
   import Gallery from "./Gallery.svelte";
   import { parseMarkdown } from "./markdown";
   import { replies } from "./replies.svelte";
+  import { refs } from "./refs.svelte";
+  import { useFiles } from "./paths.svelte";
   import { glance } from "./glancing.svelte";
   import { replyKey } from "./replies";
   import PromptBox from "./PromptBox.svelte";
@@ -96,6 +98,12 @@
      *  back into that card's prompt (`replies.ts`). */
     card?: string;
   } = $props();
+
+  /* The directory this question's prose counts from, if any — what a commit
+     hash named in an option is looked up in. Off the ambient scope, never a
+     prop, so a surface that forgets to say does not get another card's. */
+  const fileScope = useFiles();
+  const filesRoot = $derived(fileScope()?.root ?? null);
 
   let free = $state("");
 
@@ -565,8 +573,8 @@
             onclick={() => give(o.label)}
             title={i < 9 ? `${i + 1} selects it, enter gives it` : undefined}
           >
-            <span class="lbl">{#if i < 9}<span class="num" aria-hidden="true">{i + 1}</span>{/if}{o.label}</span>
-            {#if o.detail}<span class="det">{o.detail}</span>{/if}
+            <span class="lbl">{#if i < 9}<span class="num" aria-hidden="true">{i + 1}</span>{/if}{refs.say(o.label, filesRoot)}</span>
+            {#if o.detail}<span class="det">{refs.say(o.detail, filesRoot)}</span>{/if}
           </button>
         {/each}
       </div>

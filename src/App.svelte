@@ -15,6 +15,9 @@
   import { lasted } from "./lib/presence";
   import { cardByHandle } from "./lib/chatview";
   import { provideCardLinks } from "./lib/cardlinks.svelte";
+  import { provideRefLinks } from "./lib/reflinks.svelte";
+  import RefSheet from "./lib/RefSheet.svelte";
+  import type { Ref } from "./lib/refs";
   import Tooltip from "./lib/Tooltip.svelte";
   import Vigil from "./lib/Vigil.svelte";
   import Away from "./lib/Away.svelte";
@@ -2301,6 +2304,12 @@
     find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
     open: (c) => focusCard(c),
   });
+  /* And the rest of what an id can name — a sink item, a notice, a commit — opens
+     in a sheet over whatever is on screen (`reflinks.svelte.ts`). One sheet for
+     the wall and for chat view, since chat view is drawn inside this component
+     and what a sheet is *over* is the only thing that differs. */
+  let refSheet = $state<Ref | null>(null);
+  provideRefLinks({ open: (ref) => (refSheet = ref) });
 
   function reveal(full: string) {
     void invoke("show_in_explorer", { path: full }).catch((e) => (skein.fault = String(e)));
@@ -3454,7 +3463,7 @@
     if (e.key === "Escape") {
       /* Stops a turn, and goes no further: it never deselects, which would
          empty the view (§5.6). Anything open over the view answers its own. */
-      if (menu || showImport || showThemes || showAccounts || showKeyring || showFlyway || showSink || showDrop || showAnnals || unfinished || openRun || guiding)
+      if (menu || showImport || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding)
         return true;
       if (card && card.can("stop") === "yes") void card.do("stop");
       return true;
@@ -3976,6 +3985,7 @@
         showKeyring ||
         showFlyway ||
         showSink ||
+        refSheet ||
         showDrop ||
         showAnnals ||
         unfinished ||
@@ -5180,6 +5190,9 @@
   {/if}
   {#if showDrop}
     <Drop sink={skein.sink} onclose={() => (showDrop = false)} />
+  {/if}
+  {#if refSheet}
+    <RefSheet reference={refSheet} sink={skein.sink} board={skein.board} onclose={() => (refSheet = null)} />
   {/if}
   {#if showKeyring}
     <Keyring keyring={creds} {devops} onclose={() => (showKeyring = false)} />
