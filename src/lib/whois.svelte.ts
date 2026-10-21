@@ -23,6 +23,10 @@ import { describeTool, NAMES_A_CARD } from "./classify";
 import type { Line } from "./conversation.svelte";
 import { GONE, isCardAddress, shortHandle, whoIs, type Sighting } from "./whois";
 
+/** What the store said of a card this wall cannot see: its name, whether it
+ *  was closed, and the session it last held — what bringing it back resumes. */
+export type Stored = { title: string; closed: boolean; session: string | null };
+
 /** What the reactive half needs of the wall: a card by id, and every id. */
 export type Roll = { find(id: string): CardHandle | null; readonly all: CardHandle[] };
 
@@ -32,7 +36,7 @@ const GATHER_MS = 40;
 class Whois {
   #roll: Roll | null = null;
   /** handle → what the store said: a name, or null for "not in it". */
-  #stored = new SvelteMap<string, { title: string; closed: boolean } | null>();
+  #stored = new SvelteMap<string, Stored | null>();
   #waiting = new Set<string>();
   #timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -75,7 +79,7 @@ class Whois {
    *  see but whose row is still there — asking it the first time. Undefined
    *  until it has answered, null for "no such card". For prose, where only a
    *  handle the store confirms may be drawn as a card. */
-  stored(handle: string): { title: string; closed: boolean } | null | undefined {
+  stored(handle: string): Stored | null | undefined {
     if (!isCardAddress(handle)) return null;
     const h = shortHandle(handle.trim().toLowerCase());
     const got = this.#stored.get(h);
@@ -108,11 +112,14 @@ class Whois {
     this.#waiting.clear();
     if (!handles.length) return;
     try {
-      const named = await invoke<{ handle: string; title: string; closed: boolean }[]>("card_titles", { handles });
+      const named = await invoke<{ handle: string; title: string; closed: boolean; session?: string | null }[]>(
+        "card_titles",
+        { handles },
+      );
       const got = new Map(named.map((n) => [n.handle, n]));
       for (const h of handles) {
         const n = got.get(h);
-        this.#stored.set(h, n ? { title: n.title, closed: n.closed } : null);
+        this.#stored.set(h, n ? { title: n.title, closed: n.closed, session: n.session ?? null } : null);
       }
     } catch {
       /* A failed ask is not an answer (`known.ts`'s rule): nothing is recorded,

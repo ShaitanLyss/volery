@@ -17,6 +17,7 @@
   import { provideCardLinks } from "./lib/cardlinks.svelte";
   import { provideRefLinks } from "./lib/reflinks.svelte";
   import RefSheet from "./lib/RefSheet.svelte";
+  import RefPeek from "./lib/RefPeek.svelte";
   import type { Ref } from "./lib/refs";
   import Tooltip from "./lib/Tooltip.svelte";
   import Vigil from "./lib/Vigil.svelte";
@@ -892,6 +893,9 @@
      `result` used to become two `turn` rows, one per generation. */
   onDestroy(() => {
     whois.detach(cards);
+    /* The peek's rest timer, which a superseded generation must not leave to
+       fire into a component nobody is drawing. */
+    unpeek();
     /* Ahead of everything, and written rather than merely cancelled: a close
        is the other way a window stops existing, and the debounce means the
        last few hundred milliseconds of typing are otherwise still pending. */
@@ -2312,13 +2316,47 @@
   provideCardLinks({
     find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
     open: (c) => focusCard(c),
+    revive: (session) =>
+      void skein.revive(session).then((got) => {
+        if (typeof got === "string") skein.fault = got;
+        else {
+          const c = cards.find(got.id);
+          if (c) focusCard(c);
+        }
+      }),
   });
   /* And the rest of what an id can name — a sink item, a notice, a commit — opens
      in a sheet over whatever is on screen (`reflinks.svelte.ts`). One sheet for
      the wall and for chat view, since chat view is drawn inside this component
      and what a sheet is *over* is the only thing that differs. */
   let refSheet = $state<Ref | null>(null);
-  provideRefLinks({ open: (ref) => (refSheet = ref) });
+  /* And a peek before the sheet: the pointer resting on a chip for `PEEK_MS`
+     shows what it names beside it (`RefPeek.svelte`). A rest rather than an
+     enter, so a pointer swept across a paragraph opens nothing. */
+  let refPeek = $state<{ ref: Ref; at: { left: number; top: number; bottom: number } } | null>(null);
+  let peekTimer: ReturnType<typeof setTimeout> | null = null;
+  const PEEK_MS = 380;
+  function unpeek() {
+    if (peekTimer) clearTimeout(peekTimer);
+    peekTimer = null;
+    refPeek = null;
+  }
+  provideRefLinks({
+    open: (ref) => {
+      unpeek();
+      refSheet = ref;
+    },
+    hover: (ref, el) => {
+      unpeek();
+      peekTimer = setTimeout(() => {
+        peekTimer = null;
+        if (!el.isConnected) return;
+        const r = el.getBoundingClientRect();
+        refPeek = { ref, at: { left: r.left, top: r.top, bottom: r.bottom } };
+      }, PEEK_MS);
+    },
+    unhover: unpeek,
+  });
 
   function reveal(full: string) {
     void invoke("show_in_explorer", { path: full }).catch((e) => (skein.fault = String(e)));
@@ -5226,6 +5264,9 @@
   {/if}
   {#if showDrop}
     <Drop sink={skein.sink} onclose={() => (showDrop = false)} />
+  {/if}
+  {#if refPeek && !refSheet}
+    <RefPeek reference={refPeek.ref} at={refPeek.at} sink={skein.sink} board={skein.board} look={chat ? "chat" : "wall"} />
   {/if}
   {#if refSheet}
     <RefSheet

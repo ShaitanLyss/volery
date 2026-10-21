@@ -160,6 +160,11 @@
   provideCardLinks({
     find: (handle) => cards.find(cardByHandle(handle, cards.all.map((c) => c.id))),
     open: (c) => choose(c.id),
+    revive: (session) =>
+      void skein.revive(session).then((got) => {
+        if (typeof got === "string") skein.fault = got;
+        else choose(got.id);
+      }),
   });
 
   /* ── the sidebar's rows ─────────────────────────────────────────────── */

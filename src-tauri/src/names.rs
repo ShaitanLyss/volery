@@ -26,6 +26,10 @@ pub struct Named {
     pub handle: String,
     pub title: String,
     pub closed: bool,
+    /// The agent session it last held, which is what bringing a closed card
+    /// back resumes — `importable` lists sessions, not cards, and a card that
+    /// was cleared holds a session that is not its id.
+    pub session: Option<String>,
 }
 
 /// How many handles one ask may carry. The front end gathers a render's worth
@@ -40,7 +44,7 @@ const MOST: usize = 200;
 pub(crate) fn titles(conn: &Connection, handles: &[String]) -> Result<Vec<Named>, String> {
     let mut q = conn
         .prepare(
-            "SELECT title, closed_at IS NOT NULL FROM conversation
+            "SELECT title, closed_at IS NOT NULL, agent_session_id FROM conversation
               WHERE substr(id, 1, ?1) = ?2 LIMIT 2",
         )
         .map_err(|e| e.to_string())?;
@@ -52,13 +56,13 @@ pub(crate) fn titles(conn: &Connection, handles: &[String]) -> Result<Vec<Named>
         if h.len() < 8 || h.len() > 36 || !h.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
             continue;
         }
-        let rows: Vec<(String, bool)> = q
-            .query_map(params![h.chars().count() as i64, h], |r| Ok((r.get(0)?, r.get(1)?)))
+        let rows: Vec<(String, bool, Option<String>)> = q
+            .query_map(params![h.chars().count() as i64, h], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        if let [(title, closed)] = rows.as_slice() {
-            out.push(Named { handle: h, title: title.clone(), closed: *closed });
+        if let [(title, closed, session)] = rows.as_slice() {
+            out.push(Named { handle: h, title: title.clone(), closed: *closed, session: session.clone() });
         }
     }
     Ok(out)
@@ -289,7 +293,7 @@ mod tests {
         let got = titles(&conn, &["6f90401a".into()]).unwrap();
         assert_eq!(
             got,
-            vec![Named { handle: "6f90401a".into(), title: "NOVA Coordinator".into(), closed: true }]
+            vec![Named { handle: "6f90401a".into(), title: "NOVA Coordinator".into(), closed: true, session: None }]
         );
     }
 

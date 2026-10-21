@@ -80,7 +80,7 @@
   const reflinks = useRefLinks();
 
   /** What an id turned out to be. At most one of `card`, `gone` and `ref`. */
-  type Hit = { card: CardHandle | null; gone?: string; ref: Ref | null };
+  type Hit = { card: CardHandle | null; gone?: string; session?: string | null; ref: Ref | null };
 
   /** What one candidate is, or null for "text" — which is also what it is
    *  while the answer is still on its way, so nothing flickers into a chip and
@@ -98,7 +98,7 @@
          card's: a commit hash stays a hash. */
       if (links) {
         const gone = whois.stored(c.key);
-        if (gone) return { card: null, gone: whoIs(gone), ref: null };
+        if (gone) return { card: null, gone: whoIs(gone), session: gone.session, ref: null };
         if (gone === undefined) return null;
       }
       if (reflinks) {
@@ -295,14 +295,25 @@
         class:fail={c.face.tier === "fail"}
         aria-hidden="true"
       ></i>{cardName(c.face.title, "").text || "a conversation"}</button
+    >{:else if h.gone && h.session && links?.revive}{@const session = h.session}<button
+      type="button"
+      class="cardlink cardgone"
+      data-md={md}
+      title="{handleTip(md.replaceAll('`', ''))} — no longer on the wall; bring it back"
+      onclick={() => links?.revive?.(session)}>{h.gone}</button
     >{:else if h.gone}<span class="cardgone" data-md={md} title="{handleTip(md.replaceAll('`', ''))} — no longer on the wall">{h.gone}</span>{:else if h.ref}{@const r = h.ref}<button
       type="button"
       class="cardlink refchip {r.kind}"
       class:settled={r.kind === "sink" && r.settled}
       data-ref={r.kind}
       data-md={md}
-      title={refTip(r)}
-      onclick={() => reflinks?.open(r)}
+      title={reflinks?.hover ? undefined : refTip(r)}
+      onpointerenter={(e) => reflinks?.hover?.(r, e.currentTarget)}
+      onpointerleave={() => reflinks?.unhover?.()}
+      onclick={() => {
+        reflinks?.unhover?.();
+        reflinks?.open(r);
+      }}
       ><i class="shape" aria-hidden="true"></i>{refText(r)}</button
     >{/if}{/snippet}
 
@@ -310,6 +321,7 @@
   /* A card that has left the wall: named, set as the prose around it, and no
      dot — a dot is a status and a closed card has none. */
   .cardgone {
+    color: var(--paper-mute);
     text-decoration: underline dotted;
     text-decoration-color: var(--rule);
     text-underline-offset: 3px;
@@ -331,6 +343,19 @@
   .cardlink:focus-visible {
     color: var(--paper);
     text-decoration-color: var(--paper);
+  }
+  /* A closed card's name you can bring back: dimmed and dotted like the one you
+     cannot, and firming up under the pointer like any link. */
+  .cardlink.cardgone {
+    color: var(--paper-mute);
+    text-decoration: underline dotted;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+  }
+  .cardlink.cardgone:hover,
+  .cardlink.cardgone:focus-visible {
+    color: var(--paper);
+    text-decoration-color: var(--paper-faint);
   }
   .cardlink .st {
     display: inline-block;

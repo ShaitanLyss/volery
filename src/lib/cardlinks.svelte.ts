@@ -22,6 +22,9 @@ export type CardLinks = {
   find(handle: string): CardHandle | null;
   /** Go to it, the way this surface goes to a card. */
   open(card: CardHandle): void;
+  /** Bring back a card that has left the wall, from the session it last held
+   *  (`Skein.revive`), and go to it. Absent, a closed card's name is text. */
+  revive?(session: string): void;
 };
 
 const KEY = Symbol("volery:cardlinks");

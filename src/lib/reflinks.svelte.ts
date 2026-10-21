@@ -15,6 +15,11 @@ import type { Ref } from "./refs";
 export type RefLinks = {
   /** Open what an id names, the way this surface opens such things. */
   open(ref: Ref): void;
+  /** The pointer has come to rest on a chip, or left it: a peek at what it
+   *  names, drawn beside it (`RefPeek.svelte`). Optional, so a surface with no
+   *  room for one simply draws the chip. */
+  hover?(ref: Ref, el: HTMLElement): void;
+  unhover?(): void;
 };
 
 const KEY = Symbol("volery:reflinks");

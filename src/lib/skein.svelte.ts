@@ -2108,6 +2108,20 @@ export class Skein {
    *  where the CLI wrote it, and waking the card resumes that same session in
    *  place. The card arrives dormant, which is the honest state — it has a
    *  history and no process — and lazy restore already knows how to draw that. */
+  /** Bring a closed card back from the session it last held — the road
+   *  `adopt` takes, by session id rather than through the panel. A name in
+   *  prose for a card that has left the wall is a button that does this
+   *  (`Inlines.svelte`), and so is a closed parent in chat view's sidebar.
+   *  Answers the card, or why not in words a face can draw. */
+  async revive(session: string | null): Promise<Conversation | string> {
+    if (!session) return "that conversation never got as far as a recorded session";
+    const standing = this.convs.find((c) => c.sessionId === session);
+    if (standing) return standing;
+    const s = (await this.importable()).find((x) => x.id === session);
+    if (!s) return "that conversation was closed, and its session is no longer on disk";
+    return this.importSession(s);
+  }
+
   async importSession(s: Session): Promise<Conversation | string> {
     /* A card standing on the wall already *is* this conversation — which
        happens when its session was cleared, since the transcript it was cleared
