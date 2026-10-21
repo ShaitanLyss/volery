@@ -24,6 +24,9 @@
     onproject,
     onmenu,
     onprojectmenu,
+    piles = [],
+    pileOn = null,
+    onpile,
     onaccount,
   }: {
     groups: Group[];
@@ -43,6 +46,12 @@
     onmenu: (id: string, at: At, keyed: boolean) => void;
     /** A project's menu, the same way. */
     onprojectmenu: (name: string, at: At, keyed: boolean) => void;
+    /** The wall's two piles — the sink and the billboard — each a page in the
+     *  sheet (`PilePage.svelte`), with how much is in it. */
+    piles?: { kind: "sink" | "board"; label: string; count: number }[];
+    /** Which of them is the page up, if either. */
+    pileOn?: "sink" | "board" | null;
+    onpile?: (kind: "sink" | "board") => void;
     onaccount?: () => void;
   } = $props();
 
@@ -125,6 +134,7 @@
       {@render group(g)}
     {/each}
     {@render folders()}
+    {@render kept()}
     {#each rest as g (g.key)}
       {@render group(g)}
     {/each}
@@ -228,6 +238,32 @@
                 {#if f.live.length}<span class="dots">{#each f.live as t, i (i)}<i class={t}></i>{/each}</span>{/if}
                 <span class="count">{f.count}</span>
               </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+{/snippet}
+
+{#snippet kept()}
+  {#if piles.length && onpile}
+    <section class="group" aria-label="across the wall">
+      <h2>across the wall</h2>
+      <ul>
+        {#each piles as p (p.kind)}
+          <li>
+            <button
+              type="button"
+              class="row folder"
+              class:on={pileOn === p.kind}
+              aria-current={pileOn === p.kind ? "true" : undefined}
+              onclick={() => onpile(p.kind)}
+              title={p.kind === "sink" ? "the sink — what cards noticed and did not stop for" : "the billboard — standing notices about work in progress"}
+            >
+              <Icon name={p.kind === "sink" ? "list" : "pin"} small />
+              <span class="t">{p.label}</span>
+              <span class="aside"><span class="count">{p.count}</span></span>
             </button>
           </li>
         {/each}

@@ -35,6 +35,7 @@
   import MessageBox from "./MessageBox.svelte";
   import NewChat from "./NewChat.svelte";
   import ProjectPage from "./ProjectPage.svelte";
+  import PilePage from "./PilePage.svelte";
   import Budget from "./Budget.svelte";
   import AccountPop from "./AccountPop.svelte";
   import Lookup from "./Lookup.svelte";
@@ -315,12 +316,38 @@
   /** The project whose page is in the sheet, by name, or null. Choosing a
    *  conversation leaves it (§6.7). */
   let page = $state<string | null>(null);
+  /** The sink or the billboard as a page (`PilePage.svelte`), opened from the
+   *  sidebar, Ctrl+K's sink entry or a chip naming one of their items — which
+   *  is `focus`. One page in the sheet at a time, so it and `page` clear each
+   *  other. */
+  let pile = $state<{ kind: "sink" | "board"; focus: string | null } | null>(null);
+  export function openPile(kind: "sink" | "board", focus: string | null = null) {
+    pile = { kind, focus };
+    page = null;
+    drawer = false;
+  }
+  /* The sidebar counts what is in each pile, so both are read for as long as
+     chat view is up (`Sink` and `Board` read nothing until somebody attaches,
+     and refresh on their own change events after). */
+  $effect(() => {
+    skein.sink.attach("chatview");
+    skein.board.attach("chatview");
+    return () => {
+      skein.sink.detach("chatview");
+      skein.board.detach("chatview");
+    };
+  });
+  const piles = $derived([
+    { kind: "sink" as const, label: "sink", count: skein.sink.items.length },
+    { kind: "board" as const, label: "billboard", count: skein.board.notices.length },
+  ]);
   const project = $derived(page ? (skein.projects.find((p) => p.name === page) ?? null) : null);
 
   /** Open a conversation from the sidebar, the page or Ctrl+K — the page, if
    *  one is up, gives way to it. */
   function choose(id: string) {
     page = null;
+    pile = null;
     drawer = false;
     onselect(id);
   }
@@ -354,12 +381,14 @@
   /** The sidebar's *projects* group, and Ctrl+K's projects. */
   export function openProject(name: string) {
     page = name;
+    pile = null;
   }
 
   /** A new conversation: the empty sheet, which is App's to clear the
    *  selection for; here, only the page gives way. */
   export function fresh() {
     page = null;
+    pile = null;
   }
 
   let looking = $state(false);
@@ -439,7 +468,7 @@
   function picked(e: Entry) {
     looking = false;
     if (e.kind === "conversation") choose(e.id);
-    else if (e.kind === "project") page = e.name;
+    else if (e.kind === "project") openProject(e.name);
     else onpalette(e);
   }
 
@@ -721,6 +750,9 @@
         onproject={openProject}
         {onmenu}
         {onprojectmenu}
+        {piles}
+        pileOn={pile?.kind ?? null}
+        onpile={(k) => openPile(k)}
         onaccount={() => (pop = !pop)}
       />
     </div>
@@ -737,6 +769,9 @@
       onproject={openProject}
       {onmenu}
       {onprojectmenu}
+        {piles}
+        pileOn={pile?.kind ?? null}
+        onpile={(k) => openPile(k)}
       onaccount={() => (pop = !pop)}
     />
   {/if}
@@ -753,7 +788,11 @@
         void focusAsk();
       }}
     />
-    {#if project}
+    {#if pile}
+      {#key pile}
+        <PilePage kind={pile.kind} focus={pile.focus} sink={skein.sink} board={skein.board} />
+      {/key}
+    {:else if project}
       <ProjectPage
         {skein}
         {actions}

@@ -22,7 +22,7 @@
   import { onMount } from "svelte";
   import Markdown from "./Markdown.svelte";
   import { parseMarkdown } from "./markdown";
-  import { refText, refTip, type Ref } from "./refs";
+  import { refText, type Ref } from "./refs";
   import { refs, type CommitDetail } from "./refs.svelte";
   import { ago } from "./gates";
   import { whois } from "./whois.svelte";
@@ -117,9 +117,12 @@
         <span class="state">{stateOf(item)}</span>
       {/if}
       <span class="grow"></span>
-      <button type="button" class="ghost" title="Copy the id to paste to an agent" onclick={copyId}>
-        {reference.kind === "commit" ? reference.short : reference.key}
-      </button>
+      <button
+        type="button"
+        class="ghost"
+        title="copy {reference.kind === 'commit' ? reference.short : reference.key}, to paste to an agent"
+        onclick={copyId}>copy id</button
+      >
       {#if onpage}
         <button type="button" class="ghost" title="Open its page" onclick={() => onpage(reference)}>open page</button>
       {/if}
@@ -179,7 +182,9 @@
         <p class="quiet">{board.read > 0 ? "no longer on the board — it was taken down." : "reading the board…"}</p>
       {/if}
     {:else}
-      <p class="by">{refTip(reference)}</p>
+      <p class="by">
+        {reference.author || "someone"}{#if reference.at > 0} · {new Date(reference.at * 1000).toLocaleString()}{/if}
+      </p>
       {#if detail}
         {#if detail.body.replace(reference.subject, "").trim()}
           <pre class="plain">{detail.body}</pre>
@@ -187,7 +192,6 @@
         {#if detail.stat}
           <pre class="stat">{detail.stat}</pre>
         {/if}
-        <p class="quiet mono">{detail.full}</p>
       {:else if detail === null}
         <p class="quiet">git would not say any more about it.</p>
       {:else}

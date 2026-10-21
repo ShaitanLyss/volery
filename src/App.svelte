@@ -688,6 +688,9 @@
     }
     else if (verb.kind === "sink") {
       if (verb.act === "drop") showDrop = true;
+      /* In chat view the sink is a page of its own (`PilePage.svelte`), in
+         chat view's look; the wall's panel is the wall's. */
+      else if (chat && chatview) chatview.openPile("sink");
       else showSink = true;
     }
     else if (verb.kind === "dock") {
@@ -3401,7 +3404,8 @@
       field.caret = null;
       void composer.focus();
     } else if (e.kind === "sink") {
-      showSink = true;
+      if (chat && chatview) chatview.openPile("sink");
+      else showSink = true;
     } else if (e.kind === "setting") {
       if (e.id === "themes") showThemes = true;
       else if (e.id === "accounts") showAccounts = true;
@@ -5224,7 +5228,18 @@
     <Drop sink={skein.sink} onclose={() => (showDrop = false)} />
   {/if}
   {#if refSheet}
-    <RefSheet reference={refSheet} sink={skein.sink} board={skein.board} onclose={() => (refSheet = null)} />
+    <RefSheet
+      reference={refSheet}
+      sink={skein.sink}
+      board={skein.board}
+      onclose={() => (refSheet = null)}
+      onpage={chat && chatview && refSheet.kind !== "commit"
+        ? (r) => {
+            refSheet = null;
+            chatview?.openPile(r.kind === "sink" ? "sink" : "board", r.key);
+          }
+        : undefined}
+    />
   {/if}
   {#if showKeyring}
     <Keyring keyring={creds} {devops} onclose={() => (showKeyring = false)} />

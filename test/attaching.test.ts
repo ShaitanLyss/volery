@@ -46,6 +46,7 @@ const NOT_AGENT_BOUND: Record<string, string> = {
   "lib/Import.svelte": "a filter over recorded sessions",
   "lib/Kanban.svelte": "an Asana task's title",
   "lib/Lookup.svelte": "the query ctrl+K searches by",
+  "lib/PilePage.svelte": "a search over the sink or the billboard",
   "lib/ProjectPage.svelte": "a project's standing instructions, applied at spawn rather than sent",
   "lib/Keyring.svelte": "a credential",
   "lib/Servers.svelte": "a dev server's command",

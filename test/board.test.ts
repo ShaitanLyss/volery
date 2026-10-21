@@ -8,6 +8,7 @@ import {
   normalize,
   normalizeAll,
   reading,
+  searchNotices,
   since,
   type Notice,
 } from "../src/lib/board";
@@ -164,5 +165,27 @@ describe("a notice from another wall", () => {
     expect(quiet).toContain("not heard from for 5m");
     expect(quiet).toContain("may have changed there");
     expect(elsewhere(far({ paths: [], unheardMs: 3 * 3_600_000 }))).toContain("for 3h");
+  });
+});
+
+describe("searchNotices", () => {
+  const all = [
+    notice(),
+    notice({ id: "n2", subject: "don't push to this repo", body: "release in flight", paths: [] }),
+  ];
+  test("every word somewhere, in any field, in any case", () => {
+    expect(searchNotices(all, "STORE alone").map((n) => n.id)).toEqual(["n1"]);
+    expect(searchNotices(all, "push flight").map((n) => n.id)).toEqual(["n2"]);
+    expect(searchNotices(all, "store.rs").map((n) => n.id)).toEqual(["n1"]);
+  });
+  test("a quoted phrase is kept whole, and an empty query is everything", () => {
+    expect(searchNotices(all, '"leave store"').map((n) => n.id)).toEqual(["n1"]);
+    expect(searchNotices(all, '"store leave"')).toEqual([]);
+    expect(searchNotices(all, "  ")).toHaveLength(2);
+  });
+  test("a term cannot match across two fields", () => {
+    /* subject ends "store", body begins "leave": joined on a newline, so
+       "storeleave" is in neither. */
+    expect(searchNotices(all, "storeleave")).toEqual([]);
   });
 });

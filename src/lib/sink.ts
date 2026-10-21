@@ -386,3 +386,12 @@ export function whence(item: Item, here: string): string {
   if (!h) return "";
   return h.toLowerCase() === here.trim().toLowerCase() ? "" : h;
 }
+
+/** How many of each state a pile holds — the counts a page heads its filters
+ *  with. Every state is present, at zero where nothing is in it, so a face can
+ *  read any of them without asking whether the key exists. */
+export function tally(items: Item[]): Record<State, number> {
+  const out: Record<State, number> = { waiting: 0, lapsed: 0, held: 0, settled: 0 };
+  for (const i of items) out[stateOf(i)] += 1;
+  return out;
+}

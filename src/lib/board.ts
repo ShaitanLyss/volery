@@ -14,6 +14,7 @@
  * Pure — no runes — so the ordering and the labels are tested directly.
  */
 
+import { terms } from "./sink";
 import { whoIs } from "./whois";
 
 export type Notice = {
@@ -160,4 +161,21 @@ export function elsewhere(notice: Notice): string {
 /** Whether this board is worth drawing anything but a line of prose for. */
 export function isEmpty(notices: Notice[]): boolean {
   return notices.length === 0;
+}
+
+/** The notices matching `query`, in the order they were given — the sink's
+ *  spelling of a search (`sink.ts::terms`), so the two pages a person searches
+ *  from mean one thing by it: every term somewhere, quoted phrases whole. Joined
+ *  on a newline for `adopt.ts::haystack`'s reason, so no term matches across two
+ *  fields. */
+export function searchNotices(notices: Notice[], query: string): Notice[] {
+  const want = terms(query);
+  if (!want.length) return [...notices];
+  return notices.filter((n) => {
+    const hay = [n.subject, n.body, n.paths.join("\n"), n.host ?? "", n.title ?? "", n.id]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+    return want.every((t) => hay.includes(t));
+  });
 }

@@ -21,6 +21,7 @@ import {
   refusal,
   search,
   stateOf,
+  tally,
   waiting,
   whence,
   type Item,
@@ -431,5 +432,19 @@ describe("which machine a finding came from", () => {
   test("it comes off the wire", () => {
     expect(normalize({ id: "a", title: "t", originHost: "laptop" })?.originHost).toBe("laptop");
     expect(normalize({ id: "a", title: "t" })?.originHost).toBeNull();
+  });
+});
+
+describe("tally", () => {
+  test("counts each state, and says zero for one nothing is in", () => {
+    const got = tally([
+      item(),
+      item({ id: "i2" }),
+      item({ id: "i3", heldBy: "c", heldAt: 1 }),
+      item({ id: "i4", heldBy: "c", heldAt: 1, holdStale: true }),
+      item({ id: "i5", settledAt: 9 }),
+    ]);
+    expect(got).toEqual({ waiting: 2, held: 1, lapsed: 1, settled: 1 });
+    expect(tally([])).toEqual({ waiting: 0, held: 0, lapsed: 0, settled: 0 });
   });
 });
