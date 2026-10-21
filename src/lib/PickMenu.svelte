@@ -133,9 +133,6 @@
       transform: translateY(-4px);
     }
   }
-  :global(html[data-motion="still"]) .menu {
-    animation-name: fade;
-  }
   @media (prefers-reduced-motion: reduce) {
     .menu {
       animation-name: fade;

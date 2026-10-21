@@ -176,9 +176,6 @@
       opacity: 0;
     }
   }
-  :global(html[data-motion="still"]) .first {
-    animation-duration: var(--dur-quick, 160ms);
-  }
   .wbar {
     flex: none;
     height: 44px;
@@ -261,10 +258,6 @@
   .way:focus-visible {
     outline: 2px solid var(--st-ask);
     outline-offset: 4px;
-  }
-  :global(html[data-motion="still"]) .way:hover,
-  :global(html[data-motion="still"]) .way:focus-visible {
-    transform: none;
   }
   @media (prefers-reduced-motion: reduce) {
     .way:hover,

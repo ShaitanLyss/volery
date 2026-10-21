@@ -407,7 +407,4 @@
       animation: none;
     }
   }
-  :global(html[data-motion="still"]) .light {
-    animation: none;
-  }
 </style>

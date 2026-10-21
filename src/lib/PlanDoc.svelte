@@ -75,9 +75,6 @@
       transform: translateY(8px);
     }
   }
-  :global(html[data-motion="still"]) .doc {
-    animation: none;
-  }
   @media (prefers-reduced-motion: reduce) {
     .doc {
       animation: none;

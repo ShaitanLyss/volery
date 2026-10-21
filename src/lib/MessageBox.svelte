@@ -266,11 +266,6 @@
     font-size: 11.5px;
     color: var(--cv-note, var(--paper-mute));
   }
-  :global(html[data-motion="still"]) .glyph,
-  :global(html[data-motion="still"]) .send,
-  :global(html[data-motion="still"]) .box {
-    transition-duration: 0s;
-  }
   @media (prefers-reduced-motion: reduce) {
     .glyph,
     .send {

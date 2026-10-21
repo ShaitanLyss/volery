@@ -347,7 +347,9 @@ own file, since it has nothing to decide.
 
 **An endless animation answers to all four motion readings, and a test says so.** `spare`
 steps it, `still` and reduced motion stop it; `styles.test.ts` reads every chat-view component
-and fails one that forgot an arm. **And a screen reader hears the paragraph, not the token**:
+and fails one that forgot an arm. **And only an endless one does**: an entrance, a slide or a
+hover lift answers to reduced motion alone, and the same file fails a `[data-motion]` arm on
+anything not animated `infinite` (2026-10-21, `motion.md`). **And a screen reader hears the paragraph, not the token**:
 the polite region announces each answer as it settles and *finished* at the turn's end, only
 for the conversation in front of you, and never on merely selecting one.
 

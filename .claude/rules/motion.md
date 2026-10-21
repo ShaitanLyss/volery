@@ -111,6 +111,20 @@ the compositor back its idle frame the moment it does. So the timeline's complet
 (`timeline.md`, "Finishing") is allowed its ~650 ms pulse — and it is built to stay on the
 right side of the line: it is **removed from the document** a second after it starts rather
 than left at `animation-fill-mode: forwards`, it animates `stroke-dashoffset` and `opacity`
-and never `box-shadow`, `still` drops it entirely, and reduced motion keeps only the colour
-draining. The rule for anything else that wants to celebrate is the same three: it ends, it
-leaves the DOM, and `still` can take it away.
+and never `box-shadow`, and reduced motion keeps only the colour draining. The rule for
+anything else that wants to celebrate is the same two: it ends, and it leaves the DOM.
+
+### And so `still` does not reach it
+
+The setting is a GPU lever, and what it buys back is the present rate an animation **with no
+end** holds up. A transition, an entrance or a one-shot flourish was never part of that bill, so
+`still` taking one away buys nothing — it only makes the app feel broken. Twenty-odd components
+had grown a `[data-motion="still"]` arm on exactly that kind of thing anyway — a panel's slide, a
+menu's drop, a hover lift, the flourish above — copied from the endless arms beside them, until
+Lyss (2026-10-21): *"the wall's motion setting is only for things that constantly animate on the
+wall, stop applying it to everything."* They came out, and `test/styles.test.ts` now fails any
+`[data-motion]` rule whose target no rule in the same file animates `infinite`ly.
+
+What a one-shot owes instead is `prefers-reduced-motion`, which is the system's request on the
+person's behalf and a different question from this machine's GPU. Endless animations answer to
+both; the away screen's loop is one, since it runs for hours.

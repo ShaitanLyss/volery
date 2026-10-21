@@ -235,9 +235,6 @@
       transform: translateY(6px);
     }
   }
-  :global(html[data-motion="still"]) .page {
-    animation: none;
-  }
   @media (prefers-reduced-motion: reduce) {
     .page {
       animation: none;

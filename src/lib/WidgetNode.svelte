@@ -540,9 +540,6 @@
   .widget.leaving {
     opacity: 0;
   }
-  :global(html[data-motion="still"]) .widget.leaving {
-    transition: none;
-  }
 
   /* Selection puts the edge back and nothing else does. Hover used to as well,
      on the argument that a widget you cannot find the corner of is one you

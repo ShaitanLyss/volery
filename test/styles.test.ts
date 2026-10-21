@@ -532,3 +532,52 @@ describe("chat view's endless animations answer to every motion setting", () => 
     });
   }
 });
+
+/* The other half of that, and the half that kept being got wrong: the wall's
+   motion setting is a GPU lever (`motion.md`) — what it buys back is the present
+   rate an animation that never ends holds up. A transition or a one-shot
+   entrance ends by itself and costs nothing once it has, so `still` taking one
+   away buys nothing and only makes the app feel broken. Lyss, 2026-10-21: "the
+   wall's motion setting is only for things that constantly animate on the
+   wall, stop applying it to everything". Twenty-odd components had grown a
+   `still` arm on an entrance — a panel's slide, a menu's drop, a hover lift —
+   copied from the endless ones beside them. So every `[data-motion]` rule must
+   name something some rule in the same file animates `infinite`ly; anything
+   that only moves once answers to `prefers-reduced-motion` alone, which is the
+   system's request and a different question. */
+describe("the motion setting reaches only what never ends", () => {
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".svelte")) files.push(p);
+    }
+  };
+  walk(SRC);
+  /* `selector { body }` pairs, flat: nesting inside `@media` only adds a level
+     of braces, and a rule's own body holds none. */
+  const rulesOf = (css: string) =>
+    [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
+  for (const f of files) {
+    const css = readFileSync(f, "utf8");
+    if (!css.includes("data-motion=")) continue;
+    test(f.slice(SRC.length + 1), () => {
+      const style = (css.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
+      const rules = rulesOf(style);
+      const endless = rules.filter((r) => /\binfinite\b/.test(r.body) && !r.sel.includes("data-motion"));
+      const strays: string[] = [];
+      for (const r of rules.filter((r) => r.sel.includes("data-motion="))) {
+        for (const part of r.sel.split(",")) {
+          const target = part.replace(/:global\(html\[data-motion="\w+"\]\)/, "").trim();
+          if (!target) continue;
+          /* Named by its classes: the endless rule may say more about the element
+             (`.st.work::after`, `.running .pip`) than the arm that stops it. */
+          const classes = target.match(/\.[\w-]+/g) ?? [target];
+          if (!endless.some((e) => classes.every((c) => new RegExp(`\\${c}(?![\\w-])`).test(e.sel)))) strays.push(target);
+        }
+      }
+      expect(strays).toEqual([]);
+    });
+  }
+});

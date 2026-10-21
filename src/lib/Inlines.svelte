@@ -359,7 +359,4 @@
   .path.code {
     display: inline;
   }
-  :global(html[data-motion="still"]) .path {
-    transition: none;
-  }
 </style>

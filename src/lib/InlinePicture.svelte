@@ -472,9 +472,6 @@
       transition: none;
     }
   }
-  :global(html[data-motion="still"]) .pic img {
-    transition: none;
-  }
   /* Measured, the box already has the picture's shape and the picture fills
      it; unmeasured, it is drawn at its own size under the same ceiling
      `frameWidth` applies, until its first load measures it. */

@@ -972,10 +972,6 @@
       transform: translateY(6px);
     }
   }
-  :global(html[data-motion="still"]) .col {
-    animation-name: fade;
-    animation-duration: var(--dur-quick, 160ms);
-  }
   @media (prefers-reduced-motion: reduce) {
     .col {
       animation-name: fade;
@@ -986,10 +982,6 @@
       opacity: 0;
       transform: scale(1.015);
     }
-  }
-  :global(html[data-motion="still"]) .chat {
-    animation-duration: var(--dur-quick, 160ms);
-    animation-name: fade;
   }
   @keyframes fade {
     from {
@@ -1258,10 +1250,6 @@
       transform: translateX(-16px);
       opacity: 0;
     }
-  }
-  :global(html[data-motion="still"]) .drawer {
-    animation-name: fade;
-    animation-duration: var(--dur-quick, 160ms);
   }
   @media (prefers-reduced-motion: reduce) {
     .drawer {

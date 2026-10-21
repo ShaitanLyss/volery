@@ -161,10 +161,6 @@
       transform: translateY(-8px);
     }
   }
-  :global(html[data-motion="still"]) .pal {
-    animation-name: fade;
-    animation-duration: var(--dur-quick, 160ms);
-  }
   @media (prefers-reduced-motion: reduce) {
     .pal {
       animation-name: fade;

@@ -109,9 +109,6 @@
       transform: translateY(8px);
     }
   }
-  :global(html[data-motion="still"]) .ready {
-    animation: none;
-  }
   @media (prefers-reduced-motion: reduce) {
     .ready {
       animation: none;

@@ -580,9 +580,6 @@
   .moor.on {
     cursor: grabbing;
   }
-  :global(html[data-motion="still"]) .moor {
-    transition: none;
-  }
 
   .targets {
     display: flex;

@@ -363,10 +363,6 @@
     border-color: var(--paper-faint);
     transform: translateY(-1px);
   }
-  :global(html[data-motion="still"]) .idea,
-  :global(html[data-motion="still"]) .send {
-    transition-duration: 0s;
-  }
   @media (prefers-reduced-motion: reduce) {
     .idea,
     .send {

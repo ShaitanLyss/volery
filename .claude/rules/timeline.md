@@ -221,8 +221,8 @@ Two moments, about ten minutes apart (sink `d7232bc8`).
   strand of a fork together (`Frise.trackStep`) — the end of the line takes it and lets it go, and
   the last live markers drain to nothing. ~650 ms of travel, gone from the document at one second.
   No new hue (there is no success-green on this wall), no confetti, and it ends: `motion.md` priced
-  the glow that never stopped. Reduced motion keeps the drain and drops the travel; `still` keeps
-  neither. A plate that comes up already finished — at launch, out of the archive — is simply
+  the glow that never stopped. Reduced motion keeps the drain and drops the travel. `still` does not
+  touch it, since it ends by itself (`motion.md`, *What this does not forbid*). A plate that comes up already finished — at launch, out of the archive — is simply
   finished.
 - **A finished plate in the stack goes to the archive by itself**, after `archive` minutes — a knob,
   `never` / 5 / **10** / 15. Only a plate nobody moved: a plate you moved to the glass or the wall

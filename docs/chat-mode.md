@@ -1131,10 +1131,10 @@ working is a still window and presents nothing.
 - **Everything ends.** A one-shot animation hands the compositor its idle frame back when it ends;
   anything celebratory leaves the document (`motion.md`, *What this does not forbid*).
 - **The three settings hold.** `full` as above; `spare` steps the breath and the shimmer
-  (`steps(6)`, `steps(8)`); `still` removes both and turns every transition into a cross-fade of
-  at most `--dur-quick`. **`prefers-reduced-motion`** does what `still` does to movement and keeps
-  the fades. Each `[data-motion]` arm is written beside the block it neutralises, as the wall's
-  are.
+  (`steps(6)`, `steps(8)`); `still` removes both. It touches nothing else: a transition or an
+  entrance ends by itself and costs nothing once it has (revised 2026-10-21, `motion.md`).
+  **`prefers-reduced-motion`** stops the endless ones too and turns the entrances into fades. Each
+  `[data-motion]` arm is written beside the block it neutralises, as the wall's are.
 
 ---
 

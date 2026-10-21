@@ -701,11 +701,6 @@
       cx 0.45s var(--ch-ease, ease),
       cy 0.45s var(--ch-ease, ease);
   }
-  :global(html[data-motion="still"]) .fill,
-  :global(html[data-motion="still"]) .live,
-  :global(html[data-motion="still"]) .halo {
-    transition: none;
-  }
 
   /* The flourish: once, then gone from the document. */
   .pulse {
@@ -779,9 +774,6 @@
       display: none;
     }
   }
-  :global(html[data-motion="still"]) .flourish {
-    display: none;
-  }
 
   /* A step's whole span is its hover target, so the card opens wherever along
      the step the pointer is. */
@@ -834,9 +826,6 @@
       opacity: 0;
       transform: translateY(-3px);
     }
-  }
-  :global(html[data-motion="still"]) .hc {
-    animation: none;
   }
   .hx,
   .lane {

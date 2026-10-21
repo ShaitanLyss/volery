@@ -856,10 +856,6 @@
       outline-offset: 1px;
     }
   }
-  :global(html[data-motion="still"]) .blk.sought > :global(*) {
-    animation: none;
-    background: color-mix(in srgb, var(--paper) 15%, transparent);
-  }
 
   .line {
     /* The only size the column actually sets: a heading, a fence, a table and

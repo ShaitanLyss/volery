@@ -89,9 +89,6 @@
       transform: translateY(8px);
     }
   }
-  :global(html[data-motion="still"]) .out {
-    animation: none;
-  }
   @media (prefers-reduced-motion: reduce) {
     .out {
       animation: none;

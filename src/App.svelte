@@ -6038,9 +6038,6 @@
   .moor.on {
     cursor: grabbing;
   }
-  :global(html[data-motion="still"]) .moor {
-    transition: none;
-  }
 
   /* Seven pixels of hit area over a one-pixel line, because nobody can hit a
      one-pixel line. It sits mostly *outside* the panel, over the wall — three

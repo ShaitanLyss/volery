@@ -205,10 +205,6 @@
       transform: translateX(12px);
     }
   }
-  :global(html[data-motion="still"]) .pane {
-    animation-duration: var(--dur-quick, 160ms);
-    animation-name: fade;
-  }
   @keyframes fade {
     from {
       opacity: 0;

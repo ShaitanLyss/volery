@@ -96,9 +96,6 @@
       transform: translateY(4px);
     }
   }
-  :global(html[data-motion="still"]) .pop {
-    animation: none;
-  }
   @media (prefers-reduced-motion: reduce) {
     .pop {
       animation: none;
