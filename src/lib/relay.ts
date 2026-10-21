@@ -45,8 +45,21 @@ export type RelayFrom = {
   name: string;
   handle: string;
   project: string | null;
+  /** Only on a wake: how long it was armed before it fired, in seconds. */
+  waitedS?: number;
 };
 
+/** What a wake calls itself — the card's own note, never "you". "You" means
+ *  the person at the keyboard everywhere else on the wall, and a note the
+ *  agent left itself drawn under that word reads as an instruction from them. */
+export const WAKE_NAME = "note to self";
+
+/** "8 minutes ago" / "45 seconds ago" / "3 hours ago" → seconds, or null. */
+function phraseSeconds(phrase: string): number | null {
+  const m = /^(\d+) (second|minute|hour)s? ago$/.exec(phrase.trim());
+  if (!m) return null;
+  return Number(m[1]) * { second: 1, minute: 60, hour: 3600 }[m[2] as "second" | "minute" | "hour"];
+}
 /* Four shapes. A sender can be closed between writing a message and its
  * recipient waking up to read it, so the second keeps the handle — still the
  * only thing that identifies what said it. The third is not a message at
@@ -111,8 +124,11 @@ export function relayFrom(text: string): RelayFrom | null {
      degradation, so it is named rather than falling through to "another card".
      A header this build cannot parse still says it was a wake. */
   const w = WAKE.exec(head);
-  if (w) return { name: `you, ${w[1]}`, handle: "", project: null };
-  if (isWakePrompt(text)) return { name: "you, earlier", handle: "", project: null };
+  if (w) {
+    const waitedS = phraseSeconds(w[1]);
+    return { name: WAKE_NAME, handle: "", project: null, ...(waitedS === null ? {} : { waitedS }) };
+  }
+  if (isWakePrompt(text)) return { name: WAKE_NAME, handle: "", project: null };
   const m = HEADED.exec(head);
   if (m) return { name: m[1], handle: m[2], project: m[3] ?? null };
   const o = ORPHANED.exec(head);
@@ -160,6 +176,9 @@ export function relayBody(text: string): string {
  *  a cut-off first sentence names nothing. */
 export function relayCap(text: string): string {
   const from = relayFrom(text);
+  if (from?.name === WAKE_NAME) {
+    return from.waitedS === undefined ? WAKE_NAME : `${WAKE_NAME} · waited ${spanWords(from.waitedS)}`;
+  }
   return from ? `from ${from.name}` : "from another card";
 }
 
@@ -169,6 +188,34 @@ export function relayCap(text: string): string {
    another reason. Anything new that puts words in a card that the user did not
    type belongs in `isRelayPrompt` on the day it is written, not the day it is
    noticed. */
+
+/** "8 minutes", "45 seconds", "2 hours" — the span `later.rs::said` wrote. */
+export function spanWords(secs: number): string {
+  if (secs < 90) return `${secs} seconds`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 90) return `${mins} minutes`;
+  return `${Math.floor(mins / 60)} hours`;
+}
+
+/** The two times a wake carries, said so they cannot be mistaken for each
+ *  other: when it was armed, and when the wall handed it back. The envelope's
+ *  own "N minutes ago" is the wait, measured at delivery, so the armed time is
+ *  that plus however long ago it was delivered. `deliveredAgo` is the coarse
+ *  `ageOf` string, "" when the line has no time. */
+export function wakeTimes(
+  from: RelayFrom,
+  deliveredMsAgo: number | null,
+  ageOf: (ms: number) => string,
+): string {
+  const parts: string[] = [];
+  if (from.waitedS !== undefined && deliveredMsAgo !== null) {
+    parts.push(`armed ${ageOf(from.waitedS * 1000 + deliveredMsAgo)} ago`);
+  } else if (from.waitedS !== undefined) {
+    parts.push(`waited ${spanWords(from.waitedS)}`);
+  }
+  if (deliveredMsAgo !== null) parts.push(`delivered ${ageOf(deliveredMsAgo)} ago`);
+  return parts.join(" · ");
+}
 
 /** What a card is called on the roster, given only its id.
  *

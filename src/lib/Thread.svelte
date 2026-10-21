@@ -61,7 +61,7 @@
   import { RELEASE } from "./follow.svelte";
   import { others } from "./others.svelte";
   import { spawnedHandle } from "./chatview";
-  import { isWakePrompt, relayBody, relayFrom, sentOf } from "./relay";
+  import { isWakePrompt, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
   import { ageOf } from "./chatview";
   import { cardName } from "./naming";
 
@@ -595,7 +595,9 @@
         b.key,
         "in",
         [{ name: sender ? nameOf(sender) : senderName(from), card: sender, handle: from?.handle || null }],
-        ["sent this conversation a message", when(b.line.at)].filter(Boolean).join(" · "),
+        from?.name === WAKE_NAME
+          ? wakeTimes(from, b.line.at ? clock.t - b.line.at : null, ageOf)
+          : ["sent this conversation a message", when(b.line.at)].filter(Boolean).join(" · "),
         relayBody(b.line.text),
         arrived(b.line.at),
       )}

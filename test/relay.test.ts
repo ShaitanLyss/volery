@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   RELAY_MARK,
   WAKE_MARK,
+  wakeTimes,
   handleOf,
   isRelayPrompt,
   isWakePrompt,
@@ -228,9 +229,21 @@ describe("a wake", () => {
   /* Naming you rather than "another card" is the point of it having its own
      shape at all — `later.rs` is right that there is nobody at the other end,
      and a cap saying "from another card" would be the panel inventing one. */
+  test("names the card itself, never you", () => {
+    expect(relayFrom(one)?.name).not.toMatch(/\byou\b/i);
+    expect(relayCap(one)).not.toMatch(/\byou\b|^from/i);
+  });
+
+  test("says armed and delivered as two different times", () => {
+    const f = relayFrom(one)!;
+    const ageOf = (ms: number) => `${Math.floor(ms / 60000)}m`;
+    expect(wakeTimes(f, 4 * 60000, ageOf)).toBe("armed 12m ago · delivered 4m ago");
+    expect(wakeTimes(f, null, ageOf)).toBe("waited 8 minutes");
+  });
+
   test("names you as the author, and carries how long ago you asked", () => {
-    expect(relayFrom(one)).toEqual({ name: "you, 8 minutes ago", handle: "", project: null });
-    expect(relayCap(one)).toBe("from you, 8 minutes ago");
+    expect(relayFrom(one)).toEqual({ name: "note to self", handle: "", project: null, waitedS: 480 });
+    expect(relayCap(one)).toBe("note to self · waited 8 minutes");
     expect(relayCap(one).length).toBeLessThan(40);
   });
 
@@ -244,8 +257,8 @@ describe("a wake", () => {
   test("degrades to you-earlier when the header changes shape", () => {
     const odd = `${WAKE_MARK} time is up:\n\nlook at the deploy`;
     expect(isRelayPrompt(odd)).toBe(true);
-    expect(relayFrom(odd)).toEqual({ name: "you, earlier", handle: "", project: null });
-    expect(relayCap(odd)).toBe("from you, earlier");
+    expect(relayFrom(odd)).toEqual({ name: "note to self", handle: "", project: null });
+    expect(relayCap(odd)).toBe("note to self");
   });
 });
 
