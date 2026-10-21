@@ -45,11 +45,12 @@
     type Step,
     type Timeline,
   } from "./timeline";
+  import { whois } from "./whois.svelte";
+  import { handleTip, shortHandle } from "./whois";
 
   let {
     t,
     tier = "rest",
-    handle,
     archive = false,
     compact = false,
     width,
@@ -66,7 +67,6 @@
     /** The owning card's status — the one colour the plate is allowed, and
      *  only on its live markers. `rest` for a card that is not on the wall. */
     tier?: Tier;
-    handle: string;
     archive?: boolean;
     /** A window of the line rather than the whole of it — the plate's default
      *  variant. The window is as wide as whatever the plate is set into. */
@@ -108,6 +108,8 @@
   );
   const fr = $derived(frise(t.plan, rail));
   const words = $derived(whereabouts(t));
+  /** Who drew it, by name — wherever it runs, or closed since (`whois`). */
+  const owner = $derived(whois.name(t.ownerId));
   /** Labels sit under the line; the hover card under the labels. */
   const labelTop = $derived(fr.height + 4);
   const railH = $derived(fr.height + 22);
@@ -350,12 +352,12 @@
       <div class="eyebrow">
         {projectOf(t)}<span class="dot">·</span>{#if onpick}<button
             class="handle"
-            title="go to the card that drew it (or double-click the plate)"
+            title="go to the card that drew it (or double-click the plate) — {handleTip(shortHandle(t.ownerId))}"
             onclick={(e) => {
               e.stopPropagation();
               onpick?.();
-            }}>{handle}</button
-          >{:else}{handle}{/if}
+            }}>{owner}</button
+          >{:else}<span title={handleTip(shortHandle(t.ownerId))}>{owner}</span>{/if}
       </div>
       <div class="title">{t.title}</div>
     </div>
@@ -528,8 +530,9 @@
   .dot {
     margin: 0 0.45em;
   }
-  /* The card's handle, which is the way to it — set as the words it always
-     was, and only the pointer says it can be pressed. */
+  /* The card that drew it, which is the way to it — its name, set as the words
+     around it are, and only the pointer says it can be pressed. Its handle was
+     drawn here until 2026-10-21 (`whois.ts`); it is the tooltip now. */
   .handle {
     padding: 0;
     border: 0;

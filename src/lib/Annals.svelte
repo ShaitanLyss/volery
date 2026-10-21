@@ -24,7 +24,7 @@
     onclose,
   }: {
     timelines: Timeline[];
-    ownerOf: (id: string) => { tier: Tier; handle: string } | null;
+    ownerOf: (id: string) => { tier: Tier } | null;
     onjump: (ownerId: string, timelineId: string, rev: number) => void;
     onresume: (t: Timeline) => void;
     /** Hang a finished one back up — the press that makes a plate going here
@@ -75,7 +75,6 @@
             archive
             width={rail}
             tier="rest"
-            handle={owner?.handle ?? t.ownerId.slice(0, 8)}
             canJump={!!owner}
             onjump={(rev) => onjump(t.ownerId, t.id, rev)}
             onresume={() => onresume(t)}

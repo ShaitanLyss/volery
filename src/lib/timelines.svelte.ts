@@ -45,7 +45,7 @@ export class Timelines {
    *  (`gist.ts::afarTimeline`). A function the flyway hands in
    *  (`Elsewhere`), held as state so handing it in is heard. */
   #afar = $state<() => Timeline[]>(() => []);
-  #afarOwner = $state<(ownerId: string) => { tier: Tier; handle: string } | null>(() => null);
+  #afarOwner = $state<(ownerId: string) => { tier: Tier } | null>(() => null);
   /** Everything a plate, the plan strip and the pane can draw: this wall's,
    *  then every other wall's live ones. One list, so a card elsewhere's plan is
    *  housed, drawn and found (`liveFor`) by the very code a card here's is —
@@ -54,7 +54,7 @@ export class Timelines {
   shown = $derived.by((): Timeline[] => [...this.here, ...this.#afar()]);
 
   /** Where other walls' plans come from, and how their owning cards read. */
-  fromElsewhere(read: () => Timeline[], owner: (ownerId: string) => { tier: Tier; handle: string } | null) {
+  fromElsewhere(read: () => Timeline[], owner: (ownerId: string) => { tier: Tier } | null) {
     this.#afar = read;
     this.#afarOwner = owner;
   }
@@ -62,7 +62,7 @@ export class Timelines {
   /** The owning card's reading, wherever it runs — the plate's colour and the
    *  handle it names. A card here through `ownerOf`, one elsewhere through
    *  what the flyway handed in. */
-  readingOf(ownerId: string): { tier: Tier; handle: string } | null {
+  readingOf(ownerId: string): { tier: Tier } | null {
     return this.ownerOf(ownerId) ?? this.#afarOwner(ownerId);
   }
   /** The archive, newest first. Read once at load and then folded like the
@@ -82,7 +82,7 @@ export class Timelines {
 
   /** The owning card's reading, or null when it is not on the wall. Injected
    *  by the app, which is where the cards are. */
-  ownerOf: (ownerId: string) => { tier: Tier; handle: string } | null = () => null;
+  ownerOf: (ownerId: string) => { tier: Tier } | null = () => null;
   /** Land on the card and carry its transcript to the write a step names — the
    *  receipt (`timeline.rs::receipt`). Injected, because the panel is the app's. */
   jumpTo: (ownerId: string, timelineId: string, rev: number) => void = () => {};

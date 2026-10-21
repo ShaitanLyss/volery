@@ -41,6 +41,8 @@
   import ToolCall from "./ToolCall.svelte";
   import Figure from "./Figure.svelte";
   import RelayMark from "./RelayMark.svelte";
+  import { whois } from "./whois.svelte";
+  import { handleTip, isCardAddress, shortHandle } from "./whois";
   import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
     blocksOf,
@@ -95,12 +97,31 @@
   /** Who a sent message went to, as the agent wrote it: a handle that is a
    *  card here becomes that card, the two broadcast words are said as words,
    *  and anything else is shown as written. */
-  function recipient(to: string): { name: string; card: CardHandle | null } {
+  function recipient(to: string): { name: string; card: CardHandle | null; handle: string | null } {
     const word = to.toLowerCase();
-    if (word === "project") return { name: "every card in this project", card: null };
-    if (word === "skein") return { name: "every card on the wall", card: null };
+    if (word === "project") return { name: "every card in this project", card: null, handle: null };
+    if (word === "skein") return { name: "every card on the wall", card: null, handle: null };
     const c = reach?.find(to) ?? null;
-    return { name: c ? nameOf(c) : to, card: c };
+    const handle = isCardAddress(to) ? shortHandle(to) : null;
+    return { name: c ? nameOf(c) : whois.address(to), card: c, handle };
+  }
+  /** A relay's fold cap named the way the letter names its sender — the card's
+   *  name now, rather than the title the envelope quoted when it was written,
+   *  which is what `line.note` froze. Null for anything else, or for a relay
+   *  with no sender to look up (a notice, the wall, a wake). */
+  function senderCap(line: Line): string | null {
+    if (line.kind !== "relay") return null;
+    const from = relayFrom(line.text);
+    return from?.handle ? `from ${senderName(from)}` : null;
+  }
+  /** Who a relay came from when this view cannot reach them: the card the wall
+   *  still knows by that handle, else the title the envelope quoted, else said
+   *  honestly — never the handle (`whois.ts`). A closed sender's envelope says
+   *  only that, so it carries no name to fall back on. */
+  function senderName(from: ReturnType<typeof relayFrom>): string {
+    if (!from) return "another conversation";
+    if (!from.handle) return from.name;
+    return whois.name(from.handle, from.name === "a closed card" ? null : from.name);
   }
   /** How long ago, coarse, or nothing for a line that never had a time. */
   function when(at: number | undefined): string {
@@ -493,7 +514,7 @@
 {#snippet letter(
   key: string,
   dir: "in" | "out",
-  who: { name: string; card: CardHandle | null }[],
+  who: { name: string; card: CardHandle | null; handle?: string | null }[],
   sub: string,
   body: string,
   live: boolean,
@@ -509,8 +530,8 @@
                 type="button"
                 class="name"
                 onclick={() => reach?.open(c.id)}
-                title="open {w.name}">{w.name}</button
-              >{:else}{w.name}{/if}{/each}</span
+                title="open {w.name}{w.handle ? ` — ${handleTip(w.handle)}` : ''}">{w.name}</button
+              >{:else}<span title={w.handle ? handleTip(w.handle) : undefined}>{w.name}</span>{/if}{/each}</span
         >
         <span class="sub">{sub}</span>
       </span>
@@ -564,8 +585,8 @@
       {@render letter(
         b.key,
         "in",
-        [{ name: sender ? nameOf(sender) : (from?.name ?? "another conversation"), card: sender }],
-        ["sent this conversation a message", from?.handle, when(b.line.at)].filter(Boolean).join(" · "),
+        [{ name: sender ? nameOf(sender) : senderName(from), card: sender, handle: from?.handle || null }],
+        ["sent this conversation a message", when(b.line.at)].filter(Boolean).join(" · "),
         relayBody(b.line.text),
         arrived(b.line.at),
       )}
@@ -638,7 +659,7 @@
                  wake is not one — nobody sent it. -->
             <span class="bird"><RelayMark dir="in" small live={arrived(b.line.at)} /></span>
           {/if}
-          <span class="what">{fold.cap}</span>
+          <span class="what">{senderCap(b.line) ?? fold.cap}</span>
         </button>
         {#if open[b.key]}
           <!-- No `data-nav`: the rails list places in the conversation, and a

@@ -37,6 +37,7 @@
    * from, the answer is held and goes when it is back. */
 
   import Ask from "./Ask.svelte";
+  import { whois } from "./whois.svelte";
   import Notice from "./Notice.svelte";
   import type { Conversation } from "./conversation.svelte";
   import { clock } from "./conversation.svelte";
@@ -95,8 +96,8 @@
   }
 
   /** Who asked, said the way the rest of the wall says it. A card that has been
-   *  deleted since is named by its handle, which is the only thing left — the
-   *  same degradation `relayFrom` makes for a closed sender. */
+   *  closed since is named as the store still knows it, or said honestly as
+   *  gone — never by its handle, which names nothing to a person (`whois.ts`). */
   function whoOf(id: string): { project: string; title: string } {
     const c = convOf(id);
     if (c) return { project: c.project, title: c.title };
@@ -104,7 +105,7 @@
        and the wall it is on. */
     const s = elsewhere.find(id);
     if (s) return { project: `${s.project} · on ${s.host}`, title: s.title };
-    return { project: "", title: `a card that has gone (${id.slice(0, 8)})` };
+    return { project: "", title: whois.name(id) };
   }
 
   /** Whether a panel drawn for one of its questions may run scripts — the

@@ -39,7 +39,6 @@
   <Frise
     {t}
     tier={owner?.tier ?? "rest"}
-    handle={owner?.handle ?? t.ownerId.slice(0, 8)}
     canJump={jumps}
     compact={variantOf(widget) !== "wide"}
     onjump={(rev) => timelines.jumpTo(t.ownerId, t.id, rev)}

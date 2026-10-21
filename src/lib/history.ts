@@ -134,7 +134,7 @@ export function trimOverlap(history: Line[], live: Line[]): Line[] {
  * decision between them nowhere on the page. */
 export function foldTranscript(
   text: string,
-  opts: { max?: number; partial?: boolean } = {},
+  opts: { max?: number; partial?: boolean; nameOf?: (address: string) => string } = {},
 ): History {
   const max = opts.max ?? HISTORY_MAX_LINES;
   const lines: Line[] = [];
@@ -384,7 +384,7 @@ export function foldTranscript(
               name: block.name,
               input: capInput(block.input),
             };
-            push("tool", describeTool(block.name, block.input), undefined, call);
+            push("tool", describeTool(block.name, block.input, opts.nameOf), undefined, call);
             /* Registered only if the line was actually pushed — `push` drops an
                empty one, and a call registered against a line nobody can see is
                a result with nowhere to land. `describeTool` never returns an

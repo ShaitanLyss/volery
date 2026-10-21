@@ -101,6 +101,7 @@ import type { Answers, AskQuestion } from "./asking";
 import type { Closing, Confirm, Removal } from "./afar";
 import { capInput, landed, type ToolCall } from "./toolcall";
 import { diskMayHaveChanged, mayWriteDisk } from "./known";
+import { whois } from "./whois.svelte";
 import {
   afterAck,
   afterExit,
@@ -2734,7 +2735,7 @@ export class Conversation {
           const b = e.content_block;
           if (b?.type === "tool_use") {
             if (!this.working) this.#beginTurn();
-            this.activity = describeTool(b.name, b.input);
+            this.activity = describeTool(b.name, b.input, whois.address.bind(whois));
           } else if (b?.type === "thinking") {
             if (!this.working) this.#beginTurn();
             this.activity = "thinking";
@@ -2849,7 +2850,7 @@ export class Conversation {
           } else if (block.type === "tool_use") {
             this.#closingText = [];
             if (ASK_TOOLS.has(block.name)) this.#sawAskTool = true;
-            const desc = describeTool(block.name, block.input);
+            const desc = describeTool(block.name, block.input, whois.address.bind(whois));
             this.activity = desc;
             /* The call is kept, not just its prose — see `Line.call`. `capInput`
                both bounds it and copies it out of the event, which is transient

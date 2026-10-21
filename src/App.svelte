@@ -110,7 +110,7 @@
   import Unfinished from "./lib/Unfinished.svelte";
   import Exodus from "./lib/Exodus.svelte";
   import { isReceipt, type Timeline } from "./lib/timeline";
-  import { handleOf as cardHandle } from "./lib/relay";
+  import { whois } from "./lib/whois.svelte";
   import { Creds } from "./lib/creds.svelte";
   import { Asana } from "./lib/asana.svelte";
   import RunPanel from "./lib/Run.svelte";
@@ -268,6 +268,9 @@
     look: (root, path, line) => void finder.lookAt(root, path, line),
     furniture: (conv) => furnitureOf(conv),
   });
+  /* Every card named by its handle anywhere on the window is named through
+     `whois`, and this is where it learns where the cards are. */
+  whois.attach(cards);
   const board = new Board();
   const widgets = new Widgets();
   /* One stacking order for the whole wall (see layout.ts), so each of the two
@@ -866,6 +869,7 @@
      goes on ingesting events and writing rows for a wall nobody can see — one
      `result` used to become two `turn` rows, one per generation. */
   onDestroy(() => {
+    whois.detach(cards);
     /* Ahead of everything, and written rather than merely cancelled: a close
        is the other way a window stops existing, and the debounce means the
        last few hundred milliseconds of typing are otherwise still pending. */
@@ -3552,7 +3556,7 @@
    *  wall — which is what decides whether a step can be found in a transcript. */
   function timelineOwner(id: string) {
     const c = skein.convs.find((c) => c.id === id);
-    return c ? { tier: c.tier, handle: cardHandle(c.id) } : null;
+    return c ? { tier: c.tier } : null;
   }
 
   /** A timeline step was clicked: land on its card and carry the transcript to

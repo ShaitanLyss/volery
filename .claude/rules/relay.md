@@ -44,6 +44,18 @@ would put a message in the wrong repository, silently, and generated titles coll
 `relay::handle_of` and `relay.ts::handleOf` must agree; the second exists only so the wall can
 label a strand whose endpoint has since been closed.
 
+**A handle is for an agent to type, never for a person to read** (2026-10-21, Lyss: *"some ids
+are still showing raw"*). Every surface that names a card by handle — a letter's sender and
+recipients, the wall's relay fold, a plate's eyebrow, the billboard's author, a gate's observer,
+the away pile, the line a `send`/`recall`/`close` call folds into, a chronicle row — goes
+through one resolver, `whois.ts` with `whois.svelte.ts` as its reactive half: the card's
+current title (here, on another wall, or closed and still in the store — `names.rs`), else the
+name the source carried (the envelope's quoted title), else *a card no longer on the wall*.
+The handle is the tooltip. `test/whois.test.ts` walks every component's markup and fails a
+handle drawn as text, and fails an id cut to eight characters outside the three files where
+that is the point. A handle inside a message body is the agent's words and is left alone;
+`Inlines.svelte` already draws one that names a live card as the card.
+
 **A roster row carries `spawned_by` when the card was opened by a card**, and no such field
 when the user opened it — present or absent, with no third reading. It is read per row here
 rather than joined into `store::roster`, because the `spawned` table is deliberately never

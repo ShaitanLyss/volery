@@ -142,6 +142,7 @@ import {
   type Survey,
 } from "./reaping";
 import { dayStart, turnRowKind } from "./usage";
+import { whois } from "./whois.svelte";
 import type { Studio } from "./studio.svelte";
 
 /** A grouping of cards inside a project, as the store holds one.
@@ -5622,7 +5623,7 @@ export class Skein {
         c.historyState = "none";
         return;
       }
-      const h = foldTranscript(t.text, { partial: t.dropped_bytes > 0 });
+      const h = foldTranscript(t.text, { partial: t.dropped_bytes > 0, nameOf: (a) => whois.address(a) });
       /* The card may have started speaking while the file was being read, in
          which case the turn is in both places. The wire wins. */
       c.history = c.lines.length ? trimOverlap(h.lines, c.lines) : h.lines;

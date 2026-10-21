@@ -49,6 +49,7 @@
   import { clock } from "./conversation.svelte";
   import type { Gates } from "./gates.svelte";
   import { ago, type GateState } from "./gates";
+  import { whois } from "./whois.svelte";
   import { textOf, variantOf, type Widget } from "./widgets";
 
   let {
@@ -122,16 +123,17 @@
    *
    *  `names` first, because a card that is still on the wall may have been
    *  renamed since the row was written; then the name stored with the row; then
-   *  the short id, which is the honest answer for a card that has closed — and
-   *  that is exactly when this record is worth most, since there is nobody left
-   *  to ask. */
+   *  whatever the store still calls it, or that it is gone — a card that has
+   *  closed is exactly when this record is worth most, since there is nobody
+   *  left to ask, and its handle was what was drawn here until 2026-10-21. A
+   *  handle names nothing to a person (`whois.ts`). */
   function who(state: GateState): string {
     const r = state.last ?? state.runs[0];
     if (!r) return "";
     const live = names.get(r.card);
     if (live && live !== "untitled") return live;
     if (r.cardName && r.cardName !== "untitled") return r.cardName;
-    return r.card.slice(0, 8);
+    return whois.name(r.card);
   }
 
   /** Which of the five status tokens a gate's state earns.

@@ -14,6 +14,8 @@
  * Pure — no runes — so the ordering and the labels are tested directly.
  */
 
+import { whoIs } from "./whois";
+
 export type Notice = {
   id: string;
   /** `project` or `skein`. */
@@ -137,8 +139,9 @@ export function author(notice: Notice, names: Map<string, string>): string {
   if (notice.from === null) return "you";
   /* A card on another wall is not in this wall's roster, so its own wall's
      name for it travels with the notice. */
-  if (notice.host !== null) return notice.title ?? notice.from.slice(0, 8);
-  return names.get(notice.from) ?? notice.from.slice(0, 8);
+  if (notice.host !== null) return whoIs(null, notice.title);
+  const name = names.get(notice.from);
+  return whoIs(name === undefined ? null : { title: name });
 }
 
 /** Where a notice from another wall stands, as a line for its open detail —

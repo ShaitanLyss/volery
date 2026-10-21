@@ -186,8 +186,14 @@ fn source_of(app: &AppHandle, caller: &str) -> (Option<String>, String) {
         /* A card the roster does not know is one being closed as it wrote, or a
            control-surface caller. The entry is still worth keeping — losing it
            would be losing the one class of event most likely to explain
-           something — so it is filed at wall scope under its handle. */
-        None => (None, format!("card {caller}")),
+           something — so it is filed at wall scope, under the name the store
+           still holds for it. It used to be `card <its whole uuid>`, which is
+           thirty-six characters of hex on a row a person reads; the handle is
+           not drawn anywhere a name is known (`src/lib/whois.ts`). */
+        None => {
+            let named = store.0.lock().ok().and_then(|conn| crate::names::title_of(&conn, caller));
+            (None, named.map(|t| crate::clip::keep(&t, 80).kept).unwrap_or_else(|| "a card no longer on the wall".into()))
+        }
     }
 }
 

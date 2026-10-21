@@ -113,12 +113,12 @@ describe("what a row says", () => {
     expect(covering(notice({ paths: ["a", "b", "c", "d", "e"] }))).toBe("a, b, c +2");
   });
 
-  test("an author is named in the words on the card, and falls back to a handle", () => {
+  test("an author is named in the words on the card, and never by its handle", () => {
     const names = new Map([["aaaaaaaa-1111-4111-8111-111111111111", "store schema"]]);
     expect(author(notice(), names)).toBe("store schema");
     /* A card closed since — the sweep in Rust should have taken the row with
        it, and this is the moment before the next read catches up. */
-    expect(author(notice(), new Map())).toBe("aaaaaaaa");
+    expect(author(notice(), new Map())).toBe("a card no longer on the wall");
     /* And one you posted yourself, which has no card behind it at all. */
     expect(author(notice({ from: null }), names)).toBe("you");
   });
@@ -147,7 +147,7 @@ describe("a notice from another wall", () => {
 
   test("is named by its own wall's name for its author, since this roster has none", () => {
     expect(author(far(), new Map())).toBe("the orchestrator");
-    expect(author(far({ title: null }), new Map())).toBe("aaaaaaaa");
+    expect(author(far({ title: null }), new Map())).toBe("a card no longer on the wall");
     expect(author(far({ from: null }), new Map())).toBe("you");
   });
 

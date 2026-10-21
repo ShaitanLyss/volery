@@ -721,7 +721,7 @@ export class Elsewhere {
         }),
       (id) => {
         const s = this.find(id);
-        return s ? { tier: s.tier, handle: s.card.slice(0, 8) } : null;
+        return s ? { tier: s.tier } : null;
       },
     );
     this.#stopEffects = $effect.root(() => {
