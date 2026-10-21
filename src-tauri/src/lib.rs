@@ -1177,6 +1177,7 @@ pub fn run() {
             subscribe::sources::forget_source,
             subscribe::sources::check_source,
             notice::notice_take,
+            notice::rest_ack,
             presence::deferred_acts,
             presence::answer_deferred_act,
             sketch::sketch_json,

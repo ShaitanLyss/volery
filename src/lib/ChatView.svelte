@@ -50,7 +50,6 @@
   import Notice from "./Notice.svelte";
   import Toasts from "./Toasts.svelte";
   import { tick } from "svelte";
-  import { settles, settledByReading, DWELL_MS } from "./chatview";
   import { waitsOnYou } from "./notice";
   import Icon from "./Icon.svelte";
   import WindowControls from "./WindowControls.svelte";
@@ -77,8 +76,6 @@
     kin,
     reading = 1,
     watching = true,
-    present,
-    away = false,
     presence,
     elsewhere,
     sidebar = $bindable(true),
@@ -109,16 +106,8 @@
     kin: readonly { child: string; parent: string; unseen?: string }[];
     /** The reading size the wall's panel is set at (ctrl+wheel), shared. */
     reading?: number;
-    /** Whether the window is in front — the follow re-pins on coming back, and
-     *  a finished conversation is only settled by reading it while it is. */
+    /** Whether the window is in front — the follow re-pins on coming back. */
     watching?: boolean;
-    /** Somebody is looking — in front and touched lately (`Attention.looking`).
-     *  What settling a finished conversation by reading it asks, since a
-     *  window in front of an empty desk reads nothing. Required: a default
-     *  either way would settle notices nobody read or none at all. */
-    present: boolean;
-    /** Away mode is on: nothing is settled by a window nobody is at. */
-    away?: boolean;
     /** The questions put off (`Presence.filed`): a conversation holding one
      *  needs you, and the pile is where it is answered. Required, so a mount
      *  cannot leave every one of them out of *needs you* without saying so. */
@@ -247,13 +236,17 @@
           }
         : null,
       failed: f.tier === "fail",
+      /* Off the gist, so a card on another wall answers it from its own
+         wall's fold, and one from before `owed` says it does not know. */
+      owed: h.gist.owed,
+      endedOnQuestion: notice?.kind === "question" || h.gist.ending === "question",
       allowance: h.allowance,
       aside: f.aside,
       lastAt,
       turnAt: h.turnSince,
       /* When what it needs you for began waiting, which orders *needs you*
          wherever the card runs (`queueOrder`). */
-      since: ask ? ask.since : (notice?.raisedAt ?? filed?.at ?? null),
+      since: ask ? ask.since : (notice?.raisedAt ?? filed?.at ?? h.restedAt ?? null),
       lastWords: f.lastWords ?? "",
       parent: parentOf.get(h.id) ?? null,
     };
@@ -471,8 +464,9 @@
   const own = $derived(selected ? front.of(selected) : []);
   const ownAsk = $derived(own.find((t) => t.kind === "ask") ?? null);
   /** The notices drawn inline: a card's own and a given-up error, which stay
-   *  until answered with their own buttons (§5.4). A `done` notice is the
-   *  *finished* row and settles by being read; a `question` one is a line. */
+   *  until answered with their own buttons (§5.4). A rest — `done` or
+   *  `question` — is the *done with it* line at the foot, acknowledged there
+   *  and never by being read. */
   const ownNotices = $derived(
     own.filter((t) => t.kind === "notice" && (t.notice.kind === "error" || t.notice.kind === "card")),
   );
@@ -490,55 +484,25 @@
     askPanel && scroller?.scrollTo({ top: scroller.scrollHeight });
   }
 
-  /* ── settling a finished conversation by reading it (§5.4) ─────────────
-     The dwell: selected, the window in front, not away, and its last message on
-     screen for two seconds — `chatview.ts::settles`. Measured by an observer on
-     the last line, so nothing polls, and only while a notice that reading
-     settles — a finished turn, or a failure it gave up on — stands on the
-     conversation in front of you (`chatview.ts::settledByReading`). */
-  const done = $derived(card?.notices.find(settledByReading) ?? null);
-  $effect(() => {
-    const n = done;
-    const c = card;
-    const el = scroller;
-    if (!n || !c || !el) return;
-    const focused = present;
-    const gone = away;
-    let since: number | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const settle = () => {
-      if (since === null) return;
-      if (settles({ selected: c.id === selected, focused, away: gone, seenFor: Date.now() - since })) {
-        void c.acknowledge(n, "");
-      }
-    };
-    const watch = new IntersectionObserver(
-      (entries) => {
-        const seen = entries.some((e) => e.isIntersecting);
-        if (seen && since === null) {
-          since = Date.now();
-          timer = setTimeout(settle, DWELL_MS + 50);
-        } else if (!seen) {
-          since = null;
-          if (timer) clearTimeout(timer);
-          timer = null;
-        }
-      },
-      { root: el, threshold: 0 },
-    );
-    /* After the column has drawn: the last line is the conversation's last
-       message, wherever the reading is. */
-    const raf = requestAnimationFrame(() => {
-      const lines = el.querySelectorAll(".line");
-      const last = lines[lines.length - 1];
-      if (last) watch.observe(last);
-    });
-    return () => {
-      cancelAnimationFrame(raf);
-      watch.disconnect();
-      if (timer) clearTimeout(timer);
-    };
-  });
+  /* ── acknowledging its rest (2026-10-21) ──────────────────────────────
+     Reading no longer settles anything (`chatview.ts`, beside `restOwed`): a
+     rest waits in *needs you* until you say so. *Done with it* is that, the
+     same acknowledgement the wall's dock makes of a notice — one flag, both
+     views (`Skein.acknowledgeRest`). Offered on the rest itself, whatever the
+     turn was called, so a question the classifier missed has it too. */
+  const owed = $derived(card && card.gist.owed === true && !card.face.working ? card : null);
+  let acking = $state(false);
+  async function doneWith() {
+    const c = owed;
+    if (!c || acking) return;
+    acking = true;
+    try {
+      const why = await c.acknowledgeRest();
+      if (why) skein.fault = why;
+    } finally {
+      acking = false;
+    }
+  }
 
   /* ── the conversation in front of you ───────────────────────────────── */
 
@@ -890,7 +854,18 @@
                   {/if}
                 {/if}
               {/each}
-              {#if endedOnQuestion && endedOnQuestion.kind === "notice"}
+              {#if owed}
+                <p class="ended">
+                  {endedOnQuestion || owed.gist.ending === "question" ? "it ended on a question" : "it ended its turn"} —
+                  your reply goes in the box below
+                  <button
+                    type="button"
+                    disabled={acking}
+                    onclick={() => void doneWith()}
+                    title="nothing more to say — take it out of needs you (space then d a)">done with it</button
+                  >
+                </p>
+              {:else if endedOnQuestion && endedOnQuestion.kind === "notice"}
                 {@const q = endedOnQuestion.notice}
                 <p class="ended">
                   it ended on a question — your answer goes in the box below

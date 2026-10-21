@@ -561,6 +561,10 @@ export const GIST_READ: { [K in keyof Gist]: (v: unknown) => Gist[K] } = {
     if (!id || bornAt === null || updatedAt === null) return null;
     return { id, title: str(r.title, PLAN_TEXT_CAP) || "untitled", plan: capPlan(planOf(r.plan)), bornAt, updatedAt };
   },
+  ending: (v) => (ENDINGS.includes(v as Ending) ? (v as Ending) : null),
+  /* Anything but a boolean is a wall from before `owed`: unknown, so chat view
+     falls back to that card's standing notice rather than guessing either way. */
+  owed: (v) => (typeof v === "boolean" ? v : null),
 };
 
 /* A plan's bounds as it travels. A plan is usually a few kilobytes; these hold

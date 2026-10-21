@@ -97,6 +97,7 @@ import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
+import { owesYou } from "./notice";
 import type { Answers, AskQuestion } from "./asking";
 import type { Closing, Confirm, Removal } from "./afar";
 import { capInput, landed, type ToolCall } from "./toolcall";
@@ -756,8 +757,14 @@ export class Conversation {
    *  Persisted (schema v50), for `aside`'s reason: a question card restored
    *  off disk comes back amber whatever you did yesterday, and acknowledging
    *  the same rest once per launch is the complaint again a day later. The row
-   *  is written by `store::take_notice`, not from here. */
+   *  is written by `store::take_notice` and `store::ack_rest`, not from here.
+   *
+   *  Since 2026-10-21 it is also *the* acknowledgement chat view reads: a rest
+   *  without it waits in *needs you* whatever the turn was called
+   *  (`notice.ts::owesYou`, `owed` below). */
   restSeen = $state(false);
+  /** `restSeen` as the turn now running found it — see `#beginTurn`. */
+  #seenAtOpen = false;
 
   /** The wall that asked for this card to be opened here, or null for one
    *  opened on this wall. A card born over the flyway runs with the machine in
@@ -1279,6 +1286,18 @@ export class Conversation {
      *  is `pickUpText` — not a copy of anything, so it goes out unmarked. */
     pickUp?: boolean;
   } | null>(null);
+  /** The rest this card is in waits on you — a turn ended and nobody has
+   *  acknowledged it (`notice.ts::owesYou`). What chat view's *needs you*
+   *  reads, here and in the digest, in place of what the ending was called. */
+  owed = $derived.by(() =>
+    owesYou({
+      working: this.working,
+      busy: this.busy,
+      ending: this.ending,
+      restSeen: this.restSeen,
+      healing: this.pendingHeal !== null,
+    }),
+  );
   /** Carry-ons since a turn last finished cleanly — see `CARRY_BUDGET`. Counted
    *  apart from `healAttempts` because the two answer different questions: that
    *  one is "how many times has this request failed before reaching a model",
@@ -2584,7 +2603,11 @@ export class Conversation {
     this.turnSince = Date.now();
     this.working = true;
     /* The rest it was about is over, so whatever you saw of it is too — a new
-       rest counts from nothing, and a new question reaches you. */
+       rest counts from nothing, and a new question reaches you. Kept aside
+       for one case: a turn the CLI answers itself (`/model` from chat view's
+       menu) said nothing new, so the rest before it is still the one you had
+       or had not acknowledged — `#seenAtOpen` puts it back at the `result`. */
+    this.#seenAtOpen = this.restSeen;
     this.restSeen = false;
     /* A turn opening *is* the job being picked up, and it does not matter
        whether the agent woke on its own, Skein nudged it, or you typed
@@ -3047,7 +3070,10 @@ export class Conversation {
            - It no longer waits on the CLI having had something to *say*.
              `localAnswer` returning null is the panel's question; a turn that
              reached no model owes an echo either way. See `answeredLocally`. */
-        if (answeredLocally(ev)) this.#claimLocalCommand();
+        if (answeredLocally(ev)) {
+          this.#claimLocalCommand();
+          this.restSeen = this.#seenAtOpen;
+        }
         /* The arc dissolves back into the card, leaving one line behind. */
         if (this.seats.length) {
           this.#push("meta", `${this.seats.length} seats · synthesised`);

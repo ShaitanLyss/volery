@@ -30,6 +30,7 @@
  * compared. Pure; tested in `test/gist.test.ts`. */
 
 import type { Plan, Timeline } from "./timeline";
+import type { Ending } from "./classify";
 
 /** A card's live plan, as far as drawing it goes (`timeline.md`). The plan is
  *  `timeline.rs`'s, written by the owner alone; what crosses is the reading. */
@@ -79,6 +80,15 @@ export type Gist = {
    *  pane in chat view. Lyss, 2026-10-19: *"I noticed timelines don't seem to
    *  travel across the flyway."* */
   timeline: GistTimeline | null;
+  /** How its last turn ended. A hint only: what a turn was *called* decides
+   *  the dot and the words under a title, never where a card is listed. An
+   *  older wall already sent it as the digest's `ending`, so it reads off one
+   *  too. */
+  ending: Ending | null;
+  /** The rest it is in waits on you — a turn ended and nobody has
+   *  acknowledged it (`notice.ts::owesYou`). What chat view's *needs you* is
+   *  decided by. Null from a wall before it, which falls back to its notice. */
+  owed: boolean | null;
 };
 
 /** What a `Conversation` hands `gistOf` — its own field names, which differ
@@ -99,6 +109,9 @@ export type GistSource = {
   turnSince: number | null;
   held: { why: string; until: number | null; waiting: "allowance" | "turn"; queue: readonly unknown[] } | null;
   holding: { excess: number; fleet: number } | null;
+  ending: Ending | null;
+  /** `Conversation.owed`, decided there over the fold only it holds. */
+  owed: boolean;
 };
 
 /** The one function a gist is made by, for the face here and the digest that
@@ -124,6 +137,8 @@ export function gistOf(c: GistSource, live: Timeline | null): Gist {
     timeline: live
       ? { id: live.id, title: live.title, plan: live.plan, bornAt: live.bornAt, updatedAt: live.updatedAt }
       : null,
+    ending: c.ending,
+    owed: c.owed,
   };
 }
 

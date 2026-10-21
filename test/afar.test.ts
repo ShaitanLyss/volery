@@ -75,6 +75,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
     held: null,
     stalled: false,
     unacknowledged: false,
+    owed: false,
     restingSince: 1_000,
     ctx: 0.2,
     lines: [],

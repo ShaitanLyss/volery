@@ -219,6 +219,7 @@ describe("the which-key hint", () => {
       { keys: "cw", label: "wake it" },
       { keys: "cx", label: "clear it — start fresh" },
       { keys: "cy", label: "copy its resume command" },
+      { keys: "da", label: "done with it — acknowledge its rest" },
       { keys: "dc", label: "unsent reply: copy it" },
       { keys: "dn", label: "next thing waiting on you" },
       { keys: "dp", label: "unsent reply: into its card's prompt" },
@@ -387,7 +388,7 @@ describe("which chords want the wall", () => {
   });
 
   test("the rest mean the same in either view and run where they are", () => {
-    for (const keys of ["wv", "ff", "vv", "dn", "cm", "cc", "cr", "z", "ts"]) {
+    for (const keys of ["wv", "ff", "vv", "dn", "da", "cm", "cc", "cr", "z", "ts"]) {
       expect([keys, actsOnWall(verbOf(keys))]).toEqual([keys, false]);
     }
   });

@@ -59,6 +59,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
     held: null,
     stalled: false,
     unacknowledged: false,
+    owed: false,
     restingSince: 1_000,
     ctx: 0.4123,
     ctxTokens: 82_460,
@@ -120,6 +121,7 @@ describe("making a digest", () => {
       closings: [],
       confirms: [],
       notices: [],
+      owed: false,
       parent: null,
     });
   });

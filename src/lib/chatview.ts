@@ -14,7 +14,6 @@
  * list in; what comes back is drawn. */
 
 import { queueOrder, type Waiting } from "./queue";
-import { waitsOnYou } from "./notice";
 
 /** One conversation, as far as the sidebar is concerned. */
 export type ChatRow = {
@@ -42,6 +41,13 @@ export type ChatRow = {
    *  (the dot is rust), and never by itself a reason it needs you — see
    *  `needsYou`. */
   failed: boolean;
+  /** The rest it is in waits on you: a turn ended and nobody has acknowledged
+   *  it (`notice.ts::owesYou`, carried as `Gist.owed`). Null from a wall
+   *  before it, where the standing notice is the only reading there is. */
+  owed: boolean | null;
+  /** Its last turn was *called* a question (`classify.ts::endsOnQuestion`). A
+   *  hint for the dot and the words, never for where the row is listed. */
+  endedOnQuestion: boolean;
   /** Stopped for want of allowance rather than broken, or null — held until
    *  an account frees up, or stopped on the CLI's own refusal
    *  (`cards.svelte.ts::Allowance`). Said quietly under the title; never
@@ -181,9 +187,35 @@ export function goneGhost(id: string, unseen: boolean): Ghost {
  *  it. And it is the dock's own reading — `Cards.noticing` is the queue both
  *  draw — so the two cannot disagree, which the tier did. An allowance stop
  *  is not in that queue at all (`notice.ts::waitsOnYou`); the row says
- *  *waiting for allowance* instead. */
+ *  *waiting for allowance* instead.
+ *
+ *  **And a rest you have not acknowledged** (`restOwed`), whatever the turn was
+ *  called. A `done` notice used to be the one kind that did not need you, and
+ *  what decides `done` is one paragraph read by a regex
+ *  (`classify.ts::endsOnQuestion`). Lyss, 2026-10-21: *"sometimes I ask a
+ *  question and go somewhere else. The card asks a follow-up question, but it
+ *  was flagged as finished, so it's moved silently down the queue, and I'm
+ *  never prompted to go check."* So the label is a hint and nothing more: a
+ *  turn ending puts the next move with you until you acknowledge it. */
 export function needsYou(r: ChatRow): boolean {
+  return asksYou(r) || restOwed(r);
+}
+
+/** Something stands on it that asks: a parked question, one put off, or a
+ *  notice that is not a plain rest. These outrank even a card that is working
+ *  — a question you put off is yours while the card gets on. */
+function asksYou(r: ChatRow): boolean {
   return r.asking !== null || r.deferred !== null || (r.notice !== null && r.notice.kind !== "done");
+}
+
+/** Its rest waits on you. Not while it works — a card that backgrounded work
+ *  has not finished anything — and not when it stopped for want of allowance,
+ *  which waits on no one. A card from a wall before `owed` is read by its
+ *  standing notice, which is that wall's own reading of a rest not yet
+ *  acknowledged. */
+export function restOwed(r: ChatRow): boolean {
+  if (r.working || r.allowance) return false;
+  return r.owed ?? r.notice !== null;
 }
 
 /** How long a conversation that came to rest stays in *finished*, above the
@@ -197,8 +229,11 @@ export function needsYou(r: ChatRow): boolean {
  *  raised for the card you were watching. Lyss, 2026-10-20: *"they just
  *  shouldn't vanish from the top between working and finished"* — and the card
  *  that vanished was the one she was working with. So *finished* is a rest
- *  that is recent; the notice decides only the hollow dot, which reading still
- *  settles. An hour is a sitting: past it, the card is history. */
+ *  that is recent. An hour is a sitting: past it, the card is history.
+ *
+ *  Since 2026-10-21 only a rest you have **acknowledged** reaches it at all
+ *  (`needsYou`): until then it is in *needs you*, so the move from one to the
+ *  other is a gesture of yours and never the classifier's. */
 export const RECENT_MS = 60 * 60_000;
 
 /** The group a row belongs in on its own account, before lineage.
@@ -210,8 +245,12 @@ export const RECENT_MS = 60 * 60_000;
  *  children to ask. */
 export function groupOf(r: ChatRow, now: number, delegating = false): GroupKey {
   if (r.aside && !needsYou(r) && !r.working) return "aside";
-  if (needsYou(r)) return "needs";
+  if (asksYou(r)) return "needs";
+  /* A card whose own turn is over while one it started works is filed with the
+     work: its rest is not the end of anything yet, and the wall holds its
+     notice for the same reason (`notice::held`). */
   if (r.working || delegating) return "working";
+  if (restOwed(r)) return "needs";
   if (r.notice?.kind === "done" || now - r.lastAt < RECENT_MS) return "finished";
   return dayOf(r.lastAt, now);
 }
@@ -277,7 +316,13 @@ function firstLine(text: string): string {
 
 function tone(r: ChatRow, group: GroupKey): Tone {
   if (r.notice?.kind === "failed") return "fail";
-  if (group === "needs") return "ask";
+  if (group === "needs") {
+    if (asksYou(r)) return "ask";
+    /* A rest waiting on you, drawn by what the turn was called: that is the
+       one place the classifier still speaks, as a hint you can triage by. */
+    if (r.failed) return "fail";
+    return r.endedOnQuestion ? "ask" : "done";
+  }
   if (r.working) return "work";
   /* Out of allowance is not broken: nothing about the card is wrong. */
   if (r.allowance) return "rest";
@@ -311,7 +356,12 @@ export function subtitleOf(r: ChatRow, group: GroupKey, now = Date.now()): strin
     if (r.notice?.kind === "question") return firstLine(r.notice.text) || null;
     if (r.notice?.kind === "own") return firstLine(r.notice.text) || null;
     if (r.deferred !== null) return `answer later: ${firstLine(r.deferred)}`;
-    return null;
+    /* A rest you have not acknowledged: what it said, under what the turn was
+       called — `finished:` is the classifier's word and only a word. */
+    const said = firstLine(r.lastWords);
+    if (r.failed) return `stopped: ${said || "it gave up"}`;
+    if (r.endedOnQuestion) return said || null;
+    return said ? `finished: ${said}` : "finished";
   }
   if (group === "working") {
     const doing = r.doing.trim();
@@ -333,7 +383,10 @@ function needsOrder(rows: ChatRow[]): ChatRow[] {
     key: row.id,
     card: row.id,
     tier: row.asking ? 0 : 1,
-    since: row.since ?? 0,
+    /* A rest waiting on you has waited since it began, when nothing else
+       dates it — never "the oldest", which would put the turn that ended a
+       moment ago at the top of everything that has waited all morning. */
+    since: row.since ?? (restOwed(row) ? row.lastAt : 0),
     row,
   }));
   return queueOrder(items, null).map((i) => i.row);
@@ -526,45 +579,13 @@ export function matches(r: ChatRow, query: string): boolean {
   return words.every((w) => hay.includes(w));
 }
 
-/** How long a finished conversation's last message has to have been on screen
- *  before reading it counts as having read it. */
-export const DWELL_MS = 2000;
-
-/** Does reading a `done` notice settle it (`docs/chat-mode.md` §5.4)?
- *
- *  All four, and every shortcut around them was a bug the review found:
- *  Ctrl+Tab skimming past a row, the selection a view switch lands on, the
- *  card selected after a close, a launch with nobody at the keyboard — each
- *  would have acknowledged rests nobody read, and taken them out of the away
- *  pile. Only a finished turn and a failure settle this way
- *  (`settledByReading`); a turn that ended on a question stays until it is
- *  answered, because reading a question is not answering it. */
-export function settles(s: {
-  /** The notice's conversation is the one in front of you. */
-  selected: boolean;
-  /** The window is in front. */
-  focused: boolean;
-  /** Away mode is on. */
-  away: boolean;
-  /** How long its last message has been on screen, in ms. */
-  seenFor: number;
-}): boolean {
-  return s.selected && s.focused && !s.away && s.seenFor >= DWELL_MS;
-}
-
-/** Which notices reading settles: a finished turn, and a failure the card gave
- *  up on. Reading a failure is having seen it, and *needs you* holds a
- *  failure only until you have (`needsYou`) — left standing, an error you read
- *  this morning was still asking for you next week. The card stays rust, which
- *  is the fact: reading mended nothing (`notice.md`). Not a turn that ended on
- *  a question, which reading does not answer; not a card's own news, which has
- *  its own acknowledge; not one parked on a tool call, whose acknowledgement
- *  is an answer to the agent; and not an allowance stop, which waits on no one. */
-export function settledByReading(n: { kind: string; askId?: string; text: string }): boolean {
-  if (n.askId) return false;
-  if (n.kind === "done") return true;
-  return n.kind === "error" && waitsOnYou({ kind: "error", text: n.text });
-}
+/* Reading a finished conversation used to settle it: two seconds of its last
+   message on screen, selected, the window in front (`docs/chat-mode.md` §5.4).
+   It went on 2026-10-21 with the rule above, because reading is exactly how a
+   follow-up question the classifier called *finished* slipped away — a glance,
+   a plan to come back, and the row was gone. Acknowledging is a gesture now
+   (`Skein.acknowledgeRest`: *done with it*, `space d a`, a notice's own
+   acknowledge on either view) or a reply, which opens the turn that clears it. */
 
 /* ── conversations that start conversations (§5.5) ─────────────────────── */
 

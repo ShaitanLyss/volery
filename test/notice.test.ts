@@ -13,6 +13,7 @@ import {
   raiseAt,
   restNotice,
   seesRest,
+  owesYou,
   allowanceReset,
   allowanceStop,
   waitsOnYou,
@@ -68,16 +69,44 @@ describe("restNotice", () => {
 });
 
 describe("seesRest", () => {
-  test("acknowledging a finish or a question stops the card's clock", () => {
+  test("acknowledging a finish, a question or a failure acknowledges the rest", () => {
     expect(seesRest(n({ kind: "done" }))).toBe(true);
     expect(seesRest(n({ kind: "question" }))).toBe(true);
+    /* One acknowledgement for both views: a failure acknowledged on the wall
+       must leave chat view's *needs you* too (2026-10-21). */
+    expect(seesRest(n({ kind: "error" }))).toBe(true);
   });
 
-  test("but not a breakage, a card's own news, or one holding a turn open", () => {
-    expect(seesRest(n({ kind: "error" }))).toBe(false);
+  test("but not a card's own news, or one holding a turn open", () => {
     expect(seesRest(n({ kind: "card" }))).toBe(false);
     expect(seesRest(n({ kind: "card", askId: "a" }))).toBe(false);
     expect(seesRest(n({ kind: "question", askId: "a" }))).toBe(false);
+  });
+});
+
+describe("owesYou: a rest waits on you until you acknowledge it", () => {
+  const rest = { working: false, busy: false, ending: "ok" as const, restSeen: false, healing: false };
+
+  test("whatever the turn was called — finished, a question, a failure", () => {
+    /* The classifier is not asked: a follow-up question it called finished is
+       exactly the rest that went silent before. */
+    expect(owesYou(rest)).toBe(true);
+    expect(owesYou({ ...rest, ending: "question" })).toBe(true);
+    expect(owesYou({ ...rest, ending: "error" })).toBe(true);
+  });
+
+  test("until it is acknowledged", () => {
+    expect(owesYou({ ...rest, restSeen: true })).toBe(false);
+    expect(owesYou({ ...rest, ending: "question", restSeen: true })).toBe(false);
+  });
+
+  test("and never while there is no rest of yours to have", () => {
+    expect(owesYou({ ...rest, working: true })).toBe(false);
+    expect(owesYou({ ...rest, busy: true })).toBe(false);
+    expect(owesYou({ ...rest, healing: true })).toBe(false);
+    expect(owesYou({ ...rest, ending: "stopped" })).toBe(false);
+    expect(owesYou({ ...rest, ending: "asked" })).toBe(false);
+    expect(owesYou({ ...rest, ending: null })).toBe(false);
   });
 });
 

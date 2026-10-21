@@ -126,6 +126,11 @@ export interface CardHandle {
   /** Take a notice down: an empty reply acknowledges it, anything else is a
    *  follow-up sent to the card. */
   acknowledge(n: Notice, reply: string): void | boolean | Promise<boolean | void>;
+  /** *Done with it*: acknowledge the rest it is in, whatever the turn was
+   *  called, so it leaves chat view's *needs you* and stops warming on the
+   *  wall — the one acknowledgement a notice's own acknowledge also makes
+   *  (`Skein.acknowledgeRest`). Answers why it could not, or null. */
+  acknowledgeRest(): Promise<string | null>;
 }
 
 /** Why a card is waiting for allowance, as far as anything here knows:
@@ -384,6 +389,9 @@ export class LocalCard implements CardHandle {
   acknowledge(n: Notice, reply: string) {
     return reply ? this.#skein.followUpNotice(n, reply) : this.#skein.acknowledgeNotice(n);
   }
+  acknowledgeRest() {
+    return this.#skein.acknowledgeRest(this.conv);
+  }
 }
 
 /** A card on another wall. A verb its wall announced crosses as one `act`
@@ -544,6 +552,18 @@ export class RemoteCard implements CardHandle {
   holdAsk() {}
   acknowledge(n: Notice, reply: string) {
     return this.#walls.answerNotice(this.shadow, n, reply);
+  }
+  /** Over there the acknowledgement is its wall's notice coming down — the
+   *  same `notice:<id>` answer its dock's acknowledge sends, which that wall
+   *  takes as its own gesture (`elsewhere.md`, *Notices travel too*) and which
+   *  sets the flag its next snapshot carries. A rest that raised no notice
+   *  there — one somebody watched end on that wall — has nothing to send, and
+   *  says so rather than pretending. */
+  async acknowledgeRest(): Promise<string | null> {
+    const rest = this.notices.find((n) => !n.askId && n.kind !== "card");
+    if (!rest) return `no notice stands for it on ${this.shadow.host} — acknowledge it there, or reply`;
+    const ok = await this.#walls.answerNotice(this.shadow, rest, "");
+    return ok ? null : `${this.shadow.host} could not be asked to acknowledge it`;
   }
 }
 

@@ -4322,6 +4322,11 @@ export class Skein {
     void invoke("update_conversation", { id: conv.id, aside }).catch((err) => {
       this.fault = String(err);
     });
+    /* Putting a card by is saying you are done with it for now, so the rest
+       it is in stops waiting on you — or it would come straight back out of
+       *set aside* into chat view's *needs you* (`chatview.ts::groupOf`). A
+       later rest is new, and waits on you as any does. */
+    if (aside && conv.owed) void this.acknowledgeRest(conv);
     /* "At once" means this gesture, not the next minute's survey. The pass
        still decides — every loss arm, the grace, the setting being off — this
        only lets it ask now. */
@@ -4707,11 +4712,20 @@ export class Skein {
     if (pending) clearTimeout(pending);
     this.#noticeTimers.delete(c.id);
 
+    const local = answeredLocally(ev);
     const want = restNotice(c.ending, c.lastWords, {
       lastError: c.lastError,
       healing: c.pendingHeal !== null,
-      local: answeredLocally(ev),
+      local,
     });
+    /* A turn the CLI answered itself (`/model`, `/compact`) is no rest of
+       anybody's, but sending it opened a turn in Rust, and opening one spends
+       the row's acknowledgement (`store::set_mid_turn`). So a rest you had
+       acknowledged before it is written back; one you had not stays owed —
+       the command changes nothing about what the card last said to you. */
+    if (!want && local && c.restSeen && !c.working) {
+      void invoke("rest_ack", { conversationId: c.id }).catch(() => {});
+    }
     if (!want) return;
     const rested = Date.now();
     const turns = c.turns;
@@ -4723,17 +4737,51 @@ export class Skein {
       setTimeout(() => {
         this.#noticeTimers.delete(c.id);
         /* Moved on in the meantime — a queued message, its own background
-           work reporting. The rest this was about is over. */
-        if (c.working || c.turns !== turns) return;
+           work reporting. The rest this was about is over. Or already
+           acknowledged, with *done with it* inside the settle. */
+        if (c.working || c.turns !== turns || c.restSeen) return;
         if (!this.#byId.has(c.id) || this.watching(c.id)) return;
-        void invoke("notice_raise", {
+        void invoke<string>("notice_raise", {
           conversationId: c.id,
           kind: want.kind,
           text: want.text,
           byPerson,
-        }).catch(() => {});
+        })
+          .then((said) => {
+            /* Held for somebody else — an armed wake, a card it opened still
+               working, the card that opened it being told. Rust marked the
+               rest seen, since the next move is not yours (`notice::raise`);
+               the card is told the same, unless a turn has opened since. */
+            if (said === "held" && !c.working && c.turns === turns) c.restSeen = true;
+          })
+          .catch(() => {});
       }, delay),
     );
+  }
+
+  /** Acknowledge the rest a card is in: *done with it*.
+   *
+   *  The one acknowledgement both views read (Lyss, 2026-10-21: *"acknowledging
+   *  on the wall or the chat should be the same thing"*). It takes any rest
+   *  notice standing for the card — so the dock, the toasts and the away pile
+   *  agree — and sets `restSeen`, which stops the card warming on the wall and
+   *  moves it out of chat view's *needs you* (`notice.ts::owesYou`). A notice
+   *  acknowledged from the dock does the same through `acknowledgeNotice`, so
+   *  the two gestures are one. The row is `rest_ack`'s to write, under the
+   *  same mid-turn guard `take_notice` uses. Answers why it could not, or null. */
+  async acknowledgeRest(c: Conversation): Promise<string | null> {
+    if (c.working) return "it is working — there is no rest to acknowledge yet";
+    const pending = this.#noticeTimers.get(c.id);
+    if (pending) clearTimeout(pending);
+    this.#noticeTimers.delete(c.id);
+    c.restSeen = true;
+    this.notices = this.notices.filter((n) => n.conversationId !== c.id || !seesRest(n));
+    try {
+      await invoke("rest_ack", { conversationId: c.id });
+      return null;
+    } catch (err) {
+      return String(err);
+    }
   }
 
   /** Take a notice down without a word.

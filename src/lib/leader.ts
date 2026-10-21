@@ -92,7 +92,7 @@ export type CardChord =
 
 /** What a `d` chord does in the dock's queue: step to the next thing waiting,
  *  or deal with a reply whose item went before it was sent (`Dock.svelte`). */
-export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance";
+export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance" | "ack";
 
 export type Verb =
   | { kind: "find"; mode: FindMode }
@@ -210,6 +210,10 @@ export const CHORDS: readonly Chord[] = [
   /* `dr`: what the card asking the question in the dock last said — the thing
      the question is usually about. alt+R from inside the question. */
   { keys: "dr", label: "what the asking card last said", verb: { kind: "dock", act: "glance" } },
+  /* `da`: done with it — acknowledge the focused card's rest, so it leaves
+     chat view's *needs you* and stops warming on the wall. One gesture for
+     both views (`Skein.acknowledgeRest`); `a` for acknowledge. */
+  { keys: "da", label: "done with it — acknowledge its rest", verb: { kind: "dock", act: "ack" } },
   { keys: "sd", label: "drop something in the sink", verb: { kind: "sink", act: "drop" } },
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
   /* `wv`: the wall or chat view (`docs/chat-mode.md` §5.8) — how the window is
@@ -479,9 +483,10 @@ export function actsOnWall(verb: Verb): boolean {
     case "card":
       return verb.act === "glass" || verb.act === "keep" || verb.act === "keep-glass";
     case "dock":
-      /* The next thing waiting is chat view's too — its *needs you*. The
-         rest are the dock's own unsent replies, which live on the wall. */
-      return verb.act !== "next";
+      /* The next thing waiting is chat view's too — its *needs you* — and so
+         is acknowledging a rest. The rest are the dock's own unsent replies,
+         which live on the wall. */
+      return verb.act !== "next" && verb.act !== "ack";
     default:
       return false;
   }

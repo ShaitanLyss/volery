@@ -144,7 +144,15 @@ pub(crate) fn held(
 }
 
 /// Put a rest notice up, unless the wall knows the rest is not the end of
-/// anything. Answers whether it went up.
+/// anything. Answers `raised`, `held` or `working`.
+///
+/// A rest **held** for somebody else is also marked seen (`store::see_rest`):
+/// an armed wake, a card it opened still working, the card that opened it being
+/// told — in each the next move is not yours, so the rest must not wait on you
+/// in chat view's *needs you* either (`notice.ts::owesYou`), and the wall's
+/// clock had no business warming for it. `held` is said so the front end can
+/// mark its copy without waiting for a reload. `working` marks nothing: the
+/// turn that has opened is spending the flag already.
 ///
 /// Off the main thread, `crate::off_main`'s rule one step out: it takes the
 /// supervisor's lock to ask about liveness, and `deliver_blocks` holds that lock
@@ -157,7 +165,7 @@ pub async fn notice_raise(
     kind: String,
     text: String,
     by_person: Option<bool>,
-) -> Result<bool, String> {
+) -> Result<&'static str, String> {
     let by_person = by_person.unwrap_or(false);
     crate::off_main(move || raise(&app, conversation_id, kind, text, by_person)).await?
 }
@@ -168,7 +176,7 @@ fn raise(
     kind: String,
     text: String,
     by_person: bool,
-) -> Result<bool, String> {
+) -> Result<&'static str, String> {
     if !REST_KINDS.contains(&kind.as_str()) {
         return Err(format!("not a notice kind: {kind}"));
     }
@@ -201,10 +209,12 @@ fn raise(
        before the front end's timer fired has opened one the front end has not
        heard about yet. A notice over a working card says something false. */
     if sup.liveness(&conversation_id).1 {
-        return Ok(false);
+        return Ok("working");
     }
     if held(wakes, children_busy, parent_live, by_person).is_some() {
-        return Ok(false);
+        let conn = store.0.lock().map_err(|e| e.to_string())?;
+        crate::store::see_rest(&conn, &conversation_id);
+        return Ok("held");
     }
 
     /* The switch, not idleness: a rest notice raised while nobody is at the
@@ -246,7 +256,7 @@ fn raise(
             &first_line(&notice.text),
         );
     }
-    Ok(true)
+    Ok("raised")
 }
 
 /// The register's name for a card, `skein.svelte.ts::#sourceOf`'s shape.
@@ -292,6 +302,22 @@ pub fn notice_take(app: AppHandle, id: String) -> Option<NoticeRow> {
         changed(&app, Some(&n.conversation_id));
     }
     taken
+}
+
+/// *Done with it*: acknowledge a card's rest from either view — the rest
+/// notices standing for it come down and the rest is marked seen, in one
+/// statement each (`store::ack_rest`). The same acknowledgement as taking its
+/// notice, made where none stands: a rest you watched end raised none, and
+/// chat view still lists it under *needs you* until you say so.
+#[tauri::command]
+pub fn rest_ack(app: AppHandle, conversation_id: String) -> Result<(), String> {
+    {
+        let store = app.try_state::<Store>().ok_or("the store is not open")?;
+        let conn = store.0.lock().map_err(|e| e.to_string())?;
+        crate::store::ack_rest(&conn, &conversation_id);
+    }
+    changed(&app, Some(&conversation_id));
+    Ok(())
 }
 
 /// A turn opened on this card. Called on the transition from

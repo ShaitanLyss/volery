@@ -202,8 +202,39 @@ describe("endsOnQuestion", () => {
     expect(endsOnQuestion("Done.\n\n- a\n- b\n\nShall I continue?")).toBe(true);
   });
 
-  test("a question in an earlier paragraph does not count", () => {
-    expect(endsOnQuestion("Should I? Maybe.\n\nI did it anyway. All tests pass.")).toBe(false);
+  test("a question in an earlier paragraph does not count under a real ending", () => {
+    expect(
+      endsOnQuestion(
+        "Should I? Maybe.\n\nI did it anyway: the parser now keeps the span it was handed, the three callers pass theirs through, and all the tests pass, including the two that used to be skipped on Windows.",
+      ),
+    ).toBe(false);
+  });
+
+  test("but a question with only a short line under it still ends the turn on it", () => {
+    /* Widened 2026-10-21: a summary or a sign-off after the question was a
+       follow-up filed as finished. */
+    expect(endsOnQuestion("Should I push?\n\nSummary: tests pass, 3 files changed.")).toBe(true);
+    expect(endsOnQuestion("Should I? Maybe.\n\nI did it anyway. All tests pass.")).toBe(true);
+  });
+
+  test("the plural and the polite forms ask too", () => {
+    for (const said of [
+      "Done. Should I maybe also add the falloff.",
+      "I wired the uniforms.\n\nShould we also cache the texture",
+      "Shall we merge this now.",
+      "If you want, I can also squash the commits.",
+      "Let me know.",
+      "Can you confirm the branch name.",
+      "Could you paste the error output.",
+      "Maybe I should also handle the empty case.",
+      "Do we want the old behaviour behind a flag.",
+      "Thoughts on naming it `owed`.",
+      "Happy to do either.",
+      "Ready when you are.",
+    ]) {
+      expect([said, endsOnQuestion(said)]).toEqual([said, true]);
+    }
+    expect(endsOnQuestion("All done — the build is green and pushed.")).toBe(false);
   });
 
   test("the last paragraph counts, not only its last line", () => {

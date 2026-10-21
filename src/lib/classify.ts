@@ -1922,16 +1922,27 @@ export function sameModel(a: string | undefined, b: string | undefined): boolean
  * which"*, *"say the word"*, *"your call"*. Adding these to the last paragraph
  * took recall from 34% to 53% at 80% precision on the held-out half; the
  * last-line check this replaced caught 28%. The scripts that took the
- * measurement are described in `.claude/rules/notice.md`. */
+ * measurement are described in `.claude/rules/notice.md`.
+ *
+ * Widened 2026-10-21, once the label stopped deciding anything that matters
+ * (`notice.ts::owesYou`: a rest waits on you whatever it was called, so a
+ * false "question" costs a dot's colour and a missed one costs the hint you
+ * triage by). Lyss asked for forms like *"Should I maybe…"*, and the misses
+ * read off this machine's own endings were the plural and the polite —
+ * *should we*, *shall we*, *if you want*, a bare *let me know*, *can you
+ * confirm*, *could you paste*, *do we want*, *thoughts on*. Not re-scored
+ * against the labelled set, which is not on this machine; recall bought at
+ * some precision, knowingly. */
 const ASK_PHRASE =
-  /\b(say the word|let me know (if|whether|which|what|how)|tell me (which|whether|if|what|how)|send me|your call|up to you|which (do|would|should) (you|we|i)|do you want|would you (like|prefer|rather)|should i\b|shall i\b|want me to|or should|before i (go|proceed|continue|start|commit|push|merge|run)|waiting (on|for) (you|your)|need(s)? your|i need you to|your (decision|go-ahead|answer|call|input|confirmation|approval|pick)|(confirm|approve) (that|this|whether|before)|rather not (guess|decide|pick|choose)|pick one|which (one|way|option) (do|would|should)|if you('d| would) (like|rather|prefer)|say (if|which|so)|happy to [^.\n]{0,60} if you)\b/i;
+  /\b(say the word|let me know\b|should we\b|shall we\b|maybe (i|we) should|if you want\b|do (we|you) want|can you (confirm|check|paste|send|share|tell|run|try|look)|could you\b|thoughts on|happy to do (either|both|whichever)|your (move|turn)|ready when you are|(either|which) (one )?works for you|tell me (which|whether|if|what|how)|send me|your call|up to you|which (do|would|should) (you|we|i)|do you want|would you (like|prefer|rather)|should i\b|shall i\b|want me to|or should|before i (go|proceed|continue|start|commit|push|merge|run)|waiting (on|for) (you|your)|need(s)? your|i need you to|your (decision|go-ahead|answer|call|input|confirmation|approval|pick)|(confirm|approve) (that|this|whether|before)|rather not (guess|decide|pick|choose)|pick one|which (one|way|option) (do|would|should)|if you('d| would) (like|rather|prefer)|say (if|which|so)|happy to [^.\n]{0,60} if you)\b/i;
 
 /** A question mark that ends a sentence, not one inside a URL or a token. */
 const QUESTION_MARK = /\?(?=[\s"'`)\]*_]|$)/;
 
-/** The last paragraph of prose: code fences, inline code and links taken out,
- *  since a `?` in a regex or a query string is not a question. */
-function closingParagraph(text: string): string {
+/** The last paragraph of prose and the one before it, code fences, inline
+ *  code and links taken out, since a `?` in a regex or a query string is not a
+ *  question. */
+function closingParagraphs(text: string): [string, string | undefined] {
   const prose = text
     .replace(/```[\s\S]*?```/g, "")
     .replace(/`[^`\n]*`/g, "x")
@@ -1940,7 +1951,7 @@ function closingParagraph(text: string): string {
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter(Boolean);
-  return paras[paras.length - 1] ?? "";
+  return [paras[paras.length - 1] ?? "", paras[paras.length - 2]];
 }
 
 /** Did this turn end on a question?
@@ -1952,9 +1963,22 @@ function closingParagraph(text: string): string {
  * one rule and this is it. A wrong answer costs only the label: a notice carries
  * the text and a reply box whichever it says. */
 export function endsOnQuestion(text: string): boolean {
-  const last = closingParagraph(text);
+  const [last, before] = closingParagraphs(text);
   if (!last) return false;
-  return QUESTION_MARK.test(last) || ASK_PHRASE.test(last);
+  if (asks(last)) return true;
+  /* A question with a short line under it — a summary, a sign-off — still
+     ends the turn on that question: *"Should I push?"* then *"Tests pass,
+     three files."* Only a short last paragraph lets the one before speak;
+     a long one is the turn's real ending, and reading further back is the
+     two-paragraph rule the measurement above priced at six points. */
+  return last.length <= SHORT_TAIL && before !== undefined && asks(before);
+}
+
+/** How short a closing paragraph must be to let the one before it count. */
+const SHORT_TAIL = 160;
+
+function asks(paragraph: string): boolean {
+  return QUESTION_MARK.test(paragraph) || ASK_PHRASE.test(paragraph);
 }
 
 /** The note Claude Code writes into the conversation when a turn is stopped.

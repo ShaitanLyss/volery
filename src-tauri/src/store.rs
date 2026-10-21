@@ -370,7 +370,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 57;
+const SCHEMA_VERSION: i64 = 58;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -433,6 +433,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (55, migrate_v55),
     (56, migrate_v56),
     (57, migrate_v57),
+    (58, migrate_v58),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2898,10 +2899,12 @@ fn migrate_v49(conn: &Connection) -> Result<(), String> {
 /// would have you acknowledge the same rest once per restart — the complaint
 /// it exists for, one day later.
 ///
-/// Written only by `take_notice` and cleared only by `set_mid_turn` opening a
-/// turn, both here, so the flag and the turn boundary that spends it are one
-/// file's statements rather than two writes from two sides that can land in
-/// either order. Every existing row is a rest nobody has acknowledged.
+/// Written only by `see_rest` (through `take_notice` and `ack_rest`) and
+/// cleared only by `set_mid_turn` opening a turn, all here, so the flag and the
+/// turn boundary that spends it are one file's statements rather than two
+/// writes from two sides that can land in either order. Every existing row is
+/// a rest nobody has acknowledged — which `migrate_v58` revisits, once the flag
+/// became the acknowledgement chat view's *needs you* reads.
 fn migrate_v50(conn: &Connection) -> Result<(), String> {
     add_column(conn, "conversation", "rest_seen", "INTEGER NOT NULL DEFAULT 0")
 }
@@ -3159,6 +3162,30 @@ fn migrate_v57(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v57: {e}"))
+}
+
+/// `rest_seen` becomes *the* acknowledgement (2026-10-21): chat view lists
+/// every rest without it under *needs you*, whatever the turn was called
+/// (`notice.ts::owesYou`). Until now nothing set it but a notice taken from the
+/// dock, so most rests on a wall carry `0` without anybody having owed them a
+/// thing — a card you watched finish raised no notice to take, and reading one
+/// in chat view settled it without writing the flag. Left alone, the first
+/// launch on this build would file every card at rest under *needs you*.
+///
+/// So every rest standing when the rule arrived counts as acknowledged, except
+/// the ones a notice still stands for: those are the wall's own record of a
+/// rest nobody has acknowledged, and they keep waiting. A data rung, no
+/// columns, and safe to re-run — it only ever sets the flag.
+fn migrate_v58(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE conversation SET rest_seen = 1
+          WHERE rest_seen = 0 AND interrupted = 0 AND closed_at IS NULL
+            AND id NOT IN (SELECT conversation_id FROM pending_notice
+                            WHERE kind IN ('done', 'question', 'error'))",
+        [],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("migrate v58: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -8666,20 +8693,48 @@ pub fn take_notice(conn: &Connection, id: &str) -> Option<NoticeRow> {
            over — that flag would outlive the turn and silence the *next* rest,
            which is the one lie this column must not tell. A follow-up takes
            too, and is then sent, which opens the turn that clears it. */
-        let _ = conn.execute(
-            "UPDATE conversation SET rest_seen = 1 WHERE id = ?1 AND interrupted = 0",
-            params![row.conversation_id],
-        );
+        see_rest(conn, &row.conversation_id);
     }
     (gone > 0).then_some(row)
 }
 
-/// The notice kinds whose acknowledgement stops the card's clock — the two
-/// rests `urgencyFor` measures as neglect, and `notice.ts::SEEN_KINDS` says
-/// the same. Not `error`: rust is a fact about a card that broke and is still
-/// broken, not a clock, and having read it changes nothing about it. Not
-/// `card`: that is news the card sent, not its rest.
-pub const SEEN_KINDS: [&str; 2] = ["done", "question"];
+/// Mark the rest a card is in as acknowledged — the one flag the wall's clock
+/// and chat view's *needs you* both read (`migrate_v50`, `migrate_v58`). Only
+/// while no turn is open: `interrupted` is the mid-turn mark `set_mid_turn`
+/// writes as one opens, so a write landing a moment after the card stirred
+/// cannot mark a rest that is already over — that flag would outlive the turn
+/// and silence the *next* rest, which is the one lie this column must not tell.
+pub fn see_rest(conn: &Connection, conversation_id: &str) {
+    let _ = conn.execute(
+        "UPDATE conversation SET rest_seen = 1 WHERE id = ?1 AND interrupted = 0",
+        params![conversation_id],
+    );
+}
+
+/// *Done with it*: acknowledge a card's rest, and take down the rest notices
+/// standing for it so the dock agrees — the same gesture as taking its notice,
+/// made where no notice stands (a rest you watched end raises none). The card's
+/// own notices stay; they were news, not its rest. Answers how many notices
+/// came down, so the caller emits only on change.
+pub fn ack_rest(conn: &Connection, conversation_id: &str) -> usize {
+    let gone = conn
+        .execute(
+            "DELETE FROM pending_notice WHERE conversation_id = ?1
+               AND kind IN ('done', 'question', 'error')",
+            params![conversation_id],
+        )
+        .unwrap_or(0);
+    see_rest(conn, conversation_id);
+    gone
+}
+
+/// The notice kinds whose acknowledgement acknowledges the card's rest — every
+/// rest a turn ending raises, and `notice.ts::seesRest` says the same. `error`
+/// joined on 2026-10-21, when the flag became the acknowledgement chat view
+/// reads too: rust is still rust on the wall, since `urgencyFor` answers `fail`
+/// above `seen`, but a failure you acknowledged must stop waiting on you in
+/// chat view. Not `card`: that is news the card sent, not its rest.
+pub const SEEN_KINDS: [&str; 3] = ["done", "question", "error"];
 
 /// A turn opened on this card, so the rest its notice was about is over. The
 /// card's own notices stay: they were about something it said, not about it
@@ -10225,12 +10280,18 @@ mod tests {
                 != 0
         };
 
-        /* Neither a card's own news nor a breakage is a rest you can see off. */
+        /* A card's own news is not a rest you can see off. */
         raise_notice(&conn, &n("k", "card")).unwrap();
         take_notice(&conn, "k").unwrap();
+        assert!(!seen(&conn), "a card's own notice acknowledged its rest");
+
+        /* A failure it gave up on is: acknowledging it on the wall must take
+           it out of chat view's *needs you* too (2026-10-21). */
         raise_notice(&conn, &n("e", "error")).unwrap();
         take_notice(&conn, "e").unwrap();
-        assert!(!seen(&conn), "an error or a card's own notice stopped the clock");
+        assert!(seen(&conn), "acknowledging a failure left its rest waiting on you");
+        set_mid_turn(&conn, "c1", true);
+        set_mid_turn(&conn, "c1", false);
 
         raise_notice(&conn, &n("q", "question")).unwrap();
         take_notice(&conn, "q").unwrap();
@@ -10255,6 +10316,103 @@ mod tests {
         assert!(seen(&conn));
         clear_row(&conn, "c1", "s2").unwrap();
         assert!(!seen(&conn), "a cleared card kept a mark about a session it no longer has");
+    }
+
+    /// *Done with it* acknowledges a rest that raised no notice — the card you
+    /// watched end — and takes down the rest notices a rest did raise, while a
+    /// card's own news stays up. Spent by the next turn like any mark, and
+    /// refused mid-turn like any take.
+    #[test]
+    fn done_with_it_acknowledges_a_rest_with_or_without_a_notice() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        let seen = |conn: &Connection| -> bool {
+            conn.query_row("SELECT rest_seen FROM conversation WHERE id = 'c1'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                != 0
+        };
+        let n = |id: &str, kind: &str| NoticeRow {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            kind: kind.into(),
+            text: kind.into(),
+            raised_at: 1,
+            away: false,
+            waited: false,
+        };
+
+        assert_eq!(ack_rest(&conn, "c1"), 0);
+        assert!(seen(&conn), "a rest with no notice could not be acknowledged");
+
+        set_mid_turn(&conn, "c1", true);
+        assert!(!seen(&conn), "the next turn did not spend the acknowledgement");
+        ack_rest(&conn, "c1");
+        assert!(!seen(&conn), "acknowledged mid-turn — the mark would silence the next rest");
+        set_mid_turn(&conn, "c1", false);
+
+        raise_notice(&conn, &n("q", "question")).unwrap();
+        raise_notice(&conn, &n("k", "card")).unwrap();
+        assert_eq!(ack_rest(&conn, "c1"), 1, "the rest notice did not come down");
+        assert!(seen(&conn));
+        let left: Vec<String> = queued_notices(&conn).into_iter().map(|n| n.kind).collect();
+        assert_eq!(left, vec!["card".to_string()], "a card's own news went with its rest");
+    }
+
+    /// The rung that made `rest_seen` the acknowledgement counts every rest
+    /// already standing as acknowledged — or the first launch would file the
+    /// whole wall under *needs you* — except the ones a notice still stands
+    /// for, which nobody has acknowledged and which keep waiting.
+    #[test]
+    fn migrate_v58_acknowledges_old_rests_but_not_ones_a_notice_stands_for() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        for id in ["quiet", "noticed", "mid", "closed"] {
+            conn.execute(
+                "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES (?1,'p1','C:/x',0)",
+                params![id],
+            )
+            .unwrap();
+        }
+        conn.execute("UPDATE conversation SET interrupted = 1 WHERE id = 'mid'", []).unwrap();
+        conn.execute("UPDATE conversation SET closed_at = 5 WHERE id = 'closed'", []).unwrap();
+        raise_notice(
+            &conn,
+            &NoticeRow {
+                id: "n1".into(),
+                conversation_id: "noticed".into(),
+                kind: "done".into(),
+                text: "done".into(),
+                raised_at: 1,
+                away: false,
+                waited: false,
+            },
+        )
+        .unwrap();
+
+        migrate_v58(&conn).unwrap();
+        migrate_v58(&conn).unwrap();
+        let seen = |id: &str| -> bool {
+            conn.query_row("SELECT rest_seen FROM conversation WHERE id = ?1", params![id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                != 0
+        };
+        assert!(seen("quiet"), "an old rest nobody owed anything for came back waiting on you");
+        assert!(!seen("noticed"), "a rest its notice still stands for was acknowledged unseen");
+        assert!(!seen("mid"), "a turn that was open was marked as a rest");
+        assert!(!seen("closed"));
     }
 
     /// The awake mark is cleared only by the process that wrote it. An account

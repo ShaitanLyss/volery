@@ -16,6 +16,8 @@ function row(id: string, over: Partial<ChatRow> = {}): ChatRow {
     deferred: null,
     notice: null,
     failed: false,
+    owed: false,
+    endedOnQuestion: false,
     aside: false,
     lastAt: NOW - 3_600_000,
     turnAt: null,

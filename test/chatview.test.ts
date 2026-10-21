@@ -7,11 +7,8 @@ import {
   cardByHandle,
   handlesIn,
   SPAWN_TOOL,
-  DWELL_MS,
   afterClose,
   ageOf,
-  settles,
-  settledByReading,
   allowanceLine,
   hostOfKey,
   restedOf,
@@ -45,6 +42,11 @@ function row(id: string, over: Partial<ChatRow> = {}): ChatRow {
     deferred: null,
     notice: null,
     failed: false,
+    /* Acknowledged unless a test says otherwise, so the groups below are about
+       what each test names; the rule that an unacknowledged rest needs you
+       has its own block. */
+    owed: false,
+    endedOnQuestion: false,
     aside: false,
     lastAt: NOW - H,
     turnAt: null,
@@ -123,16 +125,6 @@ describe("the sidebar's groups", () => {
     expect(ids([far({ notice: { kind: "question", text: "shall I?" } })], "needs")).toEqual(["f"]);
   });
 
-  test("reading settles a finished turn and a failure, and nothing that waits on an answer", () => {
-    expect(settledByReading({ kind: "done", text: "fine" })).toBe(true);
-    expect(settledByReading({ kind: "error", text: "API Error: 529 overloaded" })).toBe(true);
-    expect(settledByReading({ kind: "question", text: "shall I?" })).toBe(false);
-    expect(settledByReading({ kind: "card", text: "found a bug" })).toBe(false);
-    expect(settledByReading({ kind: "card", text: "wait for me", askId: "a1" })).toBe(false);
-    expect(settledByReading({ kind: "done", text: "fine", askId: "a1" })).toBe(false);
-    expect(settledByReading({ kind: "error", text: "You've hit your session limit · resets 2:30pm" })).toBe(false);
-  });
-
   test("a question you put off stays in needs you while the agent works on", () => {
     expect(ids([row("x", { deferred: "q", working: true })], "needs")).toEqual(["x"]);
   });
@@ -174,10 +166,12 @@ describe("the sidebar's groups", () => {
     expect(ids(rows, "earlier")).toEqual(["earlier"]);
   });
 
-  test("a card that came to rest within the hour stays in finished, notice or not", () => {
+  test("an acknowledged rest within the hour stays in finished, notice or not", () => {
     /* Lyss, 2026-10-20: a card vanished from the top between working and
        finished — its notice was held, or never raised because she was
-       watching, and the rest filed it in today's history below the projects. */
+       watching, and the rest filed it in today's history below the projects.
+       (Every row here is acknowledged — `owed: false` — or since 2026-10-21
+       it would be in *needs you*, below.) */
     const rows = [
       row("held", { lastAt: NOW - 30_000 }),
       row("read", { lastAt: NOW - 40 * 60_000 }),
@@ -474,18 +468,105 @@ describe("projects and search", () => {
   });
 });
 
-describe("settling a finished conversation by reading it", () => {
-  const ok = { selected: true, focused: true, away: false, seenFor: DWELL_MS };
+describe("a rest needs you until you acknowledge it, whatever it was called", () => {
+  /* Lyss, 2026-10-21: *"sometimes I ask a question and go somewhere else. The
+     card asks a follow-up question, but it was flagged as finished, so it's
+     moved silently down the queue."* Each test below goes red if placement
+     trusts what the classifier called the ending again. */
+  const owed = (id: string, over: Partial<ChatRow> = {}) => row(id, { owed: true, lastAt: NOW - 5 * 60_000, ...over });
 
-  test("selected, in front, not away, and its last message on screen for two seconds", () => {
-    expect(settles(ok)).toBe(true);
+  test("a turn the classifier called finished is in needs you, not finished", () => {
+    const said = "I've wired it. Want the falloff too";
+    const r = owed("fin", { notice: { kind: "done", text: said }, lastWords: said });
+    expect(ids([r], "needs")).toEqual(["fin"]);
+    expect(ids([r], "finished")).toEqual([]);
+    /* The label survives as a hint: the hollow dot and the word. */
+    const p = groups([r], NOW)[0]!.rows[0]!;
+    expect(p.tone).toBe("done");
+    expect(p.sub).toBe(`finished: ${said}`);
   });
 
-  test("any one missing and it stands — skimming past, a background window, away, a glance", () => {
-    expect(settles({ ...ok, selected: false })).toBe(false);
-    expect(settles({ ...ok, focused: false })).toBe(false);
-    expect(settles({ ...ok, away: true })).toBe(false);
-    expect(settles({ ...ok, seenFor: DWELL_MS - 1 })).toBe(false);
+  test("a finished summary with no notice at all — you watched it end — needs you too", () => {
+    const r = owed("watched", { lastWords: "Done — the site has a dark mode." });
+    expect(ids([r], "needs")).toEqual(["watched"]);
+  });
+
+  test("a turn that ended on a question is in needs you, amber, with the question under it", () => {
+    const r = owed("q", { endedOnQuestion: true, lastWords: "Should I push it?" });
+    expect(ids([r], "needs")).toEqual(["q"]);
+    const p = groups([r], NOW)[0]!.rows[0]!;
+    expect(p.tone).toBe("ask");
+    expect(p.sub).toBe("Should I push it?");
+  });
+
+  test("a failure that raised no notice is in needs you, rust", () => {
+    const r = owed("broke", { failed: true, lastWords: "the build failed" });
+    expect(ids([r], "needs")).toEqual(["broke"]);
+    expect(groups([r], NOW)[0]!.rows[0]!.tone).toBe("fail");
+  });
+
+  test("acknowledging moves it to finished, and only that does", () => {
+    expect(ids([owed("a")], "needs")).toEqual(["a"]);
+    expect(ids([owed("a", { owed: false })], "finished")).toEqual(["a"]);
+    /* The hour does not take it out either: an old rest nobody acknowledged
+       is still waiting, not history. */
+    expect(ids([owed("old", { lastAt: NOW - 3 * 24 * H })], "needs")).toEqual(["old"]);
+  });
+
+  test("new activity on an acknowledged card puts it back: working, then needs you", () => {
+    const acked = row("c", { owed: false, lastAt: NOW - 10 * 60_000 });
+    expect(ids([acked], "finished")).toEqual(["c"]);
+    /* A wake, a message from another card, or your own reply opens a turn. */
+    const woke = row("c", { owed: false, working: true, turnAt: NOW - 30_000 });
+    expect(ids([woke], "working")).toEqual(["c"]);
+    /* The turn spends the acknowledgement; its rest is a new one. */
+    const restedAgain = row("c", { owed: true, lastAt: NOW - 1_000 });
+    expect(ids([restedAgain], "needs")).toEqual(["c"]);
+    /* And a question asked mid-turn needs you while it works. */
+    const asks = row("c", { owed: false, working: true, asking: { text: "which?", nth: 1, of: 1 } });
+    expect(ids([asks], "needs")).toEqual(["c"]);
+  });
+
+  test("after a restart: an unacknowledged rest from yesterday is still in needs you", () => {
+    /* A card restored dormant carries its rest's acknowledgement off the row
+       (`rest_seen`, persisted), so a restart neither forgets an owed rest into
+       the day's history nor brings back one you acknowledged. */
+    const yesterday = new Date(NOW);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const t = yesterday.getTime();
+    expect(ids([row("owed", { owed: true, lastAt: t })], "needs")).toEqual(["owed"]);
+    expect(ids([row("acked", { owed: false, lastAt: t })], "yesterday")).toEqual(["acked"]);
+  });
+
+  test("never while it works or backgrounds work, and never for want of allowance", () => {
+    expect(ids([owed("run", { working: true, turnAt: NOW - 1_000 })], "working")).toEqual(["run"]);
+    expect(ids([owed("held", { allowance: { until: null, reset: "3:30pm" } })], "needs")).toEqual([]);
+  });
+
+  test("a card that started one still working is filed with the work, not under you", () => {
+    const rows = [owed("parent"), row("child", { parent: "parent", working: true, turnAt: NOW - 1_000 })];
+    expect(ids(rows, "working")).toEqual(["parent", "child"]);
+    expect(ids(rows, "needs")).toEqual([]);
+  });
+
+  test("a wall from before the rule is read by its standing notice", () => {
+    const far = (over: Partial<ChatRow>) => row("f", { host: "QUEERISFREEDOM", owed: null, lastAt: NOW - 60_000, ...over });
+    expect(ids([far({ notice: { kind: "done", text: "done" } })], "needs")).toEqual(["f"]);
+    expect(ids([far({})], "finished")).toEqual(["f"]);
+  });
+
+  test("set aside and acknowledged stays aside; a rest owed brings it back", () => {
+    expect(ids([row("s", { aside: true, owed: false })], "aside")).toEqual(["s"]);
+    expect(ids([row("s", { aside: true, owed: true })], "needs")).toEqual(["s"]);
+  });
+
+  test("an owed rest is ordered by when it began, not as the oldest thing waiting", () => {
+    const rows = [
+      row("noticed", { notice: { kind: "question", text: "q" }, since: NOW - 20 * 60_000 }),
+      owed("fresh", { lastAt: NOW - 60_000 }),
+      owed("older", { lastAt: NOW - 40 * 60_000 }),
+    ];
+    expect(ids(rows, "needs")).toEqual(["older", "noticed", "fresh"]);
   });
 });
 

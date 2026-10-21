@@ -62,8 +62,8 @@ finished or ended on a question, and I'm not looking at it at that specific mome
 should get a notice."* `notice.ts::looking` is the rule: in front, and a key, click, wheel or
 pointer move inside `LOOK_MS`. A minute, because a streaming answer is read with the hands
 still; the wrong side of it costs a chime for a card you did watch, the other side costs the
-work. Chat view's settle-by-reading asks the same reading (`ChatView`'s `present`), or a
-notice that did rise was settled within two seconds by a screen nobody was in front of.
+work. (Chat view's settle-by-reading asked the same reading until it was retired on
+2026-10-21; nothing is settled by being on screen now.)
 
 **And a turn she opened is hers whoever opened the card.** `notice_raise` held every rest of
 a card whose parent has a process, on the argument that the parent is told instead
@@ -87,8 +87,10 @@ having been back, and acknowledging is having been back.
   about the last rest cannot answer. `error` is not a clock: rust does not warm, it says the
   card broke and is still broken, and reading that mended nothing — so an acknowledged error
   stays rust and stays in the Tab cycle until you send it something. `notice.ts::seesRest` and
-  `store::SEEN_KINDS` are the same list for the same reason: only `done` and `question` set
-  it; not `error`, not a card's own news, not a notice parked on a turn.
+  `store::SEEN_KINDS` are the same list: `done`, `question` and — since 2026-10-21 — `error`;
+  not a card's own news, not a notice parked on a turn. `error` sets it now because the flag
+  became chat view's acknowledgement too (below), and setting it changes nothing on the wall:
+  `urgencyFor` answers `fail` above `seen`.
 - **Spent by the next turn, on both sides at once.** `#beginTurn` clears `restSeen`, and
   `store::set_mid_turn` clears `rest_seen` in the same statement that marks the turn open —
   nobody has to remember to. That is the whole defence against the shape this codebase keeps
@@ -102,8 +104,30 @@ having been back, and acknowledging is having been back.
 - **The words stay and say why.** `ending` is what the turn was and is not rewritten, so the
   label keeps it and adds `· seen` in place of the age: `ended on a question · seen`. The age
   goes for `set aside`'s reason — it is the reading being withdrawn. A card on another wall
-  has no flag in its digest; its tier already arrives `rest`, and it reads as an ordinary
-  rest there.
+  carries the flag's consequence as `owed` in its digest (2026-10-21); its tier already
+  arrives `rest`.
+
+### And it is the one acknowledgement, in both views (2026-10-21)
+
+Chat view used to place a card by what its notice was *called*: a `done` rest went to
+*finished* and two seconds of reading settled it, so a follow-up question `endsOnQuestion` missed
+went silent (Lyss: *"'finished' is unreliable"*). Now `rest_seen` decides it: a rest without it
+waits in *needs you* whatever it was called (`notice.ts::owesYou`, `chatview.md`), and Lyss
+asked that acknowledging on the wall and in chat view be one thing. So the flag gained writers,
+all of them gestures or the wall's own knowledge that the move is somebody else's:
+
+- **`rest_ack`** (`store::ack_rest`) — *done with it* in chat view, `space d a` in either view,
+  and setting a card aside. It takes down the card's rest notices too, so the dock agrees, and is
+  the acknowledgement for a rest that raised none (the one you watched end).
+- **`notice::raise` marks a rest it holds** — an armed wake, a working child, a live parent being
+  told — and answers `held` rather than `false`, so the front end marks its copy.
+- **A turn the CLI answers itself puts back what it found** (`#seenAtOpen`): `/model` sent from
+  chat view's menu opens a turn in Rust, and must not un-acknowledge the rest before it.
+- **`migrate_v58`** counted every rest standing at the upgrade as acknowledged, except those a
+  notice still stood for.
+
+The detector was widened in the same change (`classify.ts::ASK_PHRASE`, and a question with a
+short line under it), knowingly trading some precision now that a wrong label costs a dot.
 
 ### A reply can carry a picture or a file
 

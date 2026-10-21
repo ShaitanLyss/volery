@@ -967,6 +967,9 @@ export class Control {
         /* And for the same reason: a rest whose notice you acknowledged reads
            `rest` too, and so does one that simply has not warmed yet. */
         restSeen: c.restSeen,
+        /* Whether that rest waits on you — what chat view's *needs you* is
+           decided by (`notice.ts::owesYou`), whatever the ending was called. */
+        owed: c.owed,
         /* And a card waiting on a wake reads `rest` too, until it is late — so
            the reading is reported rather than left for a test to infer. */
         waiting: c.waiting

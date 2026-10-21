@@ -22,17 +22,53 @@ export type Notice = {
   askId?: string;
 };
 
-/** Whether acknowledging this notice stops its card's clock — sets
- *  `Conversation.restSeen`, which `urgencyFor` reads as having been back.
+/** Whether acknowledging this notice acknowledges its card's rest — sets
+ *  `Conversation.restSeen`, which `urgencyFor` reads as having been back and
+ *  chat view reads as the rest no longer waiting on you (`owesYou`).
  *
- *  Only the two rests that clock measures. Not `error`: rust is a card that
- *  broke and is still broken, not neglect, and reading it mended nothing. Not
- *  `card`: that is news the card sent, often mid-turn, not the rest it is in.
- *  And not a parked one, which is holding a turn open — acknowledging it lets
- *  that turn go on, and a working card has no rest to have seen.
- *  `store::SEEN_KINDS` is the same list, for the row. */
+ *  Every rest a turn ending raises: finished, ended on a question, and a
+ *  failure it gave up on. `error` joined the other two on 2026-10-21, when the
+ *  flag became the one acknowledgement both views read — a failure you
+ *  acknowledged on the wall must not still be waiting in chat view. It changes
+ *  nothing on the wall: `urgencyFor` answers `fail` above `seen`, so rust stays
+ *  rust until the card is sent something. Not `card`: that is news the card
+ *  sent, often mid-turn, not the rest it is in. And not a parked one, which is
+ *  holding a turn open — acknowledging it lets that turn go on, and a working
+ *  card has no rest to have seen. `store::SEEN_KINDS` is the same list, for the
+ *  row. */
 export function seesRest(n: Notice): boolean {
-  return !n.askId && (n.kind === "done" || n.kind === "question");
+  return !n.askId && (n.kind === "done" || n.kind === "question" || n.kind === "error");
+}
+
+/** Does the rest this card is in wait on you — a turn ended, and nobody has
+ *  acknowledged it?
+ *
+ *  What the classifier made of the ending is deliberately **not** asked. Lyss,
+ *  2026-10-21: *"'finished' is unreliable, so we shouldn't decide a card's
+ *  place in the queue based on it"* — `endsOnQuestion` reads one paragraph,
+ *  and a follow-up question it misses was a card filed as finished and never
+ *  mentioned again. So a turn ending is the next move being yours, whatever it
+ *  said, until you say otherwise: acknowledging its notice here or on the wall,
+ *  *done with it*, or a reply, which opens the turn that clears the flag.
+ *
+ *  `restSeen` is that acknowledgement, and it is persisted and spent by the
+ *  next turn on both sides (`notice.md`). Four things are no rest of yours and
+ *  never owe you: a turn still running or work it backgrounded (it has not
+ *  finished anything), a retry it is about to make by itself, a turn you
+ *  stopped (your own gesture, which is `restNotice`'s reason too), and a card
+ *  that has never ended a turn. A turn the CLI answered locally and a rest the
+ *  wall holds for somebody else are marked seen where they happen
+ *  (`Skein.#scheduleNotice`, `notice::raise`), since only those places know. */
+export function owesYou(c: {
+  working: boolean;
+  busy: boolean;
+  ending: Ending | null;
+  restSeen: boolean;
+  healing: boolean;
+}): boolean {
+  if (c.working || c.busy || c.healing) return false;
+  if (c.ending === null || c.ending === "asked" || c.ending === "stopped") return false;
+  return !c.restSeen;
 }
 
 /** How long after you last touched the window you still count as looking at it.

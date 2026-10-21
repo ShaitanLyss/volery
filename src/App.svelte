@@ -682,6 +682,16 @@
       else showSink = true;
     }
     else if (verb.kind === "dock") {
+      /* `space d a`: done with the focused card's rest — the same
+         acknowledgement in either view, so it is no business of the dock's. */
+      if (verb.act === "ack") {
+        const c = card;
+        if (!c) skein.fault = "no card has the focus";
+        else void c.acknowledgeRest().then((why) => {
+          if (why) skein.fault = why;
+        });
+        return;
+      }
       /* `space d n` is chat view's Alt+↓ there: the next that needs you. */
       if (view.current === "chat" && verb.act === "next") {
         if (!chatview?.nextNeeding()) skein.fault = "nothing is waiting on you";
@@ -5340,8 +5350,6 @@
       kin={elsewhere.kin}
       reading={reading}
       watching={attention.focused}
-      present={attention.looking}
-      away={presence.away}
       {presence}
       {elsewhere}
       bind:sidebar={view.sidebar}

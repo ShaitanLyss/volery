@@ -326,6 +326,11 @@ export class Shadow {
       timeline: d.timeline
         ? { ...d.timeline, bornAt: here(d.timeline.bornAt) ?? d.timeline.bornAt, updatedAt: here(d.timeline.updatedAt) ?? d.timeline.updatedAt }
         : null,
+      ending: d.ending,
+      /* A quiet wall's cards claim nothing, and nothing there can be
+         acknowledged until it is heard — so its rests wait on nobody until
+         then, and come back as they were when it is. */
+      owed: unheard ? false : d.owed,
     };
   });
 
@@ -880,6 +885,7 @@ export class Elsewhere {
       compactFrac: c.compactFrac,
       turnSince: c.turnSince,
       holding: c.holding,
+      owed: c.owed,
       timeline: this.#skein.timelines.liveFor(c.id),
       lines: c.lines,
       jobs: c.jobs,

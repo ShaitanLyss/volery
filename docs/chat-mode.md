@@ -388,44 +388,54 @@ at once (`away.md`) and lives in `deferred_ask`, not in `cards.asking`, while th
 working. So it leaves the thread, *needs you* reads it from the away system with *answer later*
 as its subtitle, and it comes back through `Vigil` as today.
 
-### 5.4 Finished and settled
+### 5.4 Finished and acknowledged
 
-The wall's notice queue is what chat view's *finished* group shows. Two readings, kept apart:
+**A rest waits on you until you acknowledge it, whatever the turn was called** (2026-10-21).
+Lyss: *"'finished' is unreliable, so we shouldn't decide a card's place in the queue based on it.
+Sometimes I ask a question and go somewhere else. The card asks a follow-up question, but it was
+flagged as finished, so it's moved silently down the queue, and I'm never prompted to go check."*
+What decided *finished* was `classify.ts::endsOnQuestion` — one paragraph read by a regex — and
+two seconds of the card on screen then settled it, so a follow-up the regex missed was filed and
+gone on a glance.
 
-- **finished**: a `done` rest notice is standing. The row is in *finished*.
-- **settled**: you have read it. In chat view a `done` notice is settled by **reading it**:
-  its conversation is selected, the window is in front (`attention.focused`), you are not away,
-  and its last message has been on screen for two seconds. Then chat view acknowledges it through
-  `CardHandle.acknowledge(n, "")` — `Skein.acknowledgeNotice`, which deletes the notice row,
-  persists `rest_seen` (guarded `WHERE interrupted = 0`, `notice.md`) and emits
-  `notice:changed`. For a card on another wall it sends that wall one acknowledgement over the
-  flyway, exactly as the dock does. The dot stops being hollow; the row stays in *finished*
-  until its rest is an hour old, then moves to history.
+- **needs you**: a turn ended and nobody has acknowledged it (`notice.ts::owesYou`, carried as
+  `Gist.owed`), or something asks — a parked question, one put off, a notice that is not a plain
+  rest. Never while the card works or backgrounds work, never for want of allowance, never for
+  a turn you stopped.
+- **finished**: an acknowledged rest under an hour old. Then history.
 
-*Finished* was the notice and nothing else until 2026-10-20, and a card fell out of the live
-groups the moment its turn ended: the notice is held while a young job, a card it opened or an
-armed wake might still stir it, it is never raised for the conversation you were watching, and
-it went with the reading. So the row dropped below the projects into *today* and came back up
-when the notice rose — Lyss: *"they just shouldn't vanish from the top between working and
-finished."* A recent rest now holds the row, and the notice only decides its dot.
+The classifier still speaks, as a hint: a rest it called a question is amber with the question
+under it, one it called finished is the hollow dot and *finished: …*, a failure is rust.
 
-The dwell is the whole rule, and every shortcut around it was a bug the review found:
-Ctrl+Tab skimming through rows, the selection a view switch lands on, the card selected after
-a close, and a launch with nobody at the keyboard (a stored chat view and *reopen after a
-restart*) would each have bulk-acknowledged rests nobody read, and taken them out of the away
-pile.
+**Acknowledging is one flag for both views**, `conversation.rest_seen` — the flag the wall's
+neglect clock already read (`notice.md`), persisted, spent by the next turn on both sides. Lyss:
+*"acknowledging on the wall or the chat should be the same thing."* So it is set by:
 
-**A turn that ended on a question is not settled by reading it.** Its `question` notice keeps the
-row in *needs you* until you answer — any message opens a turn, which takes the notice down
-(`notice::stirred`) — or dismiss it from the row's menu. Reading a question is not answering it,
-and a question that dropped out of *needs you* because your eyes passed over it is the failure
-this group exists to prevent. A given-up error and a card's own notice are the same: they stay
-until you answer them, drawn inside the thread with the notice's own buttons (`Notice.svelte`,
-inline).
+- *done with it* at the foot of the thread, or `space d a` in either view
+  (`Skein.acknowledgeRest` → `rest_ack`, which also takes down the card's rest notices so the
+  dock agrees);
+- a notice's own acknowledge, in the dock or chat view (`Skein.acknowledgeNotice` →
+  `notice_take`) — `error` is one of the kinds that sets it now, since rust stays rust anyway;
+- setting the card aside;
+- the wall itself, for a rest that is somebody else's move: `notice::raise` marks a rest it
+  holds for an armed wake, a working child or a live parent.
 
-On the wall, acknowledging stays the dock's gesture. The difference is deliberate: on the wall
-you can see a card without opening it, so seeing is not evidence of reading; in chat view the only
-way to see a conversation is to open it, and the dwell is what makes opening evidence.
+**A reply** opens a turn, which spends the flag, and its rest is a new one. So does a wake, a
+message from another card, or anything else that wakes it: new activity puts an acknowledged card
+back in *needs you* once its turn ends. A turn the CLI answers itself (`/model` from the menu)
+puts back the acknowledgement it found.
+
+**Reading acknowledges nothing.** The dwell (selected, in front, not away, two seconds) is gone:
+it was exactly how a misread question slipped away, and its own review had already found it
+firing on Ctrl+Tab skims and on whatever was selected at launch.
+
+**The first launch on this build** runs `migrate_v58`, which marks every rest already standing
+as acknowledged except those a notice still stands for — or every card at rest on the wall would
+have arrived in *needs you* at once.
+
+**A card on another wall** carries `owed` in its digest. Acknowledging one sends its wall the
+notice's acknowledgement, which sets that wall's flag. A wall from before reads `owed` as unknown
+and falls back to its standing notice. A quiet wall's cards owe nothing until it is heard again.
 
 ### 5.5 Conversations that start conversations
 
@@ -1008,7 +1018,7 @@ it ever needs to know the view it can.
 ### 7.9 New pure modules and tests
 
 `chatview.ts` (groups, the stable ordering, subtitles, the next selection after a close, search
-matching over titles, projects and last words, the settling dwell, where a spawn's card goes in a
+matching over titles, projects and last words, which rests still wait on you, where a spawn's card goes in a
 thread, the run summary), `viewmode.ts` (§7.7), and the composer's key table (`composer.ts`, the
 pure half of `composer.svelte.ts`). Each gets a `test/*.test.ts` and an entry in `package.json`'s
 `test` script, which names its files explicitly. Plus one test that stands outside them: a scan of

@@ -205,14 +205,9 @@ two places.
 and *and N more*, a question's toast answers by selecting its conversation. A row rising in
 the sidebar is the other half of the same news.
 
-**Reading a finished conversation settles it, and only reading.** `chatview.ts::settles` is
-four conditions: selected, window in front, not away, the last message on screen for
-`DWELL_MS`. Every shortcut round one was a bug the review found — Ctrl+Tab skimming past, the
-selection a view switch lands on, the card selected after a close, a launch with nobody at the
-keyboard — each would have acknowledged rests nobody read and taken them out of the away pile.
-A turn that ended on a question is never settled by reading: it stays in *needs you* until it
-is answered or dismissed. The dwell is an `IntersectionObserver` on the last `.line`, so it
-measures what is on screen and not what is selected.
+**Reading a finished conversation used to settle it** — selected, window in front, not away,
+the last message on screen for two seconds. It went on 2026-10-21; see *A rest waits on you
+until you say so* at the end of this file.
 
 **A queued message says so.** A prompt sent mid-turn is `awaited` until the CLI takes it up
 (CLAUDE.md, *Settling a line is not claiming it*), so the bubble reads *queued — it goes when
@@ -374,9 +369,8 @@ card restored off disk or arriving in a digest reads rust from whatever turn las
 card that ever failed stood there for good. QUEERISFREEDOM's own store had seven such cards, the
 oldest from 14 September, and an empty notice queue: the dock showed none, the sidebar all
 seven. A notice is the honest "failure you have not seen" — raised only once a heal gives up,
-never for a card you watched, gone with the card's next turn or your acknowledging it — and
-reading a failure here for the dwell now settles it as a finished turn does
-(`settledByReading`), so nothing in *needs you* is older than your last look. The dot stays rust.
+never for a card you watched, gone with the card's next turn or your acknowledging it. (Reading
+one for two seconds settled it too, until 2026-10-21 — see the last section.) The dot stays rust.
 
 **An allowance stop waits on no one** (`notice.ts::allowanceStop`, the error notice's first line
 being the CLI's own refusal): `Cards.noticing` leaves it out for every reader at once — the dock,
@@ -445,3 +439,43 @@ nested, *waiting on 1 it started* on both ancestors, and left together when the 
 finished; a real `ask_user` parked over `/mcp/<id>`, put off with the panel's *defer*, moved the
 row to *needs you* as *answer later: …* and drew in the thread without its *defer* button;
 answering it there reached the card as the pile's envelope, and *not worth answering* emptied it.
+
+### A rest waits on you until you say so (2026-10-21)
+
+Lyss, from caravan card `31d3137e`: *"'finished' is unreliable, so we shouldn't decide a card's
+place in the queue based on it. Sometimes I ask a question and go somewhere else. The card asks
+a follow-up question, but it was flagged as finished, so it's moved silently down the queue."*
+The mechanism behind it was two readings, both visible in the code: a `done` notice was the one
+kind `needsYou` left out, and `done` is `classify.ts::endsOnQuestion` reading one paragraph
+for a `?` or a phrase. Then the dwell settled it on a glance. So a follow-up the regex missed
+went to *finished* and then to the day's history, with nothing anywhere asking her to look.
+
+- **The place is the acknowledgement, never the label.** `chatview.ts::restOwed` reads
+  `ChatRow.owed` — `Gist.owed`, `notice.ts::owesYou` over the card's own fold: at rest, ended
+  a turn (not stopped), not healing, no background work, and `restSeen` unset. *Needs you* is
+  that or something that asks; *finished* is an acknowledged rest under the hour. What the turn
+  was called only picks the dot and the words (`endedOnQuestion`, `finished: …`).
+- **One acknowledgement for both views** (Lyss: *"chat shouldn't have its own acknowledgment …
+  acknowledging on the wall or the chat should be the same thing"*). It is `rest_seen`, which
+  already stopped the wall's neglect clock. `Skein.acknowledgeRest` (*done with it* at the
+  thread's foot, `space d a`, setting a card aside) writes it through `rest_ack`, which also
+  takes the card's rest notices down; a notice acknowledged in the dock writes it through
+  `notice_take`, and `error` joined `SEEN_KINDS` so a failure acknowledged there leaves *needs
+  you* here. `notice::raise` writes it for a rest it holds for somebody else, and answers
+  `held` so the front end marks its copy.
+- **The order inside `groupOf` is the design.** What asks comes first, even over a working card
+  (a question put off); then *working*, which includes a card whose child still works, so a
+  parent whose turn ended is not under you while its work goes on; then an owed rest.
+- **Reading settles nothing.** The dwell went, and with it `present`/`away` on `ChatView`.
+- **`migrate_v58`** marks every rest standing at the upgrade as acknowledged, except those a
+  notice still stands for, or the first launch files the whole wall under *needs you*.
+- **Elsewhere**: `owed` rides the digest; a remote *done with it* is that wall's notice
+  acknowledged over the flyway, and says so when no notice stands there. An older wall's `owed`
+  reads null and its standing notice stands in. A quiet wall's cards owe nothing until heard.
+- **The detector was widened too**, at Lyss's ask (*"Should I maybe…"*): the plural and polite
+  forms, and a question with only a short line under it. Unmeasured against the labelled set;
+  the cost of a wrong label is now a dot.
+
+Tested in `test/chatview.test.ts` (*a rest needs you until you acknowledge it*): eight of its cases go
+red with the old `done` → *finished* branch put back by hand; `notice.test.ts` (`owesYou`),
+`classify.test.ts`, and `store.rs`'s `done_with_it_…` and `migrate_v58_…`.
