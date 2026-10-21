@@ -175,6 +175,9 @@ const MAX_EMPTY_ELEMENTS: usize = 1 << 16;
 
 /* ── encoding ───────────────────────────────────────────────────────────── */
 
+/// One value as bytes, for a test to round-trip; the wire path writes through
+/// `put` into a buffer it already has.
+#[cfg(test)]
 pub fn encode(v: &Value) -> Vec<u8> {
     let mut out = Vec::new();
     put(&mut out, v);
@@ -613,6 +616,7 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[cfg(test)]
 pub fn decode(buf: &[u8]) -> Result<Value, DecodeError> {
     Reader::new(buf).value()
 }

@@ -55,6 +55,7 @@ pub enum Cond {
 /// are reserved, and the tool's description says so: a field genuinely called
 /// `not` cannot be filtered on, which is a smaller loss than a grammar with an
 /// escape in it that every agent has to learn.
+#[cfg(test)]
 const RESERVED: [&str; 3] = ["all", "any", "not"];
 const OPERATORS: [&str; 4] = ["in", "contains", "exists", "not"];
 
