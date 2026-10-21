@@ -247,6 +247,13 @@ describe("describeTool degrades before arguments arrive", () => {
     }
   });
 
+  test("a subscription says what it waits on, since it names no time", () => {
+    expect(describeTool("mcp__skein__subscribe", { source: "nova-feedback" })).toBe("waits on nova-feedback");
+    expect(describeTool("mcp__skein__subscribe", {})).toBe("subscribed to an event stream");
+    expect(describeTool("mcp__skein__unsubscribe", { all: true })).toBe("stopped its subscriptions");
+    expect(describeTool("mcp__skein__subscriptions", {})).toBe("listed its subscriptions");
+  });
+
   test("unknown tools fall through to their name, since the tool list is per-session", () => {
     expect(describeTool("DesignSync", {})).toBe("DesignSync");
     expect(describeTool("mcp__foo__bar", {})).toBe("mcp__foo__bar");

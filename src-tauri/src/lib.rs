@@ -27,6 +27,7 @@ pub mod azdo;
 mod control;
 mod creds;
 mod docket;
+mod eventhub;
 mod dropzone;
 /// The rows a forge answers in, and the two providers that fill them. `forge`
 /// is vocabulary-neutral on purpose — see its header for the line between a
@@ -55,6 +56,7 @@ mod perf;
 mod pin;
 mod pool;
 mod portage;
+mod names;
 mod notice;
 mod presence;
 mod project;
@@ -100,6 +102,7 @@ mod status;
    else. */
 mod steward;
 pub mod store;
+mod subscribe;
 mod supervisor;
 mod timeline;
 /* The IPv4-first loopback CONNECT tunnel librespot dials through. Beside
@@ -699,6 +702,10 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        above: a card that asked to be woken at ten past has to be woken at ten
        past whether or not anybody is looking at the wall. */
     later::spawn_waker(app.handle().clone());
+    /* Event subscriptions: the engine that hands a card a turn when what it
+       subscribed to arrives, and a connection per source somebody uses —
+       started here for `spawn_waker`'s reason (`subscribe.rs`). */
+    subscribe::start(app.handle());
     /* Hold the machine awake on mains, and write the `Run` entry that says
        this wall is open. Above the windows because `machine_status` reads
        what it sets up. See `machine.rs`. */
@@ -971,6 +978,7 @@ pub fn run() {
             timeline::unarchive_timeline,
             timeline::resume_timeline,
             chronicle::read_chronicle,
+            names::card_titles,
             chronicle::chronicle_note,
             chronicle::chronicle_waiting,
             chronicle::chronicle_seen,
@@ -1163,6 +1171,11 @@ pub fn run() {
             notice::notice_raise,
             notice::notices_read,
             later::wakes_armed,
+            subscribe::subscriptions_armed,
+            subscribe::sources::sources_list,
+            subscribe::sources::set_source,
+            subscribe::sources::forget_source,
+            subscribe::sources::check_source,
             notice::notice_take,
             presence::deferred_acts,
             presence::answer_deferred_act,

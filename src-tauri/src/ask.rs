@@ -2029,6 +2029,12 @@ pub(crate) fn roster() -> Vec<Value> {
            does not. See `show.rs`. */
         always(crate::show::show_schema()),
         always(crate::later::wake_schema()),
+        /* Loaded beside `wake_me` and for its argument: it replaces something an
+           agent does wrongly by default — a `run_in_background` watcher that
+           wakes every two hours to find nothing, polling a database the while.
+           An agent that does not know this exists writes the watcher. Its two
+           siblings are deferred and named in its receipt (`subscribe.rs`). */
+        always(crate::subscribe::subscribe_schema()),
         always(reads_only(crate::limits::allowance_schema())),
         always(reads_only(crate::servers::servers_schema())),
         always(crate::chronicle::wisp_schema()),
@@ -2123,6 +2129,20 @@ pub(crate) fn roster() -> Vec<Value> {
            this tool in full beside the row's id — a tool result, free per turn.
            The hint carries the situation, since a card reaching for it is
            holding "they already answered that in chat", not "withdraw". */
+        /* Deferred for `cancel_wake`'s reason: `subscribe`'s receipt names both
+           in full beside the id, a tool result and free per turn. */
+        found_by(
+            crate::subscribe::cancel_schema(),
+            "stop an event subscription, unsubscribe, the watch is over, stop being \
+             woken by events, cancel subscribe, the review or deploy is done and a \
+             subscription is still armed",
+        ),
+        found_by(
+            reads_only(crate::subscribe::list_schema()),
+            "which event subscriptions do I hold, what am I subscribed to, list my \
+             subscriptions, which event sources or streams are configured on this wall, \
+             event hub, eventstream, nova feedback stream",
+        ),
         found_by(
             crate::presence::withdraw_schema(),
             "cancel a queued question, the question I put off was answered, the user \
@@ -3794,6 +3814,9 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             .or_else(|| crate::status::handle(&tool, &args))
                             .or_else(|| crate::later::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| {
+                                crate::subscribe::handle(&app, &conversation_id, &tool, &args)
+                            })
+                            .or_else(|| {
                                 crate::presence::handle(&app, &conversation_id, &tool, &args)
                             })
                             .or_else(|| crate::pin::handle(&app, &conversation_id, &tool, &args))
@@ -4395,7 +4418,7 @@ mod tests {
            `sink` do sweep expired rows on the read path, and `ask_user` spends
            the user's attention; both are argued at `reads_only`, and the rule
            for the next one is stated there. */
-        const READS: [&str; 21] = [
+        const READS: [&str; 22] = [
             "ask_user",
             "load",
             "board",
@@ -4417,6 +4440,9 @@ mod tests {
             "records",
             "timeline",
             "walls",
+            /* The card's own subscriptions and the wall's source names: a list.
+               `subscribe` itself arms one and is not here. */
+            "subscriptions",
         ];
 
         let mut seen: Vec<String> = vec![];

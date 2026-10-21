@@ -168,6 +168,33 @@ describe("a notice from the wall", () => {
   });
 });
 
+/* The settle notice's shape again, carrying a subscription's events — written
+ * by `subscribe::envelope`, which holds the Rust half of this pin. It is the
+ * same fourth shape on purpose (`relay.md`: a new kind of unbidden prompt owes
+ * a shape under `RELAY_MARK`, not a mark of its own), so nothing here had to
+ * learn it; this is what says so. */
+const subscribed =
+  `${RELAY_MARK} from the wall —\n\n2 events matched a subscription of yours.\n\n` +
+  "`3f2a9c1e` on nova-feedback (2 events), filter {\"channel\":\"ui\"}:\nYour note: triage it\n" +
+  '{"eventId":1311}\n{"eventId":1312}\n\n' +
+  "(This came from the wall rather than from anybody, so nobody is waiting on a reply. " +
+  "Each line is one event, as compact JSON.)";
+
+describe("a subscription's events, from the wall", () => {
+  test("are drawn as the wall's, not as something you typed", () => {
+    expect(isRelayPrompt(subscribed)).toBe(true);
+    expect(relayFrom(subscribed)).toEqual({ name: "the wall", handle: "", project: null });
+  });
+
+  test("keep the count, the note and the events, and drop the note to the model", () => {
+    const body = relayBody(subscribed);
+    expect(body.startsWith("2 events matched a subscription of yours.")).toBe(true);
+    expect(body).toContain("Your note: triage it");
+    expect(body.endsWith('{"eventId":1312}')).toBe(true);
+    expect(body).not.toContain("nobody is waiting");
+  });
+});
+
 /* The fifth shape, and the only one under the other mark: a note you left
  * yourself, handed back when the time came. Transcribed from `later::envelope`
  * — which is the whole contract, since the string is written by Rust and read

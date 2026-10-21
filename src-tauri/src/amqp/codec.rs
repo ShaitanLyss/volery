@@ -170,6 +170,9 @@ fn bad(what: impl Into<String>) -> DecodeError {
 /// generous for anything a broker sends and finite for anything hostile.
 const MAX_DEPTH: usize = 64;
 
+/// The most elements an array of zero-width values may claim.
+const MAX_EMPTY_ELEMENTS: usize = 1 << 16;
+
 /* ── encoding ───────────────────────────────────────────────────────────── */
 
 pub fn encode(v: &Value) -> Vec<u8> {
@@ -587,6 +590,14 @@ impl<'a> Reader<'a> {
                     descriptor = Some(inner.value_at(depth + 1)?);
                     ecode = inner.u8()?;
                 }
+                /* Every element costs at least a byte except the six
+                   constructors that are the whole value. A count of four
+                   billion of those in a thirteen-byte header is a request to
+                   allocate until the process dies, and a producer on the stream
+                   chooses these bytes. */
+                if matches!(ecode, 0x40..=0x45) && count > MAX_EMPTY_ELEMENTS {
+                    return Err(bad(format!("an array of {count} empty elements")));
+                }
                 let mut items = Vec::with_capacity(count.min(body.len()));
                 for _ in 0..count {
                     let v = inner.body(ecode, depth + 1)?;
@@ -911,6 +922,8 @@ mod tests {
         ] {
             assert!(decode(&bytes).is_err(), "{bytes:02x?}");
         }
+        /* An array of four billion nulls in thirteen bytes. */
+        assert!(decode(&[0xf0, 0, 0, 0, 5, 0xff, 0xff, 0xff, 0xff, 0x40]).is_err());
         /* And a nesting bomb is refused rather than recursed into. */
         let mut bomb = Vec::new();
         for _ in 0..200 {

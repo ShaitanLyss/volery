@@ -370,7 +370,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 56;
+const SCHEMA_VERSION: i64 = 57;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -432,6 +432,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (54, migrate_v54),
     (55, migrate_v55),
     (56, migrate_v56),
+    (57, migrate_v57),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3093,6 +3094,73 @@ fn migrate_v56(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v56: {e}"))
 }
 
+/// Event subscriptions — `subscribe.rs`, and `.claude/rules/subscriptions.md`.
+///
+/// Five tables, and the split is the delivery guarantee:
+///
+/// - `source` is the non-secret half of a source Lyss configured — its name,
+///   its consumer group, and the namespace and hub it points at, which are
+///   shown in the panel. The connection string is in the Windows vault under
+///   `dev.skein.studio/source/<name>`, never here (`vault.rs` has why).
+/// - `subscription` is a card's standing request. `created_at` is what "a new
+///   subscription starts now" is checked against; `last_served_at` is what
+///   `every_ms` is spaced from.
+/// - `source_checkpoint` is how far this wall has read each partition. It is
+///   advanced **in the same transaction** that turns an event into
+///   `sub_pending` rows, so a crash leaves either both or neither — an event is
+///   never checkpointed without its deliveries, nor delivered twice because the
+///   checkpoint did not land. Kept when a source disconnects, so the next
+///   connection catches up from it.
+/// - `sub_pending` is what has matched and not yet been handed over. Claimed by
+///   DELETE before delivery, `later.rs::serve_due`'s ordering and its reason.
+///
+/// No foreign keys, for `migrate_v15`'s reason: a card is soft-closed, so a
+/// cascade would never fire, and `subscribe::clear_for` is the real cleanup.
+fn migrate_v57(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS source (
+            name           TEXT PRIMARY KEY,
+            kind           TEXT NOT NULL DEFAULT 'eventhub',
+            consumer_group TEXT NOT NULL DEFAULT '$Default',
+            namespace      TEXT NOT NULL DEFAULT '',
+            entity         TEXT NOT NULL DEFAULT '',
+            created_at     INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS subscription (
+            id              TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            source          TEXT NOT NULL,
+            filter_json     TEXT NOT NULL,
+            note            TEXT NOT NULL,
+            every_ms        INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL,
+            last_served_at  INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS subscription_by_source ON subscription(source);
+        CREATE INDEX IF NOT EXISTS subscription_by_card ON subscription(conversation_id);
+        CREATE TABLE IF NOT EXISTS source_checkpoint (
+            source      TEXT NOT NULL,
+            partition   TEXT NOT NULL,
+            sequence    INTEGER NOT NULL,
+            enqueued_at INTEGER NOT NULL,
+            at          INTEGER NOT NULL,
+            PRIMARY KEY (source, partition)
+        );
+        CREATE TABLE IF NOT EXISTS sub_pending (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscription_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            line            TEXT NOT NULL,
+            enqueued_at     INTEGER NOT NULL,
+            arrived_at      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS sub_pending_by_card ON sub_pending(conversation_id);
+        "#,
+    )
+    .map_err(|e| format!("migrate v57: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -4802,6 +4870,7 @@ pub fn clear_conversation(
        `migrate_v18`. */
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    crate::subscribe::clear_for(&app, &id);
     /* And a delete it handed the wall to ask about: the session that asked is
        gone, and a question has no deadline to end it (`ask::drop_handoffs`). */
     if let Some(asks) = tauri::Manager::try_state::<crate::ask::Asks>(&app) {
@@ -5552,6 +5621,7 @@ pub fn close_conversation_record(
     crate::board::clear_for(&app, &id);
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    crate::subscribe::clear_for(&app, &id);
     /* Queued questions go the same way a wake does: an answer is worth nothing
        once there is nobody left to hand it to. The cascade on `deferred_ask`
        does not cover this — closing a card is a soft close, and clearing one

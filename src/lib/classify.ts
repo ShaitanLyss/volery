@@ -200,6 +200,9 @@ export const SKEIN_SPAWN_TOOL = "mcp__skein__spawn";
 export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
 export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
 export const SKEIN_CANCEL_WAKE_TOOL = "mcp__skein__cancel_wake";
+export const SKEIN_SUBSCRIBE_TOOL = "mcp__skein__subscribe";
+export const SKEIN_SUBSCRIPTIONS_TOOL = "mcp__skein__subscriptions";
+export const SKEIN_UNSUBSCRIBE_TOOL = "mcp__skein__unsubscribe";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
 /** The user has gone, and the card was the one told.
  *
@@ -491,8 +494,13 @@ function pullNumber(v: unknown): number | null {
  *
  * The tool list is per-session and includes whatever MCP servers and plugins
  * the user has loaded, so unknown names fall through to the bare tool name
- * rather than being dropped. */
-export function describeTool(name: string, input: any): string {
+ * rather than being dropped.
+ *
+ * `nameOf` is how a card the agent addressed is said: Skein's own tools take a
+ * card by handle, and "messaged 6f90401a" names nothing to a person. The caller
+ * that can see the wall passes `whois.address`; the default leaves the
+ * address as written, which is what a test or a fold with no wall gets. */
+export function describeTool(name: string, input: any, nameOf: (address: string) => string = (a) => a): string {
   const arg = (v: unknown): string | null =>
     typeof v === "string" && v.trim() ? v : null;
 
@@ -605,11 +613,11 @@ export function describeTool(name: string, input: any): string {
         const word = to.trim().toLowerCase();
         if (word === "skein") return "told the whole wall";
         if (word === "project") return "told the project";
-        return `messaged ${clip(to, 24)}`;
+        return `messaged ${clip(nameOf(to), 24)}`;
       }
       if (Array.isArray(to)) {
         return to.length === 1
-          ? `messaged ${clip(String(to[0]), 24)}`
+          ? `messaged ${clip(nameOf(String(to[0])), 24)}`
           : `messaged ${to.length} cards`;
       }
       return "messaged another card";
@@ -629,7 +637,7 @@ export function describeTool(name: string, input: any): string {
        messaging a card to ask what it did, so the line says whose words. */
     case SKEIN_RECALL_TOOL: {
       const card = arg(input?.card);
-      return card ? `read ${clip(card, 22)}'s words` : "read another card's words";
+      return card ? `read ${clip(nameOf(card), 22)}'s words` : "read another card's words";
     }
     case SKEIN_TOUCHED_TOOL: {
       const paths = input?.paths;
@@ -655,7 +663,7 @@ export function describeTool(name: string, input: any): string {
       return file ? `showed ${basename(file)}` : "showed something";
     }
     case SKEIN_TIMELINE_TOOL:
-      return arg(input?.card) ? `read ${clip(arg(input?.card)!, 24)}'s timeline` : "read its timeline";
+      return arg(input?.card) ? `read ${clip(nameOf(arg(input?.card)!), 24)}'s timeline` : "read its timeline";
     case SKEIN_TIMELINE_SET_TOOL: {
       const title = arg(input?.title);
       return title ? `drew the timeline ${clip(title, 32)}` : "redrew its timeline";
@@ -744,7 +752,7 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_CLOSE_TOOL: {
       const card = arg(input?.card);
-      return card ? `closed ${clip(card, 26)}` : "closed a card";
+      return card ? `closed ${clip(nameOf(card), 26)}` : "closed a card";
     }
     case SKEIN_CANCEL_WAKE_TOOL:
       return input?.all === true ? "cancelled its wakes" : "cancelled a wake";
@@ -754,6 +762,16 @@ export function describeTool(name: string, input: any): string {
         ? `back in ${said(secs)}`
         : "asked to be woken later";
     }
+    /* A subscription is a standing wait, so the line says what it waits on
+       rather than when — there is no when. */
+    case SKEIN_SUBSCRIBE_TOOL: {
+      const source = arg(input?.source);
+      return source ? `waits on ${clip(source, 28)}` : "subscribed to an event stream";
+    }
+    case SKEIN_SUBSCRIPTIONS_TOOL:
+      return "listed its subscriptions";
+    case SKEIN_UNSUBSCRIBE_TOOL:
+      return input?.all === true ? "stopped its subscriptions" : "stopped a subscription";
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
     case SKEIN_AWAY_TOOL: {

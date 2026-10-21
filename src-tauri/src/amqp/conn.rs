@@ -153,6 +153,8 @@ struct Link {
     grant: u32,
     /// A multi-frame transfer being assembled.
     partial: Option<(Vec<u8>, Option<u32>, bool)>,
+    /// This side sent the detach, so the peer's is an answer, not news.
+    closing: bool,
 }
 
 pub struct Conn<S: Read + Write> {
@@ -346,6 +348,7 @@ impl<S: Read + Write> Conn<S> {
                 delivery_count: 0,
                 grant,
                 partial: None,
+                closing: false,
             },
         );
         handle
@@ -397,6 +400,9 @@ impl<S: Read + Write> Conn<S> {
     }
 
     pub fn detach(&mut self, handle: u32) -> Result<()> {
+        if let Some(l) = self.links.get_mut(&handle) {
+            l.closing = true;
+        }
         let d = Value::described(codec::DETACH, vec![Value::Uint(handle), Value::Bool(true)]);
         self.send_perf(&d, &[])
     }
@@ -566,18 +572,14 @@ impl<S: Read + Write> Conn<S> {
                 let remote = perf.field(0).as_u64().unwrap_or(0) as u32;
                 let error = AmqpError::from(perf.field(2));
                 if let Some(h) = self.by_remote.remove(&remote) {
-                    self.links.remove(&h);
-                    self.pending.push_back(Event::Detached { handle: h, error });
-                    /* Answer it, or the peer holds the handle open. A detach
-                       we started is answered by this one and needs nothing. */
-                    let d = Value::described(codec::DETACH, vec![Value::Uint(h), Value::Bool(true)]);
-                    let _ = self.send_perf(&d, &[]);
-                } else if let Some((h, _)) = self.links.iter().find(|(_, l)| l.remote.is_none()) {
-                    /* A detach for a link whose attach never came back with a
-                       handle we recorded: still the answer to that attach. */
-                    let h = *h;
-                    self.links.remove(&h);
-                    self.pending.push_back(Event::Detached { handle: h, error });
+                    let ours = self.links.remove(&h).is_some_and(|l| l.closing);
+                    /* The answer to a detach we started needs nothing back; one
+                       the peer started is answered, or it holds the handle. */
+                    if !ours {
+                        self.pending.push_back(Event::Detached { handle: h, error });
+                        let d = Value::described(codec::DETACH, vec![Value::Uint(h), Value::Bool(true)]);
+                        let _ = self.send_perf(&d, &[]);
+                    }
                 }
             }
             Some(codec::END) => return Err(Error::Closed(AmqpError::from(perf.field(0)))),
@@ -620,8 +622,13 @@ impl<S: Read + Write> Conn<S> {
         l.delivery_count = l.delivery_count.wrapping_add(1);
         let low = l.credit < l.grant / 2 + 1;
         if !aborted {
-            let message = Message::decode(&bytes)?;
-            self.pending.push_back(Event::Message { handle: h, message });
+            /* One event nobody can read is skipped, not fatal: as an error it
+               would end the connection, be read again after every reconnect,
+               and stall every partition behind it for ever. */
+            match Message::decode(&bytes) {
+                Ok(message) => self.pending.push_back(Event::Message { handle: h, message }),
+                Err(e) => eprintln!("[amqp] skipped an undecodable delivery on link {h}: {e}"),
+            }
             if !settled {
                 if let Some(id) = id {
                     let d = Value::described(
@@ -662,6 +669,10 @@ impl<S: Read + Write> Conn<S> {
     /// when the peer's idle timeout is half spent, and gives up as `Quiet` when
     /// nothing has been heard for twice ours.
     fn read_frame(&mut self, deadline: Instant) -> Result<Option<Frame>> {
+        /* At least one read per call, even with the deadline already past:
+           a caller handing in `now` must still move the stream, or a loop over
+           this returns `None` for ever without the socket being read. */
+        let mut read_once = false;
         loop {
             if let Some(f) = codec::take_frame(&mut self.rbuf, MAX_FRAME as usize)? {
                 return Ok(Some(f));
@@ -672,10 +683,11 @@ impl<S: Read + Write> Conn<S> {
                     self.write_raw(&codec::frame(codec::AMQP_FRAME, 0, None, &[]))?;
                 }
             }
-            if now >= deadline {
+            if now >= deadline && read_once {
                 return Ok(None);
             }
             self.fill()?;
+            read_once = true;
         }
     }
 
@@ -735,11 +747,6 @@ impl<S: Read + Write> Conn<S> {
                 return Ok(p);
             }
         }
-    }
-
-    /// The peer's maximum frame size, for a caller sizing a message.
-    pub fn max_frame(&self) -> usize {
-        self.max_out
     }
 }
 

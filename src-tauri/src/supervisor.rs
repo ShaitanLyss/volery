@@ -2088,6 +2088,9 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
            like any other, so whether it held its history is read off the end
            of that turn — `flyway/moving.rs`. */
         crate::flyway::link::move_turn_closed(app, id);
+        /* And what a card subscribed to and was held while it worked goes
+           now, as one turn — `subscribe::engine` never interrupts one. */
+        crate::subscribe::turn_closed(app, id);
     } else {
         crate::spawn::stirring(id);
         /* And a notice about the rest that just ended comes down — the user
@@ -2230,6 +2233,17 @@ fn write_prompt(w: &mut impl Write, content: &[Block]) -> Result<(), String> {
 /// `send_prompt` is the one path that takes blocks.
 pub fn deliver(app: &AppHandle, id: &str, text: &str) -> Result<(), String> {
     deliver_blocks(app, id, &[Block::text(text)])
+}
+
+/// Whether a card has a turn open: `Some(true)` mid-turn, `Some(false)` idle,
+/// `None` with no process. `subscribe::engine` asks before it hands a card a
+/// turn, because a prompt written into a card mid-turn is queued by the CLI
+/// behind it — one turn per batch — where held and handed over at the turn's
+/// end it is one.
+pub fn turn_open(app: &AppHandle, id: &str) -> Option<bool> {
+    let sup = app.try_state::<Supervisor>()?;
+    let map = sup.0.lock().ok()?;
+    map.get(id).map(|conv| conv.turn.load(Ordering::Relaxed))
 }
 
 /// `deliver`, for a turn that is more than words.
