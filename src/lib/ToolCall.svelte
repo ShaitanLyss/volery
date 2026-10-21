@@ -37,6 +37,8 @@
      `find.rs`: `insideRoot` mirrors its `safe_join`, and `placesIn` produces the
      `(path, line)` pair its viewer reads. See `.claude/rules/finding.md`. */
   import { insideRoot, placesIn } from "./finding";
+  import RelayMark from "./RelayMark.svelte";
+  import { SEND_TOOL } from "./relay";
 
   let {
     call,
@@ -160,6 +162,12 @@
   >
     <span class="mark" aria-hidden="true">{open ? "▾" : "▸"}</span>
     <span class="tag">{badge}</span>
+    {#if call.name === SEND_TOOL}
+      <!-- A message this card sent, wearing the flock taking off that chat
+           view's letter wears — the wall's run of calls is the one place a
+           send is not drawn as a letter, and it is still a message leaving. -->
+      <span class="flock"><RelayMark dir="out" small /></span>
+    {/if}
     <span class="what">{text}</span>
     <!-- The right-hand end is the ledger: how much came back, or that nothing
          has yet. A call still in flight is the most interesting one on the page
@@ -348,6 +356,11 @@
      is mostly machinery and the machinery is meant to recede. Everything the
      fold adds sits at the two ends — the stamp at the left, the ledger at the
      right — and the prose in the middle is untouched. */
+  .flock {
+    display: inline-flex;
+    align-self: center;
+    color: var(--paper-mute);
+  }
   .head {
     display: flex;
     align-items: baseline;

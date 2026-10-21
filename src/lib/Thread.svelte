@@ -40,6 +40,7 @@
   import Markdown from "./Markdown.svelte";
   import ToolCall from "./ToolCall.svelte";
   import Figure from "./Figure.svelte";
+  import RelayMark from "./RelayMark.svelte";
   import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
     blocksOf,
@@ -58,7 +59,7 @@
   import { RELEASE } from "./follow.svelte";
   import { others } from "./others.svelte";
   import { spawnedHandle } from "./chatview";
-  import { relayBody, relayFrom, sentOf } from "./relay";
+  import { isWakePrompt, relayBody, relayFrom, sentOf } from "./relay";
   import { ageOf } from "./chatview";
   import { cardName } from "./naming";
 
@@ -304,7 +305,16 @@
   $effect(() => {
     void conv.id;
     open = {};
+    openedAt = Date.now();
   });
+
+  /* When this column was opened, so a message can tell whether it arrived while
+     you were looking. Only those move their mark (`RelayMark`'s `live`): a
+     letter drawn from history mounts too — on opening a thread, on switching to
+     it — and a whole thread of flocks settling at once would be the column
+     announcing itself rather than a message arriving. */
+  let openedAt = $state(Date.now());
+  const arrived = (at: number | undefined) => !!at && at > openedAt;
 
   /* Mounting the thread is what pays for reading a multi-megabyte file: the
      wall itself never needs the scrollback, and reading every card's transcript
@@ -480,16 +490,19 @@
      name, its live dot and the way into it — so a thread reads as one house.
      A long one is cut to a few lines until opened, with the folds' own
      toggle, so a coordinator's brief does not bury the round you came for. -->
-{#snippet letter(key: string, dir: "in" | "out", who: { name: string; card: CardHandle | null }[], sub: string, body: string)}
+{#snippet letter(
+  key: string,
+  dir: "in" | "out",
+  who: { name: string; card: CardHandle | null }[],
+  sub: string,
+  body: string,
+  live: boolean,
+)}
   {@const long = body.length > LETTER_LONG}
   {@const one = who.length === 1 ? who[0].card : null}
   <div class="letter" class:out={dir === "out"} data-nav="msg">
     <div class="hd">
-      <svg class="i" viewBox="0 0 16 16" aria-hidden="true"
-        >{#if dir === "in"}<path d="M10 3 4 8l6 5" /><path d="M4 8h9" />{:else}<path d="M6 3l6 5-6 5" /><path
-            d="M12 8H3"
-          />{/if}</svg
-      >
+      <span class="flock"><RelayMark {dir} {live} /></span>
       <span class="who">
         <span class="t"
           >{#if dir === "out"}<span class="to">to{" "}</span>{/if}{#each who as w, i (i)}{#if i}<span class="to">,{" "}</span>{/if}{#if w.card}{@const c = w.card}<button
@@ -554,11 +567,13 @@
         [{ name: sender ? nameOf(sender) : (from?.name ?? "another conversation"), card: sender }],
         ["sent this conversation a message", from?.handle, when(b.line.at)].filter(Boolean).join(" · "),
         relayBody(b.line.text),
+        arrived(b.line.at),
       )}
     {:else if b.kind === "sent"}
       <!-- A message this conversation sent, out of the run it was sent in —
-           the same letter the other way round, marked by a dashed edge and an
-           outgoing arrow so the two directions never read alike. -->
+           the same letter the other way round, marked by a dashed edge and a
+           flock taking off where a received one lands, so the two directions
+           never read alike. -->
       {@const m = sentOf(b.line.call)}
       {#if m}
         {@render letter(
@@ -576,6 +591,7 @@
             .filter(Boolean)
             .join(" · "),
           m.message,
+          arrived(b.line.at),
         )}
       {/if}
     {:else if b.kind === "long"}
@@ -616,6 +632,12 @@
           title={open[b.key] ? "fold it away" : fold.hint}
         >
           <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
+          {#if b.line.kind === "relay" && !isWakePrompt(b.line.text)}
+            <!-- The landing flock chat view's letter wears, on the wall's fold
+                 of the same message: one mark per direction, every surface. A
+                 wake is not one — nobody sent it. -->
+            <span class="flock"><RelayMark dir="in" small live={arrived(b.line.at)} /></span>
+          {/if}
           <span class="what">{fold.cap}</span>
         </button>
         {#if open[b.key]}
@@ -1239,14 +1261,12 @@
     margin-bottom: 8px;
     font-family: var(--cv-ui, var(--util));
   }
-  .letter .i {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: var(--paper-mute);
-    stroke-width: 1.4;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+  .flock {
+    display: inline-flex;
+    color: var(--paper-mute);
+  }
+  .cap .flock {
+    align-self: center;
   }
   .letter .who {
     display: flex;
