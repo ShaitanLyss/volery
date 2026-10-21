@@ -1,6 +1,6 @@
 <script lang="ts">
-  /* The mark a relay wears, wherever one is drawn: a flock landing on a
-     message received, a flock taking off on one sent (`marks.ts`). One name
+  /* The mark a relay wears, wherever one is drawn: a swallow landing on a
+     message received, a swallow taking off on one sent (`marks.ts`). One name
      per direction rather than per surface, so a letter in chat view, a fold on
      the wall and a send in a run of calls cannot come to disagree about what a
      message arriving looks like.
@@ -10,12 +10,12 @@
      who sent what.
 
      `live` is a message that arrived while you were looking, and it moves once:
-     the received flock settles down and in from the top left, the sent one lifts
+     the received swallow settles down and in from the top left, the sent one lifts
      up and away to the top right — into the place it then keeps. Transform and
      opacity only, one-shot, never looping, so it is not something the wall's
      motion setting reaches (`motion.md`, *And so `still` does not reach it*);
      reduced motion has it simply appear. A letter drawn from history is never
-     live, or every flock in a thread would hop at once each time one is
+     live, or every bird in a thread would hop at once each time one is
      opened. */
   import { RELAY_MARKS, type Dir } from "./marks";
 

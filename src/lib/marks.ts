@@ -1,31 +1,31 @@
-/* The marks a relay wears: a flock landing, and a flock taking off.
+/* The marks a relay wears: a swallow landing, and a swallow taking off.
  *
  * The arrows they replace said the wrong thing twice. They were not anything —
  * a chevron is the chrome of every app ever made — and the one on a received
  * message pointed *out*, left, so a message arriving read as one leaving (Lyss,
  * 2026-10-21: "something that evokes a bird landing coming from top left for
  * received, and something evoking bird taking off going top right for sent").
- * A volery is a flock in flight, so the mark is one: three gulls in ink, and
- * **the biggest bird leads**, which is what makes it read as movement rather
- * than as a pattern — on a message received it is the one nearest the bottom
- * right, arriving; on one sent it is the one furthest up and right, already
- * gone (her correction to the first drawing, which had it trailing).
  *
- * Ink rather than line. Two rounds of single-weight icons were turned down as
- * plain; what was chosen is a brush: each wing a stroke that swells from a fine
- * tip to its full width at the shoulder, so a bird is two crescents meeting
- * under its body. That is why this is a module of its own beside `icons.ts`
- * rather than two more entries in its table — those are 16-unit strokes
- * `Icon.svelte` draws with `stroke`, these are filled outlines on a 32 grid
- * that `RelayMark.svelte` draws with `fill`, and a shape list that could be
- * either would be a shape list nobody can draw without asking which.
+ * Chosen from pictures over three rounds. Single-weight icons were turned down
+ * as plain; of three ink drawings — a sumi-e gull, a flock of three, this — she
+ * took the swallow. So each mark is two things: **a swash**, a brush stroke
+ * that swells and runs out, which is the line of flight; and **the bird**, a
+ * forked-tail swallow in silhouette with both wings raised. Received, the swash
+ * comes down from the top left and the bird is at its foot, nose up, settling.
+ * Sent, the swash rises from the bottom left and the bird is past its end,
+ * climbing hard to the top right.
  *
- * Computed, not pasted. The outlines are a few hundred coordinates each, and a
- * table of them would be the one thing in the codebase nobody could change: the
- * geometry below is the drawing, and the numbers are what it costs to run once
- * at module load. Pure — no runes — so `test/marks.test.ts` can hold the
- * properties that make it read: three birds, inside the frame, the leader
- * biggest and where the movement is going. */
+ * Ink rather than line, which is why this is a module of its own beside
+ * `icons.ts` rather than two more entries in its table: those are 16-unit
+ * strokes `Icon.svelte` draws with `stroke`, these are filled outlines on a 32
+ * grid that `RelayMark.svelte` draws with `fill`, and a shape list that could be
+ * either is one nobody can draw without asking which.
+ *
+ * Computed, not pasted. The swash is a few dozen sampled points and the bird is
+ * placed by a transform; a table of the results would be the one thing here
+ * nobody could change. Pure — no runes — so `test/marks.test.ts` can hold what
+ * makes it read: one swash and one bird each, inside the frame, the swash on
+ * the side the bird came from and the bird on the side it is going. */
 
 export type Pt = [number, number];
 export type Dir = "in" | "out";
@@ -61,60 +61,94 @@ export function brush(p: readonly Pt[], w: number, prof: (t: number) => number, 
   return [...left, ...right.reverse()];
 }
 
-/** Where a bird stands: scaled about the frame's centre, turned, moved. */
+/* A swash swells from nothing and thins toward its tail end, so it reads as a
+   stroke made in one movement rather than a line drawn between two points. */
+const SWASH = (t: number) => Math.sin(Math.PI * t) * (1 - t * 0.45);
+
+/** A swallow heading right, wings raised, drawn full size on the 32 grid: the
+ *  body with the near wing and the forked tail as one closed outline of cubic
+ *  segments, and the far wing behind it as a second. Each outline is its start
+ *  point and then `[c1, c2, end]` per segment. */
+const SWALLOW: { start: Pt; segs: [Pt, Pt, Pt][] }[] = [
+  {
+    start: [29.8, 14.6],
+    segs: [
+      [[29, 13.2], [27.2, 12.4], [25.4, 12.8]],
+      [[23.6, 13.2], [22, 14.2], [20.2, 15]],
+      [[18.6, 10.6], [14.2, 5.8], [8.4, 3]],
+      [[12.8, 7.8], [14.8, 12.4], [16.2, 15.9]],
+      [[14.8, 16.2], [13.6, 16.4], [12.6, 16.6]],
+      [[9.5, 16.2], [6, 15.4], [2.5, 14.8]],
+      [[5.8, 16.8], [8, 17.6], [9.8, 18.1]],
+      [[7.6, 19.6], [5.4, 21], [3.4, 22.4]],
+      [[8, 21], [13, 19.2], [18, 18.4]],
+      [[22.4, 17.8], [26.8, 17.2], [29.8, 14.6]],
+    ],
+  },
+  {
+    start: [21.2, 14.8],
+    segs: [
+      [[20.6, 10.8], [18.8, 7.2], [15.6, 4.4]],
+      [[19.8, 6.6], [22.4, 10.2], [23.4, 14.2]],
+      [[22.6, 14.4], [21.9, 14.6], [21.2, 14.8]],
+    ],
+  },
+];
+
+/** Where the bird stands: scaled about the frame's centre, turned, moved. */
 export type Place = { s: number; dx: number; dy: number; rot: number };
 
-function place(pts: Pt[], { s, dx, dy, rot }: Place): Pt[] {
+function placer({ s, dx, dy, rot }: Place): (p: Pt) => Pt {
   const r = (rot * Math.PI) / 180;
   const c = Math.cos(r);
   const sn = Math.sin(r);
-  return pts.map(([x, y]) => {
+  return ([x, y]) => {
     const ox = x - 16;
     const oy = y - 16;
     return [16 + (ox * c - oy * sn) * s + dx, 16 + (ox * sn + oy * c) * s + dy];
-  });
+  };
 }
 
-/* A wing swells from the shoulder and runs out to a fine tip — the `min` keeps
-   it from opening at a point under the body, where the two would pinch. */
-const WING = (t: number) => Math.pow(1 - t, 0.8) * Math.min(1, t * 6 + 0.35);
-
-/** One gull as two wings, drawn at full size in the middle of the frame. */
-export function gull(at: Place): Pt[][] {
-  return [
-    place(brush([[16, 17], [13.5, 10], [8, 8.5], [2.5, 12]], 3.9, WING), at),
-    place(brush([[16, 17], [18.5, 10], [24, 8.5], [29.5, 12]], 3.9, WING), at),
-  ];
-}
-
-/** The three birds of each mark, far to near along the line of flight: the
- *  last is the leader and the largest. Received comes down from the top left;
- *  sent climbs to the top right. Each bird banks a little into the line. */
-export const FLOCK: Record<Dir, readonly Place[]> = {
-  in: [
-    { s: 0.3, dx: -10, dy: -10, rot: 12 },
-    { s: 0.42, dx: -3.4, dy: -2.4, rot: 10 },
-    { s: 0.58, dx: 6.6, dy: 7.6, rot: 8 },
-  ],
-  out: [
-    { s: 0.3, dx: -10, dy: 10, rot: -12 },
-    { s: 0.42, dx: -3.4, dy: 2.4, rot: -10 },
-    { s: 0.58, dx: 6.6, dy: -7.6, rot: -8 },
-  ],
+/** Each mark: the line of flight and where the bird is on it. */
+export const MARK: Record<Dir, { swash: Pt[]; bird: Place }> = {
+  /* Down from the top left; the bird at the foot of it, nose lifted to land. */
+  in: {
+    swash: [[1.5, 1.5], [3, 9], [7, 15], [13.5, 18.6]],
+    bird: { s: 0.66, rot: -12, dx: 6, dy: 6.5 },
+  },
+  /* Up from the bottom left; the bird past its end, climbing to the top right.
+     The stroke runs the other way round, so it is thickest where it leaves the
+     ground and runs out toward the bird. */
+  out: {
+    swash: [[2, 30.5], [6, 28], [10, 25], [13.6, 19.6]],
+    bird: { s: 0.66, rot: -38, dx: 6, dy: -6 },
+  },
 };
 
-function pathOf(outlines: Pt[][]): string {
-  return outlines.map((o) => "M" + o.map(([x, y]) => `${r1(x)} ${r1(y)}`).join("L") + "Z").join("");
+/** The two filled pieces of a mark, as outlines of points — for the tests,
+ *  which ask about where things are rather than about a string. The bird's
+ *  points are its segment ends and control points, which bound it. */
+export function piecesOf(dir: Dir): { swash: Pt[]; bird: Pt[] } {
+  const m = MARK[dir];
+  const prof = dir === "in" ? SWASH : (t: number) => SWASH(1 - t);
+  const at = placer(m.bird);
+  return {
+    swash: brush(m.swash, 2.1, prof),
+    bird: SWALLOW.flatMap((o) => [o.start, ...o.segs.flat()]).map(at),
+  };
 }
 
-/** Every outline of a mark, bird by bird — for the tests, which ask about the
- *  birds rather than about a string. */
-export function birdsOf(dir: Dir): Pt[][][] {
-  return FLOCK[dir].map(gull);
+const xy = ([x, y]: Pt) => `${r1(x)} ${r1(y)}`;
+
+function pathOf(dir: Dir): string {
+  const prof = dir === "in" ? SWASH : (t: number) => SWASH(1 - t);
+  const swash = "M" + brush(MARK[dir].swash, 2.1, prof).map(xy).join("L") + "Z";
+  const at = placer(MARK[dir].bird);
+  const bird = SWALLOW.map(
+    (o) => `M${xy(at(o.start))}` + o.segs.map((s) => `C${s.map((p) => xy(at(p))).join(" ")}`).join("") + "Z",
+  ).join("");
+  return swash + bird;
 }
 
 /** The `d` of each mark, on a 32-unit frame, filled. */
-export const RELAY_MARKS: Record<Dir, string> = {
-  in: pathOf(birdsOf("in").flat()),
-  out: pathOf(birdsOf("out").flat()),
-};
+export const RELAY_MARKS: Record<Dir, string> = { in: pathOf("in"), out: pathOf("out") };

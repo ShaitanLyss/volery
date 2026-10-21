@@ -311,7 +311,7 @@
   /* When this column was opened, so a message can tell whether it arrived while
      you were looking. Only those move their mark (`RelayMark`'s `live`): a
      letter drawn from history mounts too — on opening a thread, on switching to
-     it — and a whole thread of flocks settling at once would be the column
+     it — and a whole thread of birds settling at once would be the column
      announcing itself rather than a message arriving. */
   let openedAt = $state(Date.now());
   const arrived = (at: number | undefined) => !!at && at > openedAt;
@@ -502,7 +502,7 @@
   {@const one = who.length === 1 ? who[0].card : null}
   <div class="letter" class:out={dir === "out"} data-nav="msg">
     <div class="hd">
-      <span class="flock"><RelayMark {dir} {live} /></span>
+      <span class="bird"><RelayMark {dir} {live} /></span>
       <span class="who">
         <span class="t"
           >{#if dir === "out"}<span class="to">to{" "}</span>{/if}{#each who as w, i (i)}{#if i}<span class="to">,{" "}</span>{/if}{#if w.card}{@const c = w.card}<button
@@ -572,7 +572,7 @@
     {:else if b.kind === "sent"}
       <!-- A message this conversation sent, out of the run it was sent in —
            the same letter the other way round, marked by a dashed edge and a
-           flock taking off where a received one lands, so the two directions
+           swallow taking off where a received one lands, so the two directions
            never read alike. -->
       {@const m = sentOf(b.line.call)}
       {#if m}
@@ -633,10 +633,10 @@
         >
           <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
           {#if b.line.kind === "relay" && !isWakePrompt(b.line.text)}
-            <!-- The landing flock chat view's letter wears, on the wall's fold
+            <!-- The landing swallow chat view's letter wears, on the wall's fold
                  of the same message: one mark per direction, every surface. A
                  wake is not one — nobody sent it. -->
-            <span class="flock"><RelayMark dir="in" small live={arrived(b.line.at)} /></span>
+            <span class="bird"><RelayMark dir="in" small live={arrived(b.line.at)} /></span>
           {/if}
           <span class="what">{fold.cap}</span>
         </button>
@@ -1261,11 +1261,11 @@
     margin-bottom: 8px;
     font-family: var(--cv-ui, var(--util));
   }
-  .flock {
+  .bird {
     display: inline-flex;
     color: var(--paper-mute);
   }
-  .cap .flock {
+  .cap .bird {
     align-self: center;
   }
   .letter .who {

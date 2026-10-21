@@ -399,31 +399,33 @@ survive `--resume` reading the CLI's own file.
 
 ### The marks a relay wears (2026-10-21)
 
-A message received is drawn under a **flock landing** from the top left, and one sent under a
-**flock taking off** to the top right — chat view's letter, the wall's relay fold and a `send`
+A message received is drawn under a **swallow landing** from the top left, and one sent under a
+**swallow taking off** to the top right — chat view's letter, the wall's relay fold and a `send`
 in a run of calls. They replaced a pair of arrows Lyss turned down twice over: plain, and the
 received one pointed *out*, so a message arriving read as one leaving.
 
 - **One name per direction, never per surface.** `RelayMark.svelte` takes `dir: "in" | "out"`
   and nothing else that could differ, so a letter, a fold and a tool row cannot come to
   disagree about what arriving looks like. A wake wears none: nobody sent it.
-- **Three gulls in ink, the biggest leading.** That is what makes three birds read as movement
-  rather than as a pattern: on a received message the leader is the nearest the bottom right,
-  arriving; on a sent one it is furthest up and right, already gone — her correction to the
-  first drawing, which had it trailing. `test/marks.test.ts` holds the order and the frame.
-- **Ink, not line, so a module of its own.** Two rounds of single-weight 16-unit icons were
-  "too low quality and plain"; each wing is a brush stroke that swells from a fine tip to the
-  shoulder (`marks.ts::brush`). Filled outlines on a 32 grid are not `icons.ts`'s stroked
-  shapes, and a table that could hold either would need asking which before drawing. The
-  outlines are computed at module load from the geometry rather than pasted — a table of a few
-  hundred coordinates is the one thing nobody could change.
+- **A swash and a swallow.** The swash is a brush stroke that swells and runs out — the line of
+  flight — and the bird is a forked-tail swallow in silhouette, wings raised. Received, the
+  swash comes down from the top left and the bird is at its foot, nose up, settling; sent, it
+  rises from the bottom left and the bird is past its end, climbing hard to the top right.
+  `test/marks.test.ts` holds the frame and which side of the bird the swash is on.
+- **Chosen from pictures, three rounds.** Single-weight 16-unit icons were "too low quality and
+  plain, it should be more artistic and stylised"; of three ink drawings — a sumi-e gull, a
+  flock of three, this — she took the swallow. Ink rather than line is why it is a module of
+  its own (`marks.ts`): filled outlines on a 32 grid are not `icons.ts`'s stroked shapes, and
+  a table that could hold either would need asking which before drawing. The swash is sampled
+  and the bird placed by a transform at module load, rather than pasted as a few hundred
+  coordinates nobody could change.
 - **Achromatic, filled in the current colour.** Colour is status here; the surface sets
   `--paper-mute`, so the mark reads in every theme the text beside it does.
 - **It moves once, and only for a message that arrived while you were looking.** The received
-  flock settles down and in, the sent one lifts up and away — transform and opacity, one-shot,
+  swallow settles down and in, the sent one lifts up and away — transform and opacity, one-shot,
   into the place it keeps. `Thread` stamps when its column was opened and a line is `live`
   only if its `at` is later, because a letter drawn from history mounts too and a whole thread
-  of flocks settling at once is the column announcing itself. Not the wall's motion setting's
+  of birds settling at once is the column announcing itself. Not the wall's motion setting's
   to stop (`motion.md`, *And so `still` does not reach it*); reduced motion has it appear.
   The wall's tool row is never live: a call carries no arrival of its own worth marking.
 
