@@ -567,6 +567,12 @@ const NESTED: Array<{ path: string[]; file: string; items: string[] }> = [
   { path: ["flyway", "fleet"], file: "src-tauri/src/flyway/fleet.rs", items: ["const NEEDS"] },
   { path: ["flyway", "reach"], file: "src-tauri/src/flyway/reach.rs", items: ["const WALLS_TOOL", "fn walls_schema"] },
   { path: ["flyway", "here"], file: "src-tauri/src/flyway/here.rs", items: ["struct Birth"] },
+  /* `cancel_schema` and `list_schema` are `later`'s and `relay`'s names too. */
+  {
+    path: ["subscribe"],
+    file: "src-tauri/src/subscribe/mod.rs",
+    items: ["const SUBSCRIBE_TOOL", "const LIST_TOOL", "const CANCEL_TOOL", "fn subscribe_schema", "fn list_schema", "fn cancel_schema"],
+  },
 ];
 
 /** `NESTED`, as source: one `pub mod` per path segment, shared prefixes merged. */
