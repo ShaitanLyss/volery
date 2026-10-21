@@ -2117,10 +2117,25 @@ export class Skein {
     if (!session) return "that conversation never got as far as a recorded session";
     const standing = this.convs.find((c) => c.sessionId === session);
     if (standing) return standing;
-    const s = (await this.importable()).find((x) => x.id === session);
-    if (!s) return "that conversation was closed, and its session is no longer on disk";
-    return this.importSession(s);
+    /* Single-flight by session: the scan in `importable` takes long enough for
+       a second click to land inside it, and two imports of one session push two
+       `Conversation`s under one id — a duplicate key in the canvas's keyed
+       `{#each}`. The second caller gets the first one's answer. */
+    const pending = this.#reviving.get(session);
+    if (pending) return pending;
+    const run = (async () => {
+      const s = (await this.importable()).find((x) => x.id === session);
+      if (!s) return "that conversation was closed, and its session is no longer on disk";
+      return this.importSession(s);
+    })();
+    this.#reviving.set(session, run);
+    try {
+      return await run;
+    } finally {
+      this.#reviving.delete(session);
+    }
   }
+  #reviving = new Map<string, Promise<Conversation | string>>();
 
   async importSession(s: Session): Promise<Conversation | string> {
     /* A card standing on the wall already *is* this conversation — which

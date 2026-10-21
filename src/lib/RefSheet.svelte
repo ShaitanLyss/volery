@@ -86,7 +86,7 @@
 
   async function copyId() {
     try {
-      await navigator.clipboard.writeText(reference.key);
+      await navigator.clipboard.writeText(reference.kind === "commit" ? reference.short : reference.key);
     } catch {
       /* A clipboard that will not answer is not worth a fault bar here. */
     }

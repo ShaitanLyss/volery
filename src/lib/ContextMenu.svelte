@@ -215,7 +215,21 @@
 <!-- The catcher takes the next press anywhere, which is what closes the menu.
      `pointerdown` rather than `click`, so the menu is gone before the thing
      underneath decides what that press meant. -->
-<div class="catch" onpointerdown={onclose} oncontextmenu={onclose} role="presentation">
+<div
+  class="catch"
+  onpointerdown={onclose}
+  oncontextmenu={(e) => {
+    /* A right-click outside closes it. The keyboard's own `contextmenu` — the
+       menu key fires one at keyup, after its keydown has already opened this
+       menu and put the focus on a row — is not a press anywhere, so it closes
+       nothing, and is kept from the studio's handler, which would clear the
+       menu it just opened. */
+    e.preventDefault();
+    if (e.button === 2) onclose();
+    else e.stopPropagation();
+  }}
+  role="presentation"
+>
   <div
     class="menu"
     class:chat={look === "chat"}

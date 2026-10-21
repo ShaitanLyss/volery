@@ -2333,9 +2333,17 @@
   /* And a peek before the sheet: the pointer resting on a chip for `PEEK_MS`
      shows what it names beside it (`RefPeek.svelte`). A rest rather than an
      enter, so a pointer swept across a paragraph opens nothing. */
-  let refPeek = $state<{ ref: Ref; at: { left: number; top: number; bottom: number } } | null>(null);
+  let refPeek = $state<{ ref: Ref; at: { left: number; top: number; bottom: number }; el: HTMLElement } | null>(null);
   let peekTimer: ReturnType<typeof setTimeout> | null = null;
   const PEEK_MS = 380;
+  /** A chip can be taken out from under the pointer — a conversation switched
+   *  by the keyboard, a paragraph re-rendered — and then no `pointerleave`
+   *  ever comes. So any movement asks whether the chip is still there and
+   *  still under the pointer. */
+  function peekStillOn() {
+    const p = refPeek;
+    if (p && (!p.el.isConnected || !p.el.matches(":hover"))) unpeek();
+  }
   function unpeek() {
     if (peekTimer) clearTimeout(peekTimer);
     peekTimer = null;
@@ -2352,7 +2360,7 @@
         peekTimer = null;
         if (!el.isConnected) return;
         const r = el.getBoundingClientRect();
-        refPeek = { ref, at: { left: r.left, top: r.top, bottom: r.bottom } };
+        refPeek = { ref, at: { left: r.left, top: r.top, bottom: r.bottom }, el };
       }, PEEK_MS);
     },
     unhover: unpeek,
@@ -4248,7 +4256,9 @@
     const act = (id: string) => {
       if (id === "glass") canvas?.toggleGlass("region", terr);
       else if (id.startsWith("pool:")) void skein.togglePool(cwd, id.slice(5));
-      else if (id.startsWith("moveall:")) askMoveAll(terr, id.slice(8));
+      /* From chat view the menu is a project's, not a grouping's, so it moves
+         every card of the project. */
+      else if (id.startsWith("moveall:")) askMoveAll(terr, id.slice(8), view.current === "chat");
       else if (id === "explorer") void skein.showInExplorer(cwd);
       else if (id === "chat") void openChat();
       else if (id === "new") void openIn(cwd);
@@ -4310,7 +4320,15 @@
    *  every row that arranges the wall. Nothing is hung anywhere from here, so
    *  the wall point is never read. */
   function projectMenuAt(name: string, at: { x: number; y: number }, keyed: boolean) {
-    const p = skein.projects.find((q) => q.name === name && !skein.isChatHome(q.root_path));
+    /* The sidebar lists projects by name, and two checkouts can share one. A
+       menu that might be acting on the other folder — down to "forget this
+       project" — is refused rather than guessed at. */
+    const named = skein.projects.filter((q) => q.name === name && !skein.isChatHome(q.root_path));
+    if (named.length > 1) {
+      skein.fault = `two projects are called ${name} — open the one you mean on the wall`;
+      return;
+    }
+    const p = named[0];
     if (!p) return;
     const terr = skein.territories.find((t) => t.projectId === p.id);
     const { target, act } = regionMenu(terr?.id ?? p.root_path, p.root_path, { x: 0, y: 0 });
@@ -4340,13 +4358,16 @@
    *  such gesture at a time too. */
   let movingAll = false;
 
-  function askMoveAll(terr: string, host: string) {
+  function askMoveAll(terr: string, host: string, wholeProject = false) {
     if (movingAll) {
       skein.fault = "a grouping's cards are already moving — wait for that to finish";
       return;
     }
     const t = skein.territories.find((q) => q.id === terr);
-    const cards = skein.convs.filter((c) => c.territoryId === terr && c.kind === "project");
+    const groupings = new Set(
+      wholeProject && t ? skein.territories.filter((q) => q.projectId === t.projectId).map((q) => q.id) : [terr],
+    );
+    const cards = skein.convs.filter((c) => groupings.has(c.territoryId ?? "") && c.kind === "project");
     if (!t || !cards.length) return;
     exodus = { cards, name: t.name, host };
   }
@@ -4982,7 +5003,10 @@
   onkeyup={(e) => synth.on && synth.lift(e)}
   onblur={() => synth.allOff()}
   onpaste={onPaste}
-  onpointermove={trackPointer}
+  onpointermove={(e) => {
+    trackPointer(e);
+    if (refPeek) peekStillOn();
+  }}
   bind:innerWidth={winW}
   bind:innerHeight={winH}
   bind:devicePixelRatio={dpr}

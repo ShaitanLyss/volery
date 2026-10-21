@@ -22,7 +22,17 @@
   import { handleTip, whoIs } from "./whois";
   import type { CardHandle } from "./cards.svelte";
 
-  let { kids }: { kids: Inline[] } = $props();
+  let {
+    kids,
+    inLink = false,
+  }: {
+    kids: Inline[];
+    /** Drawn as a link's label. Nothing inside one becomes a button of its own
+     *  — a chip there would be a button inside a button, and a press would both
+     *  open the sheet and follow the link. `[93961f1](…/commit/93961f1)` is
+     *  how agents write commits, so the link is what was meant. */
+    inLink?: boolean;
+  } = $props();
 
   /** Where a link goes. Off the environment rather than a prop, for the reason
    *  `files` is — see `provideLinkOpener`. There is exactly one thing a link
@@ -61,7 +71,7 @@
   /** The whole of a code span, if the disk has it. */
   const spanPath = $derived.by(() => {
     const map = new Map<number, At>();
-    if (!files) return map;
+    if (!files || inLink) return map;
     for (const [i, k] of kids.entries()) {
       if (k.t !== "code") continue;
       const found = namedPath(k.v);
@@ -115,7 +125,7 @@
   }
 
   /** Whether any of this is worth looking for in a text at all. */
-  const looksForIds = !!(links || reflinks);
+  const looksForIds = $derived(!inLink && !!(links || reflinks));
 
   /** The whole of a code span, when it is exactly one id this app knows. */
   const spanHit = $derived.by(() => {
@@ -152,7 +162,7 @@
         if (from < text.length) runs.push({ text: text.slice(from), at: null, hit: null });
       };
       let from = 0;
-      for (const f of files ? pathsIn(k.v) : []) {
+      for (const f of files && !inLink ? pathsIn(k.v) : []) {
         if (f.from > from) plain(k.v.slice(from, f.from));
         runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line, symbol: f.symbol }, hit: null });
         from = f.to;
@@ -256,9 +266,9 @@
       title={hint(to.path, dir, at.symbol)}
       onclick={(e) => go(e, to.path, at)}><code>{k.v}</code></button
     >{:else}<code>{k.v}</code>{/if}{:else if k.t === "strong"}<strong
-      ><Self kids={k.kids} /></strong
-    >{:else if k.t === "em"}<em><Self kids={k.kids} /></em
-    >{:else if k.t === "del"}<del><Self kids={k.kids} /></del
+      ><Self kids={k.kids} {inLink} /></strong
+    >{:else if k.t === "em"}<em><Self kids={k.kids} {inLink} /></em
+    >{:else if k.t === "del"}<del><Self kids={k.kids} {inLink} /></del
     >{:else if k.t === "img"}{@const pic = pictureFrom(k.src)}{#if pic}<InlinePicture
         source={pic}
         alt={k.alt}
@@ -269,7 +279,7 @@
       type="button"
       class="link"
       title={k.href}
-      onclick={() => onlink?.(k.href)}><Self kids={k.kids} /></button
+      onclick={() => onlink?.(k.href)}><Self kids={k.kids} inLink /></button
     >{/if}{/each}
 
 <!-- An id drawn as the thing it names: a card by its name and its live dot, a

@@ -194,7 +194,11 @@
     onclick={() => onselect(p.row.id)}
     {@attach fullTitle(() => p.row.title, (el) => el.querySelector<HTMLElement>(".t"))}
     oncontextmenu={(e) => {
+      /* Stopped as well as prevented: the studio's own `onContextMenu` is on an
+         ancestor and runs after this, and it starts by clearing the menu — so
+         without this the menu opened here was gone before it was drawn. */
       e.preventDefault();
+      e.stopPropagation();
       if (e.button === 2) onmenu(p.row.id, { x: e.clientX, y: e.clientY }, false);
     }}
     onkeydown={(e) => {
@@ -223,6 +227,7 @@
               onclick={() => onproject(f.name)}
               oncontextmenu={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 if (e.button === 2) onprojectmenu(f.name, { x: e.clientX, y: e.clientY }, false);
               }}
               onkeydown={(e) => {

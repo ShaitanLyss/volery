@@ -48,6 +48,12 @@ class Refs {
   #commits = new SvelteMap<string, Seen>();
   #waitingOther = new Set<string>();
   #waitingCommits = new Map<string, Set<string>>();
+  /** What has been asked and not yet answered — an id, or a commit's
+   *  `commitKey`. Without it, every render between the ask and the answer asked
+   *  again: a streaming paragraph naming a hash re-derives once a token, and
+   *  each re-ask is a git spawn (~0.5s apiece on this machine). Cleared when the
+   *  answer is stored or the ask fails, so a failure is still retried. */
+  #asking = new Set<string>();
   #timer: ReturnType<typeof setTimeout> | null = null;
   /** Whether the window is still the one that should be asking. */
   #live = true;
@@ -112,16 +118,19 @@ class Refs {
     this.#timer = null;
     this.#waitingOther.clear();
     this.#waitingCommits.clear();
+    this.#asking.clear();
   }
 
   #askOther(key: string): void {
-    if (this.#waitingOther.has(key)) return;
+    if (this.#waitingOther.has(key) || this.#asking.has(key)) return;
     this.#waitingOther.add(key);
     this.#arm();
   }
 
   #askCommit(root: string, sha: string): void {
+    if (this.#asking.has(commitKey(root, sha))) return;
     const set = this.#waitingCommits.get(root) ?? new Set<string>();
+    if (set.has(sha)) return;
     set.add(sha);
     this.#waitingCommits.set(root, set);
     this.#arm();
@@ -143,6 +152,7 @@ class Refs {
 
   async #flushOthers(keys: string[]): Promise<void> {
     if (!keys.length) return;
+    for (const k of keys) this.#asking.add(k);
     try {
       const named = await invoke<Other[]>("other_names", { handles: keys });
       const by = new Map(named.map((n) => [n.handle, n]));
@@ -160,10 +170,14 @@ class Refs {
     } catch {
       /* A failed ask is not an answer (`known.ts`'s rule): nothing is recorded,
          so the next render asks again rather than pinning an id to "neither". */
+    } finally {
+      for (const k of keys) this.#asking.delete(k);
     }
   }
 
   async #flushCommits(root: string, shas: string[]): Promise<void> {
+    const keys = shas.map((sha) => commitKey(root, sha));
+    for (const k of keys) this.#asking.add(k);
     try {
       const named = await invoke<Commit[]>("commit_names", { root, shas });
       const by = new Map(named.map((n) => [n.handle, n]));
@@ -177,6 +191,8 @@ class Refs {
       }
     } catch {
       /* Not recorded, as above. */
+    } finally {
+      for (const k of keys) this.#asking.delete(k);
     }
   }
 }

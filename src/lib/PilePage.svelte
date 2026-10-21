@@ -157,8 +157,11 @@
       searchBox?.focus();
       return;
     }
+    /* Escape is the page's whichever way it goes: on this wall it would
+       otherwise reach the ladder that stops a turn, and the turn it would stop
+       belongs to the conversation this page is covering. */
+    if (e.key === "Escape") e.stopPropagation();
     if (e.key === "Escape" && open) {
-      e.stopPropagation();
       const at = open;
       open = null;
       void tick().then(() => list?.querySelector<HTMLElement>(`[data-row="${CSS.escape(at)}"]`)?.focus());

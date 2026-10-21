@@ -95,6 +95,10 @@
   let el = $state<HTMLDivElement | null>(null);
   let size = $state({ w: 0, h: 0 });
   $effect(() => {
+    /* Re-measured when what it says changes: the stores read after it opens,
+       and a body that arrives later is taller than the one first measured. */
+    void body;
+    void foot;
     if (!el) return;
     const r = el.getBoundingClientRect();
     size = { w: r.width, h: r.height };
