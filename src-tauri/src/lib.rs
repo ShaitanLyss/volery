@@ -1,4 +1,5 @@
 mod actions;
+mod amqp;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
