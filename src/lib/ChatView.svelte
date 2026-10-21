@@ -36,6 +36,7 @@
   import NewChat from "./NewChat.svelte";
   import ProjectPage from "./ProjectPage.svelte";
   import PilePage from "./PilePage.svelte";
+  import { whois } from "./whois.svelte";
   import Budget from "./Budget.svelte";
   import AccountPop from "./AccountPop.svelte";
   import Lookup from "./Lookup.svelte";
@@ -162,8 +163,15 @@
     open: (c) => choose(c.id),
     revive: (session) =>
       void skein.revive(session).then((got) => {
-        if (typeof got === "string") skein.fault = got;
-        else choose(got.id);
+        if (typeof got === "string") {
+          skein.fault = got;
+          whois.unrevivable(session);
+        } else {
+          /* A refusal from an earlier name left in the bar would read as this
+             one having failed too. */
+          if (skein.fault?.startsWith("that conversation")) skein.fault = null;
+          choose(got.id);
+        }
       }),
   });
 
@@ -616,11 +624,11 @@
   );
 
   const title = $derived(
-    project ? project.name : card ? cardName(card.face.title, "").text || "new conversation" : "new conversation",
+    pile ? (pile.kind === "sink" ? "the sink" : "the billboard") : project ? project.name : card ? cardName(card.face.title, "").text || "new conversation" : "new conversation",
   );
   const ctx = $derived(card ? Math.round((card.face.ctx ?? 0) * 100) : 0);
   const place = $derived(
-    project ? "project" : !card ? null : card.gist.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
+    pile ? "across the wall" : project ? "project" : !card ? null : card.gist.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
   );
   /* The account this conversation spends, for the foot. A card on no named
      account is on whatever Claude Code itself is signed in as, which is the

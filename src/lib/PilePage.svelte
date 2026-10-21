@@ -187,6 +187,27 @@
   }
 
   const blocksOf = (text: string) => parseMarkdown(text);
+
+  /* A row's second line, built here rather than in the template: Svelte trims
+     the space at the start of a block's text, so `{#if …} · x{/if}` drew
+     "bug· waiting" (found in the lab, 2026-10-21). */
+  const dots = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" · ");
+  function itemLine(it: (typeof everything)[number], st: State): string {
+    return dots(
+      it.kind,
+      st === "held" ? `held by ${who(it.heldBy)}` : st === "lapsed" ? "hold lapsed" : "",
+      it.voices > 1 ? `${it.voices} voices` : "",
+      about(it),
+      whence(it, sink.here) ? `from ${whence(it, sink.here)}` : "",
+    );
+  }
+  function noticeLine(n: (typeof notices)[number]): string {
+    return dots(
+      n.from === null ? "you" : n.host ? whois.name(n.from, n.title) : who(n.from),
+      n.host ? `on ${n.host}` : "",
+      covering(n),
+    );
+  }
   const fault = $derived(kind === "sink" ? sink.fault : board.fault);
 </script>
 
@@ -224,9 +245,9 @@
       <input
         bind:this={searchBox}
         bind:value={query}
-        placeholder="search — every word, &quot;a phrase&quot; whole"
+        placeholder="search"
+        title="search (/) — every word somewhere; &quot;quote&quot; a phrase to keep it whole"
         aria-label="search {kind === 'sink' ? 'the sink' : 'the billboard'}"
-        title="search (/)"
       />
     </label>
   </div>
@@ -243,7 +264,7 @@
             <b>{it.title}</b>
             <span class="when">{st === "settled" && it.settledAt ? `settled ${ago(it.settledAt)}` : ago(it.droppedAt)}</span>
             <span class="line">
-              {it.kind}{#if st === "held"} · held by {who(it.heldBy)}{:else if st === "lapsed"} · hold lapsed{/if}{#if it.voices > 1} · {it.voices} voices{/if}{#if about(it)} · {about(it)}{/if}{#if whence(it, sink.here)} · from {whence(it, sink.here)}{/if}
+              {itemLine(it, st)}
             </span>
           </button>
           {#if open === it.id}
@@ -254,7 +275,7 @@
                 <p class="note">no body — the title is the whole of it.</p>
               {/if}
               <p class="note">
-                dropped by {who(it.from)}{#if it.settledNote} · settled: {it.settledNote}{/if}
+                {dots(`dropped by ${who(it.from)}`, it.settledNote ? `settled: ${it.settledNote}` : "")}
               </p>
               <div class="acts">
                 {#if st === "settled"}
@@ -290,7 +311,7 @@
             <b>{n.subject}</b>
             <span class="when">{n.stale ? "stale · " : ""}{ago(n.postedAt)}</span>
             <span class="line">
-              {n.from === null ? "you" : n.host ? whois.name(n.from, n.title) : who(n.from)}{#if n.host} · on {n.host}{/if}{#if covering(n)} · {covering(n)}{/if}
+              {noticeLine(n)}
             </span>
           </button>
           {#if open === n.id}

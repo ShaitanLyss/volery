@@ -87,6 +87,19 @@ class Whois {
     return got;
   }
 
+  /** Bumped whenever the store answers, so a reader that walks the drawn
+   *  text — the transcript's rails — knows to read it again. */
+  answered = $state(0);
+
+  /** A closed card whose session turned out not to be on disk: its name stops
+   *  being a button that would only say so again (found in the lab,
+   *  2026-10-21 — a card closed before it ever spoke). */
+  unrevivable(session: string): void {
+    for (const [h, s] of this.#stored) {
+      if (s && s.session === session) this.#stored.set(h, { ...s, session: null });
+    }
+  }
+
   /** The words for a card named by id or handle — see `whois.ts` for the order.
    *  `said` is the name its source carried, if any. */
   name(idOrHandle: string, said?: string | null): string {
@@ -121,6 +134,7 @@ class Whois {
         const n = got.get(h);
         this.#stored.set(h, n ? { title: n.title, closed: n.closed, session: n.session ?? null } : null);
       }
+      this.answered += 1;
     } catch {
       /* A failed ask is not an answer (`known.ts`'s rule): nothing is recorded,
          so the next render asks again rather than pinning the card to GONE. */

@@ -141,7 +141,7 @@
         <dl>
           <dt>filed</dt>
           <dd>
-            {when(item.droppedAt)}{#if item.from} · by {who(item.from)}{/if}{#if whence(item, sink.here)} · on {whence(item, sink.here)}{/if}
+            {when(item.droppedAt)}{#if item.from}{` · by ${who(item.from)}`}{/if}{#if whence(item, sink.here)}{` · on ${whence(item, sink.here)}`}{/if}
           </dd>
           {#if item.voices > 1}
             <dt>voices</dt>
@@ -171,7 +171,7 @@
         <dl>
           <dt>posted</dt>
           <dd>
-            {when(notice.postedAt)} · by {who(notice.from)}{#if notice.host} · on {notice.host}{/if}{notice.stale ? " · stale" : ""}
+            {when(notice.postedAt)}{` · by ${who(notice.from)}`}{#if notice.host}{` · on ${notice.host}`}{/if}{notice.stale ? " · stale" : ""}
           </dd>
           {#if notice.paths.length}
             <dt>covers</dt>
@@ -183,7 +183,7 @@
       {/if}
     {:else}
       <p class="by">
-        {reference.author || "someone"}{#if reference.at > 0} · {new Date(reference.at * 1000).toLocaleString()}{/if}
+        {reference.author || "someone"}{#if reference.at > 0}{` · ${new Date(reference.at * 1000).toLocaleString()}`}{/if}
       </p>
       {#if detail}
         {#if detail.body.replace(reference.subject, "").trim()}

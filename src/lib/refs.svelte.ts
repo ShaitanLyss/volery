@@ -54,6 +54,8 @@ class Refs {
    *  each re-ask is a git spawn (~0.5s apiece on this machine). Cleared when the
    *  answer is stored or the ask fails, so a failure is still retried. */
   #asking = new Set<string>();
+  /** Bumped whenever an answer lands — see `whois.answered`. */
+  answered = $state(0);
   #timer: ReturnType<typeof setTimeout> | null = null;
   /** Whether the window is still the one that should be asking. */
   #live = true;
@@ -167,6 +169,7 @@ class Refs {
             : null,
         );
       }
+      this.answered += 1;
     } catch {
       /* A failed ask is not an answer (`known.ts`'s rule): nothing is recorded,
          so the next render asks again rather than pinning an id to "neither". */
@@ -189,6 +192,7 @@ class Refs {
           : null;
         this.#commits.set(commitKey(root, sha), { at, yes: ref !== null, ref });
       }
+      this.answered += 1;
     } catch {
       /* Not recorded, as above. */
     } finally {

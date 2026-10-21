@@ -22,6 +22,8 @@
      wears — and the column it follows, which chat view draws too. See
      follow.svelte.ts and Thread.svelte. */
   import { Follow, RELEASE } from "./follow.svelte";
+  import { refs } from "./refs.svelte";
+  import { whois } from "./whois.svelte";
   import Thread from "./Thread.svelte";
   import HuntBar from "./HuntBar.svelte";
   import type { CardHandle } from "./cards.svelte";
@@ -328,6 +330,16 @@
   const STREAM_MS = 160;
   $effect(() => {
     void conv.streaming;
+    refresh(STREAM_MS);
+  });
+
+  /* An id in the prose is drawn as its hex until the store or git says what it
+     names, and then as the name — a change to the column that no line count
+     sees. The rails read the drawn text, so without this they kept the hex
+     (seen in the lab, 2026-10-21). */
+  $effect(() => {
+    void refs.answered;
+    void whois.answered;
     refresh(STREAM_MS);
   });
 

@@ -124,6 +124,17 @@
     return null;
   }
 
+  /** A chip is an inline `span` with `role="button"` rather than a `<button>`:
+   *  a button is an atomic inline box, so a long name could not break across
+   *  lines and dropped whole onto a line of its own, stranding the comma after
+   *  it on the next (seen in the lab, 2026-10-21). A span wraps like the words
+   *  around it; this is the half of a button it then has to be given back. */
+  function press(e: KeyboardEvent, act: () => void) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    act();
+  }
+
   /** Whether any of this is worth looking for in a text at all. */
   const looksForIds = $derived(!inLink && !!(links || reflinks));
 
@@ -292,27 +303,32 @@
      The shape is the kind, and it is never a colour: a card's dot is a status
      and the only coloured thing here, while a sink item is a square, a notice a
      hairline square and a commit a diamond. Colour on this wall is status. -->
-{#snippet hit(h: Hit, md: string)}{#if h.card}{@const c = h.card}<button
-      type="button"
+{#snippet hit(h: Hit, md: string)}{#if h.card}{@const c = h.card}<span
+      role="button"
+      tabindex="0"
       class="cardlink"
       data-card={c.id}
       data-md={md}
       onclick={() => links?.open(c)}
+      onkeydown={(e) => press(e, () => links?.open(c))}
       ><i
         class="st"
         class:work={c.face.working}
         class:ask={!!c.ask}
         class:fail={c.face.tier === "fail"}
         aria-hidden="true"
-      ></i>{cardName(c.face.title, "").text || "a conversation"}</button
-    >{:else if h.gone && h.session && links?.revive}{@const session = h.session}<button
-      type="button"
+      ></i>{cardName(c.face.title, "").text || "a conversation"}</span
+    >{:else if h.gone && h.session && links?.revive}{@const session = h.session}<span
+      role="button"
+      tabindex="0"
       class="cardlink cardgone"
       data-md={md}
       title="{handleTip(md.replaceAll('`', ''))} — no longer on the wall; bring it back"
-      onclick={() => links?.revive?.(session)}>{h.gone}</button
-    >{:else if h.gone}<span class="cardgone" data-md={md} title="{handleTip(md.replaceAll('`', ''))} — no longer on the wall">{h.gone}</span>{:else if h.ref}{@const r = h.ref}<button
-      type="button"
+      onclick={() => links?.revive?.(session)}
+      onkeydown={(e) => press(e, () => links?.revive?.(session))}>{h.gone}</span
+    >{:else if h.gone}<span class="cardgone" data-md={md} title="{handleTip(md.replaceAll('`', ''))} — no longer on the wall">{h.gone}</span>{:else if h.ref}{@const r = h.ref}<span
+      role="button"
+      tabindex="0"
       class="cardlink refchip {r.kind}"
       class:settled={r.kind === "sink" && r.settled}
       data-ref={r.kind}
@@ -324,7 +340,8 @@
         reflinks?.unhover?.();
         reflinks?.open(r);
       }}
-      ><i class="shape" aria-hidden="true"></i>{refText(r)}</button
+      onkeydown={(e) => press(e, () => reflinks?.open(r))}
+      ><i class="shape" aria-hidden="true"></i>{refText(r)}</span
     >{/if}{/snippet}
 
 <style>
@@ -337,6 +354,7 @@
     text-underline-offset: 3px;
   }
   .cardlink {
+    display: inline;
     font: inherit;
     color: inherit;
     background: none;

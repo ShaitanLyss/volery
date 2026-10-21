@@ -119,7 +119,7 @@
   style:left="calc({left}px - var(--span-x, 0px))"
   style:top="calc({top}px - var(--span-y, 0px))"
 >
-  <div class="kind">{kind}{#if standing}<span class="state"> · {standing}</span>{/if}</div>
+  <div class="kind">{kind}{#if standing}<span class="state">{" · "}{standing}</span>{/if}</div>
   <div class="title">{refText(reference)}</div>
   {#if body}<p class="body">{body}</p>{/if}
   {#if foot}<div class="foot">{foot}</div>{/if}

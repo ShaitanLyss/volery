@@ -2318,8 +2318,13 @@
     open: (c) => focusCard(c),
     revive: (session) =>
       void skein.revive(session).then((got) => {
-        if (typeof got === "string") skein.fault = got;
-        else {
+        if (typeof got === "string") {
+          skein.fault = got;
+          whois.unrevivable(session);
+        } else {
+          /* A refusal from an earlier name left in the bar would read as this
+             one having failed too. */
+          if (skein.fault?.startsWith("that conversation")) skein.fault = null;
           const c = cards.find(got.id);
           if (c) focusCard(c);
         }
