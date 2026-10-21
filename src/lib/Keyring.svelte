@@ -457,7 +457,9 @@
           {/if}
           <p class="aside">
             The connection string goes in the vault under <code>dev.skein.studio/source/&lt;name&gt;</code>
-            and is never shown back. The wall connects only while some card is subscribed. On a row:
+            and is never shown back. A stream that takes Entra ID only has no connection string: write
+            it as <code>Endpoint=sb://…/;EntityPath=…;TenantId=…;ClientId=…;ClientSecret=…</code> with the
+            service principal that may read it. The wall connects only while some card is subscribed. On a row:
             <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>enter</kbd> changes it, <kbd>c</kbd> checks it,
             <kbd>x</kbd> forgets it, <kbd>a</kbd> comes here.
           </p>

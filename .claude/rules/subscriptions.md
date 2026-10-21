@@ -118,6 +118,17 @@ endpoint names its own). The connection string goes to Credential Manager under
 never a target** (`integrations.md`'s rule): `sources::target` is the only place the vault
 string is built, so no command can reach another credential.
 
+- **A stream may have no connection string at all.** The first one to go live (2026-10-21, Nova
+  feedback on a Fabric Eventstream) is on a tenant that disables SAS keys on custom endpoints,
+  so Entra ID is the only way in. A source can therefore be written in the connection string's
+  own shape with a service principal instead of a key — `Endpoint=sb://…/;EntityPath=…;
+  TenantId=…;ClientId=…;ClientSecret=…` — still one secret in one vault entry through one field.
+  Volery asks `login.microsoftonline.com` for a client-credentials token for
+  `https://eventhubs.azure.net/.default` and hands it to CBS as type `jwt` (the publisher card
+  verified that the SP reads the destination that way with `@azure/event-hubs`). The token is
+  renewed at three quarters of its life, and Entra's own `AADSTS…` line is what a refusal says.
+  Lyss's own user via `az` was the alternative and was not taken: it needs a workspace role
+  nobody has tested, and `az` cannot get through Netskope on AU-LT-288 at all (`azdo.md`).
 - **No subscribers, no connection.** `sources::reconcile` dials what is subscribed to and hangs
   up the rest; checkpoints stay.
 - **Several walls, one stream.** A subscription lives on its card's wall and only that wall

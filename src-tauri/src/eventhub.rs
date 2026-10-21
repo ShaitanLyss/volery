@@ -42,23 +42,60 @@ use crate::amqp::ws::{self, Cutter, Tls, WsStream};
 use crate::subscribe::ledger::Start;
 use crate::subscribe::sources::{Raw, Source};
 
-/// The parts of a connection string this needs. The key never leaves this
-/// struct except as a signature.
+/// How a source proves itself to the hub.
+#[derive(Clone, PartialEq)]
+enum Cred {
+    /// A shared-access key, signed into a SAS token per connection.
+    Key { name: String, key: String },
+    /// A ready-made `SharedAccessSignature` — usable, and not renewable.
+    Signature(String),
+    /// A Microsoft Entra service principal: a client-credentials token for
+    /// `https://eventhubs.azure.net/.default`, handed to CBS as a `jwt`.
+    ///
+    /// Added the day the first stream went live (2026-10-21): the tenant
+    /// **disables SAS keys on Fabric Eventstream custom endpoints**, so the
+    /// stream has no connection string at all and Entra ID is the only way in.
+    /// Nova's Fabric service principal is the identity authorised to read it.
+    Entra { tenant: String, client_id: String, secret: String },
+}
+
+/// The parts of a connection string this needs. The secret never leaves this
+/// struct except as a signature or a token request.
+///
+/// An Event Hubs connection string is `Endpoint=sb://…;SharedAccessKeyName=…;
+/// SharedAccessKey=…;EntityPath=…`. A source authorised by Entra ID has no
+/// such string, so it is written in the same shape with the service
+/// principal's three fields instead of the key — `Endpoint=sb://…;EntityPath=…;
+/// TenantId=…;ClientId=…;ClientSecret=…` — which keeps it one secret, in one
+/// vault entry, through one field in the panel.
 #[derive(Clone, PartialEq)]
 pub struct ConnString {
     pub host: String,
     pub entity: String,
-    key_name: String,
-    key: String,
-    /// A connection string carrying a ready-made `SharedAccessSignature`
-    /// instead of a key — usable, and not renewable.
-    sas: Option<String>,
+    cred: Cred,
 }
 
 impl std::fmt::Debug for ConnString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ConnString({} / {}, key {})", self.host, self.entity, self.key_name)
+        let how = match &self.cred {
+            Cred::Key { name, .. } => format!("key {name}"),
+            Cred::Signature(_) => "a signature".to_string(),
+            Cred::Entra { client_id, .. } => format!("entra {client_id}"),
+        };
+        write!(f, "ConnString({} / {}, {how})", self.host, self.entity)
     }
+}
+
+/// A credential as CBS takes it.
+#[derive(Clone)]
+pub struct Token {
+    pub value: String,
+    /// The CBS `type`: `servicebus.windows.net:sastoken` or `jwt`.
+    pub kind: &'static str,
+    /// When it stops working, in epoch milliseconds.
+    pub expires_at: i64,
+    /// Whether a fresh one can be made — a ready-made signature cannot.
+    pub renewable: bool,
 }
 
 impl ConnString {
@@ -97,28 +134,122 @@ impl ConnString {
                         Eventstream's custom endpoint) itself."
                 .into());
         }
-        let sas = parts.get("sharedaccesssignature").cloned();
-        let key_name = parts.get("sharedaccesskeyname").cloned().unwrap_or_default();
-        let key = parts.get("sharedaccesskey").cloned().unwrap_or_default();
-        if sas.is_none() && (key_name.is_empty() || key.is_empty()) {
-            return Err("the connection string needs SharedAccessKeyName and SharedAccessKey \
-                        (or a SharedAccessSignature)"
-                .into());
-        }
-        Ok(ConnString { host, entity, key_name, key, sas })
+        let get = |k: &str| parts.get(k).cloned().filter(|v| !v.is_empty());
+        let entra = [get("tenantid"), get("clientid"), get("clientsecret")];
+        let cred = if entra.iter().any(Option::is_some) {
+            match entra {
+                [Some(tenant), Some(client_id), Some(secret)] => Cred::Entra { tenant, client_id, secret },
+                _ => {
+                    return Err("an Entra ID source needs all three of TenantId, ClientId and \
+                                ClientSecret beside Endpoint and EntityPath"
+                        .into())
+                }
+            }
+        } else if let Some(sig) = get("sharedaccesssignature") {
+            Cred::Signature(sig)
+        } else {
+            match (get("sharedaccesskeyname"), get("sharedaccesskey")) {
+                (Some(name), Some(key)) => Cred::Key { name, key },
+                _ => {
+                    return Err("the connection string needs SharedAccessKeyName and \
+                                SharedAccessKey (or a SharedAccessSignature) — or, for a stream \
+                                that takes Entra ID only, TenantId, ClientId and ClientSecret"
+                        .into())
+                }
+            }
+        };
+        Ok(ConnString { host, entity, cred })
     }
 
     pub fn audience(&self) -> String {
         format!("sb://{}/{}", self.host, self.entity)
     }
 
-    /// A token for this hub, good until `expiry` (unix seconds).
-    pub fn token(&self, expiry: u64) -> String {
-        if let Some(sas) = &self.sas {
-            return sas.clone();
+    /// A credential for this hub, good for about an hour. Entra's is a
+    /// network round trip to `login.microsoftonline.com`, so this is called on
+    /// a runner thread or off the main thread, never on it.
+    pub fn token(&self) -> Result<Token, String> {
+        let now = crate::store::now();
+        match &self.cred {
+            Cred::Key { name, key } => {
+                let expiry = (now / 1_000) as u64 + TOKEN_LIFE.as_secs();
+                Ok(Token {
+                    value: sas_token(&self.audience(), name, key, expiry),
+                    kind: "servicebus.windows.net:sastoken",
+                    expires_at: expiry as i64 * 1_000,
+                    renewable: true,
+                })
+            }
+            Cred::Signature(sig) => Ok(Token {
+                value: sig.clone(),
+                kind: "servicebus.windows.net:sastoken",
+                expires_at: signature_expiry(sig).unwrap_or(now + TOKEN_LIFE.as_millis() as i64),
+                renewable: false,
+            }),
+            Cred::Entra { tenant, client_id, secret } => {
+                let (value, lasts) = entra_token(tenant, client_id, secret)?;
+                Ok(Token { value, kind: "jwt", expires_at: now + lasts * 1_000, renewable: true })
+            }
         }
-        sas_token(&self.audience(), &self.key_name, &self.key, expiry)
     }
+}
+
+/// The `se=` of a ready-made signature, in epoch milliseconds.
+fn signature_expiry(sig: &str) -> Option<i64> {
+    sig.split(['&', ' '])
+        .find_map(|p| p.strip_prefix("se="))
+        .and_then(|v| v.parse::<i64>().ok())
+        .map(|s| s * 1_000)
+}
+
+/// The scope a token for Event Hubs is asked for.
+const EVENTHUBS_SCOPE: &str = "https://eventhubs.azure.net/.default";
+
+/// A client-credentials token from Microsoft Entra ID: `(access_token,
+/// seconds it lasts)`. Through `forge::agent`, which carries the merged roots
+/// this network needs.
+fn entra_token(tenant: &str, client_id: &str, secret: &str) -> Result<(String, i64), String> {
+    let url = format!("https://login.microsoftonline.com/{}/oauth2/v2.0/token", encode(tenant));
+    let res = crate::forge::agent().post(&url).send_form(&[
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id),
+        ("client_secret", secret),
+        ("scope", EVENTHUBS_SCOPE),
+    ]);
+    let body = match res {
+        Ok(r) => r.into_string().map_err(|e| format!("reading Entra's answer: {e}"))?,
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            return Err(format!("Entra ID refused the service principal ({code}){}", entra_said(&body)));
+        }
+        Err(e) => return Err(format!("could not reach Entra ID: {e}")),
+    };
+    read_token_reply(&body)
+}
+
+/// The token and its lifetime out of Entra's JSON. Pure.
+fn read_token_reply(body: &str) -> Result<(String, i64), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "Entra ID answered with something that is not JSON".to_string())?;
+    let token = v
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("Entra ID gave no token{}", entra_said(body)))?;
+    let lasts = v
+        .get("expires_in")
+        .and_then(|e| e.as_i64().or_else(|| e.as_str().and_then(|s| s.parse().ok())))
+        .unwrap_or(3_600);
+    Ok((token.to_string(), lasts))
+}
+
+/// Entra's own first line of an error — `AADSTS7000215: Invalid client secret
+/// provided…` names the fix, where a status code does not.
+fn entra_said(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error_description").and_then(|d| d.as_str()).map(str::to_string))
+        .and_then(|d| d.lines().next().map(|l| format!(": {}", l.trim())))
+        .unwrap_or_default()
 }
 
 /// Percent-encode everything but the unreserved set — what
@@ -166,7 +297,10 @@ pub struct EventHub<S: Read + Write = WsStream<Tls>> {
     group: String,
     cbs: (u32, u32),
     cbs_reply: String,
-    renew_at: Instant,
+    /// The credential CBS last accepted — also what `$management` is handed —
+    /// and when to replace it; `None` for one that cannot be renewed.
+    token: Option<Token>,
+    renew_at: Option<Instant>,
     receivers: HashMap<u32, String>,
     /// Where each partition was last positioned and the last sequence it gave —
     /// what a link the service detached is re-attached from.
@@ -214,7 +348,8 @@ impl<S: Read + Write> EventHub<S> {
             group: group.to_string(),
             cbs: (tx, rx),
             cbs_reply,
-            renew_at: Instant::now(),
+            token: None,
+            renew_at: None,
             receivers: HashMap::new(),
             position: HashMap::new(),
             reattached: HashMap::new(),
@@ -228,34 +363,21 @@ impl<S: Read + Write> EventHub<S> {
     }
 
     fn put_token(&mut self, deadline: Instant) -> Result<(), String> {
-        let expiry = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            + TOKEN_LIFE.as_secs();
-        let req = Message {
-            properties: vec![
-                Value::Str(crate::store::uuid_v4()),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Str(self.cbs_reply.clone()),
-            ],
-            application: vec![
-                (Value::str("operation"), Value::str("put-token")),
-                (Value::str("type"), Value::str("servicebus.windows.net:sastoken")),
-                (Value::str("name"), Value::Str(self.cs.audience())),
-                (Value::str("expiration"), Value::Timestamp(expiry as i64 * 1_000)),
-            ],
-            value: Some(Value::Str(self.cs.token(expiry))),
-            ..Default::default()
-        };
+        let token = self.cs.token()?;
+        let req = put_token_message(&token, &self.cs.audience(), &self.cbs_reply);
         let reply = self
             .conn
             .request(self.cbs.0, self.cbs.1, &req, deadline)
             .map_err(|e| format!("authorising: {e}"))?;
-        status(&reply, "the service refused the key")?;
-        self.renew_at = Instant::now() + TOKEN_RENEW;
+        status(&reply, if token.kind == "jwt" { "the service refused the Entra token" } else { "the service refused the key" })?;
+        /* Renewed at three quarters of its life — the JS SDK's 45 of 60
+           minutes — and never sooner than a minute, so a token handed over
+           nearly spent cannot turn this into a loop. */
+        self.renew_at = token.renewable.then(|| {
+            let left = (token.expires_at - crate::store::now()).max(0) as u64;
+            Instant::now() + Duration::from_millis(left * 3 / 4).max(Duration::from_secs(60)).min(TOKEN_RENEW)
+        });
+        self.token = Some(token);
         Ok(())
     }
 
@@ -274,18 +396,14 @@ impl<S: Read + Write> EventHub<S> {
                 deadline,
             )
             .map_err(|e| e.to_string())?;
-        let expiry = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            + TOKEN_LIFE.as_secs();
+        let security = self.token.as_ref().map(|t| t.value.clone()).unwrap_or_default();
         let req = Message {
             properties: vec![Value::Str(crate::store::uuid_v4()), Value::Null, Value::Null, Value::Null, Value::Str(reply_to)],
             application: vec![
                 (Value::str("operation"), Value::str("READ")),
                 (Value::str("name"), Value::Str(self.cs.entity.clone())),
                 (Value::str("type"), Value::str("com.microsoft:eventhub")),
-                (Value::str("security_token"), Value::Str(self.cs.token(expiry))),
+                (Value::str("security_token"), Value::Str(security)),
             ],
             ..Default::default()
         };
@@ -349,6 +467,28 @@ pub fn selector(from: Start) -> String {
     }
 }
 
+/// The CBS `put-token` request for a credential. Pure, so the two kinds of
+/// token can be held to the wire shape without a hub.
+fn put_token_message(token: &Token, audience: &str, reply_to: &str) -> Message {
+    Message {
+        properties: vec![
+            Value::Str(crate::store::uuid_v4()),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Str(reply_to.to_string()),
+        ],
+        application: vec![
+            (Value::str("operation"), Value::str("put-token")),
+            (Value::str("type"), Value::str(token.kind)),
+            (Value::str("name"), Value::Str(audience.to_string())),
+            (Value::str("expiration"), Value::Timestamp(token.expires_at)),
+        ],
+        value: Some(Value::Str(token.value.clone())),
+        ..Default::default()
+    }
+}
+
 /// A management reply's verdict: any 2xx is yes, anything else is the
 /// service's own words.
 fn status(reply: &Message, what: &str) -> Result<(), String> {
@@ -379,13 +519,16 @@ impl<S: Read + Write> Source for EventHub<S> {
 
     fn next(&mut self, deadline: Instant) -> Result<Option<Raw>, String> {
         loop {
-            if Instant::now() >= self.renew_at && self.cs.sas.is_none() {
+            if self.renew_at.is_some_and(|at| Instant::now() >= at) {
                 self.put_token(Instant::now() + Duration::from_secs(20))?;
             }
             /* A ready-made signature cannot be renewed, so its renewal time is
                no deadline: folding a passed one in made every wait `now`, and
                the loop spun a core without reading the socket again. */
-            let wait = if self.cs.sas.is_some() { deadline } else { deadline.min(self.renew_at.max(Instant::now())) };
+            let wait = match self.renew_at {
+                Some(at) => deadline.min(at.max(Instant::now())),
+                None => deadline,
+            };
             match self.conn.next(wait).map_err(|e| e.to_string())? {
                 None if Instant::now() >= deadline => return Ok(None),
                 None => continue,
@@ -523,6 +666,50 @@ mod tests {
     /// `python -c "import hmac,hashlib,base64,urllib.parse as u; r=u.quote('sb://ns.servicebus.windows.net/hub',safe='');
     /// print(u.quote(base64.b64encode(hmac.new(b'c2VjcmV0a2V5',(r+'\n1800000000').encode(),hashlib.sha256).digest()).decode(),safe=''))"`
     const EXPECTED_SIG: &str = "BX97zhsZ4x41X3kereq8VNhMkJdWW%2FiGx0BtF24owtw%3D";
+
+    /// The stream that went live takes Entra ID only (SAS is disabled on the
+    /// tenant's Eventstream endpoints), so its source is written with the
+    /// service principal's three fields in place of a key.
+    #[test]
+    fn an_entra_source_is_read_and_its_secret_never_printed() {
+        let cs = ConnString::parse(
+            "Endpoint=sb://esehsywdq8b4703p87n53q.servicebus.windows.net/;\
+             EntityPath=esehsywdq8b4703p87n53q_eh;TenantId=t-1;ClientId=16aac3c0;ClientSecret=s3cr3t~x",
+        )
+        .unwrap();
+        assert_eq!(cs.audience(), "sb://esehsywdq8b4703p87n53q.servicebus.windows.net/esehsywdq8b4703p87n53q_eh");
+        assert!(matches!(&cs.cred, Cred::Entra { client_id, .. } if client_id == "16aac3c0"));
+        let shown = format!("{cs:?}");
+        assert!(shown.contains("entra 16aac3c0") && !shown.contains("s3cr3t"), "{shown}");
+        let half = ConnString::parse("Endpoint=sb://ns/;EntityPath=hub;TenantId=t;ClientId=c").unwrap_err();
+        assert!(half.contains("all three"), "{half}");
+    }
+
+    #[test]
+    fn a_jwt_goes_to_cbs_as_a_jwt() {
+        let t = Token { value: "eyJ0eXAi".into(), kind: "jwt", expires_at: 1_787_000_000_000, renewable: true };
+        let m = put_token_message(&t, "sb://ns/hub", "cbs-reply");
+        assert_eq!(m.app("type").and_then(Value::as_str), Some("jwt"));
+        assert_eq!(m.app("name").and_then(Value::as_str), Some("sb://ns/hub"));
+        assert_eq!(m.app("expiration"), Some(&Value::Timestamp(1_787_000_000_000)));
+        assert_eq!(m.value.as_ref().and_then(Value::as_str), Some("eyJ0eXAi"));
+        assert_eq!(m.property(4).as_str(), Some("cbs-reply"));
+    }
+
+    #[test]
+    fn entra_answers_are_read_for_the_token_and_the_reason() {
+        assert_eq!(
+            read_token_reply(r#"{"token_type":"Bearer","expires_in":3599,"access_token":"abc"}"#).unwrap(),
+            ("abc".to_string(), 3599)
+        );
+        let e = read_token_reply(
+            r#"{"error":"invalid_client","error_description":"AADSTS7000215: Invalid client secret provided.\r\nTrace ID: x"}"#,
+        )
+        .unwrap_err();
+        assert!(e.contains("AADSTS7000215: Invalid client secret provided."), "{e}");
+        assert!(!e.contains("Trace ID"));
+        assert_eq!(signature_expiry("SharedAccessSignature sr=x&sig=y&se=1800000000&skn=k"), Some(1_800_000_000_000));
+    }
 
     #[test]
     fn the_selector_says_where_to_start() {
