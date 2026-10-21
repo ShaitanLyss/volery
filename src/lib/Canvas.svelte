@@ -919,6 +919,21 @@
     window.removeEventListener("pointercancel", sectionUp);
   });
 
+  /* A pointer resting on a card on another wall reads its conversation, so the
+     click that usually follows opens it current rather than a refetch behind.
+     Dwell, not enter: sweeping across ten cards must not cost ten reads of the
+     owning wall's scrollback. `readTail` itself is a no-op for a card that has
+     not moved since it was last read (`tailfresh.ts`). */
+  let glimpseTimer: ReturnType<typeof setTimeout> | undefined;
+  const GLIMPSE_DWELL_MS = 300;
+  function glimpseStart(s: Shadow) {
+    clearTimeout(glimpseTimer);
+    glimpseTimer = setTimeout(() => s.glimpse(), GLIMPSE_DWELL_MS);
+  }
+  function glimpseEnd() {
+    clearTimeout(glimpseTimer);
+  }
+
   function shadowDown(n: { conv: Shadow; x: number; y: number }, e: PointerEvent) {
     if (e.button !== 0) return;
     /* From where it is *drawn*, less the pane's offset — the clamped spot is
@@ -2870,6 +2885,8 @@
     style:z-index={Z_CARD}
     onpointerdown={glass ? (e) => shadowDown(n, e) : undefined}
     onclickcapture={glass ? nodeClickCapture : undefined}
+    onpointerenter={() => glimpseStart(n.conv)}
+    onpointerleave={glimpseEnd}
     role="presentation"
   >
     <Card

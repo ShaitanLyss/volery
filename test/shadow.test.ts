@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { needsRead, shouldWarm, tailNote } from "../src/lib/tailfresh";
 import { REGION_GAP, regionWidth, SLOT_H } from "../src/lib/layout";
 import {
   ACCOUNTS_CAP,
@@ -1032,5 +1033,41 @@ describe("a wall that leaves", () => {
     /* And leaving with nothing drawn costs no redraw. */
     const empty = { walls: {}, heardAt: {}, roster: [] as { host: string }[] };
     expect(withoutWall(empty, null).walls).toBe(empty.walls);
+  });
+});
+
+describe("a far conversation says whether it is current", () => {
+  const s = { host: "lab", fetching: false, hasTail: true, why: null, readAt: 0, now: 0, unheard: false };
+  test("a kept copy read at the card's current mark needs no read", () => {
+    expect(needsRead({ hasTail: true, readMark: "a", mark: "a", failed: false })).toBe(false);
+    expect(needsRead({ hasTail: true, readMark: "a", mark: "b", failed: false })).toBe(true);
+    expect(needsRead({ hasTail: false, readMark: null, mark: "a", failed: false })).toBe(true);
+    expect(needsRead({ hasTail: true, readMark: "a", mark: "a", failed: true })).toBe(true);
+  });
+  test("a read in flight is said, over what is kept", () => {
+    expect(tailNote({ ...s, fetching: true })).toBe("fetching from lab…");
+    expect(tailNote({ ...s, fetching: true, hasTail: false })).toBe("fetching from lab…");
+  });
+  test("a current copy says nothing", () => {
+    expect(tailNote(s)).toBeNull();
+    expect(tailNote({ ...s, hasTail: false })).toBeNull();
+  });
+  test("a failure or a quiet wall says how old what is drawn is", () => {
+    expect(tailNote({ ...s, why: "timed out", now: 7 * 60_000 })).toBe(
+      "could not reach lab — showing what it last said, 7 min old",
+    );
+    expect(tailNote({ ...s, unheard: true, now: 20_000 })).toBe(
+      "could not reach lab — showing what it last said, under a minute old",
+    );
+    expect(tailNote({ ...s, why: "x", readAt: null })).toBe("could not reach lab — showing what it last said");
+  });
+  test("only a card looked at lately, heard, and not read a moment ago is refreshed unasked", () => {
+    const w = { hasTail: true, warmUntil: 1_000_000, now: 500_000, lastRead: 0, unheard: false, stale: true };
+    expect(shouldWarm(w)).toBe(true);
+    expect(shouldWarm({ ...w, hasTail: false })).toBe(false);
+    expect(shouldWarm({ ...w, stale: false })).toBe(false);
+    expect(shouldWarm({ ...w, unheard: true })).toBe(false);
+    expect(shouldWarm({ ...w, now: 2_000_000 })).toBe(false);
+    expect(shouldWarm({ ...w, lastRead: 499_000 })).toBe(false);
   });
 });

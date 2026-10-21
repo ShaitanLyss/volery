@@ -772,6 +772,9 @@
      its gap and its children are the lines, exactly as before there was a
      thread between them. -->
 <div class="thread" bind:this={root}>
+  {#if conv.freshness}
+    <div class="fresh" role="status">{conv.freshness}</div>
+  {/if}
   <!-- What was said before this card had a process listening. Drawn in the
        same column and the same kinds as the live fold, so the seam is a rule
        and a label rather than a change of voice. -->
@@ -1129,6 +1132,13 @@
   }
   .receipt.late {
     color: var(--st-fail);
+  }
+  /* A far conversation that is not known to be current. Achromatic and small:
+     it is a reading about the text below it, not an event. */
+  .fresh {
+    font-size: calc(0.68rem * var(--read, 1));
+    color: var(--paper-faint);
+    font-style: italic;
   }
   .line.tool {
     font-family: var(--mono);

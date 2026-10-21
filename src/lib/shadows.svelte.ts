@@ -31,6 +31,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { clock } from "./conversation.svelte";
+import { needsRead, shouldWarm, tailNote, WARM_MS } from "./tailfresh";
 import type { Conversation, Job, Line, PendingAsk } from "./conversation.svelte";
 import { blankAnswers, composeAnswer, normalizeAsk, type AskQuestion } from "./asking";
 import type { Skein } from "./skein.svelte";
@@ -425,6 +426,17 @@ export class Shadow {
   tailWhy = $state<string | null>(null);
   #reading = false;
   #again = false;
+  /** The mark the kept tail was read at, and when — so a panel opened on a card
+   *  that has not moved since needs no read, and one that has says it is
+   *  reading (`tailfresh.ts`). */
+  #readMark: string | null = null;
+  readAt = $state<number | null>(null);
+  /** A read is outstanding. Drawn as `freshness`, over whatever is kept. */
+  fetching = $state(false);
+  /** Until when a background refresh keeps this card's kept tail current: set
+   *  whenever somebody looks at it (opens it, rests the pointer on it). */
+  #warmUntil = 0;
+  #lastRead = 0;
 
   /** Read the conversation off the wall it runs on (`flyway_tail`). Pulled
    *  when a panel is open on it and never gossiped: a transcript is large and
@@ -434,21 +446,38 @@ export class Shadow {
    *  since the second ask means the card has moved on since the first. Only a
    *  first read says `loading` — a refresh keeps what is drawn, and a refresh
    *  that fails keeps it too, because what was read is still what was said. */
-  async readTail(): Promise<void> {
+  async readTail(looked = true): Promise<void> {
+    if (looked) this.#warmUntil = Date.now() + WARM_MS;
     if (this.#reading) {
       this.#again = true;
       return;
     }
+    /* A kept copy read at this very mark is current: the card's wall has not
+       said anything since. No read, and so no marker to flicker. */
+    if (
+      !needsRead({
+        hasTail: this.tail !== null,
+        readMark: this.#readMark,
+        mark: this.historyMark,
+        failed: this.tailWhy !== null,
+      })
+    )
+      return;
     this.#reading = true;
+    this.fetching = true;
     try {
       do {
         this.#again = false;
+        this.#lastRead = Date.now();
+        const mark = this.historyMark;
         if (this.tail === null) this.tailState = "loading";
         try {
           const raw = await invoke<unknown>("flyway_tail", { host: this.host, card: this.card });
           const t = raw == null ? [] : readTail(raw);
           if (!t) throw new Error(`${this.host} sent something that is not a conversation`);
           this.tail = t;
+          this.#readMark = mark;
+          this.readAt = Date.now();
           this.tailState = t.length ? "ready" : "none";
           this.tailWhy = null;
         } catch (e) {
@@ -458,7 +487,46 @@ export class Shadow {
       } while (this.#again);
     } finally {
       this.#reading = false;
+      this.fetching = false;
     }
+  }
+
+  /** Called when a snapshot has moved this card. Keeps a conversation somebody
+   *  looked at lately current without being asked, so clicking it later shows
+   *  the present rather than the last time you were here. Off the snapshot that
+   *  already arrives, never a timer, and bounded by `shouldWarm`. */
+  warm(): void {
+    if (
+      shouldWarm({
+        hasTail: this.tail !== null,
+        warmUntil: this.#warmUntil,
+        now: Date.now(),
+        lastRead: this.#lastRead,
+        unheard: this.face.unheard,
+        stale: this.#readMark !== this.historyMark,
+      })
+    ) {
+      void this.readTail(false);
+    }
+  }
+
+  /** The pointer has rested on the card: read it now, so the click that
+   *  probably follows finds it current. A card never read is read once. */
+  glimpse(): void {
+    void this.readTail();
+  }
+
+  /** Whether what is drawn is current, in words (`tailfresh.ts::tailNote`). */
+  get freshness(): string | null {
+    return tailNote({
+      host: this.host,
+      fetching: this.fetching,
+      hasTail: this.tail !== null,
+      why: this.tailWhy,
+      readAt: this.readAt,
+      now: clock.t,
+      unheard: this.face.unheard,
+    });
   }
 
   /** The column, as the transcript draws it.
@@ -1020,8 +1088,10 @@ export class Elsewhere {
         const id = shadowKey(host, d.id);
         keep.add(id);
         let s = this.#byId.get(id);
-        if (s) s.digest = d;
-        else {
+        if (s) {
+          s.digest = d;
+          s.warm();
+        } else {
           s = new Shadow(this, host, d);
           this.#byId.set(id, s);
         }

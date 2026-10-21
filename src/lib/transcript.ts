@@ -98,6 +98,11 @@ export type Readable = {
   /** Lines the panel says above the conversation — what this wall knows that
    *  the conversation cannot say for itself (`handle.ts::panelNotes`). */
   notes?: readonly { text: string; tone?: "warn" | "ask" }[];
+  /** Whether what is drawn is current, said quietly at the top of the column
+   *  (`tailfresh.ts::tailNote`): a read in flight, or a wall that could not be
+   *  reached. In the thread rather than in `notes`, so the panel and the chat
+   *  view both say it. Absent for a card whose conversation is read here. */
+  freshness?: string | null;
 };
 
 /** How many consecutive calls it takes to be worth folding.
