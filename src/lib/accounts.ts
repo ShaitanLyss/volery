@@ -534,8 +534,37 @@ export function usable(accounts: Account[]): Account[] {
 export const REFUSAL_BASE = 5 * MINUTE;
 export const REFUSAL_MAX = 6 * 60 * MINUTE;
 
-/** An account the server has refused, until when, and how many times running. */
-export type Refusal = { until: number; strikes: number };
+/** How long after the last refusal an account may be tried once more while the
+ *  reading says it has room — see `probing`. Two minutes is just past
+ *  `limits.rs`'s one-minute floor, so the reading that vouches for the account
+ *  is never older than the refusal it is being weighed against. */
+export const REFUSAL_PROBE = 2 * MINUTE;
+
+/** An account the server has refused, until when, how many times running, and
+ *  when it last said so (`at` is what `probing` measures from). */
+export type Refusal = { until: number; strikes: number; at: number };
+
+/** Whether a standing refusal should be tried again now, on the reading's word.
+ *
+ *  **A mark that nothing may test can never be proven wrong.** `markServed` is
+ *  the only thing that clears one early, and it needs a turn to be answered on
+ *  the account — which the mark itself forbids. So a refusal that was true when
+ *  it was made (a window that has since rolled, a reset hint a clock read
+ *  wrongly) stood for up to six hours over an account with room: on
+ *  2026-10-21 QUEERISFREEDOM held every send "until 15:37" with `tx-team` at 2%
+ *  of its session, and `/account tx-team` moved a card there only for the next
+ *  send to be held again. This is the half-open step of a circuit breaker: once
+ *  `REFUSAL_PROBE` has gone by since the last refusal, the mark stops *vetoing*
+ *  and the reading decides — so an account the reading calls full is still
+ *  full, and one it calls free gets a turn.
+ *
+ *  What it costs when the mark was right (a spend cap the reading cannot see):
+ *  one refused turn per `REFUSAL_PROBE`, which `refuse` closes again by stamping
+ *  `at`. That is the price of ever finding out, and a refused turn spends
+ *  nothing. */
+export function probing(mark: Refusal, now: number): boolean {
+  return now - mark.at >= REFUSAL_PROBE;
+}
 
 /** What a refusal does to what is already known about an account.
  *
@@ -570,11 +599,11 @@ export function refuse(
       ? Math.min(hint, now + REFUSAL_MAX)
       : 0;
   if (held && held.until > now) {
-    return { until: Math.max(held.until, hinted), strikes: held.strikes };
+    return { until: Math.max(held.until, hinted), strikes: held.strikes, at: now };
   }
   const strikes = (held?.strikes ?? 0) + 1;
   const backoff = Math.min(REFUSAL_BASE * 2 ** Math.min(strikes - 1, 16), REFUSAL_MAX);
-  return { until: Math.max(now + backoff, hinted), strikes };
+  return { until: Math.max(now + backoff, hinted), strikes, at: now };
 }
 
 /** Whether there is a choice of account to be made at all.

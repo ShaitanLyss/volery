@@ -29,6 +29,7 @@ import {
   type AfarSeat,
   choose,
   keptThrough,
+  probing,
   refuse,
   several,
   usable,
@@ -312,6 +313,13 @@ export class Waterfall {
     this.#refused.delete(label);
   }
 
+  /** A person put a card on this account: their word outranks our distrust,
+   *  for the reason `putOnAccount` gives. Keeps nothing — not even the strike
+   *  count — because if the server refuses again that is a fresh refusal. */
+  forgive(label: string) {
+    this.#refused.delete(label);
+  }
+
   /** Which account the next turn would go to, right now.
    *
    *  Straight through to the pure chooser — this class decides nothing — except
@@ -327,7 +335,9 @@ export class Waterfall {
     if (this.#refused.size > 0) {
       const overlaid: Record<string, Allowance> = { ...allowances };
       for (const [label, mark] of this.#refused) {
-        if (mark.until <= now) continue;
+        /* `probing`: past the gap since the last refusal the mark no longer
+           vetoes, and the reading alone says whether the account has room. */
+        if (mark.until <= now || probing(mark, now)) continue;
         overlaid[label] = {
           ok: true,
           at: now,

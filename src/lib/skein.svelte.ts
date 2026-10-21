@@ -3578,6 +3578,10 @@ export class Skein {
       conv.note(`this card is already on ${to}`);
       return;
     }
+    /* Your word outranks the wall's distrust. A refusal mark is memory, not
+       evidence, and without this the card moved here and the very next send was
+       held again by the mark the gesture was meant to override (2026-10-21). */
+    waterfall.forgive(to);
     await this.#moveTo(conv, to, null);
     /* `#moveTo` is given no `from`, so it writes no `swapNote` — that sentence
        is the *waterfall's*, and its reason half says what the old account could

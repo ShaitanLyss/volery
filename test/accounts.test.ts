@@ -19,6 +19,8 @@ import {
   refuse,
   REFUSAL_BASE,
   REFUSAL_MAX,
+  REFUSAL_PROBE,
+  probing,
   sayBlocked,
   sayCeiling,
   sayImported,
@@ -1334,12 +1336,12 @@ describe("a refusal the readings cannot see", () => {
      every new one went straight back to be refused again. */
   test("the first refusal is distrusted for the base, and doubles each time it lapses", () => {
     const first = refuse(undefined, T0);
-    expect(first).toEqual({ until: T0 + REFUSAL_BASE, strikes: 1 });
+    expect(first).toEqual({ until: T0 + REFUSAL_BASE, strikes: 1, at: T0 });
     const t1 = first.until + 1;
     const second = refuse(first, t1);
-    expect(second).toEqual({ until: t1 + 2 * REFUSAL_BASE, strikes: 2 });
+    expect(second).toEqual({ until: t1 + 2 * REFUSAL_BASE, strikes: 2, at: t1 });
     const t2 = second.until + 1;
-    expect(refuse(second, t2)).toEqual({ until: t2 + 4 * REFUSAL_BASE, strikes: 3 });
+    expect(refuse(second, t2)).toEqual({ until: t2 + 4 * REFUSAL_BASE, strikes: 3, at: t2 });
   });
 
   test("the back-off stops at the ceiling however many times it is refused", () => {
@@ -1355,7 +1357,29 @@ describe("a refusal the readings cannot see", () => {
   test("a refusal arriving while one stands is the same news, not a second strike", () => {
     const first = refuse(undefined, T0);
     const again = refuse(first, T0 + MIN);
-    expect(again).toEqual(first);
+    expect(again.strikes).toBe(first.strikes);
+    expect(again.until).toBe(first.until);
+  });
+
+  /* 2026-10-21: every send on QUEERISFREEDOM held "until 15:37" with tx-team at
+     2%, and /account tx-team was held again on the next send. A mark nothing
+     could test could not be proven wrong. */
+  test("a standing mark stops vetoing once the probe gap has passed since the last refusal", () => {
+    const m = refuse(undefined, T0, T0 + 5 * HOUR);
+    expect(probing(m, T0 + REFUSAL_PROBE - 1)).toBe(false);
+    expect(probing(m, T0 + REFUSAL_PROBE)).toBe(true);
+    /* still standing as a mark: it is the *probe* that lets a turn through */
+    expect(m.until).toBeGreaterThan(T0 + REFUSAL_PROBE);
+  });
+
+  test("a refused probe closes the gap again, and is not a second strike", () => {
+    const m = refuse(undefined, T0, T0 + 5 * HOUR);
+    const t = T0 + REFUSAL_PROBE + 5 * 1000;
+    expect(probing(m, t)).toBe(true);
+    const after = refuse(m, t, T0 + 5 * HOUR);
+    expect(after.strikes).toBe(m.strikes);
+    expect(probing(after, t + 1)).toBe(false);
+    expect(probing(after, t + REFUSAL_PROBE)).toBe(true);
   });
 
   test("a reset the server named is preferred when longer, and capped when absurd", () => {
