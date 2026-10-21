@@ -384,6 +384,24 @@ fn session(
     pump(&mut hub, &store.0, name, stop, &connected, &told)
 }
 
+/// Record a source, clearing its checkpoints if it now points at another hub.
+/// The whole of `set_source`'s write, under the one lock its caller holds.
+fn save(conn: &Connection, name: &str, group: &str, namespace: &str, entity: &str, moved: bool) -> Result<(), String> {
+    if moved {
+        ledger::clear_checkpoints(conn, name);
+    }
+    conn.execute(
+        "INSERT INTO source (name, kind, consumer_group, namespace, entity, created_at)
+         VALUES (?1, 'eventhub', ?2, ?3, ?4, ?5)
+         ON CONFLICT(name) DO UPDATE SET
+           consumer_group = excluded.consumer_group,
+           namespace = excluded.namespace, entity = excluded.entity",
+        params![name, group, namespace, entity, crate::store::now()],
+    )
+    .map_err(|e| format!("record source: {e}"))?;
+    Ok(())
+}
+
 /* ── what the panel reads and does ──────────────────────────────────────── */
 
 /// One source as the integrations panel draws it. Never the secret — `held`
@@ -469,30 +487,24 @@ pub async fn set_source(
         if let Some(c) = &connection {
             crate::vault::store_at(&target(&name), &format!("event source {name} (volery)"), c)?;
         }
+        /* Sequence numbers belong to one hub. Pointing the name at another
+           leaves checkpoints that would skip — or replay — everything, so they
+           go; the subscriptions' own start times bound the rest. The old hub's
+           reader is halted *before* the clear, and `pump` checks its flag
+           under the store's lock, so it writes nothing after it. */
+        let moved = existing.as_ref().is_some_and(|e| e.namespace != namespace || e.entity != entity);
+        if moved {
+            halt(&app, &name);
+        }
         {
+            /* One lock, taken once. The first cut of the clear above re-took
+               this mutex while still holding it whenever the source was *not*
+               moved — every new source — and a std mutex is not re-entrant:
+               the store deadlocked, and with it every command on the wall.
+               Volery froze on "adding…" on AU-LT-288, twice (sink 798e9b1c).
+               `save` is the whole write, under the one guard, and is tested. */
             let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
-            /* Sequence numbers belong to one hub. Pointing the name at another
-               leaves checkpoints that would skip — or replay — everything, so
-               they go; the subscriptions' own start times bound the rest. */
-            let moved = existing.as_ref().is_some_and(|e| e.namespace != namespace || e.entity != entity);
-            if moved {
-                /* Halted first, so the old hub's reader writes nothing after
-                   the clear (`pump` checks its flag under this lock). */
-                drop(conn);
-                halt(&app, &name);
-                let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
-                ledger::clear_checkpoints(&conn, &name);
-            }
-            let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
-            conn.execute(
-                "INSERT INTO source (name, kind, consumer_group, namespace, entity, created_at)
-                 VALUES (?1, 'eventhub', ?2, ?3, ?4, ?5)
-                 ON CONFLICT(name) DO UPDATE SET
-                   consumer_group = excluded.consumer_group,
-                   namespace = excluded.namespace, entity = excluded.entity",
-                params![name, group, namespace, entity, crate::store::now()],
-            )
-            .map_err(|e| format!("record source: {e}"))?;
+            save(&conn, &name, &group, &namespace, &entity, moved)?;
         }
         restart(&app, &name);
         changed(&app);
@@ -691,6 +703,27 @@ mod tests {
         assert_eq!(a.line, r#"{"channel":"ui","eventId":7,"source":"nova-feedback"}"#);
         let text = arrival(&Raw { body: b"not json".to_vec(), ..raw.clone() });
         assert_eq!(text.fields["body"], json!("not json"));
+    }
+
+    /// The write `set_source` makes, under one guard: a new source lands, a
+    /// group change keeps the checkpoints, and a move to another hub clears
+    /// them. `set_source` takes the lock once around this and nothing else.
+    #[test]
+    fn a_source_is_saved_under_one_lock() {
+        let c = db();
+        save(&c, "nova-feedback", "$Default", "ns", "hub", false).unwrap();
+        c.execute(
+            "INSERT INTO source_checkpoint (source, partition, sequence, enqueued_at, at) VALUES ('nova-feedback', '0', 9, 1, 1)",
+            [],
+        )
+        .unwrap();
+        save(&c, "nova-feedback", "cg_x", "ns", "hub", false).unwrap();
+        assert_eq!(one(&c, "nova-feedback").unwrap().consumer_group, "cg_x");
+        assert_eq!(ledger::checkpoint(&c, "nova-feedback", "0"), Some((9, 1)), "same hub keeps its place");
+        save(&c, "nova-feedback", "cg_x", "ns2", "hub2", true).unwrap();
+        assert_eq!(one(&c, "nova-feedback").unwrap().entity, "hub2");
+        assert_eq!(ledger::checkpoint(&c, "nova-feedback", "0"), None, "another hub starts over");
+
     }
 
     #[test]
