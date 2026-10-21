@@ -97,7 +97,7 @@ export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance";
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" | "accounts" }
+  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" | "accounts" | "integrations" }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
@@ -175,6 +175,12 @@ export const CHORDS: readonly Chord[] = [
      the archive's; `u` is the half of "usage" the panel draws beside each row,
      and nothing else here begins with it. Toggles, like `vv`. */
   { keys: "u", label: "the accounts panel", verb: { kind: "open", what: "accounts" } },
+  /* `o` for the integrations panel — the tokens for services outside the
+     machine and the event sources cards subscribe to. A place you go, on `a`'s
+     argument; `o` for *outside*, which is what every row in it reaches, and
+     nothing else here begins with it. It had no key at all until the event
+     sources joined it (2026-10-21). Toggles, like `u`. */
+  { keys: "o", label: "the integrations panel", verb: { kind: "open", what: "integrations" } },
   /* `w` is the window, after nvim's `<C-w>` family: what the studio window
      itself does rather than anything on the wall. A family rather than a
      letter, because placing a window is several verbs (maximise, minimise,

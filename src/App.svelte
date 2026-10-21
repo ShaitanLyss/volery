@@ -617,6 +617,7 @@
       else if (verb.what === "flyway") showFlyway = true;
       else if (verb.what === "themes") showThemes = !showThemes;
       else if (verb.what === "accounts") showAccounts = !showAccounts;
+      else if (verb.what === "integrations") showKeyring = !showKeyring;
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -4845,7 +4846,7 @@
         key: "token",
         label: "tokens",
         title:
-          "A personal access token per service Volery reads — azure devops, asana — and a check that each one works",
+          "A personal access token per service Volery reads — azure devops, asana — and the event sources cards subscribe to, with a check that each one works (space then o)",
         on: showKeyring,
         press: () => (showKeyring = !showKeyring),
       },

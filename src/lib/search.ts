@@ -28,7 +28,7 @@ export const SETTINGS: readonly { id: SettingId; label: string; note: string }[]
   { id: "themes", label: "how the reading looks", note: "themes" },
   { id: "accounts", label: "accounts and allowance", note: "settings" },
   { id: "guidance", label: "what every conversation is told", note: "settings" },
-  { id: "keyring", label: "tokens for other services", note: "settings" },
+  { id: "keyring", label: "tokens and event sources", note: "settings" },
   { id: "carry", label: "carry the layout to another machine", note: "settings" },
   { id: "import", label: "pick up a conversation from claude code", note: "settings" },
 ];

@@ -27,6 +27,21 @@
  * A recurring cron job is the one shape that cannot fully join in: it names no
  * single moment, so it says "on a schedule" and can never be late.
  *
+ * ### And a third that is not a clock at all
+ *
+ * - **`event`** — a subscription (`mcp__skein__subscribe`): the card is handed
+ *   a turn when an event matching its filter arrives on a named source, an
+ *   Azure Event Hub the wall holds the connection to. It names no moment, so it
+ *   is never late — silence on a stream is the stream being quiet, not a
+ *   promise lapsing — and it is **standing**: a turn ending does not spend it,
+ *   because the next event wakes the card again. `at: null` is what keeps it
+ *   through `pending` and through `#beginTurn`'s prune alike.
+ *
+ * A timed wake reads before a subscription. Both are true, and the face has
+ * room for one: the timed one is the more specific promise — it names when —
+ * and it is the one that can go late, so it is the one worth watching. The
+ * tooltip lists the rest either way.
+ *
  * ### Spent is "a turn has ended since", not "it is gone from the table"
  *
  * Serving a `wake_me` deletes its row — the DELETE is the claim — and the CLI
@@ -77,14 +92,22 @@ export type Wake = {
   at: number | null;
   /** Why, in the card's own words. Drawn in a tooltip, never sent anywhere. */
   note: string;
-  from: "wall" | "session";
+  from: WakeFrom;
+  /** The source a subscription listens on — set exactly when `from` is
+   *  `"event"`. */
+  on?: string;
 };
+
+/** Which of the three a wake is held by. */
+export type WakeFrom = "wall" | "session" | "event";
 
 /** What the face reads: the soonest wake still being waited on. */
 export type Waiting = {
   at: number | null;
   note: string;
-  from: "wall" | "session";
+  from: WakeFrom;
+  /** The source, for a subscription. */
+  on?: string;
   /** How many are being waited on in all, this one included. */
   count: number;
   /** Seconds since it became late — past its time *and* past `LATE_AFTER_S` —
@@ -111,14 +134,25 @@ export function sessionWakes(timers: readonly SessionTimer[]): Wake[] {
     .map((t) => ({ id: t.id, at: t.at, note: t.note, from: "session" as const }));
 }
 
-/** The wakes still being waited on, soonest first, a recurring one last.
+/** Where a wake sorts: by its moment, then a subscription, then a recurring
+ *  schedule — the two that name no moment, the more specific first. */
+function rank(w: Wake): number {
+  if (w.at !== null) return w.at;
+  return w.from === "event" ? Number.MAX_VALUE : Infinity;
+}
+
+/** The wakes still being waited on, soonest first, then a subscription, then a
+ *  recurring schedule.
  *
  *  @param endedAt when the card's last turn ended. Anything due at or before it
  *  was taken into a turn or opened one. */
 export function pending(wakes: readonly Wake[], endedAt: number): Wake[] {
   return wakes
     .filter((w) => w.at === null || w.at > endedAt)
-    .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
+    .sort((a, b) => {
+      const d = rank(a) - rank(b);
+      return Number.isNaN(d) ? 0 : d;
+    });
 }
 
 /** The reading, or null when the card is not waiting on anything.
@@ -139,6 +173,7 @@ export function readWaiting(pend: readonly Wake[], now: number): Waiting | null 
     at: first.at,
     note: first.note,
     from: first.from,
+    ...(first.on !== undefined ? { on: first.on } : {}),
     count: rest.length + 1,
     lateS: lateFor(first.at, now),
     rest,
@@ -182,6 +217,12 @@ function span(s: number): string {
 
 /** The face's line. Lowercase, sentence-shaped, the house register. */
 export function waitLine(w: Waiting, now: number): string {
+  if (w.from === "event") {
+    /* The other sources it listens on, not the other subscriptions: two
+       filters on one stream are one place to be woken from. */
+    const others = new Set(w.rest.filter((r) => r.from === "event" && r.on !== w.on).map((r) => r.on));
+    return `waiting — on ${w.on ?? "an event"}${others.size ? ` +${others.size}` : ""}`;
+  }
   if (w.at === null) return "waiting — on a schedule";
   const ahead = Math.ceil((w.at - now) / 1000);
   if (ahead > COUNTDOWN_UNDER_S) return `waiting — wakes at ${clockOf(w.at, now)}`;
@@ -192,8 +233,13 @@ export function waitLine(w: Waiting, now: number): string {
 
 const NOTE_CAP = 280;
 
-function said(w: { at: number | null; note: string; from: "wall" | "session" }, now: number): string {
-  const when = w.at === null ? "on a schedule" : `at ${clockOf(w.at, now)}`;
+function said(w: { at: number | null; note: string; from: WakeFrom; on?: string }, now: number): string {
+  const when =
+    w.from === "event"
+      ? `when an event arrives on ${w.on ?? "its source"}`
+      : w.at === null
+        ? "on a schedule"
+        : `at ${clockOf(w.at, now)}`;
   const held = w.from === "session" ? " (held by its process, and lost with it)" : "";
   const note = w.note.length > NOTE_CAP ? `${w.note.slice(0, NOTE_CAP - 1)}…` : w.note;
   return note ? `${when}${held} — ${note}` : `${when}${held}`;
@@ -204,6 +250,8 @@ export function waitTitle(w: Waiting, now: number): string {
   const head =
     w.lateS !== null
       ? "this card armed a wake that has not woken it — nothing has happened since its time"
-      : "this card armed a wake and is waiting on it, not finished";
+      : w.from === "event"
+        ? `this card is subscribed to ${w.on ?? "an event source"} and is waiting on it, not finished — it is woken only when a matching event arrives`
+        : "this card armed a wake and is waiting on it, not finished";
   return [head, said(w, now), ...w.rest.map((r) => said(r, now))].join("\n");
 }

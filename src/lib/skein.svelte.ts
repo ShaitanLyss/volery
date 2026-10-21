@@ -172,6 +172,10 @@ export type Ensured = { project: Project; territories: Grouping[] };
 /** One armed `wake_me` as `later.rs` sends it — `wakes_armed` and `wake:armed`. */
 type ArmedWake = { conversation_id: string; id: string; due_at: number; note: string };
 
+/** One standing subscription as the subscriptions table sends it —
+ *  `subscriptions_armed` and `subscription:armed`. */
+type ArmedSub = { conversation_id: string; id: string; source: string; note: string; filter: string; every_ms: number };
+
 export type Project = {
   id: string;
   name: string;
@@ -971,6 +975,21 @@ export class Skein {
         c.wakes = ids === null ? [] : c.wakes.filter((w) => !ids.includes(w.id));
       }),
     );
+    keep(
+      /* The same for a subscription to an event source, which reads on the
+         face as `waiting — on <source>`. Patched for the same reason: a
+         delivery opens a turn and spends nothing, so only these two events
+         ever change the list. */
+      listen<ArmedSub>("subscription:armed", (e) => this.#armSub(e.payload)),
+    );
+    keep(
+      listen<{ conversation_id: string; ids: string[] | null }>("subscription:disarmed", (e) => {
+        const c = this.#byId.get(e.payload.conversation_id);
+        if (!c) return;
+        const ids = e.payload.ids;
+        c.subscriptions = ids === null ? [] : c.subscriptions.filter((w) => !ids.includes(w.id));
+      }),
+    );
 
     keep(
       /* One event per recipient, so a broadcast is a strand each rather than
@@ -1304,6 +1323,15 @@ export class Skein {
     c.wakes = [...c.wakes.filter((w) => w.id !== r.id), { id: r.id, at: r.due_at, note: r.note, from: "wall" }];
   }
 
+  #armSub(r: ArmedSub) {
+    const c = this.#byId.get(r.conversation_id);
+    if (!c) return;
+    c.subscriptions = [
+      ...c.subscriptions.filter((w) => w.id !== r.id),
+      { id: r.id, at: null, note: r.note, from: "event", on: r.source },
+    ];
+  }
+
   async load() {
     /* What today has cost so far, before anything is painted — the figure and
        the ground's warmth are about the day rather than about this run of the
@@ -1467,6 +1495,14 @@ export class Skein {
       void invoke<ArmedWake[]>("wakes_armed")
         .then((rows) => {
           for (const r of rows ?? []) this.#armWake(r);
+        })
+        .catch(() => {});
+      /* And what each is subscribed to, the same way. Quiet when it fails: a
+         build without subscriptions has no such command, and that is a wall
+         with none to draw. */
+      void invoke<ArmedSub[]>("subscriptions_armed")
+        .then((rows) => {
+          for (const r of rows ?? []) this.#armSub(r);
         })
         .catch(() => {});
 

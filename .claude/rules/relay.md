@@ -339,6 +339,15 @@ wall is painted, `wake:armed` / `wake:disarmed` patch it, and the reading is `wa
   clock, and `waiting.ts::hereAt` moves it onto this one by `askedAt`'s arithmetic. The colour
   is the owner's tier, so the far side only *words* lateness. Nothing is claimed while the wall
   is unheard.
+- **A subscription is the third source, and it is standing** (2026-10-21). A card that called
+  `subscribe` reads `waiting — on <source>` (`+N` for other sources; two filters on one stream
+  are one place to be woken from). `Wake.from: "event"` with `on`, `at: null` — so it is never
+  late, since a quiet stream is not a lapsed promise, and it survives `pending` and
+  `#beginTurn`'s prune: a delivery opens a turn and spends nothing. `subscriptions_armed` at
+  load and `subscription:armed` / `subscription:disarmed` patch `Conversation.subscriptions`,
+  exactly as for wakes. **A timed wake reads first** — it names when, and it is the one that can
+  go late; a subscription reads before a recurring cron. The digest carries `on`; an older
+  wall's never says `"event"`, and one with no `on` reads as a plain wake.
 - **The edge it does not cover**: a wake served to a dormant card's inbox, then Volery restarted
   before the card stirred. The row is gone and this wall never held it, so the card reads at
   rest; its inbox mark is what still says something is waiting for it.

@@ -35,11 +35,20 @@
    * every row has one cheap authenticated GET behind a button, run when you ask
    * and never on a clock, and the answer sits beside the row. It runs itself
    * once after a store, which is the moment it is cheapest to act on: you are
-   * looking at the row with the page you minted the token on still open. */
+   * looking at the row with the page you minted the token on still open.
+   *
+   * Below the tokens, the **event sources** (`sources.ts`): streams a card
+   * subscribes to by name and is woken only when an event on it matches. A
+   * connection string is a token by another name — vault, never shown back,
+   * pasting over replaces it — so it lives in this panel rather than one of its
+   * own. Panel-local state, read on open and kept current by `sources:changed`
+   * only while the panel is up. */
 
   import type { DevOps } from "./devops.svelte";
   import type { Creds } from "./creds.svelte";
   import { INTEGRATIONS, checkFailed, checkReading, type ServiceId } from "./integrations";
+  import { Sources } from "./sources.svelte";
+  import { DEFAULT_GROUP, checkLine, groupOf, nameFault, sourceReading, step, whereLine } from "./sources";
 
   let {
     keyring,
@@ -72,6 +81,95 @@
     typed[id] = "";
     void keyring.store(id, token);
   }
+
+  /* ── event sources ──────────────────────────────────────────────────── */
+
+  const sources = new Sources();
+  $effect(() => sources.watch());
+
+  /** The add form. The connection string is cleared the moment it is sent,
+   *  whatever comes back — a refused one is pasted again, never kept here. */
+  let addName = $state("");
+  let addConn = $state("");
+  let addGroup = $state("");
+  /** Said only once something is typed, so an empty form does not scold. */
+  const addFault = $derived(addName ? nameFault(addName, sources.rows.map((r) => r.name)) : null);
+  let addNameEl = $state<HTMLInputElement | null>(null);
+
+  async function add() {
+    const name = addName.trim();
+    if (nameFault(name, sources.rows.map((r) => r.name)) || !addConn.trim()) return;
+    const conn = addConn;
+    addConn = "";
+    if (await sources.set(name, conn, groupOf(addGroup), "")) {
+      addName = "";
+      addGroup = "";
+      rowEl(name)?.focus();
+    }
+  }
+
+  /** Which source row is open for changing, and what is typed into it. */
+  let editing = $state<string | null>(null);
+  let editConn = $state("");
+  let editGroup = $state("");
+
+  function edit(name: string) {
+    const row = sources.rows.find((r) => r.name === name);
+    if (!row) return;
+    editing = name;
+    editConn = "";
+    editGroup = row.consumer_group || DEFAULT_GROUP;
+    queueMicrotask(() => document.querySelector<HTMLInputElement>(`[data-edit="${CSS.escape(name)}"]`)?.focus());
+  }
+
+  function shut(name: string) {
+    editing = null;
+    editConn = "";
+    queueMicrotask(() => rowEl(name)?.focus());
+  }
+
+  async function change(name: string) {
+    const row = sources.rows.find((r) => r.name === name);
+    if (!row) return;
+    const conn = editConn.trim() ? editConn : null;
+    const group = groupOf(editGroup);
+    editConn = "";
+    if (!conn && group === (row.consumer_group || DEFAULT_GROUP)) return shut(name);
+    if (await sources.set(name, conn, group)) shut(name);
+  }
+
+  function rowEl(name: string): HTMLElement | null {
+    return document.querySelector<HTMLElement>(`[data-source="${CSS.escape(name)}"]`);
+  }
+
+  /** j/k and the arrows between rows, and a letter per verb on the one with
+   *  focus. Only on the row itself — inside a field every key is typing. */
+  function rowKey(e: KeyboardEvent, name: string, i: number) {
+    if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key;
+    if (k === "j" || k === "ArrowDown" || k === "k" || k === "ArrowUp") {
+      const next = sources.rows[step(i, k === "j" || k === "ArrowDown" ? 1 : -1, sources.rows.length)];
+      if (next) rowEl(next.name)?.focus();
+    } else if (k === "Enter" || k === "e") edit(name);
+    else if (k === "c") void sources.verify(name);
+    else if (k === "x" || k === "Delete") void sources.forget(name);
+    else if (k === "a") addNameEl?.focus();
+    else return;
+    e.preventDefault();
+  }
+
+  /** Enter stores, and Escape inside an open row closes the row, not the
+   *  panel — so it stops here, before the window's handler hears it. */
+  function editKey(e: KeyboardEvent, name: string) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void change(name);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      shut(name);
+    }
+  }
 </script>
 
 <!-- Escape closes it, which is what puts `showKeyring` in App's Escape guard:
@@ -86,11 +184,11 @@
     class="keyring"
     onmousedown={(e) => e.stopPropagation()}
     role="dialog"
-    aria-label="integration tokens"
+    aria-label="integrations"
     tabindex="-1"
   >
     <header>
-      <h2>integration tokens</h2>
+      <h2>integrations</h2>
       <button class="x" onclick={onclose} aria-label="Close">&times;</button>
     </header>
 
@@ -198,6 +296,174 @@
         {/if}
       </section>
     {/each}
+
+    <section class="sources" aria-label="event sources">
+      <div class="head">
+        <h3>event sources</h3>
+      </div>
+      <p class="aside why">
+        A stream cards subscribe to by name: a card that subscribes ends its turn and is woken only
+        when an event on it matches, so it costs nothing while it waits. An Azure Event Hub — a
+        Fabric Eventstream's custom endpoint is one.
+      </p>
+
+      {#if sources.missing}
+        <p class="aside">This build cannot hold event sources yet.</p>
+      {:else}
+        {#each sources.rows as row, i (row.name)}
+          {@const reading = sourceReading(row)}
+          {@const checked = checkLine(sources.checkFor(row.name))}
+          {@const busy = sources.busy[row.name] ?? false}
+          <!-- Focusable so j/k have somewhere to land and the row's letters
+               somewhere to be heard; the buttons inside are the controls. -->
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            class="src"
+            data-source={row.name}
+            tabindex="0"
+            role="group"
+            aria-label={row.name}
+            title="j/k move · enter changes it · c checks it · x forgets it · a adds one"
+            onkeydown={(e) => rowKey(e, row.name, i)}
+          >
+            <div class="head">
+              <span class="name">{row.name}</span>
+              <span class="reading" data-tone={reading.tone} title={reading.line}>{reading.line}</span>
+            </div>
+            <p class="aside where">{whereLine(row)}</p>
+            {#if checked}
+              <p class="aside where" data-tone={checked.tone}>{checked.line}</p>
+            {/if}
+
+            {#if editing === row.name}
+              <input
+                class="pat"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                data-edit={row.name}
+                aria-label="connection string"
+                placeholder={row.held
+                  ? "paste a new connection string — empty keeps the one held"
+                  : "paste the connection string"}
+                bind:value={editConn}
+                onkeydown={(e) => editKey(e, row.name)}
+                disabled={busy}
+              />
+              <input
+                class="pat group"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label="consumer group"
+                placeholder={DEFAULT_GROUP}
+                bind:value={editGroup}
+                onkeydown={(e) => editKey(e, row.name)}
+                disabled={busy}
+              />
+              <div class="pair">
+                <button class="act go" disabled={busy} onclick={() => void change(row.name)}>
+                  {busy ? "storing…" : "store it"}
+                </button>
+                <button class="act" disabled={busy} onclick={() => shut(row.name)} title="leave it (escape)">
+                  leave it
+                </button>
+              </div>
+            {:else}
+              <div class="pair">
+                <button class="act" disabled={busy} onclick={() => edit(row.name)} title="change it (enter)">
+                  change it
+                </button>
+                {#if row.held}
+                  <button
+                    class="act"
+                    disabled={busy}
+                    onclick={() => void sources.verify(row.name)}
+                    title="check it (c)"
+                  >
+                    check it
+                  </button>
+                {/if}
+                <button
+                  class="act"
+                  disabled={busy}
+                  onclick={() => void sources.forget(row.name)}
+                  title="forget it (x)"
+                >
+                  forget it
+                </button>
+                {#if sources.note[row.name]}
+                  <span class="note">{sources.note[row.name]}</span>
+                {/if}
+              </div>
+            {/if}
+
+            {#if sources.fault[row.name]}
+              <button class="oops" onclick={() => (sources.fault[row.name] = "")}>
+                {sources.fault[row.name]}
+              </button>
+            {/if}
+          </div>
+        {/each}
+
+        <div class="add">
+          <input
+            class="pat"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="source name"
+            placeholder="a name cards will use — nova-feedback"
+            bind:this={addNameEl}
+            bind:value={addName}
+            onkeydown={(e) => e.key === "Enter" && void add()}
+            disabled={sources.busy[""]}
+          />
+          <input
+            class="pat"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="connection string"
+            placeholder="its connection string — Endpoint=sb://…;SharedAccessKeyName=…"
+            bind:value={addConn}
+            onkeydown={(e) => e.key === "Enter" && void add()}
+            disabled={sources.busy[""]}
+          />
+          <input
+            class="pat group"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="consumer group"
+            placeholder="consumer group — {DEFAULT_GROUP}"
+            bind:value={addGroup}
+            onkeydown={(e) => e.key === "Enter" && void add()}
+            disabled={sources.busy[""]}
+          />
+          <div class="pair">
+            <button
+              class="act go"
+              disabled={sources.busy[""] || !!addFault || !addName.trim() || !addConn.trim()}
+              onclick={() => void add()}
+            >
+              {sources.busy[""] ? "adding…" : "add it"}
+            </button>
+            {#if addFault}<span class="note">{addFault}</span>{/if}
+          </div>
+          {#if sources.fault[""]}
+            <button class="oops" onclick={() => (sources.fault[""] = "")}>{sources.fault[""]}</button>
+          {/if}
+          <p class="aside">
+            The connection string goes in the vault under <code>dev.skein.studio/source/&lt;name&gt;</code>
+            and is never shown back. The wall connects only while some card is subscribed. On a row:
+            <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>enter</kbd> changes it, <kbd>c</kbd> checks it,
+            <kbd>x</kbd> forgets it, <kbd>a</kbd> comes here.
+          </p>
+        </div>
+      {/if}
+    </section>
   </div>
 </div>
 
@@ -396,6 +662,68 @@
   .note {
     font-family: var(--mono);
     font-size: 0.68rem;
+  }
+
+  /* A source is a row inside the section rather than a section of its own:
+     they are one kind of thing listed under one heading, and a rule between
+     each would read as a token row. */
+  .src {
+    display: flex;
+    flex-direction: column;
+    padding: 0.45rem 0.5rem 0.5rem;
+    margin: 0 -0.5rem;
+    border-radius: 3px;
+    outline: none;
+  }
+  .src:focus-visible,
+  .src:focus-within {
+    background: color-mix(in srgb, var(--paper) 4%, transparent);
+  }
+  .src .head {
+    margin-bottom: 0.15rem;
+  }
+  .name {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--paper);
+  }
+  .where {
+    margin-top: 0;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+  }
+  .src .pat {
+    margin-top: 0.4rem;
+  }
+  .group {
+    width: 50%;
+  }
+  .add {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+  }
+  .add .pair {
+    margin-top: 0.15rem;
+  }
+  kbd {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    color: var(--paper-mute);
+  }
+  /* Colour is status: what a stream is doing, never what the row is. */
+  [data-tone="work"] {
+    color: var(--st-work);
+  }
+  [data-tone="soft"] {
+    color: var(--st-soft);
+  }
+  [data-tone="ask"] {
+    color: var(--st-ask);
+  }
+  [data-tone="fail"] {
+    color: var(--st-fail);
   }
 
   .oops {

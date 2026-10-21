@@ -65,6 +65,7 @@ import {
   type Removal,
 } from "./afar";
 import type { Spot } from "./glass";
+import type { WakeFrom } from "./waiting";
 import { gistOf, type Gist, type GistHeld, type GistSource, type GistTimeline } from "./gist";
 import { planOf, type Plan, type Timeline } from "./timeline";
 
@@ -83,8 +84,12 @@ export const SAID_CAP = 200;
 export const WAKES_CAP = 4;
 /** A wake's note is a tooltip, and `waiting.ts` cuts it shorter still. */
 export const WAKE_NOTE_CAP = 300;
+/** A source name — `sources.ts::SOURCE_NAME` allows 64. */
+export const SOURCE_CAP = 64;
 
-export type DigestWake = { at: number | null; note: string; from: "wall" | "session" };
+/** `on` is the source a subscription listens on, present exactly when `from`
+ *  is `"event"`. */
+export type DigestWake = { at: number | null; note: string; from: WakeFrom; on?: string };
 /** A wall with more open cards than this is drawn with the first this many. */
 export const CARDS_CAP = 400;
 
@@ -371,7 +376,12 @@ export function digestOf(c: DigestSource): CardDigest {
     jobs: c.jobs.length,
     wakes: c.pendingWakes
       .slice(0, WAKES_CAP)
-      .map((w) => ({ at: w.at, note: capText(w.note, WAKE_NOTE_CAP), from: w.from })),
+      .map((w) => ({
+        at: w.at,
+        note: capText(w.note, WAKE_NOTE_CAP),
+        from: w.from,
+        ...(w.from === "event" ? { on: capText(w.on ?? "", SOURCE_CAP) } : {}),
+      })),
     asks: c.asks
       .filter((a) => !a.ours)
       .slice(0, ASKS_CAP)
@@ -628,7 +638,12 @@ function readWakes(v: unknown): DigestWake[] {
        is not evidence of one, and reading it as "on a schedule" would be a
        claim the other wall never made. */
     if (r.at !== null && stamp(r.at) === null) continue;
-    out.push({ at: stamp(r.at), note: str(r.note, WAKE_NOTE_CAP), from: r.from === "session" ? "session" : "wall" });
+    /* A subscription names its source, and one that does not is read as a
+       wake rather than drawn as `waiting — on ` with nothing after it. An older
+       wall never sends `"event"`, so it reads exactly as it did. */
+    const on = r.from === "event" ? str(r.on, SOURCE_CAP) : "";
+    if (r.from === "event" && on) out.push({ at: null, note: str(r.note, WAKE_NOTE_CAP), from: "event", on });
+    else out.push({ at: stamp(r.at), note: str(r.note, WAKE_NOTE_CAP), from: r.from === "session" ? "session" : "wall" });
   }
   return out;
 }

@@ -175,3 +175,17 @@ next spawn (`ASANA_ACCESS_TOKEN`, `AZURE_DEVOPS_EXT_PAT`). **Storing a third int
 not make it lendable** — that is one `Lending` entry in `lend::LENDABLE`, deliberately, since a
 token the widgets need is not automatically one an agent should be offered. The argument for the
 whole hand-off, and what a grant is, is in `asana.md` under `asana_token`.
+
+### Event sources live in this panel too (2026-10-21)
+
+A source is a named stream a card subscribes to (`mcp__skein__subscribe`) and is woken by only
+when an event on it matches — an Azure Event Hub first. Its connection string is a token by
+another name: vault (`dev.skein.studio/source/<name>`), never sent back (`sources_list` carries
+`held` and the namespace/entity Rust parsed out of it), pasted over to replace. So it is a
+section of this panel rather than a panel of its own. `sources.ts` is the pure half — the name
+rule (`^[a-z0-9][a-z0-9._-]{0,63}$`, matching Rust), the readings and their tones —
+and `sources.svelte.ts` the panel-local store, which listens to `sources:changed` only while
+the panel is open. **`idle` is grey on purpose**: no subscribers means no connection, by design,
+so *check it* is how a source is proven before any card leans on it. Rust's refusals (a bad
+connection string, forgetting a source cards still use) are shown verbatim. The panel opens on
+`space then o`.

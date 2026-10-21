@@ -367,6 +367,7 @@ export class Shadow {
       at: x.at === null ? null : w ? hereAt(x.at, w.at, w.madeAt) : x.at,
       note: x.note,
       from: x.from,
+      ...(x.on !== undefined ? { on: x.on } : {}),
     }));
     return readWaiting(wakes, clock.t);
   });

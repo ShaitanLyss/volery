@@ -170,3 +170,55 @@ describe("across the flyway", () => {
     expect(hereAt(ownerWake, ownerAt, now)).toBe(now + 20 * MIN);
   });
 });
+
+describe("a subscription to an event source", () => {
+  const endedAt = now - MIN;
+  const sub = (on: string, note = "triage new feedback", id = `s-${on}`): Wake => ({ id, at: null, note, from: "event", on });
+
+  test("reads as waiting on its source, and is never late however long the stream is quiet", () => {
+    const w = waitingOf([sub("nova-feedback")], endedAt, now + 3 * 24 * 3600 * S)!;
+    expect(w.from).toBe("event");
+    expect(w.on).toBe("nova-feedback");
+    expect(waitLine(w, now)).toBe("waiting — on nova-feedback");
+    expect(w.lateS).toBe(null);
+  });
+
+  test("standing: a turn ending after it was armed does not spend it", () => {
+    /* `at: null` is what carries it through `pending`, the same as a recurring
+       cron — a delivery opens a turn and the next event wakes it again. */
+    expect(pending([sub("nova-feedback")], now + 10 * MIN)).toHaveLength(1);
+  });
+
+  test("several sources are counted, several filters on one are not", () => {
+    const two = waitingOf([sub("nova-feedback"), sub("rise-telemetry")], endedAt, now)!;
+    expect(waitLine(two, now)).toBe("waiting — on nova-feedback +1");
+    const same = waitingOf([sub("nova-feedback", "a", "s1"), sub("nova-feedback", "b", "s2")], endedAt, now)!;
+    expect(waitLine(same, now)).toBe("waiting — on nova-feedback");
+    expect(same.count).toBe(2);
+  });
+
+  test("a timed wake reads first — it names when, and it is the one that can go late", () => {
+    const w = waitingOf([sub("nova-feedback"), wake(now + 30 * MIN)], endedAt, now)!;
+    expect(waitLine(w, now)).toBe("waiting — wakes at 14:30");
+    expect(waitTitle(w, now)).toContain("when an event arrives on nova-feedback — triage new feedback");
+  });
+
+  test("before a recurring schedule, which says less", () => {
+    const ws = [wake(null, "hourly", "session", "c"), sub("nova-feedback")];
+    expect(pending(ws, 0).map((w) => w.id)).toEqual(["s-nova-feedback", "c"]);
+  });
+
+  test("the tooltip names the source and quotes the note", () => {
+    const w = waitingOf([sub("nova-feedback", "a user filed a bug about the gondola")], endedAt, now)!;
+    const t = waitTitle(w, now);
+    expect(t).toContain("subscribed to nova-feedback");
+    expect(t).toContain("woken only when a matching event arrives");
+    expect(t).toContain("a user filed a bug about the gondola");
+  });
+
+  test("it holds the neglect clock off, like a pending wake", () => {
+    const hold = holdOf(waitingOf([sub("nova-feedback")], now - 3 * 3600 * S, now));
+    expect(hold).toEqual({ lateS: null });
+    expect(urgencyFor("ok", CLEAN_BLOOM_S + 3600, false, false, hold)).toBe("rest");
+  });
+});

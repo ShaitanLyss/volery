@@ -194,6 +194,9 @@ describe("away mode has two spellings of one verb", () => {
   test("u opens the accounts panel — which had no key until its settings travelled", () => {
     expect(chord("", "u")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "accounts" } });
   });
+  test("o opens the integrations panel — tokens and event sources", () => {
+    expect(chord("", "o")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "integrations" } });
+  });
   test("i alone is a prefix rather than a chord", () => {
     expect(chord("", "i")).toMatchObject({ kind: "pending", open: "i" });
   });
@@ -238,6 +241,7 @@ describe("the which-key hint", () => {
       { keys: "mi", label: "away when nobody is at the keyboard: on / off" },
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mw", label: "keep awake on mains: on / off" },
+      { keys: "o", label: "the integrations panel" },
       { keys: "p", label: "questions that piled up" },
       { keys: "sd", label: "drop something in the sink" },
       { keys: "ss", label: "the sink" },

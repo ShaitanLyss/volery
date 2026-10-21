@@ -969,7 +969,9 @@ export class Control {
         restSeen: c.restSeen,
         /* And a card waiting on a wake reads `rest` too, until it is late — so
            the reading is reported rather than left for a test to infer. */
-        waiting: c.waiting ? { at: c.waiting.at, lateS: c.waiting.lateS, count: c.waiting.count } : null,
+        waiting: c.waiting
+          ? { at: c.waiting.at, lateS: c.waiting.lateS, count: c.waiting.count, from: c.waiting.from, on: c.waiting.on ?? null }
+          : null,
         /* The wall that asked for this card, if one did — what its face says. */
         bornFor: c.bornFor,
         /* The gear, for exactly the reason `kind` is reported: from out here a

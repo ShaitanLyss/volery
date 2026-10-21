@@ -886,6 +886,16 @@ export class Conversation {
    *  opens. */
   wakes = $state<Wake[]>([]);
 
+  /** The event sources this card is subscribed to, as `Wake`s with `from:
+   *  "event"` — read at load and patched by `subscription:armed` /
+   *  `subscription:disarmed` (`Skein`), the way `wakes` is.
+   *
+   *  **Standing, not spent**: a subscription wakes the card on every matching
+   *  event, so a turn ending takes nothing away. `at: null` is what carries it
+   *  through `pending`'s `at > endedAt` and `#beginTurn`'s prune; only a
+   *  disarm removes one. */
+  subscriptions = $state<Wake[]>([]);
+
   /** When the last turn on this wall ended, or 0 before one has. What says a
    *  wake was taken: due at or before it, it fired into a turn or opened one.
    *  Not `restingSince`, which a background job landing also moves. */
@@ -914,7 +924,7 @@ export class Conversation {
    *  digest another wall reads can carry the moment without being republished
    *  every second (`shadow.ts`, `elsewhere.md`'s rule). */
   pendingWakes = $derived(
-    this.working || this.busy ? [] : pending([...this.wakes, ...sessionWakes(this.timers)], this.turnEndedAt),
+    this.working || this.busy ? [] : pending([...this.wakes, ...this.subscriptions, ...sessionWakes(this.timers)], this.turnEndedAt),
   );
 
   /** The wake this card is waiting on, if it is — from either clock, read the

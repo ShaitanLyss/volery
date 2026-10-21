@@ -142,6 +142,18 @@ describe("making a digest", () => {
     ]);
   });
 
+  /* A subscription crosses as its source, never as a countdown — it has none —
+     and an older wall's digest, which never says "event", reads as it did. */
+  test("carries what a card is subscribed to, and a nameless one reads as a wake", () => {
+    const d = digestOf(source({ pendingWakes: [{ at: null, note: "triage", from: "event", on: "nova-feedback" }] }));
+    expect(d.wakes[0]).toEqual({ at: null, note: "triage", from: "event", on: "nova-feedback" });
+    const back = readDigest(JSON.parse(JSON.stringify(d)))!;
+    expect(back.wakes[0]).toEqual({ at: null, note: "triage", from: "event", on: "nova-feedback" });
+    expect(readDigest({ ...JSON.parse(JSON.stringify(d)), wakes: [{ at: null, note: "x", from: "event" }] })?.wakes).toEqual([
+      { at: null, note: "x", from: "wall" },
+    ]);
+  });
+
   /* What a shadow's panel states in its footer the way a local card's does. An
      older wall sends none of them, which reads as unknown rather than as a
      model called "". */
