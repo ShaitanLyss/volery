@@ -314,7 +314,8 @@ pub fn list_schema() -> Value {
         "name": LIST_TOOL,
         "description":
             "List the event subscriptions this conversation holds — each one's id, source, filter \
-             and note — and the sources configured on this wall. Reading costs nothing.",
+             and note — and the sources configured on this wall, each with whether it is connected, \
+             connecting or failing and, if failing, why. Reading costs nothing.",
         "inputSchema": { "type": "object", "properties": {} }
     })
 }
@@ -460,7 +461,36 @@ fn do_list(app: &AppHandle, caller: &str) -> String {
         let lines: Vec<String> = mine.iter().map(line).collect();
         format!("this conversation holds {}:\n{}", count(mine.len(), "subscription"), lines.join("\n"))
     };
-    format!("{head}\n\n{}", no_sources_said(&names))
+    /* What each source is doing, so a card waiting on one can tell "nothing
+       has happened" from "nothing can arrive" without asking anybody to open
+       the panel — the fault is the one the panel draws. */
+    let readings: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let (state, fault) = sources::reading(app, &conn, n);
+            reading_said(n, &state, &fault)
+        })
+        .collect();
+    if readings.is_empty() {
+        format!("{head}\n\n{}", no_sources_said(&names))
+    } else {
+        format!(
+            "{head}\n\nThe sources on this wall:\n{}\nAnother is added by the user in Volery's integrations \
+             panel (space then o).",
+            readings.join("\n")
+        )
+    }
+}
+
+/// One source's line in the listing. Pure, so the wording is tested.
+fn reading_said(name: &str, state: &str, fault: &str) -> String {
+    match state {
+        "connected" => format!("- {name}: connected, reading"),
+        "connecting" => format!("- {name}: connecting"),
+        "failing" if !fault.is_empty() => format!("- {name}: failing, retrying with backoff — {fault}"),
+        "failing" => format!("- {name}: failing, retrying with backoff"),
+        _ => format!("- {name}: idle — not connected, since nothing subscribes to it"),
+    }
 }
 
 fn line(s: &ledger::Sub) -> String {
@@ -605,6 +635,15 @@ mod tests {
     /// The other end is `relay.ts`'s `WALL` and `relayBody` — a regex on the
     /// first line and a cut at the trailer's opening words — and nothing can be
     /// imported across that seam, so the shape is pinned on both sides.
+    /// A card waiting on a source can tell a quiet stream from a broken one,
+    /// and a failing one carries the fault it would otherwise need the panel for.
+    #[test]
+    fn a_source_reading_says_whether_anything_can_arrive() {
+        assert_eq!(reading_said("nova", "connected", ""), "- nova: connected, reading");
+        assert!(reading_said("nova", "failing", "AADSTS7000215: invalid secret").ends_with("AADSTS7000215: invalid secret"));
+        assert!(reading_said("nova", "idle", "").contains("nothing subscribes"));
+    }
+
     #[test]
     fn the_envelope_is_a_message_from_the_wall() {
         let t = envelope(&[section("3f2a9c1e-aaaa", &[r#"{"eventId":1311}"#, r#"{"eventId":1312}"#])], 0, 0);

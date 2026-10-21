@@ -744,6 +744,11 @@ what a line *means*; `journal.svelte.ts` is the one subscription behind however 
   raise one family and leave the rest alone, which is what you want nine times in ten.
   `parse_spec` is pure and asserted, including that the *longest* target prefix wins so a
   narrow rule is not defeated by the order it was written in.
+  Two families are held at `warn` by default (`QUIET`): `iroh::socket`, which logs a
+  `poll_send` per relay packet once the flyway is up, and `tracing::span`, the bridge's line
+  per span entered. Between them they rolled the 2 MB file in minutes (sink 2f64be10). Naming
+  either in `SKEIN_LOG`, at any breadth, lifts its default, and a default only ever lowers a
+  ceiling, so `off` stays off.
 - **The dot reads the whole log, not the last line.** One error four hundred lines back is
   still the most important thing this widget knows; a dot that went green again because the
   next line was routine would be hiding it.

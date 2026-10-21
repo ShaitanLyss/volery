@@ -120,6 +120,16 @@ struct Sink {
     everything: log::LevelFilter,
 }
 
+/// Families held at `warn` unless `SKEIN_LOG` names them. Both are narration
+/// at `info` that drowned the file: with the flyway up, iroh logs a
+/// `poll_send` per relay packet and `tracing`'s bridge logs every span it
+/// enters, several a second between them, so `volery.log` rolled its 2 MB in
+/// minutes and a source failure or a watchdog stall was gone before anybody
+/// looked (sink 2f64be10). `iroh::endpoint`'s connect lines are kept: they are
+/// the flyway's own account of a dial, and arrive once a dial.
+const QUIET: &[(&str, log::LevelFilter)] =
+    &[("iroh::socket", log::LevelFilter::Warn), ("tracing::span", log::LevelFilter::Warn)];
+
 /// Read `SKEIN_LOG` into a default and a set of per-target ceilings.
 ///
 /// `SKEIN_LOG=debug` raises everything. `SKEIN_LOG=librespot=debug` raises one
@@ -158,6 +168,17 @@ fn parse_spec(spec: &str) -> (log::LevelFilter, Vec<(String, log::LevelFilter)>)
                     everything = f;
                 }
             }
+        }
+    }
+    /* The quiet defaults, unless `SKEIN_LOG` says anything about that family —
+       `iroh=debug` names `iroh::socket` as much as `iroh::socket=debug` does,
+       and a default that out-ranked it by being the longer prefix would be the
+       ordering bug below, wearing a default's coat. */
+    for (who, f) in QUIET {
+        let named = targets.iter().any(|(t, _): &(String, F)| who.starts_with(t.as_str()) || t.starts_with(who));
+        if !named {
+            /* Only ever lower: `SKEIN_LOG=off` is off for these too. */
+            targets.push((who.to_string(), (*f).min(everything)));
         }
     }
     /* Longest first, so `librespot_core::session=warn` beats `librespot=debug`
@@ -446,17 +467,35 @@ mod tests {
     }
 
     #[test]
-    fn the_default_is_info_and_nothing_else() {
+    fn the_default_is_info_with_the_relay_chatter_held_at_warn() {
         let (everything, targets) = parse_spec("");
         assert_eq!(everything, F::Info);
-        assert!(targets.is_empty());
+        let sink = Sink { targets, everything };
+        assert_eq!(sink.ceiling("iroh::socket::transports"), F::Warn);
+        assert_eq!(sink.ceiling("tracing::span"), F::Warn);
+        assert_eq!(sink.ceiling("iroh::endpoint"), F::Info, "a dial is still said");
+        assert_eq!(sink.ceiling("source"), F::Info);
     }
 
     #[test]
-    fn a_bare_level_raises_everything() {
+    fn a_bare_level_raises_everything_but_the_chatter() {
         let (everything, targets) = parse_spec("debug");
         assert_eq!(everything, F::Debug);
-        assert!(targets.is_empty());
+        let sink = Sink { targets, everything };
+        assert_eq!(sink.ceiling("wry::webview"), F::Debug);
+        assert_eq!(sink.ceiling("iroh::socket::transports"), F::Warn);
+    }
+
+    /// Naming the family, at any breadth, is asking for it — a quiet default
+    /// must not out-rank `iroh=debug` by being the longer prefix.
+    #[test]
+    fn naming_a_quiet_family_lifts_its_default() {
+        for spec in ["iroh=debug", "iroh::socket=debug", "iroh::socket::transports=debug"] {
+            let (everything, targets) = parse_spec(spec);
+            let sink = Sink { targets, everything };
+            assert_eq!(sink.ceiling("iroh::socket::transports"), F::Debug, "{spec}");
+            assert_eq!(sink.ceiling("tracing::span"), F::Warn, "{spec}");
+        }
     }
 
     /// The shape actually wanted: one subsystem loud, the rest quiet. `debug`
@@ -489,13 +528,14 @@ mod tests {
     /// wrong has to degrade to something rather than refusing to start.
     #[test]
     fn nonsense_leaves_the_default_standing() {
+        let (_, quiet) = parse_spec("");
         let (everything, targets) = parse_spec("shouty");
         assert_eq!(everything, F::Info);
-        assert!(targets.is_empty());
+        assert_eq!(targets, quiet);
 
         let (everything, targets) = parse_spec("librespot=shouty");
         assert_eq!(everything, F::Info);
-        assert!(targets.is_empty(), "an unreadable level is not a rule");
+        assert_eq!(targets, quiet, "an unreadable level is not a rule");
 
         /* Stray separators and whitespace are somebody typing, not an error. */
         let (everything, targets) = parse_spec("  ,, warn , librespot = trace ,");
@@ -507,8 +547,10 @@ mod tests {
 
     #[test]
     fn off_really_is_off() {
-        let (everything, _) = parse_spec("off");
+        let (everything, targets) = parse_spec("off");
         assert_eq!(everything, F::Off);
+        let sink = Sink { targets, everything };
+        assert_eq!(sink.ceiling("iroh::socket::transports"), F::Off, "a quiet default never raises");
     }
 
     /* ── reading the log back ──────────────────────────────────────────────*/

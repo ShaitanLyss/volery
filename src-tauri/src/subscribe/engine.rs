@@ -283,7 +283,7 @@ pub fn serve<D: Db, H: Hands>(b: &mut Batcher, db: &D, hands: &H, now: i64) {
         let claim = match claim {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[subscribe] claim for {id}: {e}");
+                log::warn!(target: "subscribe", "claim for {id}: {e}");
                 b.nothing_yet(&id, true, Some(now + QUIET_MS));
                 continue;
             }

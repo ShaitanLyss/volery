@@ -111,7 +111,7 @@ pub fn pump<S: Source + ?Sized>(
     db: &Mutex<Connection>,
     name: &str,
     stop: &AtomicBool,
-    connected: &dyn Fn(),
+    connected: &dyn Fn(usize),
     told: &dyn Fn(String),
 ) -> Result<(), String> {
     let parts = src.partitions()?;
@@ -126,7 +126,7 @@ pub fn pump<S: Source + ?Sized>(
     for (p, from) in &starts {
         src.open(p, *from)?;
     }
-    connected();
+    connected(parts.len());
     loop {
         if stop.load(Ordering::Relaxed) {
             src.close();
@@ -321,6 +321,7 @@ fn run(
     cutter: Arc<Mutex<Option<Arc<crate::amqp::ws::Cutter>>>>,
 ) {
     let mut backoff = BACKOFF_MIN;
+    log::info!(target: "source", "{name}: connecting");
     while !stop.load(Ordering::Relaxed) {
         set_reading(&app, &name, "connecting", "");
         let began = Instant::now();
@@ -335,14 +336,17 @@ fn run(
                 break;
             }
             Err(e) => {
-                eprintln!("[source {name}] {e}");
-                set_reading(&app, &name, "failing", &e);
                 /* A connection that held for a while and then dropped is the
                    ordinary case — a laptop waking — and starts the ladder
                    again rather than inheriting the last climb. */
                 if began.elapsed() > Duration::from_secs(120) {
                     backoff = BACKOFF_MIN;
                 }
+                /* To the log rather than stderr: the app has no console, so an
+                   `eprintln!` here was a failing source nobody could read about
+                   once the panel was closed. */
+                log::warn!(target: "source", "{name}: {e} — retrying in {}s", backoff.as_secs());
+                set_reading(&app, &name, "failing", &e);
                 if let Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) = woken.recv_timeout(backoff) {
                     if stop.load(Ordering::Relaxed) {
                         break;
@@ -352,6 +356,7 @@ fn run(
             }
         }
     }
+    log::info!(target: "source", "{name}: stopped reading");
     set_reading(&app, &name, "idle", "");
 }
 
@@ -378,7 +383,10 @@ fn session(
         return Ok(());
     }
     let app2 = app.clone();
-    let connected = move || set_reading(&app2, name, "connected", "");
+    let connected = move |partitions: usize| {
+        log::info!(target: "source", "{name}: connected, reading {partitions} partition(s)");
+        set_reading(&app2, name, "connected", "");
+    };
     let app3 = app.clone();
     let told = move |card: String| super::arrived(&app3, card);
     pump(&mut hub, &store.0, name, stop, &connected, &told)
@@ -419,17 +427,28 @@ pub struct SourceRow {
     pub fault: String,
 }
 
-fn row_of(app: &AppHandle, conn: &Connection, c: Configured) -> SourceRow {
-    let reading = app
+/// What a source is doing, as the panel and the `subscriptions` tool both say
+/// it: `idle` when nobody subscribes or no runner has reported yet, otherwise
+/// the runner's own reading, with the fault that goes with `failing`.
+pub fn reading(app: &AppHandle, conn: &Connection, name: &str) -> (String, String) {
+    let r = app
         .try_state::<Runners>()
-        .and_then(|r| r.readings.lock().ok().and_then(|m| m.get(&c.name).cloned()))
+        .and_then(|r| r.readings.lock().ok().and_then(|m| m.get(name).cloned()))
         .unwrap_or_default();
-    let subscribers = ledger::count_on_source(conn, &c.name);
+    if ledger::count_on_source(conn, name) == 0 || r.state.is_empty() {
+        ("idle".into(), String::new())
+    } else {
+        (r.state.into(), r.fault)
+    }
+}
+
+fn row_of(app: &AppHandle, conn: &Connection, c: Configured) -> SourceRow {
+    let (state, fault) = reading(app, conn, &c.name);
     SourceRow {
         held: crate::vault::held_at(&target(&c.name)),
-        subscribers,
-        state: if subscribers == 0 || reading.state.is_empty() { "idle".into() } else { reading.state.into() },
-        fault: reading.fault,
+        subscribers: ledger::count_on_source(conn, &c.name),
+        state,
+        fault,
         name: c.name,
         kind: c.kind,
         consumer_group: c.consumer_group,
@@ -660,12 +679,12 @@ mod tests {
         let tell = |c: String| told.lock().unwrap().push(c);
 
         let mut first = Fake::new(log(), Some(3));
-        let err = pump(&mut first, &db, "nova-feedback", &stop, &|| {}, &tell).unwrap_err();
+        let err = pump(&mut first, &db, "nova-feedback", &stop, &|_| {}, &tell).unwrap_err();
         assert_eq!(err, "connection reset");
         assert!(first.opened_at.iter().all(|(_, s)| *s == Start::Since(9_000 - ledger::SKEW_MS)), "fresh start at the subscriber");
 
         let mut second = Fake::new(log(), None);
-        let err = pump(&mut second, &db, "nova-feedback", &stop, &|| {}, &tell).unwrap_err();
+        let err = pump(&mut second, &db, "nova-feedback", &stop, &|_| {}, &tell).unwrap_err();
         assert_eq!(err, "drained");
         assert!(second.opened_at.iter().any(|(_, s)| matches!(s, Start::After(_))), "{:?}", second.opened_at);
 
@@ -681,7 +700,7 @@ mod tests {
     fn a_source_with_no_subscribers_is_not_read() {
         let db = Mutex::new(db());
         let mut f = Fake::new(log(), None);
-        assert!(pump(&mut f, &db, "nova-feedback", &AtomicBool::new(false), &|| {}, &|_| {}).is_ok());
+        assert!(pump(&mut f, &db, "nova-feedback", &AtomicBool::new(false), &|_| {}, &|_| {}).is_ok());
         assert!(f.opened_at.is_empty());
     }
 

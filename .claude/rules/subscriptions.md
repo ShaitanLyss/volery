@@ -140,6 +140,13 @@ string is built, so no command can reach another credential.
   proves the consumer group, which the read alone does not.
 - A source that fails reconnects with backoff, one second doubling to five minutes, and starts
   the ladder over after a connection that held two minutes (a laptop waking is ordinary).
+- **A source says what it is doing in two places a card can read without the panel.** Every
+  connect (with its partition count), failure (with its fault and the backoff) and stop goes to
+  `volery.log` under target `source` — it was `eprintln!`, and the app has no console, so a
+  source failing on AU-LT-288 left nothing behind once the panel closed. And the
+  `subscriptions` tool lists each source with its reading (`sources::reading`, the same one the
+  panel draws), so a card waiting on a quiet stream can tell *nothing has happened* from
+  *nothing can arrive*.
 
 ## The transport: a hand-rolled AMQP 1.0 receiver
 
