@@ -16,6 +16,8 @@
   import { useCardLinks } from "./cardlinks.svelte";
   import { handlesIn } from "./chatview";
   import { cardName } from "./naming";
+  import { whois } from "./whois.svelte";
+  import { handleTip, whoIs } from "./whois";
   import type { CardHandle } from "./cards.svelte";
 
   let { kids }: { kids: Inline[] } = $props();
@@ -73,7 +75,7 @@
    *  knows. */
   const cardOf = (v: string): CardHandle | null => (links && /^[0-9a-f]{8}$/.test(v) ? links.find(v) : null);
 
-  type Run = { text: string; at: At | null; card: CardHandle | null };
+  type Run = { text: string; at: At | null; card: CardHandle | null; gone?: string };
   /** A text node cut into plain runs, paths and cards. Built for every text
    *  node up front rather than per render, so the template holds no logic. A
    *  handle is only looked for in what is not a path. */
@@ -87,9 +89,14 @@
         let from = 0;
         for (const h of links ? handlesIn(text) : []) {
           const card = links!.find(h.handle);
-          if (!card) continue;
+          /* A card that has left the wall is not a link — there is nothing to
+             open — but the store still knows what it was called, and its
+             handle names nothing to a person (`whois.ts`). Only a handle the
+             store confirms is a card's: a commit hash stays a hash. */
+          const gone = card ? null : whois.stored(h.handle);
+          if (!card && !gone) continue;
           if (h.from > from) runs.push({ text: text.slice(from, h.from), at: null, card: null });
-          runs.push({ text: h.handle, at: null, card });
+          runs.push({ text: h.handle, at: null, card, gone: gone ? whoIs(gone) : undefined });
           from = h.to;
         }
         if (from < text.length) runs.push({ text: text.slice(from), at: null, card: null });
@@ -101,7 +108,7 @@
         from = f.to;
       }
       if (from < k.v.length) plain(k.v.slice(from));
-      if (runs.some((r) => r.at || r.card)) map.set(i, runs);
+      if (runs.some((r) => r.at || r.card || r.gone)) map.set(i, runs);
     }
     return map;
   });
@@ -188,7 +195,7 @@
         data-dir={dir ? "1" : null}
         title={hint(to.path, dir, at.symbol)}
         onclick={(e) => go(e, to.path, at)}>{run.text}</button
-      >{:else if run.card}{@render card(run.card)}{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code" && cardOf(k.v)}{@render card(cardOf(k.v)!)}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
+      >{:else if run.card}{@render card(run.card)}{:else if run.gone}<span class="cardgone" title="{handleTip(run.text)} — no longer on the wall">{run.gone}</span>{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code" && cardOf(k.v)}{@render card(cardOf(k.v)!)}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
         spanPath.get(i)!}{@const to = targetOf(at)!}{@const dir = to.kind === "dir"}<button
       type="button"
       class="path code"
@@ -233,6 +240,13 @@
   >{/snippet}
 
 <style>
+  /* A card that has left the wall: named, set as the prose around it, and no
+     dot — a dot is a status and a closed card has none. */
+  .cardgone {
+    text-decoration: underline dotted;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+  }
   .cardlink {
     font: inherit;
     color: inherit;

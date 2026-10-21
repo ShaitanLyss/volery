@@ -41,7 +41,7 @@
   import ToolCall from "./ToolCall.svelte";
   import Figure from "./Figure.svelte";
   import RelayMark from "./RelayMark.svelte";
-  import { whois } from "./whois.svelte";
+  import { lineText, whois } from "./whois.svelte";
   import { handleTip, isCardAddress, shortHandle } from "./whois";
   import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
@@ -104,6 +104,15 @@
     const c = reach?.find(to) ?? null;
     const handle = isCardAddress(to) ? shortHandle(to) : null;
     return { name: c ? nameOf(c) : whois.address(to), card: c, handle };
+  }
+  /** A run's lines with its last one — the one a folded cap quotes — named as
+   *  it should read now (`lineText`). Only the last, since that is all
+   *  `foldSummary` reads. */
+  function namedNow(lines: Line[]): Line[] {
+    const last = lines[lines.length - 1];
+    if (!last) return lines;
+    const text = lineText(last);
+    return text === last.text ? lines : [...lines.slice(0, -1), { ...last, text }];
   }
   /** A relay's fold cap named the way the letter names its sender — the card's
    *  name now, rather than the title the envelope quoted when it was written,
@@ -377,7 +386,7 @@
          everything else inside a fold. -->
     <ToolCall
       call={line.call}
-      text={line.text}
+      text={lineText(line)}
       open={!!open[key]}
       ontoggle={() => toggle(key)}
       root={conv.kind === "project" ? conv.cwd : undefined}
@@ -717,7 +726,7 @@
           class="cap"
           aria-expanded={open[b.key] ? "true" : "false"}
           onclick={() => toggle(b.key)}
-          title={open[b.key] ? "fold the calls away" : foldSummary(b.lines)}
+          title={open[b.key] ? "fold the calls away" : foldSummary(namedNow(b.lines))}
         >
           <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
           <!-- Folded, the cap carries the latest call in the run, so a group at
@@ -740,7 +749,7 @@
               {#if sum.added || sum.removed}<span class="delta">+{sum.added} −{sum.removed}</span>{/if}
             {/if}
           {:else}
-            <span class="what">{open[b.key] ? foldCount(b.lines) : foldSummary(b.lines)}</span>
+            <span class="what">{open[b.key] ? foldCount(b.lines) : foldSummary(namedNow(b.lines))}</span>
           {/if}
         </button>
         {#if open[b.key]}

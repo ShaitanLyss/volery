@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { GONE, handleTip, isCardAddress, shortHandle, whoIs } from "../src/lib/whois";
-import { describeTool } from "../src/lib/classify";
+import {
+  describeTool,
+  NAMES_A_CARD,
+  SKEIN_CLOSE_TOOL,
+  SKEIN_RECALL_TOOL,
+  SKEIN_SEND_TOOL,
+  SKEIN_TIMELINE_TOOL,
+} from "../src/lib/classify";
 
 describe("what a card named by its handle is called", () => {
   test("the wall's sighting first, by its current title", () => {
@@ -48,6 +55,21 @@ describe("what a card named by its handle is called", () => {
     expect(describeTool("mcp__skein__recall", { card: "6f90401a" }, nameOf)).toBe("read NOVA Coordinator's words");
     expect(describeTool("mcp__skein__close", { card: "6f90401a" }, nameOf)).toBe("closed NOVA Coordinator");
     expect(describeTool("mcp__skein__send", { to: "project" }, nameOf)).toBe("told the project");
+  });
+
+  /* The set a surface re-describes at draw time, because the fold ran before a
+     closed card's name could be known. It must be exactly the tools whose line
+     goes through `nameOf` — one missing is a line frozen with GONE about a
+     card the store knows, which is what the lab showed before it existed. */
+  test("the tools re-described at draw time are the ones whose line names a card", () => {
+    expect([...NAMES_A_CARD].sort()).toEqual(
+      [SKEIN_SEND_TOOL, SKEIN_RECALL_TOOL, SKEIN_CLOSE_TOOL, SKEIN_TIMELINE_TOOL].sort(),
+    );
+    const marker = () => "NAMED";
+    for (const name of NAMES_A_CARD) {
+      const input = { to: "6f90401a", card: "6f90401a" };
+      expect(describeTool(name, input, marker)).toContain("NAMED");
+    }
   });
 });
 

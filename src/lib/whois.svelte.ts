@@ -19,6 +19,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { SvelteMap } from "svelte/reactivity";
 import type { CardHandle } from "./cards.svelte";
 import { cardByHandle } from "./chatview";
+import { describeTool, NAMES_A_CARD } from "./classify";
+import type { Line } from "./conversation.svelte";
 import { GONE, isCardAddress, shortHandle, whoIs, type Sighting } from "./whois";
 
 /** What the reactive half needs of the wall: a card by id, and every id. */
@@ -69,6 +71,18 @@ class Whois {
     return stored ?? null;
   }
 
+  /** What the store alone says of a handle — a card this wall can no longer
+   *  see but whose row is still there — asking it the first time. Undefined
+   *  until it has answered, null for "no such card". For prose, where only a
+   *  handle the store confirms may be drawn as a card. */
+  stored(handle: string): { title: string; closed: boolean } | null | undefined {
+    if (!isCardAddress(handle)) return null;
+    const h = shortHandle(handle.trim().toLowerCase());
+    const got = this.#stored.get(h);
+    if (got === undefined) this.#ask(h);
+    return got;
+  }
+
   /** The words for a card named by id or handle — see `whois.ts` for the order.
    *  `said` is the name its source carried, if any. */
   name(idOrHandle: string, said?: string | null): string {
@@ -108,4 +122,17 @@ class Whois {
 }
 
 export const whois = new Whois();
+
+/** A tool line's words as they should read now. The text a line was folded
+ *  with is frozen at the fold, and a call that named a card by handle was
+ *  folded before the store could say what a closed card was called — so it
+ *  read "messaged a card no longer on the wall" about a card the store knew
+ *  (found in the lab, 2026-10-21). Only the tools that name a card are
+ *  re-described, from the call's own arguments; reading `whois` here is what
+ *  redraws the line when the store's answer lands. */
+export function lineText(line: Line): string {
+  const call = line.call;
+  if (line.kind !== "tool" || !call || !NAMES_A_CARD.has(call.name)) return line.text;
+  return describeTool(call.name, call.input, (a) => whois.address(a));
+}
 export { GONE };

@@ -485,6 +485,17 @@ function pullNumber(v: unknown): number | null {
   return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : null;
 }
 
+/** The tools whose line names a card the agent addressed, by handle — the ones
+ *  `describeTool`'s `nameOf` reaches. A surface drawing one of these from
+ *  history re-describes it when it is drawn (`whois.svelte.ts::lineText`):
+ *  the fold ran before the wall could say what a closed card was called. */
+export const NAMES_A_CARD: ReadonlySet<string> = new Set([
+  SKEIN_SEND_TOOL,
+  SKEIN_RECALL_TOOL,
+  SKEIN_CLOSE_TOOL,
+  SKEIN_TIMELINE_TOOL,
+]);
+
 /** Turn a tool call into the one line of prose that goes under the title.
  *
  * `input` is empty at `content_block_start` — arguments stream in afterwards as
