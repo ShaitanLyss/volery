@@ -1365,7 +1365,7 @@ describe("a refusal the readings cannot see", () => {
      2%, and /account tx-team was held again on the next send. A mark nothing
      could test could not be proven wrong. */
   test("a standing mark stops vetoing once the probe gap has passed since the last refusal", () => {
-    const m = refuse(undefined, T0, T0 + 5 * HOUR);
+    const m = refuse(undefined, T0);
     expect(probing(m, T0 + REFUSAL_PROBE - 1)).toBe(false);
     expect(probing(m, T0 + REFUSAL_PROBE)).toBe(true);
     /* still standing as a mark: it is the *probe* that lets a turn through */
@@ -1373,10 +1373,10 @@ describe("a refusal the readings cannot see", () => {
   });
 
   test("a refused probe closes the gap again, and is not a second strike", () => {
-    const m = refuse(undefined, T0, T0 + 5 * HOUR);
+    const m = refuse(undefined, T0);
     const t = T0 + REFUSAL_PROBE + 5 * 1000;
     expect(probing(m, t)).toBe(true);
-    const after = refuse(m, t, T0 + 5 * HOUR);
+    const after = refuse(m, t);
     expect(after.strikes).toBe(m.strikes);
     expect(probing(after, t + 1)).toBe(false);
     expect(probing(after, t + REFUSAL_PROBE)).toBe(true);
@@ -1492,3 +1492,19 @@ describe("signing in an account on another wall", () => {
     expect(saySeat({ ...seat("copied"), email: "" })).toContain("retired so neither logs the other out");
   });
 });
+
+describe("a refusal that named its reset is not probed", () => {
+  test("a stated reset is never probed before it passes; a guessed one is", () => {
+    const T = 1_000_000;
+    const stated = refuse(undefined, T, T + 4 * 60 * MINUTE_FOR_TEST);
+    expect(stated.stated).toBe(true);
+    expect(probing(stated, T + 3 * 60 * MINUTE_FOR_TEST)).toBe(false);
+    expect(probing(refuse(undefined, T), T + REFUSAL_PROBE)).toBe(true);
+  });
+  test("a later guessed refusal does not forget the stated one", () => {
+    const T = 1_000_000;
+    const a = refuse(undefined, T, T + 60 * MINUTE_FOR_TEST);
+    expect(refuse(a, T + 1000).stated).toBe(true);
+  });
+});
+const MINUTE_FOR_TEST = 60_000;

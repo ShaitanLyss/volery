@@ -2753,6 +2753,80 @@ export function refusalResetOf(ev: any): number | null {
   return null;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** The reset the CLI *quotes in its own sentence*, in epoch ms, or null.
+ *
+ *  `refusalResetOf` reads structured fields that the stream does not carry for
+ *  a refused turn: what arrives is `You've hit your session limit · resets
+ *  11:20am (Australia/Sydney)` and nothing else. So the mark a refusal left had
+ *  no named reset, `accounts.ts::probing` treated it as memory rather than
+ *  evidence, and the wall spent a real turn every two minutes asking an account
+ *  whose own refusal had said when it would be back (2026-10-22: a dozen turns
+ *  spent against a reset that was hours off).
+ *
+ *  Forms read, all from the CLI's bundle: `resets 9:10pm (Zone)`, `resets 3pm
+ *  (Zone)`, `resets Aug 23, 3pm (Zone)`, and a bare `resets Sep 20`. A time with
+ *  no date is the next occurrence of it. A zone the runtime does not know is no
+ *  hint rather than a wrong one. */
+export function refusalResetFromText(text: unknown, now: number): number | null {
+  if (typeof text !== "string") return null;
+  const m = /resets\s+(?:([A-Za-z]{3})[a-z]*\s+(\d{1,2}),?\s*)?(?:(\d{1,2})(?::(\d{2}))?\s*([ap]m))?\s*(?:\(([^)]+)\))?/i.exec(
+    text,
+  );
+  if (!m) return null;
+  const [, mon, dayS, hourS, minS, mer, zone] = m;
+  if (!mon && !hourS) return null;
+  const tz = zone?.trim() || undefined;
+  const parts = (t: number) => {
+    const f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    const o: Record<string, number> = {};
+    for (const p of f.formatToParts(new Date(t))) if (p.type !== "literal") o[p.type] = Number(p.value);
+    return o;
+  };
+  try {
+    const offset = (t: number) => {
+      const o = parts(t);
+      return Date.UTC(o.year!, o.month! - 1, o.day!, o.hour!, o.minute!, o.second!) - Math.floor(t / 1000) * 1000;
+    };
+    const at = (y: number, mo: number, d: number, h: number, mi: number) => {
+      const guess = Date.UTC(y, mo, d, h, mi);
+      let t = guess - offset(guess);
+      t = guess - offset(t);
+      return t;
+    };
+    let hour = 0;
+    let minute = 0;
+    if (hourS) {
+      hour = Number(hourS) % 12 + (mer!.toLowerCase() === "pm" ? 12 : 0);
+      minute = minS ? Number(minS) : 0;
+    }
+    const here = parts(now);
+    let t: number;
+    if (mon) {
+      const mo = MONTHS.indexOf(mon.toLowerCase());
+      if (mo < 0) return null;
+      t = at(here.year!, mo, Number(dayS), hour, minute);
+      if (t <= now) t = at(here.year! + 1, mo, Number(dayS), hour, minute);
+    } else {
+      t = at(here.year!, here.month! - 1, here.day!, hour, minute);
+      if (t <= now) t = at(here.year!, here.month! - 1, here.day! + 1, hour, minute);
+    }
+    return Number.isFinite(t) && t > now ? t : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Which of the four this was, or null for a failure a card must not touch.
  *
  *  Rate limiting is tested **first**. A 429 that also happened to carry the

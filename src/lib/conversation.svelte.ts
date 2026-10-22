@@ -31,6 +31,7 @@ import {
   RETRY_NOTE,
   isApiErrorMessage,
   refusalResetOf,
+  refusalResetFromText,
   CARRY_ON_TEXT,
   CARRY_BUDGET,
   type Opener,
@@ -3172,7 +3173,10 @@ export class Conversation {
              news whatever is then done about the prompt. */
           if (kind === "limited" && this.accountLabel) {
             this.pendingSpent = this.accountLabel;
-            this.pendingSpentUntil = refusalResetOf(ev) ?? this.#refusalHint;
+            this.pendingSpentUntil =
+              refusalResetOf(ev) ??
+              refusalResetFromText(detail, Date.now()) ??
+              this.#refusalHint;
           }
           this.#refusalHint = null;
           /* The turn's own shape decides this, not the failure's kind — the

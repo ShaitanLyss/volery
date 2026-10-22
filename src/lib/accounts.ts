@@ -542,7 +542,7 @@ export const REFUSAL_PROBE = 2 * MINUTE;
 
 /** An account the server has refused, until when, how many times running, and
  *  when it last said so (`at` is what `probing` measures from). */
-export type Refusal = { until: number; strikes: number; at: number };
+export type Refusal = { until: number; strikes: number; at: number; stated?: boolean };
 
 /** Whether a standing refusal should be tried again now, on the reading's word.
  *
@@ -563,6 +563,10 @@ export type Refusal = { until: number; strikes: number; at: number };
  *  `at`. That is the price of ever finding out, and a refused turn spends
  *  nothing. */
 export function probing(mark: Refusal, now: number): boolean {
+  /* A reset the server *named* is evidence, not memory: nothing is gained by
+     asking before it, and each ask is a real turn. Only a guessed back-off is
+     probed. */
+  if (mark.stated) return false;
   return now - mark.at >= REFUSAL_PROBE;
 }
 
@@ -599,11 +603,16 @@ export function refuse(
       ? Math.min(hint, now + REFUSAL_MAX)
       : 0;
   if (held && held.until > now) {
-    return { until: Math.max(held.until, hinted), strikes: held.strikes, at: now };
+    return {
+      until: Math.max(held.until, hinted),
+      strikes: held.strikes,
+      at: now,
+      ...(held.stated || hinted > 0 ? { stated: true } : {}),
+    };
   }
   const strikes = (held?.strikes ?? 0) + 1;
   const backoff = Math.min(REFUSAL_BASE * 2 ** Math.min(strikes - 1, 16), REFUSAL_MAX);
-  return { until: Math.max(now + backoff, hinted), strikes, at: now };
+  return { until: Math.max(now + backoff, hinted), strikes, at: now, ...(hinted > 0 ? { stated: true } : {}) };
 }
 
 /** Whether there is a choice of account to be made at all.

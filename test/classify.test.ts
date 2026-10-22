@@ -10,6 +10,7 @@ import {
   backgroundKind,
   jobNote,
   refusalResetOf,
+  refusalResetFromText,
   CARRY_ON_TEXT,
   CARRY_BUDGET,
   isCarryOn,
@@ -3111,5 +3112,28 @@ describe("schedules the CLI keeps in the card's process", () => {
     const jan = new Date(2027, 0, 2, 9, 3).getTime();
     expect(oneShotDue("3 9 2 1 *", now)).toBe(jan);
     expect(oneShotDue("0 0 31 2 *", now)).toBe(null);
+  });
+});
+
+describe("refusalResetFromText", () => {
+  const now = Date.parse("2026-10-22T03:00:00Z"); // 14:00 in Sydney (AEDT, +11)
+  test("a time later today in the named zone", () => {
+    expect(
+      refusalResetFromText("You've hit your session limit · resets 11:20pm (Australia/Sydney)", now),
+    ).toBe(Date.parse("2026-10-22T12:20:00Z"));
+  });
+  test("a time already past is tomorrow's", () => {
+    expect(
+      refusalResetFromText("You've hit your session limit · resets 11:20am (Australia/Sydney)", now),
+    ).toBe(Date.parse("2026-10-22T00:20:00Z") + 24 * 3600 * 1000);
+  });
+  test("a dated reset", () => {
+    expect(refusalResetFromText("hit your weekly limit · resets Nov 3, 3pm (Australia/Sydney)", now)).toBe(
+      Date.parse("2026-11-03T04:00:00Z"),
+    );
+  });
+  test("nothing named, or a zone it does not know, is no hint", () => {
+    expect(refusalResetFromText("You've hit your limit", now)).toBeNull();
+    expect(refusalResetFromText("resets 3pm (Not/AZone)", now)).toBeNull();
   });
 });
