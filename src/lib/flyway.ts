@@ -1,3 +1,5 @@
+import { isNewer, parseVersion } from "./update";
+
 /* What the flyway panel says, as functions of what it knows.
  *
  * Pure so the sentences are a thing a test can read rather than something you
@@ -77,7 +79,78 @@ export type Wall = {
   territories: string[];
   /** Answered only in the old language: its sink syncs, nothing else does. */
   older: boolean;
+  /** Which Volery it runs (`Facts::build`, `0.74.2`) — empty or absent from a
+   *  wall from before `BUILD_ANNOUNCED_FROM`, which is *unknown*, not a
+   *  version. Not the statement clock `fleet.rs` also calls a version. */
+  build?: string;
+  /** A debug build — a lab or `tauri dev` — rather than an installed release. */
+  dev?: boolean;
 };
+
+/** The first release whose walls say their build — a wall that sends none is
+ *  older than this and nothing more is known of it. Held equal to
+ *  `fleet.rs::BUILD_ANNOUNCED_FROM` by `test/flyway.test.ts`. */
+export const BUILD_ANNOUNCED_FROM = "0.75.0";
+
+/** What the build readings need of a roster row — a `Wall` here, a `RosterRow`
+ *  in `shadows.svelte.ts`. */
+export type Built = { me?: boolean; build?: string; dev?: boolean };
+
+/** This wall's own build, off its own roster row — the wall that is asking. Empty
+ *  before its first announcement, which reads as no comparison. */
+export function mineOf(rows: Built[]): string {
+  return rows.find((w) => w.me)?.build ?? "";
+}
+
+/** What this wall says of itself above the others: its own version, so a
+ *  line like `older build — 0.73.1` below has something to be older than. */
+export function ownBuildLine(rows: Built[]): string {
+  const me = rows.find((w) => w.me);
+  return me?.build ? `this machine runs volery ${me.build}${me.dev ? " · development build" : ""}` : "";
+}
+
+/** What a wall's build is to this one's. */
+export type BuildStanding = "unsaid" | "behind" | "same" | "ahead" | "unordered";
+
+export function buildStanding(w: Built, mine: string): BuildStanding {
+  const theirs = w.build ?? "";
+  if (!theirs) return "unsaid";
+  if (!parseVersion(theirs) || !parseVersion(mine)) return "unordered";
+  if (isNewer(mine, theirs)) return "behind";
+  if (isNewer(theirs, mine)) return "ahead";
+  return "same";
+}
+
+/** Which Volery a wall runs, said quietly — the fact somebody chasing a bug
+ *  fixed in some release needs. **An older build says so**, since that is the
+ *  actionable one (`older build — 0.73.1`), and a wall that says nothing is
+ *  older than the first release that does rather than a blank. A debug build is
+ *  marked, because a lab at `0.75.0` is the tree as built and not the release of
+ *  that name. Empty when there is nothing to say (this wall's own row). */
+export function buildLine(w: Built, mine: string): string {
+  if (w.me) return "";
+  const dev = w.dev ? " · development build" : "";
+  switch (buildStanding(w, mine)) {
+    case "unsaid":
+      return `older build — before ${BUILD_ANNOUNCED_FROM}, which does not say which`;
+    case "behind":
+      return `older build — ${w.build}${dev}`;
+    case "ahead":
+      return `newer build — ${w.build}${dev}`;
+    case "same":
+    case "unordered":
+      return `build ${w.build}${dev}`;
+  }
+}
+
+/** The short form for a heading that has no room: only an older build, since the
+ *  rest is not something to act on at a glance. */
+export function olderTag(w: Built | undefined, mine: string): string {
+  if (!w || w.me) return "";
+  const s = buildStanding(w, mine);
+  if (s === "unsaid") return `older build — before ${BUILD_ANNOUNCED_FROM}`;
+  return s === "behind" ? `older build — ${w.build}` : "";
+}
 
 /** A duration as the roster says one. */
 function ago(ms: number): string {

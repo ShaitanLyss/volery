@@ -705,8 +705,13 @@
          repeating it beside every line would make the conversation harder to
          read for nothing new. Muted with its wall. -->
     {#if conv.elsewhere}
-      <span class="where" class:quiet={conv.elsewhere.unheard} title="this card runs on {conv.elsewhere.host}"
-        >on {conv.elsewhere.host}{conv.elsewhere.unheard ? ", not heard from" : ""}</span
+      <span
+        class="where"
+        class:quiet={conv.elsewhere.unheard}
+        title="this card runs on {conv.elsewhere.host}{conv.elsewhere.older ? ` — ${conv.elsewhere.older}` : ''}"
+        >on {conv.elsewhere.host}{conv.elsewhere.unheard ? ", not heard from" : ""}{conv.elsewhere.older
+          ? ` · ${conv.elsewhere.older}`
+          : ""}</span
       >
       <span class="sep">·</span>
     {/if}

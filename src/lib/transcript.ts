@@ -85,7 +85,7 @@ export type Readable = {
      off the readable rather than passed beside it — `CardFace.elsewhere`'s
      bargain — so no panel can forget to say where the conversation is. */
   /** The wall it runs on, said in the footer beside its model. */
-  elsewhere?: { host: string; unheard: boolean };
+  elsewhere?: { host: string; unheard: boolean; older?: string };
   /** The panel reads the history when it opens on a card, and again whenever
    *  this changes. Absent for a card whose history is read once. */
   historyMark?: string;

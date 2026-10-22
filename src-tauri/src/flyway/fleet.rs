@@ -282,6 +282,34 @@ pub struct Facts {
     /// read their transcripts and say their `rate` — so nothing walks a week of
     /// transcripts unless someone, somewhere on the flyway, is looking.
     pub wants_rate: bool,
+    /// Which Volery this wall is running — `CARGO_PKG_VERSION`, as `0.74.2`.
+    /// Empty from a wall that predates it (`BUILD_ANNOUNCED_FROM`), which is
+    /// *unknown*, not a version: `walls` and the panel say "older than …" of
+    /// it rather than leaving a blank.
+    ///
+    /// **Not `Announcement::version` and not `Entry::version`**, which are the
+    /// statement clock — a wall's clock-at-announcing, raised on every tick —
+    /// and order one host's statements, nothing else. This is the app. Named
+    /// `build` so the two cannot be read for one another. Constant for the
+    /// life of a process, so it never makes a statement look different from
+    /// the last one (`Entry::order` hashes the facts only as a last
+    /// tie-break, and an old and a new statement of one wall differ by it
+    /// exactly once, at its restart).
+    pub build: String,
+    /// A debug build — every lab wall and `tauri dev`, as opposed to an
+    /// installed release. Same version string, different thing: a lab at
+    /// `0.74.2` is the tree as it was built, not the release of that name.
+    pub dev: bool,
+}
+
+/// The first release whose walls say their `Facts::build`. A wall that sent
+/// none is older than this and nothing more is known of it — held equal to
+/// `flyway.ts`'s `BUILD_ANNOUNCED_FROM` by `test/flyway.test.ts`.
+pub const BUILD_ANNOUNCED_FROM: &str = "0.75.0";
+
+/// What this wall says of itself for `Facts::build` and `Facts::dev`.
+pub fn this_build() -> (String, bool) {
+    (env!("CARGO_PKG_VERSION").to_string(), cfg!(debug_assertions))
 }
 
 /// Whether the person is at some other wall right now, by the roster: one
@@ -2055,6 +2083,9 @@ fn clean_facts(mut f: Facts) -> Facts {
     f.can = f.can.iter().map(|c| sc(c)).collect();
     f.holds = words(f.holds);
     f.lacks = words(f.lacks);
+    /* Goes into a sentence an agent reads and a panel draws, from a different
+       build: a version is a few characters of digits and dots. */
+    f.build = sc(&f.build).chars().take(32).collect();
     f
 }
 
@@ -2193,6 +2224,37 @@ mod tests {
         let wild = clean_facts(Facts { rate: Some(u64::MAX), ..Facts::default() });
         assert_eq!(wild.rate, None);
         assert_eq!(clean_facts(f).rate, Some(42_000));
+    }
+
+    /// Which Volery a wall runs rides the facts. A statement from before it
+    /// still parses and reads as *unsaid* (empty), a new one round-trips, and
+    /// a wall's own words are cut to what a version could be — it reaches an
+    /// agent's context from a different build.
+    #[test]
+    fn a_wall_says_its_build_and_an_older_one_says_nothing() {
+        let (build, dev) = this_build();
+        assert_eq!(build, env!("CARGO_PKG_VERSION"));
+        let f = Facts { build: build.clone(), dev, ..Facts::default() };
+        let back: Facts = serde_json::from_value(serde_json::to_value(&f).unwrap()).unwrap();
+        assert_eq!((back.build.as_str(), back.dev), (build.as_str(), dev));
+        let old: Facts = serde_json::from_value(serde_json::json!({ "accepting": true, "rate": 5 })).unwrap();
+        assert_eq!((old.build.as_str(), old.dev), ("", false));
+        /* A whole announcement from an older wall, with no `build` anywhere. */
+        let said: Announcement = serde_json::from_value(serde_json::json!({
+            "host": "lab", "version": 7, "facts": { "accepting": true }
+        }))
+        .unwrap();
+        assert_eq!(said.facts.build, "");
+        let wild = clean_facts(Facts { build: format!("0.1.0\u{0}{}", "9".repeat(80)), ..Facts::default() });
+        assert!(wild.build.chars().count() <= 32 && !wild.build.contains('\u{0}'));
+        /* Not the statement clock: announcing again moves `version` and leaves
+           the build exactly where it was. */
+        let mut me = Fleet::new("desk", 0);
+        let first = Facts { build: build.clone(), ..open_facts() };
+        me.announce(first.clone(), 1_000);
+        me.announce(first, 2_000);
+        let e = me.entry("desk").unwrap();
+        assert_eq!((e.version, e.facts.build.as_str()), (2_000, build.as_str()));
     }
     use std::collections::BTreeSet;
 

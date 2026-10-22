@@ -355,10 +355,10 @@ run: a fixed three seconds after the yes, and the card had already finished its 
 whether the asker came back *interrupted*, and was sent a resume prompt about a turn that had
 ended cleanly, was a race between its last sentence and a timer. Now the clean end is the
 ordinary one, and the answer tells the card to end its turn saying the wall is restarting.
-Nothing reports back on its own afterwards — the app's version does not cross the flyway, and
-neither does the chronicle — so a person driving from another wall finds out by asking the card,
-which wakes on the send and can call `update_volery` again: it then says the new version is
-current.
+Nothing reports back on its own afterwards — the chronicle does not cross the flyway — so a
+person driving from another wall finds out by asking the card, which wakes on the send and can
+call `update_volery` again: it then says the new version is current. Or reads the wall's build
+off `walls` / the flyway panel, since 0.75.0 (`Facts::build`, below).
 
 #### `here::accepting` is reported, never set
 
@@ -379,3 +379,25 @@ lab's exe to be let go of, rewrites `feed.json`'s `running` and relaunches it �
 `skein.exe`, since the real one would close the installed wall. `bun run lab` tears its front end
 down when the exe exits, which an update does by design, so the demonstration launched its lab
 with lab.ts's identifier and environment and a front end of its own.
+
+### Which build another wall runs crosses the flyway
+
+Lyss, 2026-10-22: *"add a way to read version number of other walls across the flyway."* A card
+was chasing `AU-LT-288` going quiet, the leading suspect was a store deadlock fixed in 0.73.2,
+and nothing could say which build that laptop ran.
+
+`Facts::build` (`fleet.rs`) is `CARGO_PKG_VERSION`, `Facts::dev` is `cfg!(debug_assertions)` — a
+lab or `tauri dev` wall is the tree as built, not the release of that name. **It is not the
+`version` beside it**: `Announcement::version` and `Entry::version` are the roster's statement
+clock (a wall's clock-at-announcing, raised every tick), which only orders one host's
+statements. Hence `build`.
+
+An absent field is **older than the first release that says** (`BUILD_ANNOUNCED_FROM`, 0.75.0),
+never a blank: `walls` answers `older than 0.75.0 — it does not say which version it runs`, and
+the panel `older build — before 0.75.0, which does not say which`. Both the Rust and TS homes of
+that number are held equal by `test/flyway.test.ts`. Read in three places and no more:
+`walls` (`version`, plus this wall's `this_wall_version` to compare against), the flyway panel's
+list (`flyway.ts::buildLine` — an older build says so with its version, a newer or equal one
+only states it, nothing coloured), and the transcript footer of a card on an older wall
+(`olderTag`, in the `elsewhere` the shadow answers). Constant for a process, so it never makes a
+statement look different from the last one.

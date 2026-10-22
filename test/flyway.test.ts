@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { flywayError, flywayReading, nothingHeard, worthJoining } from "../src/lib/flyway";
+import { readFileSync } from "node:fs";
+import {
+  BUILD_ANNOUNCED_FROM,
+  buildLine,
+  buildStanding,
+  flywayError,
+  flywayReading,
+  mineOf,
+  nothingHeard,
+  olderTag,
+  ownBuildLine,
+  worthJoining,
+  type Wall,
+} from "../src/lib/flyway";
 
 describe("the flyway panel's voice", () => {
   test("a rejection is quoted as it came", () => {
@@ -134,5 +147,73 @@ describe("forgetting a wall that has gone", () => {
   test("an older build is no different — quiet is quiet", () => {
     expect(forgettable(wall({ older: true }))).toBe(true);
     expect(forgettable(wall({ older: true, standing: "open" }))).toBe(false);
+  });
+});
+
+/* Which Volery a wall runs. The fact is `Facts::build` on the wire — not the
+   statement clock `fleet.rs` also calls `version` — and an absent one is *older
+   than the first release that says*, never a blank. */
+describe("the build a wall runs", () => {
+  const row = (host: string, build?: string, dev = false, me = false): Wall => ({
+    host,
+    me,
+    quietMs: 0,
+    standing: "open",
+    reason: null,
+    cardsLive: 0,
+    cardsWorking: 0,
+    allowanceUsed: null,
+    territories: [],
+    older: false,
+    build,
+    dev,
+  });
+  const mine = "0.75.1";
+
+  test("an older build says so with its version, a newer one and an equal one do not alarm", () => {
+    expect(buildLine(row("lap", "0.73.1"), mine)).toBe("older build — 0.73.1");
+    expect(buildLine(row("lap", "0.75.1"), mine)).toBe("build 0.75.1");
+    expect(buildLine(row("lap", "0.76.0"), mine)).toBe("newer build — 0.76.0");
+    expect(olderTag(row("lap", "0.73.1"), mine)).toBe("older build — 0.73.1");
+    expect(olderTag(row("lap", "0.75.1"), mine)).toBe("");
+    expect(olderTag(row("lap", "0.76.0"), mine)).toBe("");
+  });
+
+  test("a wall that says nothing is older than the first release that says, not blank", () => {
+    expect(buildStanding(row("lap"), mine)).toBe("unsaid");
+    expect(buildStanding(row("lap", ""), mine)).toBe("unsaid");
+    expect(buildLine(row("lap", ""), mine)).toContain(`before ${BUILD_ANNOUNCED_FROM}`);
+    expect(olderTag(row("lap"), mine)).toContain(BUILD_ANNOUNCED_FROM);
+    expect(olderTag(undefined, mine)).toBe("");
+  });
+
+  test("a development build is marked, because a lab at a version is not the release of that name", () => {
+    expect(buildLine(row("lab", "0.75.1", true), mine)).toBe("build 0.75.1 · development build");
+    expect(buildLine(row("lab", "0.73.1", true), mine)).toBe("older build — 0.73.1 · development build");
+  });
+
+  test("with nothing to compare against it says the version and does not guess", () => {
+    expect(buildStanding(row("lap", "0.73.1"), "")).toBe("unordered");
+    expect(buildLine(row("lap", "0.73.1"), "")).toBe("build 0.73.1");
+    expect(buildStanding(row("lap", "0.73.1-rc.1"), mine)).toBe("unordered");
+  });
+
+  test("this wall's own row says nothing about itself in the list, and says its version above it", () => {
+    const me = row("desk", "0.75.1", false, true);
+    expect(buildLine(me, mine)).toBe("");
+    expect(olderTag(me, mine)).toBe("");
+    expect(mineOf([row("lap", "0.73.1"), me])).toBe("0.75.1");
+    expect(mineOf([row("lap", "0.73.1")])).toBe("");
+    expect(ownBuildLine([me])).toBe("this machine runs volery 0.75.1");
+    expect(ownBuildLine([row("desk", "0.75.1", true, true)])).toContain("development build");
+    expect(ownBuildLine([row("lap", "0.73.1")])).toBe("");
+  });
+
+  /* Two homes for one number would drift; the Rust one names the first release
+     that announces, and the panel quotes it. */
+  test("the first release named here is the one fleet.rs names", () => {
+    const rust = readFileSync("src-tauri/src/flyway/fleet.rs", "utf8");
+    const m = /pub const BUILD_ANNOUNCED_FROM: &str = "([^"]+)"/.exec(rust);
+    expect(m?.[1]).toBe(BUILD_ANNOUNCED_FROM);
   });
 });

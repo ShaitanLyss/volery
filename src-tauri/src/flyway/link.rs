@@ -560,6 +560,7 @@ impl Link {
         /* Outside the store lock: two vault reads, and the wall's cards do not
            wait on the credential manager. Names only — `creds::holdings`. */
         (f.holds, f.lacks) = crate::creds::holdings();
+        (f.build, f.dev) = fleet::this_build();
         f
     }
 
@@ -2248,6 +2249,8 @@ impl Link {
                     files: e.facts.can.iter().any(|c| c == crate::attachments::CAN_FILES),
                     rate: e.facts.rate,
                     wants_rate: e.facts.wants_rate,
+                    build: e.facts.build.clone(),
+                    dev: e.facts.dev,
                 }
             })
             .collect()
@@ -2281,6 +2284,8 @@ impl Link {
                 can: e.facts.can.clone(),
                 holds: e.facts.holds.clone(),
                 lacks: e.facts.lacks.clone(),
+                build: e.facts.build.clone(),
+                dev: e.facts.dev,
                 snapshot: snapshots.get(&e.host).cloned(),
             })
             .collect()
@@ -2613,6 +2618,11 @@ pub struct RosterRow {
     rate: Option<u64>,
     /// Somebody there is looking at a burn rate (`Facts::wants_rate`).
     wants_rate: bool,
+    /// Which Volery it runs (`Facts::build`) — empty from a wall from before it
+    /// said. Not the statement clock; see there.
+    build: String,
+    /// A debug build, a lab or `tauri dev` (`Facts::dev`).
+    dev: bool,
 }
 
 #[derive(Serialize)]

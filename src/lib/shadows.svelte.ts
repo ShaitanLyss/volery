@@ -76,6 +76,7 @@ import type { Effort } from "./commands";
 import { afarTimeline, type Gist } from "./gist";
 import { actRefusal, carriesTo, panelNotes, type Remote, type Said, type Verb } from "./handle";
 import { usable } from "./accounts";
+import { mineOf, olderTag } from "./flyway";
 import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import {
@@ -177,6 +178,10 @@ export type RosterRow = {
   /** It opens an empty card a person here asks for (`flyway/opening.rs`) —
    *  what a section's menu reads to offer one. Absent from an older build. */
   opens?: boolean;
+  /** Which Volery it runs and whether that is a debug build (`Facts::build`,
+   *  `Facts::dev`) — empty or absent from a wall from before it said. */
+  build?: string;
+  dev?: boolean;
 };
 
 /** How a card asked for from a section ended: its id on that wall, or why not. */
@@ -586,7 +591,14 @@ export class Shadow {
   /* A path on the owning machine, so not a fact this wall can draw or open. */
   readonly planDoc = null;
   get elsewhere() {
-    return { host: this.host, unheard: this.face.unheard };
+    const row = this.#walls.roster.find((r) => r.host === this.host && !r.me);
+    /* Said only of an older build, the one fact there is to act on; "" for a
+       wall as new as this one or newer. `Wall` is `RosterRow`'s drawn shape. */
+    return {
+      host: this.host,
+      unheard: this.face.unheard,
+      older: olderTag(row, mineOf(this.#walls.roster)),
+    };
   }
   /** What the panel keys its read of the conversation on: it reads when it
    *  opens and again whenever this changes. The card's own wall saying it has

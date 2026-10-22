@@ -36,7 +36,7 @@
     /** The wall this card is on, when it is not this one. Read off the face
      *  rather than passed beside it, so no surface that draws a card can
      *  forget to say where it is. */
-    elsewhere?: { host: string; unheard: boolean };
+    elsewhere?: { host: string; unheard: boolean; older?: string };
     /** The wall that asked for this card to be opened here, if one did. */
     bornFor?: string | null;
     /** You acknowledged the notice about this card's rest — see

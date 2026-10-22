@@ -344,6 +344,9 @@ pub fn walls_schema() -> Value {
              Per wall: whether it has been heard from lately, whether it takes work from other \
              walls (a person's switch on that machine — without it a wall takes only answers, \
              reports from cards it opened, and reads and closes by the card that opened one), \
+             the version of Volery it runs (`version` — a wall too old to say reads \"older than\" \
+             the first release that does, and a lab or `tauri dev` wall is marked as a development \
+             build; `this_wall_version` is this one's, to compare against), \
              its territories (what `spawn` with `host` may name as `project`), the credentials \
              it holds and knows it lacks (`holds`, `lacks` — what `spawn`'s `needs` is checked \
              against; names only, since no credential ever crosses between machines), and its cards \
@@ -407,6 +410,11 @@ pub struct WallSeen {
     /// (`fleet::Facts::holds`).
     pub holds: Vec<String>,
     pub lacks: Vec<String>,
+    /// Which Volery it runs (`fleet::Facts::build`); empty from a wall from
+    /// before it said — see `version_said`.
+    pub build: String,
+    /// A debug build: a lab or `tauri dev`, not an installed release.
+    pub dev: bool,
     /// That wall's latest cards snapshot, opaque — see `cards_in`.
     pub snapshot: Option<Value>,
 }
@@ -457,6 +465,7 @@ pub fn walls_answer(
                 "territories": w.territories,
                 "cards_open": w.cards_live,
                 "cards_working": w.cards_working,
+                "version": version_said(&w.build, w.dev),
                 "cards": cards,
             });
             if let Some(obj) = row.as_object_mut() {
@@ -490,7 +499,25 @@ pub fn walls_answer(
             row
         })
         .collect();
-    json!({ "this_wall": me, "walls": walls })
+    let (here, dev) = super::fleet::this_build();
+    json!({ "this_wall": me, "this_wall_version": version_said(&here, dev), "walls": walls })
+}
+
+/// What `walls` says a wall runs: its version, a development build marked as
+/// one — a lab at `0.74.2` is a tree as built, not the release of that name —
+/// and, of a wall that said nothing, **that it is older than the first release
+/// which says**, never a blank. A blank reads as "fine" or "unknown" at the
+/// reader's whim; "older than 0.75.0" is the one thing an absent field proves,
+/// and is what a card chasing a bug fixed in some release can act on.
+pub fn version_said(build: &str, dev: bool) -> String {
+    if build.is_empty() {
+        return format!("older than {} — it does not say which version it runs", super::fleet::BUILD_ANNOUNCED_FROM);
+    }
+    if dev {
+        format!("{build} (a development build — a lab or `tauri dev`, not an installed release)")
+    } else {
+        build.to_string()
+    }
 }
 
 /// One card out of a snapshot.
@@ -562,6 +589,8 @@ mod tests {
             can: crate::flyway::fleet::CAN.iter().map(|c| c.to_string()).collect(),
             holds: Vec::new(),
             lacks: Vec::new(),
+            build: String::new(),
+            dev: false,
             snapshot: Some(snapshot),
         }
     }
@@ -579,6 +608,25 @@ mod tests {
         assert_eq!(v["walls"][0]["holds"], json!(["github"]));
         assert_eq!(v["walls"][0]["lacks"], json!(["asana"]));
         assert!(v["walls"][1].get("holds").is_none() && v["walls"][1].get("lacks").is_none());
+    }
+
+    /// A wall's version is told by the walls that say it; one that does not is
+    /// older than the first release which does — never a blank — and a debug
+    /// build is marked, since a lab at `0.74.2` is not the release of that name.
+    #[test]
+    fn walls_say_which_volery_each_runs_and_an_older_one_is_older_than() {
+        let mut new = wall("new", "open", json!({ "cards": [] }));
+        new.build = "0.75.0".into();
+        let mut lab = wall("lab", "open", json!({ "cards": [] }));
+        lab.build = "0.75.0".into();
+        lab.dev = true;
+        let old = wall("old", "open", json!({ "cards": [] }));
+        let v = walls_answer("me", &[new, lab, old], &[], None);
+        assert_eq!(v["walls"][0]["version"], "0.75.0");
+        assert!(v["walls"][1]["version"].as_str().unwrap().starts_with("0.75.0 (a development build"));
+        let said = v["walls"][2]["version"].as_str().unwrap();
+        assert!(said.starts_with(&format!("older than {}", crate::flyway::fleet::BUILD_ANNOUNCED_FROM)), "{said}");
+        assert_eq!(v["this_wall_version"].as_str().unwrap().split(' ').next().unwrap(), env!("CARGO_PKG_VERSION"));
     }
 
     /// The snapshot is read for four fields and nothing more is asked of it:

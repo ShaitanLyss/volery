@@ -18,10 +18,13 @@
   import { listen } from "@tauri-apps/api/event";
   import {
     acceptingReading,
+    buildLine,
     flywayError,
     flywayReading,
     forgettable,
+    mineOf,
     nothingHeard,
+    ownBuildLine,
     otherWalls,
     wallLine,
     worthJoining,
@@ -271,6 +274,7 @@
       </section>
       <section>
         <h3>the other walls</h3>
+        {#if ownBuildLine(walls)}<p class="aside">{ownBuildLine(walls)}</p>{/if}
         {#if otherWalls(walls).length === 0}
           <p class="aside">
             None heard from yet. A wall is learned from the one it joined through, and from
@@ -306,6 +310,13 @@
                   {/if}
                 </div>
                 <span class="aside">{wallLine(w)}</span>
+                <!-- Which Volery it runs: the fact somebody chasing a bug fixed
+                     in some release needs, and the thing that says whether a
+                     wall wants updating. Quiet — an older build says so, and
+                     nothing here is coloured. -->
+                {#if buildLine(w, mineOf(walls))}
+                  <span class="aside">{buildLine(w, mineOf(walls))}</span>
+                {/if}
               </li>
             {/each}
           </ul>
