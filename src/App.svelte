@@ -225,10 +225,12 @@
   import { GLASS_SCALES, glassScaleFor, glassScaleSaid } from "./lib/arrange";
   import { berths } from "./lib/berth.svelte";
   import { fullPath, insideRoot } from "./lib/finding";
+  import { readAfar } from "./lib/across";
   import {
     paths,
     provideFileNavigation,
     provideLinkOpener,
+    pullAfar,
   } from "./lib/paths.svelte";
   import {
     MIN_H,
@@ -269,7 +271,6 @@
     close: (conv) => closeConv(conv),
     processes: (conv) => (showProcs = conv.id),
     unpin: (conv) => unpinCard(conv),
-    look: (root, path, line) => void finder.lookAt(root, path, line),
     furniture: (conv) => furnitureOf(conv),
   });
   /* Every card named by its handle anywhere on the window is named through
@@ -2271,6 +2272,20 @@
     line: number | null,
     how: "open" | "reveal",
   ) {
+    /* A path a card on another wall wrote: its wall reads the file and this
+       one opens a copy, read-only, saying whose it is (`across.ts`). Explorer
+       runs on this machine, so "reveal" shows the copy. A folder over there is
+       never a link (`flyway_see_stat`), so it never arrives here. */
+    if (readAfar(root)) {
+      void pullAfar(root, path)
+        .then((copy) =>
+          how === "reveal"
+            ? reveal(fullPath(copy.root, copy.path))
+            : finder.lookAt(copy.root, copy.path, line, { full: copy.full, host: copy.host }),
+        )
+        .catch((e) => (skein.fault = String(e).replace(/^Error:\s*/, "")));
+      return;
+    }
     const full = fullPath(root, path);
     const dir = paths.kind(root, path) === "dir";
 

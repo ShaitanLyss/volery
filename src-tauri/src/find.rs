@@ -126,6 +126,7 @@ pub(crate) fn quiet(cmd: &mut Command) -> &mut Command {
 /// then fails to start. The cost of a miss is one failed `CreateProcess`, which
 /// is cheaper than the `where.exe` it replaces.
 fn ripgrep(root: &str, args: &[&str]) -> Result<std::process::Child, String> {
+    rooted(root)?;
     let mut last = String::new();
     for exe in candidates() {
         let mut cmd = Command::new(&exe);
@@ -230,7 +231,21 @@ fn slashes(path: &str) -> String {
 /// `..` is refused rather than resolved, and so is anything absolute or with a
 /// drive prefix — resolving would mean `canonicalize`, which needs the file to
 /// exist and answers differently for a symlink.
+/// A root this machine can read from: a whole path. A card on another wall
+/// counts its paths from a root that names it (`src/lib/across.ts`), and the
+/// front end sends those to that wall — so one arriving here is a branch that
+/// forgot to, and is refused rather than read against the process's own
+/// directory, where a file of the right name would be the wrong file.
+fn rooted(root: &str) -> Result<(), String> {
+    if Path::new(root).is_absolute() {
+        Ok(())
+    } else {
+        Err(format!("{root} is not a folder on this machine"))
+    }
+}
+
 fn safe_join(root: &str, rel: &str) -> Result<PathBuf, String> {
+    rooted(root)?;
     let rel = Path::new(rel);
     for part in rel.components() {
         match part {
@@ -843,6 +858,11 @@ pub async fn classify_paths(
 ) -> Result<std::collections::HashMap<String, String>, String> {
     crate::off_main(move || {
         let mut out = std::collections::HashMap::new();
+        /* An absolute path in the list would otherwise be stat'ed on this disk
+           for a card whose disk is another machine's (`rooted`). */
+        if rooted(&root).is_err() {
+            return Ok(out);
+        }
         for raw in paths.into_iter().take(CLASSIFY_CAP) {
             /* A path on a share is not asked about. Stat'ing `\\host\x` is
                an SMB handshake carrying this user's credentials to whatever
@@ -1110,6 +1130,8 @@ mod tests {
     #[test]
     fn a_leading_dot_is_a_path_and_not_an_escape() {
         assert!(safe_join("C:\\atelier\\skein", "./src/lib/finding.ts").is_ok());
+        /* A root that names a card on another wall is never read here. */
+        assert!(safe_join("volery-afar:lab/c1", "src/lib/finding.ts").is_err());
         assert!(safe_join("C:\\atelier\\skein", ".claude/rules/finding.md").is_ok());
     }
 

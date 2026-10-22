@@ -15,6 +15,9 @@
 
 import { clip } from "./classify";
 import type { ToolCall } from "./toolcall";
+import { readAfar } from "./across";
+import { fullPath } from "./finding";
+import { isDataPicture } from "./markdown";
 
 /** The words `show.rs` puts in front of the copy's name, and the words it says
  *  a file with. Read out of the Rust by the test, so a reworded result fails
@@ -81,6 +84,74 @@ export function shownOf(call: ToolCall): Shown {
     if (text.startsWith(FILE_MARK)) return { state: "file", path, caption };
   }
   return { state: "refused", path, caption, why: text.trim() || "nothing was said" };
+}
+
+/* ── where a picture is read from ─────────────────────────────────────────
+ *
+ * A figure and a picture in prose each used to work out for themselves where
+ * the bytes were, off the directory the surface counted from — and each
+ * decided on its own that a card on another wall had none, so the figure said
+ * its copy was kept over there and the prose kept its words. These two are now
+ * the only places that decide, and they decide off the same root every path
+ * link uses (`across.ts`): a root on this disk reads this disk, a root naming a
+ * card on another wall asks that wall. A surface hands over the root and the
+ * words; what kind of read that becomes is not its business. */
+
+/** Where a picture comes from. `data` carries its own bytes; `file` is a path
+ *  on this machine, read as it is now; `kept` is the copy `show` made, with the
+ *  agent's own path beside it to fall back on if the copy has gone; `afar` is
+ *  either of the last two on the wall the card runs on, which reads it there
+ *  (`flyway/seeing.rs`) — `path` as the card wrote it, since only that wall
+ *  knows what it counts from. */
+export type PictureSource =
+  | { kind: "data"; url: string }
+  | { kind: "file"; path: string }
+  | { kind: "kept"; id: string; path: string }
+  | { kind: "afar"; host: string; card: string; kept: string | null; path: string };
+
+/** A picture written in prose as `![alt](src)`, against the root the surface
+ *  counts from — or `null` where none may be read, which draws its words. A
+ *  `data:` picture carries its own bytes and needs no root. */
+export function proseSource(root: string | null, src: string): PictureSource | null {
+  if (isDataPicture(src)) return { kind: "data", url: src };
+  if (!root) return null;
+  const far = readAfar(root);
+  if (far) return { kind: "afar", host: far.host, card: far.card, kept: null, path: src };
+  return { kind: "file", path: fullPath(root, src) };
+}
+
+/** The copy a `show` call kept, by its name, with the path it was shown from
+ *  beside it — resolved against the root here, and as written for the wall
+ *  that resolves it there. A copy is the studio's own and needs no root to be
+ *  read; the root only decides which studio. */
+export function keptSource(root: string | null, id: string, path: string): PictureSource {
+  const far = readAfar(root);
+  if (far) return { kind: "afar", host: far.host, card: far.card, kept: id, path };
+  return { kind: "kept", id, path: root && path ? fullPath(root, path) : path };
+}
+
+/** A path a card wrote, made whole against the root it counts from — or left
+ *  as written for a card on another wall, whose own wall makes it whole. What
+ *  a figure's plate opens and what it says the file is. */
+export function placeOf(root: string | null, path: string): string {
+  if (!root || !path || readAfar(root)) return path;
+  return fullPath(root, path);
+}
+
+/** A short string naming a picture, for keying the effects that load it —
+ *  never the megabytes of a `data:` picture, and never one that two walls or
+ *  two cards could share for two different pictures. */
+export function sourceKey(s: PictureSource): string {
+  switch (s.kind) {
+    case "data":
+      return `data:${s.url.length}:${s.url.slice(-48)}`;
+    case "kept":
+      return `kept:${s.id}`;
+    case "file":
+      return `file:${s.path}`;
+    case "afar":
+      return `afar:${s.host}\n${s.card}\n${s.kept ?? ""}\n${s.path}`;
+  }
 }
 
 /** A file's own name, for a plate and for a sentence about it. */

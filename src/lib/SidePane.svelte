@@ -16,6 +16,12 @@
   import { cardName } from "./naming";
   import { shortPath } from "./handoff";
   import { untrack } from "svelte";
+  import { useFiles } from "./paths.svelte";
+
+  /* A file it touched opens the way any path in its words does — the scope
+     `ChatView` set from the card's root, and the one gesture that opens a
+     path (`App.svelte::goToPath`). */
+  const opener = useFiles();
 
   type Tab = "plan" | "files" | "linked" | "jobs" | "aside";
 
@@ -145,7 +151,7 @@
       {:else if files && files.files.length}
         <div class="files">
           {#each files.files as f (f.path)}
-            <button type="button" onclick={() => card.look?.(f.path, null)} title={f.path}>
+            <button type="button" onclick={() => opener()?.go(f.path, null, "open")} title={f.path}>
               <span class="p">{shortPath(f.path, files.root)}</span>
               <span class="op">{f.op === "write" ? "edited" : "read"}{f.count > 1 ? ` ×${f.count}` : ""}</span>
             </button>

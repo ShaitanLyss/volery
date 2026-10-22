@@ -12,6 +12,8 @@
  * so every row of the table is tested without a window. */
 
 import { CARRY_MOST, carriedCost, looksLike, type Turn } from "./attach";
+import type { CardHandle } from "./cards.svelte";
+import type { Readable } from "./transcript";
 
 export type Verb =
   | "glass"
@@ -77,6 +79,185 @@ export const COST: Record<Verb, Cost> = {
 };
 
 export const VERBS = Object.keys(COST) as Verb[];
+
+/* ── what does not cross to a card on another wall, and why ─────────────
+ *
+ * Lyss, 2026-10-22: *"Things that work locally should work accross the flyway
+ * by construction, with no omission possible, things that don't work accross
+ * should be exceptions."* So what a card can do is enumerated three ways the
+ * compiler can see, and every entry crosses unless it says why not:
+ *
+ * - **its verbs** — `COST` above. A verb whose cost is `local` is one that
+ *   stays, and `VERB_STAYS` must give its reason (`test/handle.test.ts`); every
+ *   other verb crosses as an `act`, and the same test holds `ACTS` to
+ *   `act.rs`'s `VERBS`, so a verb cannot be added that neither crosses nor says
+ *   why.
+ * - **what a gesture holds** — `CardHandle`, decided member by member in
+ *   `HANDLE_CROSSING`. A member added to the interface is a compile error there
+ *   until somebody decides.
+ * - **what the transcript reads** — `Readable`, the same way in
+ *   `READABLE_CROSSING`.
+ *
+ * What is none of those — a behaviour a surface has rather than a member it
+ * reads — is `FEATURE_STAYS`, so the list a person reads is one list. An entry
+ * with a `sink` is a gap somebody has filed rather than a decision.
+ *
+ * **What used to be here and is not**: a card elsewhere's pictures, the paths in
+ * its words and its tool calls, and opening the files they name. Those cross
+ * now, by its root (`across.ts`) and its wall's answer (`flyway/seeing.rs`):
+ * any file on that machine, behind the switch a `recall` is held to — Lyss's
+ * call, on the argument that holding the flyway key is full trust already. The
+ * one thing about them that stays is a path on a network share, which is about
+ * a third host and not about the peer. */
+
+/** Whether one capability reaches a card on another wall. */
+export type Crossing = "crosses" | { stays: string; /** The sink item that holds the gap. */ sink?: string };
+
+/** The `local` verbs, each with why. */
+export const VERB_STAYS: Readonly<Partial<Record<Verb, string>>> = {
+  pin: "where a card stands on this wall is this wall's furniture, and a card elsewhere is laid out in its wall's section rather than placed — a pin would be a row keyed on an id this store has never seen",
+  regroup:
+    "a grouping is a territory on this wall; a card elsewhere stands in its own wall's project section, which is that wall's to arrange",
+  hand: "handing a plan on opens a fresh card from the plan document, and both the document and the card would be on the machine the card runs on — not built as an act (sink dbfd0857)",
+  move: "moving a card between walls is its own exchange (`flyway/moving.rs`), started from the wall the card runs on",
+  processes:
+    "what a card is holding is a job object on the machine it runs on; listing it from here is not built as a read (sink dbfd0857)",
+};
+
+export const HANDLE_CROSSING: { readonly [K in keyof CardHandle]-?: Crossing } = {
+  id: "crosses",
+  conv: {
+    stays:
+      "only a card on this wall is a `Conversation` — rousing, the reap pass and persistence are wired to them, and one from another wall reaching any of them is `claude --resume` here on a session that exists over there",
+  },
+  face: "crosses",
+  readable: "crosses",
+  gist: "crosses",
+  remote: "crosses",
+  where: "crosses",
+  scripts: "crosses",
+  reach: "crosses",
+  hints: "crosses",
+  menu: "crosses",
+  can: "crosses",
+  do: "crosses",
+  carries: "crosses",
+  say: "crosses",
+  stir: {
+    stays:
+      "a keystroke wakes a dormant card here before you send it anything; no touch travels between walls, so a card elsewhere wakes when the words arrive, and the dock says so",
+  },
+  history: "crosses",
+  ask: "crosses",
+  asking: "crosses",
+  notices: "crosses",
+  allowance: "crosses",
+  restedAt: "crosses",
+  turnSince: "crosses",
+  answer: "crosses",
+  defer: "crosses",
+  holdAsk: {
+    stays:
+      "a half-answered sheet is held by the wall the question is parked on, so a filing there keeps what was answered; from another wall the sheet is kept here while the question stands, and nothing carries it to that wall's pile",
+    sink: "1d9a2f54",
+  },
+  acknowledge: "crosses",
+  acknowledgeRest: "crosses",
+};
+
+export const READABLE_CROSSING: { readonly [K in keyof Readable]-?: Crossing } = {
+  id: "crosses",
+  cwd: {
+    stays:
+      "a directory on the machine the card runs on, never read here — what crosses is `root`, which sends a path back to that machine to be read (`across.ts`)",
+  },
+  root: "crosses",
+  kind: "crosses",
+  lines: "crosses",
+  history: {
+    stays:
+      "the whole scrollback stays on the wall that holds it — the last 120 lines cross (`TAIL_LINES`), the round you are in and the one before, and reading further back is reading it there",
+  },
+  historyState: "crosses",
+  historyPartial: { stays: "follows `history`: a tail is the end of the conversation by definition" },
+  streaming: {
+    stays:
+      "no token stream crosses: the column is read again when the card's digest moves (`historyMark`), so an answer appears as it settles rather than as it is typed — one read a settled line instead of an exchange a token",
+  },
+  working: "crosses",
+  dormant: "crosses",
+  everSpoke: "crosses",
+  activity: "crosses",
+  doing: "crosses",
+  dropped: {
+    stays: "bookkeeping for a live column sliding off its front; a tail is read whole each time and never slides",
+  },
+  ctx: "crosses",
+  compactFrac: "crosses",
+  model: "crosses",
+  effort: "crosses",
+  gear: "crosses",
+  jobs: {
+    stays:
+      "a job's name and state cross; its output file is on the machine the card runs on, so the drawer lists it and cannot tail it",
+    sink: "20dcd867",
+  },
+  elsewhere: "crosses",
+  historyMark: "crosses",
+  saidMark: "crosses",
+  notes: "crosses",
+  freshness: "crosses",
+};
+
+/** What a surface does with a card here and not with one elsewhere, by
+ *  behaviour rather than by member. */
+export const FEATURE_STAYS: Readonly<Record<string, Exclude<Crossing, "crosses">>> = {
+  share: {
+    stays:
+      "a path on a network share is never read for another wall, as it is never read for a picture here: opening one is an SMB handshake carrying this user's credentials to whatever host an agent's words named — a third machine, not the peer",
+  },
+  folder: {
+    stays:
+      "a folder a card on another wall names is plain text: opening one is Explorer, and Explorer runs on this machine",
+  },
+  editCopy: {
+    stays:
+      "a file from another wall opens as a read-only copy — editing it in nvim or opening it in its own application would change a copy nobody else reads, on a machine the change never reaches",
+  },
+  resultPictures: {
+    stays:
+      "a picture a tool returned (a `Read` of a PNG) rides that call's result in memory and in the session file over there; the tail carries a result's text only, so the fold says it answered and shows no picture",
+    sink: "2883fa91",
+  },
+  documentPictures: {
+    stays:
+      "a markdown document read from another wall is a copy of that one file, so a picture or a path it names relative to itself is not pulled with it, and draws as words",
+    sink: "ecba68be",
+  },
+  pins: {
+    stays:
+      "a picture an agent pins stands on its own wall beside its card; a card elsewhere is laid out in its section here, which has no furniture beside it",
+    sink: "922519cd",
+  },
+  trail: {
+    stays:
+      "the files a card touched are recorded by the wall it runs on, so chat view's files tab says where they are rather than listing them",
+    sink: "30a297a8",
+  },
+  bang: {
+    stays: "a `!` line runs in the card's directory, and the directory is on the machine the card runs on",
+  },
+  commands: {
+    stays:
+      "Volery's own commands other than `/clear` and `/account` (`/rename`, `/btw`, `/gear`, `/plan` …) are carried out by this wall on its own cards; a card elsewhere is refused with the reason, the draft kept",
+    sink: "732243e9",
+  },
+  selection: {
+    stays:
+      "the marquee, a gathering and a broadcast are this wall's cards (`studio.selected`) — a carry has nowhere to write for a card with no row here",
+  },
+  strands: { stays: "strands, roots and wisps are drawn between this wall's cards (`cardBoxes`)" },
+};
 
 /** The wall a card is on, when it is not this one. */
 export type Remote = {

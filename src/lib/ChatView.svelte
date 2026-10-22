@@ -23,7 +23,7 @@
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
   import { groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Ghost } from "./chatview";
-  import { scopeFiles, scopePictures } from "./paths.svelte";
+  import { scopeFiles } from "./paths.svelte";
   import { selectionMarkdown } from "./copy";
   import { stepBy, landing } from "./outline";
   import { nudgeReading } from "./layout";
@@ -552,11 +552,10 @@
 
   /* ── the conversation in front of you ───────────────────────────────── */
 
-  /* Paths in what it says count from its directory; its pictures are read off
-     this disk only when it is here. The scopes are the mounter's to set, as
-     the panel sets them (`chatview.md`), and they default to off. */
-  scopeFiles(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
-  scopePictures(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
+  /* Paths and pictures in what it says count from the card's own root
+     (`Readable.root`), wherever the card runs. The scope is the mounter's to
+     set, as the panel sets it (`chatview.md`), and it defaults to off. */
+  scopeFiles(() => card?.readable.root ?? null);
 
   let scroller: HTMLDivElement | undefined = $state();
   let thread = $state<ReturnType<typeof Thread> | undefined>();

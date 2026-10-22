@@ -9,9 +9,10 @@
      whitespace, so indenting the branches of this `{#each}` would insert a
      space between every word and the emphasis next to it. */
   import Self from "./Inlines.svelte";
-  import InlinePicture, { type PictureSource } from "./InlinePicture.svelte";
-  import { isDataPicture, pictureMarkdown, type Inline } from "./markdown";
-  import { fullPath, namedPath, pathsIn } from "./finding";
+  import InlinePicture from "./InlinePicture.svelte";
+  import { pictureMarkdown, type Inline } from "./markdown";
+  import { proseSource } from "./showing";
+  import { namedPath, pathsIn } from "./finding";
   import { paths, symbolLine, useFiles, useLinks, usePictureRoot } from "./paths.svelte";
   import { useCardLinks } from "./cardlinks.svelte";
   import { useRefLinks } from "./reflinks.svelte";
@@ -225,18 +226,11 @@
   }
 
   /** Where a picture written in the prose is read from, or `null` where it
-   *  cannot be: a file needs a directory behind the prose to count from and a
-   *  surface allowed to reach the disk at all — the file scope a path link
-   *  needs, unless the surface said otherwise (`usePictureRoot`) — so a chat
-   *  card's `![…](C:\…)` stays words. A `data:` picture carries its own bytes
-   *  and needs neither. See `pictureSource`. */
+   *  cannot be — off the root a path link counts from, unless the surface said
+   *  otherwise (`usePictureRoot`), so a chat card's `![…](C:\…)` stays words.
+   *  Which wall reads it is `proseSource`'s to decide, not this renderer's. */
   const pictureRoot = usePictureRoot();
-  function pictureFrom(src: string): PictureSource | null {
-    if (isDataPicture(src)) return { kind: "data", url: src };
-    const root = pictureRoot();
-    if (!root) return null;
-    return { kind: "file", path: fullPath(root, src) };
-  }
+  const pictureFrom = (src: string) => proseSource(pictureRoot(), src);
 
   function hint(path: string, dir: boolean, symbol?: string[]): string {
     if (dir) return `Open ${path} in Explorer · ctrl-click to show it in Explorer`;

@@ -43,11 +43,10 @@
     onreveal?: (id: string) => void;
   } = $props();
 
-  /* A path in what it said counts from its own directory, as it does in the
-     glance and the transcript — the scope is the one thing a surface says for
-     itself, and a pin that forgot it would draw the same words as plain text.
-     A card on another wall has no directory here, and so no links. */
-  scopeFiles(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
+  /* A path in what it said counts from its own root, as it does in the glance
+     and the transcript — the scope is the one thing a surface says for itself,
+     and a pin that forgot it would draw the same words as plain text. */
+  scopeFiles(() => card?.readable.root ?? null);
 
   const face = $derived(card?.face ?? null);
   const said = $derived(face ? lastMessage(face) : "");

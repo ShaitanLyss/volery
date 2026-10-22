@@ -78,7 +78,9 @@
    *  that owns it. See `Finder.outward` — before it, `e` on a spreadsheet opened
    *  a screenful of `PK` in an editor. */
   function edit() {
-    if (!finder.sheet) return;
+    /* A copy of a file on another wall is read, never edited or opened: see
+       `Finder.copyOf`. */
+    if (!finder.sheet || finder.copyOf) return;
     if (finder.outward) {
       void finder.openOutside();
       return;
@@ -339,8 +341,10 @@
     <span class="mark"
       >{editor.on ? "edit" : finder.mode === "files" ? "find file" : "grep"}</span
     >
-    <span class="path" title={finder.root}
-      >{splitPath(finder.root).name || finder.root}</span
+    <!-- A copy of a file on another wall is that wall's, and the folder it
+         is kept in here is a key nobody should have to read. -->
+    <span class="path" title={finder.copyOf ? `on ${finder.copyOf.host}` : finder.root}
+      >{finder.copyOf ? `on ${finder.copyOf.host}` : splitPath(finder.root).name || finder.root}</span
     >
     {#if finder.busy}<span class="run">working</span>{/if}
     {#if finder.literal}
@@ -377,7 +381,7 @@
         onclick={() => editor.rest()}
         title="Back to reading it. nvim keeps your buffers (alt+E)">read</button
       >
-    {:else if finder.sheet && (!finder.sheet.binary || finder.outward)}
+    {:else if finder.sheet && !finder.copyOf && (!finder.sheet.binary || finder.outward)}
       <button
         class="ghost"
         onclick={edit}
@@ -425,11 +429,17 @@
     <!-- One step in: the file itself. -->
     {@const p = splitPath(finder.sheet.path)}
     <div class="sheetbar">
-      <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
+      {#if finder.copyOf}
+        <!-- A copy of a file on another wall: named as that wall names it, and
+             said to be read-only, since nothing here would reach it. -->
+        <span class="dir" title={finder.copyOf.full}>{finder.copyOf.full}</span>
+      {:else}
+        <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
+      {/if}
       {#if finder.sheetLine !== null}<span class="at">:{finder.sheetLine}</span>{/if}
       <span class="grow"></span>
-      {#if !finder.sheet.binary || finder.outward}<span class="note"
-          >e to {finder.outward ? "open" : "edit"}</span
+      {#if finder.copyOf}<span class="note">read-only copy</span>{:else if !finder.sheet.binary || finder.outward}<span
+          class="note">e to {finder.outward ? "open" : "edit"}</span
         >{/if}
       <span class="note">{(finder.sheet.bytes / 1024).toFixed(1)} kB</span>
     </div>
@@ -455,7 +465,7 @@
         sheet={finder.sheet}
         rendered={finder.rendered}
         line={finder.sheetLine}
-        outsideKey="e"
+        outsideKey={finder.copyOf ? null : "e"}
       />
     </div>
   {:else}

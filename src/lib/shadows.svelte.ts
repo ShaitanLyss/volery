@@ -28,6 +28,7 @@
  * *older* snapshot from winning, not a premature one.
  */
 
+import { afarRoot } from "./across";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { clock } from "./conversation.svelte";
@@ -554,6 +555,12 @@ export class Shadow {
      only holds the tail of: no scrollback of its own, no stream, no path on
      this disk. */
   readonly cwd = "";
+  /** Its wall's, by a root that names it there (`across.ts`): a path it wrote
+   *  is asked of that wall and never looked for on this disk. Nothing for a
+   *  chat card, as there. */
+  get root(): string | null {
+    return this.gist.kind === "chat" ? null : afarRoot(this.host, this.card);
+  }
   get kind() {
     return this.gist.kind;
   }

@@ -90,7 +90,7 @@ fn read_most(path: &std::path::Path, most: u64) -> std::io::Result<Option<Vec<u8
 }
 
 /// Where kept copies live, under the studio's data directory.
-const SHOWN_DIR: &str = "shown";
+pub(crate) const SHOWN_DIR: &str = "shown";
 
 /// How much `shown/` may hold before the oldest copies go.
 ///
@@ -98,7 +98,7 @@ const SHOWN_DIR: &str = "shown";
 /// an ordinary size — enough that a figure you scroll back to this week is
 /// still there, and a card left showing renders in a loop for a month costs a
 /// bounded corner of the disk rather than an unbounded one.
-const SHOWN_BUDGET: u64 = 256 * 1024 * 1024;
+pub(crate) const SHOWN_BUDGET: u64 = 256 * 1024 * 1024;
 
 /// The words the front end finds the copy by. `toolcall.ts`'s `shownOf` reads
 /// a result for exactly these, and `test/showing.test.ts` reads them out of this
@@ -172,7 +172,7 @@ fn is_svg(bytes: &[u8]) -> bool {
     opens && t.contains("<svg")
 }
 
-fn mime(ext: &str) -> &'static str {
+pub(crate) fn mime(ext: &str) -> &'static str {
     match ext {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -184,14 +184,14 @@ fn mime(ext: &str) -> &'static str {
     }
 }
 
-fn ext_of(path: &std::path::Path) -> Option<String> {
+pub(crate) fn ext_of(path: &std::path::Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .filter(|e| PICTURES.contains(&e.as_str()))
 }
 
-fn name_of(path: &std::path::Path) -> String {
+pub(crate) fn name_of(path: &std::path::Path) -> String {
     path.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("that file")
@@ -486,8 +486,23 @@ pub struct Picture {
     size: Option<(u32, u32)>,
 }
 
+/// One picture off the disk, before it is made into anything: its bytes and
+/// what they are, or the reason it is not drawn. `picture_at` makes it a
+/// `data:` URL for this window; another wall asking for it (`flyway/seeing.rs`)
+/// sends the bytes as they are — so the guards a figure here passes are, by
+/// construction, the guards a figure on another wall passes.
+pub(crate) struct Raw {
+    /// `None` when `too_large`.
+    pub data: Option<Vec<u8>>,
+    /// What the bytes are, off `sniff_picture` — never the name.
+    pub kind: &'static str,
+    pub bytes: u64,
+    pub too_large: bool,
+    pub size: Option<(u32, u32)>,
+}
+
 /// Read one picture off the disk, or say why not.
-pub(crate) fn picture_at(full: &std::path::Path) -> Result<Picture, String> {
+pub(crate) fn picture_raw(full: &std::path::Path) -> Result<Raw, String> {
     let name = name_of(full);
     if is_remote(&full.to_string_lossy()) {
         return Err(format!("{name} is on another machine's share, which is not read"));
@@ -500,38 +515,51 @@ pub(crate) fn picture_at(full: &std::path::Path) -> Result<Picture, String> {
         return Err(format!("{name} is not a file"));
     }
     let bytes = meta.len();
-    let path = full.to_string_lossy().to_string();
-    let head = |most: usize| -> Option<(u32, u32)> {
-        use std::io::Read;
-        let mut head = Vec::new();
-        let f = std::fs::File::open(full).ok()?;
-        let _ = f.take(most as u64).read_to_end(&mut head);
-        picture_size(&head)
-    };
+    let kind = mime_kind(full);
     if bytes > MAX_PICTURE {
         /* Still measured, so the box that says it is too large stands where
            the picture would have. */
-        let size = head(SIZE_HEAD);
-        return Ok(Picture { data_url: String::new(), bytes, too_large: true, path, size });
+        return Ok(Raw { data: None, kind, bytes, too_large: true, size: head_size(full) });
     }
     let Some(data) = read_most(full, MAX_PICTURE).map_err(|e| format!("could not read {name}: {e}"))?
     else {
-        return Ok(Picture { data_url: String::new(), bytes, too_large: true, path, size: head(SIZE_HEAD) });
+        return Ok(Raw { data: None, kind, bytes, too_large: true, size: head_size(full) });
     };
     let Some(kind) = sniff_picture(&data) else {
         return Err(format!("{name} is named as a picture but its bytes are not one"));
     };
     let size = picture_size(&data);
     if too_many_pixels_in(&data) {
-        return Ok(Picture { data_url: String::new(), bytes, too_large: true, path, size });
+        return Ok(Raw { data: None, kind, bytes, too_large: true, size });
     }
-    Ok(Picture {
-        data_url: format!("data:{};base64,{}", mime(kind), crate::base64(&data)),
-        bytes,
-        too_large: false,
-        path,
-        size,
-    })
+    Ok(Raw { data: Some(data), kind, bytes, too_large: false, size })
+}
+
+/// What a picture's name says it is, for a `Raw` that was never read whole.
+fn mime_kind(full: &std::path::Path) -> &'static str {
+    let ext = ext_of(full).unwrap_or_default();
+    PICTURES.iter().find(|p| **p == ext).copied().unwrap_or("png")
+}
+
+/// A picture's size off the head of its file — the box a too-large picture
+/// still stands in.
+pub(crate) fn head_size(full: &std::path::Path) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    let f = std::fs::File::open(full).ok()?;
+    let _ = f.take(SIZE_HEAD as u64).read_to_end(&mut head);
+    picture_size(&head)
+}
+
+/// Read one picture off the disk, or say why not.
+pub(crate) fn picture_at(full: &std::path::Path) -> Result<Picture, String> {
+    let raw = picture_raw(full)?;
+    let path = full.to_string_lossy().to_string();
+    let data_url = match &raw.data {
+        Some(d) => format!("data:{};base64,{}", mime(raw.kind), crate::base64(d)),
+        None => String::new(),
+    };
+    Ok(Picture { data_url, bytes: raw.bytes, too_large: raw.too_large, path, size: raw.size })
 }
 
 /// A picture named in an agent's prose — `![chart](C:\…\chart.png)` — for the
@@ -596,7 +624,7 @@ fn keep(data_dir: &std::path::Path, bytes: &[u8], ext: &str) -> Result<String, S
 /// Take the oldest copies out until what is left fits the budget. Never the one
 /// just written, which is the one a figure is about to ask for. Returns how
 /// many went, for the test.
-fn sweep(dir: &std::path::Path, budget: u64, spare: &str) -> usize {
+pub(crate) fn sweep(dir: &std::path::Path, budget: u64, spare: &str) -> usize {
     let Ok(read) = std::fs::read_dir(dir) else {
         return 0;
     };

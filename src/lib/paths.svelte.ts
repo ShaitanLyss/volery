@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { readAfar } from "./across";
 import { definitionLine, fullPath, insideRoot, isBareName, soleMatch } from "./finding";
 import { chunks, keyOf, negatives, onDiskMayHaveChanged, rootsToReask, settle } from "./known";
 
@@ -214,6 +215,27 @@ class Paths {
     return { path: at.path, kind };
   }
 
+  /** A path a tool call names, as one the viewer can open under `root`, or
+   *  `null` for one that stays text. Under a root here that is `insideRoot`,
+   *  answered without the disk: a path outside the card's tree is another
+   *  repository, `%TEMP%`, the engine directory, and the viewer would refuse
+   *  it. Under a root naming a card on another wall it is whatever that wall
+   *  said is a file there (`across.ts`) — the path as the call wrote it, which
+   *  is what its wall resolves. */
+  openable(root: string, value: string): string | null {
+    if (readAfar(root)) {
+      const t = this.target(root, { path: value });
+      return t?.kind === "file" ? t.path : null;
+    }
+    return insideRoot(value, root);
+  }
+
+  /** Queue whatever `openable` will need answered — nothing for a root on this
+   *  disk, which it answers without asking. */
+  wantOpenable(root: string, value: string) {
+    if (readAfar(root)) this.ask(root, value);
+  }
+
   /** Queue whichever question `target` will need answered. */
   want(root: string, at: { path: string; symbol?: string[] }) {
     if (isBareName(at.path)) this.seek(root, at.path);
@@ -227,8 +249,12 @@ class Paths {
     for (const [root, set] of named) {
       for (const names of chunks([...set], ASK_CHUNK)) {
         let answer: Record<string, string[]> | null = null;
+        const far = readAfar(root);
         try {
-          answer = await invoke<Record<string, string[]>>("find_names", { root, names });
+          /* A card on another wall: its wall walks its tree (`across.ts`). */
+          answer = far
+            ? await invoke<Record<string, string[]>>("flyway_see_names", { ...far, names })
+            : await invoke<Record<string, string[]>>("find_names", { root, names });
         } catch {
           /* No ripgrep, or the walk failed. That is not an answer: the names
              are left as they were (unknown, or whatever was last said) and
@@ -255,8 +281,14 @@ class Paths {
     for (const [root, set] of batches) {
       for (const paths of chunks([...set], ASK_CHUNK)) {
         let answer: Record<string, string> | null = null;
+        const far = readAfar(root);
         try {
-          answer = await invoke<Record<string, string>>("classify_paths", { root, paths });
+          /* A card on another wall: its wall answers for its disk, and never
+             this one — a path from there that happens to exist here is a
+             different file (`across.ts`). */
+          answer = far
+            ? await invoke<Record<string, string>>("flyway_see_stat", { ...far, paths })
+            : await invoke<Record<string, string>>("classify_paths", { root, paths });
         } catch {
           /* The disk refused to be asked. Said nothing, so recorded as
              nothing: `settle` leaves these alone and they are retried. */
@@ -330,6 +362,17 @@ export const paths = new Paths();
  *  that fails — because the reference was to a real file and opening it at the
  *  top is a fine degradation. */
 export async function symbolLine(root: string, path: string, symbol: string[]): Promise<number | null> {
+  if (readAfar(root)) {
+    /* On another wall: the file is pulled (once, for this and the open that
+       follows — `pullAfar`) and the copy is walked here. */
+    try {
+      const copy = await pullAfar(root, path);
+      const file = await invoke<{ text: string; binary: boolean }>("read_file_text", { root: copy.root, path: copy.path });
+      return file.binary ? null : definitionLine(file.text, symbol);
+    } catch {
+      return null;
+    }
+  }
   const rel = insideRoot(fullPath(root, path), root);
   if (!rel) return null;
   try {
@@ -338,6 +381,33 @@ export async function symbolLine(root: string, path: string, symbol: string[]): 
   } catch {
     return null;
   }
+}
+
+/* ── a file on another wall ────────────────────────────────────────────────
+ *
+ * Opening a path a card on another wall named: its wall reads the file and
+ * this one writes a copy into a folder of its own (`link/seen.rs`), which is
+ * what the viewer then reads — read-only, and saying whose file it is. Held a
+ * few seconds by the root and path, so a symbol's line and the open that
+ * follows it are one pull. */
+
+export type AfarCopy = { root: string; path: string; full: string; host: string };
+
+const PULL_HELD_MS = 15_000;
+const pulled = new Map<string, { at: number; copy: Promise<AfarCopy> }>();
+
+export function pullAfar(root: string, path: string): Promise<AfarCopy> {
+  const far = readAfar(root);
+  if (!far) return Promise.reject(new Error("that file is on this machine"));
+  const key = `${root}\n${path}`;
+  const now = Date.now();
+  for (const [k, v] of pulled) if (now - v.at > PULL_HELD_MS) pulled.delete(k);
+  const had = pulled.get(key);
+  if (had) return had.copy;
+  const copy = invoke<AfarCopy>("flyway_see_file", { ...far, path });
+  pulled.set(key, { at: now, copy });
+  copy.catch(() => pulled.delete(key));
+  return copy;
 }
 
 /* ── which directory a surface's prose counts from ─────────────────────────
@@ -423,9 +493,11 @@ export function useFiles(): () => FileLinks | null {
  *   means `docs/img/a.png`, while a path *link* in it is still asked about
  *   against the project — so only the pictures are rooted at the document's
  *   own folder (`Leaf.svelte`). Found in review.
- * - **A card on another wall.** Its directory is the far machine's, and a
- *   picture read from the same path here is a different picture drawn with
- *   nothing to say so. `null`: nothing is read (`Transcript.svelte`). */
+ *
+ * A card on another wall is not a third case. It used to be — its pictures
+ * were scoped to `null` so a path from there was never read here — and that
+ * is now what its root says by itself (`across.ts`): a picture under a root
+ * naming another wall is asked of that wall, by `showing.ts::proseSource`. */
 const PICTURES = Symbol("volery:pictures");
 
 export function scopePictures(root: () => string | null): void {
@@ -451,12 +523,16 @@ export function usePictureRoot(): () => string | null {
  *  already uses (`ask.rs::attach_files`).
  *
  *  Gated on the same scope, so a surface with no directory behind its prose —
- *  a chat card — opens nothing, as it links nothing. */
+ *  a chat card — opens nothing, as it links nothing. Under a root naming a card
+ *  on another wall the path is that card's as it wrote it, and goes to its
+ *  wall whole (`across.ts`). */
 export function useOpener(): () => ((full: string, how: "open" | "reveal") => void) | null {
   const scope = getContext<Scope | undefined>(FILES);
   return () => {
     const go = scope?.go;
-    if (!scope?.root() || !go) return null;
+    const root = scope?.root();
+    if (!root || !go) return null;
+    if (readAfar(root)) return (path, how) => go(root, path, null, how);
     return (full, how) => {
       const at = Math.max(full.lastIndexOf("/"), full.lastIndexOf("\\"));
       if (at <= 0) return;

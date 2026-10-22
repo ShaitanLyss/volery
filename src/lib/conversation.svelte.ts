@@ -1551,6 +1551,12 @@ export class Conversation {
       kind === "chat" ? "chat" : worktree ? `${base} · ${worktree}` : base;
   }
 
+  /** Where its paths count from (`Readable.root`): its directory, or nothing
+   *  for a chat card, which can make no file. */
+  get root(): string | null {
+    return this.kind === "project" ? this.cwd || null : null;
+  }
+
   /** Rebuild a card from its database row, with no process behind it.
    *
    *  This is what makes lazy restore feel instant: the wall is fully painted —

@@ -27,9 +27,10 @@
        pulled, so any mount of the thread asks — through the handle, which is
        why this takes a `CardHandle` rather than a `Readable` and two callbacks.
 
-     What it does not own: the files and pictures scopes. Those stay ambient and
-     the mounter sets them (`scopeFiles`, `scopePictures`), as the panel always
-     has, so a path is clickable here by the thread existing in a scope. */
+     What it does not own: the file scope. That stays ambient and the mounter
+     sets it from the card's own root (`scopeFiles(() => card.readable.root)`),
+     as the panel always has, so a path — in prose, in a picture, in a tool call
+     — opens here by the thread existing in a scope, wherever the card runs. */
   import { untrack } from "svelte";
   /* A `!` run keeps its colour: the shell is spawned with FORCE_COLOR, so `cargo`
      and `git` answer in SGR sequences exactly as they do in the console panel,
@@ -389,8 +390,6 @@
       text={lineText(line)}
       open={!!open[key]}
       ontoggle={() => toggle(key)}
-      root={conv.kind === "project" ? conv.cwd : undefined}
-      onfile={card.look}
     />
   {:else if line.kind === "text"}
     <!-- `data-nav` is the rail's whole handle on the panel: this one is the

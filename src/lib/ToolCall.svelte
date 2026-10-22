@@ -36,7 +36,8 @@
      reimplemented here because both are the front end's half of a bargain with
      `find.rs`: `insideRoot` mirrors its `safe_join`, and `placesIn` produces the
      `(path, line)` pair its viewer reads. See `.claude/rules/finding.md`. */
-  import { insideRoot, placesIn } from "./finding";
+  import { placesIn } from "./finding";
+  import { paths, useFiles } from "./paths.svelte";
   import RelayMark from "./RelayMark.svelte";
   import { SEND_TOOL } from "./relay";
 
@@ -44,9 +45,7 @@
     call,
     text,
     open = false,
-    root,
     ontoggle,
-    onfile,
   }: {
     call: ToolCall;
     /** `describeTool`'s prose — the line this always was. Passed in rather than
@@ -54,18 +53,17 @@
      *  doing cannot drift: both are the string the line was pushed with. */
     text: string;
     open?: boolean;
-    /** The card's working directory, so a path can be reduced to one the viewer
-     *  can actually open. Absent — a chat card has no project — and every path
-     *  here stays inert text, which is the honest answer rather than a link
-     *  that fails when pressed. */
-    root?: string;
     ontoggle?: () => void;
-    /** Open a file in the finder's viewer. Routed out rather than reached for,
-     *  the same way `onlink` is: this component knows about typography, and
-     *  which panel is on screen is not its business. The path is already
-     *  project-relative when it arrives. */
-    onfile?: (path: string, line: number | null) => void;
   } = $props();
+
+  /* Where a path in the call counts from, and how one opens — the ambient file
+     scope every prose path uses, never a prop. These were two props, `root`
+     and `onfile`, and the card on another wall was the surface that could not
+     pass them: its calls' paths stayed text. A surface with no scope (a chat
+     card) links nothing, which is the honest answer rather than a link that
+     fails when pressed. Which wall a path is on is `paths.openable`'s question
+     (`across.ts`), not this component's. */
+  const files = useFiles();
 
   /** How much of a result gets scanned for places to look at.
    *
@@ -118,8 +116,13 @@
    *  not inside this card's tree — another repository, `%TEMP%`, the engine
    *  directory. Those stay text. */
   function openable(value: string): string | null {
-    if (!onfile || !root) return null;
-    return insideRoot(value, root);
+    const f = files();
+    return f ? paths.openable(f.root, value) : null;
+  }
+
+  /** Open a path the call named, at a line if it said one. */
+  function look(path: string, line: number | null) {
+    files()?.go(path, line, "open");
   }
 
   /** The result, cut into plain runs and places you can go to.
@@ -128,9 +131,22 @@
    *  already lives there as `pieces` — what is local is which places survived
    *  `openable`, since a `Grep` across a monorepo names files this card cannot
    *  open and those have to stay text rather than become dead links. */
+  /* A path on another wall is a link only once that wall has said it is a
+     file there, so each is asked — here, in an effect, and never from the
+     derived that draws it. Nothing is asked for a card on this wall
+     (`wantOpenable`). Only while open: a closed call draws no path. */
+  $effect(() => {
+    const f = files();
+    if (!f || !open) return;
+    for (const a of view?.args ?? []) if (a.form === "path") paths.wantOpenable(f.root, a.value);
+    const text = shown?.head ?? "";
+    if (text && text.split("\n").length <= LINK_LINES)
+      for (const pl of placesIn(text)) paths.wantOpenable(f.root, pl.path);
+  });
+
   const outParts = $derived.by(() => {
     const text = shown?.head ?? "";
-    if (!text || !onfile || !root) return null;
+    if (!text || !files()) return null;
     if (text.split("\n").length > LINK_LINES) return null;
     /* Resolved to a plain `{ path, line }` here rather than carried as the
        `Place` it came from: the template then needs no narrowing and no
@@ -215,7 +231,7 @@
                     <button
                       type="button"
                       class="path go"
-                      onclick={() => onfile?.(rel, startAt)}
+                      onclick={() => look(rel, startAt)}
                       title="Look at {rel}{startAt ? ` from line ${startAt}` : ""}"
                       ><span class="dir">{p.dir}</span>{p.base}</button
                     >
@@ -322,7 +338,7 @@
                     part.go}<button
                     type="button"
                     class="go"
-                    onclick={() => onfile?.(go.path, go.line)}
+                    onclick={() => look(go.path, go.line)}
                     title="Look at {go.path} at line {go.line}"
                     >{part.text}</button
                   >{:else}{part.text}{/if}{/each}</pre>

@@ -744,7 +744,11 @@ pub fn needs(act: Act, from_card: bool) -> Option<&'static str> {
 ///   costs this wall no turn: it is another machine reaching into a transcript
 ///   on this disk, past what this wall chose to publish (the digest's capped
 ///   `said`), and the switch is the one consent a person here has given to
-///   other walls reaching in at all.
+///   other walls reaching in at all. **A person's read is the same act**
+///   (`flyway/seeing.rs`, a file a card's conversation names), and for a person
+///   the origin is the *wall* that opened the card — a person has no card to be
+///   the origin by, and the one at the machine that asked for a card is the one
+///   it is working for (Lyss, 2026-10-22).
 /// - **A close** stops work rather than starting it, so the switch does not
 ///   enter into it. An agent's close is the origin's only, which is
 ///   `spawn.rs`'s "a card you opened closes on your say-so" carried across;
@@ -766,7 +770,13 @@ pub fn may_reach(
     born_for: Option<&Origin>,
     replies: bool,
 ) -> Result<(), Refusal> {
-    let origin = from.card.is_some() && born_for.is_some_and(|b| b.card == from.card);
+    let origin = born_for.is_some_and(|b| match from.card.as_deref() {
+        Some(c) => b.card.as_deref() == Some(c),
+        /* A person: the wall that opened the card. Only a read consults it —
+           a person's close is let through below whoever opened it, and a
+           prompt never asks. */
+        None => b.host.eq_ignore_ascii_case(&from.host),
+    });
     match act {
         Act::Prompt if accepting || answering || replies => Ok(()),
         Act::Recall if accepting || origin => Ok(()),
@@ -3158,7 +3168,12 @@ mod tests {
             let other = lap(Some("x"));
             assert_eq!(may_reach(b, &other, accepting, false, born, false).is_ok(), accepting, "{other:?}");
             assert_eq!(may_reach(c, &other, accepting, false, born, false), Err(Refusal::NotOpenedFor), "{other:?}");
-            assert_eq!(may_reach(b, &lap(None), accepting, false, born, false).is_ok(), accepting);
+            /* A person at the wall that opened it reads it whatever the
+               switch says; a person anywhere else is held to it. */
+            assert_eq!(may_reach(b, &lap(None), accepting, false, born, false), Ok(()));
+            let elsewhere = Origin { host: "box".into(), card: None };
+            assert_eq!(may_reach(b, &elsewhere, accepting, false, born, false).is_ok(), accepting);
+            assert_eq!(may_reach(b, &lap(None), accepting, false, None, false).is_ok(), accepting);
             /* A card nobody on another wall asked for has no origin at all. */
             assert_eq!(may_reach(c, &origin, accepting, false, None, false), Err(Refusal::NotOpenedFor));
             /* A child reporting to the card that opened it is never work. */

@@ -11,6 +11,7 @@ paths:
   - "src/lib/Diagram.svelte"
   - "src/lib/sandbox.ts"
   - "test/showing.test.ts"
+  - "src/lib/across.ts"
 ---
 
 # Showing a picture in the conversation
@@ -315,23 +316,48 @@ its fence, and a picture that was not drawn — or a `show` that was refused —
 `data:` picture is elided to its media type (`pictureMarkdown`), never pasted as megabytes of
 base64. Nothing is a gap.
 
-## Where each one comes from, which a card on another wall will need
+## A card on another wall's pictures, drawn here (2026-10-22)
 
-Not built — the transport is `elsewhere.md`'s business — but the representation is left ready
-for it rather than special-cased as local:
+This section used to be called *Where each one comes from, which a card on another wall will
+need*, and said the representation was left ready and the transport was not built: a card on
+another wall read no local picture, and its figure said it was shown on the wall the card runs
+on, *rather than drawing a file of the same name from this machine, which would be a different
+picture*. Lyss, from QUEERISFREEDOM over a card on AU-LT-288: *"i'm not seeing the pictures from
+the remote … Things that work locally should work accross the flyway by construction."*
 
-- **A shown picture** is identified by its kept copy's name, `<uuid>.<ext>`, which is in the
-  tool result and therefore in the session file and in whatever a far wall's tail carries. It
-  resolves on the owning machine through `read_shown`, which is the read a pull (the way
-  `look.rs` pulls a question's files) would make.
-- **A prose picture** is identified by its path as written plus the card's directory — both
-  already in the transcript.
-- **A diagram** is identified by its fence text, and needs nothing from the owning machine at
-  all: any wall can draw it.
+**That refusal was right about the danger and wrong about the cure, and the new shape keeps the
+first half whole.** A file of the same name here *is* a different picture, so nothing here is
+ever read for a card elsewhere. What changed is that the picture is read *there*: the card's
+root names it on its wall (`across.ts`), `showing.ts::proseSource` and `keptSource` — the only
+two places that decide where a picture is read from — turn that into an `afar` source, and
+`InlinePicture` asks the wall the card runs on for it (`flyway/seeing.rs`, through
+`link/seen.rs`). The representation the old section described is exactly what travels: a shown
+picture by its kept copy's name, a prose picture by its path as written, counted from the card's
+directory on that machine. A diagram still needs nothing from anywhere.
 
-Until a carrier exists, a card on another wall reads no local picture (`scopePictures` is
-`null` there), and its figure says it was shown on the wall the card runs on — rather than
-drawing a file of the same name from this machine, which would be a different picture.
+- **Every refusal in *What is never drawn* still holds, on both walls.** The owning wall reads
+  through `show::picture_raw`, which is `read_picture`'s own read — the share allow-list, the
+  bytes typed by their sniff, `MAX_PICTURE`, `MAX_PIXELS` by the header's own numbers — and this
+  wall checks the bytes it is sent again (`seeing::received`) before they become a `data:` URL,
+  reading the size off them rather than believing the peer.
+- **The box is still the picture's before it decodes.** A kept figure's size is in the `show`
+  result as ever; a prose picture's header is asked of its wall at once (`flyway_see_measure`,
+  the far `measure_picture`), or read off the copy this wall already holds.
+- **Kept here, and only ever by wall, card and what was asked.** A kept copy is immutable and is
+  drawn from this wall's copy without asking again; a picture by path is the file as it is now,
+  so this wall offers back the stamp of its copy and draws it only when the far wall says the
+  file has not moved — the correctness rule *Holding pictures* states about the path cache,
+  kept across the wire.
+- **A wall that cannot be asked** — not taking work, not heard from, too old to know `see` —
+  draws what it last sent, titled *as it was when last read from …*, and a picture it never sent
+  keeps this section's old sentence with the reason after it: *x.png was shown on lab, and its
+  copy is kept there — …*. That is the degraded reading, and it is the honest one.
+- **No "open" on a picture from another wall.** Its `path` is empty: nothing on this machine is
+  where it came from. Its paths in prose open through the viewer as a read-only copy, which is
+  `elsewhere.md`'s.
+
+Who may read what is `elsewhere.md`, *Its pictures and its files*: any file on that machine,
+behind the switch an agent's `recall` is held to, by Lyss's decision.
 
 ## Not built
 

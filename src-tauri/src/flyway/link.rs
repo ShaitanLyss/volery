@@ -115,6 +115,7 @@ pub(crate) mod accounting;
 mod billboard;
 mod leaving;
 mod moves;
+pub(crate) mod seen;
 
 use leaving::{tick_hosts, tick_until_closed, Tenure};
 
@@ -355,7 +356,11 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
        link exists, so no pull can be writing while it goes. */
     {
         let a = app.clone();
-        let _ = crate::off_main(move || sweep_looks(&a, true)).await;
+        let _ = crate::off_main(move || {
+            sweep_looks(&a, true);
+            seen::sweep_files(&a, true);
+        })
+        .await;
     }
     let wire = Wire::start(k, &me).await?;
     let link = Arc::new(Link {
@@ -536,6 +541,7 @@ impl Link {
                         crate::attachments::CAN_FILES.to_string(),
                         super::opening::WORD.to_string(),
                         boards::WORD.to_string(),
+                        super::seeing::WORD.to_string(),
                     ])
                     .chain(act::words())
                     .chain(accounting::words())
@@ -825,8 +831,9 @@ impl Link {
                 /* So is a move's answer (`moves.rs`); one arriving loose is from
                    an exchange that already gave up on it. */
                 Frame::Move(_) => {}
-                /* And a look's (`read_look`), and an act's (`read_act`). */
-                Frame::Look(_) | Frame::Act(_) => {}
+                /* And a look's (`read_look`), an act's (`read_act`) and a
+                   see's (`read_see`). */
+                Frame::Look(_) | Frame::Act(_) | Frame::See(_) => {}
                 Frame::Board(m @ BoardMsg::Board { .. }) => self.on_board(m),
                 Frame::Accounts(m) => self.on_accounts(m, from),
                 /* An unpost's answer is read by the exchange that asked
@@ -857,9 +864,14 @@ impl Link {
         let (signins, rest): (Vec<Frame>, Vec<Frame>) = rest.into_iter().partition(|f| {
             matches!(f, Frame::Accounts(super::accounts::AccountsMsg::SigninBegin { .. } | super::accounts::AccountsMsg::SigninCode { .. }))
         });
+        /* What a person there is reading of this wall's projects
+           (`seeing.rs`): a disk read each, so it is answered off the
+           thread that answers everything else. */
+        let (sees, rest): (Vec<Frame>, Vec<Frame>) =
+            rest.into_iter().partition(|f| matches!(f, Frame::See(super::seeing::SeeMsg::See { .. })));
         /* Which wall asked, before `answer` consumes the frames: an act is
            done for a named wall or not at all. */
-        let from = if acts.is_empty() && signins.is_empty() { None } else { self.who_is(&rest, who) };
+        let from = if acts.is_empty() && signins.is_empty() && sees.is_empty() { None } else { self.who_is(&rest, who) };
         let mut out = self.answer(rest, who);
         if who.current {
             for f in asks.into_iter().take(TAILS_PER_EXCHANGE) {
@@ -872,6 +884,11 @@ impl Link {
                     if let Some(m) = self.act_here(id, card, verb, args, from_card, from.as_deref()).await {
                         out.push(Frame::Act(m));
                     }
+                }
+            }
+            for f in sees.into_iter().take(seen::SEES_PER_EXCHANGE) {
+                if let Frame::See(super::seeing::SeeMsg::See { id, card, ask }) = f {
+                    out.push(Frame::See(self.see_here(id, card, ask, from.clone()).await));
                 }
             }
             for f in signins.into_iter().take(1) {

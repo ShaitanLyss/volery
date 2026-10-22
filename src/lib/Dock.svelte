@@ -141,12 +141,12 @@
      the ring — `elsewhere` is that case and it is drawn on the panel. So a
      path in the question belongs to the asking card's directory, and never to
      the focused one: the same file name in two projects would have opened the
-     wrong one, silently. See `scopeFiles`. A card on another wall has no
-     directory here, so its paths are plain words — its pictures arrive
-     resolved (`flyway/look.rs`). This call went missing with the hold rule
-     (f96136e), which left every path in a question pointing at nothing. */
-  const shownCard = $derived(shown?.of.conv ?? null);
-  scopeFiles(() => (shownCard?.kind === "project" ? shownCard.cwd : null) ?? null);
+     wrong one, silently. See `scopeFiles`. A card on another wall answers with
+     its own root, so a path in its question is asked of that wall
+     (`across.ts`); its attachments arrive resolved (`flyway/look.rs`). This
+     call went missing with the hold rule (f96136e), which left every path in a
+     question pointing at nothing. */
+  scopeFiles(() => shown?.of.readable.root ?? null);
 
   /* ── a reply whose item went first ─────────────────────────────────────
    *

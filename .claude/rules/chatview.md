@@ -64,12 +64,15 @@ and it renders a `Thread` inside its scroller.
   lines; a wrapper with a box would have collapsed every gap into one. So the thread's root is
   invisible to layout and still something to raise an event on and to look a block up under.
 - **It takes a `CardHandle`, not a `Readable` and two callbacks.** History (`card.history()`)
-  and opening a file a call named (`card.look`) were props on the panel; a second mount that
-  forgot either would draw a card on another wall empty, or a path that goes nowhere — both
-  silently. The handle carries both, so there is nothing to forget.
-- **The scopes stay the mounter's.** `scopeFiles` and `scopePictures` are ambient and the
-  panel sets them (`CLAUDE.md`, *A capability every surface should have is not a prop*). Chat
-  view's sheet sets its own. Forgetting fails safe: paths are plain text.
+  and opening a file a call named were props on the panel; a second mount that forgot either
+  would draw a card on another wall empty, or a path that goes nowhere — both silently. The
+  handle carries the history; opening a file is now the file scope's (`card.look` went with
+  `ToolCall`'s `root`/`onfile`, `elsewhere.md`, *Its pictures and its files*).
+- **The scope stays the mounter's, read off the card.** `scopeFiles(() => card.readable.root)`
+  — the card's directory, its wall for a card elsewhere, nothing for a chat card — is ambient
+  and the panel sets it (`CLAUDE.md`, *A capability every surface should have is not a prop*);
+  chat view's sheet sets its own the same way, and pictures follow it. Forgetting fails safe:
+  paths are plain text.
 - **Letting go of the tail is an event, `RELEASE`.** A fold worked, a find landing on a match
   and a timeline step revealing its write each say "I chose where to read". The thread raises
   `thread:release` on its root; it bubbles to whatever scroller wears the follow. A callback

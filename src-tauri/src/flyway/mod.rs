@@ -63,6 +63,7 @@ pub mod moving;
 pub mod opening;
 pub mod reach;
 pub mod seal;
+pub mod seeing;
 pub mod session;
 pub mod sync;
 pub mod tail;

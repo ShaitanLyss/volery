@@ -5,7 +5,7 @@
   import { countSaid } from "./gist";
   import Rail from "./Rail.svelte";
   import { nudgeReading } from "./layout";
-  import { scopeFiles, scopePictures } from "./paths.svelte";
+  import { scopeFiles } from "./paths.svelte";
   import { readingOf } from "./gears";
   import {
     conclusionAt,
@@ -60,16 +60,12 @@
 
   const conv = $derived(card.readable);
 
-  /* Which directory *this card's* prose counts from. One line, because the
-     navigation comes down from the root — see `scopeFiles`. `null` for a chat
-     card, which has no directory behind it: a relative path there counts from
-     nowhere, and a link that resolves against nowhere is the dead link this
-     whole path exists to avoid. */
-  scopeFiles(() => (conv.kind === "project" ? conv.cwd : null) ?? null);
-  /* And its pictures, which are read off this machine's disk: a card on another
-     wall has its directory over there, and the same path here is a different
-     picture drawn with nothing to say so. See `scopePictures`. */
-  scopePictures(() => (conv.kind === "project" && !conv.elsewhere ? conv.cwd : null) ?? null);
+  /* Where *this card's* prose counts from — its paths, its pictures, the
+     files its calls name. One line, because the navigation comes down from the
+     root (`scopeFiles`) and the card says its own root (`Readable.root`): a
+     directory here, its wall for a card on another one, nothing for a chat
+     card. The panel does not work it out, so it cannot work it out wrong. */
+  scopeFiles(() => conv.root);
 
   let scroller: HTMLDivElement | undefined = $state();
 

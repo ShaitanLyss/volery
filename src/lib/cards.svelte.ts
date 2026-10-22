@@ -93,9 +93,6 @@ export interface CardHandle {
   stir(): void;
   /** Read what it said before this panel opened on it. */
   history(): void;
-  /** Open a file one of its tool calls named. Absent where the files are on
-   *  another machine. */
-  readonly look?: (path: string, line: number | null) => void;
 
   /* ── what it is waiting on you for ── */
   /** The question at the front of its queue, if it is parked on one you can
@@ -164,7 +161,6 @@ export type Hands = {
   close(conv: Conversation): Promise<void>;
   processes(conv: Conversation): void;
   unpin(conv: Conversation): void;
-  look(root: string, path: string, line: number | null): void;
   /** This wall's furniture around a card here, for its menu: the groupings it
    *  could move to, the walls it could move to, whether it is pinned or on the
    *  glass, the presets a plan could be handed to. */
@@ -337,10 +333,6 @@ export class LocalCard implements CardHandle {
   history() {
     void this.#skein.loadHistory(this.conv);
   }
-  /* A tool call's path counts from the card's directory; a chat card has
-     none, and the viewer is handed the empty root it always was. */
-  readonly look = (path: string, line: number | null) =>
-    this.#hands.look(this.conv.kind === "project" ? this.conv.cwd : "", path, line);
   get ask() {
     return this.conv.pendingAsk;
   }

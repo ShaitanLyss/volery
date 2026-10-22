@@ -152,6 +152,12 @@ export class Finder {
   mode = $state<FindMode>("files");
   /** The project being searched. */
   root = $state("");
+  /** Whose file the viewer is showing, when it is a copy of one on another
+   *  wall (`paths.svelte.ts::pullAfar`) — said in its bar, and the reason it
+   *  offers nothing that edits or opens the copy: an edit there would change a
+   *  file nobody is reading, on a machine it does not reach. `null` for a file
+   *  on this disk. */
+  copyOf = $state<{ full: string; host: string } | null>(null);
 
   /** Where to look, asked rather than reached for.
    *
@@ -383,6 +389,7 @@ export class Finder {
    *  alternative (a cache with an age) is a finder that is right most of the
    *  time about the one thing it exists to know. */
   async show(mode: FindMode, root: string) {
+    this.copyOf = null;
     /* Before anything moves: this can be pressed with the viewer open, and the
        file it was showing keeps its place. */
     this.#keep();
@@ -415,6 +422,7 @@ export class Finder {
   hide() {
     this.#keep();
     this.open = false;
+    this.copyOf = null;
     this.sheet = null;
     this.sheetLine = null;
     /* Cleared with the panel, not left standing: the next thing to open the
@@ -612,6 +620,7 @@ export class Finder {
   async look(row: Row | null = this.row) {
     if (!row) return;
     this.#keep();
+    this.copyOf = null;
     this.reading = true;
     try {
       const sheet = await this.#read(row.path);
@@ -634,7 +643,12 @@ export class Finder {
    *  caller has already reduced the path with `insideRoot`, so anything
    *  arriving here is inside. And it sets `alone`, which is the whole reason
    *  this is a second entry point rather than a call to `look` — see `back`. */
-  async lookAt(root: string, path: string, line: number | null = null) {
+  async lookAt(
+    root: string,
+    path: string,
+    line: number | null = null,
+    copyOf: { full: string; host: string } | null = null,
+  ) {
     if (!root || !path) return;
     this.#keep();
     /* A file list from another project is every row being a path that is not
@@ -657,7 +671,10 @@ export class Finder {
       this.alone = true;
       this.sheet = sheet;
       this.sheetLine = line;
-      this.#remember(path, line);
+      this.copyOf = copyOf;
+      /* A copy is not kept as a tab: the tab would reopen the copy, which goes
+         when this wall restarts, rather than the file it is a copy of. */
+      if (!copyOf) this.#remember(path, line);
     } finally {
       this.reading = false;
     }
@@ -699,6 +716,7 @@ export class Finder {
    *  "put me back where I was", which is the reading and not the line the file
    *  was first opened at. */
   async resume(d: Dogear) {
+    this.copyOf = null;
     this.#keep();
     /* Where "back" goes, decided before the panel moves. Coming from the
        results list there is a list behind this and Escape should return to it;

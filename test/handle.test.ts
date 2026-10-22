@@ -5,7 +5,12 @@ import { join } from "node:path";
 import {
   ACTS,
   COST,
+  FEATURE_STAYS,
+  HANDLE_CROSSING,
+  READABLE_CROSSING,
   VERBS,
+  VERB_STAYS,
+  type Crossing,
   actFor,
   actRefusal,
   canDo,
@@ -409,5 +414,85 @@ describe("what a card elsewhere's panel says above its conversation", () => {
   test("a question left when its wall went quiet is not offered as one still waiting", () => {
     const n = panelNotes({ ...base, unheard: true, sheets: 1 });
     expect(n[1]!.text).toContain("cannot be answered from here until lab is heard again");
+  });
+});
+
+/* ── what does not cross ──────────────────────────────────────────────────
+   The registry is the answer to "by construction, with no omission possible":
+   a capability added without crossing or saying why is caught here or by the
+   compiler, never by somebody trying it on the other laptop. */
+describe("what stays on the wall a card runs on says why", () => {
+  test("every verb that stays has its reason, and nothing else has one", () => {
+    const local = VERBS.filter((v) => COST[v] === "local").sort();
+    expect(Object.keys(VERB_STAYS).sort()).toEqual(local);
+    /* And every verb that does not stay crosses as an act, or is this wall's
+       own furniture, or is the close with its own road — `ACTS` is held to
+       `act.rs` above, so a verb cannot be added that neither crosses nor says
+       why it does not. */
+    for (const v of VERBS) {
+      if (COST[v] === "local") continue;
+      expect(ACTS.includes(v) || COST[v] === "here" || v === "close").toBe(true);
+    }
+  });
+
+  /** The member names an interface or a type declares, off its source — so the
+   *  runtime half of the guard does not rest on the compiler alone. */
+  function members(file: string, opener: RegExp): string[] {
+    const src = readFileSync(join(import.meta.dir, "../src/lib", file), "utf8");
+    const at = src.search(opener);
+    expect(at).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = at;
+    for (let i = src.indexOf("{", at); i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    const body = src.slice(src.indexOf("{", at) + 1, end);
+    /* Top-level members only: a line at the body's own indent naming a key. */
+    const names = new Set<string>();
+    for (const m of body.matchAll(/^ {2}(?:readonly )?([A-Za-z_$][\w$]*)\??(?:\(|:)/gm)) names.add(m[1]!);
+    return [...names].sort();
+  }
+
+  test("every member of a card's handle is decided", () => {
+    const declared = members("cards.svelte.ts", /export interface CardHandle\b/);
+    expect(declared.length).toBeGreaterThan(20);
+    expect(Object.keys(HANDLE_CROSSING).sort()).toEqual(declared);
+  });
+
+  test("every field the transcript reads is decided", () => {
+    const declared = members("transcript.ts", /export type Readable = \{/);
+    expect(declared.length).toBeGreaterThan(20);
+    expect(Object.keys(READABLE_CROSSING).sort()).toEqual(declared);
+  });
+
+  test("a reason is a sentence somebody can act on, and a filed gap names its item", () => {
+    const all: [string, string, string | undefined][] = [
+      ...Object.entries(VERB_STAYS).map(([k, v]): [string, string, undefined] => [`verb:${k}`, v!, undefined]),
+      ...[...Object.entries(HANDLE_CROSSING), ...Object.entries(READABLE_CROSSING), ...Object.entries(FEATURE_STAYS)]
+        .filter(([, c]) => c !== "crosses")
+        .map(([k, c]): [string, string, string | undefined] => {
+          const s = c as Exclude<Crossing, "crosses">;
+          return [k, s.stays, s.sink];
+        }),
+    ];
+    expect(all.length).toBeGreaterThan(10);
+    for (const [k, why, sink] of all) {
+      expect(`${k}: ${why}`.length).toBeGreaterThan(k.length + 50);
+      if (sink !== undefined) expect(sink).toMatch(/^[0-9a-f]{8}$/);
+    }
+  });
+
+  /* The boundary Lyss set on 2026-10-22 — any file on that machine — means
+     "outside a project" is not an exception any more, and the one that is left
+     is about a third host. Asserted, so the old wording does not creep back as
+     a reason somebody then builds to. */
+  test("a file elsewhere is not an exception; a share is", () => {
+    const words = JSON.stringify([VERB_STAYS, HANDLE_CROSSING, READABLE_CROSSING, FEATURE_STAYS]);
+    expect(words).not.toMatch(/outside (a|every|the) project/);
+    expect(FEATURE_STAYS.share!.stays).toContain("share");
   });
 });

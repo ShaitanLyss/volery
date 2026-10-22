@@ -721,11 +721,13 @@ quietly cannot see a file is worse than one that admits its bound.
   and `locate`.
 - `Dogears.svelte` — the strip: the pills, the fuse hairlines, the `⋯` and its two knobs. Reads
   `clock` for the tick and holds no timer of its own.
-- `ToolCall.svelte` — the transcript's end of it, importing `insideRoot` and `placesIn`. It
-  routes the gesture out as `onfile` rather than reaching for the panel, the same way it
-  routes `onlink`: what this component knows about is typography, and which panel is on
-  screen is not its business. `Transcript.svelte` passes the card's `cwd` as `root` — absent
-  for a chat card, which has no project, and every path there stays text.
+- `ToolCall.svelte` — the transcript's end of it, importing `placesIn`. It reads the ambient
+  file scope (`useFiles`) and asks `paths.openable` whether a path is one the viewer can open
+  — `insideRoot` for a card here, its wall's answer for a card elsewhere — and opens through
+  the scope's `go`, the gesture every prose path takes. It used to take `root` and `onfile`
+  as props, which a card on another wall could not pass, so its calls' paths stayed text
+  (`elsewhere.md`, *Its pictures and its files*); `test/across.test.ts` holds them deleted.
+  No scope — a chat card — and every path stays text.
 - `tools/probe-places.ts` — what real tool results look like and what `placesIn` finds in
   them. Run it before changing that pattern; it is what caught the bare-filename case.
 - `tools/probe-prose-names.ts` — what the bare file names in real agent prose resolve to:

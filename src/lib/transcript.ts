@@ -61,6 +61,14 @@ import {
 export type Readable = {
   id: string;
   cwd: string;
+  /** Where its paths count from, for every surface that turns one into
+   *  anything — a link, a picture, a file opened in the viewer: its directory
+   *  on this disk, a root naming it on another wall (`across.ts`), or `null`
+   *  for a card whose words name no file of its own (a chat card). Asked here
+   *  rather than worked out by each surface, which is how six of them came to
+   *  spell "no directory on this disk" three ways and a card on another wall
+   *  lost its pictures in all of them. */
+  root: string | null;
   kind: ConvKind;
   lines: Line[];
   history: Line[];

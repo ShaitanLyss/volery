@@ -14,6 +14,10 @@ paths:
   - "src/lib/moveall.ts"
   - "src/lib/Exodus.svelte"
   - "src-tauri/src/flyway/link/leaving.rs"
+  - "src/lib/across.ts"
+  - "src-tauri/src/flyway/seeing.rs"
+  - "src-tauri/src/flyway/link/seen.rs"
+  - "test/across.test.ts"
 ---
 
 # Cards on other walls
@@ -713,6 +717,106 @@ file and answered in markdown; opening its shadow's panel on lab drew the prompt
 `Read` (opening onto the path and the file's six lines) and the heading and bold list. A
 second turn on lab2 appeared in lab's open panel on its own, 3 → 6 lines.
 
+### Its pictures and its files, read where you are (2026-10-22)
+
+Lyss, sitting at QUEERISFREEDOM over a card on AU-LT-288: *"i'm not seeing the pictures from the
+remote … over the flyway … Things that work locally should work accross the flyway by
+construction, with no omission possible, things that don't work accross should be exceptions."*
+Every surface had decided for itself that a card on another wall had no directory: the figure
+said its copy was kept over there, `![x](path)` stayed words, a path in prose or in a tool call
+was plain text, and the viewer could open nothing. Six surfaces spelled "no directory here" three
+ways (`cwd = ""`, `!conv.elsewhere`, `card?.conv &&`), so a card elsewhere lost its pictures in
+all of them.
+
+**A card says where its paths count from, and nothing else works it out.** `Readable.root` is
+its directory for a card here, `null` for a chat card, and for a card elsewhere a root that
+*names it on its wall* (`across.ts::afarRoot`, spelled `volery-afar:<host>/<card>`). Every scope
+reads it — `scopeFiles(() => conv.root)` in the panel, chat view, the dock, the glance, a kept
+message — and pictures follow the file scope. It is a string so everything that carries a root
+(a `FileLinks`, `data-root` on an element, the menu's listener) carries this one unchanged, and
+only the four places that *act* on a root ask `readAfar`: `showing.ts` (where a picture is read
+from: `proseSource`, `keptSource`), `paths.svelte.ts` (is it a file, which file a bare name is,
+the pull), and `App.svelte::goToPath` (opening one). Each sends its question to the wall the card
+runs on instead of to this disk. `test/across.test.ts` holds that nothing else reads one.
+
+- **It must never be read as a directory here.** The same repository cloned on both laptops is
+  the ordinary case, so a path from there that exists here is the wrong file of the right name.
+  The mark is no drive and no share, and Rust refuses a root that is not absolute
+  (`find::rooted`, in `safe_join`, `ripgrep` and `classify_paths`), so a branch that forgets to
+  ask fails closed instead of reading this disk.
+- **The tool call lost two props for it.** `ToolCall.svelte` took `root` and `onfile`, which a
+  card elsewhere could not pass, so its calls' paths stayed text. It reads the file scope now
+  (`paths.openable`: `insideRoot` here, the far wall's answer there), `CardHandle.look` is gone,
+  and opening is the one gesture everything else uses (`goToPath`).
+
+**The far wall decides, and only by its own disk** (`flyway/seeing.rs`, a `see`/`seen` frame
+answered on the same stream, never gossiped). Four readings, each the counterpart of a local
+command: `stat` (`classify_paths`), `names` (`resolve_names`), `picture` (`show::picture_raw` —
+the very read `read_picture` stands on, so every refusal a figure here has, a figure there has),
+and `file` (a run of bytes, in parts, `look.rs`'s budget). A relative path counts from where the
+card *runs* (`store::session_of`), resolved by `canonicalize` before anything is read.
+
+- **Who may: any file on that machine, behind the recall's switch.** Lyss settled the boundary
+  over a narrower draft that served only files inside a project and refused a named set of
+  secrets: *holding the flyway key is full trust* (`seal.rs`, `key.rs`) — a remote spawn already
+  gets a whole shell with `--dangerously-skip-permissions` — so a narrower read rule protects
+  nothing and only blocks a screenshot in `%TEMP%`, a download, a memory file. So it is
+  `fleet::may_reach(Act::Recall, …)`, the function an agent's `recall` is held to, with the asking
+  *person* as origin: served while that wall takes work from other walls, or for the wall that
+  opened the card. `may_reach` learned the second half for a person — the origin is the wall
+  that asked, since a person has no card to be the origin by — and its test says so. **Not** the
+  tail's rule: reading a card's words passes regardless of the switch (*The conversation itself*
+  above); reading what they point at reaches past what the wall chose to publish, which is the
+  recall's argument exactly.
+- **A share is never read**, in any spelling `show::is_remote` knows, and again after resolution
+  (a junction can point at one). That is not about the peer, who is trusted; it is about a third
+  host, reached by an SMB handshake carrying this user's credentials because an agent wrote a
+  path it read off a web page.
+- **A kept copy is served by its name** — it is the conversation's record of what was shown,
+  wherever the original was — and falls back to the path it was shown from, as a local figure
+  does, saying the file is as it is now.
+
+**This wall checks again before anything goes near a `src=`** (`seeing::received`): the bytes
+decode, are no more than `MAX_PICTURE`, sniff as a picture by their first bytes, and do not
+declare more pixels than one decode may cost; the size is read off the bytes, never believed.
+
+**Kept here, keyed by wall, card and what was asked** (`link/seen.rs`, `afar-pictures/`), never
+by a bare file name. A kept copy never changes, so one held is drawn without asking; a picture by
+path is the file as it is now, so the copy is offered back with its stamp and drawn only when the
+far wall says it has not moved. **A wall that cannot be asked draws what was last read, and says
+so** in the picture's title (*as it was when last read from …*). A picture never read here says
+why in the box it would have had — today's sentence, *its copy is kept there*, with the reason
+after it: not taking work, not heard from, or an older Volery (which announces no `see` in
+`Facts::can`, so it is refused at once and never dialled).
+
+**A file opens as a read-only copy** (`flyway_see_file` → `afar-files/`, wiped at launch and after
+a day). The viewer reads the copy, says whose file it is in its bar (`Finder.copyOf`), offers no
+editor and no "open outside" over it, and keeps no tab for it — a tab would reopen the copy. A
+folder there is never a link: opening one is Explorer, and Explorer runs here. A pulled file is
+held a few seconds (`pullAfar`) so a symbol's line and the open after it are one pull.
+
+**What does not cross is one registry, and the compiler holds it** (`handle.ts`). A verb whose
+cost is `local` needs a reason in `VERB_STAYS`; every `CardHandle` member is decided in
+`HANDLE_CROSSING` and every `Readable` field in `READABLE_CROSSING` — mapped types over the
+interfaces, so a member added to either is a compile error until somebody says whether it
+crosses; and what is a behaviour rather than a member is `FEATURE_STAYS`. Each stay is a sentence
+with its reason, and a gap somebody filed carries its sink id. `test/handle.test.ts` reads the
+interfaces' members off the source so the runtime half does not rest on the compiler alone, and
+was watched to fail with a member added by hand. The audit that filled it found nine gaps outside
+pictures and files; each is a sink item named there.
+
+Demonstrated 2026-10-22/23 between two frozen labs (`pa`, `pb --peer pa`). A card on pb called
+`show` on one picture and wrote another as `![plum](pics/plum.png)`, with `notes.md` and a
+relative path in its prose. With pb's switch off, pa drew both pictures as their boxes saying
+*pb reads its files for another wall only while it takes work from other walls, or for the wall
+that opened the card*; switched on, pa drew both (320×180 for 480×270 at 150%), the path became a
+link, and clicking it opened the picture in pa's viewer as *read-only copy* under pb's own path;
+the bare `notes.md` resolved through pb and opened rendered. With pb killed, chat view on pa drew
+the kept figure from pa's cache and the path picture from its copy, titled *as it was when last
+read from lab-pb*. **Not shown:** a wall from before `see` (it announces no word, so `reachable`
+refuses before dialling — the path a quiet wall takes once past 90s, which the unit tests hold),
+and a picture larger than a frame's budget over a slow link.
+
 ### Notices travel too
 
 A notice exists to tell you a card wants you — finished, ended on a question, gave up, or said
@@ -1209,6 +1313,9 @@ hold the rest.
 
 ### What is not here
 
+The whole list, each with its reason, is `handle.ts`'s registry (*Its pictures and its files*
+above); these are the ones argued at length.
+
 - **A root to a child on a wall this one cannot see.** The parent's wall records the birth
   (`flyway_child`), but nothing hands it to the front end, and a wall that asked for a card
   almost always hears the wall it asked. A stray is drawn on the child's side only.
@@ -1373,7 +1480,7 @@ menus are the glass and the close, as before.
 brief's interface grown by what the surfaces turned out to ask: `can`/`do`, `face`/`readable`,
 `remote`, the project line a panel heads it with (`where`), whether its questions run scripts or
 take a touch (`scripts`), what the dock says beside it (`hints`), its right-click fields
-(`menu()`), `carries(turn)`/`say` for a prompt, `stir`, `history`, `look`, and its questions and
+(`menu()`), `carries(turn)`/`say` for a prompt, `stir`, `history`, and its questions and
 notices with the gestures that answer them. `LocalCard` is one-line delegates to `Skein`;
 `RemoteCard` sends one `act` (or the prompt wire, or `close_by_person`). `Cards` makes one handle
 per card and keeps it (a `WeakMap` over the `Conversation`/`Shadow`), so a `$derived` holding a
@@ -1431,8 +1538,9 @@ naming it, and whether a far queue has been read. `Yonder.svelte` is gone.
   waiting on you" land on a far card with `focusCard` (they used to force its panel open; `<space>
   e e` still does), and landing on a card from the peek reveals it, as every other landing does.
 - **And one that came back.** The hold rule (`f96136e`) dropped the dock's `scopeFiles` call, so
-  a path in a question opened against nothing; the dock scopes it to the asking card's directory
-  again (none for a card elsewhere, whose pictures arrive resolved).
+  a path in a question opened against nothing; the dock scopes it to the asking card's root again
+  — for a card elsewhere a root naming it there, so a path in its question is asked of its wall
+  (*Its pictures and its files*), while the files its question attaches arrive resolved.
 
 **Still `local`:** `processes`, `regroup`, `hand` and `pin` until a remote card has a row here,
 and Volery's own `/rename`, `/btw`, `/gear`/`/plan` on a far card, which say so.

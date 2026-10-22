@@ -1,15 +1,11 @@
 <script module lang="ts">
-  import { PictureCache, Sizes, type Dims } from "./showing";
+  import { PictureCache, Sizes, type Dims, type PictureSource } from "./showing";
 
-  /** Where a picture comes from. `data` carries its own bytes; `file` is a path
-   *  on this machine, read as it is now; `kept` is the copy `show` made, with
-   *  the agent's own path beside it to fall back on if the copy has gone. Every
-   *  path here is whole — the caller resolves a relative one against the card's
-   *  directory, and only a surface that has one ever draws a `file` or `kept`. */
-  export type PictureSource =
-    | { kind: "data"; url: string }
-    | { kind: "file"; path: string }
-    | { kind: "kept"; id: string; path: string };
+  /** Where a picture comes from — decided by `showing.ts::proseSource` and
+   *  `keptSource` off the root the surface counts from, never by the surface.
+   *  This is the one component that reads one, and the one that knows a read
+   *  can go to another wall. */
+  export type { PictureSource };
 
   /* One cache and one measure for every picture in the window, since the panel
      draws one card at a time and a picture scrolled past on one card is not
@@ -60,7 +56,7 @@
      and the viewport does instead. See `.claude/rules/showing.md`. */
   import { invoke } from "@tauri-apps/api/core";
   import { untrack } from "svelte";
-  import { CACHE_CHARS, frameWidth, megabytes, nameOf } from "./showing";
+  import { CACHE_CHARS, frameWidth, megabytes, nameOf, sourceKey } from "./showing";
   import { useOpener } from "./paths.svelte";
   import { lightbox } from "./looking.svelte";
 
@@ -113,28 +109,44 @@
     tooLarge: boolean;
     path: string;
     size: [number, number] | null;
+    /** From another wall: its kept copy had gone, and this is the file. */
+    stale?: boolean;
+    /** From another wall: drawn from this wall's copy because that wall
+     *  could not be asked, and why. */
+    note?: string | null;
   };
+
+  /** What a picture on another wall is asked by: the card, and the copy or
+   *  the path as the card wrote it. */
+  const afarArgs = (s: Extract<PictureSource, { kind: "afar" }>) => ({
+    host: s.host,
+    card: s.card,
+    kept: s.kept,
+    path: s.path || null,
+  });
 
   /* A key that names the picture without hashing megabytes of base64 every
      time the streaming tail is parsed again: the parse makes a new string per
      token, and the effects below are keyed on this rather than on the object. */
-  const key = $derived(
-    source.kind === "data"
-      ? `data:${source.url.length}:${source.url.slice(-48)}`
-      : source.kind === "kept"
-        ? `kept:${source.id}`
-        : `file:${source.path}`,
-  );
+  const key = $derived(sourceKey(source));
   const svg = $derived(
     source.kind === "data"
       ? source.url.startsWith("data:image/svg+xml")
-      : /\.svg$/i.test(source.kind === "kept" ? source.id : source.path),
+      : /\.svg$/i.test(
+          source.kind === "kept" ? source.id : source.kind === "afar" ? (source.kept ?? source.path) : source.path,
+        ),
   );
   const backed = $derived(paper ?? svg);
   const name = $derived(
     source.kind === "data"
       ? "picture"
-      : nameOf(source.kind === "kept" ? source.path || source.id : source.path),
+      : nameOf(
+          source.kind === "kept"
+            ? source.path || source.id
+            : source.kind === "afar"
+              ? source.path || source.kept || ""
+              : source.path,
+        ),
   );
   const label = $derived(alt || name);
 
@@ -145,6 +157,8 @@
   let large = $state<number | null>(null);
   /** The kept copy had gone and this is the file it came from, as it is now. */
   let stale = $state(false);
+  /** Said by a picture from another wall: drawn from this wall's copy. */
+  let note = $state<string | null>(null);
   /** Where a click opens it — what was actually read. */
   let at = $state<string | null>(null);
   let near = $state(false);
@@ -180,7 +194,9 @@
         ? invoke<Measure>("measure_picture", { path: src.path })
         : src.kind === "data"
           ? invoke<Measure>("measure_picture_data", { head: headOf(src.url) })
-          : null;
+          : src.kind === "afar"
+            ? invoke<Measure>("flyway_see_measure", afarArgs(src))
+            : null;
     void ask
       ?.then((got) => {
         const s = got?.size;
@@ -203,6 +219,7 @@
     fault = null;
     large = null;
     stale = false;
+    note = null;
     const src = untrack(() => source);
     if (src.kind === "data") {
       /* No read stands between a `data:` picture and the decode, so the pixel
@@ -226,10 +243,10 @@
       held = k;
       return;
     }
-    if (src.kind === "kept") {
+    if (src.kind === "kept" || (src.kind === "afar" && src.kept)) {
       /* The cache keeps where the copy was read from beside its bytes, so a
          figure drawn again from it can still be opened (found in review). */
-      const got = cache.get(src.id);
+      const got = cache.get(k);
       if (got) {
         const cut = got.indexOf("\n");
         at = got.slice(0, cut) || null;
@@ -241,7 +258,22 @@
     try {
       let pic: Read;
       let fallback = false;
-      if (src.kind === "kept") {
+      if (src.kind === "afar") {
+        /* On another wall: that wall reads it, this one checks the bytes and
+           keeps a copy (`flyway/seeing.rs`, `link/seen.rs`). Nothing here is
+           where it came from, so there is no file for a click to open. */
+        try {
+          pic = await invoke<Read>("flyway_see_picture", afarArgs(src));
+        } catch (e) {
+          const why = String(e).replace(/^Error:\s*/, "");
+          throw new Error(
+            src.kept
+              ? `${name} was shown on ${src.host}, and its copy is kept there — ${why}`
+              : `${name} is on ${src.host} — ${why}`,
+          );
+        }
+        fallback = !!pic.stale;
+      } else if (src.kind === "kept") {
         try {
           pic = await invoke<Read>("read_shown", { id: src.id });
         } catch {
@@ -262,6 +294,7 @@
       if (mine !== gen) return;
       at = pic.path || null;
       stale = fallback;
+      note = pic.note ?? null;
       if (pic.size && !dims) {
         sizes.set(k, pic.size[0], pic.size[1]);
         dims = { w: pic.size[0], h: pic.size[1] };
@@ -271,8 +304,8 @@
         url = null;
         return;
       }
-      if (src.kind === "kept" && !fallback && pic.dataUrl.length <= CACHE_CHARS)
-        cache.put(src.id, `${pic.path}\n${pic.dataUrl}`);
+      if ((src.kind === "kept" || (src.kind === "afar" && src.kept)) && !fallback && pic.dataUrl.length <= CACHE_CHARS)
+        cache.put(k, `${pic.path}\n${pic.dataUrl}`);
       url = pic.dataUrl;
       held = k;
     } catch (e) {
@@ -413,7 +446,7 @@
       type="button"
       class="hit"
       bind:this={hit}
-      title={`${label}${stale ? " — the kept copy has gone; this is the file as it is now" : ""} · enter or click to look at it full size`}
+      title={`${label}${stale ? " — the kept copy has gone; this is the file as it is now" : ""}${note ? ` — ${note}` : ""} · enter or click to look at it full size`}
       aria-label={`${label} — look at it full size`}
       onclick={look}
       ><img

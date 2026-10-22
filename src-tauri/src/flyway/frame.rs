@@ -49,6 +49,7 @@ use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
 use super::look::LookMsg;
 use super::moving::MoveMsg;
+use super::seeing::SeeMsg;
 use super::session::Msg;
 use super::tail::TailMsg;
 
@@ -74,6 +75,10 @@ pub enum Frame {
     /// A wall's account settings and readings (`accounts.rs`), said on every
     /// exchange to a wall that announces `accounts`.
     Accounts(AccountsMsg),
+    /// A file inside one of another wall's projects, read for a person here
+    /// (`seeing.rs`): asked of the wall the card runs on, answered on the same
+    /// stream, never gossiped.
+    See(SeeMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -128,6 +133,7 @@ const KNOWN: &[&str] = &[
     "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
     "act", "acted", "board", "unpost", "unposted", "leaving",
     "accounts", "signin_begin", "signin_begun", "signin_code", "signin_done",
+    "see", "seen",
 ];
 
 #[cfg(test)]
@@ -233,6 +239,31 @@ mod tests {
         assert!(got.iter().any(|f| matches!(f, Frame::Sink(Msg::Hello { .. }))));
     }
 
+    /// A `see` reads here as itself, and to a wall from before it — whose list
+    /// has neither word — it is a newer word, passed over with the sink frames
+    /// beside it still arriving. The asker never sends one there anyway: it
+    /// asks `Facts::can` first (`seeing::WORD`), and an older wall is told so
+    /// at once.
+    #[test]
+    fn a_see_reads_here_and_is_only_a_newer_word_to_an_older_wall() {
+        let see = Frame::See(SeeMsg::See {
+            id: "r".into(),
+            card: "c".into(),
+            ask: crate::flyway::seeing::Sight::Picture { kept: None, path: Some("a.png".into()), measure: false, have: None },
+        });
+        assert_eq!(round(see.clone()), see);
+        let bytes = serde_json::to_vec(&see).unwrap();
+        let tag = serde_json::from_slice::<Value>(&bytes).unwrap()["msg"].as_str().unwrap().to_string();
+        let before: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "pictured", "recall", "close", "cards", "tail", "tailed", "look", "looked", "act", "acted"];
+        assert!(!before.contains(&tag.as_str()));
+        let mut got = Vec::new();
+        let hello = serde_json::to_vec(&Frame::Sink(Msg::Hello { host: "lap".into(), watermark: BTreeMap::new() })).unwrap();
+        for p in [br#"{"msg":"see_v2","id":"r"}"#.to_vec(), hello] {
+            take(&p, &mut got).expect("an unknown word never ends an exchange");
+        }
+        assert!(got.iter().any(|f| matches!(f, Frame::Sink(Msg::Hello { .. }))));
+    }
+
     #[test]
     fn a_word_from_a_newer_build_is_skipped_not_fatal() {
         let newer = br#"{"msg":"carry","id":"x"}"#;
@@ -308,6 +339,12 @@ mod tests {
         }
         written.extend(crate::flyway::boards::TAGS.map(str::to_string));
         written.extend(crate::flyway::accounts::TAGS.map(str::to_string));
+        for m in [
+            SeeMsg::See { id: String::new(), card: String::new(), ask: crate::flyway::seeing::Sight::Stat { paths: vec![] } },
+            SeeMsg::Seen { id: String::new(), why: None, stats: None, names: None, picture: None, part: None },
+        ] {
+            written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
+        }
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();

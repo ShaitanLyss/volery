@@ -24,10 +24,9 @@
   const text = $derived(card ? lastMessage(card.face) : "");
   const name = $derived(card ? nameBesideProject(card.face.title) : "");
 
-  /* A path in the message counts from the card's own directory, never from
-     the focused card's — the dock's rule, for its reason. A card on another
-     wall has no directory here, so its paths stay words. */
-  scopeFiles(() => (card?.conv && card.gist.kind === "project" ? card.conv.cwd : null) ?? null);
+  /* A path in the message counts from the card's own root, never from the
+     focused card's — the dock's rule, for its reason. */
+  scopeFiles(() => card?.readable.root ?? null);
 
   let box = $state<HTMLElement | null>(null);
   let reader = $state<HTMLElement | null>(null);

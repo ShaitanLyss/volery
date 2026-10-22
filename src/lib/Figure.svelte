@@ -11,22 +11,23 @@
      is now — in a box that is its size from the first frame. */
   import type { Line } from "./conversation.svelte";
   import InlinePicture from "./InlinePicture.svelte";
-  import { fullPath, splitPath } from "./finding";
+  import { splitPath } from "./finding";
   import { pictureMarkdown } from "./markdown";
   import { useOpener, usePictureRoot } from "./paths.svelte";
-  import { nameOf, shownOf } from "./showing";
+  import { keptSource, nameOf, placeOf, shownOf } from "./showing";
 
   let { line }: { line: Line } = $props();
 
-  /* Which directory a relative path in the call counts from — off the scope the
-     transcript set rather than a prop, so no surface can draw a figure against
-     the wrong one by forgetting to pass it. `null` is a card whose pictures are
-     not on this machine (a card on another wall), and then nothing is read. */
+  /* Which root the call's path counts from — off the scope the transcript set
+     rather than a prop, so no surface can draw a figure against the wrong one
+     by forgetting to pass it. Whether that root is this disk or a card on
+     another wall is `keptSource`'s question and not this figure's: a figure is
+     drawn the same way wherever its card runs (`across.ts`). */
   const pictureRoot = usePictureRoot();
   const root = $derived(pictureRoot());
   const opener = useOpener();
   const shown = $derived(line.call ? shownOf(line.call) : null);
-  const full = $derived(shown && root && shown.path ? fullPath(root, shown.path) : (shown?.path ?? ""));
+  const full = $derived(shown ? placeOf(root, shown.path) : "");
   const name = $derived(shown ? nameOf(shown.path) || "a file" : "a file");
   const alt = $derived(shown?.caption || name);
   /* What a selection across the figure copies as — the caption as the alt and
@@ -51,20 +52,12 @@
 </script>
 
 {#if shown}
-  {#if shown.state === "picture" && !root}
-    <!-- A card on another wall: its kept copy is on that machine. Said, in the
-         box the picture would have had, rather than drawn from a file of the
-         same name here — which would be a different picture. -->
-    <div class="figure refused" data-md={md} role="note">
-      <span class="name">{name}</span> was shown on the wall this card runs on, and its copy is kept
-      there{#if shown.caption} — {shown.caption}{/if}
-    </div>
-  {:else if shown.state === "picture"}
+  {#if shown.state === "picture"}
     <!-- `figure` and `figcaption`, so the caption is the picture's name to a
          screen reader and not a paragraph that happens to follow it. -->
     <figure class="figure" data-md={md}>
       <InlinePicture
-        source={{ kind: "kept", id: shown.kept, path: full }}
+        source={keptSource(root, shown.kept, shown.path)}
         {alt}
         {md}
         size={shown.size}
