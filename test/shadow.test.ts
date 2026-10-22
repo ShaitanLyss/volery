@@ -757,7 +757,9 @@ import {
   TAIL_BUDGET,
   TAIL_LINES,
   TAIL_RESULT_CAP,
+  TAIL_SHOTS_BUDGET,
   TAIL_TEXT_CAP,
+  TAIL_THUMB_CAP,
   asLines,
   readTail,
   tailOf,
@@ -886,6 +888,93 @@ describe("a sent prompt's pictures", () => {
 
   test("a send with none draws none", () => {
     expect(asLines(weave([], [sent("words", 10, "left")]), "lab", 20)[0]!.shots).toBeUndefined();
+  });
+});
+
+/* A prompt with pictures typed at the far wall draws its strip here too — the
+   thumbnails cross in the tail, checked on both sides as an image in a tool
+   result is. */
+describe("a far prompt's pictures, in its tail", () => {
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+  const jpeg = "data:image/jpeg;base64,/9j/4AAQ";
+  const pictured = (shots: { name: string; thumb: string }[], text = "look at [shot 1] and [shot 2]") =>
+    said("you", text, { shots });
+  const across = (lines: TailSource[], here: Sent[] = []) =>
+    asLines(weave(readTail(JSON.parse(JSON.stringify(tailOf(lines))))!, here), "lab", 20);
+
+  test("cross the wall and are drawn under the line, as a local prompt's are", () => {
+    const shots = [
+      { name: "shot 1", thumb: png },
+      { name: "shot 2", thumb: jpeg },
+    ];
+    const [line] = across([pictured(shots)]);
+    expect(line).toMatchObject({ kind: "you", text: "look at [shot 1] and [shot 2]", shots });
+  });
+
+  test("a forged or oversized thumb is refused, one picture at a time", () => {
+    const shots = [
+      { name: "ok", thumb: png },
+      { name: "quote", thumb: 'data:image/png;base64,AA"onerror="x' },
+      { name: "script", thumb: "data:text/html;base64,PHNjcmlwdD4=" },
+      { name: "svg", thumb: "data:image/svg+xml,<svg onload=x>" },
+      { name: "url", thumb: "https://example.com/a.png" },
+      { name: "huge", thumb: `data:image/png;base64,${"A".repeat(TAIL_THUMB_CAP)}` },
+    ];
+    const out = tailOf([pictured(shots)]);
+    expect(out[0].shots).toEqual([{ name: "ok", thumb: png }]);
+    /* And read back strictly whatever the far wall chose to send. */
+    const read = readTail([{ kind: "you", text: "x", shots: [...shots, 7, { name: 1, thumb: png }, { thumb: png }] }]);
+    expect(read?.[0].shots).toEqual([{ name: "ok", thumb: png }]);
+    expect(readTail([{ kind: "you", text: "x", shots: "nope" }])?.[0].shots).toBeUndefined();
+  });
+
+  test("no more than a prompt may carry", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `shot ${i}`, thumb: png }));
+    expect(tailOf([pictured(many)])[0].shots?.length).toBe(20);
+    expect(readTail([{ kind: "you", text: "x", shots: many }])?.[0].shots?.length).toBe(20);
+  });
+
+  test("a strip over the budget costs the line its pictures, never the line", () => {
+    const fat = `data:image/png;base64,${"B".repeat(TAIL_THUMB_CAP - 40)}`;
+    const strip = Array.from({ length: 4 }, (_, i) => ({ name: `shot ${i}`, thumb: fat }));
+    const lines = [pictured(strip, "the older one"), pictured(strip.slice(0, 1), "the newer one")];
+    const out = tailOf(lines);
+    expect(out.map((l) => l.text)).toEqual(["the older one", "the newer one"]);
+    /* The newest is paid for first, so it keeps its picture and the older,
+       whose four would pass the picture slice, crosses as words. */
+    expect(out[1].shots?.length).toBe(1);
+    expect(out[0].shots).toBeUndefined();
+    const pictures = out.reduce((n, l) => n + (l.shots ?? []).reduce((m, s) => m + s.thumb.length, 0), 0);
+    expect(pictures).toBeLessThanOrEqual(TAIL_SHOTS_BUDGET);
+  });
+
+  test("pictures count against the whole budget", () => {
+    const fat = `data:image/png;base64,${"C".repeat(TAIL_THUMB_CAP - 40)}`;
+    const words = Array.from({ length: 70 }, () => said("text", "w".repeat(TAIL_TEXT_CAP)));
+    const out = tailOf([...words, pictured([{ name: "shot 1", thumb: fat }])]);
+    const spent = out.reduce(
+      (n, l) => n + l.text.length + (l.shots ?? []).reduce((m, s) => m + s.name.length + s.thumb.length, 0),
+      0,
+    );
+    expect(out[out.length - 1].shots?.length).toBe(1);
+    expect(spent).toBeLessThanOrEqual(TAIL_BUDGET);
+  });
+
+  test("a prompt sent from here keeps this wall's thumbnails, once", () => {
+    const theirs = [{ name: "shot 1", thumb: png }];
+    const ours = [{ name: "shot 1", thumb: jpeg }];
+    const [line] = across([pictured(theirs, "look at [shot 1]")], [{ ...sent("look at [shot 1]", 10), shots: ours }]);
+    expect(line.shots).toEqual(ours);
+  });
+
+  test("an older wall's tail, with no pictures in it, reads as it always did", () => {
+    const [line] = asLines(weave(readTail([{ kind: "you", text: "look at [shot 1]" }])!, []), "lab", 20);
+    expect(line).toEqual({ kind: "you", text: "look at [shot 1]" });
+  });
+
+  test("a line read off disk, which kept no thumbnails, crosses without a strip", () => {
+    expect(tailOf([said("you", "look at [shot 1]")])[0].shots).toBeUndefined();
+    expect(tailOf([pictured([])])[0].shots).toBeUndefined();
   });
 });
 

@@ -42,7 +42,8 @@
  */
 
 import type { Line } from "./conversation.svelte";
-import { spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify";
+import { pictureOf, spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify";
+import { MAX_ATTACHED } from "./attach";
 import { layout, REGION_GAP, regionWidth, type Box, type Laid, type Region } from "./layout";
 import { askHeadline, type AskQuestion } from "./asking";
 import { nameBesideProject } from "./naming";
@@ -1391,6 +1392,25 @@ export const TAIL_RESULT_CAP = 2_000;
  *  patience while a panel fills, not the one the wire would refuse. */
 export const TAIL_BUDGET = 400_000;
 
+/** The most one picture's thumbnail may be, in characters of its data URL.
+ *
+ *  Measured in Chrome on 2026-10-22 through `attach.svelte.ts`'s own `thumbOf`
+ *  arithmetic (`THUMB_SIDE` on the long edge, `toBlob` at 0.9): a JPEG thumb is
+ *  4k–10k and 29k at the very worst, which is pure noise; a PNG — every pasted
+ *  screen capture, since a capture could have transparency — is 37k at 16:9 and
+ *  66k square for a capture dense with small text. The ceiling of the format is
+ *  a 160×160 square of random RGBA, 137k, which no thumbnail of anything
+ *  anybody pastes is. So this keeps every real capture with room and refuses
+ *  only what is not a picture of anything, and a refused thumb is *dropped*,
+ *  never cut: half a base64 string is not half a picture, it is none. */
+export const TAIL_THUMB_CAP = 96_000;
+
+/** How much of `TAIL_BUDGET` pictures may spend between them. A prompt carrying
+ *  twenty screenshots must not cost the panel the words it was opened to read,
+ *  so the thumbnails are a slice — two dense captures or a dozen ordinary ones —
+ *  and the words always keep the rest. */
+export const TAIL_SHOTS_BUDGET = 160_000;
+
 /** One line of a conversation, as it crosses.
  *
  *  Deliberately a subset of `Line` rather than a restatement of it: the fields a
@@ -1411,6 +1431,13 @@ export type WireLine = {
    *  value on the far side, and a string is the only shape both ends can assert
    *  anything about. */
   call?: { name: string; input?: string; result?: string; failed?: true };
+  /** The thumbnails of the pictures a prompt carried, drawn under it as a local
+   *  line's are. Only ever what `wireShots` passed — a short `image/<subtype>`
+   *  data URL in the base64 alphabet, under `TAIL_THUMB_CAP` — and only while the
+   *  tail's picture slice has room. A wall from before it drops the field (its
+   *  `readTail` reads named fields only, its `tail.rs` drops every list), so the
+   *  line still crosses there, as the bare `[name]` token it always was. */
+  shots?: { name: string; thumb: string }[];
 };
 
 /** What a tail is made from — `Line`, structurally, so this file imports no
@@ -1430,7 +1457,41 @@ export type TailSource = {
     input?: unknown;
     result?: { text?: string; failed?: boolean } | null;
   } | null;
+  shots?: readonly { name?: unknown; thumb?: unknown }[] | null;
 };
+
+/** One thumbnail as it may cross, or null. `pictureOf`'s rules exactly — the
+ *  same check a picture in a tool result meets — because this string ends up in
+ *  an `<img src>` on a wall that did not make it. Returns the URL `pictureOf`
+ *  rebuilt rather than the one it was handed, so what is drawn is what was
+ *  checked. */
+function wireThumb(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length > TAIL_THUMB_CAP) return null;
+  const m = /^data:([^;,]{1,40});base64,([^]*)$/.exec(raw);
+  if (!m) return null;
+  const pic = pictureOf(m[1], m[2]);
+  return pic && pic.url.length <= TAIL_THUMB_CAP ? pic.url : null;
+}
+
+/** A line's pictures as they may cross: at most `MAX_ATTACHED`, each a name and
+ *  a thumbnail that passed `wireThumb`. Anything else is dropped, one picture at
+ *  a time — the token in the sentence still says which picture it was. */
+function wireShots(raw: unknown): { name: string; thumb: string }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { name: string; thumb: string }[] = [];
+  for (const r of raw.slice(0, MAX_ATTACHED)) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.name !== "string") continue;
+    const thumb = wireThumb(o.thumb);
+    if (thumb) out.push({ name: capText(o.name, TITLE_CAP), thumb });
+  }
+  return out;
+}
+
+function shotsCost(shots: readonly { name: string; thumb: string }[]): number {
+  return shots.reduce((n, s) => n + s.name.length + s.thumb.length, 0);
+}
 
 /** The tail of a conversation, ready to cross.
  *
@@ -1441,6 +1502,7 @@ export type TailSource = {
 export function tailOf(lines: readonly TailSource[]): WireLine[] {
   const out: WireLine[] = [];
   let spent = 0;
+  let pictured = 0;
   for (let i = lines.length - 1; i >= 0 && out.length < TAIL_LINES; i--) {
     const l = lines[i];
     if (!l || typeof l.kind !== "string") continue;
@@ -1471,6 +1533,19 @@ export function tailOf(lines: readonly TailSource[]): WireLine[] {
        leave a hole, and a hole reads as a conversation that missed a round. */
     if (spent + cost > TAIL_BUDGET && out.length) break;
     spent += cost;
+    /* Pictures come after the words have been paid for, and all or none: a
+       line whose strip does not fit what is left of either budget crosses
+       without it — never the other way round, since the words are the line and
+       the strip is beside them. */
+    const shots = l.shots?.length ? wireShots(l.shots) : [];
+    if (shots.length) {
+      const extra = shotsCost(shots);
+      if (spent + extra <= TAIL_BUDGET && pictured + extra <= TAIL_SHOTS_BUDGET) {
+        w.shots = shots;
+        spent += extra;
+        pictured += extra;
+      }
+    }
     out.push(w);
   }
   return out.reverse();
@@ -1505,6 +1580,8 @@ export function readTail(raw: unknown): WireLine[] | null {
         w.call = call;
       }
     }
+    const shots = wireShots(o.shots);
+    if (shots.length) w.shots = shots;
     out.push(w);
   }
   return out;
@@ -1608,6 +1685,7 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
       if (l.note) line.note = l.note;
       if (l.state) line.state = l.state;
       if (l.narration) line.narration = true;
+      if (l.shots?.length) line.shots = l.shots;
       if (l.call) {
         /* `input` crossed as a string and `ToolCall.input` is `unknown`, so the
            JSON is put back where it parses and left as the string where it does
@@ -1635,6 +1713,9 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
         const r = sentReading(w.sent, host, now);
         line.receipt = r.words;
         if (r.look === "failed") line.state = "failed";
+        /* This wall's own thumbnails of a prompt sent from here *replace* the
+           far wall's copy of them rather than joining it — they are the same
+           pictures, and two strips under one prompt would read as two sends. */
         if (w.sent.shots?.length) line.shots = w.sent.shots;
       }
       out.push(line);

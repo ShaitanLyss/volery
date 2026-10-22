@@ -60,8 +60,16 @@ pub const LINES: usize = 120;
 /// The most one string inside a line may be, in characters. `TAIL_TEXT_CAP`
 /// is the larger of the two TypeScript caps; a tool result is held to its own
 /// 2k there and is not re-checked by name here, since naming fields is the
-/// reading this file does not do.
+/// reading this file does not do — with the one exception of `shots`, below.
 pub const TEXT: usize = 6_000;
+
+/// How many pictures one line may carry: `attach.ts`'s `MAX_ATTACHED`.
+pub const SHOTS: usize = 20;
+
+/// The most one thumbnail may be, in characters of its data URL —
+/// `shadow.ts`'s `TAIL_THUMB_CAP`, where the measurement behind it is. A thumb
+/// over it is **dropped, never cut**, since half a base64 string is no picture.
+pub const THUMB: usize = 96_000;
 
 /// The ceiling on everything in one tail, in characters — `TAIL_BUDGET`, with
 /// room for the names and notes that file does not count.
@@ -126,16 +134,27 @@ pub fn fit(v: Value) -> Option<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut spent = 0usize;
     for line in all.into_iter().skip(start).rev() {
-        let Value::Object(_) = line else { continue };
+        let Value::Object(mut line) = line else { continue };
+        /* The one field read by name, taken out before the field-blind walk so
+           that walk still drops every list it meets. */
+        let shots = line.remove("shots");
         let mut cost = 0usize;
-        let Some(kept) = fit_value(line, 0, &mut cost) else { continue };
+        let Some(Value::Object(mut kept)) = fit_value(Value::Object(line), 0, &mut cost) else { continue };
         /* Stops the walk rather than skipping the line, for `tailOf`'s reason:
            what is past it is older, and a hole reads as a missed round. */
         if spent + cost > BUDGET {
             break;
         }
         spent += cost;
-        out.push(kept);
+        /* The pictures are beside the line, not the line: a strip that does not
+           fit what is left crosses without it rather than costing the words. */
+        if let Some((shots, extra)) = shots.and_then(fit_shots) {
+            if spent + extra <= BUDGET {
+                spent += extra;
+                kept.insert("shots".into(), shots);
+            }
+        }
+        out.push(Value::Object(kept));
     }
     if had && out.is_empty() {
         return None;
@@ -162,11 +181,47 @@ fn fit_value(v: Value, depth: usize, cost: &mut usize) -> Option<Value> {
             }
             Some(Value::Object(kept))
         }
-        /* No line this app writes holds a list; a field a newer build adds as
-           one is dropped rather than carried unbounded. */
+        /* No line this app writes holds a list but `shots`, which `fit` takes
+           out before this walk; a field a newer build adds as one is dropped
+           rather than carried unbounded. */
         Value::Object(_) | Value::Array(_) => None,
         other => Some(other),
     }
+}
+
+/// A prompt's pictures, bounded: a list of at most `SHOTS` objects of exactly
+/// `name` and `thumb`, both strings, the name scrubbed and capped and the thumb
+/// at most `THUMB` and untouched by the scrub — a thumb the scrub would change
+/// carried characters no data URL has, and is dropped rather than mended. What
+/// a thumb *is* (`pictureOf`'s rules) is `readTail`'s to decide; this is only
+/// the size of it. `None` when nothing in it could be carried, so an empty list
+/// never crosses. The cost counts the three names too, as `fit_value` does.
+fn fit_shots(v: Value) -> Option<(Value, usize)> {
+    let Value::Array(all) = v else { return None };
+    let mut cost = "shots".len();
+    let mut out = Vec::new();
+    for shot in all.into_iter().take(SHOTS) {
+        let Value::Object(m) = shot else { continue };
+        if m.len() != 2 {
+            continue;
+        }
+        let (Some(Value::String(name)), Some(Value::String(thumb))) = (m.get("name"), m.get("thumb")) else {
+            continue;
+        };
+        if thumb.chars().count() > THUMB || crate::clean::scrub(thumb) != *thumb {
+            continue;
+        }
+        let name: String = crate::clean::scrub(name).chars().take(TEXT).collect();
+        cost += "name".len() + "thumb".len() + name.chars().count() + thumb.chars().count();
+        let mut kept = Map::new();
+        kept.insert("name".into(), Value::String(name));
+        kept.insert("thumb".into(), Value::String(thumb.clone()));
+        out.push(Value::Object(kept));
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some((Value::Array(out), cost))
 }
 
 /// Read the far wall's answer to the request `id`, out of everything the
@@ -295,6 +350,46 @@ mod tests {
             v
         };
         assert!(fit(json!([wide(2)])).is_none(), "{} chars in one line", FIELDS * FIELDS * TEXT);
+    }
+
+    /// A prompt's pictures are the one list a line may carry, bounded: at most
+    /// `SHOTS`, each exactly a name and a thumb, a thumb over `THUMB` dropped
+    /// rather than cut, and a strip the budget cannot hold costing the line
+    /// its pictures — never the line itself.
+    #[test]
+    fn a_prompts_pictures_cross_bounded_and_never_at_the_words_cost() {
+        let thumb = "data:image/png;base64,AAAA";
+        let shot = |name: &str, thumb: &str| json!({ "name": name, "thumb": thumb });
+        let mut many: Vec<Value> = (0..SHOTS + 5).map(|i| shot(&format!("shot {i}"), thumb)).collect();
+        many.push(json!({ "name": "extra", "thumb": thumb, "more": 1 }));
+        let v = json!([
+            { "kind": "you", "text": "look at [shot 1]", "shots": [
+                shot("shot 1", thumb),
+                shot("too big", &"A".repeat(THUMB + 1)),
+                shot("forged\u{0}", &format!("{thumb}\u{0}")),
+                { "name": "no thumb" },
+                { "name": "extra field", "thumb": thumb, "more": 1 },
+                7,
+            ] },
+            { "kind": "you", "text": "many", "shots": many },
+            { "kind": "you", "text": "none of it", "shots": [7, { "name": 1, "thumb": thumb }] },
+            { "kind": "you", "text": "not a list", "shots": "x" },
+        ]);
+        let got = fit(v).unwrap();
+        let a = got.as_array().unwrap();
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[0]["shots"], json!([{ "name": "shot 1", "thumb": thumb }]));
+        assert_eq!(a[1]["shots"].as_array().unwrap().len(), SHOTS);
+        assert!(a[2].get("shots").is_none(), "an empty strip does not cross");
+        assert!(a[3].get("shots").is_none());
+        assert_eq!(a[3]["text"], "not a list");
+
+        /* Pictures the budget cannot hold cost the line its strip, not its place. */
+        let fat = "B".repeat(THUMB);
+        let strip: Vec<Value> = (0..SHOTS).map(|i| shot(&i.to_string(), &fat)).collect();
+        let got = fit(json!([{ "kind": "you", "text": "a lot", "shots": strip }])).unwrap();
+        assert_eq!(got[0]["text"], "a lot");
+        assert!(got[0].get("shots").is_none(), "{} chars of pictures", SHOTS * THUMB);
     }
 
     /// The two words survive the wire as themselves, and an answer from a

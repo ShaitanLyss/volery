@@ -667,6 +667,23 @@ column; when to read again) is three optional fields of `Readable` (`elsewhere`,
   backwards and never exceeded, not even for the newest. Lines of which none could be read
   is a broken answer, not an empty conversation. A different build's agent output
   is going into this card's panel; `readTail` caps too, and Rust is not the hole between.
+- **A prompt's pictures cross as their thumbnails** (`WireLine.shots`), so a picture pasted
+  into a card at its own wall draws its strip here rather than a bare `[name]` token. The one
+  list a line may hold and the one field `tail.rs` reads by name: `fit` takes `shots` out
+  before its field-blind walk, which still drops every other list. Bounded on all three
+  sides: at most `MAX_ATTACHED`, each exactly a name and a thumb, a thumb at most
+  `TAIL_THUMB_CAP` (96k, measured: a JPEG thumb is 4–10k, a PNG capture dense with text 37k
+  at 16:9 and 66k square, and the format's ceiling — 160² of random RGBA — 137k) **dropped,
+  never cut**, since half a base64 string is no picture. What a thumb *is* is `pictureOf`'s
+  rule, checked by `tailOf` and again by `readTail` — the same check an image in a tool result
+  meets, because the string lands in an `<img src>`; Rust bounds only its size. The thumbs
+  are paid out of `TAIL_BUDGET` after their line's words and inside a slice of their own
+  (`TAIL_SHOTS_BUDGET`, 160k), all or none per line: a strip that does not fit costs the line
+  its pictures, never its place. A prompt sent *from* this wall keeps this wall's own
+  thumbnails (`Sent.shots`), which replace the far copy rather than joining it. Across
+  versions it costs nothing: an older wall's tail has no `shots` and reads as before, and a
+  newer tail read by an older wall loses the field quietly (its `tail.rs` drops lists, its
+  `readTail` reads named fields).
 - **Refused at once, never waited on** (`Link::tail_reachable`): an unknown wall, a quiet one
   (the roster's 90s, in the fleet's own words), or one too old — a wall that can answer says
   `tail` in its `Facts::can`. Not one of `fleet::CAN`, since those are the acts an *agent*
