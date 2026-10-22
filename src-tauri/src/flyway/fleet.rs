@@ -309,7 +309,10 @@ pub const BUILD_ANNOUNCED_FROM: &str = "0.75.0";
 
 /// What this wall says of itself for `Facts::build` and `Facts::dev`.
 pub fn this_build() -> (String, bool) {
-    (env!("CARGO_PKG_VERSION").to_string(), cfg!(debug_assertions))
+    /* `option_env!`, not `env!`: `tools/lift-fleet.ts` compiles this file
+       outside cargo, where there is no package version — and an empty build
+       is what a wall that cannot say reads as anyway. */
+    (option_env!("CARGO_PKG_VERSION").unwrap_or("").to_string(), cfg!(debug_assertions))
 }
 
 /// Whether the person is at some other wall right now, by the roster: one
@@ -2233,7 +2236,7 @@ mod tests {
     #[test]
     fn a_wall_says_its_build_and_an_older_one_says_nothing() {
         let (build, dev) = this_build();
-        assert_eq!(build, env!("CARGO_PKG_VERSION"));
+        assert_eq!(build, option_env!("CARGO_PKG_VERSION").unwrap_or(""));
         let f = Facts { build: build.clone(), dev, ..Facts::default() };
         let back: Facts = serde_json::from_value(serde_json::to_value(&f).unwrap()).unwrap();
         assert_eq!((back.build.as_str(), back.dev), (build.as_str(), dev));
