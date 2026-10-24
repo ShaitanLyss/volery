@@ -53,6 +53,9 @@ export type ChatRow = {
    *  (`cards.svelte.ts::Allowance`). Said quietly under the title; never
    *  *needs you*. */
   allowance?: { until: number | null; reset: string | null } | null;
+  /** Spending the organisation's API credits (`credits.ts`) — drawn only while
+   *  boost is on, as the sidebar's half of boost's look. */
+  credits?: boolean;
   aside: boolean;
   /** When it was last active, in ms since the epoch. */
   lastAt: number;

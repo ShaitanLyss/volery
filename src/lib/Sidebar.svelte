@@ -10,6 +10,8 @@
   import { cubicInOut } from "svelte/easing";
   import Icon from "./Icon.svelte";
   import { fullTitle } from "./tipped.svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import { boost } from "./boost.svelte";
   import type { Ghost, Group, Placed, ProjectRow } from "./chatview";
 
   let {
@@ -56,6 +58,27 @@
   } = $props();
 
   type At = { x: number; y: number };
+
+  /* Boost's half of the sidebar (`boost.md`): a row going onto credits flares
+     once, as a card on the wall does. The sidebar listens rather than being
+     told, so no surface that draws a row can forget it. */
+  const flaring = new SvelteSet<string>();
+  $effect(() => {
+    const timers = new Set<number>();
+    const stop = boost.listen((m) => {
+      if (m.kind !== "limit") return;
+      flaring.add(m.card);
+      const t = window.setTimeout(() => {
+        flaring.delete(m.card);
+        timers.delete(t);
+      }, 1400);
+      timers.add(t);
+    });
+    return () => {
+      stop();
+      for (const t of timers) clearTimeout(t);
+    };
+  });
 
   /* A row's menu has two ways in, and the keyboard one is the house rule (a
      button with no key is unfinished): the context-menu key or Shift+F10 on a
@@ -188,6 +211,7 @@
     data-row={p.row.id}
     class:on={p.row.id === selected}
     class:kid={p.depth > 0}
+    class:boosted={boost.on && !!p.row.credits}
     style:--depth={p.depth}
     aria-current={p.row.id === selected ? "true" : undefined}
     aria-label={nameOf(p)}
@@ -207,8 +231,12 @@
       onmenu(p.row.id, under(e.currentTarget), true);
     }}
   >
+    {#if flaring.has(p.row.id)}<span class="flare" aria-hidden="true"></span>{/if}
     <i class="st {p.tone}" aria-hidden="true"></i>
-    <span class="t">{p.row.title}</span>
+    <span class="t"
+      >{#if boost.on && p.row.credits}<span class="crest" title="on the organisation's api credits">{@html boost.look.crest}</span
+        >{/if}{p.row.title}</span
+    >
     <span class="aside" title={p.aside}>{p.aside}</span>
     {#if p.sub}<span class="sub">{p.sub}</span>{/if}
   </button>
@@ -450,6 +478,60 @@
   }
   .row.fail .sub {
     color: color-mix(in oklab, var(--st-fail) 60%, var(--paper-dim));
+  }
+
+  /* A conversation spending credits while boost is on: the look's crest before
+     its title and a line of its light down the row's edge — static, since a
+     list of turning edges would be a list nobody could read. The status dot is
+     untouched; colour there still means status. */
+  .row.boosted::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, var(--boost-b), var(--boost-a));
+    box-shadow: 0 0 8px var(--boost-a);
+    pointer-events: none;
+  }
+  .crest {
+    display: inline-flex;
+    vertical-align: -1px;
+    margin-right: 5px;
+  }
+  .crest :global(svg) {
+    width: 11px;
+    height: 11px;
+  }
+  /* A row going onto credits: a band of the look's light crosses it once and
+     the element leaves the document (`motion.md`'s rule for a flourish). */
+  .flare {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--boost-a) 60%, transparent) 45%, color-mix(in srgb, #fff 70%, transparent) 50%, color-mix(in srgb, var(--boost-a) 60%, transparent) 55%, transparent 75%);
+    background-size: 260% 100%;
+    box-shadow: 0 0 0 1px var(--boost-a) inset;
+    animation: row-flare 1.3s ease-out forwards;
+  }
+  @keyframes row-flare {
+    0% { background-position: 120% 0; opacity: 1; }
+    75% { opacity: 1; }
+    100% { background-position: -40% 0; opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flare {
+      background: color-mix(in srgb, var(--boost-a) 30%, transparent);
+      animation: row-flare-fade 1.3s ease-out forwards;
+    }
+    @keyframes row-flare-fade {
+      0% { opacity: 0; }
+      20%, 70% { opacity: 1; }
+      100% { opacity: 0; }
+    }
   }
 
   /* A child, joined to its parent by a hairline. */

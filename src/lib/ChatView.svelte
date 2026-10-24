@@ -66,6 +66,10 @@
   import type { Elsewhere } from "./shadows.svelte";
   import type { Deferred } from "./presence";
   import { answerPutOff, dropPutOff } from "./putoff.svelte";
+  import { boost } from "./boost.svelte";
+  import { boostView } from "./boostview.svelte";
+  import BoostIgnition from "./BoostIgnition.svelte";
+  import { onCredits } from "./credits";
 
   let {
     skein,
@@ -259,6 +263,8 @@
       owed: h.gist.owed,
       endedOnQuestion: notice?.kind === "question" || h.gist.ending === "question",
       allowance: h.allowance,
+      /* Off the gist, so a card on another wall on credits wears it too. */
+      credits: onCredits(h.gist.account),
       aside: f.aside,
       lastAt,
       turnAt: h.turnSince,
@@ -789,6 +795,12 @@
   {/if}
 
   <main class="sheet" data-tier={pool} aria-label="conversation">
+    {#if boost.on}
+      <!-- Boost's look, in this room (`boost.md`): the field fills the sheet
+           behind the conversation, the wall's own canvases standing down while
+           this view is in front, and one field runs at a time. -->
+      <canvas class="boost-ground" aria-hidden="true" {@attach boostView.ground}></canvas>
+    {/if}
     <p class="sr" aria-live="polite">{announce}</p>
     {@render band?.()}
     <Toasts
@@ -822,6 +834,12 @@
     {:else}
     <div class="split">
     <section class="thread" data-attach-to="prompt" style:--read={reading * 1.2}>
+      {#if boost.on}
+        <!-- The reading is never set over a moving field: a veil of the look's
+             own dark stands behind the column, feathered at its sides, so the
+             battle goes on in the margins and the words stay still. -->
+        <div class="veil" aria-hidden="true"></div>
+      {/if}
       {#if thread?.finder().on}
         <HuntBar hunt={thread.finder()} onclose={() => composer.input?.focus()} />
       {/if}
@@ -939,7 +957,9 @@
         {/key}
       </div>
       {#if card}
-        <div class="foot">
+        <!-- `data-boost-anchor`: where a limit break on this conversation
+             bursts from (`boostview.svelte.ts`), since there is no card. -->
+        <div class="foot" data-boost-anchor={card.id}>
           <div class="above"><PlanStrip {timeline} /></div>
           <Budget {card} {windows} onaccounts={() => onaccount?.()} onusage={() => (pop = true)} />
           <MessageBox {field} {bang} {composer} {card} {starter} />
@@ -952,6 +972,12 @@
       </div>
     {/if}
     </div>
+    {/if}
+    {#if boost.on}
+      <!-- Its air, over everything in the sheet and catching nothing: the
+           ignition's flash and a limit break's shockwave. -->
+      <canvas class="boost-air" aria-hidden="true" {@attach boostView.air}></canvas>
+      <BoostIgnition />
     {/if}
   </main>
 
@@ -1191,6 +1217,92 @@
   }
   .chat.nosidebar .sheet {
     margin-left: 8px;
+  }
+
+  /* ── boost (`boost.md`) ──
+     The look's colours arrive as `--boost-*` on the studio root, only while
+     boost is on. The window around the sheet takes the look's dark and the bar
+     its light, as the wall's does. The sheet becomes the battlefield: the
+     field's canvas sits behind its content (the sheet isolates, so `-1` is
+     above its own ground and under everything else), the moments' canvas over
+     it. */
+  :global(.studio[data-boost]) .chat {
+    background: var(--boost-card);
+    /* The surfaces chat view lifts things on — the message box, a selected
+       row, a button — take the look's dark, a little lit by its light, so
+       nothing in the room is left in the studio's brown. Set here, where the
+       look is worn, rather than reached for in each component. */
+    --cv-lift: color-mix(in oklab, var(--boost-card) 82%, var(--boost-b) 18%);
+    --cv-hair: color-mix(in oklab, var(--boost-a) 30%, transparent);
+    --surface: color-mix(in oklab, var(--boost-card) 88%, var(--boost-b) 12%);
+    --raised: color-mix(in oklab, var(--boost-card) 80%, var(--boost-b) 20%);
+  }
+  :global(.studio[data-boost]) .bar {
+    position: relative;
+    background: var(--boost-bar);
+  }
+  :global(.studio[data-boost]) .bar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent 0%, var(--boost-c) 20%, var(--boost-b) 35%, var(--boost-a) 50%, var(--boost-b) 65%, var(--boost-c) 80%, transparent 100%);
+    background-size: 200% 100%;
+    animation: boost-sweep 6s linear infinite;
+  }
+  @keyframes boost-sweep {
+    from { background-position: 0% 0; }
+    to { background-position: -200% 0; }
+  }
+  :global(html[data-motion="spare"]) :global(.studio[data-boost]) .bar::after {
+    animation-timing-function: steps(24, end);
+  }
+  :global(html[data-motion="still"]) :global(.studio[data-boost]) .bar::after {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.studio[data-boost]) .bar::after {
+      animation: none;
+    }
+  }
+  :global(.studio[data-boost]) .sheet {
+    isolation: isolate;
+    background: var(--boost-ground);
+    border-color: color-mix(in srgb, var(--boost-a) 30%, transparent);
+  }
+  .boost-ground,
+  .boost-air {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  .boost-ground {
+    z-index: -1;
+  }
+  .boost-air {
+    z-index: 5;
+  }
+  /* Behind the column and nothing else: the measure plus a margin each side,
+     feathered so it reads as the dark gathering under the words rather than as
+     a box. Four fifths opaque at its core: enough that what moves behind a
+     line of prose is a dim glow rather than a shape, and not so much that the
+     sheet becomes a dark slab with the battle pushed to its edges — which the
+     first cut, fully opaque, was. */
+  .veil {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: min(calc(var(--cv-measure, 44rem) + 7rem), 100%);
+    transform: translateX(-50%);
+    pointer-events: none;
+    --v: color-mix(in srgb, var(--boost-card) 80%, transparent);
+    background: linear-gradient(90deg, transparent, var(--v) 3.5rem, var(--v) calc(100% - 3.5rem), transparent);
   }
   /* The thread and, when it is open, the pane beside it (§3). */
   .split {

@@ -36,6 +36,8 @@
   } from "./accounts";
   import { pct, said as windowSaid, until } from "./limits";
   import { purse } from "./purse.svelte";
+  import { boost } from "./boost.svelte";
+  import { LOOKS } from "./boostfield";
   import { creditsFace, money, parseBudget, sayBudgetSet, sayCreditsBand, sayKey } from "./credits";
   import { Listeners } from "./listeners";
   import { codeFrom, looksLikeCode, readSignin } from "./signin";
@@ -852,6 +854,26 @@
                   />
                 </label>
               </div>
+
+              <!-- Which look the wall wears while boost is on — all four, the
+                   one in force marked, and the one that is hard on amber and
+                   rust saying so where it is chosen (`boostfield.ts`). -->
+              <div class="looks" role="radiogroup" aria-label="boost's look">
+                <span class="capname">look</span>
+                {#each LOOKS as l (l.id)}
+                  <button
+                    class="chip"
+                    class:on={boost.lookId === l.id}
+                    role="radio"
+                    aria-checked={boost.lookId === l.id}
+                    title={`${l.blurb}${l.legible ? "" : " — asking and failed read less clearly under it"} (space then m l)`}
+                    onclick={() => {
+                      boost.setLook(l.id);
+                      say(`boost looks like ${l.label}`);
+                    }}>{l.label}</button
+                  >
+                {/each}
+              </div>
             </div>
           </div>
         </div>
@@ -1277,6 +1299,23 @@
   }
   .pc {
     color: var(--paper-faint);
+  }
+
+  .looks {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    padding-left: 1.5ch;
+  }
+  .looks .capname {
+    font-family: var(--util);
+    font-size: 0.7rem;
+    margin-right: 0.2rem;
+  }
+  .looks .chip.on {
+    color: var(--paper);
+    border-color: var(--paper-dim);
   }
 
   .acts {

@@ -202,15 +202,31 @@ class Skins {
     this.#paint();
   }
 
+  /** A skin drawn in place of the chosen one without choosing it — see `wear`. */
+  #worn: string | null = null;
+
+  /** Draw `id` instead of the chosen skin until called with null. Boost is the
+   *  one caller: its scene is dark whatever the wall is set to, and its looks
+   *  were drawn against the studio's ground, so on a light skin its cards were
+   *  dark slabs under dark ink. Painting is exact in both directions, so the
+   *  chosen skin comes back byte for byte when boost goes off. Nothing is
+   *  stored, and `id`, the ring and the panel go on naming the skin you chose. */
+  wear(id: string | null) {
+    if (this.#worn === id) return;
+    this.#worn = id;
+    this.#paint();
+  }
+
   #paint() {
-    const over = resolveSkin(this.id, this.customs);
+    const id = this.#worn ?? this.id;
+    const over = resolveSkin(id, this.customs);
     this.light = paint(over);
     /* Brightness is a second pass over what the skin drew, never a value
        stored into a skin. It needs the tokens as the browser resolves them,
        tokens.css's defaults included, and the only honest source for that is
        the document just painted. At zero the second pass does not happen at
        all, which is what keeps `studio` the untouched app. */
-    const level = this.levels[this.id] ?? 0;
+    const level = this.levels[id] ?? 0;
     if (level !== 0) {
       const cs = getComputedStyle(document.documentElement);
       const drawn: Record<string, string> = {};

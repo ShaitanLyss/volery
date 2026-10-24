@@ -95,7 +95,7 @@
   import { Voicing } from "./lib/voicing.svelte";
   import Hearing from "./lib/Hearing.svelte";
   import { ink } from "./lib/theme.svelte";
-  import { skin } from "./lib/palette.svelte";
+  import { skin, STUDIO } from "./lib/palette.svelte";
   import { levelSaid } from "./lib/brightness";
   import Canvas from "./lib/Canvas.svelte";
   import Dock from "./lib/Dock.svelte";
@@ -134,6 +134,7 @@
   import { purse } from "./lib/purse.svelte";
   import { boostLabel, onCredits, sayBoost } from "./lib/credits";
   import { boost } from "./lib/boost.svelte";
+  import BoostIgnition from "./lib/BoostIgnition.svelte";
   import { boostScore } from "./lib/boostscore.svelte";
   import { paletteExtras, stirsCard } from "./lib/commands";
   import { planFile, planRoot } from "./lib/gears";
@@ -563,7 +564,23 @@
      so those frames are paid for and cannot be seen — which is the one thing
      `motion.ts` says costs the most and shows the least. Null rather than a new
      flag, because `Backdrop` already means "nothing to draw" by it. */
-  const wallAmbience = $derived(synth.on ? null : ambience.active);
+  /* Boost's look replaces the weather while it is on, for the synth's reason:
+     two full-screen fields on one frame loop, one of them fully covered. */
+  const wallAmbience = $derived(synth.on || boost.on ? null : ambience.active);
+  /** The look's colours, on the studio root while boost is on — the title bar,
+   *  the crest, a card on credits and the ignition all read them. */
+  const boostStyle = $derived(
+    boost.on
+      ? Object.entries(boost.look.vars)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(";")
+      : undefined,
+  );
+  /* And the ground under it is the studio's while boost is on: every look is a
+     dark scene drawn against that ground, and a light skin would leave the
+     wall's ink and the reading in dark-on-dark under it (`palette.svelte.ts`,
+     `wear`). The skin you chose comes back exactly when boost goes off. */
+  $effect(() => skin.wear(boost.on ? STUDIO : null));
 
   /* One leader for the wall, and the only place a chord becomes an action. A
      verb rather than a mode is what lets this reach two unrelated subsystems
@@ -675,6 +692,9 @@
       if (verb.act === "reawaken") {
         skein.setReawaken(!skein.reawaken);
         leader.say(reawakenSaid(skein.reawaken));
+      } else if (verb.act === "look") {
+        boost.nextLook();
+        leader.say(`boost looks like ${boost.look.label}${boost.on ? "" : " — when it is on"}`);
       } else if (verb.act === "boost") {
         skein.setBoost(!purse.boost);
         leader.say(sayBoost(purse.state, purse.standing()).replace(/ \(space then m b\)$/, ""));
@@ -5088,6 +5108,8 @@
         title: sayBoost(purse.state, purse.standing()),
         on: purse.boost,
         press: () => skein.setBoost(!purse.boost),
+        /* On, the button wears the look: its crest, and its light. */
+        crest: boost.on ? boost.look.crest : undefined,
       },
       {
         key: "layout",
@@ -5096,7 +5118,7 @@
         on: showCarry,
         press: () => (showCarry = !showCarry),
       },
-    ] as { key: string; label: string; title?: string; on?: boolean; adopt?: boolean; press: () => void }[],
+    ] as { key: string; label: string; title?: string; on?: boolean; adopt?: boolean; crest?: string; press: () => void }[],
   );
 
 </script>
@@ -5122,6 +5144,8 @@
 <div
   class="studio"
   class:spanning={!!spread}
+  data-boost={boost.on ? boost.lookId : undefined}
+  style={boostStyle}
   style:--burn={burn}
   style:--span-x={spread ? `${spread.x}px` : undefined}
   style:--span-y={spread ? `${spread.y}px` : undefined}
@@ -5164,9 +5188,11 @@
         <button
           class="ghost"
           class:on={b.on}
+          class:boostbtn={!!b.crest}
           data-adopt={b.adopt && !mute ? true : undefined}
           title={b.title}
-          onclick={mute ? undefined : b.press}>{b.label}</button
+          onclick={mute ? undefined : b.press}
+          >{#if b.crest}<span class="crest">{@html b.crest}</span>{/if}{b.label}</button
         >
       {/if}
     {/if}
@@ -5619,6 +5645,8 @@
     style:--beside-left={footInset.left ? `${footInset.left}px` : undefined}
     style:--beside-right={footInset.right ? `${footInset.right}px` : undefined}
   >
+    <!-- Boost coming on: the title card, over the wall and inert. -->
+    <BoostIgnition />
     <!-- A project with no cards is still a place on the wall, and the only
          place its "+" lives — so an empty territory keeps the canvas up. -->
     {#if skein.convs.length || skein.projects.length || board.images.length || widgets.items.length || elsewhere.shadows.length}
@@ -5927,6 +5955,61 @@
   .wall {
     position: relative;
     z-index: 1;
+  }
+
+  /* Boost wears its look on the title bar: the look's own dark, and a line of
+     its light along the foot, travelling. The line is the bar's one endless
+     animation and answers to the motion setting like every other. */
+  .studio[data-boost] .bar {
+    position: relative;
+    background: var(--boost-bar);
+    border-bottom-color: transparent;
+  }
+  .studio[data-boost] .bar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent 0%, var(--boost-c) 20%, var(--boost-b) 35%, var(--boost-a) 50%, var(--boost-b) 65%, var(--boost-c) 80%, transparent 100%);
+    background-size: 200% 100%;
+    animation: boost-sweep 6s linear infinite;
+  }
+  @keyframes boost-sweep {
+    from { background-position: 0% 0; }
+    to { background-position: -200% 0; }
+  }
+  :global([data-motion="spare"]) .studio[data-boost] .bar::after {
+    animation-timing-function: steps(24, end);
+  }
+  :global([data-motion="still"]) .studio[data-boost] .bar::after {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .studio[data-boost] .bar::after {
+      animation: none;
+    }
+  }
+  .boostbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--boost-ink);
+    border-color: color-mix(in srgb, var(--boost-a) 70%, transparent);
+    background: color-mix(in srgb, var(--boost-a) 14%, var(--ink));
+    box-shadow: 0 0 14px color-mix(in srgb, var(--boost-a) 45%, transparent);
+  }
+  .boostbtn .crest {
+    display: inline-flex;
+    width: 12px;
+    height: 12px;
+    filter: drop-shadow(0 0 4px var(--boost-a));
+  }
+  .boostbtn .crest :global(svg) {
+    width: 12px;
+    height: 12px;
   }
 
   .bar {

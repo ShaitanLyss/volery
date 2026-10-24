@@ -514,3 +514,11 @@ another wall (`Elsewhere.openThere`, a section's menu); the empty sheet could no
   the card is a fault and the draft is given back. *Plan first* is not offered for another
   machine: it is a gear, set on the card before the first send, and nothing sends one to a card
   that has not arrived yet.
+
+### Boost, in this room (2026-10-24)
+
+Boost's look (`boost.md`) has a chat-view version and it lives in `boost.md`, *Chat view wears
+it too*, beside the wall's. The short of it: this room mounts the field in the sheet while the
+wall's canvases stand down, a veil stands under the reading, a row on credits wears the look's
+crest and a flare, and the room's surfaces (`--cv-lift`, `--surface`, `--raised`) take the
+look's dark through custom properties set on `.chat`, never by reaching into a component.

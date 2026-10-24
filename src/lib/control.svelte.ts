@@ -84,6 +84,10 @@ function boostSnapshot() {
        context's clock, where its moments were placed, and the level it
        metered every tick (`boostscore.svelte.ts::reading`). */
     score: boostScore.reading,
+    /* The look it wears, and whether the wall is wearing it — `data-boost`
+       on the studio root is what every surface keys off. */
+    look: boost.lookId,
+    worn: document.querySelector(".studio")?.getAttribute("data-boost") ?? null,
   };
 }
 import type { DevOps } from "./devops.svelte";
@@ -2554,7 +2558,11 @@ export class Control {
            moment as `Skein` would mark it. */
         if (op.working !== undefined) boost.working = Number(op.working);
         if (op.onCredits !== undefined) boost.onCredits = Number(op.onCredits);
-        if (op.mark === "limit" || op.mark === "victory") boost.mark({ kind: op.mark, card: "control", at: Date.now() });
+        /* `card` names whose limit break it is, so a lab can watch one play on
+           a real card's face; left out, it is nobody's. */
+        if (op.mark === "limit" || op.mark === "victory") boost.mark({ kind: op.mark, card: String(op.card ?? "control"), at: Date.now() });
+        /* Which look boost wears — `boostfield.ts`'s ids. */
+        if (op.look !== undefined) boost.setLook(String(op.look));
         if (op.mark === "ignite") boost.mark({ kind: "ignite", at: Date.now() });
         if (op.refresh || op.on !== undefined) await purse.refresh();
         return boostSnapshot();

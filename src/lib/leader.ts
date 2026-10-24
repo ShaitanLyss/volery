@@ -106,7 +106,7 @@ export type Verb =
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" }
+  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" }
   | { kind: "bright"; act: "up" | "down" | "reset" };
 
 /** One sequence the leader opens onto.
@@ -357,6 +357,9 @@ export const CHORDS: readonly Chord[] = [
      decision about what this wall may spend, the same sort of thing as staying
      awake on mains, and like those it says what is now true. */
   { keys: "mb", label: "boost — credits when an account runs out: on / off", verb: { kind: "machine", act: "boost" } },
+  /* And which look it wears (`boostfield.ts`), cycled — four of them, and the
+     accounts panel's credits band names them all. */
+  { keys: "ml", label: "boost's look: the next one", verb: { kind: "machine", act: "look" } },
   /* `v` is how the wall looks. `vv` is the themes panel, the family's main
      verb doubled after `ff` and `ss`; until it existed the panel had no key at
      all, only the header button. The rest is the brightness of whichever skin

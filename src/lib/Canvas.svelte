@@ -72,6 +72,8 @@
   import type { Editor } from "./unreallog";
   import { screenBox, type Box } from "./flow";
   import Backdrop from "./Backdrop.svelte";
+  import { boost } from "./boost.svelte";
+  import { boostView } from "./boostview.svelte";
   import Flow from "./Flow.svelte";
   import Lineage from "./Lineage.svelte";
   import type { Kin } from "./lineage";
@@ -2991,6 +2993,15 @@
        than inventing anybody. -->
   <Backdrop profile={ambience} names={wanderers} />
 
+  <!-- Boost's look (`boostfield.ts`, run by `boostview.svelte.ts`): its field
+       in the ground, over the weather it replaces — App hands the backdrop no
+       profile while boost is on — and under the roots and the cards. Only while
+       the wall is in front: chat view draws the look on its own sheet, and one
+       field runs at a time (`boostview.svelte.ts`). -->
+  {#if boost.on && viewing.current !== "chat"}
+    <canvas class="boost-ground" aria-hidden="true" {@attach boostView.ground}></canvas>
+  {/if}
+
   <!-- The roots, over the weather and under the whole wall.
        Here rather than beside `Flow` — which is a sibling of `.surface` and
        therefore *above* the cards — because that layering is the feature: above
@@ -3100,6 +3111,13 @@
       {/each}
     </div>
   </div>
+
+  <!-- And its air, over the cards: a limit break's shockwave and the
+       ignition's flash play here, since a burst behind the card it is about is
+       a burst the card hides. Inert, like everything drawn over the wall. -->
+  {#if boost.on && viewing.current !== "chat"}
+    <canvas class="boost-air" aria-hidden="true" {@attach boostView.air}></canvas>
+  {/if}
 </div>
 
 <!-- The strands, between the wall and the pane.
@@ -3208,6 +3226,23 @@
   }
   .surface.panning {
     cursor: grabbing;
+  }
+  /* Boost's two canvases fill the ground and catch nothing. The ground one
+     carries the look's own ground as its background, so the field is drawn
+     over the look's colour rather than the wall's. */
+  .boost-ground,
+  .boost-air {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  .boost-ground {
+    background: var(--boost-ground);
+  }
+  .boost-air {
+    z-index: 2;
   }
 
   /* ── why the wall is two boxes ──────────────────────────────────────────

@@ -62,6 +62,7 @@
 <script lang="ts">
   import { waterfall } from "./waterfall.svelte";
   import { onCredits } from "./credits";
+  import { boost } from "./boost.svelte";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
   import { waitLine, waitTitle } from "./waiting";
@@ -234,9 +235,37 @@
      that a word that never varies is never read, and a card spending money per
      token is the one funding that is never the usual one. */
   const onCreditsNow = $derived(onCredits(conv.accountLabel));
+
+  /* Boost's look on a card (`boostfield.ts`): a card spending credits wears the
+     look's light as a turning edge, and a card that has just gone onto them
+     flares once — "limit break" — on the card itself. Read off `boost`, which
+     every card can see, rather than handed down, so no surface that draws a
+     card can forget it. */
+  const boostEdge = $derived(boost.on && onCreditsNow);
+  let flaring = $state(false);
+  $effect(() => {
+    const id = conv.id;
+    let timer = 0;
+    const play = () => {
+      flaring = true;
+      clearTimeout(timer);
+      timer = window.setTimeout(() => (flaring = false), 1500);
+    };
+    /* A card spawned straight onto credits is marked a moment before it is
+       drawn; it still flares when it arrives. */
+    if (boost.limitedLately(id)) play();
+    const stop = boost.listen((m) => {
+      if (m.kind === "limit" && m.card === id) play();
+    });
+    return () => {
+      stop();
+      clearTimeout(timer);
+    };
+  });
 </script>
 
-<div class="slot" class:focused class:selected data-lod={lod}>
+<div class="slot" class:focused class:selected class:boosted={boostEdge} data-lod={lod}>
+  {#if boostEdge}<span class="boostedge" aria-hidden="true"></span>{/if}
   <button
     class="card"
     data-st={conv.tier}
@@ -315,6 +344,7 @@
       </span>
     {/if}
   </button>
+  {#if flaring}<span class="flare" aria-hidden="true">limit break</span>{/if}
 
   <!-- A fold in progress, across the wall: a line along the card's bottom edge.
        A sibling of `.card` and absolutely positioned, like `.pin` and `.aside`
@@ -522,6 +552,91 @@
   :global(html[data-motion="still"]) .slot:has(.card[data-st="work"]) {
     animation:
       land var(--ch-pop-ms, 260ms) var(--ch-ease, cubic-bezier(0.2, 0.8, 0.3, 1)) 1 both;
+  }
+
+  /* ── boost ─────────────────────────────────────────────────────────────
+     Every card takes the look's own fill while boost is on — opaque, because
+     nothing standing on the wall may be transparent. */
+  :global(.studio[data-boost]) .card {
+    background: var(--boost-card);
+  }
+  /* A card on credits: the card is lifted over an edge of the look's light,
+     two pixels wide and turning — a conic gradient rotated by `transform`,
+     which the compositor does for free, never an animated `box-shadow`
+     (`motion.md`). The glow round it is static. */
+  .slot.boosted .card {
+    position: relative;
+    z-index: 1;
+    border-color: transparent;
+    box-shadow: 0 0 20px color-mix(in srgb, var(--boost-a) 45%, transparent);
+  }
+  .boostedge {
+    position: absolute;
+    inset: -2px;
+    border-radius: calc(var(--ch-radius, 4px) + 2px);
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .boostedge::before {
+    content: "";
+    position: absolute;
+    inset: -60%;
+    background: conic-gradient(from 0deg, var(--boost-c), var(--boost-b), var(--boost-a), var(--boost-c) 40%, var(--boost-b) 55%, #fff 60%, var(--boost-a) 70%, var(--boost-c));
+    animation: boost-spin 7s linear infinite;
+  }
+  @keyframes boost-spin {
+    to { transform: rotate(360deg); }
+  }
+  :global([data-motion="spare"]) .boostedge::before {
+    animation-timing-function: steps(28, end);
+  }
+  :global([data-motion="still"]) .boostedge::before {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .boostedge::before {
+      animation: none;
+    }
+  }
+  /* The limit break: the card flares and says so, once, and the element
+     leaves the document when it is done (`motion.md`'s rule for a flourish). */
+  .flare {
+    position: absolute;
+    inset: -2px;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    border-radius: calc(var(--ch-radius, 4px) + 2px);
+    pointer-events: none;
+    font-family: var(--display);
+    font-size: 1.35rem;
+    letter-spacing: 0.32em;
+    padding-left: 0.32em;
+    white-space: nowrap;
+    color: #fff;
+    text-shadow:
+      0 0 10px var(--boost-a, #fff),
+      0 0 26px var(--boost-a, #fff),
+      0 0 60px var(--boost-c, #fff);
+    background: radial-gradient(ellipse at center, color-mix(in srgb, var(--boost-a, #fff) 45%, transparent), transparent 70%);
+    animation: boost-flare 1.4s ease-out forwards;
+  }
+  @keyframes boost-flare {
+    0% { opacity: 0; transform: scale(0.9); }
+    12% { opacity: 1; transform: scale(1.04); }
+    60% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.02); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .flare {
+      animation: boost-fade 1.4s ease-out forwards;
+    }
+    @keyframes boost-fade {
+      0% { opacity: 0; }
+      12%, 60% { opacity: 1; }
+      100% { opacity: 0; }
+    }
   }
 
   .card {

@@ -244,6 +244,7 @@ describe("the which-key hint", () => {
       { keys: "ma", label: "cards left awake come back awake: on / off" },
       { keys: "mb", label: "boost — credits when an account runs out: on / off" },
       { keys: "mi", label: "away when nobody is at the keyboard: on / off" },
+      { keys: "ml", label: "boost's look: the next one" },
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "o", label: "the integrations panel" },
@@ -340,6 +341,7 @@ describe("the which-key hint", () => {
       { keys: "a", label: "cards left awake come back awake: on / off" },
       { keys: "b", label: "boost — credits when an account runs out: on / off" },
       { keys: "i", label: "away when nobody is at the keyboard: on / off" },
+      { keys: "l", label: "boost's look: the next one" },
       { keys: "r", label: "reopen after a restart: on / off" },
       { keys: "w", label: "keep awake on mains: on / off" },
     ]);
