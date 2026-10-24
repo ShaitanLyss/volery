@@ -147,9 +147,15 @@ export const CHORDS: readonly Chord[] = [
   { keys: "td", label: "dérivée", verb: { kind: "toy", toy: "calculus" } },
   { keys: "tc", label: "casse-tête", verb: { kind: "toy", toy: "rotate" } },
   { keys: "tk", label: "croquis", verb: { kind: "toy", toy: "sketch" } },
-  /* `a` for the archive: one letter, because it is a place you go rather than
-     a family of things, and nothing else here begins with it. */
-  { keys: "a", label: "archived timelines", verb: { kind: "open", what: "timelines" } },
+  /* `a` for the accounts panel — which subscriptions the wall spends, in what
+     order, what each has left, and since 0.78.0 the credits band with boost and
+     its budget. One letter, because it is a place you go rather than a family
+     of things. It was `u` (for the usage beside each row) from 2026-10-19,
+     because `a` had been the timeline archive's since before the panel had a
+     key; Lyss asked why it was not `a` on 2026-10-24 and the two were swapped —
+     the panel is reached for daily, the archive rarely, and the archive belongs
+     with the plan chords anyway (`l h`). Toggles, like `vv`. */
+  { keys: "a", label: "the accounts panel", verb: { kind: "open", what: "accounts" } },
   /* `p` for the pile of questions that built up while you were away. One
      letter, on the same argument `a` makes — a place you go rather than a
      family of things, and nothing else here begins with it. `q` was the
@@ -163,20 +169,12 @@ export const CHORDS: readonly Chord[] = [
      pile were one gesture for as long as the pile could only be opened by
      coming back, which is the gap this closes. */
   { keys: "p", label: "questions that piled up", verb: { kind: "open", what: "pile" } },
-  /* `k` for the wall key: a place you go, on `a`'s argument, and the key is the
+  /* `k` for the wall key: a place you go, on the accounts panel's argument, and the key is the
      whole of what a flyway is — starting, joining and leaving all happen in the
      one panel it opens. */
   { keys: "k", label: "flyway key", verb: { kind: "open", what: "flyway" } },
-  /* `u` for the accounts panel — which subscriptions the wall spends, in what
-     order, and what each has left of its usage. A place you go, on `a`'s
-     argument, and the panel had no key at all until the settings in it began
-     travelling between walls (2026-10-19), when it became the place you go to
-     switch an account back on from the other laptop. `a` was the letter and is
-     the archive's; `u` is the half of "usage" the panel draws beside each row,
-     and nothing else here begins with it. Toggles, like `vv`. */
-  { keys: "u", label: "the accounts panel", verb: { kind: "open", what: "accounts" } },
   /* `o` for the integrations panel — the tokens for services outside the
-     machine and the event sources cards subscribe to. A place you go, on `a`'s
+     machine and the event sources cards subscribe to. A place you go, on the accounts panel's
      argument; `o` for *outside*, which is what every row in it reaches, and
      nothing else here begins with it. It had no key at all until the event
      sources joined it (2026-10-21). Toggles, like `u`. */
@@ -251,6 +249,10 @@ export const CHORDS: readonly Chord[] = [
   { keys: "lg", label: "plan on the glass / on the wall", verb: { kind: "plan", act: "glass" } },
   { keys: "ls", label: "plan back in the stack", verb: { kind: "plan", act: "stack" } },
   { keys: "la", label: "archive the plan", verb: { kind: "plan", act: "archive" } },
+  /* And the archive itself, beside the gesture that fills it: `h` for the
+     history of finished plans. It was `<space> a` until the accounts panel
+     took that letter (2026-10-24). */
+  { keys: "lh", label: "archived timelines", verb: { kind: "open", what: "timelines" } },
   { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
   { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
   /* `wa`: how much of its edge the dock takes — all of it, or the width the

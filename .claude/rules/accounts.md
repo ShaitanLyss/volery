@@ -1176,7 +1176,7 @@ make the move. After that each turn reads its context at $0.20 a million.
   front**: `chrome.ts::foldChrome` keeps items in order and folds the rest, so earlier means
   kept longer. `boost` first went in at the far end, beside `away`, read as "given up late",
   and on a wall of ordinary width it was folded into the overflow from the start.
-- **The accounts panel** (`<space> u`) has a credits band under the priorities, which is where
+- **The accounts panel** (`<space> a`) has a credits band under the priorities, which is where
   credits fall in the order. It holds the boost switch, whether a key is stored, what credits
   have cost this month, and **stop at $**, the budget. The budget is a cap in every way an
   account's cap is: blank is the real instruction "no ceiling of yours", it is said back
@@ -1452,7 +1452,7 @@ nothing is refused before anybody is asked. `mcp__skein__accounts` gains, per
 row, who the account signs in as, the last change another wall made, a peer's
 reading where it is the fresher one, and a retired copy's reason.
 
-The accounts panel has a key at last: `<space> u`.
+The accounts panel has a key at last: `<space> u` at first, and `<space> a` since 2026-10-24, when the timeline archive gave the letter up and moved to `<space> l h`.
 
 ### Does a refresh token rotate on use? Read the client, not the wire
 

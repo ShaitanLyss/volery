@@ -1687,7 +1687,7 @@
    *  found it. A long-lived pile is mostly cards that have since closed, which
    *  `sink.ts::finder` is what answers for. */
   const cardNames = $derived(new Map(skein.convs.map((c) => [c.id, c.title])));
-  /* The timeline archive, behind `<space>a` and a header button that is only
+  /* The timeline archive, behind `<space> l h` and a header button that is only
      there once something has been archived. */
   let showAnnals = $state(false);
   /* A close held back because the card is doing something or has a timeline
@@ -4958,7 +4958,7 @@
       {
         key: "timelines",
         label: "timelines",
-        title: "Archived timelines — the plans cards finished, or left (space then a)",
+        title: "Archived timelines — the plans cards finished, or left (space then l h)",
         on: showAnnals,
         press: () => (showAnnals = !showAnnals),
       },
@@ -5032,7 +5032,7 @@
       {
         key: "accounts",
         label: "accounts",
-        title: "Which Claude subscriptions this wall spends, and in what order (space then u)",
+        title: "Which Claude subscriptions this wall spends, and in what order (space then a)",
         on: showAccounts,
         press: () => (showAccounts = !showAccounts),
       },

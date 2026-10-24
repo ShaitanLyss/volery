@@ -191,8 +191,10 @@ describe("away mode has two spellings of one verb", () => {
   });
 
 
-  test("u opens the accounts panel — which had no key until its settings travelled", () => {
-    expect(chord("", "u")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "accounts" } });
+  test("a opens the accounts panel — u until 2026-10-24, when the archive gave it up", () => {
+    expect(chord("", "a")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "accounts" } });
+    /* And u lets go of the leader rather than opening anything. */
+    expect(chord("", "u")).toMatchObject({ kind: "lapse" });
   });
   test("o opens the integrations panel — tokens and event sources", () => {
     expect(chord("", "o")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "integrations" } });
@@ -205,7 +207,7 @@ describe("away mode has two spellings of one verb", () => {
 describe("the which-key hint", () => {
   test("the leader alone offers every chord, by its whole letters", () => {
     expect(offers("")).toEqual([
-      { keys: "a", label: "archived timelines" },
+      { keys: "a", label: "the accounts panel" },
       { keys: "ca", label: "set it aside / pick it back up" },
       { keys: "cb", label: "ignore the account caps / respect them" },
       { keys: "cc", label: "close this card" },
@@ -236,6 +238,7 @@ describe("the which-key hint", () => {
       { keys: "k", label: "flyway key" },
       { keys: "la", label: "archive the plan" },
       { keys: "lg", label: "plan on the glass / on the wall" },
+      { keys: "lh", label: "archived timelines" },
       { keys: "ll", label: "plan: the whole line / a window" },
       { keys: "ls", label: "plan back in the stack" },
       { keys: "ma", label: "cards left awake come back awake: on / off" },
@@ -252,7 +255,6 @@ describe("the which-key hint", () => {
       { keys: "tk", label: "croquis" },
       { keys: "tm", label: "motus" },
       { keys: "ts", label: "synth" },
-      { keys: "u", label: "the accounts panel" },
       { keys: "v0", label: "the wall as its skin is" },
       { keys: "vj", label: "the wall dimmer" },
       { keys: "vk", label: "the wall brighter" },
@@ -267,13 +269,15 @@ describe("the which-key hint", () => {
     ]);
   });
 
-  test("the line family is a plan's four moves", () => {
+  test("the line family is a plan's four moves, and the archive they fill", () => {
     expect(offers("l")).toEqual([
       { keys: "a", label: "archive the plan" },
       { keys: "g", label: "plan on the glass / on the wall" },
+      { keys: "h", label: "archived timelines" },
       { keys: "l", label: "plan: the whole line / a window" },
       { keys: "s", label: "plan back in the stack" },
     ]);
+    expect(chord("l", "h")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "timelines" } });
   });
 
   test("one letter in, it offers only what is left to press", () => {
