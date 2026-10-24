@@ -132,7 +132,9 @@
   import { sayBlocked, standingOf, usable } from "./lib/accounts";
   import { waterfall } from "./lib/waterfall.svelte";
   import { purse } from "./lib/purse.svelte";
-  import { boostLabel, sayBoost } from "./lib/credits";
+  import { boostLabel, onCredits, sayBoost } from "./lib/credits";
+  import { boost } from "./lib/boost.svelte";
+  import { boostScore } from "./lib/boostscore.svelte";
   import { paletteExtras, stirsCard } from "./lib/commands";
   import { planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
@@ -868,6 +870,11 @@
     () => [...remoteQuestions(elsewhere.shadows, clock.t), ...remoteNotices(elsewhere.shadows, clock.t)],
   );
 
+  /* Boost's score: plays while boost is on, the chime is enabled and you are
+     here — the chime's switch and away mode are both this component's, so
+     they are handed in (`boostscore.svelte.ts`). Released in `onDestroy`. */
+  boostScore.attach({ chime: () => attention.chime, away: () => presence.away });
+
   /** Countdowns that have run out, as things wanting your attention.
    *
    *  Built here rather than in `attention.svelte.ts` because it needs the
@@ -921,6 +928,7 @@
     leader.detach();
     presence.detach();
     synth.release();
+    boostScore.release();
     editor.detach();
     bang.detach();
     /* Holds the ear's three subscriptions. The ear itself is Rust's and is
@@ -4104,6 +4112,14 @@
      over `Skein.spend`. */
   const HORIZON_FULL_USD = 20;
   const burn = $derived(Math.min(1, skein.spend / HORIZON_FULL_USD));
+
+  /* Boost's mood, off the wall's own readings rather than a second fold of
+     them: how many cards have a turn open, and how many are spending credits
+     (`boost.ts::intensityOf` makes the score's intensity of the two). */
+  $effect(() => {
+    boost.working = skein.convs.filter((c) => c.working).length;
+    boost.onCredits = skein.convs.filter((c) => onCredits(c.accountLabel)).length;
+  });
 
   /** Walls a card of this project could move to: heard from, taking work,
    *  not answering only in the older language, and holding a territory of

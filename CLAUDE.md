@@ -76,7 +76,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
-                         # sources, marks, whois, credits
+                         # sources, marks, whois, credits, boostmusic
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -299,6 +299,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `editing.md` | editing a file in your own nvim: attaching to one as a UI over pipes rather than a PTY, the panel's third reading, what the wire format gets wrong, the one key kept back, and colour against the house rule | `nvim.rs`, `nvim.ts`, `nvim.svelte.ts`, `Quill.svelte` |
 | `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, a markdown file that opens as a document, a path in a tool call that opens it, and one named in an agent's *prose* where the pattern is generous and the disk is the guard | `find.rs`, `finding.ts`, `paths.svelte.ts`, `finder.svelte.ts`, `Spyglass.svelte`, `ToolCall.svelte`, `Inlines.svelte` |
 | `toys.md` | the toy shelf at `<space>t` and the synthesiser on it: why it is an overlay rather than the wall's weather, the one place hue is allowed and what confines it, the five things that make it fun and why none are taste, which threads are already threads, and the leader hoisted off the finder so a chord can open something that is not a panel | `synth.ts`, `synth.svelte.ts`, `synth.worker.ts`, `Plume.svelte`, `leader.ts`, `leader.svelte.ts`, `Which.svelte` |
+| `boost-music.md` | boost's score: the 16-bit last battle Lyss picked by ear, ported note for note, and its moments rebuilt as part of it — placed on a bar line rather than played, built on the bar's chord, the loop ducked and the drums not, a burst of cards onto credits heard as one, and the gate of boost, chime and away | `boostmusic.ts`, `boostscore.svelte.ts` |
 | `bang.md` | `!` in the dock: a shell line where a prompt goes, the two things Enter and Ctrl+Enter mean, and completion out of the shell's own `TabExpansion2` | `bang.ts`, `bang.svelte.ts`, `bang.rs`, `Dock.svelte`, `field.svelte.ts` |
 | `naming.md` | what a card is called, and the draft it wears before it is named | `naming.ts` |
 | `menu.md` | the right-click, and why offering nothing is a real answer | `menu.ts` |
@@ -424,7 +425,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `plates.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
 `glance.ts`, `tether.ts`, `brightness.ts`, `peeking.ts`,
-`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`) are pure
+`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

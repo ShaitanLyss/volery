@@ -26,6 +26,7 @@ import {
 } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { purse } from "./purse.svelte";
+import { boost } from "./boost.svelte";
 import {
   CREDITS,
   fundingName,
@@ -695,7 +696,9 @@ export class Skein {
        send. Tells Rust the switch, so a card's `allowance` can say it. */
     purse.start();
     purse.whenOn = () => {
-      if (!this.#gone && this.convs.some((c) => c.held)) void this.releaseHeld();
+      if (this.#gone) return;
+      boost.mark({ kind: "ignite", at: Date.now() });
+      if (this.convs.some((c) => c.held)) void this.releaseHeld();
     };
     this.#holdSweep = setInterval(() => {
       /* Only when something is actually waiting. The per-hold timer is the
@@ -2083,7 +2086,10 @@ export class Skein {
          than treating the card as unattached and moving it. */
       conv.accountLabel = account;
       if (account) void invoke("set_conversation_account", { id, accountLabel: account });
-      if (onCredits(account)) conv.note(ontoCreditsNote(null, "no account on the ladder can take work"));
+      if (onCredits(account)) {
+        conv.note(ontoCreditsNote(null, "no account on the ladder can take work"));
+        boost.mark({ kind: "limit", card: conv.id, at: Date.now() });
+      }
       /* We just spawned it, so it has a process — even though `system/init`
          has not arrived yet. It cannot: claude emits init only after it
          receives its first message. Leaving this dormant meant `send` tried to
@@ -2953,8 +2959,11 @@ export class Skein {
         ev.num_turns !== 0 &&
         conv.accountLabel
       ) {
-        if (onCredits(conv.accountLabel)) purse.served();
-        else waterfall.markServed(conv.accountLabel);
+        if (onCredits(conv.accountLabel)) {
+          purse.served();
+          /* A turn finished on credits: the fanfare, rationed in `boost`. */
+          boost.mark({ kind: "victory", card: conv.id, at: Date.now() });
+        } else waterfall.markServed(conv.accountLabel);
       }
       return;
     }
@@ -3576,6 +3585,7 @@ export class Skein {
       const why = from && !onCredits(from) ? this.#whyLeft(conv, from) : "no account on the ladder can take work";
       await this.#moveTo(conv, CREDITS, null, d.home);
       conv.note(ontoCreditsNote(d.home, why));
+      boost.mark({ kind: "limit", card: conv.id, at: Date.now() });
       return;
     }
     if (onCredits(from)) {

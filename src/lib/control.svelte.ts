@@ -65,6 +65,8 @@ import {
 } from "./limits";
 import { waterfall } from "./waterfall.svelte";
 import { purse } from "./purse.svelte";
+import { boost } from "./boost.svelte";
+import { boostScore } from "./boostscore.svelte";
 
 /** The boost half of the snapshot, shared by the snapshot and the `boost` op. */
 function boostSnapshot() {
@@ -78,6 +80,10 @@ function boostSnapshot() {
     refused: purse.refused,
     ready: standing.ready,
     why: standing.ready ? null : standing.why,
+    /* The score, since a sound has no DOM: whether it is sounding, the
+       context's clock, where its moments were placed, and the level it
+       metered every tick (`boostscore.svelte.ts::reading`). */
+    score: boostScore.reading,
   };
 }
 import type { DevOps } from "./devops.svelte";
@@ -2536,11 +2542,20 @@ export class Control {
       /** Boost mode, as the header's button and `<space> m b` reach it:
        *  `on` flips it through `Skein.setBoost` (so held cards are asked
        *  again), `budget` sets the month's ceiling (`null` for none),
-       *  `refresh` re-reads the ledger and the vault. Answers the snapshot's
+       *  `refresh` re-reads the ledger and the vault; `working`, `onCredits`
+       *  and `mark` drive the score (see below). Answers the snapshot's
        *  `boost`. */
       boost: async (op) => {
         if (op.on !== undefined) h.skein.setBoost(!!op.on);
         if (op.budget !== undefined) purse.setBudget(op.budget === null ? null : Number(op.budget));
+        /* Stand-ins for the wall's own readings and moments, so a lab can
+           drive the score without a card going onto credits: `working` and
+           `onCredits` hold until the wall next writes them, `mark` is a
+           moment as `Skein` would mark it. */
+        if (op.working !== undefined) boost.working = Number(op.working);
+        if (op.onCredits !== undefined) boost.onCredits = Number(op.onCredits);
+        if (op.mark === "limit" || op.mark === "victory") boost.mark({ kind: op.mark, card: "control", at: Date.now() });
+        if (op.mark === "ignite") boost.mark({ kind: "ignite", at: Date.now() });
         if (op.refresh || op.on !== undefined) await purse.refresh();
         return boostSnapshot();
       },
