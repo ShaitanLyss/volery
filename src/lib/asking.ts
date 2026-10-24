@@ -557,6 +557,20 @@ export function isScriptBuilt(p: AskPreview): boolean {
   return !!p.js && !drawsSomething(p.html);
 }
 
+/** Whether a design's script makes sound — the one thing a preview does that a
+ *  still frame cannot hint at. Every preview renders static first, so a sketch
+ *  of music reads as a finished page of buttons that does nothing when pressed:
+ *  Lyss pressed a style, heard nothing and asked whether it was a Volery limit
+ *  (sink ce6af271). It was not — measured in a lab on 2026-10-24, the frame
+ *  plays with no `allow` attribute (`AudioContext` `running`, peaks 0.17-0.28
+ *  from the real sketch) — the script had simply not been run. So the gallery
+ *  says so, loudly, for exactly the scripts that need it. A pattern over the
+ *  source, so a false positive costs a plate and a miss costs nothing worse
+ *  than the hint line a design already carries. */
+export function makesSound(p: AskPreview): boolean {
+  return !!p.js && /\b(?:webkit)?AudioContext\b|\bnew\s+Audio\s*\(|\bspeechSynthesis\b/.test(p.js);
+}
+
 /** The document a preview is rendered as.
  *
  *  Two things contain it, and only one of them is guaranteed:

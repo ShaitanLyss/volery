@@ -19,6 +19,7 @@ import {
   isComplete,
   isScriptBuilt,
   lookLabel,
+  makesSound,
   normalizeAsk,
   panelsOf,
   previewAside,
@@ -525,6 +526,21 @@ const skeleton = (): AskPreview => ({
   html: '<div id="rows"></div>',
   css: "#rows{display:grid}",
   js: 'document.getElementById("rows").innerHTML = "<b>a row</b>";',
+});
+
+describe("makesSound", () => {
+  const js = (code: string) => ({ html: "<b>x</b>", css: null, js: code });
+  test("reads the ways a script reaches a speaker", () => {
+    expect(makesSound(js("const ac = new AudioContext(); ac.resume()"))).toBe(true);
+    expect(makesSound(js("new (window.AudioContext || window.webkitAudioContext)()"))).toBe(true);
+    expect(makesSound(js("new Audio('x').play()"))).toBe(true);
+    expect(makesSound(js("speechSynthesis.speak(u)"))).toBe(true);
+  });
+  test("is quiet for a script that only moves things, and for no script", () => {
+    expect(makesSound(js("el.onclick = () => go()"))).toBe(false);
+    expect(makesSound(js("const myAudioContextual = 1"))).toBe(false);
+    expect(makesSound({ html: "<b>x</b>", css: null, js: null })).toBe(false);
+  });
 });
 
 describe("isScriptBuilt", () => {

@@ -34,6 +34,7 @@
     PREVIEW_VIEWPORT,
     galleryHint, arrowStep,
     isScriptBuilt,
+  makesSound,
     previewDoc,
     type AskFile,
     type AskOption,
@@ -585,6 +586,18 @@
               </div>
             {/if}
 
+            <!-- A design that makes sound is silent until its script runs, and
+                 nothing in a still frame says so — the one case where "press it
+                 and nothing happens" reads as the feature being broken rather
+                 than withheld (sink ce6af271). So the run button is put where
+                 the eye already is, not only in the foot. -->
+            {#if scripts && p.preview && makesSound(p.preview) && !live[i]}
+              <div class="sound">
+                <span class="line">this design plays sound — it is silent until its script runs</span>
+                <button class="act" onclick={() => (live[i] = true)}>run its script</button>
+              </div>
+            {/if}
+
             <!-- Drawn on hover, but in the tab order always: an affordance that
                  only exists once a pointer is over it is one a keyboard can
                  never reach, and `:focus-within` on the panel is what makes
@@ -783,6 +796,13 @@
                 ? "nothing is drawn until you run it — the button below"
                 : "and a chat card may not run one, so it cannot be drawn here"}
             </span>
+          </div>
+        {/if}
+
+        {#if scripts && bigPanel.preview && makesSound(bigPanel.preview) && !bigLive}
+          <div class="sound">
+            <span class="line">this design plays sound — it is silent until its script runs</span>
+            <button class="act" onclick={() => big !== null && (live[big] = true)}>run its script</button>
           </div>
         {/if}
 
@@ -1051,6 +1071,27 @@
   .waiting .sub {
     font-size: 0.64rem;
     color: var(--paper-faint);
+  }
+
+  .sound {
+    position: absolute;
+    left: 50%;
+    bottom: 0.8rem;
+    transform: translateX(-50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    max-width: 92%;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    background: var(--surface);
+    font-family: var(--util);
+  }
+  .sound .line {
+    font-size: 0.72rem;
+    color: var(--paper);
   }
 
   .foot {

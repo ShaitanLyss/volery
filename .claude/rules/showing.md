@@ -367,3 +367,16 @@ behind the switch an agent's `recall` is held to, by Lyss's decision.
   process per figure — a decision about cost, not a small step.
 - **Video.** A plate, for now.
 - **Other diagram languages** (graphviz, plantuml). Mermaid is the one Claude reaches for.
+
+### A design that plays sound (sink `ce6af271`, 2026-10-24)
+
+Lyss pressed the style buttons of a Web Audio sketch in an `ask_user` preview and heard
+nothing. **The frame was not the cause.** Measured in a named lab over CDP: a
+`sandbox="allow-scripts"` scaled srcdoc frame with no `allow` attribute, under the CSP in
+`sandbox.ts`, takes an `AudioContext` to `running` after one click, and the real sketch
+metered peaks of 0.17–0.28 through an `AnalyserNode`. The script had not been run — every
+preview is static first, and nothing in a still frame says a design makes sound. So
+`makesSound` (`asking.ts`) reads the script for `AudioContext`/`Audio()`/`speechSynthesis`
+and `Gallery.svelte` puts a `.sound` plate with its own *run its script* button over the
+frame. **Do not add `allow="autoplay"`** — it was not needed, and `showing.test.ts` asserts
+the gallery has no `allow=`, so a permissions grant stays a decision rather than a reflex.

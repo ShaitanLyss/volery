@@ -466,6 +466,10 @@ describe("the frame a diagram and a design stand behind", () => {
     const gallery = readFileSync("src/lib/Gallery.svelte", "utf8");
     expect(gallery).not.toMatch(/sandbox="/);
     expect(gallery).toContain("sandbox={SANDBOX}");
+    // Sound needs no `allow` on the frame: measured in a lab (sink ce6af271), an
+    // opaque-origin scaled srcdoc frame runs an AudioContext after one click.
+    // A permissions-policy grant would be a second thing the wall hands out.
+    expect(gallery).not.toMatch(/\sallow=/);
   });
 });
 
