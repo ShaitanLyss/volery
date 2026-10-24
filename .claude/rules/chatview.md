@@ -527,15 +527,18 @@ look's dark through custom properties set on `.chat`, never by reaching into a c
 
 Lyss: *"conversations are missing a clear signal of how used the context window is like on the
 wall, the only way I have to see it is to click on each conversation and look at the tiny
-context window radial progress at the top."* So every row carries the wall card's ring
-(`CtxRing.svelte`) in a fourth column across both its lines, and the header's ring is the same
-component, larger.
+context window radial progress at the top."* So every row carries the wall card's ring in a
+fourth column across both its lines, and the header's is the same ring, a little smaller.
 
-- **It warms where the card's warms**, and the two lines are one function now
-  (`classify.ts::ctxWarmth`: warm from 65%, hot from 85%) that `Card.svelte` reads too.
-- **Achromatic while there is room**, where the wall's is celadon. A column of rows each
-  wearing celadon is colour that means nothing; here the only colour the ring ever shows is
-  amber or rust, which is when it wants you. A dormant card's ring is faint, as on the wall.
+- **It is the card's ring, not a likeness of it.** `CtxRing.svelte` is what `Card.svelte` draws
+  and what chat view draws — the track, the stroke, the round cap, celadon warming to amber
+  from 65% and rust from 85% (`classify.ts::ctxWarmth`), faint when dormant. The first cut was
+  a second ring drawn for chat view, achromatic while there was room, on the argument that a
+  column of celadon says nothing. Lyss sent it back: *"you didn't respect the style of volery
+  for context window, you could have reused the ones used on the wall."* The wall's ring is
+  the vocabulary a person already reads at a glance, and a second spelling of it is one more
+  thing to learn and one more thing to drift. Only the size differs (`size`: 26 on a card, 20
+  in a row, 18 in the header).
 - **Off the gist** (`Gist.ctx`, `ctxTokens`), so a card on another wall wears its ring too.
   Hovering says it in the header's word (`chatview.ts::ctxSaid`: *memory 71% full · 712k
   tokens*).

@@ -62,7 +62,7 @@
 <script lang="ts">
   import { waterfall } from "./waterfall.svelte";
   import { onCredits } from "./credits";
-  import { ctxWarmth } from "./classify";
+  import CtxRing from "./CtxRing.svelte";
   import { boost } from "./boost.svelte";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
@@ -165,15 +165,6 @@
   /** The turn's own words, while it is writing them. */
   const saying = $derived(say(conv.streaming));
 
-  const CIRC = 2 * Math.PI * 11;
-
-  /* The ring warms independently of status as it approaches full, so a card can
-     be calmly at rest and still visibly close to the edge. */
-  const ringColor = $derived(
-    conv.dormant
-      ? "var(--paper-faint)"
-      : { hot: "var(--st-fail)", warm: "var(--st-ask)", cool: "var(--st-work)" }[ctxWarmth(conv.ctx)],
-  );
 
   const label = $derived.by(() => {
     const s = conv.idleSeconds;
@@ -311,18 +302,7 @@
       </span>
       <span class="title" class:provisional={name.provisional}>{name.text}</span>
     </span>
-    <svg class="ring" viewBox="0 0 26 26" aria-hidden="true">
-      <circle class="track" cx="13" cy="13" r="11" />
-      <circle
-        class="fill"
-        cx="13"
-        cy="13"
-        r="11"
-        style:stroke={ringColor}
-        style:stroke-dasharray={CIRC}
-        style:stroke-dashoffset={CIRC * (1 - conv.ctx)}
-      />
-    </svg>
+    <CtxRing ctx={conv.ctx} dormant={conv.dormant} />
     </span>
 
     <span class="act" title={conv.waiting ? waitTitle(conv.waiting, clock.t) : undefined}
@@ -789,25 +769,7 @@
     color: var(--paper-dim);
   }
 
-  .ring {
-    flex: 0 0 auto;
-    width: 26px;
-    height: 26px;
-    transform: rotate(-90deg);
-  }
-  .ring circle {
-    fill: none;
-    stroke-width: 2.5;
-  }
-  .ring .track {
-    stroke: var(--edge);
-  }
-  .ring .fill {
-    stroke-linecap: round;
-    transition:
-      stroke-dashoffset 0.6s ease,
-      stroke 0.6s ease;
-  }
+  /* The ring is `CtxRing.svelte`, the one every surface draws. */
 
   .act {
     font-family: var(--util);

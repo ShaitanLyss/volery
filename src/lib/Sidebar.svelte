@@ -240,7 +240,7 @@
     >
     <span class="aside" title={p.aside}>{p.aside}</span>
     <span class="ctx" title={ctxSaid(p.row.ctx ?? 0, p.row.ctxTokens)}
-      ><CtxRing ctx={p.row.ctx ?? 0} dormant={!!p.row.dormant} size={17} /></span
+      ><CtxRing ctx={p.row.ctx ?? 0} dormant={!!p.row.dormant} size={20} /></span
     >
     {#if p.sub}<span class="sub">{p.sub}</span>{/if}
   </button>
@@ -454,7 +454,7 @@
      both of its lines: how used each one is reads straight down the list, as
      it does across the wall, without opening any of them. */
   .convrow {
-    grid-template-columns: 14px minmax(7em, 1fr) minmax(0, auto) 17px;
+    grid-template-columns: 14px minmax(7em, 1fr) minmax(0, auto) 20px;
   }
   .row .ctx {
     grid-column: 4;
