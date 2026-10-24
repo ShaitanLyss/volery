@@ -22,7 +22,16 @@
   import type { Composer } from "./composer.svelte";
   import type { Starter } from "./starting.svelte";
   import type { ChatRow, Group } from "./chatview";
-  import { ideasFor, placeLabel, placesOf, samePlace, type Place } from "./starting";
+  import {
+    choosesMachine,
+    ideasFor,
+    machineOptions,
+    placeLabel,
+    placesOf,
+    placesOn,
+    samePlace,
+    type Place,
+  } from "./starting";
 
   let {
     skein,
@@ -43,8 +52,24 @@
   const projects = $derived(
     skein.projects.filter((p) => !skein.isChatHome(p.root_path)).map((p) => ({ name: p.name, dir: p.root_path })),
   );
-  const options = $derived(placesOf(projects, rows, starter.place));
+  /* The row of the wall the conversation is bound for, when it is not this one. */
+  const there = $derived(starter.machine === null ? null : (starter.roster.find((r) => r.host === starter.machine) ?? null));
+  const options = $derived(there ? placesOn(there, rows, starter.place) : placesOf(projects, rows, starter.place));
   let placing = $state(false);
+  let machining = $state(false);
+  /* Drawn only when another machine could take the work: one machine is nothing
+     to choose between. */
+  const machined = $derived(choosesMachine(starter.roster));
+  const machineRows = $derived<PickRow[]>(
+    machineOptions(starter.roster, starter.place).map((m) => ({
+      id: m.host ?? "",
+      label: m.label,
+      note: m.note || undefined,
+      icon: "wall" as const,
+      on: m.host === starter.machine,
+      off: !m.ok,
+    })),
+  );
 
   const pickRows = $derived<PickRow[]>([
     ...options.map((o) => ({
@@ -56,8 +81,15 @@
       on: samePlace(o.place, starter.place),
       sep: o.place.kind === "chat" && options.length > 1,
     })),
-    { id: "open", label: "open a folder…", aside: "ctrl O", icon: "plus" as const },
+    /* Another machine opens only in the projects it holds. */
+    ...(there ? [] : [{ id: "open", label: "open a folder…", aside: "ctrl O", icon: "plus" as const }]),
   ]);
+
+  function pickMachine(id: string) {
+    machining = false;
+    starter.chooseMachine(id === "" ? null : id, projects, rows);
+    void composer.focus();
+  }
 
   function key(p: Place): string {
     return p.kind === "chat" ? "chat" : p.kind === "project" ? `p:${p.name}` : `f:${p.dir}`;
@@ -79,6 +111,11 @@
   const blocked = $derived(starter.ready === "missing" || starter.ready === "signed-out");
   const empty = $derived(!field.text.trim());
 
+  /* A machine that went quiet while chosen is this machine again. */
+  $effect(() => {
+    starter.settleMachine(projects, rows);
+  });
+
   onMount(() => {
     starter.settle(projects, rows);
     if (starter.auth === null) void starter.check();
@@ -95,7 +132,7 @@
     if (e.altKey && !e.ctrlKey && (e.key === "p" || e.key === "P")) {
       e.preventDefault();
       e.stopPropagation();
-      if (starter.place.kind !== "chat") starter.plan = !starter.plan;
+      if (starter.place.kind !== "chat" && !there) starter.plan = !starter.plan;
       return;
     }
     composer.key(e);
@@ -106,6 +143,12 @@
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.key === "P" || e.key === "p")) {
       e.preventDefault();
       placing = !placing;
+    }
+    /* The machine's, the `e` family's letter: elsewhere. */
+    if (machined && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.key === "E" || e.key === "e")) {
+      e.preventDefault();
+      placing = false;
+      machining = !machining;
     }
   }
 
@@ -173,7 +216,25 @@
           <PickMenu rows={pickRows} label="where it works" onpick={pick} onclose={() => (placing = false)} />
         {/if}
       </span>
-      {#if starter.place.kind !== "chat"}
+      {#if machined}
+        <span class="wrap">
+          <button
+            type="button"
+            class="place"
+            class:there
+            aria-haspopup="menu"
+            aria-expanded={machining}
+            title="which machine it works on (ctrl+shift+E)"
+            onclick={() => ((machining = !machining), (placing = false))}
+          >
+            <Icon name="wall" small />{starter.machine ?? "this machine"}<Icon name="chev-d" small />
+          </button>
+          {#if machining}
+            <PickMenu rows={machineRows} label="which machine" onpick={pickMachine} onclose={() => (machining = false)} />
+          {/if}
+        </span>
+      {/if}
+      {#if starter.place.kind !== "chat" && !there}
         <button
           type="button"
           class="toggle"

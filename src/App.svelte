@@ -3272,7 +3272,15 @@
   /* Chat view's empty state: the place, the preset and the first send
      (`starting.svelte.ts`). Beside the composer, whose send it ends in, and
      held here because the choices outlive the empty state that draws them. */
-  const starter = new Starter({ skein, field, composer, openIn, openChat });
+  const starter = new Starter({
+    skein,
+    field,
+    composer,
+    openIn,
+    openChat,
+    roster: () => elsewhere.roster,
+    openThere: openThereAndFocus,
+  });
 
 
   /** Step along the cards that want something, in urgency order.
@@ -4160,6 +4168,45 @@
     landing = { key: shadowKey(host, o.card), until: at + LAND_WITHIN_MS, focusWas };
   }
 
+  /** Open an empty card in `project` on `host` for chat view's new
+   *  conversation, and resolve once its shadow is drawn here and has the focus
+   *  — the draft is sent to it next, and a prompt needs the card to be there.
+   *  Null with the reason a fault when the wall refused or the card is slower
+   *  than `LAND_WITHIN_MS` (it is then in its section, and left alone). */
+  async function openThereAndFocus(host: string, project: string, preset: Preset | null): Promise<CardHandle | null> {
+    const o = await elsewhere.openThere(host, project, spawnPairOf(preset));
+    if ("why" in o) {
+      skein.fault = `no conversation was opened on ${host}: ${o.why}`;
+      return null;
+    }
+    const key = shadowKey(host, o.card);
+    const c = await new Promise<CardHandle | null>((resolve) => {
+      let stop: (() => void) | null = null;
+      let over = false;
+      const end = (found: CardHandle | null) => {
+        if (over) return;
+        over = true;
+        clearTimeout(timer);
+        stop?.();
+        resolve(found);
+      };
+      const timer = setTimeout(() => end(null), LAND_WITHIN_MS);
+      stop = $effect.root(() => {
+        $effect(() => {
+          const found = cards.find(key);
+          if (found) end(found);
+        });
+      });
+      if (over) stop();
+    });
+    if (!c) {
+      skein.fault = `${host} opened the conversation, but it has not arrived here yet — it will be in its section, and nothing was sent`;
+      return null;
+    }
+    focusCard(c);
+    return c;
+  }
+
   /* The card asked for above, taking the focus when its shadow arrives —
      re-read on every snapshot and every change of focus, and let go of once
      the focus has moved or the window has passed. */
@@ -4692,6 +4739,13 @@
    *  the floor it is. */
   const FOLD_ORDER = [
     "adopt",
+    /* Kept second only to `adopt`: while boost is on, cards are spending
+       money per token, and a bar that folded it away to make room for the
+       zoom would be hiding the one state on it that costs something. Earlier
+       here is kept longer — `chrome.ts::foldChrome` folds from the end. It
+       went in at the far end first, beside `away`, read as "given up late",
+       and the lab showed it folded on a wall of ordinary width. */
+    "boost",
     "read",
     "register",
     "timelines",
@@ -4708,11 +4762,6 @@
     "token",
     "flyway",
     "away",
-    /* Boost is kept as long as the switch beside the readings: while it is on,
-       cards are spending money per token, and a bar that folded that away to
-       make room for the zoom would be hiding the one state on it that costs
-       something. */
-    "boost",
     /* Given up after `away` and before the readings, which is as late as a verb
        gets here. It is only in the bar at all when something is waiting, and
        when something is waiting it is the most important thing in the bar —

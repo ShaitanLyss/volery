@@ -9,6 +9,8 @@
     icon?: IconName;
     on?: boolean;
     sep?: boolean;
+    /** Drawn, with its note saying why, and not takeable. */
+    off?: boolean;
   };
 </script>
 
@@ -95,7 +97,9 @@
       aria-checked={!!r.on}
       data-on={r.on ? "true" : "false"}
       data-pick={r.id}
-      onclick={() => onpick(r.id)}
+      aria-disabled={r.off ? "true" : undefined}
+      class:off={r.off}
+      onclick={() => !r.off && onpick(r.id)}
     >
       <span class="ic">{#if r.icon}<Icon name={r.icon} small />{/if}</span>
       <span class="l">{r.label}</span>
@@ -162,6 +166,10 @@
   .mi:focus-visible {
     background: color-mix(in oklab, var(--paper) 5%, transparent);
     outline: none;
+  }
+  .mi.off {
+    opacity: 0.55;
+    cursor: default;
   }
   .mi.on {
     background: color-mix(in oklab, var(--paper) 7%, transparent);

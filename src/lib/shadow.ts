@@ -1759,6 +1759,18 @@ export type Opener = {
  *  says why rather than showing nothing. The far wall still weighs its switch
  *  and its bounds again when it decides; this is what can be known here. */
 export function openRefusal(row: Opener | undefined, host: string, project: string): string | null {
+  const why = wallRefusal(row, host);
+  if (why) return why;
+  const want = project.trim().toLowerCase();
+  if (project === NO_PROJECT || !(row?.territories ?? []).some((t) => t.toLowerCase() === want))
+    return `${host} has no project called ${project}`;
+  return null;
+}
+
+/** The first half of `openRefusal`: why a wall as a whole cannot take a card
+ *  a person here asks for, before any project is named. Chat view's machine
+ *  choice asks it alone — a machine is offered where this is null. */
+export function wallRefusal(row: Opener | undefined, host: string): string | null {
   if (!row || row.me) return `${host} has not been heard from on this flyway`;
   if (row.standing === "quiet")
     return `${host} has not been heard from lately — a card is never queued for a wall that is away`;
@@ -1766,9 +1778,6 @@ export function openRefusal(row: Opener | undefined, host: string, project: stri
   if (row.standing === "closed" || row.standing === "full")
     return row.reason ?? `${host} is not taking work from other walls`;
   if (row.standing !== "open") return `${host} is not taking work from other walls`;
-  const want = project.trim().toLowerCase();
-  if (project === NO_PROJECT || !(row.territories ?? []).some((t) => t.toLowerCase() === want))
-    return `${host} has no project called ${project}`;
   return null;
 }
 

@@ -812,7 +812,7 @@
         groups={gs}
         onselect={choose}
         onnew={() => {
-          starter.choose({ kind: "project", name: project.name, dir: project.root_path });
+          starter.chooseHere({ kind: "project", name: project.name, dir: project.root_path });
           page = null;
           onnew();
         }}

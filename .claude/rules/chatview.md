@@ -482,3 +482,35 @@ went to *finished* and then to the day's history, with nothing anywhere asking h
 Tested in `test/chatview.test.ts` (*a rest needs you until you acknowledge it*): eight of its cases go
 red with the old `done` → *finished* branch put back by hand; `notice.test.ts` (`owesYou`),
 `classify.test.ts`, and `store.rs`'s `done_with_it_…` and `migrate_v58_…`.
+
+### The machine a conversation starts on (2026-10-24)
+
+Lyss: *"I have no way to choose which machine to use when creating a new conversation in chat
+view and there are multiple machines on the flyway."* The wall could already open a card on
+another wall (`Elsewhere.openThere`, a section's menu); the empty sheet could not.
+
+- **A second chip, drawn only when it is a choice.** `starting.ts::choosesMachine`: some other
+  wall is heard from lately, new enough, taking work from other walls *and* holding a project
+  (`shadow.ts::wallRefusal`, the first half of `openRefusal`, now shared). With one machine —
+  or others that would only refuse — nothing new is drawn. A wall that cannot take it is still
+  a row in the menu, dimmed, with why (`machineOptions`), so a missing machine is not a mystery.
+  Ctrl+Shift+E (the `e` of *elsewhere*; Ctrl+Shift+P is the place's).
+- **The machine decides which projects exist.** Choosing it carries the place with it
+  (`placeOnWall`): the project in use if that wall announces it, else the first it does in the
+  order the menu has at home; the place menu then lists that wall's territories (`placesOn`) and
+  *just chat* and *open a folder…* are not offered — another wall opens cards only in territories
+  it holds (`here::territories`, `opening.rs`), never in a chat or an arbitrary folder. Going back
+  to this machine restores the folder (`placeAtHome`). Ctrl+O is inert there.
+- **Sticks for this launch, not across them** (Lyss's call). A card on another laptop runs with
+  its permissions skipped and bills there; a restart opens on this machine. What is chosen on
+  another machine is not written to `skein.start.v1` either — its project is that machine's, not
+  the place you start from. A chosen wall that goes quiet, or stops taking work, is this machine
+  again at once (`machineNow`, `Starter.settleMachine`).
+- **A project's page says *here*.** Its *new conversation here* is `Starter.chooseHere`: that
+  page is this wall's folder, so it resets the machine.
+- **The first send** opens an empty card there (`openThereAndFocus` in `App.svelte`: `openThere`,
+  then wait for the shadow, bounded by `LAND_WITHIN_MS`, then `focusCard`) and hands the draft to
+  the composer, which reaches the card in front of it wherever it runs. A wall that never shows
+  the card is a fault and the draft is given back. *Plan first* is not offered for another
+  machine: it is a gear, set on the card before the first send, and nothing sends one to a card
+  that has not arrived yet.

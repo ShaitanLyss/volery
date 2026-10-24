@@ -148,3 +148,67 @@ describe("whether a conversation can start", () => {
     expect(readiness(ready, null, 0)).toBe("looking");
   });
 });
+
+/* ── which machine it works on ── */
+
+import { ableWalls, choosesMachine, holds, machineNow, machineOptions, placeAtHome, placeOnWall, placesOn } from "../src/lib/starting";
+
+const me = { host: "desk", me: true };
+const wall = (host: string, over: Record<string, unknown> = {}) => ({
+  host,
+  standing: "open",
+  opens: true,
+  territories: ["portfolio", "ledger"],
+  ...over,
+});
+
+describe("choosing the machine", () => {
+  test("one machine, or others that cannot take work, offers nothing to choose", () => {
+    expect(choosesMachine([me])).toBe(false);
+    expect(choosesMachine([me, wall("lab", { standing: "quiet" })])).toBe(false);
+    expect(choosesMachine([me, wall("lab", { standing: "closed" })])).toBe(false);
+    expect(choosesMachine([me, wall("lab", { older: true })])).toBe(false);
+    expect(choosesMachine([me, wall("lab", { opens: false })])).toBe(false);
+    expect(choosesMachine([me, wall("lab", { territories: [] })])).toBe(false);
+  });
+  test("a wall heard from, new enough and taking work is offered", () => {
+    expect(choosesMachine([me, wall("lab")])).toBe(true);
+    expect(ableWalls([me, wall("lab"), wall("away", { standing: "quiet" })]).map((r) => r.host)).toEqual(["lab"]);
+  });
+  test("a chosen machine that stops taking work is this machine again", () => {
+    expect(machineNow("lab", [me, wall("lab")])).toBe("lab");
+    expect(machineNow("lab", [me, wall("lab", { standing: "quiet" })])).toBeNull();
+    expect(machineNow("lab", [me])).toBeNull();
+    expect(machineNow(null, [me, wall("lab")])).toBeNull();
+  });
+  test("projects match case folded", () => {
+    expect(holds({ territories: ["RISE"] }, "rise")).toBe(true);
+    expect(holds({ territories: ["RISE"] }, "")).toBe(false);
+  });
+  test("the menu draws this machine, then walls that can, then those that cannot with why", () => {
+    const rows = machineOptions(
+      [me, wall("zed"), wall("asleep", { standing: "quiet" }), wall("lab", { territories: ["ledger"] })],
+      { kind: "project", name: "portfolio", dir: "C:/p" },
+    );
+    expect(rows.map((r) => r.host)).toEqual([null, "lab", "zed", "asleep"]);
+    expect(rows[1]!.note).toBe("opens in ledger");
+    expect(rows[2]!.note).toBe("holds portfolio");
+    expect(rows[3]!.ok).toBe(false);
+    expect(rows[3]!.note).toContain("not been heard from lately");
+  });
+  test("another machine's places are its projects, never chat or a folder", () => {
+    const rows = placesOn({ territories: ["ledger", "portfolio"] }, [{ project: "portfolio", lastAt: 5 }], { kind: "chat" });
+    expect(rows.map((r) => r.label)).toEqual(["portfolio", "ledger"]);
+    expect(rows.every((r) => r.place.kind === "project")).toBe(true);
+  });
+  test("the place goes with the machine: kept where held, else the first held", () => {
+    const here: Place = { kind: "project", name: "paperwork", dir: "C:/docs/paperwork" };
+    expect(placeOnWall({ territories: ["paperwork", "x"] }, here, projects, seen)).toEqual({ kind: "project", name: "paperwork", dir: "" });
+    expect(placeOnWall({ territories: ["recipes", "portfolio"] }, here, projects, seen)).toEqual({ kind: "project", name: "portfolio", dir: "" });
+    expect(placeOnWall({ territories: ["only-there"] }, { kind: "chat" }, projects, seen)).toEqual({ kind: "project", name: "only-there", dir: "" });
+  });
+  test("coming home restores the folder here, or what the place would have been", () => {
+    expect(placeAtHome({ kind: "project", name: "recipes", dir: "" }, null, projects, seen)).toEqual({ kind: "project", name: "recipes", dir: "C:/docs/recipes" });
+    expect(placeAtHome({ kind: "project", name: "only-there", dir: "" }, "chat", projects, seen)).toEqual({ kind: "chat" });
+  });
+});

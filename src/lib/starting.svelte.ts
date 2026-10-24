@@ -16,12 +16,17 @@ import type { Conversation } from "./conversation.svelte";
 import type { Skein } from "./skein.svelte";
 import type { Field } from "./field.svelte";
 import type { Composer } from "./composer.svelte";
+import type { CardHandle } from "./cards.svelte";
+import type { Opener } from "./shadow";
 import { NOTHING } from "./drafts";
 import { defaultPresetFor, presetById, type Preset } from "./presets";
 import { readSignin, type Progress } from "./signin";
 import { waterfall } from "./waterfall.svelte";
 import {
   FIRST_ACCOUNT,
+  machineNow,
+  placeAtHome,
+  placeOnWall,
   presetOf,
   readiness,
   startingPlace,
@@ -48,12 +53,22 @@ type Host = {
    *  double press must not get past. */
   openIn: (dir: string, worktree?: string, preset?: Preset | null) => Promise<Conversation | null>;
   openChat: (preset?: Preset | null) => Promise<Conversation | null>;
+  /** The walls on the flyway, as the roster says them. */
+  roster: () => Opener[];
+  /** Open an empty card in `project` on `host` and resolve to it once it is
+   *  drawn here and has the focus, or null — the reason already a fault. */
+  openThere: (host: string, project: string, preset: Preset | null) => Promise<CardHandle | null>;
 };
 
 export class Starter {
   /** Where the next conversation works. Settled from what is remembered the
    *  first time the empty state draws (`settle`), and then only by choosing. */
   place = $state<Place>({ kind: "chat" });
+  /** The machine it opens on: a wall's name on the flyway, or null for this one.
+   *  Only for this launch, on purpose: a card on another laptop runs with its
+   *  permissions skipped and bills there, so a restart opens on this machine
+   *  rather than on wherever the last conversation happened to go. */
+  machine = $state<string | null>(null);
   /** The preset it opens as, in `Skein.open`'s three states. */
   preset = $state<PresetChoice>(null);
   /** Plan first, for the conversation about to start. Not remembered: it is a
@@ -96,13 +111,18 @@ export class Starter {
     }
   }
 
+  /** The walls on the flyway, as the roster says them — reactive. */
+  get roster(): Opener[] {
+    return this.#h.roster();
+  }
+
   /** The place the empty state opens on, decided once per launch from what is
    *  remembered and what the wall holds. Later draws keep what was chosen. */
   settle(projects: readonly Known[], seen: readonly Seen[]) {
     if (this.#settled) {
       /* A project deleted while chosen is not a place any more. */
       const p = this.place;
-      if (p.kind === "project" && !projects.some((k) => k.name === p.name)) this.place = startingPlace(null, projects, seen);
+      if (this.machine === null && p.kind === "project" && !projects.some((k) => k.name === p.name)) this.place = startingPlace(null, projects, seen);
       return;
     }
     this.#settled = true;
@@ -112,11 +132,38 @@ export class Starter {
   choose(p: Place) {
     this.place = p;
     this.#settled = true;
-    const s = storedOf(p);
+    /* What was chosen on another machine is that machine's projects, not the
+       place you start from: it is not remembered. */
+    const s = this.machine === null ? storedOf(p) : null;
     if (s) {
       this.#stored = s;
       this.#save();
     }
+  }
+
+  /** A place chosen from this wall's own pages — a project's *new conversation
+   *  here* — which can only mean this machine. */
+  chooseHere(p: Place) {
+    this.machine = null;
+    this.choose(p);
+  }
+
+  /** Pick the machine, and carry the place with it: kept where that wall holds
+   *  the project in use, else the first it holds, and back to a folder here when
+   *  it is this machine again. Not remembered across launches. */
+  chooseMachine(host: string | null, projects: readonly Known[], seen: readonly Seen[]) {
+    const row = host === null ? null : this.#h.roster().find((r) => r.host === host);
+    if (host !== null && !row) return;
+    this.machine = host;
+    this.#settled = true;
+    this.place = row ? placeOnWall(row, this.place, projects, seen) : placeAtHome(this.place, this.#stored, projects, seen);
+  }
+
+  /** A machine chosen and since gone quiet, or switched to take no work, is
+   *  this machine again at once — the send must not go to a wall that would only
+   *  refuse it. Asked as the roster changes. */
+  settleMachine(projects: readonly Known[], seen: readonly Seen[]) {
+    if (this.machine !== null && machineNow(this.machine, this.#h.roster()) === null) this.chooseMachine(null, projects, seen);
   }
 
   choosePreset(choice: PresetChoice) {
@@ -128,6 +175,7 @@ export class Starter {
    *  it the place. Nothing opens yet — the first send does, so a folder picked
    *  by mistake costs nothing. True when one was picked. */
   async pickFolder(): Promise<boolean> {
+    if (this.machine !== null) return false;
     const picked = await openDialog({ directory: true, multiple: false, title: "Where should this conversation work?" });
     if (typeof picked !== "string") return false;
     const known = this.#h.skein.projects.find((p) => p.root_path === picked);
@@ -239,6 +287,24 @@ export class Starter {
     field.take(NOTHING);
     try {
       const place = this.place;
+      if (this.machine !== null) {
+        /* On another machine: an empty card in the project that wall holds,
+           then the draft goes to it as it goes to any card elsewhere — through
+           the composer, which reaches the card in front of it wherever it
+           runs. Plan first is a gear, and a card elsewhere has no gear verb. */
+        const host = machineNow(this.machine, this.#h.roster());
+        const card = host && place.kind === "project" ? await this.#h.openThere(host, place.name, this.resolved ?? null) : null;
+        if (!card) {
+          if (!host) skein.fault = `${this.machine} cannot take a conversation from here now — it was not started`;
+          field.take(draft);
+          return false;
+        }
+        this.plan = false;
+        await tick();
+        field.take(draft);
+        await composer.send(false);
+        return true;
+      }
       const preset = this.preset === null ? undefined : this.preset === "" ? null : (presetById(this.preset) ?? undefined);
       const conv =
         place.kind === "chat" ? await this.#h.openChat(preset) : await this.#h.openIn(place.dir, undefined, preset);
