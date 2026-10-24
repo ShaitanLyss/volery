@@ -13,7 +13,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import { boost } from "./boost.svelte";
   import CtxRing from "./CtxRing.svelte";
-  import { ctxSaid, type Ghost, type Group, type Placed, type ProjectRow } from "./chatview";
+  import { ctxSaid, ringShown, type Ghost, type Group, type Placed, type ProjectRow } from "./chatview";
 
   let {
     groups,
@@ -239,9 +239,15 @@
         >{/if}{p.row.title}</span
     >
     <span class="aside" title={p.aside}>{p.aside}</span>
-    <span class="ctx" title={ctxSaid(p.row.ctx ?? 0, p.row.ctxTokens)}
-      ><CtxRing ctx={p.row.ctx ?? 0} dormant={!!p.row.dormant} size={20} /></span
-    >
+    <!-- The column is kept when the ring is not drawn, so the place beside the
+         title does not shift as a conversation crosses a third or is selected. -->
+    {#if ringShown(p.row.ctx, p.row.id === selected)}
+      <span class="ctx" title={ctxSaid(p.row.ctx ?? 0, p.row.ctxTokens)}
+        ><CtxRing ctx={p.row.ctx ?? 0} dormant={!!p.row.dormant} size={20} /></span
+      >
+    {:else}
+      <span class="ctx" aria-hidden="true"></span>
+    {/if}
     {#if p.sub}<span class="sub">{p.sub}</span>{/if}
   </button>
 {/snippet}

@@ -662,3 +662,16 @@ describe("a row's context ring, said on hover", () => {
     expect(ctxSaid(Number.NaN, 5)).toBe("memory 0% full · 5 tokens");
   });
 });
+import { ringShown, RING_FROM } from "../src/lib/chatview";
+
+describe("which rows wear their context ring", () => {
+  test("the selected conversation always, any other only past a third of its window", () => {
+    expect(ringShown(0, true)).toBe(true);
+    expect(ringShown(undefined, true)).toBe(true);
+    expect(ringShown(0.2, false)).toBe(false);
+    expect(ringShown(RING_FROM, false)).toBe(false);
+    expect(ringShown(0.34, false)).toBe(true);
+    expect(ringShown(0.91, false)).toBe(true);
+    expect(ringShown(undefined, false)).toBe(false);
+  });
+});

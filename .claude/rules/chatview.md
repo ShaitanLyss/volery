@@ -539,6 +539,11 @@ fourth column across both its lines, and the header's is the same ring, a little
   the vocabulary a person already reads at a glance, and a second spelling of it is one more
   thing to learn and one more thing to drift. Only the size differs (`size`: 26 on a card, 20
   in a row, 18 in the header).
+- **Not on every row.** Lyss, once it shipped: *"in the sidebar it can become a bit noise with
+  all the context windows."* A row wears its ring when it is the selected conversation or
+  has used more than a third of its window (`chatview.ts::ringShown`, `RING_FROM`). The
+  column stays reserved on every row, so the place beside a title does not shift as a
+  conversation crosses the line or is selected. The header's ring is always drawn.
 - **Off the gist** (`Gist.ctx`, `ctxTokens`), so a card on another wall wears its ring too.
   Hovering says it in the header's word (`chatview.ts::ctxSaid`: *memory 71% full · 712k
   tokens*).

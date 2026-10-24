@@ -106,6 +106,17 @@ const ORDER: GroupKey[] = ["needs", "working", "finished", "today", "yesterday",
  *  hollow dot of a finished, unsettled row; `rest` and `chat` are achromatic. */
 export type Tone = "ask" | "fail" | "work" | "done" | "rest";
 
+/** Past this share of its window a row wears its ring whether or not it is
+ *  the one in front (Lyss: a ring on every row was noise). Below it, only the
+ *  selected conversation does. */
+export const RING_FROM = 0.33;
+
+/** Whether a row draws its context ring: the conversation in front always,
+ *  any other only once it has used more than a third of its window. */
+export function ringShown(ctx: number | undefined, selected: boolean): boolean {
+  return selected || (ctx ?? 0) > RING_FROM;
+}
+
 /** What a row's context ring says on hover: how full, in the words the
  *  header already uses for it (*memory*), and the tokens behind it where
  *  they are known. */
