@@ -3137,3 +3137,16 @@ describe("refusalResetFromText", () => {
     expect(refusalResetFromText("resets 3pm (Not/AZone)", now)).toBeNull();
   });
 });
+
+import { ctxWarmth, CTX_WARM, CTX_HOT } from "../src/lib/classify";
+
+describe("how warm the context ring is", () => {
+  test("cool with room, warm from 65%, hot from 85% — one reading for every ring", () => {
+    expect(ctxWarmth(0)).toBe("cool");
+    expect(ctxWarmth(CTX_WARM - 0.001)).toBe("cool");
+    expect(ctxWarmth(CTX_WARM)).toBe("warm");
+    expect(ctxWarmth(CTX_HOT - 0.001)).toBe("warm");
+    expect(ctxWarmth(CTX_HOT)).toBe("hot");
+    expect(ctxWarmth(1)).toBe("hot");
+  });
+});

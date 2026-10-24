@@ -647,3 +647,18 @@ describe("a card named by its handle in prose", () => {
     expect(cardByHandle("ab12cd34", ["ab12cd34-1111-2222", far])).toBe("ab12cd34-1111-2222");
   });
 });
+
+import { ctxSaid } from "../src/lib/chatview";
+
+describe("a row's context ring, said on hover", () => {
+  test("the share in the header's word, and the tokens where they are known", () => {
+    expect(ctxSaid(0.62, 124_400)).toBe("memory 62% full · 124k tokens");
+    expect(ctxSaid(0.004, 1_840)).toBe("memory 0% full · 1.8k tokens");
+    expect(ctxSaid(0.3, null)).toBe("memory 30% full");
+    expect(ctxSaid(0, 0)).toBe("memory 0% full");
+  });
+  test("a reading out of range is held to it", () => {
+    expect(ctxSaid(1.4, undefined)).toBe("memory 100% full");
+    expect(ctxSaid(Number.NaN, 5)).toBe("memory 0% full · 5 tokens");
+  });
+});

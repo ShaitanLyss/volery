@@ -62,6 +62,7 @@
 <script lang="ts">
   import { waterfall } from "./waterfall.svelte";
   import { onCredits } from "./credits";
+  import { ctxWarmth } from "./classify";
   import { boost } from "./boost.svelte";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
@@ -171,11 +172,7 @@
   const ringColor = $derived(
     conv.dormant
       ? "var(--paper-faint)"
-      : conv.ctx >= 0.85
-        ? "var(--st-fail)"
-        : conv.ctx >= 0.65
-          ? "var(--st-ask)"
-          : "var(--st-work)",
+      : { hot: "var(--st-fail)", warm: "var(--st-ask)", cool: "var(--st-work)" }[ctxWarmth(conv.ctx)],
   );
 
   const label = $derived.by(() => {

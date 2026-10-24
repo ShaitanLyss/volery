@@ -12,7 +12,8 @@
   import { fullTitle } from "./tipped.svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { boost } from "./boost.svelte";
-  import type { Ghost, Group, Placed, ProjectRow } from "./chatview";
+  import CtxRing from "./CtxRing.svelte";
+  import { ctxSaid, type Ghost, type Group, type Placed, type ProjectRow } from "./chatview";
 
   let {
     groups,
@@ -207,7 +208,7 @@
   {/if}
   <button
     type="button"
-    class="row {p.tone}"
+    class="row convrow {p.tone}"
     data-row={p.row.id}
     class:on={p.row.id === selected}
     class:kid={p.depth > 0}
@@ -238,6 +239,9 @@
         >{/if}{p.row.title}</span
     >
     <span class="aside" title={p.aside}>{p.aside}</span>
+    <span class="ctx" title={ctxSaid(p.row.ctx ?? 0, p.row.ctxTokens)}
+      ><CtxRing ctx={p.row.ctx ?? 0} dormant={!!p.row.dormant} size={17} /></span
+    >
     {#if p.sub}<span class="sub">{p.sub}</span>{/if}
   </button>
 {/snippet}
@@ -445,6 +449,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     text-align: right;
+  }
+  /* A conversation's row carries its context ring in a fourth column, across
+     both of its lines: how used each one is reads straight down the list, as
+     it does across the wall, without opening any of them. */
+  .convrow {
+    grid-template-columns: 14px minmax(7em, 1fr) minmax(0, auto) 17px;
+  }
+  .row .ctx {
+    grid-column: 4;
+    grid-row: 1 / span 2;
+    align-self: center;
+    display: flex;
   }
   .folder .aside {
     display: inline-flex;

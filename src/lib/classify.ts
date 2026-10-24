@@ -1852,6 +1852,18 @@ export function contextWindowFor(model: string | undefined): number {
   return /\[1m\]|-1m\b/.test(model) ? 1_000_000 : 200_000;
 }
 
+/** How close a conversation is to the edge of its window, as the ring warms:
+ *  `cool` with room to spare, `warm` from 65% — the point a long session starts
+ *  to want a compaction or a fresh card — and `hot` from 85%, where the CLI is
+ *  about to compact it. One reading for every surface that draws the ring: the
+ *  wall's card and chat view's rows and header. */
+export type CtxWarmth = "cool" | "warm" | "hot";
+export const CTX_WARM = 0.65;
+export const CTX_HOT = 0.85;
+export function ctxWarmth(ctx: number): CtxWarmth {
+  return ctx >= CTX_HOT ? "hot" : ctx >= CTX_WARM ? "warm" : "cool";
+}
+
 /** The window a session must have had, given what it actually occupied.
  *
  * For a conversation read off disk there is no `system/init` to ask: a

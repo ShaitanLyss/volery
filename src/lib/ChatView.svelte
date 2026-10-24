@@ -22,7 +22,8 @@
   import type { Front } from "./front.svelte";
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
-  import { groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Ghost } from "./chatview";
+  import { ctxSaid, groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Ghost } from "./chatview";
+  import CtxRing from "./CtxRing.svelte";
   import { scopeFiles } from "./paths.svelte";
   import { selectionMarkdown } from "./copy";
   import { stepBy, landing } from "./outline";
@@ -265,6 +266,9 @@
       allowance: h.allowance,
       /* Off the gist, so a card on another wall on credits wears it too. */
       credits: onCredits(h.gist.account),
+      ctx: h.gist.ctx,
+      ctxTokens: h.gist.ctxTokens,
+      dormant: f.dormant,
       aside: f.aside,
       lastAt,
       turnAt: h.turnSince,
@@ -631,7 +635,7 @@
   const title = $derived(
     pile ? (pile.kind === "sink" ? "the sink" : "the billboard") : project ? project.name : card ? cardName(card.face.title, "").text || "new conversation" : "new conversation",
   );
-  const ctx = $derived(card ? Math.round((card.face.ctx ?? 0) * 100) : 0);
+  const ctx = $derived(card ? Math.round((card.gist.ctx ?? 0) * 100) : 0);
   const place = $derived(
     pile ? "across the wall" : project ? "project" : !card ? null : card.gist.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
   );
@@ -716,8 +720,8 @@
     </div>
     <span class="grow" data-tauri-drag-region></span>
     {#if card}
-      <span class="ctx" title="how full this conversation's memory is">
-        <i class="ring" style:--p={ctx}></i>{ctx}%
+      <span class="ctx" title={`how full this conversation's memory is — ${ctxSaid(card.gist.ctx, card.gist.ctxTokens)}`}>
+        <CtxRing ctx={card.gist.ctx} dormant={card.face.dormant} size={18} />{ctx}%
       </span>
     {/if}
     {@render extras?.()}
@@ -1147,16 +1151,6 @@
     gap: 6px;
     font-size: 12px;
     color: var(--paper-mute);
-  }
-  .ring {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: conic-gradient(
-      var(--paper-dim) calc(var(--p) * 1%),
-      color-mix(in oklab, var(--edge) 90%, transparent) 0
-    );
-    mask: radial-gradient(circle, transparent 4.2px, #000 4.6px);
   }
   .views {
     display: inline-flex;

@@ -522,3 +522,20 @@ it too*, beside the wall's. The short of it: this room mounts the field in the s
 wall's canvases stand down, a veil stands under the reading, a row on credits wears the look's
 crest and a flare, and the room's surfaces (`--cv-lift`, `--surface`, `--raised`) take the
 look's dark through custom properties set on `.chat`, never by reaching into a component.
+
+### How used each conversation is, down the list (2026-10-24)
+
+Lyss: *"conversations are missing a clear signal of how used the context window is like on the
+wall, the only way I have to see it is to click on each conversation and look at the tiny
+context window radial progress at the top."* So every row carries the wall card's ring
+(`CtxRing.svelte`) in a fourth column across both its lines, and the header's ring is the same
+component, larger.
+
+- **It warms where the card's warms**, and the two lines are one function now
+  (`classify.ts::ctxWarmth`: warm from 65%, hot from 85%) that `Card.svelte` reads too.
+- **Achromatic while there is room**, where the wall's is celadon. A column of rows each
+  wearing celadon is colour that means nothing; here the only colour the ring ever shows is
+  amber or rust, which is when it wants you. A dormant card's ring is faint, as on the wall.
+- **Off the gist** (`Gist.ctx`, `ctxTokens`), so a card on another wall wears its ring too.
+  Hovering says it in the header's word (`chatview.ts::ctxSaid`: *memory 71% full · 712k
+  tokens*).

@@ -56,6 +56,12 @@ export type ChatRow = {
   /** Spending the organisation's API credits (`credits.ts`) — drawn only while
    *  boost is on, as the sidebar's half of boost's look. */
   credits?: boolean;
+  /** How full its context window is, 0–1 (`Gist.ctx`), and whether it is
+   *  dormant — drawn as the row's ring (`CtxRing.svelte`), so how used each
+   *  conversation is reads down the list without opening one. */
+  ctx?: number;
+  ctxTokens?: number | null;
+  dormant?: boolean;
   aside: boolean;
   /** When it was last active, in ms since the epoch. */
   lastAt: number;
@@ -99,6 +105,17 @@ const ORDER: GroupKey[] = ["needs", "working", "finished", "today", "yesterday",
  *  (`--st-*`): asking amber, broken rust, working celadon. `done` is the
  *  hollow dot of a finished, unsettled row; `rest` and `chat` are achromatic. */
 export type Tone = "ask" | "fail" | "work" | "done" | "rest";
+
+/** What a row's context ring says on hover: how full, in the words the
+ *  header already uses for it (*memory*), and the tokens behind it where
+ *  they are known. */
+export function ctxSaid(ctx: number, tokens: number | null | undefined): string {
+  const pct = Math.round(Math.max(0, Math.min(1, ctx || 0)) * 100);
+  const head = `memory ${pct}% full`;
+  if (tokens == null || !(tokens > 0)) return head;
+  const t = tokens >= 10_000 ? `${Math.round(tokens / 1000)}k` : tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+  return `${head} · ${t} tokens`;
+}
 
 /** A row as drawn. */
 export type Placed = {
