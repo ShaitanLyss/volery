@@ -128,6 +128,20 @@ pub fn note(
     mark: &str,
     detail: &str,
 ) {
+    note_from(app, None, project_id, source, level, mark, detail);
+}
+
+/// `note`, filed against the card it is about, so the wisp flies from that
+/// card's edge rather than landing in the register from nowhere.
+fn note_from(
+    app: &AppHandle,
+    from_id: Option<&str>,
+    project_id: Option<&str>,
+    source: &str,
+    level: &str,
+    mark: &str,
+    detail: &str,
+) {
     let mark = crate::clip::keep(mark.trim(), MARK_MAX).kept;
     if mark.is_empty() {
         return;
@@ -136,13 +150,39 @@ pub fn note(
     let store = app.state::<Store>();
     let wrote = store.0.lock().ok().and_then(|conn| {
         crate::store::add_chronicle_entry(
-            &conn, None, project_id, source, level, &mark, &detail, "",
+            &conn, from_id, project_id, source, level, &mark, &detail, "",
         )
         .ok()
     });
     if wrote.is_some() {
         changed(app, project_id.map(str::to_string));
     }
+}
+
+/// Volery's own entry about one card, under that card's name in the register
+/// and flying from its edge — the way `do_wisp` files a card's own words, but
+/// written by the wall.
+///
+/// A card the roster does not know is skipped rather than filed at wall scope
+/// the way `source_of` would: the only caller is the shared browser server,
+/// which another wall can be running (`mcphost::ensure` counts a lab's server
+/// as up), so an unknown id is a card of *that* wall, not a gap in this one's.
+pub fn note_card(app: &AppHandle, card: &str, level: &str, mark: &str, detail: &str) {
+    let known = {
+        let store = app.state::<Store>();
+        let known = store
+            .0
+            .lock()
+            .ok()
+            .and_then(|conn| crate::store::roster_one(&conn, card))
+            .is_some();
+        known
+    };
+    if !known {
+        return;
+    }
+    let (project, source) = source_of(app, card);
+    note_from(app, Some(card), project.as_deref(), &source, level, mark, detail);
 }
 
 fn globs_from(v: Option<&Value>) -> String {

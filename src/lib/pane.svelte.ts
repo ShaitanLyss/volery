@@ -688,8 +688,12 @@ export class Pane {
          server that is not answering, which can still save what the pages it
          reaches hold. */
       try {
-        const merged = JSON.parse(await invoke<string>("browser_save_all")) as StorageState;
-        this.saved = savedWhat(merged);
+        /* `missed` is what the server could not read — the browser's own tabs,
+           on a machine too loaded to answer — said beside the count, since a
+           count alone would read as everything having been saved. */
+        const reply = JSON.parse(await invoke<string>("browser_save_all")) as { state?: StorageState; missed?: string } & Partial<StorageState>;
+        const merged = (reply.state ?? reply) as StorageState;
+        this.saved = reply.missed ? `${savedWhat(merged)} — but ${reply.missed}` : savedWhat(merged);
         return;
       } catch {
         /* Fall through to reading the pages directly. */

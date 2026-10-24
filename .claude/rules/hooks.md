@@ -743,6 +743,13 @@ everybody's timeout"). `tools/probe-tool-failure.ts` is what it rests on. An MCP
 carrying `isError: true` fires this event and **not** `PostToolUse`. The server's text
 arrives verbatim under `error`, and `additionalContext` reaches the model.
 
+**It no longer has anything to explain** (2026-10-25). The arm keys on `initializeServer`,
+which was the upstream `@playwright/mcp`'s wording; the wall's own server (`browserhost.cjs`)
+never said it, and now attaches to no tab outside the cards' own contexts, so no tab can hold
+its connect and its error says so itself. A card's own frozen tab is told about in the reply to
+its call (`browser.md`, *A stuck tab stalls nobody*). The arm is a candidate for removal along
+with the event's registration, which would save one hook process per failed tool call.
+
 It is registered broad, like the other three, and that costs nothing it would not anyway:
 the event never fires on a call that worked. The routing sits above the `PreToolUse` body
 because a failure payload carries the same `tool_input`, and falling through would hand an

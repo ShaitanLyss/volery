@@ -1,6 +1,10 @@
 ---
 paths:
   - "src-tauri/src/browser.rs"
+  - "src-tauri/src/browserhost.cjs"
+  - "src-tauri/src/browsercdp.cjs"
+  - "src-tauri/src/browserstall.cjs"
+  - "tools/probe-card-tabs.ts"
   - "src/lib/browser.ts"
   - "src/lib/pane.svelte.ts"
   - "src/lib/Browser.svelte"
@@ -815,6 +819,11 @@ redirects to that Atlassian login — into every Chrome that runs its normal sta
 own browsers never had them, because playwright launches with `--no-startup-window` and opens
 its pages over CDP.
 
+*Since 2026-10-25 nothing a tab does can hold the browser server's connect — see "A stuck tab
+stalls nobody" below — and the server's own error says so; the hook arm described here matched
+the upstream server's `initializeServer` wording, which `browserhost.cjs` never produced. It is
+kept as a record of the measurement and of what the three questions are.*
+
 **What is built is an explanation, not a fix, and it only runs after a failure.** The user
 ruled out a check in front of every call — ~10–30ms on each one to explain the rare one —
 and the CLI has an event that costs nothing on success. `tools/probe-tool-failure.ts`,
@@ -1018,7 +1027,8 @@ tab. Three consequences:
 - **A context dies with the connection** (`disposeOnDetach`), so a restart of the host closes
   every card's pages. Honest rather than lossy: a restart also forgets which card was which.
 - **One hung tab now holds one connect, not every card's** (e5452945): the host attaches to
-  every target once. Not cured — the one it holds is the one every card shares.
+  every target once. Not cured — the one it holds is the one every card shares. *Cured the next
+  day: the host attaches to no tab outside the cards' contexts — see the section below.*
 
 **A card starts signed in.** The context is created at the card's first browser call, seeded
 from the vault — cookies *and* localStorage, because MSAL keeps its tokens in localStorage and
@@ -1065,6 +1075,187 @@ cookie and localStorage), I (what A writes on an origin, B on the same origin do
 (B's sign-in, saved when B was released, reaches a card C started afterwards, and the save
 route answers with the merged vault) — plus the existing ones, all green, and the `live` arm
 with two real cards green on the new host.
+
+## A stuck tab stalls nobody, and its own card is told (2026-10-25)
+
+Lyss: *"prevent a stuck tab from stalling everyone, including the card owning the tab. Volery
+should automatically handle the situation when a real stall is identified, not something that's
+just long running by design. Careful."* Sinks e5452945 and e5776153 were the reports; the two
+sections above had narrowed them to one shared connect and left them open.
+
+**Measured first, because the answer decided the design.** `bun tools/probe-card-tabs.ts stall`
+on a private headed Chrome (19333), the real host, no API turn. What one frozen tab did once the
+host was connected:
+
+```text
+card A's tab loops by itself (A's other tab is on another site)
+  card B: navigate, snapshot, tabs, evaluate, run_code      6-520ms   unaffected
+  card C, a new card's first call (a new context)            424ms    unaffected
+  card A: snapshot / tabs list / evaluate on its HEALTHY tab  HUNG     every reply lists every
+                                                                       tab's title, no deadline
+  card A: tabs close of the frozen tab                        541ms    frees A at once
+  release of A with the tab still looping                   10027ms    the capture's deadline
+an alert() left open in card D                                         Playwright's modal state:
+                                                                       every tool answers at once
+the host restarted, a page looping in the browser's own context
+  any card's first call                                      30015ms   connectOverCDP: Timeout
+```
+
+So after the connect, cards were already isolated from each other — the brief's per-card
+connections through a proxy would have bought nothing — and the two real costs were the owning
+card, every call of which hung for the CLI's five-minute idle limit, and the shared connect,
+which any frozen tab anywhere in the browser still held for every card.
+
+**What a look can tell apart, and what it cannot.** A fresh socket asking `Page.enable`,
+`evaluate("1")` and a promise only a timer resolves (`browser::stalled_tabs`' three questions):
+
+```text
+a page looping                          enable=0 eval=0 turn=0
+an alert() open                         enable=0 eval=0 turn=0
+the agent's own 12s synchronous evaluate enable=0 eval=0 turn=0
+a navigation waiting 10s on its server  enable=0 eval=0 turn=0   Chrome holds every protocol
+                                                                  message until it commits
+paused in a debugger                    enable=1 eval=1 turn=0   and Debugger.enable says PAUSED
+a page doing 40ms of work every frame   enable=1 eval=1 turn=1   in ~75ms
+during browser_wait_for                 enable=1 eval=1 turn=1   in ~50ms
+```
+
+The first four are identical, and three of them are by design. That is the finding the design
+rests on: **a look alone can never be the evidence.** What tells them apart is what the host
+already knows — Playwright holds a dialog as a modal state, a navigation in flight is a
+main-frame request with no response yet, and the agent's own script is the tool being
+`browser_evaluate` or `browser_run_code_unsafe`.
+
+**And what reaches a frozen tab at all**, because the sentence a card is given has to name only
+remedies that work:
+
+```text
+browser_tabs close / /json/close     works, 0.5s
+browser_navigate to ANOTHER host     works, 50ms — a new process (another port
+                                     on the same host is the same site, the same process)
+navigate within the same site        nothing: same frozen process
+reload                               nothing
+Runtime.terminateExecution           nothing — a fresh session cannot reach a hung renderer
+Page.captureScreenshot               nothing
+```
+
+So "stop the script" was never an option Volery could offer, and the two remedies a card is
+told about are the two that measured.
+
+### What shipped: hide, deadline, watch, tell — and nothing done to the page
+
+Lyss chose from two pictures (2026-10-25): **tell the card only**, against closing a card's own
+frozen tab after two minutes; and **never cut off the agent's own script**, against cutting it
+off after sixty seconds of silence. A frozen tab is often the very bug a card is testing for, a
+page she has open in the widget is not Volery's to take away, and the worst case of telling is a
+card told wrongly that retries.
+
+- **The host's connection sees only the cards' contexts** (`browsercdp.cjs`). The host dials
+  Chrome through a loopback filter: Playwright is shown a target only if it is in a context
+  created on that connection, learned from the `Target.createBrowserContext` replies going
+  past. Everything else — the browser's own context (the widget's pages, the first blank page,
+  what the person opened), other clients' contexts — is attached to by Chrome as usual, resumed
+  if Chrome paused it for us (`waitForDebuggerOnStart`), detached, and never mentioned. A
+  target let go of that way runs normally: part 5, detached with or without the resume, the
+  page ran its script and answered. After a restart with a looping tab in the browser's own
+  context, a card's first call took **~0.6-1s** where it had failed at 30s, and a page opened
+  there after the connect still ran. A message over 64 KB is skimmed rather than parsed, except
+  one that begins as a target event does — an attach for a page with a large `data:` URL.
+- **A tab's title gets a deadline** (1.5s, 250ms once the tab is known frozen). The MCP's
+  `Tab.headerSnapshot` is wrapped so `page.title()` is shadowed for exactly the synchronous
+  stretch before its first `await` — an agent's own `page.title()` is never touched. Past the
+  deadline the tab list reads the browser's own title and `(not answering)`, or `(loading)`
+  during a navigation, and the page is judged in the background. A's call on its healthy tab:
+  1.5s, with `[a (not answering)](…/a)` in its list, where it had hung.
+- **A call still running at 8s has its card's current tab judged**, and again every 15s while
+  it runs, for at most the CLI's own five minutes or until the client gives up: two looks 4s
+  apart, both **silent**. A page that answers the protocol and runs no timer is never named —
+  that is a page paused in a debugger, or one whose timers are faked or wrapped (a test clock,
+  zone.js), and such a page cannot hold a call past the bounded waits anyway. Nor is a page with
+  a dialog open, or **any page of the same card** while one has a dialog open (a dialog blocks its
+  tab's whole process, which a same-site popup shares — the card is told which tab has the
+  dialog, `dialogNote`); a page with a main-frame navigation in flight, or one not yet past its
+  first `about:blank` (a popup reaches Playwright only once initialised, so its first request can
+  come before anything is listening); or a page a call that needed it came back from during the
+  judgement. Only then is the wait ended, with a sentence naming the tab, saying Volery did
+  nothing to it, that it is the card's own and nobody else can see it, that what the call was
+  doing **may still happen** once the tab answers (so take a snapshot before repeating an
+  action), and that closing it or navigating to **another host** — 127.0.0.1 instead of
+  localhost — frees the card, while another port on the same host, a reload or a same-site
+  navigation will not: Chrome keeps a site in one process and a site ignores the port
+  (`browserstall.cjs::stuckNote`). The call goes on inside Playwright and settles when the tab
+  answers or closes.
+- **A tab already judged frozen is looked at once more before the next call is dispatched**,
+  and if it still answers nothing the call is **not made** at all — so nothing it would have
+  done can land later — in ~2s. Only for tools that need the page (`NEEDS_PAGE`: snapshot,
+  click, type, screenshot, …); a navigation (the way out), the console and network readings
+  (the way to diagnose it), a resize, a timed wait and any tool added later go through to the
+  watch instead.
+- **A timed `browser_wait_for` is watched only after its own time**: it sleeps in the host, and
+  the page may be busy on purpose all that while. 1f: a 16s wait beside a page that ran 12s
+  without yielding came back `Waited`, nothing reported. A tab that freezes 2.5s into a 5s wait
+  (1c): told at ~21s.
+- **The MCP's settle waits get a deadline of their own length plus 2s.** `Tab.waitForTimeout`
+  waits by evaluating a `setTimeout` *in the page* — the half-second settle after every action
+  and after the agent's own code — so code that left its page frozen (1d: `run_code` arming a
+  loop in its own tab) had its call hang inside the tool, after the script had returned, for as
+  long as the CLI would wait. The host's own clock ends a settle that has outrun itself, and the
+  reply came back in 4s with the code's result and the tab marked *not answering*. This is the
+  one place the agent's own call is bounded, and it cuts nothing the agent wrote: the script had
+  already returned.
+- **Never watched**: `browser_evaluate` and `browser_run_code_unsafe` (her decision — a 40s
+  computation reads exactly like `while(true){}`, so a real infinite loop holds its card until
+  the CLI's own five minutes), and `browser_tabs`, `browser_close`, which are how a tab is got
+  rid of. `browser_handle_dialog` *is* watched, since a page can freeze the moment its dialog is
+  answered. The controls, all run: a 12s synchronous evaluate ran to its answer; a 14s
+  navigation was never named; `browser_wait_for` on a page doing 40ms of work a frame, and on a
+  tab with an open alert, ran their full length; a page paused in a debugger was left waiting;
+  a popup loading for 15s was never marked.
+- **The wall is told once per tab per time it stops**: the host posts to
+  `ask::STALLED_PATH` (`--report`, from `mcphost.rs`), and `browser::stalled_entry` writes a `bad`
+  chronicle row under the card's name and from its edge (`chronicle::note_card` passes the card
+  as `from_id`, so the wisp flies from it) — *a browser tab stopped answering*, and a detail that
+  opens with *nothing was closed* and how the card heard (its call ended, or its tab list), so a
+  long title cannot clip that half off, then the tab in the page's own words made safe to quote.
+  The URL goes without its query or fragment, where a sign-in leaves its codes. A card the roster
+  does not know is skipped, since another wall can be running the server.
+- **The save button reads the browser's own context itself** (`captureDefault`), because its
+  `storageState()` would open a page in a context the filter hides and Playwright would wait for
+  that page for ever. Two things in it are deliberately not the page's to say: **which site the
+  storage belongs to** comes off the URL Chrome lists for the target, and **the reading** runs in
+  an isolated world of the host's own (`Page.createIsolatedWorld`), whose globals the page's
+  scripts cannot reach — as Playwright's own read did in its utility world. Only a web origin is
+  ever kept (`browservault.cjs::webOrigin`), at every way into the vault, because every new card
+  is seeded from it and Playwright opens each saved origin to restore it: one that is not a web
+  origin would fail the seeding of every card after it, and the vault never drops an origin by
+  itself. A partitioned cookie is left out rather than translated, for the same reason. 4: a page
+  that had replaced its own `JSON.stringify` was saved under its real origin and no other, with
+  what it held. What could not be read is said (`missed`, shown beside the count) rather than
+  saved as nothing. Lost against `storageState()`: storage of sites the default context visited
+  but no longer has open.
+
+**What is still open, said plainly.**
+
+- **A frozen tab in an idle card keeps a core busy** until the card closes it, the card is
+  closed, or the grace after its process goes. Nothing polls for it; it is noticed only when a
+  call or a reply touches it — which is also when the card is there to be told.
+- **An agent's own script that dials `$VOLERY_CDP_ENDPOINT`** still attaches to every tab and can
+  still hang on one; the hook cannot see a shell command's connect. And `run_code` that reaches
+  `page.context().browser().contexts()` sees the hidden default context empty — opening a page
+  there fails — and can still reach other cards' contexts, as it could before this change.
+- **The `initializeServer` hook arm above no longer has anything to explain.** It matched the
+  upstream server's wording; the host's own connect error never said `initializeServer`, and
+  since this change it says in its own words that no tab can be holding it. Left registered, on
+  a call that already failed, as a backstop for nothing — sink item to remove it.
+- **Selecting a frozen tab takes ~5s**, Playwright's own deadline on listing the page's WebMCP
+  tools, which a frozen page never answers. Bounded, and closing it is the better gesture.
+
+**Reviewed adversarially before it shipped**, and the review is why several bullets above read as
+they do: the save capture had taken a page's word for its own origin; "ended before it started"
+was false because the up-front look ran after the dispatch; another *port* does not leave a
+site; a frozen-not-silent reading named exactly the pages that are busy on purpose; a timed wait
+was cut short and then refused; a popup's first navigation and a sibling's dialog both named the
+wrong tab. Each has a check in `probe-card-tabs.ts stall`.
 
 ## What is not built
 

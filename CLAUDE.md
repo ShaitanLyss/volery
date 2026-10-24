@@ -76,7 +76,8 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
-                         # sources, marks, whois, credits, boostmusic, boostfield
+                         # sources, marks, whois, credits, boostmusic, boostfield,
+                         # browsercdp, browserstall
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -141,7 +142,9 @@ bun tools/probe-card-tabs.ts       # whether each card gets tabs of its own from
                                    # not leak between cards, a window per page that keeps
                                    # painting while another card is in front, popups, the
                                    # grace and the release. Two sessions, a private headed
-                                   # Chrome on 19333, no API turn; `live` adds two real cards
+                                   # Chrome on 19333, no API turn; `live` adds two real cards;
+                                   # `stall [parts]` is a frozen tab: nobody else waits, its
+                                   # own card is told, and nothing long by design is touched
 bun tools/probe-mcp-hook.ts        # whether a PreToolUse hook sees an MCP tool call and
                                    # whether the CLI *waits* for it before running the tool.
                                    # Two real turns, pinned to Haiku

@@ -83,6 +83,17 @@ const SCRIPT: &str = include_str!("browserhost.cjs");
 /// itself. A file of its own so `test/browservault.test.ts` can run it.
 const VAULT_SCRIPT: &str = include_str!("browservault.cjs");
 
+/// What the host's one connection to Chrome may see — the cards' own
+/// contexts and nothing else — and when a card's own tab counts as stopped
+/// and what the card is told. Loaded from beside the host, files of their own
+/// for the same reason: `test/browsercdp.test.ts` and
+/// `test/browserstall.test.ts` run them.
+const SIDE_SCRIPTS: [(&str, &str); 3] = [
+    ("browservault.cjs", VAULT_SCRIPT),
+    ("browsercdp.cjs", include_str!("browsercdp.cjs")),
+    ("browserstall.cjs", include_str!("browserstall.cjs")),
+];
+
 /// How long a card's browser context outlives its last session: a card that
 /// went dormant, or was killed, loses its pages this long after the server
 /// notices — its sign-ins saved into the vault first. Lyss's
@@ -218,6 +229,13 @@ enum Started {
 /// length of an `npx` start.
 const LIVE_GRACE: Duration = Duration::from_secs(10);
 
+/// The address the host reports a stuck tab to, with the card appended: this
+/// wall's own ask listener. None while it has no port, which is a wall whose
+/// cards have no tools at all and nothing to report about.
+fn report_url(ask_port: u16) -> Option<String> {
+    (ask_port != 0).then(|| format!("http://{HOST}:{ask_port}{}", crate::ask::STALLED_PATH))
+}
+
 fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     let mut guard = host.child.lock().map_err(|_| "mcp host state poisoned")?;
     if let Some(r) = guard.as_mut() {
@@ -243,8 +261,10 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     let script = dir.join("browserhost.cjs");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(&script, SCRIPT).map_err(|e| format!("{}: {e}", script.display()))?;
-    let vault_script = dir.join("browservault.cjs");
-    std::fs::write(&vault_script, VAULT_SCRIPT).map_err(|e| format!("{}: {e}", vault_script.display()))?;
+    for (name, body) in SIDE_SCRIPTS {
+        let at = dir.join(name);
+        std::fs::write(&at, body).map_err(|e| format!("{}: {e}", at.display()))?;
+    }
     /* Each card's context is seeded from the vault and saved back into it, so
        the host is handed the one file the widget's save and the isolated
        `playwright` server already share (`browser::session_path`). */
@@ -264,7 +284,8 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
        it as needing auth without sending a request (`load.md` §1). The host
        never answers either — a wrong `Host` is a 421 — and the pin is also what
        its reach into the package's internals rests on. */
-    let words: Vec<String> = vec![
+    let report = report_url(app.state::<crate::ask::Asks>().port());
+    let mut words: Vec<String> = vec![
         "npx".into(),
         "--yes".into(),
         "-p".into(),
@@ -282,6 +303,12 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
         "--grace-ms".into(),
         TAB_GRACE.as_millis().to_string(),
     ];
+    /* Where the host tells the wall a card's tab stopped answering, so it is a
+       row in the chronicle as well as a sentence to the card. */
+    if let Some(r) = report {
+        words.push("--report".into());
+        words.push(r);
+    }
     let mut cmd = Command::new("cmd");
     #[cfg(windows)]
     {
@@ -343,4 +370,29 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     }
     let _ = child.kill();
     Err(format!("nothing answered on {} within {}s", url("<card>"), READY_TIMEOUT.as_secs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The host is told where to report a stuck tab only when there is a
+    /// listener to report to, and the card is appended to exactly that path.
+    #[test]
+    fn the_host_reports_to_this_walls_own_listener() {
+        assert_eq!(report_url(0), None);
+        assert_eq!(
+            report_url(51234).as_deref(),
+            Some("http://127.0.0.1:51234/browser/stalled/")
+        );
+    }
+
+    /// Every file the host `require`s from beside itself is written there.
+    #[test]
+    fn every_script_the_host_loads_is_written_beside_it() {
+        for needed in ["browservault.cjs", "browsercdp.cjs", "browserstall.cjs"] {
+            assert!(SCRIPT.contains(needed), "the host no longer loads {needed}");
+            assert!(SIDE_SCRIPTS.iter().any(|(n, _)| *n == needed), "{needed} is not written");
+        }
+    }
 }

@@ -2852,6 +2852,17 @@ pub const REMOVE_PATH: &str = "/remove/shell/";
 /// the hook gives up on it after a few seconds anyway. See `load::note_for`.
 pub const LOAD_PATH: &str = "/load/note/";
 
+/// Where the wall's browser server (`browserhost.cjs`) says that a card's own
+/// tab stopped answering: `POST /browser/stalled/<card id>` with
+/// `{ "title", "url", "kind" }`. The card has already been told, in the reply
+/// to its call; this is the row in the chronicle that says so to the person,
+/// once per tab per time it stops. See `browser::stalled_entry`.
+///
+/// Same footing as `LOAD_PATH`: loopback, read and written on its own thread,
+/// and its only effect is one chronicle row, so there is nothing for an
+/// unauthenticated caller to gain but a line in the register.
+pub const STALLED_PATH: &str = "/browser/stalled/";
+
 /// How long [`REMOVE_PATH`] holds its request before telling the hook the
 /// question is standing. Under `hooks::ROUTE_TIMEOUT`, which is under the
 /// `PreToolUse` ceiling, so the hook always has its answer before it is killed.
@@ -3104,6 +3115,20 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                         Some(note) => req.respond(tiny_http::Response::from_string(note)),
                         None => req.respond(tiny_http::Response::empty(204)),
                     };
+                    return;
+                }
+
+                if req.url().starts_with(STALLED_PATH) {
+                    let card = conversation_of(req.url()).to_string();
+                    let mut body = String::new();
+                    let parsed = std::io::Read::read_to_string(req.as_reader(), &mut body)
+                        .ok()
+                        .and_then(|_| serde_json::from_str::<Value>(&body).ok());
+                    if let Some(body) = parsed {
+                        let (mark, detail) = crate::browser::stalled_entry(&body);
+                        crate::chronicle::note_card(&app, &card, "bad", &mark, &detail);
+                    }
+                    let _ = req.respond(tiny_http::Response::empty(204));
                     return;
                 }
 

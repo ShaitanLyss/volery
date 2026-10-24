@@ -42,8 +42,23 @@ function cookiesOf(state) {
   return Array.isArray(state && state.cookies) ? state.cookies.filter((c) => c && typeof c.name === "string") : [];
 }
 
+/** Whether an origin is one storage may be saved under: an http(s) origin in
+ *  its canonical form, and nothing else. Every new card's context is seeded
+ *  from the vault and Playwright opens each saved origin to restore it, so one
+ *  that is not a web origin would fail the seeding of every card after it —
+ *  and the vault never drops an origin by itself. */
+function webOrigin(origin) {
+  if (typeof origin !== "string") return false;
+  try {
+    const u = new URL(origin);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 function originsOf(state) {
-  return Array.isArray(state && state.origins) ? state.origins.filter((o) => o && typeof o.origin === "string") : [];
+  return Array.isArray(state && state.origins) ? state.origins.filter((o) => o && webOrigin(o.origin)) : [];
 }
 
 /** Merge `captures` into `vault`. `now` is in seconds, as cookie expiries are. */
@@ -79,7 +94,6 @@ function mergeStates(vault, captures, now) {
   }
   for (const state of captures) {
     for (const o of originsOf(state)) {
-      if (!o.origin || o.origin === "null") continue;
       if (!stored.has(o.origin)) stored.set(o.origin, { before: new Map(), items: new Map(), changed: new Set() });
       const slot = stored.get(o.origin);
       slot.changed = slot.changed || new Set();
@@ -106,6 +120,54 @@ function mergeStates(vault, captures, now) {
   };
 }
 
+/** The browser's own context, read over plain CDP, in the vault's shape.
+ *
+ *  Each origin is the one the host read off the page's URL, never one the page
+ *  reported about itself, and only a web origin is kept. A partitioned cookie
+ *  is left out rather than translated: its key is a shape Playwright and Chrome
+ *  spell differently, and a cookie the seeding rejects fails the whole seed.
+ *
+ *  The host's Playwright connection no longer sees that context's pages
+ *  (`browsercdp.cjs`), so `storageState()` cannot be asked of it; the host
+ *  reads the cookies (`Storage.getCookies`) and each page's localStorage
+ *  itself and this puts them in the shape `mergeStates` takes — the same
+ *  conversion `src/lib/browser.ts`'s `storageStateFrom` makes for the widget's
+ *  fallback: a session cookie is `-1` whichever way CDP spelled it, a missing
+ *  `sameSite` is `Lax` (Playwright refuses a document without one, and `Lax`
+ *  is what Chrome treats absence as), an expired cookie is dropped. */
+function stateFromCdp(cookies, origins, now) {
+  const out = [];
+  for (const c of Array.isArray(cookies) ? cookies : []) {
+    if (!c || !c.name || !c.domain || c.partitionKey) continue;
+    const raw = typeof c.expires === "number" ? c.expires : -1;
+    const expires = c.session || raw < 0 ? -1 : Math.floor(raw);
+    if (expires >= 0 && now > 0 && expires <= now) continue;
+    out.push({
+      name: c.name,
+      value: c.value ?? "",
+      domain: c.domain,
+      path: c.path || "/",
+      expires,
+      httpOnly: c.httpOnly === true,
+      secure: c.secure === true,
+      sameSite: c.sameSite === "Strict" || c.sameSite === "None" ? c.sameSite : "Lax",
+    });
+  }
+  const merged = new Map();
+  for (const o of Array.isArray(origins) ? origins : []) {
+    if (!o || !webOrigin(o.origin)) continue;
+    const into = merged.get(o.origin) || new Map();
+    for (const [name, value] of o.entries || []) if (typeof name === "string") into.set(name, String(value));
+    merged.set(o.origin, into);
+  }
+  return {
+    cookies: out,
+    origins: [...merged.entries()]
+      .filter(([, items]) => items.size > 0)
+      .map(([origin, items]) => ({ origin, localStorage: [...items.entries()].map(([name, value]) => ({ name, value })) })),
+  };
+}
+
 /** A vault read off disk, or an empty one if it is missing or not a vault. */
 function readVault(text) {
   try {
@@ -116,4 +178,4 @@ function readVault(text) {
   }
 }
 
-module.exports = { mergeStates, readVault };
+module.exports = { mergeStates, readVault, stateFromCdp, webOrigin };
