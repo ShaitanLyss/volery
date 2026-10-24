@@ -59,6 +59,13 @@ export class Purse {
   refused = $state<CreditMark | null>(null);
   /** The month `spent` counts from. */
   since = $state(monthStart(Date.now()));
+  /** What the wall does when boost comes on — release every held card, since a
+   *  hold credits can take is no longer a hold (`Skein` installs it at load).
+   *  A hook here rather than a method every surface must remember to call: the
+   *  header, the chord, the accounts panel and the control surface all flip
+   *  boost, and one that flipped it without the release would leave cards
+   *  waiting on an allowance boost was turned on to stand in for. */
+  whenOn: (() => void) | null = null;
 
   get state(): PurseState {
     return {
@@ -87,6 +94,7 @@ export class Purse {
     }
     this.#note();
     void this.refresh();
+    if (on) this.whenOn?.();
   }
 
   setBudget(budget: number | null) {

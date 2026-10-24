@@ -1171,8 +1171,18 @@ make the move. After that each turn reads its context at $0.20 a million.
   argument is that a word that never varies is never read, and credits are the one funding
   that is never the usual one. Its tooltip names the home.
 - **The title bar** has `boost`, which while on reads `boost · $88 of $500` for the month. It
-  folds late, after `away`. A bar that folded the one state costing money to make room for the
-  zoom would be hiding it.
+  is kept second only to `adopt` when the bar runs short. A bar that folded the one state
+  costing money to make room for the zoom would be hiding it. **`FOLD_ORDER` is read from the
+  front**: `chrome.ts::foldChrome` keeps items in order and folds the rest, so earlier means
+  kept longer. `boost` first went in at the far end, beside `away`, read as "given up late",
+  and on a wall of ordinary width it was folded into the overflow from the start.
+- **The accounts panel** (`<space> u`) has a credits band under the priorities, which is where
+  credits fall in the order. It holds the boost switch, whether a key is stored, what credits
+  have cost this month, and **stop at $**, the budget. The budget is a cap in every way an
+  account's cap is: blank is the real instruction "no ceiling of yours", it is said back
+  beside the field, and Enter commits it as leaving the field does. Its tag wears the account
+  rows' tones (`creditsFace`): `held` for a wait that ends by itself (a refusal backing off,
+  a budget that lifts next month), `bad` for something to fix (no key, a key refused).
 - **`<space> m b`** flips it and says what is now true, beside the other standing switches in
   `m`.
 - **The transcript** says every move onto and off credits (`ontoCreditsNote`,

@@ -4,6 +4,10 @@ import type { Choice } from "../src/lib/accounts";
 import { carryNote, creditRefusalOf, healNote } from "../src/lib/classify";
 import {
   boostLabel,
+  creditsFace,
+  sayBudgetSet,
+  sayCreditsBand,
+  sayKey,
   CREDITS,
   creditsStanding,
   fundingName,
@@ -342,6 +346,32 @@ describe("saying it", () => {
     expect(sayBoost({ ...p, boost: true }, { ready: false, why: "the api key was refused", until: null })).toContain(
       "credits are not taking work: the api key was refused",
     );
+  });
+
+  test("the accounts panel's credits band: its tag wears the account rows' tones", () => {
+    const now = 1_000_000;
+    const p: Purse = { boost: true, keyHeld: true, budget: 500, spent: 12, refused: null };
+    expect(creditsFace({ ...p, boost: false }, OFF, now)).toEqual({ word: "boost is off", tone: "off", back: null });
+    expect(creditsFace(p, READY, now)).toEqual({ word: "ready", tone: "ready", back: null });
+    /* Something to go and fix: no key, or a key refused. */
+    const noKey = { ...p, keyHeld: false };
+    expect(creditsFace(noKey, creditsStanding(noKey, now), now).tone).toBe("bad");
+    const keyRefused = { ...p, refused: refuseCredits(null, "key", now) };
+    expect(creditsFace(keyRefused, creditsStanding(keyRefused, now), now)).toMatchObject({ tone: "bad", back: null });
+    /* A wait that ends by itself: a refusal backing off, a budget that lifts. */
+    const rate = { ...p, refused: refuseCredits(null, "rate", now) };
+    expect(creditsFace(rate, creditsStanding(rate, now), now)).toMatchObject({ tone: "held", back: now + 60_000 });
+    const spent = { ...p, spent: 500 };
+    expect(creditsFace(spent, creditsStanding(spent, now), now)).toMatchObject({ tone: "held", back: nextMonth(now) });
+  });
+
+  test("the band's other words", () => {
+    expect(sayCreditsBand(true)).toContain("billed per token");
+    expect(sayCreditsBand(false)).toContain("space then m b");
+    expect(sayKey(null)).toBe("looking for the api key…");
+    expect(sayKey(false)).toContain("space then o");
+    expect(sayBudgetSet(250)).toBe("credits stop at $250 this month");
+    expect(sayBudgetSet(null)).toContain("no ceiling of yours");
   });
 
   test("money, budgets and months", () => {

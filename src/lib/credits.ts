@@ -242,6 +242,45 @@ export function sayBoost(p: Purse, standing: CreditsStanding): string {
   return "boost is on — a card whose account runs out carries on with the organisation's api credits (space then m b)";
 }
 
+/* ── the accounts panel's credits band ────────────────────────────────────*/
+
+/** What the band is, under its name — the same slot `sayTier` fills for a
+ *  priority, and the same two facts: when work lands here, and what it costs. */
+export function sayCreditsBand(boost: boolean): string {
+  return boost
+    ? "boost is on — a card whose own account runs out carries on here, billed per token"
+    : "only under boost — switch it on here, in the title bar, or with space then m b";
+}
+
+/** The band's tag: one word or sentence, and which of the panel's four tones
+ *  it wears. The tones are the account rows' own, for the account rows'
+ *  reasons — `held` for a wait that ends by itself (a refusal backing off, a
+ *  budget that lifts next month), `bad` for something to go and fix (no key,
+ *  a key refused), and nothing at all for a switch that is simply off. */
+export type CreditsFace = { word: string; tone: "ready" | "off" | "held" | "bad"; back: number | null };
+
+export function creditsFace(p: Purse, s: CreditsStanding, now: number): CreditsFace {
+  if (!p.boost) return { word: "boost is off", tone: "off", back: null };
+  if (s.ready) return { word: "ready", tone: "ready", back: null };
+  const fix = p.keyHeld === false || (p.refused?.kind === "key" && p.refused.until > now);
+  return { word: s.why, tone: fix ? "bad" : "held", back: fix ? null : s.until };
+}
+
+/** Whether there is a key to run on, said where the budget is set. */
+export function sayKey(keyHeld: boolean | null): string {
+  if (keyHeld === null) return "looking for the api key…";
+  return keyHeld
+    ? "the api key is stored — the integrations panel holds it (space then o)"
+    : "no api key yet — add one in the integrations panel (space then o)";
+}
+
+/** What setting the budget did, said back beside the field. */
+export function sayBudgetSet(budget: number | null): string {
+  return budget === null
+    ? "credits have no ceiling of yours now — the console's spend limit is the only one"
+    : `credits stop at ${money(budget)} this month`;
+}
+
 /** Dollars, whole above ten, cents below: the figure moves by cents a turn and a
  *  budget is a round number, and both read cleanly in the same slot. */
 export function money(usd: number): string {

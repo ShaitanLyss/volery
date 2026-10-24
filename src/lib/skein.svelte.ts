@@ -694,6 +694,9 @@ export class Skein {
        ladder cannot place may go onto them has to be answerable at the first
        send. Tells Rust the switch, so a card's `allowance` can say it. */
     purse.start();
+    purse.whenOn = () => {
+      if (!this.#gone && this.convs.some((c) => c.held)) void this.releaseHeld();
+    };
     this.#holdSweep = setInterval(() => {
       /* Only when something is actually waiting. The per-hold timer is the
          precise way out and this is the backstop for the case it cannot cover:
@@ -737,6 +740,9 @@ export class Skein {
     this.#gone = true;
     this.#listeners.detach();
     waterfall.detach("wall");
+    /* A superseded Skein must not be the one boost releases held cards
+       through — the replacement installs its own in `load`. */
+    purse.whenOn = null;
     if (this.#holdSweep !== null) clearInterval(this.#holdSweep);
     this.#holdSweep = null;
     for (const t of this.#holds.values()) clearTimeout(t);
@@ -5083,13 +5089,14 @@ export class Skein {
   }
 
   /** Turn boost on or off — the header's button, `<space> m b` and the control
-   *  surface all come here. On, every held card is asked again at once: a hold
-   *  credits can now take is released onto them rather than left to wait out a
-   *  window (`credits.ts::route`). Off, a card on credits moves back to the
-   *  ladder at its next message; nothing is moved under a turn. */
+   *  surface come here, and the accounts panel calls the purse itself. On,
+   *  every held card is asked again at once through `purse.whenOn`, installed
+   *  in `load`, so it happens whichever surface flipped it: a hold credits can
+   *  now take is released onto them rather than left to wait out a window
+   *  (`credits.ts::route`). Off, a card on credits moves back to the ladder at
+   *  its next message; nothing is moved under a turn. */
   setBoost(on: boolean) {
     purse.setBoost(on);
-    if (on && this.convs.some((c) => c.held)) void this.releaseHeld();
   }
 
   /** Ask the table what the day has cost. The table is the only source: a turn

@@ -35,6 +35,8 @@
     type Merge,
   } from "./accounts";
   import { pct, said as windowSaid, until } from "./limits";
+  import { purse } from "./purse.svelte";
+  import { creditsFace, money, parseBudget, sayBudgetSet, sayCreditsBand, sayKey } from "./credits";
   import { Listeners } from "./listeners";
   import { codeFrom, looksLikeCode, readSignin } from "./signin";
 
@@ -89,6 +91,24 @@
     noteTimer = window.setTimeout(() => (note = ""), 2600);
   }
 
+  /** The credits band's tag, off the same decision the routing reads. */
+  const credits = $derived(creditsFace(purse.state, purse.standing(now), now));
+
+  /** A budget typed into the band. Blank is "no ceiling of yours", exactly as a
+   *  blank cap is — a real and different instruction, said back so it is never
+   *  taken by accident; anything that is not a number of dollars changes
+   *  nothing and puts the old figure back in the field. */
+  function setBudget(el: HTMLInputElement) {
+    const read = parseBudget(el.value);
+    if (!read.ok) {
+      el.value = purse.budget === null ? "" : String(purse.budget);
+      say("that is not a number of dollars");
+      return;
+    }
+    purse.setBudget(read.budget);
+    say(sayBudgetSet(read.budget));
+  }
+
   /** How one account's sign-in is going, read off what it has said. */
   function progressOf(label: string) {
     return readSignin(signinOut[label] ?? "");
@@ -96,6 +116,9 @@
 
   onMount(() => {
     waterfall.attach(WATCHER);
+    /* What credits have cost and whether a key is stored, as of opening: both
+       change without this panel, and both are drawn in it. */
+    void purse.refresh();
 
     /* Subscriptions are kept so they can be let go of — `Listeners` exists
        because `tauri dev` rebuilds this component on every edit, and a
@@ -761,6 +784,78 @@
           </div>
         </div>
       {/each}
+
+      <!-- ── credits ──────────────────────────────────────────────────────
+           Under the priorities because that is where it falls: under boost, a
+           card whose own account runs out carries on here (`credits.ts::route`).
+           A band like the others, with a budget where an account has its caps,
+           and for the caps' reason — a ceiling that is yours, under one that is
+           not (the Console's spend limit, which nothing here can read). -->
+      {#if waterfall.ready}
+        <div class="band">
+          <div class="bandhead">
+            <span class="tiermark">credits</span>
+            <span class="tierwhat">{sayCreditsBand(purse.boost)}</span>
+          </div>
+
+          <div class="bandrows">
+            <div class="acct" class:off={!purse.boost}>
+              <div class="row">
+                <span class="label">api credits</span>
+                <span
+                  class="tag"
+                  class:ready={credits.tone === "ready"}
+                  class:held={credits.tone === "held"}
+                  class:bad={credits.tone === "bad"}>{credits.word}</span
+                >
+                {#if credits.back !== null}
+                  <span class="dim">back in {until(credits.back - now)}</span>
+                {/if}
+                <span class="grow"></span>
+                <button
+                  class="chip"
+                  onclick={() => {
+                    purse.setBoost(!purse.boost);
+                    say(purse.boost ? "boost is on" : "boost is off");
+                  }}
+                  title={purse.boost
+                    ? "stop putting cards on credits when their account runs out (space then m b)"
+                    : "put a card on credits when its account runs out (space then m b)"}
+                >{purse.boost ? "on" : "off"}</button>
+              </div>
+
+              <div class="who">
+                <span class="dim">{sayKey(purse.keyHeld)}</span>
+              </div>
+
+              <div class="caps">
+                <label class="cap" title="what this wall's cards have spent on credits since the first of the month, and where you want that to stop">
+                  <span class="capname">this month</span>
+                  <span class="used">{money(purse.spent)}</span>
+                  <span class="of">stop at $</span>
+                  <input
+                    class="capin"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="—"
+                    value={purse.budget ?? ""}
+                    onchange={(e) => setBudget(e.currentTarget)}
+                    onkeydown={(e) => {
+                      /* Enter commits as leaving the field does: a figure you
+                         typed and pressed Enter on is a figure you meant. */
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        setBudget(e.currentTarget);
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      {/if}
 
       <!-- ── accounts on other walls that want signing in ─────────────────
            Signed in from here, each machine still getting a chain of its own:
