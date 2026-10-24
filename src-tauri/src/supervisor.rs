@@ -3424,7 +3424,7 @@ mod tests {
         let cold = crate::ask::mcp_config(1234, "abc", Some(&crate::browser::address()));
         assert_eq!(
             cold["mcpServers"]["browser"]["url"],
-            format!("http://127.0.0.1:{}/mcp", crate::browser::MCP_PORT),
+            format!("http://127.0.0.1:{}/mcp/abc", crate::browser::MCP_PORT),
             "the address handed to a card is not the fixed one: {cold}"
         );
 

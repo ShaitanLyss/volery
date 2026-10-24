@@ -135,6 +135,11 @@ bun tools/probe-lazy-browser.ts    # when `@playwright/mcp` dials its `--cdp-end
                                    # so whether the browser may arrive *after* the card that
                                    # will drive it. The whole of the lazy start rests on it.
                                    # No API turn; its own Chrome on 19222, never the wall's
+bun tools/probe-card-tabs.ts       # whether each card gets tabs of its own from the shared
+                                   # browser server (`browserhost.cjs`): per-card lists, a
+                                   # window per page that keeps painting while another card
+                                   # is in front, popups, the grace and the release. Two
+                                   # sessions, a private headed Chrome on 19333, no API turn
 bun tools/probe-mcp-hook.ts        # whether a PreToolUse hook sees an MCP tool call and
                                    # whether the CLI *waits* for it before running the tool.
                                    # Two real turns, pinned to Haiku

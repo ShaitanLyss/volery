@@ -1,4 +1,5 @@
-//! One `@playwright/mcp` for the whole wall, instead of one per card.
+//! One browser MCP server for the whole wall, instead of one per card — and
+//! since 2026-10-24, one in which each card has tabs of its own.
 //!
 //! Every project card used to carry its own stdio `npx @playwright/mcp
 //! --cdp-endpoint http://127.0.0.1:9222`: three processes and ~217 MB per card
@@ -8,33 +9,44 @@
 //!
 //! `@playwright/mcp` has an HTTP transport (`--port`), where one process serves
 //! many clients, and reading its source (playwright-core 1.64, bundled with
-//! `@playwright/mcp` 0.0.83, `coreBundle.js` around `factory.create`) settles the
-//! one thing that had to be true before sharing it: **each HTTP session gets
-//! what a stdio server got.** A session opens its own `connectOverCDP`, takes
-//! `browser.contexts()[0]` — the default context, so the user's live sign-ins
-//! stay shared exactly as before — and builds its own `BrowserBackend`, which is
-//! where "the current tab" lives. Nothing about a card's view of the browser
-//! changes; only the process count does. `--shared-browser-context` would have
-//! made every card share one backend, and one current tab, which is the fight
-//! sinks 7af2acb4 and 9e05a3fd already describe — it is deliberately not passed.
+//! `@playwright/mcp` 0.0.83, `coreBundle.js` around `factory.create`) settled
+//! that a session got what a stdio server got: its own `connectOverCDP`, the
+//! default context — so the user's live sign-ins stay shared — and its own
+//! `BrowserBackend`, which is where "the current tab" lives.
 //!
-//! Two more properties from the same reading, both load-bearing:
+//! **And that was the bug, not the reassurance it read as.** A backend's tabs
+//! are every page in the default context, and its current tab is the first of
+//! them. So every card saw every card's pages, a card with no tab of its own
+//! took whichever page Chrome listed first, `browser_tabs select` brought a
+//! page to the front of the one window they all shared and hid the rest, and a
+//! card closing "a duplicate" closed another card's work. Sink 9e05a3fd is
+//! Lyss's own wording of it; `.claude/rules/browser.md` has the twenty twins.
+//!
+//! So the server Volery runs is `browserhost.cjs` — the same server built from
+//! the pieces `@playwright/mcp`'s own CLI is built from, run under the pinned
+//! package by `npx -p`, with two differences: a card is named in the URL
+//! (`/mcp/<card>`) and gets a view of the default context holding only its own
+//! pages, and every page a card opens is a window of its own. The file says
+//! how, and `tools/probe-card-tabs.ts` is the measurement.
+//!
+//! Two properties of the original are kept on purpose, both load-bearing:
 //!
 //! - **A session costs nothing until it calls a tool.** The backend (and so the
 //!   CDP connection) is created on the first `tools/call`, never at `initialize`
 //!   or `tools/list` — the same laziness `browser.rs`'s probe measured over stdio.
 //! - **A dead client's session is closed by the server.** Once a session has a
 //!   backend the server pings it every three seconds and closes it when a ping
-//!   goes unanswered (`startHeartbeat`), which disposes the CDP connection. That
-//!   matters here more than anywhere: Volery ends a card with `TerminateProcess`,
-//!   so no client ever says goodbye.
+//!   goes unanswered, which disposes the CDP connection — and, `TAB_GRACE`
+//!   later, the dead card's tabs. That matters here more than anywhere: Volery
+//!   ends a card with `TerminateProcess`, so no client ever says goodbye.
 //!
 //! **And it ends the CONNECT_TIMEOUT family**, which is the other half of why
-//! this is worth doing (sinks 36919493, d5c3b54e, ab552a46, 0e31145a, 6f564b5a,
-//! c14409db, cb41f229, 2f25b6b7). Each of those is a card whose stdio server —
-//! `npx` resolving a package on a machine with no memory to spare — did not
-//! answer `initialize` inside the CLI's thirty seconds, and the CLI does not
-//! retry. Connecting to a server that is already up is a loopback round trip.
+//! sharing one server was worth doing (sinks 36919493, d5c3b54e, ab552a46,
+//! 0e31145a, 6f564b5a, c14409db, cb41f229, 2f25b6b7). Each of those is a card
+//! whose stdio server — `npx` resolving a package on a machine with no memory
+//! to spare — did not answer `initialize` inside the CLI's thirty seconds, and
+//! the CLI does not retry. Connecting to a server already up is a loopback
+//! round trip.
 //!
 //! The port is fixed for the reason `browser::DEFAULT_PORT` is: a card's
 //! `--mcp-config` is written at spawn and cannot be renegotiated, so the address
@@ -56,8 +68,22 @@ use crate::browser::{mcp_url as url, MCP_PORT as PORT};
 const HOST: &str = "127.0.0.1";
 
 /// The `@playwright/mcp` this wall runs. See the note in `start` on why it is
-/// pinned, and re-run `tools/probe-shared-mcp.ts` before moving it.
+/// pinned, and re-run `tools/probe-shared-mcp.ts` and `tools/probe-card-tabs.ts`
+/// before moving it — the host reaches into the package's `tools` export, which
+/// is public but young, so a move is a re-probe rather than a bump.
 const PINNED: &str = "@playwright/mcp@0.0.83";
+
+/// The server itself. Carried in the binary and written beside the database at
+/// every start, so the installed app and the script it runs cannot drift apart.
+const SCRIPT: &str = include_str!("browserhost.cjs");
+
+/// How long a card's tabs outlive its last session: a card that went dormant,
+/// or was killed, loses its pages this long after the server notices. Lyss's
+/// number (2026-10-24) — "the page can always be reopened cheaply" — and it is
+/// the answer to sink f7553ae5, where a day of finished cards' tabs held
+/// 4.2 GB of one Chrome. A card that is merely idle keeps its session, and so
+/// its pages, for as long as its process lives.
+const TAB_GRACE: Duration = Duration::from_secs(120);
 
 /// How long a start may take before it is called failed. `npx` checks the
 /// registry and may install the pinned version on a first run, and this machine taxes every process start
@@ -106,6 +132,22 @@ pub fn pids(app: &AppHandle) -> Vec<u32> {
         .unwrap_or_default()
 }
 
+/// Close the tabs a card opened, now: the card has been closed for good.
+///
+/// The server would close them anyway, `TAB_GRACE` after the card's session
+/// stopped answering, so this is only the impatient half — a closed card's
+/// pages have nobody left to look at them, and two minutes of a WebGL scene
+/// rendering for nobody is the thing sink f7553ae5 was about. On a thread of
+/// its own and never waited on: it is called from `close_conversation_record`
+/// on the main thread, and a server that is slow, or down, or another wall's
+/// older build with no such route, must cost the close nothing.
+pub fn release(card: &str) {
+    let url = format!("http://{HOST}:{PORT}/volery/release/{card}");
+    std::thread::spawn(move || {
+        let _ = ureq::post(&url).timeout(Duration::from_secs(5)).call();
+    });
+}
+
 /// Start the server if nothing is answering on its port, in the background, and
 /// ask every card whose `browser` server failed to connect to try again once it
 /// is up. Cheap and idempotent: the common case is one loopback connect.
@@ -134,11 +176,11 @@ pub fn ensure(app: &AppHandle) {
             host.starting.store(false, Ordering::SeqCst);
             return;
         }
-        let result = start(&host);
+        let result = start(&app, &host);
         host.starting.store(false, Ordering::SeqCst);
         match result {
             Ok(Started::Fresh) => {
-                log::info!(target: "volery::mcphost", "shared browser MCP up on {}", url());
+                log::info!(target: "volery::mcphost", "shared browser MCP up on {}", url("<card>"));
                 /* Only a server that replaced one sends every card back to
                    reconnect — each session died with the old process. A first
                    start, or one found answering after all, owes that only to
@@ -169,7 +211,7 @@ enum Started {
 /// length of an `npx` start.
 const LIVE_GRACE: Duration = Duration::from_secs(10);
 
-fn start(host: &Host) -> Result<Started, String> {
+fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     let mut guard = host.child.lock().map_err(|_| "mcp host state poisoned")?;
     if let Some(r) = guard.as_mut() {
         if matches!(r.child.try_wait(), Ok(None)) {
@@ -187,41 +229,66 @@ fn start(host: &Host) -> Result<Started, String> {
     if answering() {
         return Ok(Started::Already);
     }
-    let mut cmd = Command::new("cmd");
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?;
+    let script = dir.join("browserhost.cjs");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(&script, SCRIPT).map_err(|e| format!("{}: {e}", script.display()))?;
+    let state = dir.join("browser-tabs.json");
     /* `npx`, once, for the wall — the wrapper sink 482e25ee measured at 111 MB
-       was a per-card cost and is now a per-wall one.
+       was a per-card cost and is now a per-wall one. `-p … node <script>`
+       rather than the package's own bin: `npx -p` puts the pinned package's
+       `.bin` on the script's PATH, which is how `browserhost.cjs` finds the
+       playwright-core beside it without anybody reading npm's hash-named cache.
 
        **Pinned to the version that was probed**, where the stdio entry floated
        on `@latest`. The trade changed with the transport: a stdio server that
        broke cost the cards it broke, but an HTTP server that answers a card 401
        or 403 is remembered by the *name* `browser` in the CLI's machine-wide
        `mcp-needs-auth-cache.json`, and every session on the machine then lists
-       it as needing auth without sending a request (`load.md` §1). A release
-       that tightened its host checks would take the browser off every card on
-       the wall, silently. Moving this is one line and a re-run of
-       `tools/probe-shared-mcp.ts`. */
-    cmd.args([
-        "/C",
-        "npx",
-        "--yes",
-        PINNED,
-        "--port",
-        &PORT.to_string(),
-        "--host",
-        HOST,
-        /* **Named, or every card is refused with a 403.** The MCP route checks
-           `Host` against its own list, which defaults to `localhost:<port>` —
-           port and all, after normalising the bind address — so the
-           `127.0.0.1:<port>` a card sends is not on it. Measured with the probe:
-           the CLI reported the server as `needs-auth` and listed no tools.
-           Naming the one host the cards use keeps the guard against a page
-           rebinding a name of its own to loopback, which `'*'` would drop. */
-        "--allowed-hosts",
-        &format!("{HOST}:{PORT}"),
-        "--cdp-endpoint",
-        &crate::browser::address(),
-    ])
-    .stdin(Stdio::null())
+       it as needing auth without sending a request (`load.md` §1). The host
+       never answers either — a wrong `Host` is a 421 — and the pin is also what
+       its reach into the package's internals rests on. */
+    let words: Vec<String> = vec![
+        "npx".into(),
+        "--yes".into(),
+        "-p".into(),
+        PINNED.into(),
+        "node".into(),
+        script.display().to_string(),
+        "--port".into(),
+        PORT.to_string(),
+        "--host".into(),
+        HOST.into(),
+        "--cdp-endpoint".into(),
+        crate::browser::address(),
+        "--state".into(),
+        state.display().to_string(),
+        "--grace-ms".into(),
+        TAB_GRACE.as_millis().to_string(),
+    ];
+    let mut cmd = Command::new("cmd");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /* `/S` with the whole line in one pair of quotes and every word quoted
+           inside it, so a profile path with a space in it stays one argument —
+           `pool.rs`'s spelling, for its reason — **except the program name**.
+           `npx` is a `.cmd` shim that finds npm through `%~dp0`, and invoked as
+           `"npx"` that expands to the current directory instead of the shim's:
+           measured, `Cannot find module '<cwd>\node_modules\npm\bin\npm-prefix.js'`
+           and nothing listening. The name is a constant with no space in it. */
+        let line = std::iter::once(words[0].clone())
+            .chain(words[1..].iter().map(|w| crate::pool::cmd_word(w)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        cmd.raw_arg(format!("/S /C \"{line}\""));
+    }
+    #[cfg(not(windows))]
+    cmd.arg("-c").arg(words.join(" "));
+    cmd.stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -262,5 +329,5 @@ fn start(host: &Host) -> Result<Started, String> {
         std::thread::sleep(Duration::from_millis(250));
     }
     let _ = child.kill();
-    Err(format!("nothing answered on {} within {}s", url(), READY_TIMEOUT.as_secs()))
+    Err(format!("nothing answered on {} within {}s", url("<card>"), READY_TIMEOUT.as_secs()))
 }

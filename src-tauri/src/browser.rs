@@ -952,14 +952,28 @@ pub fn address() -> String {
 /// connect, the CONNECT_TIMEOUT sinks) are what changed. `mcphost.rs` has the
 /// reading of `@playwright/mcp`'s source that says a session gets exactly what a
 /// stdio server got.
-pub fn mcp_server() -> serde_json::Value {
-    serde_json::json!({ "type": "http", "url": mcp_url() })
+///
+/// **Since 2026-10-24 the URL names the card**, and that is the whole of how a
+/// card gets tabs of its own: the server (`browserhost.cjs`) gives the session
+/// at `/mcp/<card>` a view of the browser holding only the pages that card
+/// opened. See `mcphost.rs`.
+pub fn mcp_server(card: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "http", "url": mcp_url(card) })
 }
 
-/// Where the wall's shared `@playwright/mcp` listens. Fixed, for `DEFAULT_PORT`'s
-/// reason: a card's `--mcp-config` is written at spawn, before anything need be
-/// listening.
-pub const MCP_PORT: u16 = 9244;
+/// Where the wall's shared browser MCP server listens. Fixed, for
+/// `DEFAULT_PORT`'s reason: a card's `--mcp-config` is written at spawn, before
+/// anything need be listening.
+///
+/// **It moved from 9244 when cards got tabs of their own**, and the move is the
+/// guard. "Another wall's server counts" (`mcphost::ensure`) — so on the old
+/// port a card of this build, beside an installed wall still on the old one,
+/// would have been handed that wall's server, which answers `/mcp/<card>`
+/// exactly as it answers `/mcp`: every page in the browser, the first one
+/// current, the fight this port exists to end. Working, by every sign a card
+/// can read, and wrong. A new port makes the old server unreachable from a new
+/// card rather than quietly adequate.
+pub const MCP_PORT: u16 = 9245;
 
 /// The URL a card's `browser` entry points at. `127.0.0.1` rather than
 /// `localhost`, because the server binds the address it is given and a
@@ -968,8 +982,8 @@ pub const MCP_PORT: u16 = 9244;
 /// `Host` on its allow-list, which `mcphost.rs` sets to exactly this
 /// `127.0.0.1:<port>` — not `'*'`, which would let any page the user visits
 /// rebind a name to loopback and drive the shared browser.
-pub fn mcp_url() -> String {
-    format!("http://{HOST}:{MCP_PORT}/mcp")
+pub fn mcp_url(card: &str) -> String {
+    format!("http://{HOST}:{MCP_PORT}/mcp/{card}")
 }
 
 #[tauri::command]
@@ -1482,7 +1496,24 @@ fn raw_spawn(
            `open_first_page` does, since a parked mode needs a window to park
            and an agent a page to drive. A mandatory policy beats a URL on the
            command line, so this is the one spelling that keeps them out. */
-        .arg("--no-startup-window");
+        .arg("--no-startup-window")
+        /* **A window nobody can see is a page that stops running**, and since
+           every card's page is a window of its own (`browserhost.cjs`) that is
+           every card's page. Measured 2026-10-24 with `tools/probe-card-tabs.ts`:
+           a card's window opened where the browser is parked read
+           `visibilityState: hidden`, ran no `requestAnimationFrame` in half a
+           second and took no real click; with this flag, `visible`, ~120 frames
+           and the click landed. It is also what sinks 77db68df, 67c947e5 and
+           4ecf4f57 asked for, about pages hidden in the wall's one window.
+
+           This file once took the three occlusion flags *out*, on a control run
+           that counted screencast frames — and a screencast forces painting, so
+           the run could not see what a page itself sees. The finding it rested
+           on stands (with `SW_HIDE` the flags made the screencast worse); the
+           browser is parked, never hidden, and this one flag is the one the
+           probe needed. `--disable-features=CalculateNativeWinOcclusion` passed
+           too and is not taken: it is the wider switch for the same fix. */
+        .arg("--disable-backgrounding-occluded-windows");
 
     match mode {
         /* Identical, and that is a *finding* rather than an oversight. Parked

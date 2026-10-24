@@ -203,7 +203,7 @@ pub fn mcp_config(port: u16, conversation_id: &str, shared_browser: Option<&str>
            session on that server. It still decides *whether* there is a
            `browser` at all, which is the half `append_prompt` agrees with. */
         let _ = endpoint;
-        servers["browser"] = crate::browser::mcp_server();
+        servers["browser"] = crate::browser::mcp_server(conversation_id);
     }
     json!({ "mcpServers": servers })
 }

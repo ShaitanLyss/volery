@@ -33,8 +33,11 @@ is telling a card what it is looking at.
 ## 1. One browser MCP server for the wall (`mcphost.rs`)
 
 Every project card carried its own stdio `npx @playwright/mcp --cdp-endpoint 9222` — all of
-them driving the *same* Chrome. Now the wall runs one with `--port 9244`, and each card's
-`browser` entry is `{"type":"http","url":"http://127.0.0.1:9244/mcp"}` (`browser::mcp_server`).
+them driving the *same* Chrome. Now the wall runs one, and each card's `browser` entry is
+`{"type":"http","url":"http://127.0.0.1:9245/mcp/<card>"}` (`browser::mcp_server`). It was
+`@playwright/mcp --port 9244` until 2026-10-24; since then it is Volery's own
+`browserhost.cjs`, built from that package's pieces, so that each card sees only its own tabs —
+`browser.md`, *Each card on tabs of its own*, has why the port moved with it.
 
 **Why a session is a stdio server in everything but process count** — read out of
 playwright-core 1.64's `coreBundle.js` (`factory.create`) and then measured
@@ -61,6 +64,8 @@ Three things the probe found that the source did not say:
   included — unless told otherwise. A card sending `Host: 127.0.0.1:9244` got a 403. So the
   server is started with `--allowed-hosts 127.0.0.1:9244`: the one host the cards use, and not
   `'*'`, which would let any web page rebind a name to loopback and drive the browser.
+  `browserhost.cjs` keeps the same check by hand and answers a wrong host **421**, never 403,
+  for the reason the next bullet gives.
 - **A 401 or 403 is remembered by server *name*, machine-wide.** The CLI read that 403 as
   "needs auth" and wrote `"browser"` into `~/.claude/mcp-needs-auth-cache.json`; every later
   session on the machine reported `needs-auth` for `browser` **without sending a request**. Had
@@ -69,9 +74,10 @@ Three things the probe found that the source did not say:
   never answer a card 401 or 403**, and **a probe must never name its server `browser`** (the
   probe's is `probebrowser`). If cards ever report `needs-auth` for `browser`, that file is the
   first place to look.
-- **Tab isolation is unchanged, not broken.** Two sessions both drive the browser's first page,
+- **Tab isolation was unchanged, not broken** — and is since fixed, in `browser.md`, *Each card
+  on tabs of its own*. Two sessions both drove the browser's first page,
   exactly as N stdio servers did — that is sinks 7af2acb4 and 9e05a3fd, which this neither
-  causes nor fixes.
+  caused nor fixed.
 
 **Lifecycle.** Started at launch in the background (`open_wall`), and `ensure`d — one loopback
 connect when it is up, never waited on — at every spawn, on the browser wake route, and when a
@@ -221,6 +227,8 @@ choose the moment. It never restarts anything itself.
 
 ```powershell
 bun tools/probe-shared-mcp.ts      # one HTTP @playwright/mcp, two sessions, one real claude
+bun tools/probe-card-tabs.ts       # the host's per-card tabs, windows and grace, two
+                                   # sessions on a private headed Chrome; no API turn
 bun tools/probe-mcp-override.ts    # .mcp.json vs --mcp-config vs disabledMcpjsonServers
 bun tools/lift-load.ts             # the pure halves of load.rs, perf::judge and pool.rs,
                                    # run for real on a machine with no MSVC (18 assertions)

@@ -5671,6 +5671,9 @@ pub fn close_conversation_record(
        already handed its words back, and read back any file of the card's
        own folder they named (`Skein.close`). */
     crate::attachments::clear_for(&store.1, &id);
+    /* And the browser tabs it opened, which the shared server would otherwise
+       close two minutes after it noticed the card had gone. */
+    crate::mcphost::release(&id);
     /* And any delete it handed the wall to ask about: the card is gone, and a
        question has no deadline to end it any more (`ask::drop_handoffs`). */
     if let Some(asks) = tauri::Manager::try_state::<crate::ask::Asks>(&app) {

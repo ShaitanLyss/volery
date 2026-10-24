@@ -885,6 +885,112 @@ parked), headless with the flag, and a person closing the parked window — with
 Chrome stays up on its debugging port, which is what playwright relies on, but nothing here
 watched that. The running app is several builds behind and cannot be rebuilt on this machine.
 
+## Each card on tabs of its own (2026-10-24)
+
+*"different conversations should be using different tabs"* — Lyss, after the twentieth report
+of the same thing. Sink 9e05a3fd is hers; 7af2acb4, 39f9fe2e, 94fff9f3, 99714b6e, bdc033c9,
+6c25be93, b3b6eb88 and 7a37cc13 are cards' tabs driven by other cards; d3169ad9, c735221a,
+c987c48a, 4ecf4f57, 77db68df, 67c947e5, 345832bd and 56d3d3a8 are pages starved because a
+different tab was in front; f7553ae5 is a day of finished cards' tabs holding 4.2 GB. The
+nova incident that finally forced it: two cards each "in their own tab" on the same URL, one
+closed the other's as a duplicate, and both then drove one walk-mode session — seven unsaved
+edits nobody made, and a measurement abandoned mid-run.
+
+**Where "the current tab" lived is the whole cause.** `@playwright/mcp`'s backend takes the
+browser's default context and calls every page in it a tab; its current tab is the first one
+(`Context._onPageCreated` in playwright-core 1.64's `coreBundle.js`). So each card's session
+listed every card's pages, a card with no tab yet adopted whichever page Chrome listed first,
+and `browser_tabs select` called `bringToFront` in the one window every page shared — hiding
+the rest, which is the rAF and lost-input half. `--shared-browser-context` was never the cause
+(`mcphost.rs` deliberately does not pass it); per-session backends were already there and were
+not enough, because they were all handed the same set of pages.
+
+**What shipped: own tabs, a window each, sign-ins still shared.** `src-tauri/src/browserhost.cjs`
+is the wall's browser MCP server now, run by `mcphost.rs` as `npx -p @playwright/mcp@0.0.83
+node browserhost.cjs`. It is assembled from the package's own public `tools` export —
+`BrowserBackend`, `filteredTools`, `resolveCLIConfigForMCP` — and a hand-written copy of its
+`createServer` (lazy backend, heartbeat, dispose), so a card cannot tell it from the server it
+replaced except by what it sees in `browser_tabs`. Three differences:
+
+- **The card is in the URL** (`browser::mcp_url(card)` → `/mcp/<card>`), the way the skein
+  server's is. The session's backend is handed a `Proxy` over the default context whose
+  `pages()` and `page` event carry only the pages that card owns. Its tab list, its current
+  tab, `select`, `close`, `run_code`'s `page` and `snapshot` are therefore about its own pages
+  and no one else's — a fresh card is given a new page rather than adopting one.
+- **Every page a card opens is a window of its own** (`Target.createTarget` with `newWindow`),
+  opened at the bounds of a window the browser already has — so a parked browser's new windows
+  are born off-screen and never flash onto the desktop, and a shown one's open beside it. A
+  page alone in its window is never a background tab, so nothing another card brings forward
+  can hide it.
+- **Ownership is the host's**, a `target id → card` map written to
+  `<app data>/browser-tabs.json` so a restart of the server alone does not orphan every tab. A
+  page opened *by* a card's page — a popup, `target=_blank` — is that card's, read off CDP's
+  `openerId`. A page nobody owns (the browser's first `about:blank`, a page the person opened
+  from the widget) is in nobody's list. `GET /volery/tabs` says who owns what.
+
+**Tabs close when their card is done with them.** At once when the card is closed for good
+(`store::close_conversation_record` → `mcphost::release` → `POST /volery/release/<card>`), and
+`mcphost::TAB_GRACE` — two minutes, Lyss's number — after the card's last session stopped
+answering the heartbeat, which is what a card that went dormant or was killed looks like from
+here. A card that is merely idle keeps its process, its session and so its pages. The close is
+`/json/close/<id>`, which needs no session and so cannot be held up by a page that stopped
+answering. An account swap closes and respawns a process without closing the card, and comes
+back inside the grace with its pages.
+
+**And the occlusion flag went back on, because the measurement that took it off could not see
+pages.** One window per page put the visibility question to every card, and the first probe
+run answered it badly: a card's window opened where the browser is parked read `hidden`, ran
+no rAF in half a second and took no real click — and the same with the windows on the desktop,
+since each window covers another. `--disable-backgrounding-occluded-windows` alone:
+`visible`, ~120 frames, the click landed. The earlier section above removed the three
+occlusion flags on a screencast frame count, and a screencast forces painting, so that run
+could not see what the page sees; its `SW_HIDE` finding still stands and the browser is never
+hidden. Sinks 77db68df and 67c947e5 had asked for exactly this flag.
+
+**What the other option was, and why it was not taken.** A browser *context* per card
+(`Target.createBrowserContext`) costs no second browser — it is ~a renderer per page, the same
+as now — and isolates localStorage too, which is what sinks 0ff8aa7f, f3a07350 and 38adbb03
+want. It also isolates the cookie jar, so every card would start signed out, a sign-in done in
+one card would reach no other, and an MSAL token refreshed in one would go stale in the rest.
+Seeding each from the vault at creation softens the first and not the other two. "One cookie
+jar, you sign in once" is the reason this browser exists (the two-browser table above), so the
+localStorage leaks stay open, and `mcp__plugin_playwright_playwright__*` — isolated, seeded
+from the vault — is still the answer for a card that must not write shared storage.
+
+**What it does not fix:**
+
+- **One hung tab still holds everyone's connect** (e5452945, e5776153). Each session still
+  `connectOverCDP`s to the whole browser and playwright waits for every page to initialise;
+  the view is filtered above that. Fewer stale tabs makes it rarer; the cure would be a CDP
+  proxy filtering targets per card, which is arm D's machinery and was not built.
+- **`run_code`'s `page.context()` is the real context.** `browser_run_code_unsafe` hands the
+  agent a real `Page`, and `page.context().pages()` lists every page in the browser — the
+  workaround sink 94fff9f3 recommended. A card that reaches past its own view that way can
+  still drive another's page; nothing short of a CDP proxy stops it.
+- **A card cannot see a page the person opened.** "Look at the tab I have open" has no tab to
+  find. An adoption gesture would be easy to add and would reintroduce the race it is named
+  for, so it waits for somebody to need it.
+
+**Proven and not.** `bun tools/probe-card-tabs.ts` drives two sessions at one private headed
+Chrome (19333) through the real host, no API turn: per-card lists, a fresh card not adopting
+the first page, three pages in three windows born off-screen, A visible with rAF running and a
+real click landing while B selects and navigates its own tabs, B unable to close an index it
+does not have, a popup following its opener, a session ending and a new one inside the grace
+finding its tabs, the grace closing them after, and release closing a card's tabs at once.
+`CHROME_FLAGS=` reproduces the hidden page without the flag. Its `live` arm puts two real
+`claude` cards (Haiku) on the same host at once with the entry Volery writes: A's page measured
+after B had opened, navigated and selected its own tabs was still A's, `visible`, painting and
+clickable; neither list held the other's pages; and once both processes were gone the
+heartbeat and the grace closed every tab they had opened. A lab wall showed `mcphost.rs` writing
+the script and launching it (`listening on …:9245/mcp/<card>` in its log). What was **not** run
+is a lab card driving the browser: the installed wall's Chrome held 9222, and a lab refuses to
+adopt a browser it did not start.
+
+**One trap on the way, in `cmd`, not in the host.** `npx` is a `.cmd` shim that finds npm through
+`%~dp0`, and quoted as `"npx"` on a `cmd /S /C` line that expands to the current directory —
+`Cannot find module '<cwd>\node_modules\npm\bin\npm-prefix.js'`, nothing listening. So the
+program name is left bare. `pool.rs` quotes it and has the same hole (sink `6db955d9`).
+
 ## What is not built
 
 - **No navigation bar.** The agent navigates, and `Page.navigate` is wired in `pane.svelte.ts`
