@@ -5455,6 +5455,52 @@ pub fn siblings_in_tree(db: &std::path::Path, card: &str) -> Vec<Sibling> {
     rows.filter_map(Result::ok).collect()
 }
 
+/// The other open cards whose own directory lies inside `root`.
+///
+/// `siblings_in_tree` answers "who shares *my* tree" from rows; this answers
+/// "who is in *that* tree" for a command that moved somewhere else (`cd`,
+/// `git -C`) — a card's own private worktree, or the shared checkout it had
+/// walked into. A card's directory is where its process runs
+/// (`worktree::run_dir`), since a worktree card's `cwd` is the project root it
+/// does not stand in. Dormant cards count, for `siblings_in_tree`'s reason, and
+/// every unreadable answer is empty, as there.
+pub fn siblings_under(db: &std::path::Path, card: &str, root: &str) -> Vec<Sibling> {
+    let Some(conn) = open_readonly(db) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, COALESCE(title, ''), COALESCE(cwd, ''), COALESCE(worktree, '')
+           FROM conversation
+          WHERE closed_at IS NULL AND id <> ?1
+          ORDER BY rowid",
+    ) else {
+        return Vec::new();
+    };
+    let norm = |s: &str| s.replace('\\', "/");
+    let root = norm(root);
+    let Ok(rows) = stmt.query_map(params![card], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok)
+        .filter(|(_, _, cwd, _)| !cwd.is_empty())
+        .filter(|(_, _, cwd, wt)| {
+            let run = crate::worktree::run_dir(cwd, Some(wt.as_str()));
+            under(&norm(&run), &root)
+        })
+        .map(|(id, title, _, _)| Sibling {
+            conversation_id: id,
+            title,
+        })
+        .collect()
+}
+
 /// How far back a write counts as still being somebody's work in progress.
 ///
 /// Milliseconds, because `now` is — getting that wrong would make the window

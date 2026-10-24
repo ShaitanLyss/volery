@@ -1288,6 +1288,14 @@ pub struct TreeWide {
     pub verb: String,
     /// The `-C` directory, if the invocation gave one.
     pub dir: Option<String>,
+    /// The directories a `cd` / `Set-Location` / `pushd` earlier on the same line
+    /// moved to, in order, spelled PowerShell-style so a backslash path survives.
+    /// The git command runs wherever they lead, not where the card's row says.
+    pub cds: Vec<String>,
+    /// A `cd` that could not be read as a literal directory (`cd`, `cd -`, no
+    /// operand, or the two shells' tokenizers disagreeing about the line). The
+    /// guard cannot say where the command runs, so it judges the card's own tree.
+    pub cd_unreadable: bool,
 }
 
 /// Does this command line run a git that throws work away across the whole tree?
@@ -1314,9 +1322,49 @@ pub struct TreeWide {
 /// silently destroys uncommitted work, and denying them would stop legitimate
 /// work to no end. What is here is the set whose whole purpose is to discard.
 pub fn tree_wide(command: &str) -> Option<TreeWide> {
-    commands(&strip_heredocs(command))
+    let stripped = strip_heredocs(command);
+    let cmds = commands(&stripped);
+    let (at, mut tw) = cmds
         .iter()
-        .find_map(|words| tree_wide_in(words))
+        .enumerate()
+        .find_map(|(i, words)| tree_wide_in(words).map(|t| (i, t)))?;
+
+    /* Where does it run? Every `cd` ahead of it on the line, read with the
+       PowerShell tokenizer (a backslash is a separator there, and an unquoted
+       `C:\work\x` comes out of the POSIX one as `C:workx`). The two tokenizers
+       split a line at the same places except around an escaped separator, so a
+       count mismatch is "cannot say", which fails closed. */
+    let ps = commands_as(&stripped, false);
+    for (i, words) in cmds[..at].iter().enumerate() {
+        if !is_cd(words) {
+            continue;
+        }
+        match ps.get(i).filter(|_| ps.len() == cmds.len()).and_then(|w| cd_target(w)) {
+            Some(t) => tw.cds.push(t),
+            None => tw.cd_unreadable = true,
+        }
+    }
+    Some(tw)
+}
+
+fn is_cd(words: &[String]) -> bool {
+    words.first().is_some_and(|w| {
+        matches!(
+            w.to_ascii_lowercase().as_str(),
+            "cd" | "chdir" | "set-location" | "sl" | "pushd" | "push-location"
+        )
+    })
+}
+
+/// The directory a `cd` names: its first operand that is not a flag (`-Path`,
+/// `-LiteralPath`, cmd's `/d`). `cd` alone goes home and `cd -` goes back, and
+/// neither is a literal, so both are `None`.
+fn cd_target(words: &[String]) -> Option<String> {
+    words[1..]
+        .iter()
+        .find(|w| (!w.starts_with('-') || w.as_str() == "-") && !w.eq_ignore_ascii_case("/d"))
+        .filter(|w| w.as_str() != "-")
+        .cloned()
 }
 
 fn tree_wide_in(words: &[String]) -> Option<TreeWide> {
@@ -1345,6 +1393,8 @@ fn tree_wide_in(words: &[String]) -> Option<TreeWide> {
     discards.then(|| TreeWide {
         verb: verb.to_string(),
         dir,
+        cds: Vec::new(),
+        cd_unreadable: false,
     })
 }
 
@@ -1726,33 +1776,93 @@ pub fn perilous_reason(tw: &TreeWide, siblings: &[crate::store::Sibling]) -> Str
 /// working alone, no database, a card with no id in its settings layer.
 fn perilous(command: &str, cwd: Option<&str>, card: &str, db: &std::path::Path) -> Option<String> {
     let tw = tree_wide(command)?;
-
-    /* A `-C` pointing elsewhere is a *different* tree, and this card's siblings
-       are the wrong answer about it. Rather than resolve that properly — which
-       would mean canonicalizing two paths and being wrong in the direction of a
-       false deny — the guard steps aside unless `-C` demonstrably names the
-       directory the card is already standing in. That is a hole, and it is the
-       safe kind: an unreadable path means allow, never refuse. The case that
-       actually happens is a bare `git stash` where the card stands, and the
-       system prompt covers the rest (`supervisor::append_prompt`). */
-    if let Some(d) = &tw.dir {
-        let same = cwd.is_some_and(|c| {
-            let there = std::path::Path::new(c).join(d);
-            matches!(
-                (std::fs::canonicalize(&there), std::fs::canonicalize(c)),
-                (Ok(a), Ok(b)) if a == b
-            )
-        });
-        if !same {
-            return None;
-        }
-    }
-
-    let siblings = crate::store::siblings_in_tree(db, card);
+    let siblings = perilous_siblings(
+        &tw,
+        cwd,
+        |dir| git(dir, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()),
+        || crate::store::siblings_in_tree(db, card),
+        |root| crate::store::siblings_under(db, card, root),
+    );
     if siblings.is_empty() {
         return None;
     }
     Some(perilous_reason(&tw, &siblings))
+}
+
+/// Who else is in the tree this command will actually run in.
+///
+/// **The tree is where the command runs, not where the card's row says it
+/// stands.** A card's `cwd` is the project root, but its shell can `cd` or
+/// `git -C` into a worktree it made for itself — a linked worktree has its own
+/// top level, its own index and its own files, and shares only the object store.
+/// Judging that by the row's tree refused a card for standing beside six
+/// dormant cards that were in a different checkout entirely (sink `8da708c5`).
+///
+/// So when the line moves anywhere (`cd`, `Set-Location`, `-C`) the directory is
+/// resolved, git is asked for its top level, and the siblings are the *other
+/// cards whose own directory lies inside it*. A private worktree has none and
+/// the command runs; the shared checkout has them all and is refused as before.
+///
+/// **Every way of not knowing falls back to the card's own tree**, which is the
+/// old answer and the refusing one: an unreadable `cd`, a variable or `~` in the
+/// path, a directory that is not there, a path git does not call a work tree.
+/// The guard may be wrong towards a denial naming the correct form; never
+/// towards letting a stash through a tree it could not place.
+///
+/// The three lookups are arguments so the decision is testable without a
+/// repository, a database or a spawned git.
+fn perilous_siblings(
+    tw: &TreeWide,
+    cwd: Option<&str>,
+    top_of: impl Fn(&std::path::Path) -> Option<String>,
+    own_tree: impl Fn() -> Vec<crate::store::Sibling>,
+    inside: impl Fn(&str) -> Vec<crate::store::Sibling>,
+) -> Vec<crate::store::Sibling> {
+    if tw.cds.is_empty() && tw.dir.is_none() {
+        return own_tree();
+    }
+    if tw.cd_unreadable {
+        return own_tree();
+    }
+    let Some(dir) = run_dir_of(tw, cwd) else {
+        return own_tree();
+    };
+    match top_of(&dir) {
+        Some(top) if !top.is_empty() => inside(&top),
+        _ => own_tree(),
+    }
+}
+
+/// Where a line's git command runs: the card's `cwd`, moved by each `cd` in
+/// order and then by `-C`. `None` when a step cannot be taken literally.
+fn run_dir_of(tw: &TreeWide, cwd: Option<&str>) -> Option<std::path::PathBuf> {
+    let mut here = std::path::PathBuf::from(cwd?);
+    for step in tw.cds.iter().chain(tw.dir.iter()) {
+        here = step_into(&here, step)?;
+    }
+    Some(here)
+}
+
+fn step_into(base: &std::path::Path, target: &str) -> Option<std::path::PathBuf> {
+    /* Anything the shell would expand, or a name only the shell can place. */
+    if target.is_empty() || target.starts_with('~') || target.contains(['$', '%', '`']) {
+        return None;
+    }
+    /* Git Bash's mount of a drive: `/c/Users/x` is `C:/Users/x`. Any other
+       absolute POSIX path (`/tmp`, `/usr`) is whatever the shell mounts it as. */
+    let b = target.as_bytes();
+    let target = if b[0] == b'/' {
+        if b.len() >= 2 && b[1].is_ascii_alphabetic() && (b.len() == 2 || b[2] == b'/') {
+            let rest = if target.len() == 2 { "/" } else { &target[2..] };
+            format!("{}:{}", (b[1] as char).to_ascii_uppercase(), rest)
+        } else {
+            return None;
+        }
+    } else {
+        target.to_string()
+    };
+    let p = std::path::Path::new(&target);
+    Some(if p.is_absolute() { p.to_path_buf() } else { base.join(p) })
 }
 
 /* -- deleting by moving instead -------------------------------------------
@@ -5094,6 +5204,122 @@ mod tests {
             Some("../nova")
         );
         assert_eq!(tree_wide("git stash").unwrap().dir, None);
+    }
+
+    fn card(id: &str) -> crate::store::Sibling {
+        crate::store::Sibling {
+            conversation_id: id.into(),
+            title: String::new(),
+        }
+    }
+
+    /// Run `perilous_siblings` with canned lookups. `top` is what git would say
+    /// the top level of the resolved directory is (`None`: not a work tree);
+    /// the two sibling lists are what the wall would answer for the card's own
+    /// tree and for a named root, and the root asked about is returned too.
+    fn judged(
+        command: &str,
+        cwd: &str,
+        top: Option<&str>,
+        own: &[&str],
+        in_top: &[&str],
+    ) -> (Vec<String>, std::cell::RefCell<Vec<String>>) {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let tw = tree_wide(command).unwrap();
+        let got = perilous_siblings(
+            &tw,
+            Some(cwd),
+            |_| top.map(str::to_string),
+            || own.iter().map(|i| card(i)).collect(),
+            |root| {
+                asked.borrow_mut().push(root.to_string());
+                in_top.iter().map(|i| card(i)).collect()
+            },
+        );
+        (got.into_iter().map(|s| s.conversation_id).collect(), asked)
+    }
+
+    /// The incident: six dormant cards stand in the main checkout, the card
+    /// `cd`s into a worktree of its own, and nobody else is inside that.
+    #[test]
+    fn a_private_worktree_is_not_the_shared_checkout() {
+        let own = ["a", "b", "c"];
+        for command in [
+            "cd /c/Users/flori/codes/nova-perf-pr && git checkout --detach 36e7f0f2",
+            "git -C C:/Users/flori/codes/nova-perf-pr checkout --detach 36e7f0f2",
+            "Set-Location C:\\Users\\flori\\codes\\nova-perf-pr; git reset --hard",
+            "cd C:\\Users\\flori\\codes\\nova-perf-pr && git clean -fd",
+        ] {
+            let (got, asked) = judged(
+                command,
+                "C:\\Users\\flori\\codes\\nova",
+                Some("C:/Users/flori/codes/nova-perf-pr"),
+                &own,
+                &[],
+            );
+            assert!(got.is_empty(), "wrongly refused: {command}");
+            assert_eq!(
+                asked.borrow().as_slice(),
+                ["C:/Users/flori/codes/nova-perf-pr"],
+                "judged the wrong tree: {command}"
+            );
+        }
+    }
+
+    /// The protection the guard exists for: the same command whose resolved
+    /// tree is the shared checkout still meets everybody standing in it.
+    #[test]
+    fn the_shared_checkout_is_still_refused() {
+        for command in [
+            "git checkout --detach abc",
+            "cd /c/Users/flori/codes/nova && git checkout --detach abc",
+            "git -C C:/Users/flori/codes/nova reset --hard",
+        ] {
+            let (got, _) = judged(
+                command,
+                "C:\\Users\\flori\\codes\\nova",
+                Some("C:/Users/flori/codes/nova"),
+                &["a", "b"],
+                &["a", "b"],
+            );
+            assert_eq!(got, ["a", "b"], "let through: {command}");
+        }
+    }
+
+    /// Fail closed: anything that cannot be placed is judged as the card's own
+    /// tree, which is the answer that refuses.
+    #[test]
+    fn an_unresolvable_directory_is_judged_by_the_cards_own_tree() {
+        for (command, top) in [
+            ("cd $env:WORK; git checkout x", Some("C:/w")),
+            ("cd ~/nova-perf-pr && git checkout x", Some("C:/w")),
+            ("cd - && git checkout x", Some("C:/w")),
+            ("cd && git checkout x", Some("C:/w")),
+            ("cd /tmp/x && git checkout x", Some("C:/w")),
+            ("cd C:\\gone && git checkout x", None),
+        ] {
+            let (got, asked) = judged(command, "C:\\nova", top, &["a"], &[]);
+            assert_eq!(got, ["a"], "let through: {command}");
+            assert!(asked.borrow().len() <= 1);
+        }
+    }
+
+    /// A line that never moves is the old answer and never asks git.
+    #[test]
+    fn a_line_that_stays_put_is_judged_as_before() {
+        let (got, asked) = judged("git stash", "C:\\nova", Some("C:/other"), &["a"], &[]);
+        assert_eq!(got, ["a"]);
+        assert!(asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_cd_targets_come_back_in_order() {
+        let tw = tree_wide("cd a && cd 'b c' && git stash").unwrap();
+        assert_eq!(tw.cds, ["a", "b c"]);
+        assert!(!tw.cd_unreadable);
+        let tw = tree_wide("Set-Location -Path C:\\x\\y; git clean -fd").unwrap();
+        assert_eq!(tw.cds, ["C:\\x\\y"]);
+        assert!(tree_wide("cd - && git stash").unwrap().cd_unreadable);
     }
 
     /// The refusal has to carry its reasoning and a runnable way forward —
