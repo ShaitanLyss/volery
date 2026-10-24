@@ -18,8 +18,17 @@
  *      A's, still `visible`, rAF still fires, and a real mouse click lands
  *   4. A popup opened by A's page is A's
  *   5. A's session ends: within the grace its tabs survive and a new session
- *      for A finds them again; after it, they are closed
- *   6. Volery's release closes a card's tabs at once
+ *      for A finds them again; after it, they are closed — and what A held is
+ *      saved into the vault first
+ *   6. Volery's release closes a card's tabs at once, saving them too
+ *
+ * And, since each card became a browser context of its own (sinks 0ff8aa7f,
+ * f3a07350, 38adbb03):
+ *
+ *   S. a card starts with the vault's cookie and localStorage (seeded)
+ *   I. what A writes — a cookie, a localStorage key — B on the same origin
+ *      does not see
+ *   V. a sign-in made in one card reaches a card started after it was saved
  *
  * `live` is the same browser and host with two real cards on it, spawned with
  * the `browser` entry Volery writes (`/mcp/<card>`), driving at the same time:
@@ -46,6 +55,7 @@ const HOST = "127.0.0.1";
 const CARD = process.env.SKEIN_CARD ?? "probe";
 const SCRATCH = path.resolve(`.scratch-${CARD}`, "card-tabs");
 const GRACE = 4000;
+const VAULT = path.join(SCRATCH, "vault.json");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
 const say = (s: string) => console.log(`${((Date.now() - t0) / 1000).toFixed(1).padStart(6)}s  ${s}`);
@@ -165,7 +175,15 @@ async function main() {
   if (!process.env.NOPARK) await parkWindowOf(first.id);
   say(`chrome up; first page ${first.id.slice(0, 8)} parked`);
 
-  host = spawn("node", ["src-tauri/src/browserhost.cjs", "--port", String(MCP_PORT), "--cdp-endpoint", `http://${HOST}:${CHROME_PORT}`, "--state", path.join(SCRATCH, "owners.json"), "--grace-ms", String(GRACE)], { env: { ...process.env, VOLERY_PLAYWRIGHT_CORE: findCore() }, stdio: ["ignore", "ignore", "pipe"] });
+  /* A vault holding one sign-in, the way a save leaves it. */
+  fs.writeFileSync(
+    VAULT,
+    JSON.stringify({
+      cookies: [{ name: "seeded", value: "yes", domain: HOST, path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" }],
+      origins: [{ origin: `http://${HOST}:${PAGE_PORT}`, localStorage: [{ name: "seeded", value: "yes" }] }],
+    }),
+  );
+  host = spawn("node", ["src-tauri/src/browserhost.cjs", "--port", String(MCP_PORT), "--cdp-endpoint", `http://${HOST}:${CHROME_PORT}`, "--vault", VAULT, "--grace-ms", String(GRACE)], { env: { ...process.env, VOLERY_PLAYWRIGHT_CORE: findCore() }, stdio: ["ignore", "ignore", "pipe"] });
   host.stderr!.on("data", (d) => process.stdout.write(`        host| ${d}`));
   await waitFor(`http://${HOST}:${MCP_PORT}/volery/tabs`, 15000);
 
@@ -199,6 +217,16 @@ async function main() {
   const aTarget = listed.find((t: any) => t.url.endsWith("/a"));
   const bounds = (await windowOf(aTarget.id)).bounds;
   check(bounds.left <= -10000, `2. A's window opened where the browser is parked (left ${bounds.left})`);
+
+  // S, I
+  const stateOf = async (c: Client) =>
+    result(await c.call("browser_run_code_unsafe", { code: `async (page) => page.evaluate(() => ({ cookie: document.cookie, seeded: localStorage.getItem("seeded"), theme: localStorage.getItem("theme") }))` }));
+  const a0 = await stateOf(A);
+  check(/seeded=yes/.test(a0?.cookie ?? "") && a0?.seeded === "yes", `S. A started with the vault's cookie and storage: ${JSON.stringify(a0)}`);
+  await A.call("browser_run_code_unsafe", { code: `async (page) => page.evaluate(() => { document.cookie = "mine=a; path=/"; localStorage.setItem("theme", "dark"); })` });
+  const b0 = await stateOf(B);
+  check(!/mine=a/.test(b0?.cookie ?? "") && b0?.theme === null && b0?.seeded === "yes", `I. B on the same origin sees none of what A wrote: ${JSON.stringify(b0)}`);
+  await B.call("browser_run_code_unsafe", { code: `async (page) => page.evaluate(() => { document.cookie = "signedin=b; path=/"; })` });
 
   // 3
   await B.call("browser_tabs", { action: "new" });
@@ -243,13 +271,26 @@ async function main() {
   await sleep(GRACE + 1500);
   const left = await cdpList();
   check(!left.some((t: any) => t.url.includes("/a") || t.url.includes("popup-of-a")), `5. after the grace A's tabs are closed (${left.map((t: any) => t.url.split("/").pop()).join(", ")})`);
+  const v1 = JSON.parse(fs.readFileSync(VAULT, "utf8"));
+  check(v1.cookies.some((c: any) => c.name === "mine" && c.value === "a"), "5. ...and what A held was saved into the vault first");
 
   // 6
   const rel = await (await fetch(`http://${HOST}:${MCP_PORT}/volery/release/cardB`, { method: "POST" })).json();
   const after = await cdpList();
   check(rel.closed === 2 && after.length === 1, `6. release closed B's two tabs at once (${rel.closed}); left: ${after.length}`);
+  const v2 = JSON.parse(fs.readFileSync(VAULT, "utf8"));
+  check(v2.cookies.some((c: any) => c.name === "signedin" && c.value === "b"), "6. ...and B's sign-in was saved into the vault");
   const owners = await (await fetch(`http://${HOST}:${MCP_PORT}/volery/tabs`)).json();
-  check(Object.keys(owners.owners).length === 0, "6. nobody owns anything now");
+  check(Object.keys(owners.cards).length === 0, "6. no card holds a context now");
+
+  // V
+  const C = new Client("cardC");
+  await C.init();
+  await C.call("browser_navigate", { url: `http://${HOST}:${PAGE_PORT}/c` });
+  const c0 = await stateOf(C);
+  check(/signedin=b/.test(c0?.cookie ?? "") && /seeded=yes/.test(c0?.cookie ?? ""), `V. a card started after B was saved has B's sign-in: ${JSON.stringify(c0)}`);
+  const saved = await (await fetch(`http://${HOST}:${MCP_PORT}/volery/save`, { method: "POST" })).json();
+  check(saved.ok && saved.state.cookies.some((c: any) => c.name === "signedin"), `V. the save button answers with the merged vault (${saved.state?.cookies?.length} cookies)`);
 }
 
 /* ── live: two real cards ─────────────────────────────────────────────── */
@@ -299,7 +340,7 @@ async function live() {
      closed GRACE after its session goes — correctly, and usually before A is
      done. The host's own record says which card still holds what. */
   const owners = await (await fetch(`http://${HOST}:${MCP_PORT}/volery/tabs`)).json();
-  say(`   owners: ${JSON.stringify(owners)}`);
+  say(`   contexts: ${JSON.stringify(owners)}`);
 
   /* The CLI exited on its own here; a card Volery kills is the harder case,
      and the heartbeat is what has to notice either. */

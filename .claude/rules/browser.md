@@ -947,7 +947,9 @@ occlusion flags on a screencast frame count, and a screencast forces painting, s
 could not see what the page sees; its `SW_HIDE` finding still stands and the browser is never
 hidden. Sinks 77db68df and 67c947e5 had asked for exactly this flag.
 
-**What the other option was, and why it was not taken.** A browser *context* per card
+**What the other option was, and why it was not taken — that morning.** It was built the same
+afternoon; see *A browser context per card* below, which is what runs now. The argument as it
+stood: a browser *context* per card
 (`Target.createBrowserContext`) costs no second browser — it is ~a renderer per page, the same
 as now — and isolates localStorage too, which is what sinks 0ff8aa7f, f3a07350 and 38adbb03
 want. It also isolates the cookie jar, so every card would start signed out, a sign-in done in
@@ -957,16 +959,13 @@ jar, you sign in once" is the reason this browser exists (the two-browser table 
 localStorage leaks stay open, and `mcp__plugin_playwright_playwright__*` — isolated, seeded
 from the vault — is still the answer for a card that must not write shared storage.
 
-**What it does not fix:**
+**What it did not fix, as first shipped** (both changed by the section below):
 
-- **One hung tab still holds everyone's connect** (e5452945, e5776153). Each session still
-  `connectOverCDP`s to the whole browser and playwright waits for every page to initialise;
-  the view is filtered above that. Fewer stale tabs makes it rarer; the cure would be a CDP
-  proxy filtering targets per card, which is arm D's machinery and was not built.
-- **`run_code`'s `page.context()` is the real context.** `browser_run_code_unsafe` hands the
-  agent a real `Page`, and `page.context().pages()` lists every page in the browser — the
-  workaround sink 94fff9f3 recommended. A card that reaches past its own view that way can
-  still drive another's page; nothing short of a CDP proxy stops it.
+- **One hung tab held everyone's connect** (e5452945, e5776153). Each session
+  `connectOverCDP`d to the whole browser and playwright waits for every page to initialise.
+- **`run_code`'s `page.context()` was the real default context**, so
+  `page.context().pages()` listed every page in the browser — the workaround sink 94fff9f3
+  recommended, and a way past the card's own view.
 - **A card cannot see a page the person opened.** "Look at the tab I have open" has no tab to
   find. An adoption gesture would be easy to add and would reintroduce the race it is named
   for, so it waits for somebody to need it.
@@ -990,6 +989,82 @@ adopt a browser it did not start.
 `%~dp0`, and quoted as `"npx"` on a `cmd /S /C` line that expands to the current directory —
 `Cannot find module '<cwd>\node_modules\npm\bin\npm-prefix.js'`, nothing listening. So the
 program name is left bare. `pool.rs` quotes it and has the same hole (sink `6db955d9`).
+
+## A browser context per card (2026-10-24, the same afternoon)
+
+Lyss, on reading the tradeoff above: *"let's also fix the case of one context per card so that
+state doesn't leak into other pages, to still support one sign in to work for multiple cards
+after, save sign ins could save all the cookies (picking the most recent one when there are
+duplicates) and using it to seed new contexts for new cards as a base."* Built with four
+changes she approved, less one that was dropped (below).
+
+**Each card is a browser context of its own**: its own cookies, localStorage, sessionStorage,
+cache and pages, inside the one Chrome. A context is a partition, not a browser — it costs
+what its pages cost — so the memory argument at the top of this file is untouched.
+
+**The host holds one connection, and that is forced rather than chosen.** A page in a context
+a Playwright connection did not create is filed under *that connection's default context*
+(`CRBrowser._onAttachedToTarget`, playwright-core 1.64: `this._contexts.get(id) || this._defaultContext`).
+So a session dialling Chrome for itself could never hold a card's context as one — its cookie
+tools, routes and init scripts would have reached the shared default jar. `browserhost.cjs`
+dials once, creates each card's context on that connection (`browser.newContext`), and hands
+the session's `BrowserBackend` the card's context itself. Tabs, the current tab, popups, cookie
+tools, `storageState`, routing and `run_code`'s `page.context()` are then scoped by Playwright,
+not by a filter of ours; the only wrapper left is `newPage`, which opens a window rather than a
+tab. Three consequences:
+
+- **The ownership map and its state file are gone.** Which card a page belongs to is which
+  context it is in. A popup is in its opener's context by Chrome's own rule.
+- **A context dies with the connection** (`disposeOnDetach`), so a restart of the host closes
+  every card's pages. Honest rather than lossy: a restart also forgets which card was which.
+- **One hung tab now holds one connect, not every card's** (e5452945): the host attaches to
+  every target once. Not cured — the one it holds is the one every card shares.
+
+**A card starts signed in.** The context is created at the card's first browser call, seeded
+from the vault — cookies *and* localStorage, because MSAL keeps its tokens in localStorage and
+a cookies-only seed would have left every Microsoft sign-in silently signed out.
+
+**Sign-ins flow back, by a rule.** When a card's context closes (release, or the grace after
+its session went) its `storageState` is merged into the vault before the close; the widget's
+save button (`browser_save_all` → `POST /volery/save`) merges the default context and every
+card's. `browservault.cjs` is the rule and `test/browservault.test.ts` holds it:
+
+- **A value that changed since the vault beats one that did not.** Every context started from
+  the same file, so an unchanged value says nothing and a changed one is somebody's newer
+  sign-in. "Most recent" cannot be read off a cookie — Chrome records when one expires, not
+  when it was set — so this is the nearest honest reading.
+- **Among changed values, the later expiry wins**, a session cookie counting as latest; a tie
+  goes to the later capture.
+- **Nothing is removed**: a cookie missing from one context is a card that never visited that
+  site, not a sign-out of the wall. Expired cookies are dropped.
+- **localStorage merges per origin and key** by the same rule without the expiry.
+
+The front end can no longer save by itself — `Network.getAllCookies` answers for the context of
+the page it is asked on — so `Pane.saveSession` asks the host first and only falls back to its
+own page reading when the host does not answer.
+
+**What a card already running does not get.** Its copy was taken when it started; a sign-in
+made in another card afterwards does not reach it until it is closed and a new one starts. A
+card that finds itself on a login page asks the person, as it always has. A step that would have
+re-seeded a card automatically when its sign-in was revoked was proposed and **dropped**: it
+amounts to putting back a credential the service has just cancelled, which is the service's
+security decision to make, not the wall's. Some identity providers rotate refresh tokens and
+revoke a whole session on reuse, so two cards seeded with the same token can, in principle, sign
+each other out; the remedy is the person signing in again.
+
+**The leak this closes and the one it moves.** A theme, an impersonation or a view preference
+one card writes no longer changes what any other live card sees (sinks 0ff8aa7f, f3a07350,
+38adbb03, 56d3d3a8's second half). It is, though, part of that card's localStorage, so it is
+saved into the vault when the card closes and *seeds the next card started* — a starting point,
+not a shared one. Saving tokens and not preferences would need telling them apart, which no
+generic rule can; if that seeding ever bites, the narrower option is to save cookies only on
+close and leave localStorage to the button.
+
+**Proven.** `bun tools/probe-card-tabs.ts` grew three checks: S (a card starts with the vault's
+cookie and localStorage), I (what A writes on an origin, B on the same origin does not see), V
+(B's sign-in, saved when B was released, reaches a card C started afterwards, and the save
+route answers with the merged vault) — plus the existing ones, all green, and the `live` arm
+with two real cards green on the new host.
 
 ## What is not built
 

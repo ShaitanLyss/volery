@@ -2083,6 +2083,33 @@ pub async fn browser_save_session(app: AppHandle, state: String) -> Result<Strin
     .await?
 }
 
+/// Save every card's sign-ins, and the default context's, into the vault.
+///
+/// **Since each card became a browser context of its own the front end cannot
+/// do this any more**: `Network.getAllCookies` answers for the context of the
+/// page it is asked on, and the pages are spread across one context per card.
+/// The shared browser server holds every context, so it captures them all and
+/// merges them into the vault by `browservault.cjs`'s rule — the same merge it
+/// does when a card's context closes. Answers with the merged vault, for the
+/// widget to count. An error here means the server is not answering, and
+/// `Pane.saveSession` falls back to reading the pages it can reach itself.
+#[tauri::command]
+pub async fn browser_save_all() -> Result<String, String> {
+    crate::off_main(|| {
+        let url = format!("http://{HOST}:{MCP_PORT}/volery/save");
+        let res = ureq::post(&url)
+            .timeout(std::time::Duration::from_secs(60))
+            .call()
+            .map_err(|e| format!("the browser server did not save: {e}"))?;
+        let body: serde_json::Value = res.into_json().map_err(|e| format!("the browser server answered nonsense: {e}"))?;
+        if body["ok"].as_bool() != Some(true) {
+            return Err(format!("the browser server could not save: {}", body["error"].as_str().unwrap_or("no reason given")));
+        }
+        Ok::<String, String>(body["state"].to_string())
+    })
+    .await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

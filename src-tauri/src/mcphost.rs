@@ -24,10 +24,12 @@
 //!
 //! So the server Volery runs is `browserhost.cjs` — the same server built from
 //! the pieces `@playwright/mcp`'s own CLI is built from, run under the pinned
-//! package by `npx -p`, with two differences: a card is named in the URL
-//! (`/mcp/<card>`) and gets a view of the default context holding only its own
-//! pages, and every page a card opens is a window of its own. The file says
-//! how, and `tools/probe-card-tabs.ts` is the measurement.
+//! package by `npx -p`, with three differences: a card is named in the URL
+//! (`/mcp/<card>`) and gets a browser context of its own — its own pages,
+//! cookies and storage — seeded from the vault (`browser::session_path`) and
+//! saved back into it when it closes; and every page a card opens is a window
+//! of its own. The file says how, `browservault.cjs` is the merge rule, and
+//! `tools/probe-card-tabs.ts` is the measurement.
 //!
 //! Two properties of the original are kept on purpose, both load-bearing:
 //!
@@ -77,8 +79,13 @@ const PINNED: &str = "@playwright/mcp@0.0.83";
 /// every start, so the installed app and the script it runs cannot drift apart.
 const SCRIPT: &str = include_str!("browserhost.cjs");
 
-/// How long a card's tabs outlive its last session: a card that went dormant,
-/// or was killed, loses its pages this long after the server notices. Lyss's
+/// The rule saved sign-ins are merged by, which the host loads from beside
+/// itself. A file of its own so `test/browservault.test.ts` can run it.
+const VAULT_SCRIPT: &str = include_str!("browservault.cjs");
+
+/// How long a card's browser context outlives its last session: a card that
+/// went dormant, or was killed, loses its pages this long after the server
+/// notices — its sign-ins saved into the vault first. Lyss's
 /// number (2026-10-24) — "the page can always be reopened cheaply" — and it is
 /// the answer to sink f7553ae5, where a day of finished cards' tabs held
 /// 4.2 GB of one Chrome. A card that is merely idle keeps its session, and so
@@ -236,7 +243,13 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     let script = dir.join("browserhost.cjs");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(&script, SCRIPT).map_err(|e| format!("{}: {e}", script.display()))?;
-    let state = dir.join("browser-tabs.json");
+    let vault_script = dir.join("browservault.cjs");
+    std::fs::write(&vault_script, VAULT_SCRIPT).map_err(|e| format!("{}: {e}", vault_script.display()))?;
+    /* Each card's context is seeded from the vault and saved back into it, so
+       the host is handed the one file the widget's save and the isolated
+       `playwright` server already share (`browser::session_path`). */
+    crate::browser::ensure_session_file(app);
+    let vault = crate::browser::session_path(app)?;
     /* `npx`, once, for the wall — the wrapper sink 482e25ee measured at 111 MB
        was a per-card cost and is now a per-wall one. `-p … node <script>`
        rather than the package's own bin: `npx -p` puts the pinned package's
@@ -264,8 +277,8 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
         HOST.into(),
         "--cdp-endpoint".into(),
         crate::browser::address(),
-        "--state".into(),
-        state.display().to_string(),
+        "--vault".into(),
+        vault.display().to_string(),
         "--grace-ms".into(),
         TAB_GRACE.as_millis().to_string(),
     ];

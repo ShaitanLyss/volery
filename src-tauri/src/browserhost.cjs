@@ -1,42 +1,63 @@
-/* The wall's one browser MCP server, with each card on tabs of its own.
+/* The wall's one browser MCP server, with each card in a browser context of
+ * its own.
  *
  * Volery used to run `npx @playwright/mcp --port 9244 --cdp-endpoint …` as it
  * comes. Every HTTP session then took the browser's default context as it
  * found it: every page in the browser was one of its tabs, the first of them
  * was its "current" tab, and `browser_tabs select` brought a page to the front
  * of the one window they all shared. So two cards drove each other's pages,
- * and the page a card had brought forward hid everybody else's — rAF paused,
- * real input lost, screenshots timing out (sinks 9e05a3fd, 7af2acb4, d3169ad9
- * and their many twins; `.claude/rules/browser.md` has the list).
+ * the page a card had brought forward hid everybody else's — rAF paused, real
+ * input lost, screenshots timing out — and one cookie jar and one localStorage
+ * meant a theme or an impersonation one card set changed what every other card
+ * saw (sinks 9e05a3fd, 7af2acb4, d3169ad9, 0ff8aa7f and their many twins;
+ * `.claude/rules/browser.md` has the list).
  *
  * This is the same server built from the same pieces `@playwright/mcp`'s own
  * CLI is built from (`tools.BrowserBackend`, `tools.filteredTools`,
  * `tools.resolveCLIConfigForMCP` — the package's public `tools` export), with
- * two differences, and they are the whole of it:
+ * three differences, and they are the whole of it:
  *
- * - **A card is named in the URL**: `/mcp/<card>`. A session's backend gets a
- *   *scoped* view of the default context — the same cookie jar and the same
- *   sign-ins, but `pages()` and the `page` event carry only the pages this card
- *   owns. So its tab list, its current tab, `browser_tabs select` and `close`,
- *   and `run_code`'s `page` are all about its own pages and nobody else's.
+ * - **A card is named in the URL**: `/mcp/<card>`, and gets a browser context
+ *   of its own — its own cookies, localStorage, sessionStorage and cache, its
+ *   own pages. A context is a partition inside the one Chrome, not a second
+ *   browser; it costs what its pages cost. The backend is handed that context,
+ *   so the tab list, the current tab, `select`, `close`, `run_code`'s `page`,
+ *   the cookie tools and routing are all about this card and nobody else, and
+ *   Playwright scopes them itself rather than a filter here doing it.
+ * - **A card starts signed in.** Its context is created at its first browser
+ *   call, seeded from the vault (`sessions/wall.json`, the shape Playwright
+ *   calls `storageState`): cookies and localStorage, the latter because MSAL
+ *   keeps its tokens there. Sign-ins flow back the other way when a card's
+ *   context closes and when the widget's save is pressed, merged by
+ *   `browservault.cjs`'s rule — so a login done in one card reaches every card
+ *   started after it. A card already running keeps its own copy: one that
+ *   finds itself signed out asks the person, as it always has.
  * - **Every page a card opens is a window of its own** (`Target.createTarget`
- *   with `newWindow`). A page that is the only tab in its window is never a
- *   background tab, so nothing another card brings forward can hide it.
+ *   with `newWindow`), opened where the browser already stands. A page alone in
+ *   its window is never a background tab, so nothing another card brings
+ *   forward can hide it.
  *
- * Ownership lives here, in `owners` (target id → card), and is written to the
- * state file so a restart of this process does not orphan every tab. A page
- * opened *by* a card's page (a popup, `target=_blank`) is that card's too. A
- * page nobody owns — the browser's first `about:blank`, one the person opened —
- * is in no card's list.
+ * **One connection holds every context.** Pages in a context a Playwright
+ * connection did not create are filed under that connection's *default*
+ * context (`CRBrowser._onAttachedToTarget` in playwright-core 1.64), so a
+ * session dialling Chrome for itself could never hold a card's context as one.
+ * The host dials once, creates the contexts on that connection, and hands each
+ * session its card's. A context created this way is disposed when the
+ * connection goes (`disposeOnDetach`), so a restart of this process closes the
+ * cards' pages with it — the honest outcome, since it is also what forgets
+ * which card was which. And a hung tab now holds one connect, not every card's
+ * (sink e5452945), though the one it holds is the one everybody shares.
  *
- * Tabs are closed when their card is done with them: at once when Volery says
- * the card was closed (`POST /volery/release/<card>`), and after `GRACE` with
- * no live session otherwise — a card that went dormant, or was killed, stops
- * answering the heartbeat and its session is closed (sink f7553ae5).
+ * A card's context is closed when its card is done with it: at once when
+ * Volery says the card was closed (`POST /volery/release/<card>`), and after
+ * `GRACE` with no live session otherwise — a card that went dormant, or was
+ * killed, stops answering the heartbeat and its session is closed (sink
+ * f7553ae5). Its sign-ins are saved first.
  *
  * Plain CommonJS with no dependency of its own: it is run as
  * `npx -p @playwright/mcp@<pinned> node browserhost.cjs …`, and finds
- * playwright-core beside the package `npx` put on PATH.
+ * playwright-core beside the package `npx` put on PATH. `browservault.cjs` is
+ * written beside it.
  */
 "use strict";
 
@@ -44,21 +65,22 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const crypto = require("crypto");
-const { EventEmitter } = require("events");
+const { mergeStates, readVault } = require(path.join(__dirname, "browservault.cjs"));
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 && process.argv[i + 1] !== undefined ? process.argv[i + 1] : fallback;
 }
 
-const PORT = Number(arg("port", "9244"));
+const PORT = Number(arg("port", "9245"));
 const HOST = arg("host", "127.0.0.1");
 const CDP = arg("cdp-endpoint", "http://127.0.0.1:9222");
-const STATE = arg("state", "");
-/** How long a card's tabs outlive its last session. Long enough that a card
- *  whose CLI reconnects, or whose turn is merely between tools, keeps its page;
- *  short enough that a day of finished cards does not pile up in one Chrome. */
-const GRACE = Number(arg("grace-ms", String(15 * 60 * 1000)));
+/** The saved sign-ins. Empty means seed nothing and save nothing. */
+const VAULT = arg("vault", "");
+/** How long a card's context outlives its last session. Long enough that a
+ *  card whose CLI reconnects keeps its pages; short enough that a day of
+ *  finished cards does not pile up in one Chrome. */
+const GRACE = Number(arg("grace-ms", String(2 * 60 * 1000)));
 /** Only the one host the cards use, as `--allowed-hosts` did: it keeps a page
  *  that rebinds a name of its own to loopback from driving the browser. */
 const ALLOWED = [`${HOST}:${PORT}`, `localhost:${PORT}`];
@@ -95,68 +117,145 @@ const { Server, StreamableHTTPServerTransport, CallToolRequestSchema, ListToolsR
 
 const say = (...a) => console.error("browserhost:", ...a);
 
-/* ── ownership ───────────────────────────────────────────────────────────── */
+/* ── the one connection ──────────────────────────────────────────────────── */
 
-/** target id → card handle. */
-const owners = new Map();
+let browserPromise = null;
+
+/** The host's connection to Chrome, dialled on first need and again after
+ *  Chrome went away — every context went with it, so the cards are forgotten
+ *  too and each makes a fresh one at its next call. */
+function connection() {
+  if (!browserPromise) {
+    const p = chromium.connectOverCDP(CDP, { noDefaults: true }).then((browser) => {
+      browser.once("disconnected", () => {
+        if (browserPromise === p) browserPromise = null;
+        contexts.clear();
+        say("chrome went away; every card's context with it");
+      });
+      return browser;
+    });
+    p.catch(() => {
+      if (browserPromise === p) browserPromise = null;
+    });
+    browserPromise = p;
+  }
+  return browserPromise;
+}
+
+/* ── the vault ───────────────────────────────────────────────────────────── */
+
+let vaultWrites = Promise.resolve();
+
+function vaultNow() {
+  if (!VAULT) return { cookies: [], origins: [] };
+  try {
+    return readVault(fs.readFileSync(VAULT, "utf8"));
+  } catch {
+    return { cookies: [], origins: [] };
+  }
+}
+
+/** Merge these captures into the vault and write it, atomically and one write
+ *  at a time — a card closing and a save pressed in the same second must not
+ *  each read the old file and the second write lose the first. */
+function saveToVault(captures) {
+  const run = vaultWrites.then(() => {
+    if (!VAULT) return vaultNow();
+    const merged = mergeStates(vaultNow(), captures, Math.floor(Date.now() / 1000));
+    const tmp = `${VAULT}.writing`;
+    fs.writeFileSync(tmp, JSON.stringify(merged));
+    fs.renameSync(tmp, VAULT);
+    return merged;
+  });
+  vaultWrites = run.catch(() => {});
+  return run;
+}
+
+/** What a context holds, or nothing if it will not say. Under a deadline: a
+ *  hung page must cost a save its sign-ins from that card, not the save. */
+async function capture(context) {
+  try {
+    return await Promise.race([context.storageState(), new Promise((_, no) => setTimeout(() => no(new Error("no answer")), 10000))]);
+  } catch {
+    return null;
+  }
+}
+
+/* ── each card's context ─────────────────────────────────────────────────── */
+
+/** card → { context, id, made } — `made` orders captures, oldest first. */
+const contexts = new Map();
+/** card → a context being made, so two sessions of one card share it. */
+const making = new Map();
 /** card → number of sessions alive now. */
 const live = new Map();
-/** card → the timer that will close its tabs. */
+/** card → the timer that will close its context. */
 const reaping = new Map();
-/** card → createTarget calls in flight, so a `page` event that beats its own
- *  createTarget answer is not judged before the owner is written down. */
-const creating = new Map();
+/** Context creation is one at a time: the new context's id is read as the one
+ *  Chrome did not have a moment before, which only holds if nobody else made
+ *  one in between. */
+let creation = Promise.resolve();
 
-function persist() {
-  if (!STATE) return;
+async function contextFor(card) {
+  const have = contexts.get(card);
+  if (have) return have;
+  if (making.has(card)) return making.get(card);
+  const p = (creation = creation.catch(() => {}).then(async () => {
+    const browser = await connection();
+    const cdp = await browser.newBrowserCDPSession();
+    try {
+      const before = new Set((await cdp.send("Target.getBrowserContexts")).browserContextIds);
+      /* `viewport: null` keeps the window's own size, as the default context
+         always had; Playwright's 1280×720 emulation would put a page that
+         does not match its window in front of a person watching it. */
+      const context = await browser.newContext({ storageState: vaultNow(), viewport: null });
+      const after = (await cdp.send("Target.getBrowserContexts")).browserContextIds;
+      const id = after.find((x) => !before.has(x));
+      const entry = { context, id, made: Date.now(), card };
+      contexts.set(card, entry);
+      context.on("close", () => {
+        if (contexts.get(card) === entry) contexts.delete(card);
+      });
+      say(`made a context for ${card}`);
+      return entry;
+    } finally {
+      cdp.detach().catch(() => {});
+    }
+  }));
+  making.set(card, p);
   try {
-    const tmp = `${STATE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(owners)));
-    fs.renameSync(tmp, STATE);
-  } catch (e) {
-    say("could not write", STATE, String(e));
+    return await p;
+  } finally {
+    making.delete(card);
   }
 }
 
-function own(targetId, card) {
-  if (owners.get(targetId) === card) return;
-  owners.set(targetId, card);
-  persist();
-}
-
-/** Forget a tab once Chrome no longer lists it. */
-async function forgetIfGone(targetId) {
-  if (!owners.has(targetId)) return;
-  try {
-    const listed = await cdpJson("/json/list");
-    if (listed.some((t) => t.id === targetId)) return;
-  } catch {
-    /* No browser to ask is a browser with no tabs. */
-  }
-  if (owners.delete(targetId)) persist();
-}
-
-async function cdpJson(route, method = "GET") {
-  const res = await fetch(`${CDP}${route}`, { method });
-  if (!res.ok) throw new Error(`${route}: ${res.status}`);
-  return res.headers.get("content-type")?.includes("json") ? res.json() : res.text();
-}
-
-/** Close every tab a card owns. Over `/json/close`, which needs no session and
- *  so cannot be held up by a page that has stopped answering. */
+/** Save what a card's context holds into the vault, then close it — and with
+ *  it every page and window it had. */
 async function release(card, why) {
   clearTimeout(reaping.get(card));
   reaping.delete(card);
-  const mine = [...owners].filter(([, c]) => c === card).map(([id]) => id);
-  for (const id of mine) {
-    await cdpJson(`/json/close/${id}`, "PUT").catch(() => {});
-    owners.delete(id);
-  }
-  if (mine.length) {
-    persist();
-    say(`closed ${mine.length} tab(s) of ${card}: ${why}`);
-  }
-  return mine.length;
+  const entry = contexts.get(card);
+  if (!entry) return 0;
+  contexts.delete(card);
+  const pages = entry.context.pages().length;
+  const state = await capture(entry.context);
+  if (state) await saveToVault([state]).catch((e) => say("could not save sign-ins:", String(e)));
+  await entry.context.close().catch(() => {});
+  say(`closed ${card}'s context and ${pages} page(s): ${why}`);
+  return pages;
+}
+
+/** The save button: every card's context and the default one, merged. */
+async function saveAll() {
+  const browser = await connection();
+  const entries = [...contexts.values()].sort((a, b) => a.made - b.made);
+  /* The default context first, so a card's newer value wins a tie with it. */
+  const captures = [];
+  const base = browser.contexts()[0];
+  if (base) captures.push(await capture(base));
+  for (const e of entries) captures.push(await capture(e.context));
+  return saveToVault(captures.filter(Boolean));
 }
 
 function sessionOpened(card) {
@@ -180,33 +279,11 @@ function scheduleRelease(card) {
   reaping.set(card, t);
 }
 
-/** Read the state a previous run left, keep what the browser still has. */
-async function restore() {
-  if (!STATE || !fs.existsSync(STATE)) return;
-  let saved = {};
-  try {
-    saved = JSON.parse(fs.readFileSync(STATE, "utf8"));
-  } catch {
-    return;
-  }
-  let present = null;
-  try {
-    present = new Set((await cdpJson("/json/list")).map((t) => t.id));
-  } catch {
-    /* No browser up: every id in the file names a tab that is gone. */
-    present = new Set();
-  }
-  for (const [id, card] of Object.entries(saved)) if (present.has(id) && typeof card === "string") owners.set(id, card);
-  persist();
-  for (const card of new Set(owners.values())) scheduleRelease(card);
-}
-
-/* ── a card's view of the browser ────────────────────────────────────────── */
+/* ── a page is a window ──────────────────────────────────────────────────── */
 
 const infoOf = new WeakMap();
 
-/** A page's CDP target info, asked once. Under a deadline, because a page that
- *  stopped answering must cost this card nothing more than a missing tab. */
+/** A page's CDP target info, asked once, under a deadline. */
 function targetInfo(context, page) {
   let known = infoOf.get(page);
   if (known) return known;
@@ -227,114 +304,50 @@ function targetInfo(context, page) {
 /** Where a new window should open: where the browser already is. Parked means
  *  off every screen, so a card's window never flashes onto the desktop; shown
  *  means beside the one you are looking at. */
-async function placement(browserSession) {
+async function placement(cdp) {
   try {
-    const { targetInfos } = await browserSession.send("Target.getTargets");
+    const { targetInfos } = await cdp.send("Target.getTargets");
     for (const t of targetInfos) {
       if (t.type !== "page") continue;
-      const { bounds } = await browserSession.send("Browser.getWindowForTarget", { targetId: t.targetId });
+      const { bounds } = await cdp.send("Browser.getWindowForTarget", { targetId: t.targetId });
       if (bounds && bounds.windowState === "normal") return { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
     }
   } catch {}
   return {};
 }
 
-async function scoped(card) {
-  const browser = await chromium.connectOverCDP(CDP, { noDefaults: true });
-  const context = browser.contexts()[0];
-  const emitter = new EventEmitter();
-  const mine = [];
-
-  /* Every page this card is given goes through here, and is announced to the
-     backend before anything else can hand it out — a page `newPage` returns
-     must already be in the backend's tab list, as it is with Playwright's own
-     `newPage`, or the backend's current tab is left pointing at nothing. */
-  const admit = (page, announce) => {
-    if (mine.includes(page)) return;
-    mine.push(page);
-    page.once("close", () => {
-      const i = mine.indexOf(page);
-      if (i >= 0) mine.splice(i, 1);
-      /* A page also "closes" when this session's connection does, and then
-         the tab is still there and still this card's. Only Chrome can say
-         which, so ask it. */
-      void targetInfo(context, page).then((info) => info && forgetIfGone(info.targetId));
-    });
-    if (announce) emitter.emit("page", page);
-  };
-
-  const judge = async (page) => {
-    const info = await targetInfo(context, page);
-    if (!info) return false;
-    await Promise.all([...(creating.get(card) || [])]).catch(() => {});
-    if (owners.get(info.targetId) === card) return true;
-    /* A popup is its opener's. */
-    if (info.openerId && owners.get(info.openerId) === card) {
-      own(info.targetId, card);
-      return true;
-    }
-    return false;
-  };
-
-  await Promise.all(context.pages().map(async (p) => (await judge(p)) && admit(p, false)));
-  /* Keep the order the pages were opened in, which is the order Chrome lists. */
-  mine.sort((a, b) => context.pages().indexOf(a) - context.pages().indexOf(b));
-
-  context.on("page", async (page) => {
-    if (await judge(page)) admit(page, true);
-  });
-
+/** The card's context, with `newPage` opening a window rather than a tab.
+ *  Everything else is Playwright's own, scoped to the context by Playwright. */
+function windowed(entry, browser) {
+  const { context, id } = entry;
   async function newPage() {
-    const session = await browser.newBrowserCDPSession();
+    if (!id) return context.newPage();
+    const cdp = await browser.newBrowserCDPSession();
     let targetId;
-    const made = (async () => {
-      const where = await placement(session);
-      ({ targetId } = await session.send("Target.createTarget", { url: "about:blank", newWindow: true, ...where }));
-      own(targetId, card);
-    })();
-    const set = creating.get(card) || new Set();
-    creating.set(card, set);
-    set.add(made);
     try {
-      await made;
+      const where = await placement(cdp);
+      ({ targetId } = await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, browserContextId: id, ...where }));
     } finally {
-      set.delete(made);
-      session.detach().catch(() => {});
+      cdp.detach().catch(() => {});
     }
-    /* The page event may have landed already, or be on its way. */
+    /* The `page` event may have landed already, or be on its way. */
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
-      for (const p of mine) {
-        const info = await targetInfo(context, p);
-        if (info?.targetId === targetId) return p;
-      }
       for (const p of context.pages()) {
         const info = await targetInfo(context, p);
-        if (info?.targetId === targetId) {
-          admit(p, true);
-          return p;
-        }
+        if (info?.targetId === targetId) return p;
       }
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error("the new tab did not appear");
   }
-
-  const proxy = new Proxy(context, {
+  return new Proxy(context, {
     get(target, prop) {
-      if (prop === "pages") return () => mine.filter((p) => !p.isClosed());
       if (prop === "newPage") return newPage;
-      if (prop === "on" || prop === "addListener" || prop === "once" || prop === "off" || prop === "removeListener") {
-        return (event, fn) => {
-          (event === "page" ? emitter : target)[prop](event, fn);
-          return proxy;
-        };
-      }
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { browser, context: proxy };
 }
 
 /* ── the MCP server, one per session ─────────────────────────────────────── */
@@ -392,12 +405,11 @@ function sessionServer(card, streamOpened) {
             roots = (await server.listRoots().catch(() => ({ roots: [] }))).roots;
           }
           const clientInfo = { cwd: firstRoot(roots), clientName: server.getClientVersion()?.name ?? "Playwright MCP" };
-          const { browser, context } = await scoped(card);
-          const backend = new tools.BrowserBackend(config, context, toolList, {
-            dispose: async () => {
-              await browser.close().catch(() => {});
-            },
-          });
+          const browser = await connection();
+          const entry = await contextFor(card);
+          /* No dispose of our own: the context is the card's, not the
+             session's, and outlives it by `GRACE`. */
+          const backend = new tools.BrowserBackend(config, windowed(entry, browser), toolList, {});
           await backend.initialize(clientInfo);
           return backend;
         })().then((backend) => {
@@ -494,8 +506,20 @@ async function onRequest(req, res) {
       return res.end(JSON.stringify({ closed }));
     }
     if (parts[1] === "tabs" && req.method === "GET") {
+      const cards = {};
+      for (const [card, e] of contexts) cards[card] = e.context.pages().map((p) => p.url());
       res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({ owners: Object.fromEntries(owners), live: Object.fromEntries(live) }));
+      return res.end(JSON.stringify({ cards, live: Object.fromEntries(live) }));
+    }
+    if (parts[1] === "save" && req.method === "POST") {
+      res.setHeader("content-type", "application/json");
+      try {
+        const merged = await saveAll();
+        return res.end(JSON.stringify({ ok: true, state: merged }));
+      } catch (e) {
+        res.statusCode = 500;
+        return res.end(JSON.stringify({ ok: false, error: String(e) }));
+      }
     }
     res.statusCode = 404;
     return res.end();
@@ -519,10 +543,9 @@ async function onRequest(req, res) {
     res.statusCode = 400;
     return res.end("Invalid request");
   }
-  /* `/mcp` with no card is a client from before cards were named — a wall on
-     an older build sharing this port. It still gets a view of its own, keyed
-     by session, so it can neither see nor be seen; it simply cannot find its
-     tabs again after a reconnect. */
+  /* `/mcp` with no card is a client that did not name itself. It still gets a
+     context of its own, keyed by session, so it can neither see nor be seen;
+     it simply cannot find its pages again after a reconnect. */
   const id = crypto.randomUUID();
   const card = parts[1] && CARD.test(parts[1]) ? parts[1] : `session-${id}`;
   const streamOpened = deferred();
@@ -543,7 +566,6 @@ async function onRequest(req, res) {
 async function main() {
   config = await tools.resolveCLIConfigForMCP({ cdpEndpoint: CDP });
   toolList = tools.filteredTools(config);
-  await restore();
   const server = http.createServer((req, res) => {
     onRequest(req, res).catch((e) => {
       say("request failed:", String(e));
@@ -551,7 +573,7 @@ async function main() {
       res.end();
     });
   });
-  server.listen(PORT, HOST, () => say(`listening on http://${HOST}:${PORT}/mcp/<card>, driving ${CDP}`));
+  server.listen(PORT, HOST, () => say(`listening on http://${HOST}:${PORT}/mcp/<card>, driving ${CDP}${VAULT ? ", seeding from " + VAULT : ""}`));
 }
 
 main().catch((e) => {

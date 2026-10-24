@@ -932,6 +932,7 @@ pub fn run() {
             browser::browser_status,
             browser::browser_session_file,
             browser::browser_save_session,
+            browser::browser_save_all,
             browser::browser_start,
             browser::browser_stop,
             browser::browser_park,

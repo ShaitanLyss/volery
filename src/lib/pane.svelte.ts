@@ -47,6 +47,7 @@ import {
   type FrameMeta,
   type KeyMsg,
   type Mode,
+  type StorageState,
 } from "./browser";
 import type { Row } from "./logface";
 
@@ -680,6 +681,19 @@ export class Pane {
     this.saved = null;
     this.fault = null;
     try {
+      /* Each card's pages are a browser context of their own, so the sign-ins
+         are spread across contexts this socket-per-page reading cannot see
+         whole. The shared browser server holds them all and merges them into
+         the vault (`browser_save_all`); what follows is the fallback for a
+         server that is not answering, which can still save what the pages it
+         reaches hold. */
+      try {
+        const merged = JSON.parse(await invoke<string>("browser_save_all")) as StorageState;
+        this.saved = savedWhat(merged);
+        return;
+      } catch {
+        /* Fall through to reading the pages directly. */
+      }
       await this.refresh();
       if (this.targets.length === 0) {
         this.saved = "nothing to save — no page is open";
