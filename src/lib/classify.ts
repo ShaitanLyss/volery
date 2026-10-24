@@ -2655,6 +2655,33 @@ export function wasRateLimited(result: any): boolean {
   );
 }
 
+/** Why a turn on **credits** was refused, if it was (`credits.ts`).
+ *
+ *  Asked only of a card on credits — the caller decides that, because a 401 on
+ *  a subscription is an expired sign-in with a heal of its own and must not be
+ *  read as a credits problem. Three answers, read out of claude 2.1.304:
+ *
+ *  - `balance` — the API's `Your credit balance is too low to access the
+ *    Anthropic API` and the CLI's own `Credit balance too low · Add funds`, both
+ *    in the bundle beside the CLI's own `X7` detector, which is the same
+ *    lowercase `credit balance is too low` test this makes on the shared half.
+ *  - `key` — probed: a dummy key answers `api_error_status: 401` with
+ *    `Invalid API key · Fix external API key`.
+ *  - `rate` — the organisation's rate limit, `wasRateLimited`'s 429.
+ *
+ *  `faultText` is the gate as everywhere else: an agent that *quoted* a credit
+ *  error in a successful turn is not refused. */
+export function creditRefusalOf(result: any): "balance" | "key" | "rate" | null {
+  const said = faultText(result);
+  if (!said) return null;
+  if (said.includes("credit balance")) return "balance";
+  if (result?.api_error_status === 401 || said.includes("invalid api key") || said.includes("invalid x-api-key")) {
+    return "key";
+  }
+  if (wasRateLimited(result)) return "rate";
+  return null;
+}
+
 /** Does this sentence say the account ran out — read off **text alone**, for
  *  the places that have only the words: a notice's opening line, which is the
  *  CLI's own refusal (`restNotice` puts `lastError` first), on this wall or
@@ -2946,9 +2973,12 @@ export function saySoon(ms: number): string {
  *  cold says how much of the bill was retries, and the wait is in it because a
  *  card that has gone quiet for five minutes should not need the reader to
  *  guess whether it is thinking or waiting. */
-export function healNote(kind: HealKind, attempt: number, waitMs: number): string {
+export function healNote(kind: HealKind, attempt: number, waitMs: number, credits = false): string {
   const tail = `trying again in ${saySoon(waitMs)} (${attempt} of ${HEAL_BUDGET[kind]})`;
-  if (kind === "limited") return `this account is out of allowance — ${tail}`;
+  /* A card on credits has no allowance to be out of; what refused it was the
+     organisation's balance, key or rate limit (`creditRefusalOf`), and the
+     card has already said which. */
+  if (kind === "limited") return `${credits ? "credits were refused" : "this account is out of allowance"} — ${tail}`;
   if (kind === "dropped") return `the connection dropped — ${tail}`;
   return kind === "malformed"
     ? `the request was cut short on the way out — ${tail}`
@@ -3375,8 +3405,9 @@ export function isCarryOn(text: string): boolean {
 /** The person's half of it, said before the prompt goes. Like `healNote` and for
  *  its reason: Skein spawns with `--dangerously-skip-permissions`, and nothing it
  *  does on its own initiative may be invisible afterwards. */
-export function carryNote(attempt: number, waitMs: number): string {
-  return `the allowance ran out part-way through — carrying on from another account in ${saySoon(waitMs)} (${attempt} of ${CARRY_BUDGET})`;
+export function carryNote(attempt: number, waitMs: number, credits = false): string {
+  const what = credits ? "credits were refused part-way through" : "the allowance ran out part-way through";
+  return `${what} — carrying on from another account in ${saySoon(waitMs)} (${attempt} of ${CARRY_BUDGET})`;
 }
 
 /** Who put in front of the model the prompt a turn is answering — which is the

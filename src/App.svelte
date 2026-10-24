@@ -131,6 +131,8 @@
   import { adrift, Portage } from "./lib/portage.svelte";
   import { sayBlocked, standingOf, usable } from "./lib/accounts";
   import { waterfall } from "./lib/waterfall.svelte";
+  import { purse } from "./lib/purse.svelte";
+  import { boostLabel, sayBoost } from "./lib/credits";
   import { paletteExtras, stirsCard } from "./lib/commands";
   import { planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
@@ -474,6 +476,9 @@
      the third integration is not wired into it. */
   creds.changed = (id) => {
     if (id === "azdo") void devops.refresh();
+    /* A key stored or removed decides whether credits can take work at all,
+       and a stored one clears a refusal of the key it replaced. */
+    if (id === "anthropic") void purse.refresh();
     /* Asana's project list is the thing a board widget cannot draw its picker
        without, and it is asked once rather than on a clock — so storing a token
        has to be what brings it in, or a widget placed before the token was
@@ -668,6 +673,9 @@
       if (verb.act === "reawaken") {
         skein.setReawaken(!skein.reawaken);
         leader.say(reawakenSaid(skein.reawaken));
+      } else if (verb.act === "boost") {
+        skein.setBoost(!purse.boost);
+        leader.say(sayBoost(purse.state, purse.standing()).replace(/ \(space then m b\)$/, ""));
       } else void flipMachine(verb.act);
     }
     else if (verb.kind === "grouping") groupingChord(verb.act);
@@ -4654,6 +4662,7 @@
     "token",
     "flyway",
     "chime",
+    "boost",
     "layout",
   ];
 
@@ -4699,6 +4708,11 @@
     "token",
     "flyway",
     "away",
+    /* Boost is kept as long as the switch beside the readings: while it is on,
+       cards are spending money per token, and a bar that folded that away to
+       make room for the zoom would be hiding the one state on it that costs
+       something. */
+    "boost",
     /* Given up after `away` and before the readings, which is as late as a verb
        gets here. It is only in the bar at all when something is waiting, and
        when something is waiting it is the most important thing in the bar —
@@ -4776,6 +4790,7 @@
       skein.projects.length,
       skein.live,
       skein.spend.toFixed(2),
+      boostLabel(purse.state),
       releases.stage,
       releases.offer?.version ?? "",
       releases.note ?? "",
@@ -5001,6 +5016,13 @@
         title: "Play a soft chime when a card wants you and Skein isn't focused",
         on: attention.chime,
         press: () => (attention.chime = !attention.chime),
+      },
+      {
+        key: "boost",
+        label: boostLabel(purse.state),
+        title: sayBoost(purse.state, purse.standing()),
+        on: purse.boost,
+        press: () => skein.setBoost(!purse.boost),
       },
       {
         key: "layout",

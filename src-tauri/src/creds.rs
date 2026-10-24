@@ -90,6 +90,11 @@ struct Service {
 const ASANA_TARGET: &str = "dev.skein.studio/asana-pat";
 const ASANA_WHO: &str = "asana (volery)";
 
+/// The Anthropic API key a card on credits runs on (`credits.rs`). `-key`
+/// rather than `-pat` because that is what the Console calls it.
+const ANTHROPIC_TARGET: &str = "dev.skein.studio/anthropic-key";
+const ANTHROPIC_WHO: &str = "anthropic api key (volery)";
+
 const SERVICES: &[Service] = &[
     Service {
         id: "azdo",
@@ -107,6 +112,17 @@ const SERVICES: &[Service] = &[
            — every request reads the vault, which costs a syscall and means a
            token deleted in Control Panel stops working immediately rather than
            at the next detach. */
+        forget: forget_nothing,
+    },
+    Service {
+        id: "anthropic",
+        target: ANTHROPIC_TARGET,
+        who: ANTHROPIC_WHO,
+        probe: probe_anthropic,
+        /* Nothing held: a card reads the vault at spawn, so a key replaced here
+           reaches the next card spawned on credits with no cache to drop. A card
+           already running keeps the key it was born with, as every environment
+           variable does. */
         forget: forget_nothing,
     },
 ];
@@ -463,6 +479,51 @@ fn probe_asana(token: &str, _roots: &[String]) -> Result<String, String> {
             trailing(res.into_string().unwrap_or_default())
         )),
         Err(e) => Err(format!("could not reach asana: {e}")),
+    }
+}
+
+/// `GET /v1/models` with the key: authenticated, free, and touching no balance.
+///
+/// It cannot name an identity — nothing an API key may ask says which
+/// organisation it belongs to — so an accepted key reads as how many models it
+/// can see, which is the one thing it can say about itself. **A key that is
+/// accepted here can still be refused for money**: a key from an organisation
+/// with no credits passes this and fails its first turn with "credit balance is
+/// too low", which the wall reads and says (`classify.ts::creditRefusalOf`).
+fn probe_anthropic(token: &str, _roots: &[String]) -> Result<String, String> {
+    let res = crate::forge::agent()
+        .get("https://api.anthropic.com/v1/models?limit=100")
+        .set("x-api-key", token.trim())
+        .set("anthropic-version", "2023-06-01")
+        .call();
+    match res {
+        Ok(res) => {
+            let v: serde_json::Value = res
+                .into_json()
+                .map_err(|e| format!("unreadable answer from anthropic: {e}"))?;
+            let n = v.get("data").and_then(|d| d.as_array()).map_or(0, |d| d.len());
+            Ok(format!("an api key that can see {n} models"))
+        }
+        Err(ureq::Error::Status(code, res)) => Err(format!(
+            "anthropic answered {code}{}",
+            trailing_anthropic(res.into_string().unwrap_or_default())
+        )),
+        Err(e) => Err(format!("could not reach anthropic: {e}")),
+    }
+}
+
+/// Anthropic's error body is `{"type":"error","error":{"type":…,"message":…}}`,
+/// which neither of `trailing`'s two shapes is.
+fn trailing_anthropic(body: String) -> String {
+    let said = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let said = said.lines().next().unwrap_or("").trim().to_string();
+    if said.is_empty() {
+        String::new()
+    } else {
+        format!(": {said}")
     }
 }
 

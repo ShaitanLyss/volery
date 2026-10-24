@@ -106,7 +106,7 @@ export type Verb =
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" }
+  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" }
   | { kind: "bright"; act: "up" | "down" | "reset" };
 
 /** One sequence the leader opens onto.
@@ -350,6 +350,11 @@ export const CHORDS: readonly Chord[] = [
      questions stopped having a deadline, is the only thing that moves one off
      a forgotten open laptop. `i` for idle, and on by default. */
   { keys: "mi", label: "away when nobody is at the keyboard: on / off", verb: { kind: "machine", act: "idle" } },
+  /* Boost: whether a card whose account runs out carries on with the
+     organisation's api credits (`credits.ts`). In `m` because it is a standing
+     decision about what this wall may spend, the same sort of thing as staying
+     awake on mains, and like those it says what is now true. */
+  { keys: "mb", label: "boost — credits when an account runs out: on / off", verb: { kind: "machine", act: "boost" } },
   /* `v` is how the wall looks. `vv` is the themes panel, the family's main
      verb doubled after `ff` and `ss`; until it existed the panel had no key at
      all, only the header button. The rest is the brightness of whichever skin

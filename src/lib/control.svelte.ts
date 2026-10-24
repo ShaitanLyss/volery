@@ -64,6 +64,22 @@ import {
   type Report,
 } from "./limits";
 import { waterfall } from "./waterfall.svelte";
+import { purse } from "./purse.svelte";
+
+/** The boost half of the snapshot, shared by the snapshot and the `boost` op. */
+function boostSnapshot() {
+  const standing = purse.standing();
+  return {
+    on: purse.boost,
+    budget: purse.budget,
+    spent: purse.spent,
+    since: purse.since,
+    keyHeld: purse.keyHeld,
+    refused: purse.refused,
+    ready: standing.ready,
+    why: standing.ready ? null : standing.why,
+  };
+}
 import type { DevOps } from "./devops.svelte";
 import type { Shell } from "./shell.svelte";
 import type { Finder } from "./finder.svelte";
@@ -964,6 +980,12 @@ export class Control {
            set aside and one that is merely resting both read `rest`, which is
            the intended effect and therefore the thing a test cannot see. */
         aside: c.aside,
+        /* Which funding the card runs on — an account label, `@credits`, or
+           null for the CLI's own sign-in — and, on credits, the account it goes
+           back to. Reported because a card on credits and one on an account
+           read identically by tier, and money is the difference. */
+        account: c.accountLabel,
+        creditsHome: c.creditsHome,
         /* And for the same reason: a rest whose notice you acknowledged reads
            `rest` too, and so does one that simply has not warmed yet. */
         restSeen: c.restSeen,
@@ -1339,6 +1361,10 @@ export class Control {
         others: h.editor.others.map((o) => o.key),
         fault: h.editor.fault,
       },
+      /* Boost and the credits it spends (`credits.ts`). `standing` is the
+         decision the routing reads, reported so a test can see *why* a card
+         did or did not go onto credits without reconstructing it. */
+      boost: boostSnapshot(),
       attention: {
         windowFocused: h.attention.focused,
         chime: h.attention.chime,
@@ -2507,6 +2533,18 @@ export class Control {
        *  (`accountsync.rs`). `refresh` re-reads first. Answers every row with
        *  its identity and who last changed what, which is how a lab run sees a
        *  setting arrive from another wall. */
+      /** Boost mode, as the header's button and `<space> m b` reach it:
+       *  `on` flips it through `Skein.setBoost` (so held cards are asked
+       *  again), `budget` sets the month's ceiling (`null` for none),
+       *  `refresh` re-reads the ledger and the vault. Answers the snapshot's
+       *  `boost`. */
+      boost: async (op) => {
+        if (op.on !== undefined) h.skein.setBoost(!!op.on);
+        if (op.budget !== undefined) purse.setBudget(op.budget === null ? null : Number(op.budget));
+        if (op.refresh || op.on !== undefined) await purse.refresh();
+        return boostSnapshot();
+      },
+
       accounts: async (op) => {
         const label = op.label === undefined ? null : String(op.label);
         if (op.add !== undefined) await waterfall.add(String(op.add));

@@ -20,6 +20,7 @@ import {
   describeTool,
   endingFor,
   healKindOf,
+  creditRefusalOf,
   mayHeal,
   healHeldNote,
   producedModelOutput,
@@ -80,6 +81,7 @@ import {
   type TaskNote,
   type Tier,
 } from "./classify";
+import { onCredits } from "./credits";
 import { holdOf, pending, readWaiting, sessionWakes, type Wake } from "./waiting";
 import { backupSettled } from "./repair";
 import {
@@ -1318,6 +1320,11 @@ export class Conversation {
    *  frees up and paying the uncached re-read twice. */
   accountLabel = $state<string | null>(null);
 
+  /** While `accountLabel` is `@credits`: the account the card left, which it
+   *  goes back to when that has room (`credits.ts::route`). Null otherwise, and
+   *  null for a card that started on credits with no account to go back to. */
+  creditsHome = $state<string | null>(null);
+
   /** This card ignores the caps you set. It still cannot cross the accounts'
    *  own limits, because nothing can — a bypassed card with every subscription
    *  genuinely spent is held exactly like any other. */
@@ -1505,6 +1512,10 @@ export class Conversation {
   /** The reset that refusal named, if any — epoch ms. Rides with
    *  `pendingSpent` and is cleared with it; see `refusalResetOf`. */
   pendingSpentUntil: number | null = null;
+  /** Why credits were refused, when the refused label is `@credits` — the
+   *  wait differs by a factor of sixty between a rate limit and an empty
+   *  balance (`credits.ts::refuseCredits`). Rides with `pendingSpent`. */
+  pendingSpentKind: "balance" | "key" | "rate" | null = null;
   /** A reset heard on an event *before* the `result` that carries the refusal:
    *  the synthetic assistant message and `rate_limit_event` both arrive first.
    *  Consumed by the refusal and dropped, so a warning heard on an ordinary turn
@@ -1584,6 +1595,8 @@ export class Conversation {
     territoryId?: string | null;
     /** Optional because a row written before schema v16 has neither. */
     account_label?: string | null;
+    /** Optional because a row written before schema v59 has none. */
+    credits_home?: string | null;
     bypass_caps?: boolean;
     /** Optional because a row written before schema v54 has none. */
     held?: { text: string; key: string; pictures?: string[]; origin?: string | null }[];
@@ -1653,6 +1666,7 @@ export class Conversation {
        nothing. A row from before the column existed is null, which is the truth
        about it: that card was spawned as whoever was signed in. */
     c.accountLabel = row.account_label ?? null;
+    c.creditsHome = onCredits(c.accountLabel) ? (row.credits_home ?? null) : null;
     c.bypassCaps = row.bypass_caps ?? false;
     /* And the prompt it was holding when the wall closed. Without this the hold
        was `$state` and nothing else: a card holding your words came back **idle**
@@ -3172,13 +3186,19 @@ export class Conversation {
              the next person wondering where the allowance went has nothing to
              find. Skein adds the note saying it is trying again, when it
              actually does. */
-          const kind = healKindOf(ev);
+          /* A card on credits reads its refusals as credits refusals first: an
+             empty balance and a refused key are the one failure *another
+             funding* fixes, which is `limited`'s meaning exactly, and a 401 here
+             is the key rather than an expired sign-in. */
+          const credit = onCredits(this.accountLabel) ? creditRefusalOf(ev) : null;
+          const kind = credit ? "limited" : healKindOf(ev);
           this.lastFault = kind;
           /* Before any decision about re-sending, and outside every branch
              below — see `pendingSpent`. The server refusing this account is
              news whatever is then done about the prompt. */
           if (kind === "limited" && this.accountLabel) {
             this.pendingSpent = this.accountLabel;
+            this.pendingSpentKind = credit;
             this.pendingSpentUntil =
               refusalResetOf(ev) ??
               refusalResetFromText(detail, Date.now()) ??

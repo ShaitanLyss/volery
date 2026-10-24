@@ -26,6 +26,7 @@ mod chronicle;
 pub mod azdo;
 mod control;
 mod creds;
+mod credits;
 mod docket;
 mod eventhub;
 mod dropzone;
@@ -793,6 +794,8 @@ pub fn run() {
            answer: a quit in the first seconds of a launch has nothing to
            warn about. See `quit.rs`. */
         .manage(Quit::default())
+        /* Off until the wall says boost is on — see `credits.rs`. */
+        .manage(credits::Boost::default())
         /* Whether the studio is spread over every screen, and the frame it came
            from. See `window.rs`. */
         .manage(window::Span::default())
@@ -1107,6 +1110,8 @@ pub fn run() {
             store::gate_trees,
             joblog::job_output,
             quit::note_busy,
+            credits::note_boost,
+            credits::credits_spent,
             quit::stay,
             perf::sample_performance,
             perf::release_performance,

@@ -285,11 +285,18 @@ fn ask(
     /* The card's own subscription, and the same hard failure `spawn_now` gives
        rather than a silent fall-through to whoever is signed in — an aside must
        not quietly spend the account being held in reserve. */
-    if let Some(label) = account.filter(|s| !s.trim().is_empty()) {
-        crate::accounts::usable_store(app, &label)?;
-        let dir = crate::accounts::store_dir(app, &label)?;
-        cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
-        cmd.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+    if crate::credits::is_credits(account.as_deref()) {
+        /* A card on credits asks beside itself on credits too — the aside is a
+           fork of its session, and its own account is the one it has. */
+        crate::credits::apply(app, &mut cmd)?;
+    } else {
+        crate::credits::withhold(&mut cmd);
+        if let Some(label) = account.filter(|s| !s.trim().is_empty()) {
+            crate::accounts::usable_store(app, &label)?;
+            let dir = crate::accounts::store_dir(app, &label)?;
+            cmd.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
+            cmd.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+        }
     }
 
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());

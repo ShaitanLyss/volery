@@ -1526,7 +1526,19 @@ fn spawn_now(
        silent fall-through to the signed-in account: falling through would spend
        the wrong subscription — quietly, and precisely the one being held in
        reserve. */
-    if let Some(label) = account_label.as_deref().filter(|s| !s.is_empty()) {
+    /* Credits first: `@credits` is not an account and names no store, so it is
+       told apart before anything treats it as one. Every other card loses any
+       API key it would inherit, since a key outranks the store it is put on —
+       see `credits.rs`. */
+    if crate::credits::is_credits(account_label.as_deref()) {
+        crate::credits::apply(&app, &mut cmd)?;
+    } else {
+        crate::credits::withhold(&mut cmd);
+    }
+    if let Some(label) = account_label
+        .as_deref()
+        .filter(|s| !s.is_empty() && !crate::credits::is_credits(Some(s)))
+    {
         /* Not signed in, or holding a sign-in retired as a copy of another
            machine's — whose use would log that machine out (`accounts.rs`,
            *a sign-in never leaves its machine*). */

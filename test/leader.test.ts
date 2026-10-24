@@ -239,6 +239,7 @@ describe("the which-key hint", () => {
       { keys: "ll", label: "plan: the whole line / a window" },
       { keys: "ls", label: "plan back in the stack" },
       { keys: "ma", label: "cards left awake come back awake: on / off" },
+      { keys: "mb", label: "boost — credits when an account runs out: on / off" },
       { keys: "mi", label: "away when nobody is at the keyboard: on / off" },
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mw", label: "keep awake on mains: on / off" },
@@ -333,10 +334,13 @@ describe("the which-key hint", () => {
   test("so is the machine the wall runs on", () => {
     expect(offers("m")).toEqual([
       { keys: "a", label: "cards left awake come back awake: on / off" },
+      { keys: "b", label: "boost — credits when an account runs out: on / off" },
       { keys: "i", label: "away when nobody is at the keyboard: on / off" },
       { keys: "r", label: "reopen after a restart: on / off" },
       { keys: "w", label: "keep awake on mains: on / off" },
     ]);
+    /* Boost: whether a card whose account runs out carries on with credits. */
+    expect(chord("m", "b")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "boost" } });
     /* The backstop for a question nobody is there to answer, now that a
        question has no deadline: it has to be reachable without the mouse. */
     expect(chord("m", "i")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "idle" } });

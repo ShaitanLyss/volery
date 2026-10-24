@@ -1333,7 +1333,13 @@ fn say_accounts(rows: &[Seat], mine: Option<&str>, now: i64) -> String {
             r.label, r.priority
         ));
     }
-    if mine.is_none() {
+    if crate::credits::is_credits(mine) {
+        out.push_str(
+            "This card is on credits — an Anthropic API key billed per token, which the wall \
+             moves it onto under boost mode when its account runs out. `mcp__skein__allowance` says what \
+             credits have cost this month.\n",
+        );
+    } else if mine.is_none() {
         out.push_str("This card is on Claude Code's own sign-in, which is none of these.\n");
     }
     out.push_str(
@@ -1377,6 +1383,13 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
         .into_iter()
         .filter(|l| Some(l.as_str()) != label.as_deref())
         .collect();
+
+    /* A card on credits has no subscription to read — `@credits` names no
+       store, and asking `report_with` would answer with a failure the arm below
+       would then explain as a signed-out account. Its reading is the bill. */
+    if crate::credits::is_credits(label.as_deref()) {
+        return crate::credits::allowance_answer(app, &day, &others);
+    }
 
     /* **The asking card's account, not the wall's.** This passed `""` — the
        CLI's own sign-in — for every caller, so a card spawned on a registered

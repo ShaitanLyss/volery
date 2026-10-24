@@ -205,6 +205,10 @@ pub struct StoredConversation {
     /// whole wall onto the first account at once, re-reading every conversation
     /// uncached. See `.claude/rules/accounts.md`.
     pub account_label: Option<String>,
+    /// The account a card on credits left, and goes back to when it has room
+    /// (`migrate_v59`). Only ever set beside `account_label = '@credits'`.
+    #[serde(default)]
+    pub credits_home: Option<String>,
     /// This card ignores the caps you set. Persisted because it is a decision
     /// about a conversation, and one that quietly reverted on restart is one you
     /// would have to remember to make again.
@@ -370,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 58;
+const SCHEMA_VERSION: i64 = 59;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -434,6 +438,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (56, migrate_v56),
     (57, migrate_v57),
     (58, migrate_v58),
+    (59, migrate_v59),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3188,6 +3193,26 @@ fn migrate_v58(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v58: {e}"))
 }
 
+/// Which funding a turn ran on, and which account a card on credits stands in
+/// for (`credits.rs`, `.claude/rules/accounts.md` *Credits and boost mode*).
+///
+/// `turn.account_label` is what lets the wall say what it has spent on credits
+/// this month: the conversation's own column is overwritten by every move, so a
+/// turn could only ever be joined to the account its card is on *now*. Nothing
+/// is backfilled — an old row's funding is unknowable, and NULL already reads
+/// as "not credits", which every one of them was, since credits did not exist.
+///
+/// `conversation.credits_home` is the account a card left when it went onto
+/// credits, so it can go home when that account has room again rather than to
+/// whichever account happens to be free. Kept on the row because a card on
+/// credits that forgot its home across a restart would either stay on credits
+/// for good or wander onto a reserve, and both spend money nobody chose to.
+fn migrate_v59(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "turn", "account_label", "TEXT")?;
+    add_column(conn, "conversation", "credits_home", "TEXT")?;
+    Ok(())
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -3334,14 +3359,20 @@ pub fn set_conversation_account(
     store: tauri::State<'_, Store>,
     id: String,
     account_label: Option<String>,
+    credits_home: Option<String>,
 ) -> Result<(), String> {
+    /* The home only means anything beside the credits label, so it is written
+       with the label in one statement and cleared by every other move — a
+       caller that omits it (every caller but the move onto credits) is a card
+       that has no home to go back to, which is exactly what NULL says. */
+    let home = credits_home.filter(|_| crate::credits::is_credits(account_label.as_deref()));
     store
         .0
         .lock()
         .map_err(|_| "the store is wedged".to_string())?
         .execute(
-            "UPDATE conversation SET account_label = ?1 WHERE id = ?2",
-            params![account_label, id],
+            "UPDATE conversation SET account_label = ?1, credits_home = ?3 WHERE id = ?2",
+            params![account_label, id, home],
         )
         .map_err(|e| format!("set account: {e}"))?;
     Ok(())
@@ -4980,13 +5011,18 @@ pub fn record_turn(
     cache_read_tokens: i64,
     cache_write_tokens: i64,
     usd: f64,
+    account_label: Option<String>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
+    /* `account_label` optional for `kind`'s reason: Tauri drops a key it does
+       not recognise, and a required argument would then lose the whole row —
+       the money with it. A turn with no label is one this build did not say the
+       funding of, which reads as "not credits". */
     conn.execute(
         "INSERT INTO turn
            (conversation_id, ended_at, status_tier, kind, in_tokens, out_tokens,
-            cache_read_tokens, cache_write_tokens, cache_tokens, usd)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            cache_read_tokens, cache_write_tokens, cache_tokens, usd, account_label)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             conversation_id,
             now(),
@@ -4997,7 +5033,8 @@ pub fn record_turn(
             cache_read_tokens,
             cache_write_tokens,
             cache_read_tokens + cache_write_tokens,
-            usd
+            usd,
+            account_label.filter(|l| !l.trim().is_empty())
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -5909,7 +5946,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
                     c.permission_mode, c.held_why, c.held_until,
-                    c.rest_seen, c.awake, {LAST_ACTIVE}
+                    c.rest_seen, c.awake, {LAST_ACTIVE}, c.credits_home
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
@@ -5948,6 +5985,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 rest_seen: r.get::<_, i64>(25)? != 0,
                 awake: r.get::<_, i64>(26)? != 0,
                 last_active: r.get(27)?,
+                credits_home: r.get(28)?,
             })
         })
         .map_err(|e| e.to_string())?

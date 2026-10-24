@@ -76,7 +76,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
-                         # sources, marks, whois
+                         # sources, marks, whois, credits
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -112,7 +112,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # usage.rs,
                               # tunnel.rs, applog.rs, sluice.rs,
                               # limits.rs, load.rs, pool.rs, perf.rs,
-                              # timeline.rs, arrange.rs, notice.rs, machine.rs
+                              # timeline.rs, arrange.rs, notice.rs, machine.rs, credits.rs
                               # subscribe/ (filter, ledger, engine, sources), eventhub.rs,
                               # amqp/ (codec, conn, ws)
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
@@ -424,7 +424,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `plates.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
 `glance.ts`, `tether.ts`, `brightness.ts`, `peeking.ts`,
-`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`) are pure
+`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

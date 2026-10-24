@@ -39,6 +39,10 @@
     elsewhere?: { host: string; unheard: boolean; older?: string };
     /** The wall that asked for this card to be opened here, if one did. */
     bornFor?: string | null;
+    /** On credits, the account the card goes back to (`Conversation`). Optional
+     *  because a card on another wall's digest carries no such field; its face
+     *  then says credits without naming a home, which is not false. */
+    creditsHome?: string | null;
     /** You acknowledged the notice about this card's rest — see
      *  `Conversation.restSeen`. Optional because a card on another wall is
      *  drawn off its digest, whose tier already says `rest` and which carries
@@ -57,6 +61,7 @@
 
 <script lang="ts">
   import { waterfall } from "./waterfall.svelte";
+  import { onCredits } from "./credits";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
   import { waitLine, waitTitle } from "./waiting";
@@ -222,7 +227,13 @@
    *  is invisible — a card quietly spending the reserve you set aside is
    *  exactly that, and the transcript note scrolls away. No colour: colour on
    *  this wall is status, and which account a card is on is not a status. */
-  const acct = $derived(waterfall.several ? conv.accountLabel : null);
+  const acct = $derived(
+    onCredits(conv.accountLabel) ? "credits" : waterfall.several ? conv.accountLabel : null,
+  );
+  /* Credits are said whatever the count of accounts: `several`'s argument is
+     that a word that never varies is never read, and a card spending money per
+     token is the one funding that is never the usual one. */
+  const onCreditsNow = $derived(onCredits(conv.accountLabel));
 </script>
 
 <div class="slot" class:focused class:selected data-lod={lod}>
@@ -242,10 +253,15 @@
         {#if acct}
           <span
             class="acct"
-            class:loose={conv.bypassCaps}
-            title={conv.bypassCaps
-              ? `spending the ${acct} account, ignoring the caps you set`
-              : `spending the ${acct} account`}>{acct}{conv.bypassCaps ? " uncapped" : ""}</span
+            class:loose={conv.bypassCaps && !onCreditsNow}
+            class:credits={onCreditsNow}
+            title={onCreditsNow
+              ? conv.creditsHome
+                ? `spending the organisation's api credits while ${conv.creditsHome} has no room — billed per token`
+                : "spending the organisation's api credits — billed per token"
+              : conv.bypassCaps
+                ? `spending the ${acct} account, ignoring the caps you set`
+                : `spending the ${acct} account`}>{acct}{conv.bypassCaps && !onCreditsNow ? " uncapped" : ""}</span
           >
         {/if}
         <!-- Where the card is, when that is not here, and who asked for it
@@ -597,6 +613,13 @@
     opacity: 0.75;
     font-weight: 500;
     letter-spacing: 0.1em;
+  }
+  /* Credits read a step brighter than an account: they are money per token,
+     and the one funding a glance should never miss. Still no hue — boost's
+     look is its own piece of work, and colour here is status. */
+  .acct.credits {
+    color: var(--paper-dim);
+    opacity: 1;
   }
   /* Beside `.acct` and drawn the same way, for `.acct`'s reason: the place
      keeps its width and the project name gives way. */

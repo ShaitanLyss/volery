@@ -40,7 +40,7 @@
 /** The services, as an id the wire uses. A union rather than a string so a
  *  typo in a component is a build error rather than a command that answers
  *  "no such integration" at runtime. */
-export type ServiceId = "azdo" | "asana";
+export type ServiceId = "azdo" | "asana" | "anthropic";
 
 export type Integration = {
   id: ServiceId;
@@ -117,6 +117,21 @@ export const INTEGRATIONS: Integration[] = [
     scope: null,
     sole: true,
     probe: "GET /users/me",
+  },
+  {
+    id: "anthropic",
+    label: "anthropic credits",
+    target: "dev.skein.studio/anthropic-key",
+    credential: "api key",
+    why: "runs a card on your organisation's API credits when boost is on and its account runs out",
+    /* The organisation is the one your plan's monthly credits were linked to.
+       A workspace of its own with a monthly spend limit is the hard ceiling the
+       wall's budget cannot be: every key in the organisation draws on one
+       balance, and past the credits a purchased balance would pay. */
+    mint: "platform.claude.com → settings → workspaces → a workspace with a spend limit → api keys → create key",
+    scope: null,
+    sole: true,
+    probe: "GET /v1/models",
   },
 ];
 

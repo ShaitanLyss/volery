@@ -25,6 +25,16 @@ import {
   type Choice,
 } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
+import { purse } from "./purse.svelte";
+import {
+  CREDITS,
+  fundingName,
+  offCreditsNote,
+  onCredits,
+  ontoCreditsNote,
+  route,
+  type Decision,
+} from "./credits";
 import { listen } from "@tauri-apps/api/event";
 import { reapedNote, type Reaped } from "./perf";
 import { foldLog, type Flood, type LogLine } from "./serverlog";
@@ -680,6 +690,10 @@ export class Skein {
        the unmanaged path. With no accounts registered this costs one local
        call and then nothing, since `poll` asks for no labels. */
     waterfall.attach("wall");
+    /* And the credits beside it, for the same reason: whether a card the
+       ladder cannot place may go onto them has to be answerable at the first
+       send. Tells Rust the switch, so a card's `allowance` can say it. */
+    purse.start();
     this.#holdSweep = setInterval(() => {
       /* Only when something is actually waiting. The per-hold timer is the
          precise way out and this is the backstop for the case it cannot cover:
@@ -2025,7 +2039,20 @@ export class Skein {
          A spawned card may carry a preferred account, and `stickTo` is how it
          is honoured without a second policy: ready wins over the tiers, and
          anything else falls through them as a fresh card would. */
-      const opening = waterfall.list.length > 0 ? waterfall.next({ stickTo: prefer }) : null;
+      /* With boost on, a card the ladder cannot place — every account spent,
+         switched off or signed out — spawns straight onto credits rather than
+         waiting for its first send to be held (Lyss, 2026-10-24). `route` with
+         nothing to stick to is the ladder exactly, plus that. */
+      const opening =
+        waterfall.list.length > 0
+          ? route({
+              current: null,
+              home: null,
+              credits: purse.standing(),
+              ladder: () => waterfall.next({ stickTo: prefer }),
+              state: (label) => waterfall.stateOf(label),
+            })
+          : null;
       const account = opening?.kind === "use" ? opening.label : null;
       /* No `worktree` here: `spawn_conversation` reads it back off the row for
          the reason it reads `kind` and the preset off the row. It was the one
@@ -2050,6 +2077,7 @@ export class Skein {
          than treating the card as unattached and moving it. */
       conv.accountLabel = account;
       if (account) void invoke("set_conversation_account", { id, accountLabel: account });
+      if (onCredits(account)) conv.note(ontoCreditsNote(null, "no account on the ladder can take work"));
       /* We just spawned it, so it has a process — even though `system/init`
          has not arrived yet. It cannot: claude emits init only after it
          receives its first message. Leaving this dormant meant `send` tried to
@@ -2919,13 +2947,31 @@ export class Skein {
         ev.num_turns !== 0 &&
         conv.accountLabel
       ) {
-        waterfall.markServed(conv.accountLabel);
+        if (onCredits(conv.accountLabel)) purse.served();
+        else waterfall.markServed(conv.accountLabel);
       }
       return;
     }
     const hint = conv.pendingSpentUntil;
+    const credit = conv.pendingSpentKind;
     conv.pendingSpent = null;
     conv.pendingSpentUntil = null;
+    conv.pendingSpentKind = null;
+    if (onCredits(label)) {
+      /* Credits are not an account, and their memory is the purse's: an empty
+         balance waits hours and a rate limit a minute, which is a distinction
+         the waterfall's one back-off cannot draw. */
+      purse.refuse(credit ?? "rate");
+      if (conv.pendingHeal === null) {
+        const next = this.#decide(conv);
+        if (next.kind === "use" && !onCredits(next.label)) {
+          conv.note(`credits refused — your next message goes to ${next.label}`);
+        } else if (next.kind === "hold") {
+          conv.note("credits refused and no account is free — your next message will wait for one");
+        }
+      }
+      return;
+    }
     waterfall.markSpent(label, hint);
     /* A limit that lands mid-turn is not re-sent (`mayHeal`) but is carried on
        (`CARRY_ON_TEXT`), which arms a heal and so skips this. What reaches here
@@ -2933,9 +2979,9 @@ export class Skein {
        stops on the refusal and reads as though switching had not worked — the
        report this was written from — so say where the *next* message goes. */
     if (conv.pendingHeal === null) {
-      const next = waterfall.next({ bypass: conv.bypassCaps, stickTo: label });
+      const next = this.#decide(conv);
       if (next.kind === "use" && next.label !== label) {
-        conv.note(`${label} refused — your next message goes to ${next.label}`);
+        conv.note(`${label} refused — your next message goes to ${fundingName(next.label)}`);
       } else if (next.kind === "hold") {
         conv.note(`${label} refused and nothing else is free — your next message will wait for an account`);
       }
@@ -3033,9 +3079,11 @@ export class Skein {
       heal.kind === "overloaded"
         ? "overloaded — waiting…"
         : heal.kind === "limited"
-          ? heal.carry
-            ? "out of allowance — carrying on…"
-            : "out of allowance — moving account…"
+          ? onCredits(conv.accountLabel)
+            ? "credits refused — moving off them…"
+            : heal.carry
+              ? "out of allowance — carrying on…"
+              : "out of allowance — moving account…"
           : "trying again…";
     /* Rolled once, here, rather than inside the delay: the note the card writes
        has to name the same wait the timer is actually set to, or a card that
@@ -3055,10 +3103,10 @@ export class Skein {
       }
       conv.note(
         heal.carry
-          ? carryNote(heal.attempt, wait)
+          ? carryNote(heal.attempt, wait, onCredits(conv.accountLabel))
           : heal.pickUp
             ? pickUpNote(heal.kind, heal.attempt, wait)
-            : healNote(heal.kind, heal.attempt, wait),
+            : healNote(heal.kind, heal.attempt, wait, onCredits(conv.accountLabel)),
       );
       /* Look before re-sending, and only on the first attempt.
          `wasMalformedRequest` cannot tell the two causes apart — a body cut
@@ -3438,15 +3486,10 @@ export class Skein {
   ): Promise<boolean> {
     if (!this.#managing) return true;
 
-    const choice: Choice = waterfall.next({
-      bypass: conv.bypassCaps,
-      stickTo: conv.accountLabel,
-    });
+    const choice = this.#decide(conv);
 
     if (choice.kind === "use") {
-      if (choice.label !== conv.accountLabel) {
-        await this.#moveTo(conv, choice.label, choice.swapFrom);
-      }
+      if (choice.label !== conv.accountLabel) await this.#shift(conv, choice);
       return true;
     }
 
@@ -3506,7 +3549,41 @@ export class Skein {
    *  thing an app like that owes you is that nothing it did on its own is
    *  invisible afterwards, and a card that moved itself onto the subscription
    *  you were holding in reserve is precisely that. */
-  async #moveTo(conv: Conversation, to: string, from: string | null) {
+  /** Where this card's next turn runs: the waterfall, with credits in the
+   *  picture when boost is on. `credits.ts::route` is the whole of the policy;
+   *  with boost off and the card on an account it is exactly `waterfall.next`. */
+  #decide(conv: Conversation): Decision {
+    return route({
+      current: conv.accountLabel,
+      home: conv.creditsHome,
+      credits: purse.standing(),
+      ladder: (stickTo) => waterfall.next({ bypass: conv.bypassCaps, stickTo }),
+      state: (label) => waterfall.stateOf(label, conv.bypassCaps),
+    });
+  }
+
+  /** Make a decision to run somewhere else true, saying why in the words that
+   *  fit the move — onto credits, back off them, or across the ladder. */
+  async #shift(conv: Conversation, d: Extract<Decision, { kind: "use" }>) {
+    const from = conv.accountLabel;
+    if (d.label === CREDITS) {
+      const why = from && !onCredits(from) ? this.#whyLeft(conv, from) : "no account on the ladder can take work";
+      await this.#moveTo(conv, CREDITS, null, d.home);
+      conv.note(ontoCreditsNote(d.home, why));
+      return;
+    }
+    if (onCredits(from)) {
+      const standing = purse.standing();
+      await this.#moveTo(conv, d.label, null);
+      conv.note(
+        offCreditsNote(d.label, d.why === "home" ? "home" : "ladder", standing.ready ? null : standing.why),
+      );
+      return;
+    }
+    await this.#moveTo(conv, d.label, from);
+  }
+
+  async #moveTo(conv: Conversation, to: string, from: string | null, home: string | null = null) {
     try {
       /* **Unconditionally, and that is the whole of the bug this once had.**
          This used to be `if (!conv.dormant)`, which asks the *front end's
@@ -3546,7 +3623,14 @@ export class Skein {
       }
       conv.dormant = true;
       conv.accountLabel = to;
-      void invoke("set_conversation_account", { id: conv.id, accountLabel: to });
+      /* The home goes with the label in one write, and every other move clears
+         it — `store::set_conversation_account` holds the same rule. */
+      conv.creditsHome = onCredits(to) ? home : null;
+      void invoke("set_conversation_account", {
+        id: conv.id,
+        accountLabel: to,
+        creditsHome: conv.creditsHome,
+      });
       if (from) conv.note(swapNote(from, to, this.#whyLeft(conv, from)));
     } catch (err) {
       conv.retiring = false;
@@ -3824,7 +3908,9 @@ export class Skein {
     if (!conv.held || this.#releasing.has(conv.id)) return;
     if (conv.working || conv.pendingHeal || this.#heals.has(conv.id)) return;
     if (this.#managing) {
-      const choice = waterfall.next({ bypass: conv.bypassCaps, stickTo: conv.accountLabel });
+      /* The same decision the send will make, so a hold boost can take onto
+         credits is released rather than re-held. */
+      const choice = this.#decide(conv);
       if (choice.kind === "hold") {
         this.#reHold(conv, this.#holdWhy(conv, choice), choice.until);
         return;
@@ -4991,6 +5077,19 @@ export class Skein {
     if (since === this.spendSince) return;
     this.spendSince = since;
     void this.#readSpend();
+    /* A day rolling over is the only moment a month can: the purse notices a
+       new month itself and starts its ledger again. */
+    void purse.refresh(now);
+  }
+
+  /** Turn boost on or off — the header's button, `<space> m b` and the control
+   *  surface all come here. On, every held card is asked again at once: a hold
+   *  credits can now take is released onto them rather than left to wait out a
+   *  window (`credits.ts::route`). Off, a card on credits moves back to the
+   *  ladder at its next message; nothing is moved under a turn. */
+  setBoost(on: boolean) {
+    purse.setBoost(on);
+    if (on && this.convs.some((c) => c.held)) void this.releaseHeld();
   }
 
   /** Ask the table what the day has cost. The table is the only source: a turn
@@ -5997,13 +6096,20 @@ export class Skein {
         cacheReadTokens: c.lastTurn.cacheRead,
         cacheWriteTokens: c.lastTurn.cacheWrite,
         usd: c.lastTurn.usd,
+        /* Which funding paid for it — the move onto another account happens at
+           a send, so during the turn this is the account the turn ran on. It is
+           what the month's credits figure is a sum of (`migrate_v59`). */
+        accountLabel: c.accountLabel,
       })
         /* And the day's figure moves, once the row is actually in — the write
            is what the reading is of. Chained rather than added to `spend` here,
            so there is one source for that number and not two that can drift.
            A SUM over the turn table costs less than the round trip carrying
-           it. */
-        .then(() => this.#readSpend())
+           it. The credits figure is the same argument over its own rows. */
+        .then(() => {
+          void this.#readSpend();
+          if (onCredits(c.accountLabel)) void purse.refresh();
+        })
         .catch(() => {});
     } else if (ev?.type === "assistant") {
       for (const b of ev.message?.content ?? []) {

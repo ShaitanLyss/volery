@@ -10,6 +10,9 @@ paths:
   - "src-tauri/src/accountsync.rs"
   - "src-tauri/src/flyway/accounts.rs"
   - "src-tauri/src/flyway/link/accounting.rs"
+  - "src/lib/credits.ts"
+  - "src/lib/purse.svelte.ts"
+  - "src-tauri/src/credits.rs"
 ---
 
 # More than one subscription, in priority order
@@ -1016,6 +1019,214 @@ in casing. That is the `usage.svelte.ts` trap `ledger.svelte.ts` is named
 around, one degree worse — not an ambiguity resolved the wrong way but one that
 cannot be resolved at all. `skein.svelte.ts` does the swapping and the holding,
 because sending is a Rust call and a `Conversation` never makes one.
+
+## Credits and boost mode
+
+Since October 2026 a Max or Team plan carries a monthly Claude API credit: $100 on Max 5x,
+$200 on Max 20x, and on Team $20 a Standard seat and $100 a Premium seat, pooled and capped
+at $500. A plan owner claims it by linking one Claude Console organisation to the plan. It
+lands in that organisation's balance as *promotional credits*, expires at the end of each
+billing cycle, and does not roll over. Lyss's manager let her spend the team's, on
+2026-10-24.
+
+**The terms say the credits do not cover Claude Code, and then make the exception this
+feature stands on.** From the help centre's article on them, read the same day: *"API credits
+cover `claude -p` and the Claude Agent SDK when you run them yourself with an API key from your
+linked Claude Console organization, because that usage is billed as Agent SDK usage."* Every
+card on this wall is a `claude --print` child. And it is not a reading of prose alone: claude
+2.1.304's bundle sets `CLAUDE_CODE_ENTRYPOINT=sdk-cli` for a print-mode session and reports
+`sdk-cli` (with `sdk-ts` and `sdk-py`) as `claude_code_sdk`. That is the class the credits
+pay for. The interactive TUI, the IDE extensions, the desktop app and the GitHub Action are
+the other classes, and the article names them as uncovered *even with `-p`*. So `credits.rs`
+takes `CLAUDE_CODE_ENTRYPOINT` off a credits card's environment and lets the CLI name the
+session itself. A wall launched from inside another card would otherwise hand its children
+the parent's entrypoint.
+
+**What has not been seen is the Console filing a real turn as covered.** A turn on a key
+from the linked organisation is that check, and it has not been run yet (*Proven, and what is
+still only claimed*, below).
+
+### A signed-in account is not the way in
+
+The obvious reading, "I joined the organisation with my claude.ai account, so cards on it
+spend the credits", is wrong in a way that would cost money quietly. A claude.ai sign-in
+bills the *subscription*. Credits are spent only by an **API key** minted in the linked
+organisation. `claude auth login --console` would mint one too. It is not used, because on
+Windows it writes the key as `primaryApiKey` into the **shared** `~/.claude.json` (read out
+of the bundle: `tengu_api_key_saved_to_config`). Every card on the machine reads that file,
+so the key would quietly outrank every account's store.
+
+### How a card is put on the key
+
+Probed against claude 2.1.304:
+
+```text
+empty store                         authMethod "none"
+empty store + ANTHROPIC_API_KEY     authMethod "api_key", apiKeySource "ANTHROPIC_API_KEY"
+tx-team's signed-in store + key     authMethod "api_key"            <- the key outranks the store
+-p turn, dummy key                  api_error_status 401, "Invalid API key · Fix external API key"
+-p turn, apiKeyHelper in --settings hung for 90s, no output         <- not usable
+```
+
+So a card on credits is `ANTHROPIC_API_KEY` in its environment at spawn, read from the vault
+(`dev.skein.studio/anthropic-key`, a row in the integrations panel). That is the shape
+`lend.rs` already uses for a lent credential, for `lend.rs`'s reason: `--settings` is an
+inline argv that any process can read. The store is pointed at an **empty** directory beside
+it, so a CLI that one day stops reading the variable fails with `authMethod: none` instead of
+quietly spending the global sign-in.
+
+**And every card that is not on credits has the variable taken off.** Volery's own
+environment has none, but a lab wall started from inside a card on credits does, and its
+cards would then spend the credits while drawing the lab's accounts. Inheriting the key is
+not harmless, because the key outranks the store the card was put on.
+
+### `@credits` is a funding, not an account
+
+A card on credits carries `@credits` in `conversation.account_label`. No account can be
+called that: `accounts.rs::is_label` refuses the `@`. Every Rust path that names a credential
+store for a label asks `credits::is_credits` first: `spawn_now`, `aside.rs`, and the
+`allowance` and `accounts` tools. Reusing the column, rather than adding a funding column
+beside it, keeps a card's stickiness, its swap, and its row restored at launch working
+exactly as they do for an account. The waterfall never sees the label. `Waterfall.next` only
+ever chooses among the registry, so `@credits` is never a candidate. Credits enter only
+through `credits.ts::route`.
+
+`conversation.credits_home` (`migrate_v59`) is the account a card left when it went onto
+credits. It is written in the same statement as the label and cleared by every other move.
+`turn.account_label` (same rung) is the funding each turn ran on, and the month's credits
+figure is a sum over it. It cannot be a join through the conversation, because the
+conversation's label is overwritten by every move. Nothing is backfilled. An old row's
+funding is unknowable, and NULL reads as "not credits", which is what every one of them was.
+
+### The rule is Lyss's, and the afternoon it was checked against
+
+Asked for on 2026-10-24: *"When boost mode is on, cards first try to use normal account
+allowance; when it runs out on the account they were using, instead of switching to the next
+account in the ladder, they switch to credits."* It was put back to her as one afternoon on
+her own wall (`lyss` spent for the week, `tx-team` mid-session, `alizee` on priority 2), with
+two alternatives drawn beside it, and she kept it as stated. Then, mid-build: *"all accounts
+are already used or off and I spawn a card in boost mode, it should use credits right away."*
+`route` is the whole of it, pure, and `test/credits.test.ts` replays that afternoon:
+
+- **A card whose own account is blocked goes onto credits**, not down the ladder. The account
+  is remembered as its home.
+- **A new card takes the ladder first** and goes onto credits only where the ladder cannot
+  place it. That includes every account switched off or signed out (`none`), which without
+  boost would be a fault. A new card in that state spawns on credits directly, and turning
+  boost on releases every held card onto them.
+- **A card on credits goes home at its next message once its home has room.** That bends
+  "a card swaps when it must, not when it could" on purpose. The stickiness rule exists
+  because a move costs an uncached re-read, but here staying costs money on every turn while
+  going home costs that re-read once. A card with no home goes to any account with room. So
+  does one whose home was switched off.
+- **An account that is merely unusable is not one that ran out.** While another account has
+  room, its card goes down the ladder as before, so a switch you flipped keeps its meaning.
+  Credits take the card only when the ladder has nowhere to put it.
+- **When credits cannot take work, everything is the ladder exactly.** That covers boost off,
+  no key, your budget spent, or a refusal standing. A card on credits then starts down the
+  ladder from its home.
+
+### What a refusal on credits means
+
+`classify.ts::creditRefusalOf` is asked only of a card on credits. A 401 on a subscription is
+an expired sign-in with a heal of its own, and must not read as a credits problem. Its three
+answers all become `limited`, which means *the one failure another funding fixes*, so the
+reactive half carries a card off credits exactly as it carries one off a spent account. The
+waits differ by a factor of sixty, so the memory is the purse's (`refuseCredits`), not the
+waterfall's single back-off:
+
+- **`balance`**: "credit balance is too low", in the API's words and in the CLI's own `Credit
+  balance too low · Add funds`. Both are in the bundle beside the CLI's own detector. An hour,
+  doubling to six. The grant comes back monthly, not in minutes.
+- **`key`**: the 401 a dummy key was probed to produce. Same wait. Storing a key clears it.
+- **`rate`**: the organisation's own rate limit (429). A minute, doubling to ten. That is
+  weather, not money.
+
+Flipping boost back on clears any of them, which is `putOnAccount`'s argument: the gesture a
+person makes after topping up or replacing the key outranks the wall's memory.
+
+### The money, and what the wall cannot see
+
+**The budget is yours, and $500 a month unless you set another.** A wall that was never told
+a figure must not be one that can spend without limit. `skein.credits.budget` holds a number,
+or `"none"` for no ceiling. **It is not the hard ceiling and cannot be.** Every key in the
+organisation draws on one balance. Past the credits, a purchased balance or an invoiced
+account goes on paying ("If the organization has other credits, requests continue using
+purchased credits"). And the balance itself needs an admin key to read. So the
+integrations row says what is: mint the key in a workspace of its own with a monthly spend
+limit. That limit is the ceiling nothing on this side can cross. The wall's figure is what
+*this wall* spent (`credits::spent_since`, from `result.total_cost_usd`). It is never shown as
+what is left.
+
+**What it costs, measured rather than guessed.** On the day this was built the wall had spent
+$33.66 in 24 hours at API prices. In mid-September a single day ran $510 of Opus. So $500 is
+about two weeks of today's pace, or one heavy day, if *everything* ran on it. Only overflow
+does. A card that moves onto credits pays its whole context once as a 1h cache write: Opus 5.5
+is $4/$20 a million and a cache write is twice input, so a card 500k deep pays about $4 to
+make the move. After that each turn reads its context at $0.20 a million.
+
+### Where it is drawn
+
+- **The card** says `credits` in the account slot whatever the count of accounts. `several`'s
+  argument is that a word that never varies is never read, and credits are the one funding
+  that is never the usual one. Its tooltip names the home.
+- **The title bar** has `boost`, which while on reads `boost · $88 of $500` for the month. It
+  folds late, after `away`. A bar that folded the one state costing money to make room for the
+  zoom would be hiding it.
+- **`<space> m b`** flips it and says what is now true, beside the other standing switches in
+  `m`.
+- **The transcript** says every move onto and off credits (`ontoCreditsNote`,
+  `offCreditsNote`), by `swapNote`'s rule.
+- **A card's `allowance`** on credits answers with the bill, not windows (`credits.rs`). The
+  advice is milder than the ladder's last rungs on purpose. Boost is a decision the user made
+  to keep work moving, and telling an agent to do the smallest thing possible would overrule
+  it.
+
+Boost and the budget are this machine's, in `localStorage`, as the chime is. They are noted
+to Rust as they change (`note_boost`, `quit::note_busy`'s shape) so the allowance tool can
+say them without asking the webview.
+
+### Proven, and what is still only claimed
+
+Driven on a lab wall (`bun run lab boost --frozen`, store at v59) on 2026-10-24. The routing
+was put through the control surface's stand-in allowance (`allowance accounts:@…`), so no
+real account was spent to make one look full:
+
+```text
+every account spent, boost on, open        card spawned on @credits, "put on credits — …"
+/model haiku, then a real prompt            claude-haiku-5-5, ending ok, $0.0086
+                                            turn row account_label '@credits'; purse spent $0.0086
+fed "Credit balance too low · Add funds"    purse refused: balance, 1h; carry-on armed
+boost on again                              refusal forgiven, ready
+tx-team frees up, /cost                     moved to tx-team; the CLI's own /cost answered
+                                            "using your subscription" — the key did not follow it
+tx-team runs out under it, /cost            @credits, credits_home tx-team
+tx-team frees up, boost off, /cost          back on tx-team, home cleared
+```
+
+`/cost` is answered by the CLI itself, so every move after the first turn cost nothing, and
+the `spend` rows it wrote are $0. That is what shows a respawn onto another funding does not
+count the session's cost twice.
+
+**What this did not prove is the one claim the feature rests on.** The key used was from
+Lyss's own organisation, which held $5 of *purchased* credit while her developer access to
+the linked organisation was pending. So the turn was paid, and the help centre's sentence
+about `claude -p` being covered by the *promotional* credits is still a sentence. The check is
+one Haiku turn on a key minted in the linked organisation, then the Console's usage page for
+that key. If it ever is not covered and that organisation holds only promotional credits, the
+CLI says `Credit balance too low`, which `creditRefusalOf` reads as `balance`. Credits then
+stop taking work, and the cards go back to the ladder.
+
+### Not built
+
+- **Boost's look and its music.** Asked for in the same breath ("now this is the real deal,
+  this is our last battle") and deliberately second. Three looks and three playable sketches
+  were shown, and the credits came first.
+- **Putting a card on credits by hand.** `/account` and `put it on…` list the registry.
+  `putOnAccount` with `@credits` would be one arm, and the menu would need to offer it.
+- **A wall with no accounts registered.** `#settleAccount` returns at once there, so boost
+  never routes. Such a wall runs every card on the CLI's own sign-in, and nothing here knows
+  when that has run out.
 
 ## Carrying a waterfall — and why a sign-in never travels
 

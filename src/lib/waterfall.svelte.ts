@@ -32,6 +32,7 @@ import {
   probing,
   refuse,
   several,
+  standingOf,
   usable,
   type Account,
   type Allowance,
@@ -330,7 +331,21 @@ export class Waterfall {
    *  should aim its retry at, since a poll cannot see a spend cap and so cannot
    *  be what releases one. */
   next(opts: { bypass?: boolean; stickTo?: string | null } = {}): Choice {
-    const now = Date.now();
+    return choose(this.list, this.#overlaid(Date.now()), opts);
+  }
+
+  /** One account's state as `next` sees it — refusals included — for the
+   *  boost routing, which has to tell an account that *ran out* (credits stand
+   *  in for it) from one that was switched off (it does not). An account not in
+   *  the registry is `unusable`. */
+  stateOf(label: string, bypass = false): "ready" | "blocked" | "unusable" {
+    const acct = this.list.find((a) => a.label === label);
+    if (!acct) return "unusable";
+    return standingOf(acct, this.#overlaid(Date.now())[label], bypass).state;
+  }
+
+  /** The readings with every standing refusal laid over them; see `next`. */
+  #overlaid(now: number): Record<string, Allowance> {
     let allowances = this.allowances;
     if (this.#refused.size > 0) {
       const overlaid: Record<string, Allowance> = { ...allowances };
@@ -356,7 +371,7 @@ export class Waterfall {
       }
       allowances = overlaid;
     }
-    return choose(this.list, allowances, opts);
+    return allowances;
   }
 
   /* ── the gestures ────────────────────────────────────────────────────────*/
