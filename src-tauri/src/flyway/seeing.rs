@@ -66,6 +66,20 @@
 //! read: `show::picture_raw` is the function `read_picture` stands on. And the
 //! asking wall checks the bytes again (`received`) before they go near a
 //! `src=`, since they came from another machine.
+//!
+//! ### And a picture a tool call answered with
+//!
+//! A `Read` of a PNG, a browser screenshot: the result *is* an image block, and
+//! opening that call on a card here draws it (`ToolCall.svelte`). The tail
+//! carries a call's text and not its pictures — a screenshot is ~135k of base64
+//! and the tail is re-read on every change — so a far fold opened onto nothing.
+//! It is pulled instead, when the fold is opened, as one more `picture` reading
+//! that names the call (`call`, `n`): the owning wall finds that `tool_result`
+//! in the card's own session file and sends its `n`th image block
+//! (`result_picture`). Not by path, because a screenshot was never a file and a
+//! `Read`'s file may have changed since — the conversation's record is what was
+//! seen. Behind a word of its own (`CALL_WORD`), since an older wall reads the
+//! unknown fields as absent and would answer "no path was named".
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -74,6 +88,14 @@ use std::path::{Path, PathBuf};
 /// The word a wall announces in `Facts::can` when it answers a `see`. Not one
 /// of `fleet::CAN`, for `tail::WORD`'s reason.
 pub const WORD: &str = "see";
+
+/// The word a wall announces when it also answers a `picture` that names a
+/// tool call rather than a file — "And a picture a tool call answered with".
+pub const CALL_WORD: &str = "see_call";
+
+/// The longest tool-use id believed. The CLI's are `toolu_` and two dozen
+/// characters; this bounds what is searched for, not what is drawn.
+const CALL_ID_MOST: usize = 128;
 
 /// The most paths one `stat` may ask about — `find::CLASSIFY_CAP`.
 pub const STAT_MOST: usize = 400;
@@ -135,7 +157,13 @@ pub enum Sight {
     /// By the copy `show` kept, or by path — and a kept copy that has gone
     /// falls back to `path`, as a local figure does. `measure` asks for the
     /// box alone; `have` is the stamp of a copy the asker already holds.
+    /// `call` asks instead for the `n`th picture that tool call answered with,
+    /// out of the card's own conversation, and is then the only thing read.
     Picture {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        n: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kept: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,6 +178,10 @@ pub enum Sight {
         #[serde(default)]
         from: u64,
     },
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A picture, as the owning wall read it.
@@ -196,6 +228,8 @@ pub struct Part {
 pub struct Grounds {
     pub base: Option<PathBuf>,
     pub shown: PathBuf,
+    /// The card's session file, where a tool call's pictures are read from.
+    pub transcript: Option<PathBuf>,
     /// This wall's name, for the sentences.
     pub me: String,
 }
@@ -294,7 +328,10 @@ pub fn answer(id: &str, ask: Sight, g: &Grounds) -> SeeMsg {
             Ok(Said::Stats(out))
         }
         Sight::Names { names } => names_here(names, g).map(Said::Names),
-        Sight::Picture { kept, path, measure, have } => picture_here(kept, path, measure, have, g).map(Said::Picture),
+        Sight::Picture { call: Some(call), n, measure, .. } => result_picture(&call, n, measure, g).map(Said::Picture),
+        Sight::Picture { kept, path, measure, have, call: None, .. } => {
+            picture_here(kept, path, measure, have, g).map(Said::Picture)
+        }
         Sight::File { path, from } => part_here(&path, from, g).map(Said::Part),
     })
 }
@@ -382,6 +419,82 @@ fn picture_here(kept: Option<String>, path: Option<String>, measure: bool, have:
         stamp: Some(stamp),
         same: false,
         stale,
+    })
+}
+
+/// A tool-use id as the CLI writes one — letters, digits, `_` and `-` — which
+/// is also what lets a substring search for it stand as a prefilter.
+fn is_call_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= CALL_ID_MOST && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The `n`th picture the tool call `call` answered with, out of a session
+/// file: the `tool_result` naming it in a record's content, and its base64
+/// image blocks in order — the shape `classify.ts::picturesOf` reads, on the
+/// wire and on disk alike. Only a line that mentions the id is parsed, so a
+/// transcript of a hundred megabytes costs one pass of `contains`. `None` when
+/// the call, or that many pictures in it, is not there.
+pub fn picture_of_call(transcript: &Path, call: &str, n: u32) -> Result<Option<Vec<u8>>, String> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(transcript).map_err(|e| e.to_string())?;
+    let mut lines = std::io::BufReader::new(f);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if lines.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+            return Ok(None);
+        }
+        if !line.contains(call) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) else { continue };
+        let says = |b: &serde_json::Value, k: &str| b.get(k).and_then(|t| t.as_str()).map(str::to_string);
+        for b in content {
+            if says(b, "type").as_deref() != Some("tool_result") || says(b, "tool_use_id").as_deref() != Some(call) {
+                continue;
+            }
+            let Some(blocks) = b.get("content").and_then(|c| c.as_array()) else { return Ok(None) };
+            let data = blocks
+                .iter()
+                .filter(|x| says(x, "type").as_deref() == Some("image"))
+                .filter_map(|x| x.get("source"))
+                .filter(|s| says(s, "type").as_deref() == Some("base64"))
+                .filter_map(|s| s.get("data").and_then(|d| d.as_str()))
+                .nth(n as usize);
+            return Ok(data.and_then(crate::unbase64));
+        }
+    }
+}
+
+/// A tool call's picture, as an answer, meeting every refusal a picture read
+/// from a file meets in `picture_raw`: typed by its own bytes, `MAX_PICTURE`,
+/// and `MAX_PIXELS` by the header's numbers. Never stamped — what a call
+/// answered with does not change, so the asker keeps it as it keeps a `show`
+/// copy.
+fn result_picture(call: &str, n: u32, measure: bool, g: &Grounds) -> Result<Pictured, String> {
+    let call = call.trim();
+    if !is_call_id(call) {
+        return Err("that is not the name of a tool call".into());
+    }
+    let Some(t) = &g.transcript else {
+        return Err(format!("that card has no conversation on {} yet", g.me));
+    };
+    let name = format!("picture {} of that call", n + 1);
+    let bytes = picture_of_call(t, call, n)
+        .map_err(|e| format!("that card's conversation could not be read on {}: {e}", g.me))?
+        .ok_or_else(|| format!("{name} is not in that card's conversation on {}", g.me))?;
+    if crate::show::sniff_picture(&bytes).is_none() {
+        return Err(format!("{name} is not a picture this window can draw"));
+    }
+    let too_large = bytes.len() as u64 > crate::show::MAX_PICTURE || crate::show::too_many_pixels_in(&bytes);
+    Ok(Pictured {
+        name,
+        data: if measure || too_large { String::new() } else { crate::base64(&bytes) },
+        bytes: bytes.len() as u64,
+        size: crate::show::picture_size(&bytes),
+        too_large,
+        ..Pictured::default()
     })
 }
 
@@ -578,8 +691,84 @@ mod tests {
         std::fs::write(p("proj/.scratch-x/shot.png"), PNG).unwrap();
         std::fs::write(p("proj/.env.local"), b"TOKEN=x").unwrap();
         std::fs::write(p("elsewhere/note.md"), b"# note").unwrap();
-        let g = Grounds { base: Some(p("proj")), shown: p("shown"), me: "lap".into() };
+        /* A conversation in the CLI's own shape: the call, and a result holding
+           some words and two pictures, the second a PNG. */
+        let png = crate::base64(PNG);
+        let records = [
+            serde_json::json!({ "type": "assistant", "message": { "content": [
+                { "type": "tool_use", "id": "toolu_01Shot", "name": "Read", "input": { "file_path": "shot.png" } } ] } }),
+            serde_json::json!({ "type": "user", "message": { "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_01Other", "content": [
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": png } } ] } ] } }),
+            serde_json::json!({ "type": "user", "message": { "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_01Shot", "content": [
+                    { "type": "text", "text": "two pictures" },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": crate::base64(b"not a picture") } },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": png } } ] } ] } }),
+        ];
+        let jsonl: String = records.iter().map(|r| format!("{r}\n")).collect();
+        std::fs::write(p("session.jsonl"), jsonl).unwrap();
+        let g = Grounds { base: Some(p("proj")), shown: p("shown"), transcript: Some(p("session.jsonl")), me: "lap".into() };
         (Tree { top }, g)
+    }
+
+    /// A picture a tool call answered with is read out of the card's own
+    /// conversation — by the call's id and its place among the pictures — and
+    /// meets the same refusals a picture read from a file does.
+    #[test]
+    fn a_calls_picture_crosses_out_of_the_conversation() {
+        let (_t, mut g) = tree();
+        let call = |id: &str, n: u32, measure: bool| Sight::Picture {
+            call: Some(id.into()),
+            n,
+            kept: None,
+            path: None,
+            measure,
+            have: None,
+        };
+        let SeeMsg::Seen { picture: Some(p), why: None, .. } = answer("r", call("toolu_01Shot", 1, false), &g) else { panic!() };
+        assert_eq!(p.size, Some((2, 3)));
+        assert!(p.stamp.is_none(), "what a call answered with never changes");
+        assert_eq!(received(&p, "lap").unwrap().data.as_deref(), Some(PNG));
+        /* Measured: the box and no bytes. */
+        let SeeMsg::Seen { picture: Some(m), .. } = answer("r", call("toolu_01Shot", 1, true), &g) else { panic!() };
+        assert!(m.data.is_empty() && m.size == Some((2, 3)));
+        /* The first image block of that call is not a picture: refused, not drawn. */
+        let SeeMsg::Seen { why: Some(w), .. } = answer("r", call("toolu_01Shot", 0, false), &g) else { panic!() };
+        assert!(w.contains("not a picture"), "{w}");
+        let SeeMsg::Seen { why: Some(w), .. } = answer("r", call("toolu_01Shot", 2, false), &g) else { panic!() };
+        assert!(w.contains("not in that card's conversation on lap"), "{w}");
+        let SeeMsg::Seen { why: Some(w), .. } = answer("r", call("toolu_01Gone", 0, false), &g) else { panic!() };
+        assert!(w.contains("not in that card's conversation"), "{w}");
+        /* An id is only ever an id: nothing that could be a path or a pattern. */
+        for bad in ["", "../x", "toolu \"x\"", &"t".repeat(CALL_ID_MOST + 1)] {
+            let SeeMsg::Seen { why: Some(w), .. } = answer("r", call(bad, 0, false), &g) else { panic!() };
+            assert!(w.contains("not the name of a tool call"), "{bad}: {w}");
+        }
+        g.transcript = None;
+        let SeeMsg::Seen { why: Some(w), .. } = answer("r", call("toolu_01Shot", 1, false), &g) else { panic!() };
+        assert!(w.contains("no conversation on lap"), "{w}");
+    }
+
+    /// A wall from before `call` reads the frame without it — so the asker
+    /// must not send it there, which is what `CALL_WORD` is for — and the
+    /// default `n` is not written, so an ordinary picture's frame is unchanged.
+    #[test]
+    fn a_call_rides_the_picture_reading_and_costs_an_ordinary_one_nothing() {
+        let plain = SeeMsg::See {
+            id: "r".into(),
+            card: "c".into(),
+            ask: Sight::Picture { call: None, n: 0, kept: None, path: Some("a.png".into()), measure: false, have: None },
+        };
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(v["ask"].get("call").is_none() && v["ask"].get("n").is_none(), "{v}");
+        let called = SeeMsg::See {
+            id: "r".into(),
+            card: "c".into(),
+            ask: Sight::Picture { call: Some("toolu_1".into()), n: 2, kept: None, path: None, measure: false, have: None },
+        };
+        let back: SeeMsg = serde_json::from_value(serde_json::to_value(&called).unwrap()).unwrap();
+        assert_eq!(back, called);
     }
 
     /// Any file on the machine, by Lyss's decision — beside the card or
@@ -626,7 +815,7 @@ mod tests {
     #[test]
     fn a_picture_crosses_checked_and_a_file_crosses_whole() {
         let (_t, g) = tree();
-        let pic = |have: Option<String>| Sight::Picture { kept: None, path: Some(".scratch-x/shot.png".into()), measure: false, have };
+        let pic = |have: Option<String>| Sight::Picture { call: None, n: 0, kept: None, path: Some(".scratch-x/shot.png".into()), measure: false, have };
         let SeeMsg::Seen { picture: Some(p), why: None, .. } = answer("r", pic(None), &g) else { panic!() };
         assert_eq!(p.size, Some((2, 3)));
         let c = received(&p, "lap").unwrap();
@@ -637,14 +826,14 @@ mod tests {
         assert!(q.same && q.data.is_empty());
         /* Measured: the box, and nothing else. */
         let SeeMsg::Seen { picture: Some(m), .. } =
-            answer("r", Sight::Picture { kept: None, path: Some(".scratch-x/shot.png".into()), measure: true, have: None }, &g)
+            answer("r", Sight::Picture { call: None, n: 0, kept: None, path: Some(".scratch-x/shot.png".into()), measure: true, have: None }, &g)
         else {
             panic!()
         };
         assert!(m.data.is_empty() && m.size == Some((2, 3)) && !m.too_large);
         /* A text file is not a picture, here or there. */
         let SeeMsg::Seen { why: Some(w), .. } =
-            answer("r", Sight::Picture { kept: None, path: Some("src/a.ts".into()), measure: false, have: None }, &g)
+            answer("r", Sight::Picture { call: None, n: 0, kept: None, path: Some("src/a.ts".into()), measure: false, have: None }, &g)
         else {
             panic!()
         };
@@ -685,7 +874,7 @@ mod tests {
         let (t, g) = tree();
         let k = format!("{}.png", crate::store::uuid_v4());
         std::fs::copy(t.top.join("proj/.scratch-x/shot.png"), g.shown.join(&k)).unwrap();
-        let kept = |k: String, path: Option<&str>| Sight::Picture { kept: Some(k), path: path.map(str::to_string), measure: false, have: None };
+        let kept = |k: String, path: Option<&str>| Sight::Picture { call: None, n: 0, kept: Some(k), path: path.map(str::to_string), measure: false, have: None };
         let SeeMsg::Seen { picture: Some(p), .. } = answer("r", kept(k, None), &g) else { panic!() };
         assert!(!p.stale && !p.data.is_empty());
         let SeeMsg::Seen { why: Some(w), .. } = answer("r", kept("../proj/.env.local".into(), None), &g) else { panic!() };
@@ -733,7 +922,7 @@ mod tests {
     fn the_words_round_trip_and_a_newer_answer_still_reads() {
         for m in [
             SeeMsg::See { id: "r".into(), card: "c".into(), ask: Sight::Stat { paths: vec!["a".into()] } },
-            SeeMsg::See { id: "r".into(), card: "".into(), ask: Sight::Picture { kept: Some("k".into()), path: None, measure: true, have: None } },
+            SeeMsg::See { id: "r".into(), card: "".into(), ask: Sight::Picture { call: None, n: 0, kept: Some("k".into()), path: None, measure: true, have: None } },
             SeeMsg::Seen { id: "r".into(), why: Some("no".into()), stats: None, names: None, picture: None, part: None },
         ] {
             let back: SeeMsg = serde_json::from_value(serde_json::to_value(&m).unwrap()).unwrap();

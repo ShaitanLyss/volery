@@ -494,6 +494,13 @@ export type ToolResult = {
    *  to distinguish "no images" from "images not read yet" — every other
    *  optional field here strikes the same bargain. */
   pictures?: Picture[];
+  /** How many pictures came back that this window does not hold: a card on
+   *  another wall, whose tail carries a call's words and only the *count* of
+   *  its pictures. Each is pulled from that wall when the fold is opened, by
+   *  the call's id and its place (`showing.ts::callSource`) — the same
+   *  "decoding is paid for by a click" the pictures above keep, with the read
+   *  paid for by it too. At most `RESULT_PICTURES`, like `pictures`. */
+  far?: number;
   /** How many more came back than are being drawn — see `RESULT_PICTURES`. */
   unshown?: number;
   /** When it landed, in ms — the end of the call, as its line's `at` is the
@@ -560,7 +567,7 @@ export function resultSize(r: ToolResult): string {
      block beside it *is* the image — so this used to answer "empty" about a call
      that had come back with a screenshot in it, which is the whole of what sink
      28cb1c5d was reporting from the outside. */
-  const shots = (r.pictures?.length ?? 0) + (r.unshown ?? 0);
+  const shots = (r.pictures?.length ?? 0) + (r.far ?? 0) + (r.unshown ?? 0);
   if (shots > 0) {
     const said = shots === 1 ? "1 image" : `${shots} images`;
     return text ? `${said}, ${text.split("\n").length} lines` : said;

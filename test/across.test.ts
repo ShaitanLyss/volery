@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afarRoot, isHere, readAfar } from "../src/lib/across";
-import { keptSource, placeOf, proseSource, sourceKey } from "../src/lib/showing";
+import { callSource, keptSource, placeOf, proseSource, sourceKey } from "../src/lib/showing";
 
 describe("a root naming a card on another wall", () => {
   test("comes back as the wall and the card it was made from", () => {
@@ -73,6 +73,29 @@ describe("where a picture is read from", () => {
     const b = proseSource(afarRoot("lab", "c2"), "a.png")!;
     const c = proseSource(afarRoot("box", "c1"), "a.png")!;
     expect(new Set([sourceKey(a), sourceKey(b), sourceKey(c)]).size).toBe(3);
+  });
+
+  test("a tool call's picture is asked of the wall its card runs on, by the call and its place", () => {
+    expect(callSource(far, "toolu_1", 2)).toEqual({ kind: "afar", host: "lab", card: "c1", kept: null, path: "", call: "toolu_1", n: 2 });
+    /* A card here holds its call's pictures already; a chat card has none. */
+    expect(callSource("C:\\p", "toolu_1", 0)).toBeNull();
+    expect(callSource(null, "toolu_1", 0)).toBeNull();
+    const keys = [
+      callSource(far, "toolu_1", 0)!,
+      callSource(far, "toolu_1", 1)!,
+      callSource(far, "toolu_2", 0)!,
+      callSource(afarRoot("lab", "c2"), "toolu_1", 0)!,
+      proseSource(far, "")!,
+    ].map(sourceKey);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("a far call's pictures are drawn by the one picture, from the fold's own file scope", () => {
+    const call = read("src/lib/ToolCall.svelte");
+    const pics = tags(call, "InlinePicture");
+    expect(pics.length).toBe(1);
+    expect(call).toMatch(/callSource\(root, call\.id, n\)/);
+    expect(call).toMatch(/files\(\)\?\.root/);
   });
 });
 

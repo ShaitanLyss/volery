@@ -117,13 +117,21 @@
   };
 
   /** What a picture on another wall is asked by: the card, and the copy or
-   *  the path as the card wrote it. */
+   *  the path as the card wrote it — or the tool call that answered with it
+   *  and its place among that call's pictures. */
   const afarArgs = (s: Extract<PictureSource, { kind: "afar" }>) => ({
     host: s.host,
     card: s.card,
     kept: s.kept,
     path: s.path || null,
+    call: s.call ?? null,
+    n: s.n ?? null,
   });
+
+  /** A picture that never changes once made: a `show` copy, here or on the
+   *  wall a card runs on, or what a tool call answered with there. Cached, and
+   *  asked for once. */
+  const fixed = (s: PictureSource) => s.kind === "kept" || (s.kind === "afar" && (!!s.kept || !!s.call));
 
   /* A key that names the picture without hashing megabytes of base64 every
      time the streaming tail is parsed again: the parse makes a new string per
@@ -140,7 +148,9 @@
   const name = $derived(
     source.kind === "data"
       ? "picture"
-      : nameOf(
+      : source.kind === "afar" && source.call
+        ? `picture ${(source.n ?? 0) + 1}`
+        : nameOf(
           source.kind === "kept"
             ? source.path || source.id
             : source.kind === "afar"
@@ -194,9 +204,10 @@
         ? invoke<Measure>("measure_picture", { path: src.path })
         : src.kind === "data"
           ? invoke<Measure>("measure_picture_data", { head: headOf(src.url) })
-          : src.kind === "afar"
+          : src.kind === "afar" && !src.call
             ? invoke<Measure>("flyway_see_measure", afarArgs(src))
-            : null;
+            : null; /* a call's picture is in a fold opened by a click, and
+                       measuring it would read the far conversation twice */
     void ask
       ?.then((got) => {
         const s = got?.size;
@@ -243,7 +254,7 @@
       held = k;
       return;
     }
-    if (src.kind === "kept" || (src.kind === "afar" && src.kept)) {
+    if (fixed(src)) {
       /* The cache keeps where the copy was read from beside its bytes, so a
          figure drawn again from it can still be opened (found in review). */
       const got = cache.get(k);
@@ -269,7 +280,9 @@
           throw new Error(
             src.kept
               ? `${name} was shown on ${src.host}, and its copy is kept there — ${why}`
-              : `${name} is on ${src.host} — ${why}`,
+              : src.call
+                ? `${name} of this call is kept on ${src.host} — ${why}`
+                : `${name} is on ${src.host} — ${why}`,
           );
         }
         fallback = !!pic.stale;
@@ -304,7 +317,7 @@
         url = null;
         return;
       }
-      if ((src.kind === "kept" || (src.kind === "afar" && src.kept)) && !fallback && pic.dataUrl.length <= CACHE_CHARS)
+      if (fixed(src) && !fallback && pic.dataUrl.length <= CACHE_CHARS)
         cache.put(k, `${pic.path}\n${pic.dataUrl}`);
       url = pic.dataUrl;
       held = k;

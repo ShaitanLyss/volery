@@ -102,12 +102,13 @@ export function shownOf(call: ToolCall): Shown {
  *  agent's own path beside it to fall back on if the copy has gone; `afar` is
  *  either of the last two on the wall the card runs on, which reads it there
  *  (`flyway/seeing.rs`) — `path` as the card wrote it, since only that wall
- *  knows what it counts from. */
+ *  knows what it counts from. An `afar` with `call` is the `n`th picture a
+ *  tool call answered with, read out of that card's conversation there. */
 export type PictureSource =
   | { kind: "data"; url: string }
   | { kind: "file"; path: string }
   | { kind: "kept"; id: string; path: string }
-  | { kind: "afar"; host: string; card: string; kept: string | null; path: string };
+  | { kind: "afar"; host: string; card: string; kept: string | null; path: string; call?: string; n?: number };
 
 /** A picture written in prose as `![alt](src)`, against the root the surface
  *  counts from — or `null` where none may be read, which draws its words. A
@@ -130,6 +131,15 @@ export function keptSource(root: string | null, id: string, path: string): Pictu
   return { kind: "kept", id, path: root && path ? fullPath(root, path) : path };
 }
 
+/** The `n`th picture tool call `call` answered with, for a card on another
+ *  wall — the only kind of card whose call results arrive without their
+ *  pictures (`ToolResult.far`). `null` for a root on this disk or none, which
+ *  holds its pictures already or has none to ask for. */
+export function callSource(root: string | null, call: string, n: number): PictureSource | null {
+  const far = readAfar(root);
+  return far ? { kind: "afar", host: far.host, card: far.card, kept: null, path: "", call, n } : null;
+}
+
 /** A path a card wrote, made whole against the root it counts from — or left
  *  as written for a card on another wall, whose own wall makes it whole. What
  *  a figure's plate opens and what it says the file is. */
@@ -150,7 +160,9 @@ export function sourceKey(s: PictureSource): string {
     case "file":
       return `file:${s.path}`;
     case "afar":
-      return `afar:${s.host}\n${s.card}\n${s.kept ?? ""}\n${s.path}`;
+      return s.call
+        ? `afar-call:${s.host}\n${s.card}\n${s.call}\n${s.n ?? 0}`
+        : `afar:${s.host}\n${s.card}\n${s.kept ?? ""}\n${s.path}`;
   }
 }
 

@@ -40,6 +40,8 @@
   import { paths, useFiles } from "./paths.svelte";
   import RelayMark from "./RelayMark.svelte";
   import { SEND_TOOL } from "./relay";
+  import InlinePicture from "./InlinePicture.svelte";
+  import { callSource } from "./showing";
 
   let {
     call,
@@ -142,6 +144,26 @@
     const text = shown?.head ?? "";
     if (text && text.split("\n").length <= LINK_LINES)
       for (const pl of placesIn(text)) paths.wantOpenable(f.root, pl.path);
+  });
+
+  /** The pictures a call on another wall answered with, each read from that
+   *  wall by the call's id and its place (`ToolResult.far`). Asked of the file
+   *  scope rather than passed in, like every path here: its root is what names
+   *  the wall and the card (`across.ts`). Only while open — the same
+   *  paid-for-by-a-click a local result's pictures keep, and here the read
+   *  across the network is paid for by it too. Null where nothing names a far
+   *  card, which leaves the count said rather than drawn. */
+  const farShots = $derived.by(() => {
+    const far = open ? (call.result?.far ?? 0) : 0;
+    if (!far || !call.id) return null;
+    const root = files()?.root ?? null;
+    const out = [];
+    for (let n = 0; n < far; n++) {
+      const s = callSource(root, call.id, n);
+      if (!s) return null;
+      out.push(s);
+    }
+    return out;
   });
 
   const outParts = $derived.by(() => {
@@ -312,12 +334,31 @@
                argument. The panel holds up to 300 lines and a screenshot is
                ~135KB of base64 apiece; decoding one is the browser's business
                and it only does it for a fold somebody clicked. -->
-          {#if call.result.pictures}
-            <div class="shots">
-              {#each call.result.pictures as pic, i (i)}
-                <img class="shot" src={pic.url} alt="what the call answered with" />
-              {/each}
-            </div>
+          {#if call.result.far}
+            <!-- A card on another wall: the same pictures, read from the wall
+                 it runs on as the fold opens, through the one component every
+                 far picture is drawn by — its checks, its cache, and its
+                 sentence when that wall cannot be asked. -->
+            {#if farShots}
+              <div class="shots">
+                {#each farShots as src, i (i)}
+                  <InlinePicture source={src} alt="what the call answered with" md="[image]" />
+                {/each}
+              </div>
+            {:else}
+              <p class="clip">
+                {call.result.far} image{call.result.far === 1 ? "" : "s"}, kept on the wall this card runs on
+              </p>
+            {/if}
+          {/if}
+          {#if call.result.pictures || call.result.far}
+            {#if call.result.pictures}
+              <div class="shots">
+                {#each call.result.pictures as pic, i (i)}
+                  <img class="shot" src={pic.url} alt="what the call answered with" />
+                {/each}
+              </div>
+            {/if}
             {#if call.result.unshown}
               <p class="clip">
                 and {call.result.unshown} more image{call.result.unshown === 1 ? "" : "s"} not
@@ -326,7 +367,7 @@
             {/if}
           {/if}
         {/if}
-        {#if call.result && !call.result.text && !call.result.pictures}
+        {#if call.result && !call.result.text && !call.result.pictures && !call.result.far}
           <p class="none">it answered with nothing</p>
         {:else if call.result?.text}
           <!-- A `Grep` result is a list of places, and every one of them is

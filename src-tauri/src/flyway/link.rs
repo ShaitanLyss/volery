@@ -542,6 +542,7 @@ impl Link {
                         super::opening::WORD.to_string(),
                         boards::WORD.to_string(),
                         super::seeing::WORD.to_string(),
+                        super::seeing::CALL_WORD.to_string(),
                     ])
                     .chain(act::words())
                     .chain(accounting::words())

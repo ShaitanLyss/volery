@@ -789,6 +789,21 @@ why in the box it would have had — today's sentence, *its copy is kept there*,
 after it: not taking work, not heard from, or an older Volery (which announces no `see` in
 `Facts::can`, so it is refused at once and never dialled).
 
+**A tool call's pictures are pulled when its fold opens** (2026-10-24, Lyss: *"in local
+conversations I can expand a read image tool and see the image it read, but not on remote
+conversations"*). The tail carried a call's text and dropped its result's image blocks, so a far
+`Read` of a PNG or a browser screenshot opened onto nothing — and since its result had no words,
+`tailOf` sent no result at all and the fold drew the call as still in flight. Now the tail carries
+the call's `id` and a **count** (`WireLine.call.pictures`, scalars, so `tail.rs` needs no reading of
+its own), never the pictures: a screenshot is ~135k of base64 and a tail is re-read on every change.
+`asLines` makes the count `ToolResult.far`, and the open fold draws each through `InlinePicture`
+with `showing.ts::callSource` — a fifth `see` reading, `picture` with `call` and `n`, which the owning
+wall answers out of the card's own session file (`seeing::picture_of_call`) with every refusal a
+picture from a file meets. By the record and not by path: a screenshot was never a file, and a
+`Read`'s file may have changed since. What a call answered with never changes, so this wall keeps it
+like a `show` copy. Its own word, `see_call`, because a wall from before it would read the unknown
+fields as absent and answer *no path was named*.
+
 **A file opens as a read-only copy** (`flyway_see_file` → `afar-files/`, wiped at launch and after
 a day). The viewer reads the copy, says whose file it is in its bar (`Finder.copyOf`), offers no
 editor and no "open outside" over it, and keeps no tab for it — a tab would reopen the copy. A

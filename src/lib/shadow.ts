@@ -44,6 +44,7 @@
 import type { Line } from "./conversation.svelte";
 import { pictureOf, spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify";
 import { MAX_ATTACHED } from "./attach";
+import { RESULT_PICTURES } from "./toolcall";
 import { layout, REGION_GAP, regionWidth, type Box, type Laid, type Region } from "./layout";
 import { askHeadline, type AskQuestion } from "./asking";
 import { nameBesideProject } from "./naming";
@@ -1429,8 +1430,15 @@ export type WireLine = {
   narration?: true;
   /** The call, flattened. `input` arrives as a *string*: it is an unknown JSON
    *  value on the far side, and a string is the only shape both ends can assert
-   *  anything about. */
-  call?: { name: string; input?: string; result?: string; failed?: true };
+   *  anything about.
+   *
+   *  `pictures` is how many its result came back with, and never the pictures:
+   *  a screenshot is ~135k of base64 and a tail is re-read on every change, so
+   *  each is pulled by `id` and its place when somebody opens the fold
+   *  (`flyway/seeing.rs`, "And a picture a tool call answered with"). Scalars
+   *  both, so `tail.rs` carries them with no reading of its own, and a wall from
+   *  before them drops them and draws the words as it always did. */
+  call?: { name: string; id?: string; input?: string; result?: string; failed?: true; pictures?: number };
   /** The thumbnails of the pictures a prompt carried, drawn under it as a local
    *  line's are. Only ever what `wireShots` passed — a short `image/<subtype>`
    *  data URL in the base64 alphabet, under `TAIL_THUMB_CAP` — and only while the
@@ -1454,11 +1462,24 @@ export type TailSource = {
   narration?: true;
   call?: {
     name?: string;
+    id?: string;
     input?: unknown;
-    result?: { text?: string; failed?: boolean } | null;
+    result?: { text?: string; failed?: boolean; pictures?: readonly unknown[]; unshown?: number } | null;
   } | null;
   shots?: readonly { name?: unknown; thumb?: unknown }[] | null;
 };
+
+/** The most pictures one call's count may say. A count is all that crosses,
+ *  so this bounds only what a far fold offers to pull — `MAX_ATTACHED`'s
+ *  number, since a screenshot harness handing back more is not a call. */
+const CALL_PICTURES_MOST = MAX_ATTACHED;
+
+/** A tool-use id as it may cross: what the CLI writes (`toolu_…`), and what
+ *  `seeing.rs::is_call_id` asks of one before searching a conversation for it.
+ *  Anything else is no id, and its call's pictures cannot be asked for. */
+function callId(raw: unknown): string | null {
+  return typeof raw === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(raw) ? raw : null;
+}
 
 /** One thumbnail as it may cross, or null. `pictureOf`'s rules exactly — the
  *  same check a picture in a tool result meets — because this string ends up in
@@ -1523,8 +1544,15 @@ export function tailOf(lines: readonly TailSource[]): WireLine[] {
         }
         if (text !== undefined) c.input = capText(text, TAIL_RESULT_CAP);
       }
-      if (l.call.result?.text) c.result = capText(l.call.result.text, TAIL_RESULT_CAP);
+      /* A result with no words is still a result — a screenshot answers with
+         nothing else — and leaving it off drew the far call as still in
+         flight. */
+      if (l.call.result) c.result = capText(l.call.result.text ?? "", TAIL_RESULT_CAP);
       if (l.call.result?.failed) c.failed = true;
+      const id = callId(l.call.id);
+      if (id) c.id = id;
+      const pictures = (l.call.result?.pictures?.length ?? 0) + (l.call.result?.unshown ?? 0);
+      if (pictures > 0 && id) c.pictures = Math.min(pictures, CALL_PICTURES_MOST);
       w.call = c;
     }
     const cost = w.text.length + (w.call?.result?.length ?? 0) + (w.call?.input?.length ?? 0);
@@ -1577,6 +1605,11 @@ export function readTail(raw: unknown): WireLine[] | null {
         if (typeof co.input === "string") call.input = capText(co.input, TAIL_RESULT_CAP);
         if (typeof co.result === "string") call.result = capText(co.result, TAIL_RESULT_CAP);
         if (co.failed === true) call.failed = true;
+        const id = callId(co.id);
+        if (id) call.id = id;
+        /* A count, and only beside an id to pull them by. */
+        if (id && Number.isInteger(co.pictures) && (co.pictures as number) > 0)
+          call.pictures = Math.min(co.pictures as number, CALL_PICTURES_MOST);
         w.call = call;
       }
     }
@@ -1699,12 +1732,25 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
             input = l.call.input;
           }
         }
+        /* Pictures are pulled from the far wall when the fold opens, so the
+           result holds their count (`far`), drawn up to the same four a local
+           result draws and the rest counted out loud. */
+        const far = Math.min(l.call.pictures ?? 0, RESULT_PICTURES);
+        const unshown = (l.call.pictures ?? 0) - far;
         line.call = {
           name: l.call.name,
+          ...(l.call.id ? { id: l.call.id } : {}),
           input,
           ...(l.call.result === undefined
             ? {}
-            : { result: { text: l.call.result, failed: l.call.failed === true } }),
+            : {
+                result: {
+                  text: l.call.result,
+                  failed: l.call.failed === true,
+                  ...(far > 0 ? { far } : {}),
+                  ...(unshown > 0 ? { unshown } : {}),
+                },
+              }),
         } as Line["call"];
       }
       /* The receipt rides the far wall's own copy of your words — which is the

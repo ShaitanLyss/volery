@@ -52,15 +52,15 @@ impl Link {
             return refuse(format!("{} is still starting", self.me));
         };
         let shown = store.1.join(crate::show::SHOWN_DIR);
-        let (base, born, accepting) = {
+        let (session, born, accepting) = {
             let Ok(conn) = store.0.lock() else {
                 return refuse(format!("{} could not read its own wall just then — try again", self.me));
             };
-            let base = crate::store::session_of(&conn, &card).map(|(dir, _)| dir);
+            let session = crate::store::session_of(&conn, &card);
             let born = here::birth_of(&conn, &card).map(|b| Origin { host: b.host, card: b.asker_card });
-            (base, born, here::accepting(&conn))
+            (session, born, here::accepting(&conn))
         };
-        let Some(base) = base else {
+        let Some((base, session)) = session else {
             return refuse(format!("no card {card} is on {} — it may have been closed since it was drawn there", self.me));
         };
         let person = Origin { host: asker, card: None };
@@ -74,7 +74,10 @@ impl Link {
                 other => other.reason(&self.me),
             });
         }
-        let g = Grounds { base: Some(PathBuf::from(base)), shown, me: self.me.clone() };
+        /* Where the CLI keeps this card's conversation — the run directory
+           `session_of` folded, which is the one the CLI filed it under. */
+        let transcript = session.and_then(|s| crate::supervisor::transcript_path(&self.app, &base, &s).ok());
+        let g = Grounds { base: Some(PathBuf::from(base)), shown, transcript, me: self.me.clone() };
         let id2 = id.clone();
         crate::off_main(move || seeing::answer(&id2, ask, &g)).await.unwrap_or_else(refuse)
     }
@@ -106,6 +109,17 @@ impl Link {
 /// The link, a host that can be asked and a card — or the sentence. Said at
 /// once for a wall that is unknown, quiet or too old, never waited on.
 async fn ready(app: &AppHandle, host: &str, card: &str) -> Result<(Arc<Link>, String, String), String> {
+    ready_for(app, host, card, seeing::WORD, "cannot show its cards' files to another wall — update it there to see them here").await
+}
+
+/// `ready`, for a reading behind a word of its own.
+async fn ready_for(
+    app: &AppHandle,
+    host: &str,
+    card: &str,
+    word: &'static str,
+    older: &'static str,
+) -> Result<(Arc<Link>, String, String), String> {
     let Some(l) = current(app) else {
         return Err("this wall is not on a flyway, so it cannot read another wall's files".into());
     };
@@ -115,10 +129,7 @@ async fn ready(app: &AppHandle, host: &str, card: &str) -> Result<(Arc<Link>, St
     }
     let check = l.clone();
     let h = host.clone();
-    crate::off_main(move || {
-        check.reachable(&h, seeing::WORD, "cannot show its cards' files to another wall — update it there to see them here")
-    })
-    .await??;
+    crate::off_main(move || check.reachable(&h, word, older)).await??;
     Ok((l, host, card))
 }
 
@@ -192,9 +203,14 @@ fn files_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Where one picture from one card on one wall is kept here — never by its
-/// own name, which another card or wall can share for another picture.
-fn held_at(app: &AppHandle, host: &str, card: &str, kept: Option<&str>, path: Option<&str>) -> Result<PathBuf, String> {
-    let k = seeing::key(&[&host.to_ascii_lowercase(), card, kept.unwrap_or(""), path.unwrap_or("")]);
+/// own name, which another card or wall can share for another picture. A
+/// tool call's picture is named by the call and its place in the result.
+fn held_at(app: &AppHandle, host: &str, card: &str, kept: Option<&str>, path: Option<&str>, call: Option<(&str, u32)>) -> Result<PathBuf, String> {
+    let host = host.to_ascii_lowercase();
+    let k = match call {
+        Some((id, n)) => seeing::key(&[&host, card, "call", id, &n.to_string()]),
+        None => seeing::key(&[&host, card, kept.unwrap_or(""), path.unwrap_or("")]),
+    };
     Ok(pictures_dir(app)?.join(format!("{k}.pic")))
 }
 
@@ -232,12 +248,12 @@ pub async fn flyway_see_measure(
     kept: Option<String>,
     path: Option<String>,
 ) -> Result<Measured, String> {
-    let at = held_at(&app, host.trim(), card.trim(), kept.as_deref(), path.as_deref())?;
+    let at = held_at(&app, host.trim(), card.trim(), kept.as_deref(), path.as_deref(), None)?;
     if let Some((_, bytes)) = crate::off_main(move || seeing::read_held(&at)).await? {
         return Ok(Measured { size: crate::show::picture_size(&bytes), too_large: false });
     }
     let (l, host, card) = ready(&app, &host, &card).await?;
-    let ask = Sight::Picture { kept, path, measure: true, have: None };
+    let ask = Sight::Picture { call: None, n: 0, kept, path, measure: true, have: None };
     match l.read_see(&host, &card, ask, Duration::from_secs(20)).await? {
         SeeMsg::Seen { picture: Some(p), .. } => Ok(Measured { size: p.size, too_large: p.too_large }),
         _ => Err(format!("{host} did not say how large that picture is")),
@@ -253,6 +269,10 @@ pub async fn flyway_see_measure(
 /// picture by path is "the file as it is now", so the copy here is offered
 /// back with its stamp and drawn only when the far wall says it has not moved.
 /// If that wall cannot be asked, what is held here is drawn and says so.
+///
+/// `call` asks instead for the `n`th picture a tool call answered with
+/// (`seeing.rs`, "And a picture a tool call answered with"), which never
+/// changes and is kept here as a kept copy is.
 #[tauri::command]
 pub async fn flyway_see_picture(
     app: AppHandle,
@@ -260,12 +280,16 @@ pub async fn flyway_see_picture(
     card: String,
     kept: Option<String>,
     path: Option<String>,
+    call: Option<String>,
+    n: Option<u32>,
 ) -> Result<Seen, String> {
     let _turn = turn().await?;
-    let at = held_at(&app, host.trim(), card.trim(), kept.as_deref(), path.as_deref())?;
+    let call = call.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    let n = n.unwrap_or(0);
+    let at = held_at(&app, host.trim(), card.trim(), kept.as_deref(), path.as_deref(), call.as_deref().map(|c| (c, n)))?;
     let read_at = at.clone();
     let held = crate::off_main(move || seeing::read_held(&read_at)).await?;
-    if kept.is_some() {
+    if kept.is_some() || call.is_some() {
         if let Some((meta, bytes)) = &held {
             if !meta.stale {
                 if let Some(s) = seen_from(meta, bytes, None) {
@@ -275,9 +299,20 @@ pub async fn flyway_see_picture(
         }
     }
     let asked = async {
-        let (l, host, card) = ready(&app, &host, &card).await?;
-        let have = if kept.is_none() { held.as_ref().and_then(|(m, _)| m.stamp.clone()) } else { None };
-        let ask = Sight::Picture { kept: kept.clone(), path: path.clone(), measure: false, have };
+        let (l, host, card) = match &call {
+            Some(_) => {
+                let older = "cannot show the pictures its cards' tool calls answered with — update it there to see them here";
+                ready_for(&app, &host, &card, seeing::CALL_WORD, older).await?
+            }
+            None => ready(&app, &host, &card).await?,
+        };
+        let ask = match &call {
+            Some(c) => Sight::Picture { call: Some(c.clone()), n, kept: None, path: None, measure: false, have: None },
+            None => {
+                let have = if kept.is_none() { held.as_ref().and_then(|(m, _)| m.stamp.clone()) } else { None };
+                Sight::Picture { call: None, n: 0, kept: kept.clone(), path: path.clone(), measure: false, have }
+            }
+        };
         let within = wire::carrying_within((crate::show::MAX_PICTURE as usize) / 3 * 4);
         match l.read_see(&host, &card, ask, within).await? {
             SeeMsg::Seen { picture: Some(p), .. } => Ok((host, p)),

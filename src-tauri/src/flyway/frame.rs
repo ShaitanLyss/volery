@@ -249,7 +249,7 @@ mod tests {
         let see = Frame::See(SeeMsg::See {
             id: "r".into(),
             card: "c".into(),
-            ask: crate::flyway::seeing::Sight::Picture { kept: None, path: Some("a.png".into()), measure: false, have: None },
+            ask: crate::flyway::seeing::Sight::Picture { call: None, n: 0, kept: None, path: Some("a.png".into()), measure: false, have: None },
         });
         assert_eq!(round(see.clone()), see);
         let bytes = serde_json::to_vec(&see).unwrap();

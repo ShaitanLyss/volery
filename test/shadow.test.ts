@@ -768,6 +768,8 @@ import {
   type TailSource,
   type WireLine,
 } from "../src/lib/shadow";
+import { MAX_ATTACHED } from "../src/lib/attach";
+import { RESULT_PICTURES, resultSize } from "../src/lib/toolcall";
 
 const said = (kind: string, text: string, extra: Partial<TailSource> = {}): TailSource => ({
   kind,
@@ -833,6 +835,33 @@ describe("a conversation crossing to another wall", () => {
     expect(out.length).toBe(1);
   });
 
+  test("a call's pictures cross as a count beside its id, never as pictures", () => {
+    const pic = { url: `data:image/png;base64,${"A".repeat(200_000)}`, chars: 200_000 };
+    const out = tailOf([
+      said("tool", "reading a screenshot", {
+        call: { name: "Read", id: "toolu_01Shot", input: { file_path: "shot.png" }, result: { text: "", pictures: [pic], unshown: 2 } },
+      }),
+    ]);
+    const c = out[0].call!;
+    expect(c.id).toBe("toolu_01Shot");
+    expect(c.pictures).toBe(3);
+    /* A result of nothing but pictures is a result — leaving it off drew the
+       far call as still in flight. */
+    expect(c.result).toBe("");
+    expect(JSON.stringify(out).length).toBeLessThan(1_000);
+  });
+
+  test("a count with no id to pull by does not cross, and an id is only an id", () => {
+    const pic = { url: "data:image/png;base64,AAAA", chars: 4 };
+    const [noId] = tailOf([said("tool", "x", { call: { name: "Read", result: { text: "", pictures: [pic] } } })]);
+    expect(noId.call?.pictures).toBeUndefined();
+    const [badId] = tailOf([said("tool", "x", { call: { name: "Read", id: "../x y", result: { text: "", pictures: [pic] } } })]);
+    expect(badId.call?.id).toBeUndefined();
+    expect(badId.call?.pictures).toBeUndefined();
+    const [none] = tailOf([said("tool", "x", { call: { name: "Read", id: "toolu_1", result: { text: "words" } } })]);
+    expect(none.call?.pictures).toBeUndefined();
+  });
+
   test("a circular input costs the line its arguments, not its place", () => {
     const loop: Record<string, unknown> = {};
     loop.self = loop;
@@ -862,6 +891,24 @@ describe("reading a tail back from a wall you did not write", () => {
       said("text", "done", { narration: true }),
     ]);
     expect(readTail(JSON.parse(JSON.stringify(there)))).toEqual(there);
+  });
+
+  test("a far call's pictures arrive as a count the fold pulls by, up to the four a fold draws", () => {
+    const read = readTail([
+      { kind: "tool", text: "shot", call: { name: "Read", id: "toolu_01Shot", result: "", pictures: 6 } },
+      { kind: "tool", text: "forged", call: { name: "Read", id: "a b", result: "", pictures: 2 } },
+      { kind: "tool", text: "odd", call: { name: "Read", id: "toolu_2", result: "", pictures: 1.5 } },
+      { kind: "tool", text: "huge", call: { name: "Read", id: "toolu_3", result: "", pictures: 1e9 } },
+    ])!;
+    expect(read[0].call).toEqual({ name: "Read", id: "toolu_01Shot", result: "", pictures: 6 });
+    expect(read[1].call).toEqual({ name: "Read", result: "" });
+    expect(read[2].call?.pictures).toBeUndefined();
+    expect(read[3].call?.pictures).toBe(MAX_ATTACHED);
+    const [line] = asLines(weave(read.slice(0, 1), []), "lab", 20);
+    expect(line.call?.id).toBe("toolu_01Shot");
+    expect(line.call?.result).toEqual({ text: "", failed: false, far: RESULT_PICTURES, unshown: 2 });
+    /* And the fold's head says what came back, rather than "empty". */
+    expect(resultSize(line.call!.result!)).toBe("6 images");
   });
 
   test("a state nobody recognises is not kept", () => {

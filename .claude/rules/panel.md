@@ -257,6 +257,11 @@ it may be part of. `toolcall.ts` is pure and decides *what* is shown and in what
   first four is the quiet truncation this codebase keeps having to learn not to do. The `img`
   itself is only in the DOM while the fold is open, so decoding is paid for by a click.
 
+  **On a card on another wall the pictures are not in the line at all** — the tail carries a
+  count (`ToolResult.far`) and the open fold pulls each from the wall the card runs on through
+  `InlinePicture`, so the click pays for the read across the network as well as the decode.
+  `elsewhere.md`, *Its pictures and its files*.
+
   The `[Image: original 3200x2000, displayed at 2000x1250. …]` note is a *different* record and
   stays dropped (`isImageNote`): it is coordinate arithmetic addressed to the model, it carries
   `isMeta` on disk, and it was being drawn as something the user had typed.
