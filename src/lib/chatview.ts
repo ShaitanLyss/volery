@@ -520,17 +520,23 @@ export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySe
           : [...tops].sort((a, b) => b.lastAt - a.lastAt);
     const placed: Placed[] = [];
     const visit = (r: ChatRow, depth: number, ghost: Ghost | null) => {
+      /* The dot and the words are the row's own group, never the one it is
+         drawn in. A child follows its parent into a livelier group, and read
+         off *that* group a child writing a file under a parent in *needs you*
+         said `finished: …` with the hollow dot (Lyss, 2026-10-25), and a
+         resting child under a working parent said `waiting on undefined`. */
+      const mine = own.get(r.id)!;
       placed.push({
         row: r,
         group: key,
         depth,
         ghost,
-        tone: tone(r, key),
+        tone: tone(r, mine),
         sub:
-          key === "working" && !r.working
+          mine === "working" && !r.working
             ? `waiting on ${working.get(r.id)} it started · ${whereOf(r)}`
-            : subtitleOf(r, key, now),
-        aside: key === "working" && r.turnAt !== null ? ageOf(now - r.turnAt) : whereOf(r),
+            : subtitleOf(r, mine, now),
+        aside: mine === "working" && r.turnAt !== null ? ageOf(now - r.turnAt) : whereOf(r),
       });
       for (const kid of members) {
         if (kid.parent === r.id && !seen.get(kid.id)!.ghost && kid.id !== r.id) {

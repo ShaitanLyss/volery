@@ -321,6 +321,33 @@ describe("children sit under their parent", () => {
     const rows = [row("a", { parent: "b" }), row("b", { parent: "a" })];
     expect(() => groups(rows, NOW)).not.toThrow();
   });
+
+  test("a child drawn in its parent's group says its own state, never the group's", () => {
+    /* Lyss, 2026-10-25: a child writing a file, nested under an orchestrator
+       in *needs you*, read `finished: Waiting on the t…` with the hollow dot. */
+    const rows = [
+      row("p", { notice: { kind: "question", text: "which branch?" } }),
+      row("k", { working: true, doing: "writing a file", turnAt: NOW - 90_000, parent: "p", lastWords: "Waiting on the tests" }),
+      row("r", { parent: "p", lastAt: NOW - 600_000, lastWords: "All green." }),
+    ];
+    const g = groups(rows, NOW).find((x) => x.key === "needs")!;
+    expect(g.rows.map((p) => [p.row.id, p.depth])).toEqual([
+      ["p", 0],
+      ["k", 1],
+      ["r", 1],
+    ]);
+    expect(g.rows[1]).toMatchObject({ tone: "work", sub: "writing a file · portfolio", aside: "1m" });
+    /* An acknowledged rest under it owes nothing: no amber, no `finished:`. */
+    expect(g.rows[2]).toMatchObject({ tone: "rest", sub: "All green." });
+    expect(g.rows.slice(1).some((p) => p.sub?.startsWith("finished"))).toBe(false);
+  });
+
+  test("a resting child under a working parent is not said to be waiting on anything", () => {
+    const rows = [row("p", { working: true, turnAt: NOW }), row("k", { parent: "p", lastAt: NOW - 3 * H })];
+    const k = groups(rows, NOW).find((x) => x.key === "working")!.rows[1];
+    expect(k.sub ?? "").not.toContain("undefined");
+    expect(k.tone).toBe("rest");
+  });
 });
 
 describe("what a row says", () => {

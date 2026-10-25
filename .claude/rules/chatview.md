@@ -547,3 +547,13 @@ fourth column across both its lines, and the header's is the same ring, a little
 - **Off the gist** (`Gist.ctx`, `ctxTokens`), so a card on another wall wears its ring too.
   Hovering says it in the header's word (`chatview.ts::ctxSaid`: *memory 71% full · 712k
   tokens*).
+
+### A row speaks for itself wherever it is drawn (2026-10-25)
+
+Lyss, with a screenshot: a child writing a file, nested under an orchestrator in *needs you*,
+read `finished: Waiting on the t…` with the hollow dot. A child follows its parent into the
+parent's group when that group is livelier (`groups`' `placeOf`), and the dot, the words and
+the right-hand side were read off the group it was **drawn** in. So under a parent in *needs
+you* a working child got the owed-rest wording, and under a working parent a resting child
+read `waiting on undefined it started`. `groups` now asks `tone`, `subtitleOf` and the age of
+the row's **own** group (`groupOf`); the group a row sits in decides only where it is listed.
