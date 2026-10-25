@@ -245,9 +245,14 @@ describe("cycling round the ring", () => {
     expect(moorings().dock.site).toBe("bottom");
   });
 
-  test("the width has its own ring, starting where the dock has always been", () => {
+  test("a new room starts with the chat a whole column on the right and the dock in the corner beside it", () => {
+    // Lyss, 2026-10-25: the dock bottom left, the chat right.
+    expect(moorings().dock.extent).toBe("available");
+    expect(dockInsets(moorings().dock, moorings().panel.site, 460, 1600)).toEqual({ left: 0, right: 460 });
+  });
+
+  test("the width has its own ring of two", () => {
     expect(DOCK_EXTENTS[0]).toBe("full");
-    expect(moorings().dock.extent).toBe("full");
     expect(nextSite(DOCK_EXTENTS, "full")).toBe("available");
     expect(nextSite(DOCK_EXTENTS, "available")).toBe("full");
   });
@@ -328,6 +333,10 @@ describe("reading back what was stored", () => {
     const m = mooringsOf({ dock: { site: "top", x: 10, y: 20, w: 600, h: 0 } });
     expect(m.dock.site).toBe("top");
     expect(m.dock.extent).toBe("full");
+    // Not the new default: that is for rooms nobody has moored in, and reading
+    // an old berth by it would move a dock somebody already put somewhere.
+    expect(mooringsOf({ dock: { site: "bottom" } }).dock.extent).toBe("full");
+    expect(mooringsOf({ panel: { site: "left" } }).dock.extent).toBe(moorings().dock.extent);
   });
 
   test("a width it does not know is the full one, and the edge is kept", () => {

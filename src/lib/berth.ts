@@ -123,12 +123,22 @@ export const EDGE = 72;
  *  two numbers against each other. */
 export const CENTRE = 112;
 
+/** Where a room nobody has moored in starts, and where a double-click puts
+ *  things back: the chat a whole column on the right, title bar to foot, and
+ *  the dock in the bottom-left corner beside it (Lyss, 2026-10-25). The dock
+ *  took the full width until then, under the panel's foot as well. */
 export function moorings(): Moorings {
   return {
     panel: { site: "right", x: 0, y: 0, w: 420, h: 520 },
-    dock: { site: "bottom", extent: "full", x: 0, y: 0, w: 720, h: 0 },
+    dock: { site: "bottom", extent: "available", x: 0, y: 0, w: 720, h: 0 },
   };
 }
+
+/** The width a dock stored *without* one is read as: the full width, which
+ *  is what every dock was drawn at before `extent` existed. Not the default,
+ *  which is a choice about rooms nobody has moored in yet — reading an old
+ *  berth by it would move a dock somebody already put somewhere. */
+const STORED_EXTENT: DockExtent = "full";
 
 export type Box = { x: number; y: number; w: number; h: number };
 
@@ -328,10 +338,13 @@ export function mooringsOf(v: unknown): Moorings {
   return {
     panel: berthOf(o.panel, PANEL_SITES, d.panel),
     /* `extent` is read on its own: every berth stored before it existed has
-       none, and those are full-width docks — which is what they were drawn as. */
+       none, and those are full-width docks — which is what they were drawn as.
+       Nothing stored at all is a room nobody moored in, and gets the default. */
     dock: {
       ...berthOf(o.dock, DOCK_SITES, d.dock),
-      extent: DOCK_EXTENTS.find((e) => e === dock.extent) ?? d.dock.extent,
+      extent:
+        DOCK_EXTENTS.find((e) => e === dock.extent) ??
+        (o.dock && typeof o.dock === "object" ? STORED_EXTENT : d.dock.extent),
     },
   };
 }

@@ -80,8 +80,14 @@ runs on from the title bar to the bottom of the window.
 - **Too little left and it takes the full width instead** (`dockInsets`), rather than a field
   narrower than `MIN_W`, the floor a floating dock already has. `panelWidth` keeps `WALL_MIN` of
   wall, so this only bites in a window under about 540px.
-- **Double-click puts back both**: the bottom, at the full width, which is where the dock has
-  always been.
+- **Double-click puts back both**, to where a new room starts (`moorings()`).
+- **A new room starts with the dock in the corner** (Lyss, 2026-10-25: *"make the default layout
+  dock bottom left corner and chat right side"*): the panel on the right, a whole column from
+  the title bar to the foot, and the dock at the bottom taking what the panel leaves. Until then
+  the default was the full width. **The default is not how an old berth is read**:
+  `mooringsOf` still reads a stored dock with no `extent` as `full` (`STORED_EXTENT`), because
+  that is what it was drawn as, and reading it by the new default would move a dock somebody
+  already put somewhere. Nothing stored at all is a room nobody moored in, and gets the default.
 
 #### How the panel gets past the wall without the wall moving
 

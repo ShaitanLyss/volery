@@ -2169,12 +2169,14 @@
     if (moved) berths.save();
   }
 
-  /** Back to the edge it has always been on. The same offer `gripReset` makes,
-   *  and for the same reason: a surface dragged somewhere unreachable on a
-   *  screen you no longer have is otherwise something you fix by eye. */
+  /** Back to where a new room starts (`berth.ts::moorings`). The same offer
+   *  `gripReset` makes, and for the same reason: a surface dragged somewhere
+   *  unreachable on a screen you no longer have is otherwise something you fix
+   *  by eye. */
   function moorReset(what: "panel" | "dock") {
-    if (what === "panel") berths.setPanel({ site: "right" });
-    else berths.setDock({ site: "bottom", extent: "full" });
+    const home = moorings();
+    if (what === "panel") berths.setPanel({ site: home.panel.site });
+    else berths.setDock({ site: home.dock.site, extent: home.dock.extent });
     berths.save();
   }
 
