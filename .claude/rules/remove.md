@@ -299,15 +299,99 @@ this whole subsystem's founding observation.
   under a path one card is about to remove may belong to a card that has not written it down
   yet — and a delete takes all of it at once with nothing anywhere to say whose it was. The
   refusal says so and names `mcp__skein__touched`.
-- **Anything under `.git`.** Matched on the *name* rather than resolved, because `.git` is a
-  file in a worktree and a directory in a checkout, and both answers are leave it alone.
-- **A git work tree's root, a territory root, a filesystem root, the home directory**, and any
-  directory the calling card is standing inside. A *sibling* territory is not refused — a card
-  clearing another project's build cache is a real thing to want, and it is asked about like
-  anything else.
+- **Anything under `.git`**, named. Matched on the *name* rather than resolved, because `.git`
+  is a file in a worktree and a directory in a checkout, and both answers are leave it alone.
+  A `.git` goes only with the whole repository around it — next section.
+- **A territory root, a filesystem root, the home directory**, any directory the calling card
+  is standing inside, and — since 2026-10-25 — any directory **another** card on the wall is
+  running in (`Ground::others`, its worktree where it has one). A *sibling* territory is not
+  refused — a card clearing another project's build cache is a real thing to want, and it is
+  asked about like anything else.
+- **A repository holding anything that exists nowhere else**, which is what "a git work
+  tree's root" used to stand in for. Next section.
 - **A path that does not exist**, said plainly rather than succeeding vacuously. The refusal
   spells out why that is not the same as done: an agent told "nothing to do" acts as though
   the cleanup happened, and a path already gone and a path got wrong look identical from here.
+
+### A whole repository, when nothing in it exists anywhere else (2026-10-25)
+
+Sink `2ddc27d2`. `C:\atelier\sonic-ds`, 6.9 GB, pushed to a private GitHub repository with a
+clean tree; the user said *remove local*, then *use the remove tool*. The tool refused the root
+(*root of a git work tree*), refused the nested `melonDS` and `vcpkg` clones the same way, and
+could never touch `.git` — 53 MB were left behind, and the card's only way out was to hand the
+user a `Remove-Item` to type. Which is the hook's own denial, so the whole subsystem had routed
+a legitimate delete back to the shell it exists to keep deletes out of.
+
+The refusal's argument was *every branch nobody has pushed lives in it* — true, and also a
+question git can answer. So a root is no longer refused for being a root:
+
+- **Every repository the delete would take is read** (`assess`): the target's own when it is a
+  root, and every `.git` the size walk meets below it (`Weighed::gits` — the walk already looked
+  for them, for the temp tier). Up to `MAX_REPOS` (24); more is one unread stand-in, which
+  refuses.
+- **What refuses** (`unsafe_repo`, every reason at once so a card fixes it in one pass): a
+  tracked file with uncommitted changes, an untracked file git is not told to ignore (new work
+  nobody has committed is unpushed work as surely as a branch is), and — where the repository's
+  objects go with the delete — no remote at all, a stash, and any commit no remote ref contains:
+  a local branch (`rev-list refs/heads/B --not --remotes`), a detached `HEAD`, a tag on no
+  branch. `melonDS`'s never-pushed `sonic-dcache-timing` is the case, and the refusal names it
+  with its commit count. So does a repository git could not answer for: unknown is not none.
+- **A linked worktree is judged on its working state alone.** Its common directory
+  (`rev-parse --git-common-dir`) is the main repository's, which survives — so its branch is
+  not lost and no remote is owed. If the main repository is *inside* the target too, the
+  objects go and the full test applies; that is the whole of `owns_objects`.
+- **A nested clone is not its parent's untracked work** (`discount_nested`). `?? melonDS/` is
+  how the outer repository sees it; it is judged as itself beside the outer one, or every pushed
+  project with a pushed clone inside it would refuse over the clone's name. Found by the
+  real-git test before the lab ever saw it.
+- **A walk that stopped short refuses** when it found a repository: a clone deeper than the walk
+  reached would never have been read. The refusal says to name the large build directories
+  first.
+- **The question says it plainly**: header *delete a repository*, a line *a whole git
+  repository, `.git` included*, and per repository *pushed to origin (url), nothing unpushed* —
+  with how many branches, and **what the reading rests on**: this clone's own remote-tracking
+  refs. git is not asked over the network (no fetch, nothing that could prompt), so a branch
+  deleted on the server since the last fetch would not show; the line says so rather than
+  implying a check it did not make. What git ignores in it goes with no copy anywhere, and that
+  is listed by name — `build/`, and also `.env`, which is the reason it is listed rather than
+  counted.
+- **It always asks.** Neither scratch tier can reach a repository (`untouched` wants
+  `!nested_git`), and none was added: the decision is the user's, the tool's part is making it
+  one click with the facts in front of her.
+- **The settle re-reads it whole.** The rest of the survey is deliberately not refreshed at the
+  moment of deleting; a repository is, for every target whose survey met one (`rechecks`) — a
+  commit made on an unpushed branch while the question stood is exactly the work the question
+  promised did not exist. The walk is paid a second time there and only there.
+- **It crosses the flyway** as `repos` on each evidence target (path, worktree, remotes, branch
+  count, ignored), and `afar.ts::readRemoval` reads them strictly once present — a clone with no
+  remote cannot have passed, so evidence saying so is refused. A far wall from before this reads
+  the target without them, which is the one degradation: it draws the delete without the
+  *pushed* line. It cannot draw anything false, because the owning wall only asks once the
+  repository has passed.
+- **And the shell route follows for free.** `hooks.rs` hands `rm -rf <repo>` to the same
+  decision; its denial now says the tool refuses *a repository holding anything unpushed*
+  rather than *a work-tree root*.
+
+`tools/lift-remove.ts` holds the decisions; `git_is_asked_what_a_repository_holds` (cargo only,
+it shells out) builds a bare remote, a pushed clone and a clone nested in it, and walks every
+reading through git itself — the never-pushed branch, its push, a dirty file, a stash.
+
+### Many paths, read by where they are (2026-10-25)
+
+The same incident's other half: the leftovers were 25 paths and the cap was 8, so 40 MB cost
+three questions. **What made twenty unreadable was never the count, it was the scatter.**
+`MAX_PATHS` (8) still holds for paths spread across the disk; up to `MAX_GROUPED` (40) may be
+named when they sit in at most `MAX_PARENTS` (2) directories (`too_many`, decided on the
+*resolved* paths, before anything is walked). Past eight, the question is one listing per
+directory — the directory and its total once, then a line per path (`compact`): name, size,
+git's word, and **every warning `describe` would have given, kept in full**. A grouped line is
+shorter by the path and the bullets, never by what is unusual. `confirm_of` groups the same
+way, one fact per directory, because `ask::FACTS_CAP` is sixteen and a fact per path would be a
+question that cannot travel. `afar.ts` draws the far wall's question grouped too, and its cap
+is read out of `remove.rs` by `test/afar.test.ts` so the two cannot drift.
+
+The glob form the item floated (*everything under X except `.git`*) was not built: with the
+repository tier, the case it was for is one path.
 
 `under` is the sharpest of these and the easiest to get wrong: it compares on **segment
 boundaries**, because a plain `starts_with` makes `C:/work/skein-old` a child of
@@ -610,7 +694,7 @@ would match none of them.
 There is no MSVC toolchain here, so the app does not compile and the tool cannot be exercised
 from a running Volery. What *is* proved:
 
-- `tools/lift-remove.ts` runs 28 Rust assertions for real — both halves, `remove.rs`'s
+- `tools/lift-remove.ts` runs 55 Rust assertions for real — both halves, `remove.rs`'s
   decisions and `hooks.rs`'s two detectors. `approved` and `refuse` are the whole of the
   safety and neither direction of either is visible to a typecheck: an `approved` returning
   `true` for everything compiles and deletes on a timeout, and a `refuse` returning `None`

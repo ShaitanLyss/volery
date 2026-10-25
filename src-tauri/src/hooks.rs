@@ -2763,8 +2763,9 @@ pub fn wipe_reason(w: &Wipe) -> String {
          it, whether a dev server is running out of that tree -- and deletes it when they \
          press the button. one call from you, one click from them.\n\
          - it refuses on its own, with or without a click, anything holding uncommitted \
-         tracked changes, anything under `.git`, a work-tree root, a territory root, and the \
-         directory you are standing in. so it is safe to reach for without checking first.\n\
+         tracked changes, anything under `.git`, a repository holding anything unpushed, a \
+         territory root, and the directory you are standing in. so it is safe to reach for \
+         without checking first.\n\
          - **do not look for a spelling that gets past this.** `mv`-ing the directory aside \
          is denied too and for the same reason; the last card that did it left 5.3 GB on \
          disk under a `-stale-audit-backup` suffix (sink `14f2543e`). deleting one file, \

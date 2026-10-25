@@ -108,13 +108,27 @@ use tauri::Manager;
 /// carries.
 pub const REMOVE_TOOL: &str = "remove";
 
-/// The most paths one call may name.
+/// The most paths one call may name when they are scattered.
 ///
 /// Not a resource bound — a survey is cheap and the walk is capped below. It is
 /// about the question: a confirmation listing twenty directories is one nobody
 /// reads to the end, and an unread confirmation is the failure this whole module
 /// exists to avoid.
 const MAX_PATHS: usize = 8;
+
+/// The most paths one call may name when they all sit in at most
+/// `MAX_PARENTS` directories (sink `2ddc27d2`).
+///
+/// **What made twenty unreadable was never the count, it was the scatter.**
+/// Twenty-five leftovers of one project — `build`, `out`, `.vs`, a dozen logs —
+/// cost the user three questions for 40 MB under the flat cap of eight, and the
+/// card's only way out was to hand the user a `Remove-Item` to type. Read as one
+/// directory's listing, a line each, they are one decision: *clear these out of
+/// `sonic-ds`*. So paths that share one or two parents are drawn grouped
+/// (`compact`) and may be five times as many; paths spread across the disk are
+/// still eight, because there the reader has to place each one separately.
+const MAX_GROUPED: usize = 40;
+const MAX_PARENTS: usize = 2;
 
 /// How far the size walk goes before it stops counting and says so.
 ///
@@ -256,6 +270,63 @@ pub(crate) fn is_root(p: &str) -> bool {
     Path::new(&k).parent().is_none() || k.is_empty()
 }
 
+/// The directory a path sits in, in the spelling it was given, and its own
+/// name. Split on either separator, since a canonical Windows path and a test
+/// fixture disagree about which.
+pub(crate) fn split_parent(p: &str) -> (String, String) {
+    let t = p.trim_end_matches(['/', '\\']);
+    match t.rfind(['/', '\\']) {
+        Some(i) => (t[..i].to_string(), t[i + 1..].to_string()),
+        None => (String::new(), t.to_string()),
+    }
+}
+
+/// The paths of one call by the directory each sits in, in the order first
+/// named. Directories are compared the way `same` compares them.
+pub(crate) fn groups(paths: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for p in paths {
+        let (dir, name) = split_parent(p);
+        match out.iter_mut().find(|(d, _)| same(d, &dir)) {
+            Some((_, names)) => names.push(name),
+            None => out.push((dir, vec![name])),
+        }
+    }
+    out
+}
+
+/// Whether a call names too many paths to be read, and what to say if so.
+///
+/// Eight anywhere, or `MAX_GROUPED` sitting in at most `MAX_PARENTS`
+/// directories. Run on the resolved paths, since `..` and a relative spelling
+/// can hide that two paths share a directory or that they do not.
+pub(crate) fn too_many(paths: &[String]) -> Option<String> {
+    let n = paths.len();
+    if n <= MAX_PATHS {
+        return None;
+    }
+    let parents = groups(paths).len();
+    if n <= MAX_GROUPED && parents <= MAX_PARENTS {
+        return None;
+    }
+    Some(if parents > MAX_PARENTS {
+        format!(
+            "{n} paths across {parents} directories is more than anybody will read to the end \
+             of, and an unread confirmation is worse than none. Nothing was deleted and nobody \
+             was asked. Name at most {MAX_PATHS} paths anywhere, or up to {MAX_GROUPED} that sit \
+             in at most {MAX_PARENTS} directories — those are drawn as one listing per directory, \
+             which a person can read — and split the rest into calls by where they are."
+        )
+    } else {
+        format!(
+            "{n} paths is more than one listing anybody will read to the end of. Nothing was \
+             deleted and nobody was asked. Name at most {MAX_GROUPED} at once, even within one \
+             directory. If what you want is the whole of a directory, name the directory: a \
+             repository that is clean and pushed can be deleted whole, `.git` included."
+        )
+    })
+}
+
 /* ── what was found out before anybody was asked ──────────────────────────*/
 
 /// Everything gathered about one target, before the question is composed.
@@ -298,6 +369,51 @@ pub(crate) struct Survey {
     pub(crate) writers: Vec<String>,
     /// Dev server groups currently up in a territory that contains it.
     pub(crate) servers: Vec<String>,
+    /// Every git repository whose work tree this delete would take with it —
+    /// the target itself when it is a work tree's root, and every clone or
+    /// worktree the walk met below it. Empty when nothing was gathered, which
+    /// for a root is a refusal (`refuse`), never a pass.
+    pub(crate) repos: Vec<Repo>,
+}
+
+/// One repository a delete would destroy, as git described it.
+///
+/// **Gathered so a whole repository can be deleted at all** (sink `2ddc27d2`).
+/// A root used to be refused outright, on the argument that *every branch
+/// nobody has pushed lives in it* — which is true, and is also a question git
+/// can answer. Ask it, and a repository with nothing in it that exists nowhere
+/// else is a directory like any other: one question, one click. One that has
+/// anything only it holds is refused naming the thing, as before.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Repo {
+    /// The work tree's root.
+    pub(crate) root: String,
+    /// Its objects go with the delete: a clone, or a worktree whose main
+    /// repository is inside the target too. False for a linked worktree of a
+    /// repository elsewhere — its commits live there and survive, so only what
+    /// is uncommitted in it is at stake.
+    pub(crate) owns_objects: bool,
+    /// git answered every question asked of it. False is a refusal: a
+    /// repository whose branches could not be read is one whose unpushed work
+    /// is unknown, and unknown is not none.
+    pub(crate) read: bool,
+    /// `name (url)`, one per remote.
+    pub(crate) remotes: Vec<String>,
+    /// How many local branches it has, every one of them on a remote when the
+    /// repository passes.
+    pub(crate) branches: usize,
+    /// What it holds that no remote ref contains: `branch (N commits)`, the
+    /// detached `HEAD`, tags.
+    pub(crate) unpushed: Vec<String>,
+    pub(crate) stashes: usize,
+    /// Tracked files with uncommitted changes, anywhere in the repository.
+    pub(crate) dirty: Vec<String>,
+    /// Untracked files git is not told to ignore — new work nobody has
+    /// committed, which is unpushed work as surely as a branch is.
+    pub(crate) untracked: Vec<String>,
+    /// What git ignores and the delete takes anyway, top-level entries only —
+    /// build output, and also `.env`, which is why it is shown.
+    pub(crate) ignored: Vec<String>,
 }
 
 /// Where the caller is standing, and what the wall says is off limits.
@@ -309,6 +425,109 @@ pub(crate) struct Ground {
     pub(crate) roots: Vec<String>,
     /// The user's home directory.
     pub(crate) home: String,
+    /// Every *other* card on the wall, by the name it is drawn under, and the
+    /// directory its process runs in — a worktree where it has one. A delete
+    /// above any of them takes a card's ground away as surely as one above the
+    /// caller's own.
+    pub(crate) others: Vec<(String, String)>,
+}
+
+/// How many of a list to name before saying "and N more".
+const SHOWN: usize = 6;
+
+/// A list of names, cut at `SHOWN` with the rest counted.
+pub(crate) fn listed(items: &[String]) -> String {
+    let shown: Vec<&str> = items.iter().take(SHOWN).map(String::as_str).collect();
+    let more = items.len().saturating_sub(shown.len());
+    let mut s = shown.join(", ");
+    if more > 0 {
+        s.push_str(&format!(" and {more} more"));
+    }
+    s
+}
+
+/// Why this repository may not go, or `None` when nothing in it exists only
+/// here.
+///
+/// Every reason at once rather than the first, so a card fixing the refusal
+/// fixes it in one pass. Pure, so `tools/lift-remove.ts` holds it: this is the
+/// function that decides whether a `.git` is deleted, and one returning `None`
+/// for everything compiles.
+pub(crate) fn unsafe_repo(r: &Repo) -> Option<String> {
+    if !r.read {
+        return Some(format!(
+            "git could not answer for the repository at {}, so whether it holds work that \
+             exists nowhere else is unknown — and unknown is not none.",
+            r.root
+        ));
+    }
+    let mut why: Vec<String> = Vec::new();
+    if !r.dirty.is_empty() {
+        why.push(format!(
+            "uncommitted changes to {} tracked file{}: {}",
+            r.dirty.len(),
+            if r.dirty.len() == 1 { "" } else { "s" },
+            listed(&r.dirty)
+        ));
+    }
+    if !r.untracked.is_empty() {
+        why.push(format!(
+            "untracked files git has no copy of: {}",
+            listed(&r.untracked)
+        ));
+    }
+    if r.owns_objects {
+        if r.remotes.is_empty() {
+            why.push("no remote at all, so none of its history exists anywhere else".into());
+        }
+        if !r.unpushed.is_empty() {
+            why.push(format!(
+                "commits on no remote: {} — never pushed, or pushed somewhere this clone has \
+                 not heard of",
+                listed(&r.unpushed)
+            ));
+        }
+        if r.stashes > 0 {
+            why.push(format!(
+                "{} stash entr{} — a stash is never pushed",
+                r.stashes,
+                if r.stashes == 1 { "y" } else { "ies" }
+            ));
+        }
+    }
+    (!why.is_empty()).then(|| {
+        format!(
+            "the repository at {} holds work that exists nowhere else:\n\n{}",
+            r.root,
+            why.iter().map(|w| format!("  - {w}\n")).collect::<String>()
+        )
+    })
+}
+
+/// What a repository that passed is, in the line the question draws.
+///
+/// Only ever drawn for a repository `unsafe_repo` let through, so its
+/// "nothing unpushed" is a reading rather than a hope — and it says what the
+/// reading rests on: this clone's own remote-tracking refs. git is not asked
+/// over the network, so a branch deleted on the server since the last fetch
+/// would not show.
+pub(crate) fn repo_line(r: &Repo) -> String {
+    if !r.owns_objects {
+        return format!(
+            "{} — a linked worktree; its commits live in the main repository, which this does \
+             not touch. Nothing uncommitted or untracked in it.",
+            r.root
+        );
+    }
+    format!(
+        "{} — **pushed to {}, nothing unpushed**: {} local branch{} all on a remote, no stash, \
+         nothing uncommitted or untracked. As of this clone's last fetch; git was not asked \
+         over the network.",
+        r.root,
+        r.remotes.join(", "),
+        r.branches,
+        if r.branches == 1 { "" } else { "es" },
+    )
 }
 
 /// Should this be refused outright, whatever anybody would click?
@@ -363,12 +582,17 @@ pub(crate) fn refuse(s: &Survey, g: &Ground) -> Option<String> {
         ));
     }
 
+    /* A root nobody asked git about. The survey always gathers the target's
+       own repository when it is a root, so this is a survey that was not
+       taken — a pure caller, or git failing to say where the root is — and a
+       repository nobody looked into is refused as one always was. */
     if let Some(root) = &s.repo_root {
-        if same(p, root) {
+        if same(p, root) && !s.repos.iter().any(|r| same(&r.root, p)) {
             return Some(format!(
-                "{p} is the root of a git work tree. A repository is not a thing to remove by \
-                 the path — it is other cards' checkout as well as yours, and every branch \
-                 nobody has pushed lives in it. Name what inside it you actually want gone."
+                "{p} is the root of a git work tree, and git could not be asked what is in it. \
+                 A repository is only deleted whole when git can show that every branch is on \
+                 a remote and nothing is uncommitted, untracked or stashed; unknown is not \
+                 none. Name what inside it you actually want gone."
             ));
         }
     }
@@ -377,6 +601,16 @@ pub(crate) fn refuse(s: &Survey, g: &Ground) -> Option<String> {
         return Some(format!(
             "{p} is a territory root on this wall ({hit}). Every card standing there would \
              lose its working directory. Name something inside it."
+        ));
+    }
+
+    /* Any card, not only the caller: a worktree another card is running in is
+       its ground, and the delete would take it mid-turn. */
+    if let Some((who, at)) = g.others.iter().find(|(_, at)| !at.is_empty() && under(p, at)) {
+        return Some(format!(
+            "{p} contains the directory {who} is running in ({at}), so deleting it would take \
+             that card's working tree away under it. Nothing was deleted and nobody was asked. \
+             If that card is finished, it can be closed first."
         ));
     }
 
@@ -410,6 +644,34 @@ pub(crate) fn refuse(s: &Survey, g: &Ground) -> Option<String> {
             } else {
                 String::new()
             },
+        ));
+    }
+
+    /* Every repository the delete would take, the target's own and every one
+       nested under it — melonDS inside sonic-ds was the case, a clone with a
+       branch that had never been pushed. */
+    if !s.repos.is_empty() && s.capped {
+        return Some(format!(
+            "{p} holds a git repository and is too large to walk to the end of, so a clone \
+             nested deeper than the walk reached could hold work that exists nowhere else and \
+             would never be seen. Nothing was deleted and nobody was asked. Name its large \
+             build directories first, then the repository."
+        ));
+    }
+    let failing: Vec<String> = s.repos.iter().filter_map(unsafe_repo).collect();
+    if !failing.is_empty() {
+        return Some(format!(
+            "{p} would take {} with it, and nothing was deleted and nobody was asked:\n\n{}\n\
+             What to do instead: push what is unpushed, commit or remove what is uncommitted, \
+             and drop a stash only if it is truly disposable — or tell the user what is there \
+             and let them decide outside this tool. A repository is deleted whole only when \
+             nothing in it exists nowhere else.",
+            if s.repos.len() == 1 {
+                "a git repository".to_string()
+            } else {
+                format!("{} git repositories", s.repos.len())
+            },
+            failing.join("\n"),
         ));
     }
 
@@ -859,7 +1121,67 @@ pub(crate) fn describe(s: &Survey) -> String {
         ));
     }
 
+    out.push_str(&repos_said(s));
     out
+}
+
+/// The lines a survey's repositories add to its description: what goes, that
+/// it is pushed, and what git ignores and so has no copy of.
+fn repos_said(s: &Survey) -> String {
+    let mut out = String::new();
+    let own = s.repos.iter().find(|r| same(&r.root, &s.path));
+    if own.is_some() {
+        out.push_str("- **a whole git repository, `.git` included**\n");
+    }
+    for r in &s.repos {
+        out.push_str(&format!("- {}\n", repo_line(r)));
+        if !r.ignored.is_empty() {
+            out.push_str(&format!(
+                "- ignored by git in {}, so going with no copy anywhere: {}\n",
+                split_parent(&r.root).1,
+                listed(&r.ignored)
+            ));
+        }
+    }
+    out
+}
+
+/// One target in a grouped listing: its name and the one line that matters,
+/// with every warning `describe` would have given kept in full — a grouped
+/// listing is shorter by the path and the bullets, never by what is unusual.
+pub(crate) fn compact(s: &Survey) -> String {
+    let name = split_parent(&s.path).1;
+    let size = if s.is_link {
+        "a link".to_string()
+    } else if s.is_dir {
+        format!(
+            "{}{} in {}{} file{}",
+            if s.capped { "more than " } else { "" },
+            human_size(s.bytes),
+            if s.capped { "more than " } else { "" },
+            s.files,
+            if s.files == 1 { "" } else { "s" }
+        )
+    } else {
+        human_size(s.bytes)
+    };
+    let git = match (&s.repo_root, s.tracked) {
+        (None, _) => "not in git".to_string(),
+        (Some(_), 0) => "untracked".to_string(),
+        (Some(_), n) => format!("**git tracks {n}**"),
+    };
+    let mut line = format!("- `{name}` — {size}, {git}");
+    if !s.writers.is_empty() {
+        line.push_str(&format!("; **written in by {}**", s.writers.join(", ")));
+    }
+    if !s.servers.is_empty() {
+        line.push_str(&format!("; **dev server running: {}**", s.servers.join(", ")));
+    }
+    line.push('\n');
+    for r in &s.repos {
+        line.push_str(&format!("  - {}\n", repo_line(r)));
+    }
+    line
 }
 
 /// The question, for however many paths one call named.
@@ -868,16 +1190,37 @@ pub(crate) fn describe(s: &Survey) -> String {
 /// reply (`ask.rs`), and — the half that matters more — a card naming three
 /// directories is making one decision about clearing them, not three.
 pub(crate) fn question(reason: &str, surveys: &[Survey]) -> Value {
-    let header = if surveys.len() == 1 {
-        "delete a path".to_string()
-    } else {
-        format!("delete {} paths", surveys.len())
+    let header = match surveys {
+        [s] if s.repos.iter().any(|r| same(&r.root, &s.path)) => "delete a repository".to_string(),
+        [_] => "delete a path".to_string(),
+        many => format!("delete {} paths", many.len()),
     };
 
     let mut body = format!("A card wants to **delete** {}:\n\n", if surveys.len() == 1 { "this" } else { "these" });
-    for s in surveys {
-        body.push_str(&describe(s));
-        body.push('\n');
+    if surveys.len() > MAX_PATHS {
+        /* The grouped form `MAX_GROUPED` allows: one listing per directory,
+           a line per path, the directory's total first. */
+        let paths: Vec<String> = surveys.iter().map(|s| s.path.clone()).collect();
+        for (dir, _) in groups(&paths) {
+            let here: Vec<&Survey> = surveys.iter().filter(|s| same(&split_parent(&s.path).0, &dir)).collect();
+            let bytes: u64 = here.iter().map(|s| s.bytes).sum();
+            let files: usize = here.iter().map(|s| s.files).sum();
+            let floor = if here.iter().any(|s| s.capped) { "more than " } else { "" };
+            body.push_str(&format!(
+                "**{} paths in {dir}**, together {floor}{} in {floor}{files} files:\n",
+                here.len(),
+                human_size(bytes)
+            ));
+            for s in here {
+                body.push_str(&compact(s));
+            }
+            body.push('\n');
+        }
+    } else {
+        for s in surveys {
+            body.push_str(&describe(s));
+            body.push('\n');
+        }
     }
     body.push_str(&format!("Its reason: *{}*\n\n", reason.trim()));
 
@@ -959,6 +1302,16 @@ pub(crate) fn evidence(reason: &str, surveys: &[Survey], cwd: &str, machine: &st
                 "tracked": s.tracked,
                 "writers": s.writers,
                 "servers": s.servers,
+                /* Every repository the delete takes, each one that reached a
+                   question having passed `unsafe_repo` — so the far wall can
+                   say *pushed to origin, nothing unpushed* from these alone. */
+                "repos": s.repos.iter().map(|r| json!({
+                    "path": r.root,
+                    "worktree": !r.owns_objects,
+                    "remotes": r.remotes,
+                    "branches": r.branches,
+                    "ignored": r.ignored,
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -980,12 +1333,32 @@ pub(crate) fn evidence(reason: &str, surveys: &[Survey], cwd: &str, machine: &st
 /// that knew only the generic block would still decide on the whole glance.
 pub(crate) fn confirm_of(reason: &str, surveys: &[Survey], cwd: &str) -> crate::ask::Confirm {
     let act = match surveys {
+        [s] if s.repos.iter().any(|r| same(&r.root, &s.path)) => "delete a repository".to_string(),
         [s] if s.is_link => "delete a link".to_string(),
         [s] if s.is_dir => "delete a directory".to_string(),
         [_] => "delete a file".to_string(),
         many => format!("delete {} paths", many.len()),
     };
     let mut c = crate::ask::Confirm::new(act);
+    if surveys.len() > MAX_PATHS {
+        /* The grouped form, one fact per directory: `ask::FACTS_CAP` is sixteen
+           and a fact per path would be a question that cannot travel. */
+        let paths: Vec<String> = surveys.iter().map(|s| s.path.clone()).collect();
+        for (dir, _) in groups(&paths) {
+            let lines: String = surveys
+                .iter()
+                .filter(|s| same(&split_parent(&s.path).0, &dir))
+                .map(compact)
+                .collect();
+            let tree = if !cwd.is_empty() && under(cwd, &dir) {
+                "inside the card's own working tree"
+            } else {
+                "**outside the card's own working tree**"
+            };
+            c = c.fact(format!("in {dir}"), format!("{tree}\n\n{lines}"));
+        }
+        return c.why(Some(reason)).stakes(STAKES);
+    }
     for (i, s) in surveys.iter().enumerate() {
         let size = if s.is_link {
             "a link — the link goes, not what it points at".to_string()
@@ -1013,15 +1386,20 @@ pub(crate) fn confirm_of(reason: &str, surveys: &[Survey], cwd: &str) -> crate::
         if !s.servers.is_empty() {
             said.push_str(&format!("; **a dev server is running out of this tree**: {}", s.servers.join(", ")));
         }
+        let repos = repos_said(s);
+        if !repos.is_empty() {
+            said.push_str(&format!("\n\n{}", repos.trim_end()));
+        }
         let label = if surveys.len() == 1 { "path".to_string() } else { format!("path {}", i + 1) };
         c = c.fact(label, said);
     }
-    c.why(Some(reason)).stakes(
-        "**This is permanent.** It is not moved to a recycle bin and nothing can bring it back. That \
-         machine checks again at the moment of deleting and refuses if the tree has changed under \
-         it — uncommitted work appearing there, say.",
-    )
+    c.why(Some(reason)).stakes(STAKES)
 }
+
+/// The last line of every removal that travels.
+const STAKES: &str = "**This is permanent.** It is not moved to a recycle bin and nothing can bring it back. That \
+     machine checks again at the moment of deleting and refuses if the tree has changed under \
+     it — uncommitted work appearing there, say.";
 
 /// Whether a parked question is a removal that carries everything a person on
 /// another machine would need to decide it — the gate `ask::answer_from_afar`
@@ -1037,7 +1415,7 @@ pub(crate) fn travels(question: &Value) -> bool {
     named(&e["machine"])
         && named(&e["reason"])
         && !targets.is_empty()
-        && targets.len() <= MAX_PATHS
+        && targets.len() <= MAX_GROUPED
         && targets.iter().all(|t| {
             named(&t["path"])
                 && matches!(t["kind"].as_str(), Some("file" | "directory" | "link"))
@@ -1094,10 +1472,17 @@ pub fn remove_schema() -> Value {
              the confirmation says so. Treat a yes as final.\n\n\
              Refused outright, with a click or without one: a path holding uncommitted \
              changes to tracked files — in a tree this wall shares those are frequently \
-             *another card's* unwritten work — anything under `.git`, a git work tree's root, \
-             a territory root, a filesystem root, and any directory this card is standing \
-             inside. A path that does not exist is reported as not existing rather than \
-             quietly succeeding.\n\n\
+             *another card's* unwritten work — anything under `.git`, a territory root, a \
+             filesystem root, and any directory this card or another is standing inside. A \
+             path that does not exist is reported as not existing rather than quietly \
+             succeeding.\n\n\
+             **A whole repository can go, `.git` and all, when nothing in it exists nowhere \
+             else.** Name its root (or a directory holding clones): every repository it \
+             would take is read first, and if every local branch is on a remote and nothing \
+             is uncommitted, untracked or stashed, the user is asked once with that said. \
+             Anything unpushed refuses, naming the branch or file — push it first.\n\n\
+             Up to 8 paths anywhere, or up to 40 that sit in at most two directories, which \
+             are drawn as one listing per directory.\n\n\
              The ordinary case is a corrupt or stale build cache — `.next`, `dist`, `target`, \
              `.turbo`, `node_modules` — where the tree is regenerable and the cost is a \
              recompile. Say that in `reason`: it is the sentence the user is actually \
@@ -1203,17 +1588,26 @@ fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
 /// Iterative rather than recursive: the depth of a `node_modules` is whatever
 /// npm felt like, and a stack overflow inside a survey would take the whole
 /// request thread with it.
-fn weigh(root: &Path) -> (u64, usize, bool, bool) {
+/// What the walk found: size, count, whether it stopped short, and the root
+/// of every repository met on the way — the parent of each `.git`, file or
+/// directory alike.
+struct Weighed {
+    bytes: u64,
+    files: usize,
+    capped: bool,
+    gits: Vec<PathBuf>,
+}
+
+fn weigh(root: &Path) -> Weighed {
     let started = Instant::now();
-    let mut bytes = 0u64;
-    let mut files = 0usize;
+    let mut w = Weighed { bytes: 0, files: 0, capped: false, gits: Vec::new() };
     let mut seen = 0usize;
-    let mut git = false;
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
         if seen >= WALK_ENTRIES || started.elapsed() >= WALK_TIME {
-            return (bytes, files, true, git);
+            w.capped = true;
+            return w;
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -1221,12 +1615,13 @@ fn weigh(root: &Path) -> (u64, usize, bool, bool) {
         for e in entries.flatten() {
             seen += 1;
             if seen >= WALK_ENTRIES || started.elapsed() >= WALK_TIME {
-                return (bytes, files, true, git);
+                w.capped = true;
+                return w;
             }
             /* A file (worktree) or a directory (clone), and either way a
                repository somebody may have unpushed work in. */
             if e.file_name().eq_ignore_ascii_case(".git") {
-                git = true;
+                w.gits.push(dir.clone());
             }
             /* `DirEntry::metadata` and not `fs::metadata`, which are not the
                same function: this one does **not** traverse a symlink, so a
@@ -1241,12 +1636,154 @@ fn weigh(root: &Path) -> (u64, usize, bool, bool) {
             if md.is_dir() {
                 stack.push(e.path());
             } else {
-                bytes += md.len();
-                files += 1;
+                w.bytes += md.len();
+                w.files += 1;
             }
         }
     }
-    (bytes, files, false, git)
+    w
+}
+
+/// The most repositories one delete may take. Past it the question would be a
+/// census, and the honest answer is to name them separately.
+const MAX_REPOS: usize = 24;
+
+/// A count git printed, when it is more than nothing.
+fn some_commits(n: Option<String>) -> Option<usize> {
+    n.and_then(|n| n.trim().parse::<usize>().ok()).filter(|n| *n > 0)
+}
+
+fn commits(n: usize) -> String {
+    format!("{n} commit{}", if n == 1 { "" } else { "s" })
+}
+
+/// Ask git everything `unsafe_repo` decides on, for one repository a delete of
+/// `deleting` would take.
+///
+/// Read-only throughout, under `git()`'s environment — no fetch, nothing that
+/// could prompt or take a lock. A question git fails to answer leaves `read`
+/// false, which refuses.
+fn assess(root: &Path, deleting: &str) -> Repo {
+    let mut read = true;
+    let mut ask = |args: &[&str]| -> Option<String> {
+        let out = git(root, args);
+        if out.is_none() {
+            read = false;
+        }
+        out
+    };
+    let lines = |o: Option<String>| -> Vec<String> {
+        o.unwrap_or_default()
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    };
+
+    /* Whose objects these are. A clone's `.git` is inside its own root; a
+       linked worktree's common directory is the main repository's, which
+       survives unless the delete reaches it too. */
+    let common = ask(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .map(|c| c.trim().to_string())
+        .unwrap_or_default();
+    let owns_objects = !common.is_empty() && under(deleting, &common);
+
+    /* One `status` for both halves: `??` is untracked, anything else is a
+       tracked change. `normal` collapses an untracked directory to one line. */
+    let mut dirty = Vec::new();
+    let mut untracked = Vec::new();
+    for l in lines(ask(&["status", "--porcelain=v1", "--untracked-files=normal"])) {
+        if l.len() <= 3 {
+            continue;
+        }
+        let name = l[3..].trim().to_string();
+        if l.starts_with("??") {
+            untracked.push(name)
+        } else {
+            dirty.push(name)
+        }
+    }
+    let ignored = lines(ask(&["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"]));
+
+    let mut remotes = Vec::new();
+    let mut branches = 0;
+    let mut unpushed = Vec::new();
+    let mut stashes = 0;
+    if owns_objects {
+        for name in lines(ask(&["remote"])) {
+            let url = ask(&["remote", "get-url", &name]).unwrap_or_default();
+            remotes.push(format!("{name} ({})", url.trim()));
+        }
+        /* Contained in a remote ref, which is the whole test: `rev-list B
+           --not --remotes` is what B has that no remote-tracking ref does. */
+        let heads = lines(ask(&["for-each-ref", "--format=%(refname:short)", "refs/heads/"]));
+        branches = heads.len();
+        for b in &heads {
+            let full = format!("refs/heads/{b}");
+            if let Some(n) = some_commits(ask(&["rev-list", "--count", &full, "--not", "--remotes"])) {
+                unpushed.push(format!("{b} ({})", commits(n)));
+            }
+        }
+        /* A detached HEAD and tags hold commits no branch does. `symbolic-ref`
+           failing means detached, not that git failed, so it goes round `ask`. */
+        if git(root, &["symbolic-ref", "-q", "HEAD"]).is_none() {
+            let n = ask(&["rev-list", "--count", "HEAD", "--not", "--remotes", "--branches"]);
+            if let Some(n) = some_commits(n) {
+                unpushed.push(format!("detached HEAD ({})", commits(n)));
+            }
+        }
+        let n = ask(&["rev-list", "--count", "--tags", "--not", "--remotes", "--branches"]);
+        if let Some(n) = some_commits(n) {
+            unpushed.push(format!("tags ({} on no branch or remote)", commits(n)));
+        }
+        stashes = lines(ask(&["stash", "list"])).len();
+    }
+
+    Repo {
+        root: root.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
+        owns_objects,
+        read,
+        remotes,
+        branches,
+        unpushed,
+        stashes,
+        dirty,
+        untracked,
+        ignored,
+    }
+}
+
+/// Every repository under `abs` the walk found, assessed — or, past
+/// `MAX_REPOS`, one unread stand-in that refuses.
+fn repos_under(abs: &Path, gits: &[PathBuf]) -> Vec<Repo> {
+    let deleting = abs.to_string_lossy().to_string();
+    if gits.len() > MAX_REPOS {
+        return vec![Repo {
+            root: format!("{deleting} (and {} repositories under it)", gits.len()),
+            read: false,
+            ..Default::default()
+        }];
+    }
+    let mut repos: Vec<Repo> = gits.iter().map(|g| assess(g, &deleting)).collect();
+    discount_nested(&mut repos);
+    repos
+}
+
+/// Take each nested repository out of the untracked list of the one around it.
+///
+/// A clone inside a work tree is `?? melonDS/` to the outer repository — and it
+/// is not untracked work, it is a repository, and it is judged as one in its own
+/// right beside this. Left in, every pushed project with a pushed clone inside
+/// it would refuse over the clone's name. Pure, so the lift holds it.
+pub(crate) fn discount_nested(repos: &mut [Repo]) {
+    let roots: Vec<String> = repos.iter().map(|r| r.root.clone()).collect();
+    for r in repos.iter_mut() {
+        let root = r.root.clone();
+        r.untracked.retain(|u| {
+            let at = format!("{root}/{u}");
+            !roots.iter().any(|o| same(o, &at))
+        });
+    }
 }
 
 /// Everything about one path, gathered before the question.
@@ -1264,12 +1801,14 @@ fn survey(app: &AppHandle, caller: &str, abs: &Path) -> Survey {
         return s;
     }
 
+    let mut gits = Vec::new();
     if s.is_dir {
-        let (bytes, files, capped, git) = weigh(abs);
-        s.bytes = bytes;
-        s.files = files;
-        s.capped = capped;
-        s.nested_git = git;
+        let w = weigh(abs);
+        s.bytes = w.bytes;
+        s.files = w.files;
+        s.capped = w.capped;
+        s.nested_git = !w.gits.is_empty();
+        gits = w.gits;
     } else {
         s.bytes = md.as_ref().map(|m| m.len()).unwrap_or(0);
         s.files = 1;
@@ -1319,6 +1858,11 @@ fn survey(app: &AppHandle, caller: &str, abs: &Path) -> Survey {
             .repo_root
             .as_deref()
             .is_some_and(|root| project_ignore(ask_from, &path, root));
+    }
+    /* Not through a link: deleting one takes the link off and nothing behind
+       it, so the repositories behind it are not this delete's to judge. */
+    if !s.is_link {
+        s.repos = repos_under(abs, &gits);
     }
 
     s.writers = other_writers(app, caller, &path);
@@ -1447,6 +1991,7 @@ fn ground(app: &AppHandle, caller: &str) -> Result<Ground, String> {
         .into_iter()
         .map(|p| p.root_path)
         .collect();
+    let others = standing(&conn, Some(caller));
     drop(conn);
 
     Ok(Ground {
@@ -1455,7 +2000,27 @@ fn ground(app: &AppHandle, caller: &str) -> Result<Ground, String> {
         home: std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default(),
+        others,
     })
+}
+
+/// Every card on the wall but `except`, by the name it is drawn under, and the
+/// directory its process runs in — `session_of`'s worktree where there is one.
+fn standing(conn: &rusqlite::Connection, except: Option<&str>) -> Vec<(String, String)> {
+    crate::store::roster(conn, None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| Some(r.id.as_str()) != except && r.kind != "chat")
+        .map(|r| {
+            let at = crate::store::session_of(conn, &r.id)
+                .map(|(dir, _)| dir)
+                .unwrap_or(r.cwd.clone());
+            let handle = crate::relay::handle_of(&r.id);
+            let title = r.title.trim();
+            let name = if title.is_empty() { handle } else { format!("{title} ({handle})") };
+            (name, at)
+        })
+        .collect()
 }
 
 /* ── the call ─────────────────────────────────────────────────────────────*/
@@ -1510,17 +2075,14 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
                 .into(),
         );
     }
-    if named.len() > MAX_PATHS {
-        return Writing::Now(format!(
-            "{} paths in one call is more than anybody will read to the end of, and an unread \
-             confirmation is worse than none. Name at most {MAX_PATHS}, in the groups they \
-             actually belong to.",
-            named.len()
-        ));
+    if named.len() > MAX_GROUPED {
+        if let Some(why) = too_many(&named) {
+            return Writing::Now(why);
+        }
     }
 
     let base = PathBuf::from(&g.cwd);
-    let mut surveys: Vec<Survey> = Vec::new();
+    let mut resolved: Vec<PathBuf> = Vec::new();
     for p in &named {
         let joined = base.join(p);
         /* Canonicalized where it can be, so `..` and a short 8.3 name and a
@@ -1547,8 +2109,14 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
                 .trim_start_matches(r"\\?\")
                 .to_string(),
         );
-        surveys.push(survey(app, caller, &abs));
+        resolved.push(abs);
     }
+    /* Decided on the resolved spellings, before anything is walked. */
+    let spelled: Vec<String> = resolved.iter().map(|a| a.to_string_lossy().to_string()).collect();
+    if let Some(why) = too_many(&spelled) {
+        return Writing::Now(why);
+    }
+    let surveys: Vec<Survey> = resolved.iter().map(|abs| survey(app, caller, abs)).collect();
 
     for s in &surveys {
         if let Some(why) = refuse(s, &g) {
@@ -1557,6 +2125,12 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
     }
 
     let targets: Vec<String> = surveys.iter().map(|s| s.path.clone()).collect();
+    /* The ones whose repositories are re-read at the moment of deleting. */
+    let rechecks: Vec<String> = surveys
+        .iter()
+        .filter(|s| s.nested_git || !s.repos.is_empty())
+        .map(|s| s.path.clone())
+        .collect();
 
     /* All or none: a question that lists five paths when three of them were
        going anyway is a question about the wrong thing, and deleting three and
@@ -1569,7 +2143,7 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
     if surveys.iter().all(|s| unasked(s, &temps, &mine)) {
         return Writing::Now(format!(
             "{}\nnobody was asked: {}",
-            settle_delete(app, &targets),
+            settle_delete(app, &targets, &rechecks),
             why_unasked(&surveys, &temps, &mine),
         ));
     }
@@ -1589,7 +2163,7 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
             if !approved(answer) {
                 return declined(answer);
             }
-            settle_delete(app, &targets)
+            settle_delete(app, &targets, &rechecks)
         }),
     }
 }
@@ -1665,7 +2239,12 @@ pub(crate) fn deliver_late(app: &AppHandle, card: &str, command: &str, said: &st
 /// decision that has now been taken, and re-walking nine thousand files to
 /// produce a number nobody will see would only widen the window between the
 /// check and the delete.
-fn settle_delete(app: &AppHandle, targets: &[String]) -> String {
+///
+/// **Except a repository's state, which is re-read whole** for every target
+/// that took one (`rechecks`): a commit made on an unpushed branch while the
+/// question stood is exactly the work the question promised did not exist, so
+/// the walk is paid again there and only there.
+fn settle_delete(app: &AppHandle, targets: &[String], rechecks: &[String]) -> String {
     let Ok(g) = ground_for_settle(app) else {
         return "the wall could not be read at the moment of deleting, so nothing was \
                 deleted. Try again."
@@ -1676,7 +2255,12 @@ fn settle_delete(app: &AppHandle, targets: &[String]) -> String {
     let mut failed: Vec<String> = Vec::new();
 
     for t in targets {
-        let s = survey_light(t);
+        let mut s = survey_light(t);
+        if s.exists && s.is_dir && !s.is_link && rechecks.iter().any(|r| same(r, t)) {
+            let w = weigh(Path::new(t));
+            s.capped = w.capped;
+            s.repos = repos_under(Path::new(t), &w.gits);
+        }
         if let Some(why) = refuse(&s, &g) {
             failed.push(format!(
                 "{t} — not deleted, and this was true at the moment of deleting rather than \
@@ -1739,6 +2323,7 @@ fn ground_for_settle(app: &AppHandle) -> Result<Ground, String> {
         .into_iter()
         .map(|p| p.root_path)
         .collect();
+    let others = standing(&conn, None);
     drop(conn);
     Ok(Ground {
         cwd: String::new(),
@@ -1746,6 +2331,7 @@ fn ground_for_settle(app: &AppHandle) -> Result<Ground, String> {
         home: std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default(),
+        others,
     })
 }
 
@@ -1806,6 +2392,36 @@ mod tests {
             cwd: cwd.to_string(),
             roots: vec!["C:\\Users\\lyss\\workbench\\skein".into()],
             home: "C:\\Users\\lyss".into(),
+            others: vec![(
+                "\"lane B\" (3f2a9c1e)".into(),
+                "C:\\Users\\lyss\\workbench\\skein\\.claude\\worktrees\\lane-b".into(),
+            )],
+        }
+    }
+
+    /// A clone that passes: two branches, both on a remote, nothing else.
+    fn pushed(root: &str) -> Repo {
+        Repo {
+            root: root.to_string(),
+            owns_objects: true,
+            read: true,
+            remotes: vec!["origin (https://github.com/lyss/sonic-ds.git)".into()],
+            branches: 2,
+            ignored: vec!["build/".into(), ".env".into()],
+            ..Default::default()
+        }
+    }
+
+    /// `sonic-ds`, as it was on 2026-10-25: a pushed repository at the root,
+    /// with a clone nested inside it.
+    fn sonic() -> Survey {
+        let root = "C:\\atelier\\sonic-ds";
+        Survey {
+            repo_root: Some(root.into()),
+            tracked: 412,
+            nested_git: true,
+            repos: vec![pushed(root), pushed(&format!("{root}\\melonDS"))],
+            ..dir(root)
         }
     }
 
@@ -2061,7 +2677,7 @@ mod tests {
             assert!(!travels(&q), "{field}");
         }
         let mut many = whole();
-        many["remove"]["targets"] = json!(vec![many["remove"]["targets"][0].clone(); MAX_PATHS + 1]);
+        many["remove"]["targets"] = json!(vec![many["remove"]["targets"][0].clone(); MAX_GROUPED + 1]);
         assert!(!travels(&many));
     }
 
@@ -2423,6 +3039,277 @@ mod tests {
            ever reached. */
         let mixed = why_unasked(&[in_t, aside], &temps, mine);
         assert!(mixed.contains("for some"), "{mixed}");
+    }
+
+    /// The case sink `2ddc27d2` was filed about: a repository pushed to a
+    /// remote with a clean tree goes whole, `.git` included, behind one
+    /// question that says so.
+    #[test]
+    fn a_pushed_clean_repository_goes_whole_behind_one_question() {
+        let g = ground_at("C:\\Users\\lyss\\workbench\\skein");
+        let s = sonic();
+        assert_eq!(refuse(&s, &g), None);
+
+        let q = question("pushed to github, freeing 6.9 GB", std::slice::from_ref(&s));
+        assert_eq!(q["questions"][0]["header"], "delete a repository");
+        let body = q["questions"][0]["question"].as_str().unwrap();
+        assert!(body.contains("`.git` included"), "{body}");
+        assert!(body.contains("pushed to origin (https://github.com/lyss/sonic-ds.git), nothing unpushed"), "{body}");
+        /* The nested clone is drawn too, since it goes with it. */
+        assert!(body.contains("melonDS — **pushed to origin"), "{body}");
+        /* What git ignores has no copy anywhere, and `.env` is the reason that
+           is shown rather than summarised. */
+        assert!(body.contains(".env"), "{body}");
+        /* And what the reading rests on: no network was asked. */
+        assert!(body.contains("last fetch"), "{body}");
+        /* The permanent wording is untouched by the new tier. */
+        assert!(body.contains("**This is permanent.**"), "{body}");
+        assert!(body.contains("recycle bin"), "{body}");
+
+        /* It is never a no-click tier: a repository always asks. */
+        assert!(!unasked(&s, &[temp_root().to_string()], "50140826"));
+    }
+
+    /// Anything that exists only in the repository refuses, naming it — the
+    /// melonDS branch that had never been pushed was the real case.
+    #[test]
+    fn a_repository_holding_anything_unpushed_is_refused_naming_it() {
+        let g = ground_at("C:\\Users\\lyss\\workbench\\skein");
+        let root = "C:\\atelier\\sonic-ds";
+        let melon = format!("{root}\\melonDS");
+        let cases: Vec<(Repo, &str)> = vec![
+            (Repo { unpushed: vec!["sonic-dcache-timing (3 commits)".into()], ..pushed(&melon) }, "sonic-dcache-timing (3 commits)"),
+            (Repo { dirty: vec!["src/ARM.cpp".into()], ..pushed(&melon) }, "src/ARM.cpp"),
+            (Repo { untracked: vec!["notes.txt".into()], ..pushed(&melon) }, "notes.txt"),
+            (Repo { stashes: 2, ..pushed(&melon) }, "2 stash entries"),
+            (Repo { remotes: vec![], ..pushed(&melon) }, "no remote at all"),
+            (Repo { read: false, ..pushed(&melon) }, "unknown is not none"),
+            (Repo { unpushed: vec!["detached HEAD (1 commit)".into()], ..pushed(&melon) }, "detached HEAD"),
+        ];
+        for (bad, named) in cases {
+            /* Nested under a pushed root, which is what makes it easy to miss. */
+            let s = Survey { repos: vec![pushed(root), bad.clone()], ..sonic() };
+            let why = refuse(&s, &g).unwrap_or_else(|| panic!("{bad:?} was allowed"));
+            assert!(why.contains(named), "{named}: {why}");
+            assert!(why.contains("melonDS"), "{why}");
+            assert!(why.contains("nobody was asked"), "{why}");
+            /* And named directly, as the clone's own root. */
+            let alone = Survey {
+                path: melon.clone(),
+                repo_root: Some(melon.clone()),
+                repos: vec![bad.clone()],
+                ..sonic()
+            };
+            assert!(refuse(&alone, &g).is_some(), "{bad:?} alone");
+        }
+        /* Every reason at once, so a card fixes it in one pass. */
+        let both = Repo {
+            unpushed: vec!["wip (1 commit)".into()],
+            dirty: vec!["a.rs".into()],
+            ..pushed(&melon)
+        };
+        let why = unsafe_repo(&both).unwrap();
+        assert!(why.contains("wip (1 commit)") && why.contains("a.rs"), "{why}");
+    }
+
+    /// A clone inside a repository is that repository's untracked entry, and
+    /// it is judged as itself rather than as untracked work.
+    #[test]
+    fn a_nested_clone_is_not_its_parents_untracked_work() {
+        let root = "C:\\atelier\\sonic-ds";
+        let mut repos = vec![
+            Repo { untracked: vec!["melonDS/".into(), "notes.txt".into()], ..pushed(root) },
+            pushed(&format!("{root}\\melonDS")),
+        ];
+        discount_nested(&mut repos);
+        assert_eq!(repos[0].untracked, vec!["notes.txt".to_string()]);
+        /* A name that merely starts the same is still untracked work. */
+        let mut repos = vec![
+            Repo { untracked: vec!["melonDS-notes/".into()], ..pushed(root) },
+            pushed(&format!("{root}\\melonDS")),
+        ];
+        discount_nested(&mut repos);
+        assert_eq!(repos[0].untracked.len(), 1);
+    }
+
+    /// A linked worktree's commits live in its main repository, which the
+    /// delete does not touch — so only its working state is at stake.
+    #[test]
+    fn a_worktree_is_judged_on_its_working_state_alone() {
+        let wt = Repo {
+            root: "C:\\w\\nova-review".into(),
+            owns_objects: false,
+            read: true,
+            ..Default::default()
+        };
+        assert_eq!(unsafe_repo(&wt), None, "no remote and no branches of its own is fine");
+        assert!(repo_line(&wt).contains("linked worktree"));
+        assert!(unsafe_repo(&Repo { dirty: vec!["x.ts".into()], ..wt.clone() }).is_some());
+        assert!(unsafe_repo(&Repo { untracked: vec!["y.ts".into()], ..wt.clone() }).is_some());
+    }
+
+    /// A root nobody asked git about is refused as roots always were, and a
+    /// walk too big to finish cannot vouch for what is nested below it.
+    #[test]
+    fn an_unread_or_unfinished_repository_is_refused() {
+        let g = ground_at("C:\\Users\\lyss\\workbench\\skein");
+        let unread = Survey { repos: vec![], ..sonic() };
+        let why = refuse(&unread, &g).unwrap();
+        assert!(why.contains("git work tree"), "{why}");
+        /* Its own root missing from the list is the same as unread. */
+        let other = Survey { repos: vec![pushed("C:\\atelier\\sonic-ds\\melonDS")], ..sonic() };
+        assert!(refuse(&other, &g).is_some());
+        let capped = Survey { capped: true, ..sonic() };
+        let why = refuse(&capped, &g).unwrap();
+        assert!(why.contains("too large to walk"), "{why}");
+        /* Naming `.git` itself is still never a thing to ask about. */
+        assert!(refuse(&dir("C:\\atelier\\sonic-ds\\.git"), &g).is_some());
+    }
+
+    /// Another card's ground is as off limits as the caller's own.
+    #[test]
+    fn a_tree_another_card_stands_in_is_refused_naming_it() {
+        let g = ground_at("C:\\Users\\lyss\\workbench\\skein");
+        let worktrees = dir("C:\\Users\\lyss\\workbench\\skein\\.claude\\worktrees");
+        let why = refuse(&worktrees, &g).unwrap();
+        assert!(why.contains("lane B"), "{why}");
+        /* A sibling of its tree is not its tree. */
+        let sib = dir("C:\\Users\\lyss\\workbench\\skein\\.claude\\worktrees\\lane-b-old");
+        assert_eq!(refuse(&sib, &g), None);
+    }
+
+    /// Eight anywhere, or forty in at most two directories.
+    #[test]
+    fn many_paths_are_read_by_where_they_are() {
+        let at = |dir: &str, n: usize| -> Vec<String> {
+            (0..n).map(|i| format!("C:\\atelier\\{dir}\\leftover-{i}")).collect()
+        };
+        assert_eq!(too_many(&at("sonic-ds", 8)), None);
+        assert_eq!(too_many(&at("sonic-ds", 25)), None, "one directory's listing");
+        let two: Vec<String> = [at("sonic-ds", 20), at("sonic-ds\\out", 20)].concat();
+        assert_eq!(too_many(&two), None);
+        let three: Vec<String> = [at("a", 4), at("b", 4), at("c", 1)].concat();
+        let why = too_many(&three).unwrap();
+        assert!(why.contains("3 directories"), "{why}");
+        assert!(why.contains("Nothing was deleted"), "{why}");
+        let why = too_many(&at("sonic-ds", 41)).unwrap();
+        assert!(why.contains("name the directory"), "{why}");
+        /* Separators and case are the filesystem's when grouping. */
+        let mixed = vec!["C:/a/x".to_string(), "c:\\A\\y".to_string()];
+        assert_eq!(groups(&mixed).len(), 1);
+        assert_eq!(split_parent("C:\\a\\b\\"), ("C:\\a".to_string(), "b".to_string()));
+    }
+
+    /// A grouped call is drawn as one listing per directory, and a grouped
+    /// line drops the path and the bullets — never a warning.
+    #[test]
+    fn a_grouped_question_lists_each_directory_once_and_keeps_every_warning() {
+        let mut surveys: Vec<Survey> = (0..25)
+            .map(|i| Survey { bytes: 1_600_000, files: 40, ..dir(&format!("C:\\atelier\\sonic-ds\\obj-{i}")) })
+            .collect();
+        surveys[3].writers = vec!["\"lane B\" (3f2a9c1e)".into()];
+        surveys[7].servers = vec!["web (sonic)".into()];
+        let q = question("clearing the build leftovers", &surveys);
+        assert_eq!(q["questions"][0]["header"], "delete 25 paths");
+        let body = q["questions"][0]["question"].as_str().unwrap();
+        assert!(body.contains("**25 paths in C:\\atelier\\sonic-ds**"), "{body}");
+        assert!(body.contains("38.1 MB in 1000 files"), "{body}");
+        assert!(body.contains("`obj-24`"), "{body}");
+        /* The directory is said once rather than twenty-five times. */
+        assert_eq!(body.matches("C:\\atelier\\sonic-ds").count(), 1, "{body}");
+        assert!(body.contains("written in by \"lane B\""), "{body}");
+        assert!(body.contains("dev server running: web (sonic)"), "{body}");
+        assert!(body.contains("**This is permanent.**"), "{body}");
+    }
+
+    /// The far wall draws a repository delete from fields alone, so they say
+    /// what the local question says.
+    #[test]
+    fn a_repository_delete_carries_its_repositories_across() {
+        let e = evidence("freeing disk", &[sonic()], "C:\\Users\\lyss\\workbench\\skein", "home");
+        let repos = e["targets"][0]["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0]["path"], "C:\\atelier\\sonic-ds");
+        assert_eq!(repos[0]["worktree"], false);
+        assert_eq!(repos[0]["remotes"][0], "origin (https://github.com/lyss/sonic-ds.git)");
+        assert_eq!(repos[0]["branches"], 2);
+        let q = json!({ "remove": e });
+        assert!(travels(&q));
+        /* And forty grouped paths still travel; forty-one would not. */
+        let many: Vec<Survey> = (0..MAX_GROUPED).map(|i| dir(&format!("C:\\x\\d{i}"))).collect();
+        assert!(travels(&json!({ "remove": evidence("why", &many, "C:\\x", "home") })));
+    }
+
+    /// `assess` against real repositories: a bare remote, a clone pushed to
+    /// it, and a clone nested inside that one — every reading the decisions
+    /// above are fed, from git itself rather than from a fixture.
+    #[test]
+    fn git_is_asked_what_a_repository_holds() {
+        let base = std::env::temp_dir().join(format!("skein-remove-assess-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+        };
+        let remote = base.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        run(&remote, &["init", "--bare", "-q"]);
+        let repo = base.join("repo");
+        run(&base, &["clone", "-q", remote.to_str().unwrap(), "repo"]);
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        std::fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-qm", "a"]);
+        run(&repo, &["push", "-q", "origin", "main"]);
+        std::fs::create_dir_all(repo.join("build")).unwrap();
+        std::fs::write(repo.join("build").join("out.o"), "o").unwrap();
+        let nested = repo.join("inner");
+        run(&repo, &["clone", "-q", remote.to_str().unwrap(), "inner"]);
+
+        let deleting = repo.to_string_lossy().to_string();
+        let w = weigh(&repo);
+        let mut roots: Vec<String> = w.gits.iter().map(|g| g.to_string_lossy().to_string()).collect();
+        roots.sort();
+        assert_eq!(roots.len(), 2, "{roots:?}");
+        /* `inner` is untracked as far as the outer one is concerned, and it
+           is its own repository, judged as one — not untracked work. */
+        assert!(assess(&repo, &deleting).untracked.iter().any(|u| u.contains("inner")));
+        let both = repos_under(&repo, &w.gits);
+        assert_eq!(both.len(), 2);
+        let r = both.iter().find(|r| same(&r.root, &deleting)).unwrap().clone();
+        assert!(r.untracked.is_empty(), "{r:?}");
+        assert!(r.read && r.owns_objects, "{r:?}");
+        assert_eq!(unsafe_repo(&r), None, "{r:?}");
+        assert_eq!(r.branches, 1);
+        assert!(r.remotes[0].starts_with("origin ("), "{r:?}");
+        assert!(r.ignored.iter().any(|i| i.starts_with("build")), "{r:?}");
+        assert_eq!(unsafe_repo(&assess(&nested, &deleting)), None);
+
+        /* A branch never pushed: the melonDS case. */
+        run(&nested, &["checkout", "-qb", "sonic-dcache-timing"]);
+        std::fs::write(nested.join("b.txt"), "b").unwrap();
+        run(&nested, &["add", "."]);
+        run(&nested, &["commit", "-qm", "b"]);
+        let why = unsafe_repo(&assess(&nested, &deleting)).unwrap();
+        assert!(why.contains("sonic-dcache-timing (1 commit)"), "{why}");
+        run(&nested, &["push", "-q", "origin", "sonic-dcache-timing"]);
+        assert_eq!(unsafe_repo(&assess(&nested, &deleting)), None);
+
+        /* A dirty tracked file, then a stash of it. */
+        std::fs::write(repo.join("a.txt"), "changed").unwrap();
+        let why = unsafe_repo(&assess(&repo, &deleting)).unwrap();
+        assert!(why.contains("a.txt"), "{why}");
+        run(&repo, &["stash", "-q"]);
+        let why = unsafe_repo(&assess(&repo, &deleting)).unwrap();
+        assert!(why.contains("1 stash entry"), "{why}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// `TEMP` is an environment variable, and one pointed at a root or at home

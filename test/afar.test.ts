@@ -19,6 +19,8 @@ import {
   readNotices,
   readRemoval,
   readRemovals,
+  REMOVAL_LISTED,
+  REMOVAL_TARGETS_CAP,
   remoteNotices,
   removalHere,
   removalsOf,
@@ -113,7 +115,7 @@ describe("a removal carries what the glance would have said", () => {
     ]) {
       expect(readRemoval(evidence({}, t))).toBeNull();
     }
-    expect(readRemoval(evidence({ targets: Array(9).fill(evidence().targets[0]) }))).toBeNull();
+    expect(readRemoval(evidence({ targets: Array(41).fill(evidence().targets[0]) }))).toBeNull();
     expect(readRemoval(null)).toBeNull();
   });
 
@@ -190,12 +192,57 @@ describe("the question drawn on the other wall", () => {
     expect(composeAnswer(q, answers)).toBe(DELETE_IT);
   });
 
+  /* A whole repository, which the owning wall only asks about once git has
+     shown everything in it is on a remote (sink 2ddc27d2). */
+  test("a repository delete says it is pushed, from the fields alone", () => {
+    const repo = {
+      path: "C:\\atelier\\sonic-ds",
+      worktree: false,
+      remotes: ["origin (https://github.com/lyss/sonic-ds.git)"],
+      branches: 2,
+      ignored: ["build/", ".env"],
+    };
+    const r = readRemoval(evidence({}, { path: "C:\\atelier\\sonic-ds", repos: [repo] }))!;
+    const body = removalHere(r, "home")![0]!.question;
+    expect(body).toContain("`.git` included");
+    expect(body).toContain("pushed to origin (https://github.com/lyss/sonic-ds.git), nothing unpushed");
+    expect(body).toContain("2 local branches");
+    expect(body).toContain(".env");
+    /* Strict once present: a clone with no remote cannot have passed. */
+    expect(readRemoval(evidence({}, { repos: [{ ...repo, remotes: [] }] }))).toBeNull();
+    expect(readRemoval(evidence({}, { repos: [{ ...repo, branches: "2" }] }))).toBeNull();
+    expect(readRemoval(evidence({}, { repos: "sonic-ds" }))).toBeNull();
+    /* Absent is a wall from before, which never asked about one. */
+    expect(readRemoval(evidence())!.targets[0]!.repos).toEqual([]);
+  });
+
+  test("many paths are drawn one listing per directory", () => {
+    const t = evidence().targets[0] as Record<string, unknown>;
+    const targets = Array.from({ length: 25 }, (_, i) => ({ ...t, path: `C:\\atelier\\sonic-ds\\obj-${i}` }));
+    const r = readRemoval(evidence({ targets }))!;
+    const body = removalHere(r, "home")![0]!.question;
+    expect(body).toContain("**25 paths in C:\\atelier\\sonic-ds**");
+    expect(body).toContain("`obj-24`");
+    expect(body.split("C:\\atelier\\sonic-ds").length - 1).toBe(1);
+    /* Every warning is kept in the short form. */
+    expect(body).toContain("written in by auditing nova (32e394af) on home");
+    expect(body).toContain("**This is permanent.**");
+  });
+
   /* The two labels are Rust's, and only `delete it` verbatim is a yes there.
      Read out of the source so a renamed button cannot ship as a "no". */
   test("the labels are remove.rs's own", async () => {
     const rs = await Bun.file(new URL("../src-tauri/src/remove.rs", import.meta.url)).text();
     expect(rs).toContain(`const DELETE_IT: &str = "${DELETE_IT}";`);
     expect(rs).toContain(`const KEEP_IT: &str = "${KEEP_IT}";`);
+  });
+
+  /* The caps are Rust's too: a far wall reading fewer than the owning wall
+     asks about would drop the question rather than draw it. */
+  test("the path caps are remove.rs's own", async () => {
+    const rs = await Bun.file(new URL("../src-tauri/src/remove.rs", import.meta.url)).text();
+    expect(rs).toContain(`const MAX_GROUPED: usize = ${REMOVAL_TARGETS_CAP};`);
+    expect(rs).toContain(`const MAX_PATHS: usize = ${REMOVAL_LISTED};`);
   });
 
   test("sizes read in remove.rs's register", () => {

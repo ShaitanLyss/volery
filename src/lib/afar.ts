@@ -56,8 +56,14 @@ import { nameBesideProject } from "./naming";
 export const DELETE_IT = "delete it";
 export const KEEP_IT = "keep it";
 
-/** `remove::MAX_PATHS`: a confirmation listing more is one nobody reads. */
-export const REMOVAL_TARGETS_CAP = 8;
+/** `remove::MAX_GROUPED`: forty paths in at most two directories, drawn as one
+ *  listing per directory. Past `REMOVAL_LISTED` the question groups them, as
+ *  the owning wall's does. */
+export const REMOVAL_TARGETS_CAP = 40;
+/** `remove::MAX_PATHS`: up to this many are each described in full. */
+export const REMOVAL_LISTED = 8;
+/** `remove::MAX_REPOS`. */
+const REPOS_CAP = 24;
 const PATH_CAP = 1_000;
 const REASON_CAP = 2_000;
 const NAME_CAP = 80;
@@ -82,7 +88,39 @@ export type RemovalTarget = {
   writers: string[];
   /** Dev servers running out of a tree containing it. */
   servers: string[];
+  /** Every git repository the delete takes, `.git` included. A removal is
+   *  only ever asked about with these when each has passed `unsafe_repo` on
+   *  the owning machine — every branch on a remote, nothing uncommitted,
+   *  untracked or stashed — so their presence is the claim *nothing
+   *  unpushed*, and the fields say where it was pushed. Absent on a wall from
+   *  before 2026-10-25, which never asked about a repository at all. */
+  repos: RemovalRepo[];
 };
+
+export type RemovalRepo = {
+  path: string;
+  /** A linked worktree, whose commits live in a repository elsewhere. */
+  worktree: boolean;
+  /** `name (url)`, one per remote. */
+  remotes: string[];
+  branches: number;
+  /** What git ignores in it and the delete takes anyway. */
+  ignored: string[];
+};
+
+/** One repository off the wire, or null when it is malformed. */
+function readRepo(raw: unknown): RemovalRepo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const x = raw as Record<string, unknown>;
+  const path = typeof x.path === "string" ? scrub(x.path).trim() : "";
+  const branches = count(x.branches);
+  if (!path || path.length > PATH_CAP || typeof x.worktree !== "boolean" || branches === null) return null;
+  const remotes = names(x.remotes);
+  /* A clone with no remote cannot have passed, so evidence saying so is
+     evidence of nothing. */
+  if (!x.worktree && !remotes.length) return null;
+  return { path, worktree: x.worktree, remotes, branches, ignored: names(x.ignored) };
+}
 
 /** `remove::evidence`, as the question carries it. */
 export type Removal = {
@@ -133,6 +171,17 @@ export function readRemoval(raw: unknown): Removal | null {
     if (kind !== "file" && kind !== "directory" && kind !== "link") return null;
     if (x.exists !== true || entries === null || bytes === null) return null;
     if (typeof x.capped !== "boolean" || typeof x.own !== "boolean") return null;
+    /* Strict once present: a repository drawn with a hole in it is a claim of
+       *nothing unpushed* about less than it appears to be. */
+    let repos: RemovalRepo[] = [];
+    if (x.repos !== undefined) {
+      if (!Array.isArray(x.repos) || x.repos.length > REPOS_CAP) return null;
+      for (const raw of x.repos) {
+        const repo = readRepo(raw);
+        if (!repo) return null;
+        repos.push(repo);
+      }
+    }
     targets.push({
       path,
       kind,
@@ -145,6 +194,7 @@ export function readRemoval(raw: unknown): Removal | null {
       tracked: count(x.tracked) ?? 0,
       writers: names(x.writers),
       servers: names(x.servers),
+      repos,
     });
   }
   return { machine: capText(machine, NAME_CAP), reason: capText(reason, REASON_CAP), targets };
@@ -219,7 +269,95 @@ function described(t: RemovalTarget, host: string): string {
   if (t.writers.length) lines.push(`- **other cards on ${host} have written in here**: ${t.writers.join(", ")}`);
   if (t.servers.length)
     lines.push(`- **a dev server is running out of this tree on ${host}**: ${t.servers.join(", ")}`);
+  lines.push(...reposSaid(t));
   return lines.join("\n");
+}
+
+/** A name list cut at six with the rest counted — `remove::listed`. */
+function listed(items: string[]): string {
+  const shown = items.slice(0, 6);
+  const more = items.length - shown.length;
+  return shown.join(", ") + (more > 0 ? ` and ${more} more` : "");
+}
+
+function lastSegment(p: string): string {
+  const t = p.replace(/[\\/]+$/, "");
+  return t.slice(Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\")) + 1);
+}
+
+function parentOf(p: string): string {
+  const t = p.replace(/[\\/]+$/, "");
+  return t.slice(0, Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\"), 0));
+}
+
+/** `remove::repo_line`, from the fields: what a repository that passed is. */
+export function repoLine(r: RemovalRepo): string {
+  if (r.worktree)
+    return (
+      `${r.path} — a linked worktree; its commits live in the main repository, which this does ` +
+      `not touch. Nothing uncommitted or untracked in it.`
+    );
+  return (
+    `${r.path} — **pushed to ${r.remotes.join(", ")}, nothing unpushed**: ${plural(r.branches, "local branch", "local branches")} ` +
+    `all on a remote, no stash, nothing uncommitted or untracked. As of that clone's last fetch; ` +
+    `git was not asked over the network.`
+  );
+}
+
+/** `remove::repos_said`: the lines a target's repositories add. */
+function reposSaid(t: RemovalTarget): string[] {
+  const out: string[] = [];
+  const key = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  if (t.repos.some((r) => key(r.path) === key(t.path))) out.push("- **a whole git repository, `.git` included**");
+  for (const r of t.repos) {
+    out.push(`- ${repoLine(r)}`);
+    if (r.ignored.length)
+      out.push(`- ignored by git in ${lastSegment(r.path)}, so going with no copy anywhere: ${listed(r.ignored)}`);
+  }
+  return out;
+}
+
+/** `remove::compact`: one target in a grouped listing, every warning kept. */
+function compactLine(t: RemovalTarget, host: string): string {
+  const floor = t.capped ? "more than " : "";
+  const size =
+    t.kind === "link"
+      ? "a link"
+      : t.kind === "directory"
+        ? `${floor}${humanSize(t.bytes)} in ${floor}${plural(t.entries, "file")}`
+        : humanSize(t.bytes);
+  const git = !t.repo ? "not in git" : t.tracked ? `**git tracks ${t.tracked}**` : "untracked";
+  let line = `- \`${lastSegment(t.path)}\` — ${size}, ${git}`;
+  if (t.writers.length) line += `; **written in by ${t.writers.join(", ")} on ${host}**`;
+  if (t.servers.length) line += `; **dev server running on ${host}: ${t.servers.join(", ")}**`;
+  const repos = t.repos.map((r) => `\n  - ${repoLine(r)}`).join("");
+  return line + repos;
+}
+
+/** Many targets, one listing per directory — `remove::question`'s grouped form. */
+function grouped(targets: RemovalTarget[], host: string): string[] {
+  const order: string[] = [];
+  const by = new Map<string, RemovalTarget[]>();
+  for (const t of targets) {
+    const dir = parentOf(t.path);
+    const k = dir.replace(/\\/g, "/").toLowerCase();
+    if (!by.has(k)) {
+      by.set(k, []);
+      order.push(dir);
+    }
+    by.get(k)!.push(t);
+  }
+  return order.map((dir) => {
+    const here = by.get(dir.replace(/\\/g, "/").toLowerCase())!;
+    const bytes = here.reduce((n, t) => n + t.bytes, 0);
+    const files = here.reduce((n, t) => n + t.entries, 0);
+    const floor = here.some((t) => t.capped) ? "more than " : "";
+    const own = here.every((t) => t.own) ? "" : " — **outside the card's own working tree**";
+    return [
+      `**${here.length} paths in ${dir}**, together ${floor}${humanSize(bytes)} in ${floor}${plural(files, "file")}${own}:`,
+      ...here.map((t) => compactLine(t, host)),
+    ].join("\n");
+  });
 }
 
 /** The question this wall draws for a removal parked on `host` — or null, and
@@ -235,7 +373,7 @@ export function removalHere(r: Removal, host: string): AskQuestion[] | null {
   const which = r.targets.length === 1 ? "this" : `these ${r.targets.length}`;
   const body = [
     `A card on **${host}** wants to **delete** ${which} — on ${host}'s disk, not this machine's:`,
-    ...r.targets.map((t) => described(t, host)),
+    ...(r.targets.length > REMOVAL_LISTED ? grouped(r.targets, host) : r.targets.map((t) => described(t, host))),
     `Its reason: *${r.reason}*`,
     `**This is permanent.** It is not moved to a recycle bin and nothing on either wall can bring ` +
       `it back. ${host} checks again at the moment of deleting and refuses if the tree has ` +
