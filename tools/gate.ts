@@ -39,6 +39,7 @@
 
 import { spawnSync } from "node:child_process";
 import { staleArtifact } from "./stale";
+import { pruneTarget } from "./prune-target";
 
 type Step = {
   /** What it is, in CI's words. */
@@ -76,6 +77,11 @@ const STEPS: Step[] = [
 
 const full = process.argv.includes("--full");
 const run = STEPS.filter((s) => full || !s.heavy);
+
+/* Before the rust suite builds: superseded hashes of this crate out of
+   `target/debug`, which otherwise grows ~50 GB a fortnight (sink b3300e79).
+   Skips itself while any cargo runs, and never fails the gate. */
+console.log(pruneTarget());
 
 let failed = 0;
 for (const s of run) {

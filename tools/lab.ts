@@ -71,6 +71,7 @@ import {
 } from "node:fs";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
+import { pruneTarget } from "./prune-target";
 
 /* ── the pure part, which test/lab.test.ts holds ──────────────────────────── */
 
@@ -358,6 +359,9 @@ function build() {
   if (free !== null && free < 8 * 2 ** 30) {
     refuse(`only ${gb(free)} free on ${REPO[0]}: — a debug build can take more. Pass --no-build to use the existing binary.`);
   }
+  /* Nothing is building, so this is the moment the superseded hashes of this
+     crate can come out of target/debug (sink b3300e79, tools/prune-target.ts). */
+  say(pruneTarget().replace(/^prune: /, ""));
   say("cargo build (a no-op when target\\debug is current)");
   const r = spawnSync("cargo", ["build"], { cwd: join(REPO, "src-tauri"), stdio: "inherit" });
   if (r.status !== 0) {
