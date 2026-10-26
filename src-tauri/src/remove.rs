@@ -3262,6 +3262,17 @@ mod tests {
         run(&remote, &["init", "--bare", "-q"]);
         let repo = base.join("repo");
         run(&base, &["clone", "-q", remote.to_str().unwrap(), "repo"]);
+        /* The way `resolve_targets` spells a path before `assess` sees it. CI's
+           temp is `C:\Users\RUNNER~1\…`, which git answers in its long form, so
+           the raw join made `owns_objects` false there and nowhere else
+           (v0.84.0's build). */
+        let repo = PathBuf::from(
+            std::fs::canonicalize(&repo)
+                .unwrap()
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string(),
+        );
         std::fs::write(repo.join("a.txt"), "a").unwrap();
         std::fs::write(repo.join(".gitignore"), "build/\n").unwrap();
         run(&repo, &["add", "."]);
