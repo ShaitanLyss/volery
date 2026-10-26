@@ -1257,6 +1257,66 @@ site; a frozen-not-silent reading named exactly the pages that are busy on purpo
 was cut short and then refused; a popup's first navigation and a sibling's dialog both named the
 wrong tab. Each has a check in `probe-card-tabs.ts stall`.
 
+## A card saves files in the tree it works in (2026-10-26)
+
+Playwright checks every file a tool names — a screenshot's `filename`, a snapshot, console or
+network log saved to disk, `paths` to upload, a script or storage state to load — against two
+roots: the client's `cwd` and its output folder. The host gave it the card's launch directory
+as that `cwd`, once, at the card's first call. Cards work in git worktrees beside the checkout
+they were launched in, made whenever they like, so a card in `nova-hop` (launched in `nova`)
+was refused a screenshot where it worked and put its evidence in a checkout other cards own;
+and a *relative* name resolved against the launch directory, so a card working in `rise-r1`
+silently wrote into `rise`, the tree it had been told never to touch (sinks ac92fe93,
+c6683061).
+
+- **The roots are the launch directory and the same directory in every worktree of its
+  repository**, from `git worktree list` on every call that names a file — so a worktree made
+  after the card started counts, and nothing in a call widens them. Launched in `repo/sub`, a
+  card gets `<worktree>/sub` in each, never a whole tree above where it was put. A worktree git
+  marks `prunable` or `bare`, or whose folder has gone, is left out, since Playwright would
+  recreate it. `browserroots.cjs`, pure, `test/browserroots.test.ts` (real git included).
+  **It is a bound against accidents, not a security boundary**: `browser_run_code_unsafe` runs
+  any script inside the host, and a card can write a file with its own tools anyway.
+- **Paths are matched the way Playwright checks them, links resolved**, so the two cannot
+  disagree. A card launched through a junction, a subst drive or an 8.3 name still finds its
+  worktrees: `git rev-parse --show-toplevel` answers with the real path, which would not nest
+  under the launch spelling as text.
+- **A git that fails is not a directory with no repository.** `git` resolves to stdout, to
+  `null` when git says *not a git repository*, and to `undefined` for anything else (timed out
+  after 5s, not installed). Reading the last as "no repository" would bring the original bug
+  back quietly whenever git hung, so it refuses relative names and says git did not answer.
+- **Playwright still enforces it.** The host decides which root a call runs under and runs the
+  call with Playwright's workspace set to it: `context.options.cwd` becomes a getter over an
+  `AsyncLocalStorage`, because Playwright reads it at the moment it resolves and checks a file,
+  inside `callTool`. No lock, and a call or page event outside a `run` sees the launch
+  directory. A tool or argument `browserroots.cjs` has never heard of is checked against the
+  launch directory, as before. If a playwright-core bump moves `context.options`, a worktree
+  path is refused saying so, rather than refused by a list that leaves it out. The backend's
+  browser context is built straight after `initialize`, outside any `run`: each tab already in
+  a card's context replays its console into a log file created once under the workspace of the
+  moment, so a first call naming a worktree file would otherwise have left those logs there.
+- **A relative name is refused where it would be a guess**: launched in the main checkout of
+  a repository with worktrees beside it. That includes a stray scratch worktree, which is
+  a refusal the card meets once and answers with an absolute path. The CLI reports the launch directory as `cwd` on every
+  record whatever the card has `cd`'d into (checked on 0c8147e8's transcript, 952 records, one
+  value), so the host cannot see which tree a card is in. The refusal names the trees and the
+  output folder. Launched in a linked worktree — one Volery made for it — or in a repository
+  with one tree, a relative name resolves against the launch directory as it always did.
+- **`_meta.cwd` is pinned to the launch directory** on any call that names a file. It is
+  Playwright's per-call `relativeTo` — what a relative name resolves against and what a saved
+  file's link is printed relative to. Without it the link was relative to the worktree, a bare
+  `.scratch\live.png` the card would read as its own launch tree's; with it the link reads
+  `..\repo-hop\.scratch\live.png`. It also means a `_meta.cwd` the card sends cannot move what
+  a relative name means.
+- **A name outside every root is refused before the call runs**, naming the roots and why.
+- A call naming files in two trees is refused: one call runs under one root.
+
+`bun tools/probe-worktree-files.ts` drives the real host with a client declaring its root as
+the CLI does, over a throwaway repository: a worktree added mid-session, a screenshot, snapshot
+and console log saved in it, the relative and outside refusals, and the default screenshot
+still in the launch `.playwright-mcp`. No API turn; Chrome on 19334, host on 19447. Run against
+a host with the scope taken out, the three saves into the worktree fail.
+
 ## What is not built
 
 - **No navigation bar.** The agent navigates, and `Page.navigate` is wired in `pane.svelte.ts`

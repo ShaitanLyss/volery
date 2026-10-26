@@ -76,6 +76,9 @@ const crypto = require("crypto");
 const { mergeStates, readVault, stateFromCdp, webOrigin } = require(path.join(__dirname, "browservault.cjs"));
 const { TargetFilter } = require(path.join(__dirname, "browsercdp.cjs"));
 const stall = require(path.join(__dirname, "browserstall.cjs"));
+const files = require(path.join(__dirname, "browserroots.cjs"));
+const { AsyncLocalStorage } = require("async_hooks");
+const { execFile } = require("child_process");
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -1047,6 +1050,12 @@ function sessionServer(card, streamOpened) {
              session's, and outlives it by `GRACE`. */
           const backend = new tools.BrowserBackend(config, windowed(entry, browser), toolList, {});
           await backend.initialize(clientInfo);
+          scopeWorkspace(backend, clientInfo.cwd);
+          /* Built here, outside any call's root: each tab of a context the
+             card already has replays its console into a log file created once
+             under the workspace of the moment, and a first call that named a
+             worktree file would otherwise leave every such log there. */
+          await backend._context?.ensureBrowserContext?.().catch(() => {});
           return backend;
         })().then((backend) => {
           backend.on?.("dynamictoolschange", () => {
@@ -1075,7 +1084,19 @@ function sessionServer(card, streamOpened) {
          call is dispatched, so a refused call is one that was never made. */
       const refused = entry ? await upFront(backend, entry, tool) : null;
       if (refused) return { content: [{ type: "text", text: refused }], isError: true };
-      const call = backend.callTool(tool, args, extra.signal);
+      /* Which tree a call that names a file runs under (`browserroots.cjs`):
+         the launch directory, or one of its repository's worktrees, read
+         fresh so one made after the card started counts. */
+      const where = await whereFiles(backend, args, extra.signal);
+      if (where?.refuse) return { content: [{ type: "text", text: "### Error\n" + where.refuse }], isError: true };
+      /* `_meta.cwd` is what Playwright resolves a relative name against and
+         prints a saved file's link relative to (`callTool`'s `relativeTo`).
+         Pinned to the launch directory on any call that names a file: the
+         link then reads from where the card stands (`..\nova-hop\…`, not a
+         bare `.scratch\…` it would take for its own), and a `_meta.cwd` the
+         card sent cannot move what a relative name means. */
+      const sent = backend.voleryLaunch && files.named(args).length ? { ...args, _meta: { ...(args._meta ?? {}), cwd: backend.voleryLaunch } } : args;
+      const call = where?.root ? workspace.run(where.root, () => backend.callTool(tool, sent, extra.signal)) : backend.callTool(tool, sent, extra.signal);
       /* Raced against a watch on the card's own tab, which ends the wait with
          a sentence only on evidence (`watchCall`). What it ends is the wait,
          not the work: the call goes on inside Playwright and settles when the
@@ -1127,6 +1148,73 @@ function toMcp(schema) {
     inputSchema: utils.z.toJSONSchema(schema.inputSchema),
     annotations: { title: schema.title, readOnlyHint: readOnly, destructiveHint: !readOnly, openWorldHint: true },
   };
+}
+
+/* ── which tree a file goes in ──────────────────────────────────────────── */
+
+/** The directory a call runs under, when it is not the launch directory.
+ *  Playwright reads its workspace off `context.options.cwd` at the moment it
+ *  resolves and checks a file (`workspaceFile`, `checkFile`, `outputDir`, and
+ *  the `Response`'s `_clientWorkspace`, all built inside `callTool`), so a
+ *  getter over this store gives each call its own root without a lock, and a
+ *  call — or a page event — outside a `run` sees the launch directory as it
+ *  always did. */
+const workspace = new AsyncLocalStorage();
+
+function scopeWorkspace(backend, launch) {
+  backend.voleryLaunch = launch;
+  const options = backend._context?.options;
+  if (!options || typeof options.cwd !== "string") return;
+  Object.defineProperty(options, "cwd", { get: () => workspace.getStore() ?? launch, enumerable: true, configurable: true });
+  backend.voleryScoped = true;
+}
+
+/** stdout; `null` when git says this is not a repository; `undefined` for
+ *  any other failure — the difference `browserroots.cjs`'s `decide` needs. */
+function git(cwd, args, signal) {
+  return new Promise((resolve) =>
+    execFile(
+      "git",
+      ["-C", cwd, ...args],
+      { timeout: 5000, windowsHide: true, signal, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+      (error, stdout, stderr) => resolve(!error ? String(stdout) : /not a git repository/i.test(String(stderr)) ? null : undefined)
+    )
+  );
+}
+
+/** Where Playwright puts a file that names no path (`outputDir` in
+ *  playwright-core): the configured folder, else `<cwd>/.playwright-mcp`, else
+ *  the temp folder's when the launch directory cannot be written. */
+function outputFor(launch) {
+  if (config.outputDir) return path.resolve(config.outputDir);
+  try {
+    fs.accessSync(launch, fs.constants.W_OK);
+    return path.join(launch, ".playwright-mcp");
+  } catch {
+    return path.join(require("os").tmpdir(), ".playwright-mcp");
+  }
+}
+
+/** `null` to run the call as it is, `{ root }` to run it under a worktree,
+ *  `{ refuse }` to answer it without running it. Asks git only for a call
+ *  that names a file, which is a handful a session. */
+async function whereFiles(backend, args, signal) {
+  const launch = backend.voleryLaunch;
+  if (config.allowUnrestrictedFileAccess) return null;
+  const p = await files.decide({
+    args,
+    launch,
+    outputDir: launch ? outputFor(launch) : undefined,
+    git: (cwd, a) => git(cwd, a, signal),
+    exists: fs.existsSync,
+    realpath: fs.realpathSync.native,
+  });
+  /* A playwright-core whose context no longer keeps `options.cwd` where
+     `scopeWorkspace` looks: say so, rather than let its check refuse the
+     worktree with a list that leaves it out. */
+  if (p?.root && !backend.voleryScoped)
+    return { refuse: `This browser cannot write into ${p.root} yet: the host could not scope Playwright's workspace (playwright-core moved \`context.options\`). Save under ${launch} and copy.` };
+  return p;
 }
 
 function firstRoot(roots) {

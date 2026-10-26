@@ -85,13 +85,15 @@ const VAULT_SCRIPT: &str = include_str!("browservault.cjs");
 
 /// What the host's one connection to Chrome may see — the cards' own
 /// contexts and nothing else — and when a card's own tab counts as stopped
-/// and what the card is told. Loaded from beside the host, files of their own
-/// for the same reason: `test/browsercdp.test.ts` and
-/// `test/browserstall.test.ts` run them.
-const SIDE_SCRIPTS: [(&str, &str); 3] = [
+/// and what the card is told — and which of its repository's worktrees a card
+/// may save a file in. Loaded from beside the host, files of their own for the
+/// same reason: `test/browsercdp.test.ts`, `test/browserstall.test.ts` and
+/// `test/browserroots.test.ts` run them.
+const SIDE_SCRIPTS: [(&str, &str); 4] = [
     ("browservault.cjs", VAULT_SCRIPT),
     ("browsercdp.cjs", include_str!("browsercdp.cjs")),
     ("browserstall.cjs", include_str!("browserstall.cjs")),
+    ("browserroots.cjs", include_str!("browserroots.cjs")),
 ];
 
 /// How long a card's browser context outlives its last session: a card that
@@ -390,7 +392,7 @@ mod tests {
     /// Every file the host `require`s from beside itself is written there.
     #[test]
     fn every_script_the_host_loads_is_written_beside_it() {
-        for needed in ["browservault.cjs", "browsercdp.cjs", "browserstall.cjs"] {
+        for needed in ["browservault.cjs", "browsercdp.cjs", "browserstall.cjs", "browserroots.cjs"] {
             assert!(SCRIPT.contains(needed), "the host no longer loads {needed}");
             assert!(SIDE_SCRIPTS.iter().any(|(n, _)| *n == needed), "{needed} is not written");
         }

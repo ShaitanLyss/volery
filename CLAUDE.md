@@ -77,7 +77,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
                          # sources, marks, whois, credits, boostmusic, boostfield,
-                         # browsercdp, browserstall
+                         # browsercdp, browserstall, browserroots
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -159,6 +159,10 @@ bun tools/probe-matcher.ts         # whether the PreToolUse matcher narrowing ho
 bun tools/probe-tool-failure.ts    # which hook hears an MCP call that FAILED, what it is
                                    # handed, and whether its additionalContext reaches the
                                    # model. One real turn, pinned to Haiku
+bun tools/probe-worktree-files.ts  # whether a card launched in one checkout can save browser
+                                   # files in a worktree of it made mid-session, and that a
+                                   # relative name or a path outside is refused. The real host,
+                                   # a client declaring roots as the CLI does; no API turn
 node --experimental-strip-types tools/probe-cdp-stall.ts   # what makes playwright hang
                                    # in initializeServer — a dialog, a hung page — and that
                                    # the hook's check names it. No API turn; Chrome on 19222
