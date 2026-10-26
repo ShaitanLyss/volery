@@ -5623,6 +5623,7 @@
         if (c) menuAt(c, at.x, at.y, keyed);
       }}
       onprojectmenu={projectMenuAt}
+      onclosecard={(id) => void cards.find(id)?.do("close")}
       {starter}
       {actions}
       {ledger}

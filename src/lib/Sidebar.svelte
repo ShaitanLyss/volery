@@ -27,6 +27,7 @@
     onproject,
     onmenu,
     onprojectmenu,
+    onclose,
     piles = [],
     pileOn = null,
     onpile,
@@ -49,6 +50,8 @@
     onmenu: (id: string, at: At, keyed: boolean) => void;
     /** A project's menu, the same way. */
     onprojectmenu: (name: string, at: At, keyed: boolean) => void;
+    /** Close a conversation — offered on a row that is not working. */
+    onclose: (id: string) => void;
     /** The wall's two piles — the sink and the billboard — each a page in the
      *  sheet (`PilePage.svelte`), with how much is in it. */
     piles?: { kind: "sink" | "board"; label: string; count: number }[];
@@ -239,6 +242,21 @@
         >{/if}{p.row.title}</span
     >
     <span class="aside" title={p.aside}>{p.aside}</span>
+    {#if p.tone !== "work" && !p.row.working && !p.row.asking}
+      <!-- Not a nested button: the row is one. The menu's *close* is the key path. -->
+      <span
+        class="x"
+        role="button"
+        tabindex="-1"
+        title="close this conversation"
+        aria-label="close {p.row.title}"
+        onclick={(e) => {
+          e.stopPropagation();
+          onclose(p.row.id);
+        }}
+        onkeydown={(e) => e.stopPropagation()}><Icon name="x" small /></span
+      >
+    {/if}
     <!-- The column is kept when the ring is not drawn, so the place beside the
          title does not shift as a conversation crosses a third or is selected. -->
     {#if ringShown(p.row.ctx, p.row.id === selected)}
@@ -429,6 +447,25 @@
   }
   .row:hover {
     background: color-mix(in oklab, var(--surface) 70%, transparent);
+  }
+  .row .x {
+    position: absolute;
+    right: 6px;
+    top: 6px;
+    display: none;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: color-mix(in oklab, var(--raised) 94%, transparent);
+    color: var(--paper-dim);
+  }
+  .row:hover .x {
+    display: grid;
+  }
+  .row .x:hover {
+    color: var(--paper);
+    background: var(--raised);
   }
   .row .t {
     white-space: nowrap;

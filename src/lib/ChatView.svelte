@@ -90,6 +90,7 @@
     onwall,
     onmenu,
     onprojectmenu,
+    onclosecard: closeRow,
     onnew,
     onaccount,
     starter,
@@ -130,6 +131,8 @@
     /** A project's menu — the territory's, less the rows that arrange the wall
      *  (`menu.ts`'s `region` case). */
     onprojectmenu: (name: string, at: { x: number; y: number }, keyed: boolean) => void;
+    /** Close the conversation a sidebar row stands for. */
+    onclosecard: (id: string) => void;
     onnew: () => void;
     onaccount?: () => void;
     /** The empty state's choices and its first send (`starting.svelte.ts`). */
@@ -775,6 +778,7 @@
         onproject={openProject}
         {onmenu}
         {onprojectmenu}
+        onclose={closeRow}
         {piles}
         pileOn={pile?.kind ?? null}
         onpile={(k) => openPile(k)}
@@ -794,6 +798,7 @@
       onproject={openProject}
       {onmenu}
       {onprojectmenu}
+      onclose={closeRow}
         {piles}
         pileOn={pile?.kind ?? null}
         onpile={(k) => openPile(k)}
