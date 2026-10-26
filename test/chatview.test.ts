@@ -24,6 +24,7 @@ import {
   workingUnder,
   RECENT_MS,
   type ChatRow,
+  type Entered,
 } from "../src/lib/chatview";
 
 /* Noon on a Wednesday, local time, so "today" and "yesterday" are unambiguous. */
@@ -150,6 +151,26 @@ describe("the sidebar's groups", () => {
       row("newer", { working: true, turnAt: NOW - 60_000, lastAt: NOW - 30_000 }),
     ];
     expect(ids(rows, "working")).toEqual(["newer", "older"]);
+  });
+
+  test("a row keeps its place while it stays in its group, whatever re-stamps its clocks", () => {
+    const entered: Entered = new Map();
+    const order = (rows: ChatRow[], key: "working" | "finished") =>
+      groups(rows, NOW, new Set(), entered).find((g) => g.key === key)?.rows.map((p) => p.row.id);
+    // working: a turn ending with background work drops turnAt and leaves a later rest stamp
+    const a = row("a", { working: true, turnAt: NOW - 10 * 60_000 });
+    const b = row("b", { working: true, turnAt: NOW - 60_000 });
+    expect(order([a, b], "working")).toEqual(["b", "a"]);
+    expect(order([{ ...a, turnAt: null, lastAt: NOW }, b], "working")).toEqual(["b", "a"]);
+    expect(order([{ ...a, turnAt: NOW }, b], "working")).toEqual(["b", "a"]);
+    // finished: a job landing re-stamps the rest of the older card
+    const c = row("c", { lastAt: NOW - 20 * 60_000 });
+    const d = row("d", { lastAt: NOW - 5 * 60_000 });
+    expect(order([c, d], "finished")).toEqual(["d", "c"]);
+    expect(order([{ ...c, lastAt: NOW - 1_000 }, d], "finished")).toEqual(["d", "c"]);
+    // leaving and re-entering a group is a move
+    order([{ ...c, working: true, turnAt: NOW }, d], "working");
+    expect(order([{ ...c, lastAt: NOW - 1_000 }, d], "finished")).toEqual(["c", "d"]);
   });
 
   test("history buckets by the calendar, newest first", () => {

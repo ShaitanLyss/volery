@@ -22,7 +22,7 @@
   import type { Front } from "./front.svelte";
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
-  import { ctxSaid, groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Ghost } from "./chatview";
+  import { ctxSaid, groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Entered, type Ghost } from "./chatview";
   import CtxRing from "./CtxRing.svelte";
   import { scopeFiles } from "./paths.svelte";
   import { selectionMarkdown } from "./copy";
@@ -281,7 +281,10 @@
   }
 
   const rows = $derived(cards.all.map(rowOf));
-  const gs = $derived(groups(rows, clock.t, unseen));
+  /* Plain, not $state: the list's memory of where rows entered, written while
+     the groups are made and never read to draw anything. */
+  const entered: Entered = new Map();
+  const gs = $derived(groups(rows, clock.t, unseen, entered));
   /** The rows in the sidebar's order, every group, set aside last — what
    *  Ctrl+K lists before anything is typed and breaks a tie by. `cards.all`
    *  is this wall's cards and then every other's, which put a card here ahead

@@ -453,6 +453,11 @@ export function workingUnder(rows: readonly ChatRow[]): Map<string, number> {
   return out;
 }
 
+/** Where each row last entered a group, and the moment its place there is
+ *  held by. Owned by whoever draws the list (`ChatView`) so the order outlives
+ *  a single call; a fresh map is a list with no history. */
+export type Entered = Map<string, { group: GroupKey; at: number }>;
+
 /** Every group with something in it, in the order they are drawn, each row
  *  placed under the conversation that started it.
  *
@@ -468,7 +473,12 @@ export function workingUnder(rows: readonly ChatRow[]): Map<string, number> {
  *
  *  `unseen` is the parents on a wall this one holds no word from
  *  (`Kin.unseen`), which are drawn as out of reach rather than as closed. */
-export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySet<string> = new Set()): Group[] {
+export function groups(
+  rows: readonly ChatRow[],
+  now: number,
+  unseen: ReadonlySet<string> = new Set(),
+  entered: Entered = new Map(),
+): Group[] {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const working = workingUnder(rows);
   const own = new Map(rows.map((r) => [r.id, groupOf(r, now, (working.get(r.id) ?? 0) > 0)]));
@@ -501,6 +511,7 @@ export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySe
     return p ? { id, label: p.title, state: "here", host: p.host ?? null } : goneGhost(id, unseen.has(id));
   };
 
+  for (const id of entered.keys()) if (!byId.has(id)) entered.delete(id);
   const out: Group[] = [];
   for (const key of ORDER) {
     const members = rows.filter((r) => seen.get(r.id)!.group === key);
@@ -509,15 +520,21 @@ export function groups(rows: readonly ChatRow[], now: number, unseen: ReadonlySe
     /* The tops of this group's trees: a row whose parent is not drawn here
        under it. A ghosted child is a top, with its parent's title above it. */
     const tops = members.filter((r) => !r.parent || !inGroup.has(r.parent) || seen.get(r.id)!.ghost);
-    /* Elsewhere, recency — but a working row by when its turn *began*, since
-       its last activity moves with every word it writes and a list that
-       reshuffled on each one could not be read, let alone clicked. */
+    /* Elsewhere, by when the row *entered* this group — fixed while it stays,
+       so a row moves only when its own state does. It was the turn's start
+       for working and the rest's start elsewhere, and both are re-stamped by
+       things that are not a move: a turn ending with background work swapped
+       the key to another scale, and a job landing on a finished card made its
+       rest new. Rows reshuffled at times nobody could connect to anything. */
+    for (const r of members) {
+      const was = entered.get(r.id);
+      if (!was || was.group !== key) entered.set(r.id, { group: key, at: key === "working" ? (r.turnAt ?? now) : r.lastAt });
+    }
+    const at = (r: ChatRow) => entered.get(r.id)!.at;
     const ordered =
       key === "needs"
         ? needsOrder(tops)
-        : key === "working"
-          ? [...tops].sort((a, b) => (b.turnAt ?? b.lastAt) - (a.turnAt ?? a.lastAt))
-          : [...tops].sort((a, b) => b.lastAt - a.lastAt);
+        : [...tops].sort((a, b) => at(b) - at(a) || (a.id < b.id ? -1 : 1));
     const placed: Placed[] = [];
     const visit = (r: ChatRow, depth: number, ghost: Ghost | null) => {
       /* The dot and the words are the row's own group, never the one it is
