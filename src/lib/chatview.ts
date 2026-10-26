@@ -349,10 +349,11 @@ function tone(r: ChatRow, group: GroupKey): Tone {
   if (r.notice?.kind === "failed") return "fail";
   if (group === "needs") {
     if (asksYou(r)) return "ask";
-    /* A rest waiting on you, drawn by what the turn was called: that is the
-       one place the classifier still speaks, as a hint you can triage by. */
+    /* A rest waiting on you wears the ask colour whatever the turn was called:
+       a hollow dot among the things that need you was read as already dealt
+       with, and never clicked. The wording still says *finished*. */
     if (r.failed) return "fail";
-    return r.endedOnQuestion ? "ask" : "done";
+    return "ask";
   }
   if (r.working) return "work";
   /* Out of allowance is not broken: nothing about the card is wrong. */

@@ -528,9 +528,9 @@ describe("a rest needs you until you acknowledge it, whatever it was called", ()
     const r = owed("fin", { notice: { kind: "done", text: said }, lastWords: said });
     expect(ids([r], "needs")).toEqual(["fin"]);
     expect(ids([r], "finished")).toEqual([]);
-    /* The label survives as a hint: the hollow dot and the word. */
+    /* The label survives as the word; the dot is the ask colour. */
     const p = groups([r], NOW)[0]!.rows[0]!;
-    expect(p.tone).toBe("done");
+    expect(p.tone).toBe("ask");
     expect(p.sub).toBe(`finished: ${said}`);
   });
 

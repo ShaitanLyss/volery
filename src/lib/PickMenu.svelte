@@ -48,8 +48,18 @@
   }
 
   onMount(() => {
+    /* A long list is held to the room the window has on its side of the chip
+       and scrolls inside itself: left to run past the window, focusing a row
+       scrolled the whole sheet up to show it. */
+    if (list) {
+      const at = list.getBoundingClientRect();
+      const room = up ? at.bottom : window.innerHeight - at.top;
+      list.style.maxHeight = `${Math.max(160, room - 12)}px`;
+    }
     const all = buttons();
-    (all.find((b) => b.dataset.on === "true") ?? all[0])?.focus();
+    const first = all.find((b) => b.dataset.on === "true") ?? all[0];
+    first?.focus({ preventScroll: true });
+    first?.scrollIntoView({ block: "nearest" });
     /* A press anywhere else closes it — on the next frame, so the press that
        opened it is not also the one that closes it. */
     const away = (e: PointerEvent) => {
@@ -72,11 +82,13 @@
     } else if (e.key === "ArrowDown" || e.key === "j") {
       e.preventDefault();
       e.stopPropagation();
-      all[(at + 1) % all.length]?.focus();
+      all[(at + 1) % all.length]?.focus({ preventScroll: true });
+      all[(at + 1) % all.length]?.scrollIntoView({ block: "nearest" });
     } else if (e.key === "ArrowUp" || e.key === "k") {
       e.preventDefault();
       e.stopPropagation();
-      all[(at - 1 + all.length) % all.length]?.focus();
+      all[(at - 1 + all.length) % all.length]?.focus({ preventScroll: true });
+      all[(at - 1 + all.length) % all.length]?.scrollIntoView({ block: "nearest" });
     } else if (e.key === "Tab") {
       onclose();
     } else if (e.key === " ") {
@@ -119,6 +131,7 @@
     max-width: 340px;
     border-radius: var(--cv-r-m, 12px);
     padding: 6px;
+    overflow-y: auto;
     border: 1px solid color-mix(in oklab, var(--edge) 70%, var(--paper) 9%);
     background: color-mix(in oklab, var(--raised) 97%, transparent);
     box-shadow: 0 24px 50px -20px color-mix(in srgb, var(--shade) 95%, transparent);
