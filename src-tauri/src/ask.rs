@@ -916,6 +916,11 @@ fn tool_schema() -> Value {
              with one click.\n\n\
              Say what is at stake and which way you would go: they have not read \
              the code and you have.\n\n\
+             Put what the question rests on inside it — the table, the breakdown, \
+             the figures. Prose you write just before this call, in the same turn, \
+             can reach them only as a one-line summary the server writes in its \
+             place: you still see your words, they never do. The question renders \
+             markdown and scrolls.\n\n\
              When you have more than one decision outstanding, put each in its own \
              entry of `questions` rather than fusing them into one. They are asked one \
              at a time and answered separately, and there is no limit on how many a \
@@ -951,8 +956,9 @@ fn tool_schema() -> Value {
                             "question": {
                                 "type": "string",
                                 "description":
-                                    "This one decision, in one or two sentences. \
-                                     Markdown is fine."
+                                    "This one decision, in one or two sentences, \
+                                     with anything it rests on under it. Markdown \
+                                     is fine."
                             },
                             "options": option_schema(),
                             "preview": preview_schema(false),
@@ -964,8 +970,9 @@ fn tool_schema() -> Value {
                 "question": {
                     "type": "string",
                     "description":
-                        "A single question, in one or two sentences — the short form \
-                         for when there is only one decision. Markdown is fine."
+                        "A single question, in one or two sentences with anything it \
+                         rests on under it — the short form for when there is only \
+                         one decision. Markdown is fine."
                 },
                 "options": option_schema(),
                 /* The one full copy. Top level rather than one of the nested

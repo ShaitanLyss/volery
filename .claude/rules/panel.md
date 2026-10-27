@@ -83,6 +83,13 @@ here: 315 non-empty thinking blocks, **all** narration.
   `.md > :last-child` never see it), because it is the gist rather than the words. The words
   themselves never reach the client; there is nothing better to draw.
 - **It stays out of `#turnText`**, which is what `endingFor` reads as the turn's last word.
+- **So whatever precedes an `ask_user` is narration, and the question has to carry it.** Sink
+  `015408d8`, nova `0c8147e8`, 2026-10-27: a turn wrote a table of 110 lint warnings, then
+  asked about them, and the session file holds only an empty thinking block and a one-line
+  summary — the table never reached disk or wire, and the CLI has no switch for it (its only
+  narration code reads the tag). The model still sees its own words, since the signature
+  replays them, so it believes the table was shown. Nothing here can draw what never arrived;
+  `ask.rs`'s tool description tells the agent to put what the question rests on inside it.
 - **Reproduce** with `claude -p … --output-format stream-json --verbose --effort high` and a
   prompt asking for prose between two shell calls. Without thinking (no effort flag) the same
   prose arrives as plain `text`, which is why a cheap probe shows nothing wrong.
