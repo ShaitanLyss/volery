@@ -364,6 +364,12 @@ export const SKEIN_REMOVE_TOOL = "mcp__skein__remove";
  *  has the reasoning. */
 export const SKEIN_UPDATE_TOOL = "mcp__skein__update_volery";
 
+/** A card bringing this machine's Claude Code and installed plugins up to date
+ *  — the accounts panel's button, asked for by an agent. `freshen.rs`'s
+ *  `FRESHEN_TOOL`; `.claude/rules/freshen.md` has the reasoning. With
+ *  `status` it only reads the last run. */
+export const SKEIN_FRESHEN_TOOL = "mcp__skein__update_claude";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -883,6 +889,8 @@ export function describeTool(name: string, input: any, nameOf: (address: string)
        call is a refusal the answer explains. */
     case SKEIN_UPDATE_TOOL:
       return "wants to update volery";
+    case SKEIN_FRESHEN_TOOL:
+      return input?.status === true ? "read the last claude code update" : "updated claude code & plugins";
     /* The music. A search is a reading; putting something on is the only act,
        and it is refused while the user is listening — hence `chose`. */
     case SKEIN_RECORDS_TOOL: {

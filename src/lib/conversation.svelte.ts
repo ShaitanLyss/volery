@@ -633,6 +633,12 @@ export class Conversation {
     if (v === this.#dormant) return;
     this.#dormant = v;
     this.awakeSince = v ? null : Date.now();
+    /* What the last process said it was running is not true of the next one,
+       which says nothing until its first message (`freshen.ts`). */
+    if (v) {
+      this.cliVersion = undefined;
+      this.runningPlugins = [];
+    }
   }
 
   /** When this card's *current* process started, or null when it has none.
@@ -651,6 +657,18 @@ export class Conversation {
    *  Not persisted, and could not be: a restored card has no process, so the
    *  honest value is null. */
   awakeSince = $state<number | null>(null);
+
+  /** Which Claude Code this card's *current* process is, out of its
+   *  `system/init` (`claude_code_version`, a required field of the init schema
+   *  in 2.1.311's bundle). Undefined until that init lands — which is only after
+   *  the process's first message — and cleared when the process goes. Read by
+   *  `freshen.ts` to say which cards an update left on the old copy. */
+  cliVersion = $state<string | undefined>(undefined);
+  /** The plugins this process loaded, as the same init names them: `name`,
+   *  `path` (the per-commit cache directory it is reading skills from) and
+   *  `source` (`name@marketplace`, or a sentinel like `@inline`). Same life as
+   *  `cliVersion`. */
+  runningPlugins = $state<{ name: string; path: string; source?: string }[]>([]);
 
   /** How long this card's process has been up, in seconds. Zero when it has
    *  none. Off the same one-second tick everything else here reads. */
@@ -2674,6 +2692,16 @@ export class Conversation {
           this.died = false;
           if (ev.model) this.#adoptModel(ev.model, true);
           this.#adoptSkills(ev.skills);
+          if (typeof ev.claude_code_version === "string") this.cliVersion = ev.claude_code_version;
+          if (Array.isArray(ev.plugins)) {
+            this.runningPlugins = ev.plugins
+              .filter((p: any) => typeof p?.name === "string" && typeof p?.path === "string")
+              .map((p: any) => ({
+                name: p.name,
+                path: p.path,
+                source: typeof p.source === "string" ? p.source : undefined,
+              }));
+          }
           /* The gear this turn is running under — which is not always what the
              card is set to, since an init for a turn already in flight when the
              mode changed reports the old one. `#initGear` holds the rule; see

@@ -106,7 +106,7 @@ export type Verb =
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" }
+  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" | "freshen" }
   | { kind: "bright"; act: "up" | "down" | "reset" };
 
 /** One sequence the leader opens onto.
@@ -360,6 +360,10 @@ export const CHORDS: readonly Chord[] = [
   /* And which look it wears (`boostfield.ts`), cycled — four of them, and the
      accounts panel's credits band names them all. */
   { keys: "ml", label: "boost's look: the next one", verb: { kind: "machine", act: "look" } },
+  /* Claude Code and its plugins brought up to date now (`freshen.rs`) — what
+     you press after pushing a skill. In `m` because it is about the software
+     on this machine, the family's other verbs are about the machine too. */
+  { keys: "mu", label: "update claude code & plugins now", verb: { kind: "machine", act: "freshen" } },
   /* `v` is how the wall looks. `vv` is the themes panel, the family's main
      verb doubled after `ff` and `ss`; until it existed the panel had no key at
      all, only the header button. The rest is the brightness of whichever skin

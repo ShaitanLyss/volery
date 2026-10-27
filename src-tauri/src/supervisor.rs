@@ -4053,6 +4053,7 @@ mod tests {
         ("timeline.rs", include_str!("timeline.rs")),
         ("notice.rs", include_str!("notice.rs")),
         ("update.rs", include_str!("update.rs")),
+        ("freshen.rs", include_str!("freshen.rs")),
         /* In a subdirectory, so the scan below cannot find them: listed by
            hand because both answer tool calls — `reach.rs` its own and
            `link.rs` the receipts a remote spawn, send, recall and close

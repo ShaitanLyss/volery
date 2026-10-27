@@ -25,6 +25,8 @@ import {
   type Choice,
 } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
+import { freshening } from "./freshening.svelte";
+import { currentCli, runRow, staleCards, type Run as FreshRun, type Stale } from "./freshen";
 import { purse } from "./purse.svelte";
 import { boost } from "./boost.svelte";
 import {
@@ -2919,6 +2921,108 @@ export class Skein {
     } finally {
       this.#resting = false;
     }
+  }
+
+  /** The cards still running a Claude Code or plugin copy an update has since
+   *  replaced. A reading over what each process said about itself at init and
+   *  what is installed now — `freshen.ts` holds the rule. */
+  get stale(): Stale[] {
+    const snap = freshening.snap;
+    if (!snap) return [];
+    const cli = currentCli(snap.last, waterfall.claude?.state === "ready" ? waterfall.claude.version : null);
+    return staleCards(
+      this.convs.map((c) => ({
+        id: c.id,
+        name: c.title || c.project || "a card",
+        dormant: c.dormant,
+        awakeSince: c.awakeSince,
+        cliVersion: c.cliVersion,
+        runningPlugins: c.runningPlugins,
+        busy: c.working || c.busy || !!c.pendingAsk,
+      })),
+      snap,
+      cli,
+    );
+  }
+
+  /** A finished update run, written once into the chronicle — naming what
+   *  moved, what failed, and the cards it left on the old copy. Nothing at all
+   *  for a run that found everything current. */
+  noteFreshened(run: FreshRun) {
+    const row = runRow(run, this.stale);
+    if (row) this.#record(null, row.level, row.mark, row.detail);
+  }
+
+  /** Stand the stale cards down so their next message starts on what is
+   *  installed now — and only the ones that would lose nothing by it.
+   *
+   *  **This is the reaper's own stand-down with the wait taken out**, and it
+   *  is that on purpose rather than a close-and-respawn of its own: `keptFrom`
+   *  is the one list of what a process would take with it (a turn, a prompt on
+   *  the wire, a question, background work, a timer, live children), and
+   *  `rest_conversation` refuses under the supervisor's own lock if a turn
+   *  opened in the instant between. So a card mid-turn is never touched, which
+   *  is the rule this was asked for under. A card left dormant has lost nothing
+   *  — `--resume` gives it everything back on the next keystroke (`stir`), on
+   *  the new CLI with the new skills. Not respawned here: a process nobody is
+   *  about to speak to is memory spent for nothing, and the next one is started
+   *  the moment somebody turns to it.
+   *
+   *  Answers how many went and how many were left, for the panel to say. */
+  async restartStale(): Promise<{ rested: number; kept: number }> {
+    const ids = new Set(this.stale.map((s) => s.id));
+    const cards = this.convs.filter((c) => ids.has(c.id));
+    if (!cards.length) return { rested: 0, kept: 0 };
+    const survey = await invoke<Survey>("reap_survey", {
+      ids: cards.filter((c) => !c.dormant && !c.retiring && !c.working).map((c) => c.id),
+    }).catch(() => null);
+    /* Not blind, for `letRest`'s reason: an empty wake list would be read as
+       "no timers", and that is the one direction this must never guess in. */
+    if (!survey) return { rested: 0, kept: cards.length };
+    const wakes = new Set(survey.awaiting_wake);
+    const sending = new Set(survey.mid_turn);
+    let rested = 0;
+    const names: string[] = [];
+    for (const conv of cards) {
+      if (this.#gone) break;
+      if (!this.#byId.has(conv.id)) continue;
+      const around = {
+        wake: wakes.has(conv.id),
+        children: this.#hasLiveChild(conv),
+        midTurn: sending.has(conv.id),
+      };
+      /* A wait of nothing: being quiet a long time is not the question here,
+         only what the process would take with it. `recent` can still answer
+         for a card set aside inside its grace — the card you are typing into. */
+      if (keptFrom(conv, around, 0)) continue;
+      try {
+        conv.retiring = true;
+        const ok = await invoke<boolean>("rest_conversation", { id: conv.id });
+        if (!ok) {
+          conv.retiring = false;
+          continue;
+        }
+        conv.note(
+          "skein stood this card down after a claude code / plugin update — your next message starts it again on what is installed now, with nothing lost",
+        );
+        await this.#awaitDormant(conv);
+        conv.dormant = true;
+        rested++;
+        names.push(conv.title || conv.project || "a card");
+      } catch (e) {
+        conv.retiring = false;
+        conv.note(`skein could not restart this card onto the update — ${e}`);
+      }
+    }
+    if (rested) {
+      this.#record(
+        null,
+        "note",
+        `restarted ${rested} card${rested === 1 ? "" : "s"} onto the updated claude code and plugins`,
+        names.join(", "),
+      );
+    }
+    return { rested, kept: cards.length - rested };
   }
 
   /** Has this card a child on the wall that still has a process?

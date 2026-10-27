@@ -15,6 +15,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { waterfall } from "./waterfall.svelte";
+  import Freshen from "./Freshen.svelte";
+  import type { Stale } from "./freshen";
   import {
     exportAccounts,
     importAccounts,
@@ -45,7 +47,21 @@
   /* `me` is this wall's flyway name and `flying` whether it flies with any
      other wall: the sync line says which wall changed a setting, and keeps
      quiet about changes made here or with nobody to keep in step with. */
-  let { onclose, me = "", flying = false }: { onclose: () => void; me?: string; flying?: boolean } = $props();
+  let {
+    onclose,
+    me = "",
+    flying = false,
+    stale = [],
+    onrestart,
+  }: {
+    onclose: () => void;
+    me?: string;
+    flying?: boolean;
+    /** Cards an update left on the old Claude Code or plugin copy, and the
+     *  restart for them — `Freshen.svelte`'s, passed through. */
+    stale?: Stale[];
+    onrestart?: () => Promise<{ rested: number; kept: number }>;
+  } = $props();
 
   const WATCHER = "accounts-panel";
 
@@ -528,6 +544,7 @@
             not on PATH — found via {waterfall.claude.foundIn}, and spawned by full path
           </span>
         {/if}
+        <Freshen {stale} {onrestart} />
       {:else}
         <span class="warn">claude code was not found on this machine</span>
         <button class="go" onclick={install} disabled={installing}>

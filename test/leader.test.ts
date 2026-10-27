@@ -246,6 +246,7 @@ describe("the which-key hint", () => {
       { keys: "mi", label: "away when nobody is at the keyboard: on / off" },
       { keys: "ml", label: "boost's look: the next one" },
       { keys: "mr", label: "reopen after a restart: on / off" },
+      { keys: "mu", label: "update claude code & plugins now" },
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "o", label: "the integrations panel" },
       { keys: "p", label: "questions that piled up" },
@@ -343,8 +344,11 @@ describe("the which-key hint", () => {
       { keys: "i", label: "away when nobody is at the keyboard: on / off" },
       { keys: "l", label: "boost's look: the next one" },
       { keys: "r", label: "reopen after a restart: on / off" },
+      { keys: "u", label: "update claude code & plugins now" },
       { keys: "w", label: "keep awake on mains: on / off" },
     ]);
+    /* Claude Code and its plugins, now — what you press after pushing a skill. */
+    expect(chord("m", "u")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "freshen" } });
     /* Boost: whether a card whose account runs out carries on with credits. */
     expect(chord("m", "b")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "boost" } });
     /* The backstop for a question nobody is there to answer, now that a

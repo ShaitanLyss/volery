@@ -2290,6 +2290,18 @@ pub(crate) fn roster() -> Vec<Value> {
            The by-hand words are in it on purpose — a card reaching for this has
            usually just been asked to "install the latest" and is about to write a
            script, which is the thing this replaces. */
+        /* Claude Code and its plugins, kept current (`freshen.rs`). The hint
+           is the moment it is wanted — a skill just pushed, a brief naming a
+           skill this card does not have — and says `claude` and `plugin`
+           throughout so it does not collide with `update_volery` just below,
+           which closes the wall. */
+        found_by(
+            crate::freshen::freshen_schema(),
+            "update claude code, update the claude cli, claude update, update plugins, \
+             refresh plugin marketplace, plugin marketplace update, pushed a skill, new \
+             skill not showing, skill missing or out of date, stale plugin, tx-toolkit \
+             update, /plugin is not available",
+        ),
         found_by(
             crate::update::update_schema(),
             "update volery to the newest release upgrade volery install the latest \
@@ -3837,6 +3849,10 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                public page a question with no arguments, and the
                                answer is the same for every card on the wall. */
                             .or_else(|| crate::status::handle(&tool, &args))
+                            /* Waits on this request's own thread for a run of
+                               at most a few minutes — under Bun's 300s clock
+                               (`freshen::TOOL_WAIT`) — parking nobody else. */
+                            .or_else(|| crate::freshen::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::later::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| {
                                 crate::subscribe::handle(&app, &conversation_id, &tool, &args)

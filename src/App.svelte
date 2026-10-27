@@ -46,6 +46,7 @@
   import { Meter } from "./lib/meter.svelte";
   import { crowds } from "./lib/crowds.svelte";
   import { releases } from "./lib/release.svelte";
+  import { freshening } from "./lib/freshening.svelte";
   import { Beacon } from "./lib/beacon.svelte";
   import { Pane } from "./lib/pane.svelte";
   import { caption } from "./lib/browser";
@@ -695,6 +696,14 @@
       } else if (verb.act === "look") {
         boost.nextLook();
         leader.say(`boost looks like ${boost.look.label}${boost.on ? "" : " — when it is on"}`);
+      } else if (verb.act === "freshen") {
+        void freshening.now().then((started) =>
+          leader.say(
+            started
+              ? "updating claude code & plugins — the accounts panel shows each (space then a)"
+              : (freshening.fault ?? "already updating"),
+          ),
+        );
       } else if (verb.act === "boost") {
         skein.setBoost(!purse.boost);
         leader.say(sayBoost(purse.state, purse.standing()).replace(/ \(space then m b\)$/, ""));
@@ -943,6 +952,8 @@
     attention.detach();
     actions.detach();
     control.detach();
+    freshening.stop();
+    freshening.onSettled = null;
     shell.detach();
     finder.detach();
     leader.detach();
@@ -1052,6 +1063,12 @@
   $effect(() => {
     releases.watch(attention.focused);
   });
+
+  /* Claude Code and its plugins: Rust runs the updates on its own clock and
+     emits each step, so this only listens — and writes the one chronicle row a
+     finished run is worth, naming the cards it left on the old copy. */
+  freshening.start();
+  freshening.onSettled = (run) => skein.noteFreshened(run);
 
   /* What the lid does and whether Windows will sign her back in are settings
      she changes in Windows, not here — so they are asked again when she comes
@@ -5385,7 +5402,12 @@
   {/if}
 
   {#if showAccounts}
-    <Accounts onclose={() => (showAccounts = false)} me={elsewhere.me} flying={elsewhere.roster.some((r) => !r.me)} />
+    <Accounts
+      onclose={() => (showAccounts = false)}
+      me={elsewhere.me}
+      flying={elsewhere.roster.some((r) => !r.me)}
+      stale={skein.stale}
+      onrestart={() => skein.restartStale()} />
   {/if}
 
   {#if showThemes}

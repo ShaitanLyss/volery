@@ -35,6 +35,7 @@ mod dropzone;
 /// projection that is honest and one that is a lie.
 pub mod flyway;
 pub mod forge;
+mod freshen;
 mod github;
 /// Public so `examples/find-probe.rs` can drive the real search rather than a
 /// copy of it — the same arrangement `azdo` has, and the convention
@@ -714,6 +715,10 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
     /* Whether the update the last run started landed — a chronicle row, since
        the card that asked for it went down with the wall and cannot say. */
     update::landed(app.handle());
+    /* Claude Code and its plugins kept current: the state is managed here
+       because `freshen_state` reads it, and the automatic run waits out a
+       minute after launch before its first look. See `freshen.rs`. */
+    freshen::start(app.handle());
     /* Whether the main thread is answering — the one reading no event can
        give. It waits out the launch itself before its first look. */
     watchdog::start(app.handle().clone());
@@ -943,6 +948,9 @@ pub fn run() {
             claude::find_claude,
             claude::install_claude,
             claude::claude_auth,
+            freshen::freshen_state,
+            freshen::freshen_now,
+            freshen::freshen_settings,
             accounts::list_accounts,
             accounts::add_account,
             accounts::remove_account,

@@ -77,7 +77,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
                          # sources, marks, whois, credits, boostmusic, boostfield,
-                         # browsercdp, browserstall, browserroots
+                         # browsercdp, browserstall, browserroots, freshen
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -113,7 +113,8 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # usage.rs,
                               # tunnel.rs, applog.rs, sluice.rs,
                               # limits.rs, load.rs, pool.rs, perf.rs,
-                              # timeline.rs, arrange.rs, notice.rs, machine.rs, credits.rs
+                              # timeline.rs, arrange.rs, notice.rs, machine.rs, credits.rs,
+                              # freshen.rs
                               # subscribe/ (filter, ledger, engine, sources), eventhub.rs,
                               # amqp/ (codec, conn, ws)
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
@@ -326,6 +327,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, the one binary that undoes it, and the one thing on that binary a *card* invokes rather than Volery | `hooks.rs`, `main.rs` |
 | `remove.md` | deleting a path from a card behind the user's own click: why a permission can refuse and only a tool can ask, the deny everybody reasoned from that governs nothing a card can call, why the delete is permanent rather than recoverable, and the two denials whose reasons name the tool | `remove.rs`, `hooks.rs`, `tools/probe-rm.ts` |
 | `accounts.md` | more than one subscription: an account as a credential store and why Skein holds none of it, signing one in without a terminal, the waterfall and its stickiness, your caps against the server's, the per-card bypass, being held, and finding Claude Code before installing it | `accounts.ts`, `accounts.rs`, `signin.ts`, `signin.rs`, `claude.rs`, `Accounts.svelte` |
+| `freshen.md` | keeping Claude Code and its plugins current: the CLI's own three commands in order, the plan read off `installed_plugins.json` and never written, a project scope run in its project, why the background never asks a question and nothing passes `-y`, which cards an update left on the old copy (read off their own `system/init`), and restarting them through the reaper's stand-down so nothing mid-turn is touched | `freshen.rs`, `freshen.ts`, `freshening.svelte.ts`, `Freshen.svelte` |
 | `update.md` | getting onto the newer one: why the installer does the work rather than a plugin, offering nothing when in doubt, and why the exit handler launches it | `update.rs`, `update.ts`, `release.svelte.ts`, `release.yml` |
 | `portage.md` | carrying a wall off and setting one up again: what a layout is and what it deliberately leaves behind, why no id travels and an import only adds, furniture identified by what-and-where, and a territory that arrives pointing nowhere | `portage.ts`, `portage.svelte.ts`, `portage.rs`, `Carry.svelte` |
 | `roster.md` | **design, unbuilt** — drawing something else's work: a wall-level MCP registry, the row contract a server publishes to appear here, and why `tier` is the only vocabulary Volery exports | `roster.ts`, `Roster.svelte`, `mcp.rs` |
@@ -440,7 +442,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `plates.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
 `glance.ts`, `tether.ts`, `brightness.ts`, `peeking.ts`,
-`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`) are pure
+`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.
