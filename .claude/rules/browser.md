@@ -1378,9 +1378,56 @@ window, and on the real wall it put the nova card's Chrome in front of Lyss's sc
 `Target.activateTarget`.
 
 What was not driven end to end: the hook and the display request inside a running wall. A lab
-shares the installed wall's Chrome on 9222 and host on 9245, so it never spawns a browser of its
-own to watch. The Win32 sequence `park_minimised` runs was replayed call for call against a
+shared the installed wall's Chrome on 9222 and host on 9245 that day, so it never spawned a
+browser of its own to watch — which is what the next section changed. The Win32 sequence `park_minimised` runs was replayed call for call against a
 private Chrome, and the host half runs in `probe-card-tabs.ts`.
+
+## A lab has a browser of its own (2026-10-27)
+
+Sink aabc85dd, the day the section above could not be driven: `DEFAULT_PORT` and `MCP_PORT`
+were constants, so a lab's `mcphost::ensure` found the installed wall's host answering on 9245,
+counted it as up, and the lab's cards drove Lyss's real Chrome through the *installed* build's
+`browserhost.cjs`. A change to this file or the host was a change no lab ever ran.
+
+**Fixed per wall, not per machine.** `browser::ports()` is the pair every reader now goes
+through — `address`, `mcp_url`, the spawn's `--remote-debugging-port`, the status, the save
+route, and `mcphost`'s probe, release and `--port`. It is `STUDIO_PORTS` (9222/9245) unless
+`lab::assume` kept a lab's pair before the builder ran, once, in a `OnceLock`. Everything
+the fixed-port section argues still holds, because the pair is still settled before the first
+card spawns and never moves; it is only no longer the same pair on every wall.
+
+- **The launcher picks it** (`tools/lab.ts::browserPortsFor`, Chrome in 9300–9349, the host
+  fifty above), beside the vite port and for its reason: a free pair means knowing which pairs
+  the other labs took, and only the launcher reads their records. Recorded rather than answering
+  is what counts, since a lab's Chrome and host start on a card's first browser call.
+  `control.md`, trap 6.
+- **Rust is the gate** (`lab::browser_ports`): the studio never reads the variables, and a lab
+  may not take 9222 or 9245, half a pair, or one port twice. Refused at start rather than
+  ignored, because ignoring it is this bug. Release builds read none of it.
+- **The hook has no wall to ask**, so `stall_note`/`stalled_tabs` take the port, and the hook
+  reads it off the card's own `VOLERY_CDP_ENDPOINT` (`endpoint_port`), which the wall wrote from
+  `address` at spawn.
+- **The profile and the vault already followed the identifier** (`profile_dir`,
+  `session_path` are under `app_data_dir`), and so did `browser-tabs.json` and the host scripts.
+- **The installed wall is byte-identical**: with nothing kept, `address()` is
+  `http://127.0.0.1:9222` and a card's `browser` entry is `…:9245/mcp/<card>`, which
+  `the_studio_keeps_its_two_ports` and `supervisor`'s config assertion hold.
+
+**Proved end to end on lab `bp`** (frozen, 2026-10-27). The launcher gave it Chrome :9325 and host
+:9375; the lab's log had `browserhost: listening on http://127.0.0.1:9375/mcp/<card>, driving
+http://127.0.0.1:9325, seeding from …\dev.skein.lab.bp\sessions\wall.json`. A lab card's argv
+carried `127.0.0.1:9375/mcp/<card>`; it called `mcp__browser__browser_navigate` on a
+`data:` page titled `lab-bp-aabc85dd`, and the hook's wake started a Chrome on
+`--remote-debugging-port=9325 --user-data-dir=…\dev.skein.lab.bp\browser-profile` which held
+the page 12s after the prompt, with the host's `/volery/tabs` naming the card as its owner. The
+installed wall's 9222, read before and after with `GET /json/list` only: 4 pages and 4 pages,
+none new, the probe title nowhere. `lab down` took the Chrome and the host with it.
+
+**What it took to get a lab card to make that call at all**: a lab's account registry starts
+empty, so its first card ran on the default credential store and answered *Not logged in*; and
+on a day when every subscription is spent, a lab card also needs boost on (`ctl accounts
+add=<label>`, `ctl boost on=true budget=2`). Filed in the sink rather than built into the
+launcher, since which account a lab may spend is Lyss's to say.
 
 ## What is not built
 
@@ -1389,8 +1436,8 @@ private Chrome, and the host half runs in `probe-card-tabs.ts`.
   page you are testing is one the agent opened, and a URL field invites the widget to become a
   browser rather than a view of the agent's browser. Worth revisiting the first time somebody
   wants to check a second route by hand.
-- **One browser, not one per territory.** Nothing stops a second, but the port is a single
-  constant and the config that points the agent at it is wall-wide.
+- **One browser per wall, not one per territory.** A lab has its own (above), but within a wall
+  the pair is one and the config that points the agent at it is wall-wide.
 
 ## The probes
 

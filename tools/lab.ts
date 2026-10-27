@@ -14,7 +14,7 @@
  *
  * Running several walls side by side was always possible — `VOLERY_SECOND`,
  * `VOLERY_WALL_DIR` and a copied binary — and on 2026-10-08 four cards spent a
- * day finding out how by stepping on each of the five things below. Every one
+ * day finding out how by stepping on each of the first five things below. Every one
  * of them is derived here from the name, so none of them can be got wrong:
  *
  *  1. **The port.** Vite is `--strictPort`, so two labs on one port is a
@@ -40,6 +40,14 @@
  *     whose parent has gone (`perf.rs::sweep`). This launcher stays up as the
  *     parent of everything it starts, so run it as a foreground command — from a
  *     card, a *background* shell call — and never with `&`.
+ *  6. **The browser.** Chrome's debugging port and the browser MCP host's were
+ *     the installed wall's 9222 and 9245 on every wall, so a lab's cards found
+ *     the installed host answering, used it, and drove Lyss's real Chrome
+ *     through the installed build's host script — nothing in the browser code
+ *     could be tried on a lab at all (sink aabc85dd). A lab now has a pair of
+ *     its own, hashed from the name like the vite port, kept off every other
+ *     lab's, and passed as `VOLERY_LAB_CDP_PORT`/`VOLERY_LAB_MCP_PORT`; its
+ *     profile and vault already followed the identifier.
  *
  * And two that are not footguns but were missing:
  *
@@ -119,6 +127,32 @@ function fnv(s: string): number {
 export function portsFor(name: string): number[] {
   const start = fnv(name) % PORT_SPAN;
   return Array.from({ length: PORT_SPAN }, (_, i) => PORT_FLOOR + ((start + i) % PORT_SPAN));
+}
+
+/** Where a lab's own browser stands: Chrome's debugging port in 9300–9349 and
+ *  its browser MCP host 50 above, in 9350–9399 — never the installed wall's
+ *  9222/9245, which `lab.rs::browser_ports` refuses as well. A pair moves
+ *  together, so one index is one lab's. The bare lab is the empty name. */
+const BROWSER_FLOOR = 9300;
+const BROWSER_SPAN = 50;
+
+export type BrowserPorts = { cdp: number; mcp: number };
+
+/** The pairs a name tries, in order, as `portsFor` does for vite. */
+export function browserPortsFor(name: string | null): BrowserPorts[] {
+  const start = fnv(`browser:${name ?? ""}`) % BROWSER_SPAN;
+  return Array.from({ length: BROWSER_SPAN }, (_, i) => {
+    const k = (start + i) % BROWSER_SPAN;
+    return { cdp: BROWSER_FLOOR + k, mcp: BROWSER_FLOOR + BROWSER_SPAN + k };
+  });
+}
+
+/** The first pair no other lab has claimed. Claimed is the record, not the
+ *  port answering: a lab's Chrome and host start on a card's first browser
+ *  call, so a lab up for an hour may have nothing listening on its pair yet. */
+export function unclaimed(pairs: BrowserPorts[], claimed: Iterable<number>): BrowserPorts[] {
+  const taken = new Set(claimed);
+  return pairs.filter((p) => !taken.has(p.cdp) && !taken.has(p.mcp));
 }
 
 /** What a lab calls itself on the flyway. The machine is in it so two
@@ -258,6 +292,9 @@ type Record = {
   frozen: boolean;
   /** On the installed wall's flyway rather than the labs' own. */
   real?: boolean;
+  /** Its own browser's debugging port and browser MCP host port. */
+  cdp?: number;
+  mcp?: number;
   started: string;
 };
 
@@ -320,6 +357,25 @@ function answers(port: number): Promise<boolean> {
 async function freePort(name: string): Promise<number> {
   for (const p of portsFor(name)) if (!(await answers(p))) return p;
   refuse(`every port in ${PORT_FLOOR}–${PORT_FLOOR + PORT_SPAN - 1} answers; something else owns the range`);
+}
+
+/** A browser pair for this lab: its own first, past every pair another live
+ *  lab has recorded, and past anything already answering on either port. */
+async function freeBrowserPorts(name: string | null): Promise<BrowserPorts> {
+  const claimed = labs()
+    .filter((l) => l.up && l.record.name !== name)
+    .flatMap((l) => [l.record.cdp, l.record.mcp])
+    .filter((p): p is number => typeof p === "number");
+  for (const pair of unclaimed(browserPortsFor(name), claimed)) {
+    if (!(await answers(pair.cdp)) && !(await answers(pair.mcp))) return pair;
+  }
+  refuse(`no free browser port pair in ${BROWSER_FLOOR}–${BROWSER_FLOOR + 2 * BROWSER_SPAN - 1}; something else owns the range`);
+}
+
+/** The two variables `lab.rs::assume` reads, and what they say. */
+function browserEnv(env: NodeJS.ProcessEnv, pair: BrowserPorts) {
+  env.VOLERY_LAB_CDP_PORT = String(pair.cdp);
+  env.VOLERY_LAB_MCP_PORT = String(pair.mcp);
 }
 
 function killTree(pid: number | undefined) {
@@ -397,6 +453,15 @@ function freezeBinary(home: string): string {
   if (!knows) {
     refuse(`${exe} (${age(exe)}) predates named labs and would ignore the name — rebuild (drop --no-build)`);
   }
+  /* The same proof for the browser pair: a binary that cannot read it puts
+     the lab's cards on the installed wall's Chrome, which is sink aabc85dd. */
+  const ownBrowser = ["skein.exe", "skein_lib.dll"].some((f) => {
+    const p = join(TARGET, f);
+    return existsSync(p) && readFileSync(p).includes("VOLERY_LAB_CDP_PORT");
+  });
+  if (!ownBrowser) {
+    refuse(`${exe} (${age(exe)}) predates a lab's own browser — its cards would drive the installed wall's Chrome. Rebuild (drop --no-build)`);
+  }
   const bin = join(home, "bin");
   mkdirSync(bin, { recursive: true });
   const dlls = readdirSync(TARGET).filter((f) => f.toLowerCase().endsWith(".dll"));
@@ -456,6 +521,8 @@ async function bare(passthrough: string[], real: boolean) {
     say(LOUD);
   }
   env.VOLERY_FLYWAY_HOST ||= flywayHost(null, MACHINE);
+  const browser = await freeBrowserPorts(null);
+  browserEnv(env, browser);
   mkdirSync(where.home, { recursive: true });
   const record: Record = {
     name: null,
@@ -465,10 +532,12 @@ async function bare(passthrough: string[], real: boolean) {
     host: env.VOLERY_FLYWAY_HOST!,
     frozen: false,
     real,
+    cdp: browser.cdp,
+    mcp: browser.mcp,
     started: new Date().toISOString(),
   };
   writeFileSync(where.record, JSON.stringify(record, null, 2));
-  say(`bare lab: dev.skein.lab on :1421, flyway host ${record.host}`);
+  say(`bare lab: dev.skein.lab on :1421, flyway host ${record.host}, its own browser on :${browser.cdp} (host :${browser.mcp})`);
   const child = spawn("bun", ["run", "tauri", "dev", "--config", "src-tauri/tauri.lab.conf.json", ...passthrough], {
     cwd: REPO,
     env,
@@ -530,6 +599,7 @@ async function up(name: string, frozen: boolean, wantBuild: boolean, peer: strin
 
   const exe = freezeBinary(where.home);
   const port = await freePort(name);
+  const browser = await freeBrowserPorts(name);
   const host = flywayHost(name, MACHINE);
   const log = join(where.home, "vite.log");
   const out = openSync(log, "w");
@@ -565,7 +635,7 @@ async function up(name: string, frozen: boolean, wantBuild: boolean, peer: strin
      else taken out first: a store directory, a forced second instance, a peer
      or an identity from whatever shell this was launched in. */
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of ["VOLERY_SECOND", "VOLERY_WALL_DIR", "VOLERY_FLYWAY_PEER", "VOLERY_LAB_ON_INSTALLED_FLYWAY", "VOLERY_LAB_PEER", "SKEIN_ID", "VOLERY_LAB", "VOLERY_LAB_PORT"]) {
+  for (const k of ["VOLERY_SECOND", "VOLERY_WALL_DIR", "VOLERY_FLYWAY_PEER", "VOLERY_LAB_ON_INSTALLED_FLYWAY", "VOLERY_LAB_PEER", "SKEIN_ID", "VOLERY_LAB", "VOLERY_LAB_PORT", "VOLERY_LAB_CDP_PORT", "VOLERY_LAB_MCP_PORT"]) {
     delete env[k];
   }
   Object.assign(env, {
@@ -575,6 +645,7 @@ async function up(name: string, frozen: boolean, wantBuild: boolean, peer: strin
     WEBVIEW2_USER_DATA_FOLDER: where.webview,
     SKEIN_ID: where.id,
   });
+  browserEnv(env, browser);
   /* A key under this lab's own identifier unless asked for the installed
      wall's by name — see `flyway::key::OWN_TARGET` for what the default
      exists to stop. With a peer, the lab comes up holding the peer's key and
@@ -604,9 +675,12 @@ async function up(name: string, frozen: boolean, wantBuild: boolean, peer: strin
     host,
     frozen,
     real,
+    cdp: browser.cdp,
+    mcp: browser.mcp,
     started: new Date().toISOString(),
   };
   writeFileSync(where.record, JSON.stringify(record, null, 2));
+  say(`${name}'s browser: Chrome on :${browser.cdp}, its MCP host on :${browser.mcp} — started by a card's first browser call, never the installed wall's 9222/9245`);
   say(`${name} is up — ${where.id}, ${frozen ? "frozen front end" : "vite with hot reload"} on :${port}, flyway host ${host} on ${real ? "the INSTALLED WALL's flyway" : peer ? `${peer}'s lab key` : "a lab key of its own"}`);
   say(`drive it:    $env:SKEIN_ID="${where.id}"; bun tools/ctl.ts health`);
   say(`take it down: bun run lab down ${name}`);
@@ -705,6 +779,7 @@ function list() {
   for (const { record, up } of all) {
     console.log(
       `${(record.name ?? "(bare)").padEnd(17)} ${up ? "up  " : "gone"} :${record.port}  ${record.host}` +
+        `${record.cdp ? `  browser :${record.cdp}/:${record.mcp}` : ""}` +
         `${record.frozen ? "  frozen" : ""}${record.real ? "  ON THE INSTALLED WALL'S FLYWAY" : ""}  ${record.card ? `card ${record.card}` : "a terminal"}  since ${record.started}`,
     );
   }

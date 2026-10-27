@@ -85,8 +85,10 @@ card's `system/init` reports `browser` failed. A card that beats a cold start fa
 and is sent `mcp_reconnect` when the server lands (`reconnect_stranded`). A server that dies
 and is started again sends `mcp_reconnect` to **every** live card, because every session died
 with it and nothing guarantees the CLI opens a new one on a 404. Another wall's server on the
-port (a lab beside the installed wall) counts as up: it drives the same Chrome on the same
-fixed port. A live server that misses one 300 ms probe is given ten seconds before it is called
+port counts as up: it drives the same Chrome on the same fixed port. A lab launched by
+`bun run lab` is not that case since 2026-10-27 — it has a Chrome port and a host port of its
+own (`browser::ports`, `control.md` trap 6), so it runs its own host rather than borrowing the
+installed wall's. A live server that misses one 300 ms probe is given ten seconds before it is called
 wedged — killing a healthy one on a saturated machine costs every card its browser for the
 length of an `npx` start — and only a server that *replaced* one sends every card back to
 reconnect. **The version is pinned** (`@playwright/mcp@0.0.83`, the one probed), where the stdio

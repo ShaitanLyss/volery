@@ -89,7 +89,59 @@ const HOST: &str = "127.0.0.1";
 /// silently unwire every card on the wall, since their arguments were written
 /// before the choice was made. The name is kept because it is in the comments
 /// and in people's fingers; the parameter is gone.
+///
+/// **It is the installed wall's port, and a named lab's is another** (`ports`).
+/// Fixed still means what it meant — known before the first card spawns and
+/// never moved afterwards — only per wall rather than per machine.
 pub const DEFAULT_PORT: u16 = 9222;
+
+/// The two ports a wall's browser stands on: Chrome's debugging port and the
+/// browser MCP host's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ports {
+    pub cdp: u16,
+    pub mcp: u16,
+}
+
+/// The installed wall's pair, and every wall's unless a lab says otherwise.
+pub const STUDIO_PORTS: Ports = Ports { cdp: DEFAULT_PORT, mcp: MCP_PORT };
+
+/// A lab's own pair, set once by `lab::assume` before the builder runs and
+/// never again. Unset everywhere else — the installed wall, a release build,
+/// and the short-lived hook process, which reads the card's
+/// `VOLERY_CDP_ENDPOINT` instead (`endpoint_port`).
+static PORTS: std::sync::OnceLock<Ports> = std::sync::OnceLock::new();
+
+/// Where this wall's browser and its MCP host listen.
+///
+/// **Why a lab needs its own** (sink aabc85dd): with one pair per machine, a
+/// lab's `mcphost::ensure` found the installed wall's host answering on 9245,
+/// counted it as up, and the lab's cards drove the installed wall's real Chrome
+/// through the *installed* build's `browserhost.cjs` — so nothing in this file
+/// or the host could be driven end to end on a lab at all. `tools/lab.ts`
+/// picks the pair from the lab's name, and `lab::browser_ports` is the gate
+/// that keeps it off 9222/9245 and off the installed wall altogether.
+pub fn ports() -> Ports {
+    PORTS.get().copied().unwrap_or(STUDIO_PORTS)
+}
+
+/// Take on a lab's pair. The first call wins; there is no second.
+pub fn keep_ports(ports: Ports) {
+    let _ = PORTS.set(ports);
+}
+
+/// The CDP port a card's own `VOLERY_CDP_ENDPOINT` names, for the hook: a
+/// short-lived child of the card with no wall to ask, whose environment the
+/// wall wrote from `address` at spawn. Anything that does not read as
+/// `http://<host>:<port>` is the installed wall's port, which is what every
+/// card had before a lab could have another.
+pub fn endpoint_port(endpoint: Option<&str>) -> u16 {
+    endpoint
+        .and_then(|e| e.trim().trim_end_matches('/').rsplit_once(':'))
+        .and_then(|(_, p)| p.parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .unwrap_or(DEFAULT_PORT)
+}
 
 /// How long to wait for a freshly spawned Chrome to answer `/json/version`.
 ///
@@ -766,9 +818,9 @@ pub(crate) const STALL_BUDGET: std::time::Duration = std::time::Duration::from_s
 ///
 /// Read-only throughout — nothing here closes, dismisses or navigates. Run only
 /// from the hook, after a failure, so a call that works pays nothing for it.
-pub fn stalled_tabs() -> Result<Reading, String> {
+pub fn stalled_tabs(port: u16) -> Result<Reading, String> {
     let body = get(
-        &format!("http://{HOST}:{DEFAULT_PORT}/json/list"),
+        &format!("http://{HOST}:{port}/json/list"),
         std::time::Duration::from_secs(1),
     )?;
     let list: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -1079,7 +1131,7 @@ fn headed_user_agent(ua: &str) -> Option<String> {
 fn status_of(guard: &Option<Running>, mode: Mode, starting: bool) -> Status {
     match guard {
         None => Status {
-            port: DEFAULT_PORT,
+            port: ports().cdp,
             /* The mode a start *would* use, not a placeholder. The widget's
                knob has to draw something before there is a browser, and the
                honest something is the setting it will act on. */
@@ -1134,7 +1186,7 @@ fn mode_and_starting(state: &Browser) -> (Mode, bool) {
 /// the first `tools/call`, and a call made *after* Chrome appears succeeds on
 /// the same server process. Every one of those three had to hold.
 pub fn address() -> String {
-    format!("http://{HOST}:{DEFAULT_PORT}")
+    format!("http://{HOST}:{}", ports().cdp)
 }
 
 /// The MCP server that turns this browser into `mcp__browser__*` on a card.
@@ -1233,7 +1285,7 @@ pub const MCP_PORT: u16 = 9245;
 /// `127.0.0.1:<port>` — not `'*'`, which would let any page the user visits
 /// rebind a name to loopback and drive the shared browser.
 pub fn mcp_url(card: &str) -> String {
-    format!("http://{HOST}:{MCP_PORT}/mcp/{card}")
+    format!("http://{HOST}:{}/mcp/{card}", ports().mcp)
 }
 
 #[tauri::command]
@@ -1413,7 +1465,7 @@ pub fn ensure_running(app: &AppHandle) -> Result<(), String> {
             .to_string()
     })?;
 
-    let started = spawn_browser(&exe, &profile, DEFAULT_PORT, mode)?;
+    let started = spawn_browser(&exe, &profile, ports().cdp, mode)?;
     if mode != Mode::Headless {
         watch_minimise(app, started.child.id());
     }
@@ -2349,7 +2401,7 @@ pub async fn browser_save_session(app: AppHandle, state: String) -> Result<Strin
 #[tauri::command]
 pub async fn browser_save_all() -> Result<String, String> {
     crate::off_main(|| {
-        let url = format!("http://{HOST}:{MCP_PORT}/volery/save");
+        let url = format!("http://{HOST}:{}/volery/save", ports().mcp);
         let res = ureq::post(&url)
             .timeout(std::time::Duration::from_secs(60))
             .call()
@@ -2432,6 +2484,27 @@ mod tests {
     #[test]
     fn newlines_cannot_smuggle_a_second_request_line() {
         assert_eq!(urlencoding_minimal("http://x/\r\nHost: y"), "http://x/Host:%20y");
+    }
+
+    /// The installed wall's cards are written exactly what they always were:
+    /// with no lab pair kept, the endpoint and the host URL are 9222 and 9245.
+    #[test]
+    fn the_studio_keeps_its_two_ports() {
+        assert_eq!(ports(), STUDIO_PORTS);
+        assert_eq!(address(), "http://127.0.0.1:9222");
+        assert_eq!(mcp_url("abc"), "http://127.0.0.1:9245/mcp/abc");
+    }
+
+    /// The hook reads the card's own endpoint, so a lab card's stall note
+    /// names the lab's Chrome; anything unreadable is the studio's port.
+    #[test]
+    fn the_hook_reads_the_port_off_the_cards_endpoint() {
+        assert_eq!(endpoint_port(Some("http://127.0.0.1:9311")), 9311);
+        assert_eq!(endpoint_port(Some("http://127.0.0.1:9311/")), 9311);
+        assert_eq!(endpoint_port(Some("http://127.0.0.1:9222")), 9222);
+        for odd in [None, Some(""), Some("nonsense"), Some("http://127.0.0.1:0"), Some("http://x:99999")] {
+            assert_eq!(endpoint_port(odd), DEFAULT_PORT, "{odd:?}");
+        }
     }
 
     /// Nothing running is not an error state, and the port it *would* use is

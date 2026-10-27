@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { badName, deletable, dllMissing, FLAG_INSTALLED, flywayHost, identifierOf, MAX_LABS, mayTakeDown, plan, portsFor } from "../tools/lab.ts";
+import { badName, deletable, dllMissing, FLAG_INSTALLED, flywayHost, identifierOf, MAX_LABS, mayTakeDown, plan, portsFor, browserPortsFor, unclaimed } from "../tools/lab.ts";
 
 describe("a lab name", () => {
   test("is narrow, because it becomes two folders and a mutex", () => {
@@ -31,6 +31,37 @@ describe("a lab's port", () => {
 
   test("differs between names, so two labs rarely even probe", () => {
     expect(portsFor("a")[0]).not.toBe(portsFor("b")[0]);
+  });
+});
+
+describe("a lab's browser", () => {
+  test("never stands on the installed wall's 9222 or 9245, nor on a vite port", () => {
+    for (const name of ["alpha", "b", "sixteen-chars-ok", null]) {
+      for (const { cdp, mcp } of browserPortsFor(name)) {
+        for (const p of [cdp, mcp]) {
+          expect([9222, 9245]).not.toContain(p);
+          expect(p).toBeGreaterThan(1499);
+          expect(p).toBeGreaterThanOrEqual(1024);
+        }
+        expect(cdp).not.toBe(mcp);
+      }
+    }
+  });
+
+  test("is the same pair every run, and every pair it may try is distinct", () => {
+    expect(browserPortsFor("alpha")).toEqual(browserPortsFor("alpha"));
+    const all = browserPortsFor("alpha").flatMap((p) => [p.cdp, p.mcp]);
+    expect(new Set(all).size).toBe(all.length);
+    expect(browserPortsFor("a")[0]).not.toEqual(browserPortsFor("b")[0]);
+  });
+
+  test("passes over a pair another lab recorded, even half of one", () => {
+    const pairs = browserPortsFor("alpha");
+    const [first, second] = pairs;
+    expect(unclaimed(pairs, [])[0]).toEqual(first);
+    expect(unclaimed(pairs, [first.cdp])[0]).toEqual(second);
+    expect(unclaimed(pairs, [first.mcp])[0]).toEqual(second);
+    expect(unclaimed(pairs, pairs.flatMap((p) => [p.cdp]))).toEqual([]);
   });
 });
 

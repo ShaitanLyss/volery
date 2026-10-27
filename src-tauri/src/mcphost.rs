@@ -52,7 +52,10 @@
 //!
 //! The port is fixed for the reason `browser::DEFAULT_PORT` is: a card's
 //! `--mcp-config` is written at spawn and cannot be renegotiated, so the address
-//! has to be knowable before anything is listening on it.
+//! has to be knowable before anything is listening on it. Fixed per wall, not
+//! per machine: a named lab's is its own (`browser::ports`), so it runs a host
+//! of its own against a Chrome of its own rather than finding the installed
+//! wall's answering here.
 
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
@@ -64,7 +67,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::servers::jobs;
 
-use crate::browser::{mcp_url as url, MCP_PORT as PORT};
+use crate::browser::mcp_url as url;
+
+/// This wall's host port: 9245 on the installed wall, a lab's own on a lab.
+fn port() -> u16 {
+    crate::browser::ports().mcp
+}
 
 /// Loopback only, like the CDP port it drives. See `browser::mcp_url`.
 const HOST: &str = "127.0.0.1";
@@ -131,7 +139,7 @@ struct Running {
 }
 
 fn answering() -> bool {
-    let addr: SocketAddr = format!("{HOST}:{PORT}").parse().expect("a literal address");
+    let addr: SocketAddr = format!("{HOST}:{}", port()).parse().expect("a literal address");
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
@@ -163,7 +171,7 @@ pub fn pids(app: &AppHandle) -> Vec<u32> {
 /// on the main thread, and a server that is slow, or down, or another wall's
 /// older build with no such route, must cost the close nothing.
 pub fn release(card: &str) {
-    let url = format!("http://{HOST}:{PORT}/volery/release/{card}");
+    let url = format!("http://{HOST}:{}/volery/release/{card}", port());
     std::thread::spawn(move || {
         let _ = ureq::post(&url).timeout(Duration::from_secs(5)).call();
     });
@@ -173,10 +181,12 @@ pub fn release(card: &str) {
 /// ask every card whose `browser` server failed to connect to try again once it
 /// is up. Cheap and idempotent: the common case is one loopback connect.
 ///
-/// **Another wall's server counts.** A lab wall beside the installed one, or a
-/// second Volery against the same machine, finds the port taken and uses what
-/// is there — it drives the same Chrome on the same fixed port, which is the
-/// arrangement `browser.rs` already has for the browser itself.
+/// **Another wall's server counts.** A second Volery under the same ports finds
+/// the port taken and uses what is there — it drives the same Chrome on the
+/// same fixed port. A lab launched by `tools/lab.ts` is not that case any more:
+/// its ports are its own, so what answers on them is its own host (sink
+/// aabc85dd). A lab started some other way keeps the installed wall's pair, and
+/// the old arrangement with it.
 ///
 /// **Everything happens on a thread of its own**, the probe included: this is
 /// called from `open_wall` on the main thread before any window exists, and a
@@ -304,7 +314,7 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
         "node".into(),
         script.display().to_string(),
         "--port".into(),
-        PORT.to_string(),
+        port().to_string(),
         "--host".into(),
         HOST.into(),
         "--cdp-endpoint".into(),

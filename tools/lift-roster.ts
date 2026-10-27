@@ -276,7 +276,7 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
      asserts about what it returns. */
   {
     file: "src-tauri/src/browser.rs",
-    items: ["fn mcp_server", "const MCP_PORT", "fn mcp_url", "const HOST"],
+    items: ["fn mcp_server", "const MCP_PORT", "fn mcp_url", "const HOST", "const DEFAULT_PORT", "struct Ports", "const STUDIO_PORTS", "static PORTS", "fn ports"],
   },
   {
     file: "src-tauri/src/docket.rs",

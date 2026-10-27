@@ -30,6 +30,14 @@
 //! `VOLERY_LAB_ON_INSTALLED_FLYWAY=1` is the one way onto the installed wall's
 //! flyway — and onto Lyss's roster, her shadows and her sink — and is named so
 //! that nobody sets it by accident; a lab on it may use that key, never change it.
+//!
+//! **And a lab has a browser of its own** (sink aabc85dd): `VOLERY_LAB_CDP_PORT`
+//! and `VOLERY_LAB_MCP_PORT` move its Chrome and its browser MCP host off the
+//! installed wall's 9222/9245, and its profile and vault already follow the
+//! identifier. Picked by `tools/lab.ts` beside the vite port and for the same
+//! reason — choosing a free port means knowing what the other labs took, and
+//! only the launcher reads their records — and checked here by `browser_ports`,
+//! which the studio never consults.
 
 /// Take on the lab identity `VOLERY_LAB` names, if it names one.
 pub fn assume<R: tauri::Runtime>(mut context: tauri::Context<R>) -> tauri::Context<R> {
@@ -54,6 +62,22 @@ pub fn assume<R: tauri::Runtime>(mut context: tauri::Context<R>) -> tauri::Conte
                it in — and `tools/lab.ts` validates first, so this is a backstop
                that only a hand-typed variable reaches. Exiting is the point: the
                alternative is opening whatever wall the binary was built for. */
+            Err(why) => {
+                eprintln!("volery: {why}");
+                std::process::exit(2);
+            }
+        }
+        /* The browser's two ports, which `tools/lab.ts` picks from the name
+           and passes the way it passes the vite port. Asked of the identifier
+           as it now stands, so the bare lab — whose identifier is compiled in —
+           gets its own too, and the studio can never be handed any. */
+        let cdp = std::env::var("VOLERY_LAB_CDP_PORT").ok();
+        let mcp = std::env::var("VOLERY_LAB_MCP_PORT").ok();
+        match browser_ports(&context.config().identifier, cdp.as_deref(), mcp.as_deref()) {
+            Ok(None) => {}
+            Ok(Some(ports)) => crate::browser::keep_ports(ports),
+            /* Refused rather than ignored: ignoring it is a lab whose cards
+               drive the installed wall's Chrome, which is the bug this is. */
             Err(why) => {
                 eprintln!("volery: {why}");
                 std::process::exit(2);
@@ -148,6 +172,60 @@ fn identity(name: Option<&str>, port: Option<&str>) -> Result<Option<Lab>, Strin
     }))
 }
 
+/// The browser ports a lab was handed, if any. `Ok(None)` is the installed
+/// wall's pair (`browser::STUDIO_PORTS`), which is also what the studio gets
+/// whatever its environment says — a lab card's shell carries these variables,
+/// and a `bun run tauri dev` typed there must still open the real wall on 9222.
+///
+/// A lab may not name either of the studio's ports: on 9245 its `mcphost`
+/// would find the installed wall's host answering and use it, and on 9222 its
+/// Chrome would fail to bind and leave the installed wall's to be refused —
+/// the very collision the pair exists to end.
+fn browser_ports(
+    identifier: &str,
+    cdp: Option<&str>,
+    mcp: Option<&str>,
+) -> Result<Option<crate::browser::Ports>, String> {
+    if identifier == "dev.skein.studio" {
+        return Ok(None);
+    }
+    fn given(v: Option<&str>) -> Option<&str> {
+        v.map(str::trim).filter(|v| !v.is_empty())
+    }
+    let (cdp, mcp) = match (given(cdp), given(mcp)) {
+        (None, None) => return Ok(None),
+        (Some(c), Some(m)) => (c, m),
+        _ => {
+            return Err("VOLERY_LAB_CDP_PORT and VOLERY_LAB_MCP_PORT come as a pair — one \
+                        without the other would split this lab's browser from its host. \
+                        Nothing was opened."
+                .into())
+        }
+    };
+    let port = |name: &str, v: &str| -> Result<u16, String> {
+        match v.parse::<u16>() {
+            Ok(n) if n >= 1024 => Ok(n),
+            _ => Err(format!("{name}={v:?} is not a port this lab can use. Nothing was opened.")),
+        }
+    };
+    let ports = crate::browser::Ports {
+        cdp: port("VOLERY_LAB_CDP_PORT", cdp)?,
+        mcp: port("VOLERY_LAB_MCP_PORT", mcp)?,
+    };
+    let studio = crate::browser::STUDIO_PORTS;
+    if [ports.cdp, ports.mcp].iter().any(|p| *p == studio.cdp || *p == studio.mcp) {
+        return Err(format!(
+            "a lab may not take {} or {}: they are the installed wall's browser and its host. \
+             Nothing was opened.",
+            studio.cdp, studio.mcp
+        ));
+    }
+    if ports.cdp == ports.mcp {
+        return Err(format!("the lab's browser and its host cannot share port {}. Nothing was opened.", ports.cdp));
+    }
+    Ok(Some(ports))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +266,36 @@ mod tests {
         assert_eq!(flyway_for("dev.skein.lab.a", Some("yes")), Flyway::Own);
         assert_eq!(flyway_for("dev.skein.lab.a", Some("1")), Flyway::Borrowed);
         assert_eq!(flyway_for("dev.skein.lab", Some(" 1 ")), Flyway::Borrowed);
+    }
+
+    /// The installed wall keeps 9222/9245 whatever is in its environment, a
+    /// lab with no pair keeps them too, and a lab handed one gets exactly it.
+    #[test]
+    fn only_a_lab_takes_browser_ports_of_its_own() {
+        let pair = crate::browser::Ports { cdp: 9311, mcp: 9361 };
+        assert_eq!(browser_ports("dev.skein.studio", Some("9311"), Some("9361")), Ok(None));
+        assert_eq!(browser_ports("dev.skein.lab.a", None, None), Ok(None));
+        assert_eq!(browser_ports("dev.skein.lab.a", Some(" "), None), Ok(None));
+        assert_eq!(browser_ports("dev.skein.lab.a", Some("9311"), Some(" 9361 ")), Ok(Some(pair)));
+        assert_eq!(browser_ports("dev.skein.lab", Some("9311"), Some("9361")), Ok(Some(pair)));
+    }
+
+    /// Half a pair, a bad number, one port twice, or either of the studio's
+    /// is a lab that would end up on the installed wall's browser — refused.
+    #[test]
+    fn a_lab_cannot_land_on_the_installed_walls_browser() {
+        for (c, m) in [
+            (Some("9311"), None),
+            (None, Some("9361")),
+            (Some("80"), Some("9361")),
+            (Some("x"), Some("9361")),
+            (Some("9311"), Some("9311")),
+            (Some("9222"), Some("9361")),
+            (Some("9311"), Some("9245")),
+            (Some("9245"), Some("9222")),
+        ] {
+            assert!(browser_ports("dev.skein.lab.a", c, m).is_err(), "{c:?} {m:?} was accepted");
+        }
     }
 
     /// Whatever the name, the studio is not reachable from here.

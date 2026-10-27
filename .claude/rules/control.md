@@ -346,7 +346,7 @@ two processes under one name are refused by the guard that already existed — t
 sets `VOLERY_SECOND`, and a name that does not parse exits rather than falling back to the
 compiled-in identifier, which for a copy built by `bun run tauri dev` is the real wall.
 
-The five traps four cards met on 2026-10-08, and what the launcher does about each:
+The five traps four cards met on 2026-10-08, a sixth found on 2026-10-27, and what the launcher does about each:
 
 1. **Ports.** Vite is `--strictPort`, and cards negotiated :1421/:1425/:1429 over relay. A name
    hashes into 1430–1499, probes onward past anything answering on either loopback, and the
@@ -381,6 +381,26 @@ The five traps four cards met on 2026-10-08, and what the launcher does about ea
    gone. The launcher stays up as the parent of the wall and its vite for the wall's whole
    life, so run it as a *foreground* command — from a card, a background shell call — and never
    behind `&`, `exec` or `Start-Process` from a shell that then exits.
+6. **The browser** (2026-10-27, sink aabc85dd). Chrome's debugging port (9222) and the
+   browser MCP host's (9245) were constants, so a lab's `mcphost::ensure` found the *installed*
+   wall's host answering, counted it as up, and the lab's cards drove Lyss's real Chrome
+   through the installed build's `browserhost.cjs`. Nothing in `browser.rs` or the host could be
+   driven end to end on a lab — a change to either was a change the lab never ran. **A lab now
+   has a pair of its own**: Chrome in 9300–9349 and its host fifty above, hashed from the name
+   (`browserPortsFor`), past any pair another live lab has *recorded* — recorded rather than
+   answering, because a lab's Chrome and host start on a card's first browser call and a lab up
+   an hour may have nothing listening yet — and past anything answering. The pair is passed as
+   `VOLERY_LAB_CDP_PORT`/`VOLERY_LAB_MCP_PORT`, the way the vite port is, and for the vite port's
+   reason: only the launcher reads the other labs' records. `lab.rs::browser_ports` is the gate
+   (`browser::keep_ports`): half a pair, a port under 1024, one port twice, or either of 9222/9245
+   refuses to open, and on `dev.skein.studio` the variables are never read — a lab card's shell
+   carries them, and a `bun run tauri dev` typed there must still be the real wall on 9222.
+   Release builds ignore them with the rest of `assume`. The profile (`browser-profile`) and the
+   vault (`sessions\wall.json`) already followed the identifier. The bare lab gets a pair too;
+   the record and `lab list` carry it, and a binary that predates the variables is refused, since
+   its cards would land on the installed Chrome. A wall started *without* the launcher keeps
+   9222/9245 and the old arrangement — the installed host counts as up. **Proved end to end** on
+   2026-10-27: see `browser.md`, *A lab has a browser of its own*.
 
 **Where a lab lives, and why not in scratch.** Everything is in the identifier's two folders,
 `%APPDATA%\dev.skein.lab.<name>` and `%LOCALAPPDATA%\dev.skein.lab.<name>` (the launcher's own

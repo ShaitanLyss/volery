@@ -106,6 +106,12 @@ const BROWSER_ITEMS = [
      its input would assert about a number this file had made up. */
   "const READY_TIMEOUT",
   "const SHARED_START_WAIT",
+  /* `address` and `mcp_url` read the wall's pair, which a lab may move off
+     9222/9245 (sink aabc85dd) — so the pair and its reading come too. */
+  "struct Ports",
+  "const STUDIO_PORTS",
+  "static PORTS",
+  "fn ports",
   "fn address",
   "fn mcp_server",
   "const MCP_PORT",
