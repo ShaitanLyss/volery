@@ -211,7 +211,7 @@ describe("against real git", () => {
 
     run(main, "worktree", "add", "-q", hop);
     const after = await decide(path.join(hop, ".scratch", "x.png"));
-    expect(after?.root && fs.realpathSync(after.root)).toBe(fs.realpathSync(hop));
+    expect(after?.root && realpath(after.root)).toBe(realpath(hop));
     /* And now the relative name is a guess, so it is refused. */
     expect((await decide("x.png"))?.refuse).toContain("Relative file name refused");
     expect(await decide(path.join(main, "x.png"))).toBeNull();
@@ -221,7 +221,7 @@ describe("against real git", () => {
     const link = path.join(base, "via");
     fs.symlinkSync(main, link, "junction");
     const p = await decide(path.join(hop, "y.png"), link);
-    expect(p?.root && fs.realpathSync(p.root)).toBe(fs.realpathSync(hop));
+    expect(p?.root && realpath(p.root)).toBe(realpath(hop));
     expect((await decide("y.png", link))?.refuse).toContain("Relative file name refused");
     /* The junction's own spelling of a file in the launch tree is the launch tree. */
     expect(await decide(path.join(link, "y.png"), link)).toBeNull();
