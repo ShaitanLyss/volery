@@ -103,6 +103,7 @@
   import Dogears from "./lib/Dogears.svelte";
   import { Field } from "./lib/field.svelte";
   import ContextMenu from "./lib/ContextMenu.svelte";
+  import { copyPicture, pictureAt, savePicture } from "./lib/picturecopy";
   import Glance from "./lib/Glance.svelte";
   import { glance } from "./lib/glancing.svelte";
   import Effects from "./lib/Effects.svelte";
@@ -2535,6 +2536,20 @@
             skein.fault = "could not read the clipboard";
           }
         }
+      };
+    } else if (pictureAt(el) && !selected) {
+      /* A figure in the transcript, drawn by `InlinePicture`: one right-click
+         answer for a `show`, a markdown image and a pasted one alike, in the
+         wall's panel and in chat view, since both draw it the one way. */
+      const pic = pictureAt(el)!;
+      target = { kind: "picture", original: !!pic.go?.() };
+      act = (id) => {
+        if (id === "pic-copy") {
+          void copyPicture(pic).catch(() => (skein.fault = "could not copy the picture"));
+        } else if (id === "pic-save") {
+          void savePicture(pic).catch((e) => (skein.fault = String(e).replace(/^Error:\s*/, "")));
+        } else if (id === "pic-open") pic.go?.()?.("open");
+        else if (id === "pic-reveal") pic.go?.()?.("reveal");
       };
     } else if (cardEl?.dataset.conv || shadowEl?.dataset.shadow) {
       /* A card on this wall or another: one menu, built by its handle out of

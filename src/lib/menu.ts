@@ -19,6 +19,7 @@ export type MenuKind =
   | "ground"
   | "editable"
   | "prose"
+  | "picture"
   | "section";
 
 /** One option among several, of which one is in force — a widget's variant. */
@@ -198,6 +199,11 @@ export type MenuTarget = {
      press was on ordinary prose, which is how the menu stays the one-item
      thing it was. */
   path?: { path: string; dir: boolean };
+
+  /* picture: a figure in the transcript. `original` is whether there is a file
+     it came from to open — not for a picture that carries its own bytes, a chat
+     card's, or a card on another wall's. */
+  original?: boolean;
 
   /* editable / prose */
   hasSelection?: boolean;
@@ -862,6 +868,18 @@ export function menuFor(t: MenuTarget): MenuItem[] {
           t.hasSelection ? item("copy", "copy") : null,
         ].filter(Boolean) as MenuItem[]
       );
+
+    /* A picture in the transcript. Copy first: it is what you right-clicked
+       for. The original is offered only where there is one, rather than as a
+       row that cannot do anything. */
+    case "picture":
+      return tidy([
+        item("pic-copy", "copy image"),
+        item("pic-save", "save image as…"),
+        t.original ? sep : null,
+        t.original ? item("pic-open", "open the original") : null,
+        t.original ? item("pic-reveal", "show it in explorer") : null,
+      ]);
 
     default:
       return [];

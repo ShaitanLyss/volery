@@ -3,6 +3,8 @@ paths:
   - "src-tauri/src/show.rs"
   - "src/lib/showing.ts"
   - "src/lib/InlinePicture.svelte"
+  - "src/lib/picturecopy.ts"
+  - "src-tauri/src/dragout.rs"
   - "src/lib/Figure.svelte"
   - "src/lib/Lightbox.svelte"
   - "src/lib/looking.svelte.ts"
@@ -358,6 +360,40 @@ directory on that machine. A diagram still needs nothing from anywhere.
 
 Who may read what is `elsewhere.md`, *Its pictures and its files*: any file on that machine,
 behind the switch an agent's `recall` is held to, by Lyss's decision.
+
+## Taking one out (2026-10-27)
+
+Asked for after a `show`n 3200×2053 png could not be pasted into Teams: every picture the
+transcript draws can be copied as an image, saved, and dragged into another app. All of it hangs
+off `InlinePicture`, so a `show` figure, a prose `![](path)` and a pasted or `data:` picture have
+it alike, in the wall's panel and in chat view. `picturecopy.ts` is the logic.
+
+- **From the bytes the figure holds, never the agent's path.** The figure's `data:` URL is the kept
+  copy `show` made, so a deleted original changes nothing.
+- **A bitmap, as `image/png`.** `navigator.clipboard.write` with a `ClipboardItem` is the whole of
+  it; the blob is passed as a promise so the click's user activation outlives a slow encode. A png is
+  sent as the bytes it is; anything else, and every svg, is drawn on a canvas and re-encoded. An svg
+  is drawn at least 1600 wide, on white (`rasterTarget`), since Teams cannot paste svg and a
+  transparent png pastes black in some mail clients. *Not yet driven in the running app on Windows
+  when this was written* — see the report in the commit; if a paste ever arrives as nothing, the
+  fallback is a Rust command writing `CF_DIB`.
+- **One right-click answer.** `pictureAt` finds a figure by a `data-picture` attribute and a
+  `WeakMap` of handles, so the window's one `contextmenu` handler in `App.svelte` asks any picture
+  without a prop (CLAUDE.md, "a capability every surface should have is not a prop"). The branch is
+  above the card, widget and ground ones, because a figure can stand inside any of them. Rows:
+  copy image, save image as…, and the original's open/explorer only where `opener()` and a path
+  exist.
+- **The hover chip is CSS** (`.pic:hover .copy`) and is in the tab order, shown on focus. Nothing
+  about hovering is state, so the column re-renders nothing.
+- **Dragging out is the shell's drag, not HTML5.** WebView2's drag reaches native apps as nothing
+  usable. `dragout.rs` writes the picture to `dragout/<uuid>/<name>` under the studio's storage
+  (`stage_picture`, swept after a day) when the press lands, and `drag_file` runs `SHDoDragDrop`
+  on the main thread once the pointer has travelled `DRAG_SLOP` (5px). Copy-only. `drag_file`
+  refuses any path not directly inside a staged folder. The `<img>` is `draggable="false"` so the
+  browser's own drag does not start first, and the click that follows a drag is swallowed
+  (`dragged`). Press and move handlers use plain variables, not `$state`.
+- **Not covered:** the pinned images on the wall (`ImageNode`, a different component) and the
+  `ask_user` gallery's file previews, and the full-size view's own bar.
 
 ## Not built
 

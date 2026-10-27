@@ -582,6 +582,31 @@ pub async fn read_picture(path: String) -> Result<Picture, String> {
     .await?
 }
 
+/// Write the picture a transcript is drawing to a file the user chose in a
+/// save dialog. The bytes come from the `data:` URL the figure already holds
+/// — the kept copy, never the agent's path, which may be gone — and are typed
+/// by what they are, so a url that is not a picture writes nothing.
+#[tauri::command]
+pub async fn save_picture(path: String, data_url: String) -> Result<(), String> {
+    crate::off_main(move || {
+        let target = std::path::PathBuf::from(&path);
+        if !target.is_absolute() || is_remote(&path) {
+            return Err("a picture is saved to a whole local path".to_string());
+        }
+        let b64 = data_url
+            .strip_prefix("data:image/")
+            .and_then(|r| r.split_once(";base64,"))
+            .map(|(_, b)| b)
+            .ok_or("that is not a picture this window drew")?;
+        let bytes = crate::unbase64(b64).ok_or("the picture's bytes could not be read")?;
+        if sniff_picture(&bytes).is_none() {
+            return Err("those bytes are not a picture".to_string());
+        }
+        std::fs::write(&target, &bytes).map_err(|e| format!("could not write {}: {e}", target.display()))
+    })
+    .await?
+}
+
 /// A picture `show` kept, by the name the tool result gave it.
 #[tauri::command]
 pub async fn read_shown(store: tauri::State<'_, Store>, id: String) -> Result<Picture, String> {

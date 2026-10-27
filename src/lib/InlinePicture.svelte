@@ -59,6 +59,7 @@
   import { CACHE_CHARS, frameWidth, megabytes, nameOf, sourceKey } from "./showing";
   import { useOpener } from "./paths.svelte";
   import { lightbox } from "./looking.svelte";
+  import { DRAG_SLOP, copyPicture, dragOut, offerPicture, stagePicture, type PictureHandle } from "./picturecopy";
 
   let {
     source,
@@ -379,6 +380,10 @@
   function look(e: MouseEvent) {
     /* Never also the press of something it sits inside. */
     e.stopPropagation();
+    if (dragged) {
+      dragged = false;
+      return;
+    }
     if (!url) return;
     const img = hit?.querySelector("img");
     const w = dims?.w ?? img?.naturalWidth ?? 0;
@@ -402,6 +407,79 @@
       },
       hit,
     );
+  }
+
+  /* What the window's right-click and the hover button both ask of this
+     picture. Read at the moment of the gesture — the bytes come and go with the
+     view — so nothing here is a copy of state. */
+  let copied = $state(false);
+  let copiedAt = 0;
+  const handle: PictureHandle = {
+    url: () => url,
+    get svg() {
+      return svg;
+    },
+    get name() {
+      return source.kind === "data" ? label : name;
+    },
+    dims: () => dims,
+    go: () => {
+      const go = opener();
+      const file = at;
+      return go && file ? (how) => go(file, how) : null;
+    },
+    copied: () => {
+      copied = true;
+      clearTimeout(copiedAt);
+      copiedAt = window.setTimeout(() => (copied = false), 1600);
+    },
+  };
+  let copyFault = $state(false);
+  async function copy(e: MouseEvent) {
+    e.stopPropagation();
+    copyFault = false;
+    try {
+      await copyPicture(handle);
+    } catch {
+      copyFault = true;
+      clearTimeout(copiedAt);
+      copiedAt = window.setTimeout(() => (copyFault = false), 2400);
+    }
+  }
+  const offer = (el: HTMLElement) => offerPicture(el, handle);
+
+  /* Dragging it out to another app. Plain variables, not state: a press and a
+     drag change nothing that is drawn, so nothing here may re-render the column.
+     The file is written when the press lands, since the drag has to begin while
+     the button is still down; a click that never travels costs one write per
+     picture, remembered by the bytes it was written from. */
+  let downAt: { x: number; y: number } | null = null;
+  let staged: { from: string; path: Promise<string> } | null = null;
+  /** The drag ate the press's release, so the click after it is not a click. */
+  let dragged = false;
+
+  function press(e: PointerEvent) {
+    if (e.button !== 0 || !url) return;
+    dragged = false;
+    downAt = { x: e.clientX, y: e.clientY };
+    if (staged?.from !== url) {
+      const path = stagePicture(handle);
+      path.catch(() => {});
+      staged = { from: url, path };
+    }
+  }
+  function travel(e: PointerEvent) {
+    if (!downAt) return;
+    if (e.buttons === 0) {
+      downAt = null;
+      return;
+    }
+    if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < DRAG_SLOP) return;
+    downAt = null;
+    dragged = true;
+    void staged?.path
+      .then((path) => dragOut(path))
+      .catch((err) => console.warn("could not drag the picture out", err));
   }
 
   function openFile(e: MouseEvent) {
@@ -445,6 +523,8 @@
   class:sized={!!dims}
   class:held={!!url}
   data-md={md}
+  data-picture
+  {@attach offer}
   style:aspect-ratio={ratio}
   style:width
   role={fault || large !== null ? "note" : null}
@@ -462,7 +542,13 @@
       title={`${label}${stale ? " — the kept copy has gone; this is the file as it is now" : ""}${note ? ` — ${note}` : ""} · enter or click to look at it full size`}
       aria-label={`${label} — look at it full size`}
       onclick={look}
+      onpointerdown={press}
+      onpointermove={travel}
+      onpointerup={() => (downAt = null)}
+      onpointercancel={() => (downAt = null)}
+      ondragstart={(e) => e.preventDefault()}
       ><img
+        draggable="false"
         src={url}
         alt={label}
         class:in={shown}
@@ -470,6 +556,14 @@
         onload={measured}
         onerror={broke}
       /></button
+    ><button
+      type="button"
+      class="copy"
+      class:said={copied || copyFault}
+      title="copy the picture as an image — to paste into a message"
+      aria-label="copy the picture as an image"
+      onclick={copy}
+      >{copyFault ? "could not copy" : copied ? "copied" : "copy"}</button
     >{:else}<span class="wait" aria-hidden="true">{label}</span>{/if}{#if stale && !fault}<span
       class="stale">the file as it is now — the copy that was shown has gone</span
     >{/if}</span
@@ -542,6 +636,38 @@
   .hit:focus-visible {
     outline: 1px solid var(--paper-faint);
     outline-offset: 2px;
+  }
+  /* On the picture's corner, drawn on hover or focus and never held in state,
+     so the pointer crossing a figure repaints nothing but this. A chip over
+     the picture's own pixels, so it carries its own ground. */
+  .copy {
+    position: absolute;
+    top: 0.4em;
+    right: 0.4em;
+    padding: 0.2em 0.6em;
+    font-family: var(--util);
+    font-size: 0.72em;
+    color: var(--paper-dim);
+    background: var(--ink);
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+  .pic:hover .copy,
+  .copy:focus-visible,
+  .copy.said {
+    opacity: 1;
+  }
+  .copy:hover,
+  .copy:focus-visible {
+    color: var(--paper);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .copy {
+      transition: none;
+    }
   }
   .wait {
     position: absolute;

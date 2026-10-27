@@ -78,6 +78,7 @@ mod shell;
 /// Showing a picture in the conversation itself — the other channel `pin` had
 /// been standing in for. See `.claude/rules/showing.md`.
 mod show;
+mod dragout;
 mod sketch;
 mod sink;
 pub mod sinksync;
@@ -1094,6 +1095,9 @@ pub fn run() {
             attachments::restage_held,
             show::read_picture,
             show::read_shown,
+            show::save_picture,
+            dragout::stage_picture,
+            dragout::drag_file,
             show::measure_picture,
             show::measure_picture_data,
             store::classify_drop,
