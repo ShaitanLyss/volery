@@ -434,16 +434,16 @@
       copiedAt = window.setTimeout(() => (copied = false), 1600);
     },
   };
-  let copyFault = $state(false);
+  let copyFault = $state<string | null>(null);
   async function copy(e: MouseEvent) {
     e.stopPropagation();
-    copyFault = false;
+    copyFault = null;
     try {
       await copyPicture(handle);
-    } catch {
-      copyFault = true;
+    } catch (err) {
+      copyFault = String(err instanceof Error ? `${err.name}: ${err.message}` : err);
       clearTimeout(copiedAt);
-      copiedAt = window.setTimeout(() => (copyFault = false), 2400);
+      copiedAt = window.setTimeout(() => (copyFault = null), 2400);
     }
   }
   const offer = (el: HTMLElement) => offerPicture(el, handle);
@@ -559,8 +559,8 @@
     ><button
       type="button"
       class="copy"
-      class:said={copied || copyFault}
-      title="copy the picture as an image — to paste into a message"
+      class:said={copied || !!copyFault}
+      title={copyFault ?? "copy the picture as an image — to paste into a message"}
       aria-label="copy the picture as an image"
       onclick={copy}
       >{copyFault ? "could not copy" : copied ? "copied" : "copy"}</button
