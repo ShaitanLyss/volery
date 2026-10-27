@@ -239,6 +239,10 @@ windows = { version = "0.61", features = [
     # would pay the very start-up it stands in for. `LibraryLoader` is only for
     # the module handle its window class is registered against. See `splash.rs`.
     "Win32_Graphics_Gdi",
+    # `DWMWA_TRANSITIONS_FORCEDISABLED` on a browser window being parked out of
+    # a minimise, so the restore it has to go through is not animated onto the
+    # desktop first. See `browser::park_minimised`.
+    "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
     # Showing a territory's folder in Explorer goes through the shell's own
     # SHOpenFolderAndSelectItems rather than `explorer.exe`, because that is the
@@ -265,6 +269,10 @@ windows = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    # Whether the session is locked, asked when a card's browser call ends: the
+    # input desktop cannot be opened or switched to while the secure desktop
+    # holds it. See `screen.rs`.
+    "Win32_System_StationsAndDesktops",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     # `SetWinEventHook`: dropzone.rs hears the browser process create and

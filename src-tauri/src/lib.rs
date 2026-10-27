@@ -52,6 +52,7 @@ mod nvim;
 mod limits;
 mod load;
 mod machine;
+mod screen;
 mod mcphost;
 mod open;
 mod perf;
@@ -713,6 +714,9 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        this wall is open. Above the windows because `machine_status` reads
        what it sets up. See `machine.rs`. */
     machine::arrive(app.handle());
+    /* Hear the display, so a card measuring frames in the browser can be told
+       the screen is off. See `screen.rs`. */
+    screen::install();
     /* Whether the update the last run started landed — a chronicle row, since
        the card that asked for it went down with the wall and cannot say. */
     update::landed(app.handle());
@@ -1291,6 +1295,7 @@ pub fn run() {
                    main window's close above for why this handler must never
                    touch it. */
                 machine::release();
+                screen::release();
                 if let Some(store) = app.try_state::<Store>() {
                     if let Ok(conn) = store.0.lock() {
                         store::mark_interrupted(&conn, &running);

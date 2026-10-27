@@ -470,6 +470,201 @@ pub fn park_windows(_pid: u32) -> usize {
     0
 }
 
+/* ── a minimised window is parked instead ──────────────────────────────── */
+
+/// The browser process whose minimised windows are parked. Zero is none.
+#[cfg(windows)]
+static MINIMISE_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(windows)]
+static MINIMISE_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+/// Park this browser's windows when somebody minimises one, rather than let it
+/// sit minimised.
+///
+/// **A minimised Chrome window draws no frames at all**, and a card driving a
+/// page in it cannot tell: Playwright emulates focus, so the page still reads
+/// `visible` and focused. Measured 2026-10-27 on Chrome 154 against every flag
+/// on offer — the one `raw_spawn` passes, the renderer- and timer-backgrounding
+/// pair, `CalculateNativeWinOcclusion` off — and minimised gave no frame in 8s
+/// under each, where a window merely *covered* by another app draws at the
+/// display's rate. No flag reaches it, so the window is not left minimised.
+/// Lyss chose this over warning alone: "minimise means park", the window goes
+/// off-screen and out of the taskbar, and frames keep coming; she gets it back
+/// with the widget's show, like any parked window.
+///
+/// Folded, not polled: `EVENT_SYSTEM_MINIMIZESTART` from a WinEvent hook,
+/// `dropzone.rs`'s mechanism. One hook for the life of the app on its own
+/// thread with a message loop, filtered in the callback to the browser that
+/// is running now, so a browser that restarts needs only its pid written.
+#[cfg(windows)]
+pub fn watch_minimise(app: &AppHandle, pid: u32) {
+    use std::sync::atomic::Ordering;
+    let _ = MINIMISE_APP.set(app.clone());
+    MINIMISE_PID.store(pid, Ordering::Relaxed);
+    static HOOKED: std::sync::Once = std::sync::Once::new();
+    HOOKED.call_once(|| {
+        let _ = std::thread::Builder::new().name("browser-minimise".into()).spawn(|| unsafe {
+            use windows::Win32::UI::Accessibility::SetWinEventHook;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                DispatchMessageW, GetMessageW, TranslateMessage, EVENT_SYSTEM_MINIMIZESTART, MSG,
+                WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+            };
+            let hook = SetWinEventHook(
+                EVENT_SYSTEM_MINIMIZESTART,
+                EVENT_SYSTEM_MINIMIZESTART,
+                None,
+                Some(on_minimise),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            );
+            if hook.is_invalid() {
+                log::warn!("browser: could not watch for a minimised window; one will stop drawing frames");
+                return;
+            }
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+    });
+}
+
+#[cfg(not(windows))]
+pub fn watch_minimise(_app: &AppHandle, _pid: u32) {}
+
+/// The hook's whole cost for a window that is not the browser's is one
+/// `GetWindowThreadProcessId` and a compare.
+#[cfg(windows)]
+unsafe extern "system" fn on_minimise(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    hwnd: windows::Win32::Foundation::HWND,
+    object: i32,
+    child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    use std::sync::atomic::Ordering;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetWindowThreadProcessId, CHILDID_SELF, OBJID_WINDOW,
+    };
+    if object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 || hwnd.is_invalid() {
+        return;
+    }
+    let want = MINIMISE_PID.load(Ordering::Relaxed);
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if want == 0 || pid != want {
+        return;
+    }
+    let mut class = [0u16; 64];
+    let n = unsafe { GetClassNameW(hwnd, &mut class) };
+    if n <= 0 || !String::from_utf16_lossy(&class[..n as usize]).starts_with("Chrome_WidgetWin") {
+        return;
+    }
+    /* Off the hook's thread: the minimise is still animating when this fires,
+       and placing a window mid-animation is undone by the animation ending. */
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || park_minimised(raw));
+}
+
+/// Wait for the minimise to land, then put the window where a parked one goes:
+/// restored, off every screen, out of the taskbar, without taking focus.
+///
+/// **The window has to be restored on the desktop and then moved**, and both
+/// obvious ways round that were tried on a private Chrome first (2026-10-27,
+/// the call sequence replayed from PowerShell):
+///
+/// - `SetWindowPlacement` with the normal rectangle at `PARKED_AT` restored it
+///   at its *old* rectangle — (60,60), on the desktop — because Windows keeps a
+///   restore rectangle on a monitor.
+/// - Restoring while hidden is not a thing: a placement with `SW_HIDE` leaves it
+///   minimised, and a minimised window drew no frames, which is the whole case.
+///
+/// So it is restored without activation and moved at once, with DWM's
+/// transitions switched off on the window for the moment in between so the
+/// restore is not animated onto the desktop. Measured: restored, at
+/// (-32000,-32000), and drawing at 125-144 fps again; `DwmSetWindowAttribute`
+/// on another process's window answered `S_OK`. A window minimised from
+/// *maximised* would restore maximised onto its monitor, so its placement
+/// first loses `WPF_RESTORETOMAXIMIZED` while it is still minimised and
+/// hidden — measured with a real maximised window: flags 2 before, `showCmd`
+/// normal after, parked, 120-131 fps.
+#[cfg(windows)]
+fn park_minimised(raw: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, GetWindowPlacement, IsIconic, SetWindowLongW, SetWindowPlacement, SetWindowPos,
+        ShowWindow, GWL_EXSTYLE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWMINNOACTIVE,
+        SW_SHOWNOACTIVATE, WINDOWPLACEMENT, WINDOWPLACEMENT_FLAGS, WS_EX_TOOLWINDOW,
+    };
+    let hwnd = HWND(raw as *mut core::ffi::c_void);
+    let mut iconic = false;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if unsafe { IsIconic(hwnd) }.as_bool() {
+            iconic = true;
+            break;
+        }
+    }
+    if !iconic {
+        return;
+    }
+    unsafe {
+        let flag = |on: i32| {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                &on as *const i32 as *const core::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            );
+        };
+        flag(1);
+        /* The ex-style bracket `park_windows` uses: a taskbar-affecting
+           change is honoured only on a window hidden while it is made. */
+        let _ = ShowWindow(hwnd, SW_HIDE);
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW.0 as i32);
+        /* Restored at its normal size — a maximised window would come back
+           maximised on a monitor, and a parked one wants a size of its own. So
+           the restore-to-maximised flag goes first, the window kept minimised. */
+        let mut place = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        if GetWindowPlacement(hwnd, &mut place).is_ok() {
+            place.flags = WINDOWPLACEMENT_FLAGS(0);
+            place.showCmd = SW_SHOWMINNOACTIVE.0 as u32;
+            let _ = SetWindowPlacement(hwnd, &place);
+        }
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            PARKED_AT.0,
+            PARKED_AT.1,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        flag(0);
+    }
+    log::info!("browser: a minimised window was parked off-screen instead, so its pages keep drawing");
+    if let Some(app) = MINIMISE_APP.get() {
+        if let Some(state) = app.try_state::<Browser>() {
+            if let Ok(mut guard) = state.inner.lock() {
+                if let Some(r) = guard.as_mut() {
+                    r.on_desktop = false;
+                }
+            }
+        }
+        announce(app);
+    }
+}
+
 /* ── a card's own tab, stopped ──────────────────────────────────────────── */
 
 /// The chronicle row for a card's tab that stopped answering, out of what the
@@ -1219,6 +1414,9 @@ pub fn ensure_running(app: &AppHandle) -> Result<(), String> {
     })?;
 
     let started = spawn_browser(&exe, &profile, DEFAULT_PORT, mode)?;
+    if mode != Mode::Headless {
+        watch_minimise(app, started.child.id());
+    }
 
     {
         let state = app

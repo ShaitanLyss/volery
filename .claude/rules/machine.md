@@ -41,7 +41,10 @@ is a handle the process owns. It also carries a reason string, and `powercfg /re
 prints that beside our name, which matters for someone wondering why the machine will not
 sleep.
 
-The request is **system-required only, never display**, so the screen may still sleep.
+The request is **system-required only, never display**, so the screen may still sleep. The one
+display request on this wall is `screen.rs`'s, held only while a card drives the browser and let go
+two minutes after its last call, because a frame timing taken with the screen off is not one
+(`browser.md`, *Frames a card can trust*).
 
 **It is held on mains only, and the power source is folded, not sampled.**
 `PowerSettingRegisterNotification(GUID_ACDC_POWER_SOURCE, DEVICE_NOTIFY_CALLBACK)` calls back

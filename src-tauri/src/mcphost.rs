@@ -89,11 +89,12 @@ const VAULT_SCRIPT: &str = include_str!("browservault.cjs");
 /// may save a file in. Loaded from beside the host, files of their own for the
 /// same reason: `test/browsercdp.test.ts`, `test/browserstall.test.ts` and
 /// `test/browserroots.test.ts` run them.
-const SIDE_SCRIPTS: [(&str, &str); 4] = [
+const SIDE_SCRIPTS: [(&str, &str); 5] = [
     ("browservault.cjs", VAULT_SCRIPT),
     ("browsercdp.cjs", include_str!("browsercdp.cjs")),
     ("browserstall.cjs", include_str!("browserstall.cjs")),
     ("browserroots.cjs", include_str!("browserroots.cjs")),
+    ("browserframes.cjs", include_str!("browserframes.cjs")),
 ];
 
 /// How long a card's browser context outlives its last session: a card that
@@ -238,6 +239,13 @@ fn report_url(ask_port: u16) -> Option<String> {
     (ask_port != 0).then(|| format!("http://{HOST}:{ask_port}{}", crate::ask::STALLED_PATH))
 }
 
+/// The address the host posts every browser call to, with the card appended:
+/// it holds the screen on and hears back whether it is locked or off
+/// (`ask::FRAMES_PATH`, `screen.rs`). None without a port, as `report_url`.
+fn frames_url(ask_port: u16) -> Option<String> {
+    (ask_port != 0).then(|| format!("http://{HOST}:{ask_port}{}", crate::ask::FRAMES_PATH))
+}
+
 fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     let mut guard = host.child.lock().map_err(|_| "mcp host state poisoned")?;
     if let Some(r) = guard.as_mut() {
@@ -286,7 +294,8 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
        it as needing auth without sending a request (`load.md` §1). The host
        never answers either — a wrong `Host` is a 421 — and the pin is also what
        its reach into the package's internals rests on. */
-    let report = report_url(app.state::<crate::ask::Asks>().port());
+    let ask_port = app.state::<crate::ask::Asks>().port();
+    let report = report_url(ask_port);
     let mut words: Vec<String> = vec![
         "npx".into(),
         "--yes".into(),
@@ -310,6 +319,10 @@ fn start(app: &AppHandle, host: &Host) -> Result<Started, String> {
     if let Some(r) = report {
         words.push("--report".into());
         words.push(r);
+    }
+    if let Some(f) = frames_url(ask_port) {
+        words.push("--frames".into());
+        words.push(f);
     }
     let mut cmd = Command::new("cmd");
     #[cfg(windows)]

@@ -77,7 +77,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
                          # sources, marks, whois, credits, boostmusic, boostfield,
-                         # browsercdp, browserstall, browserroots, freshen
+                         # browsercdp, browserstall, browserframes, browserroots, freshen
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -114,7 +114,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # tunnel.rs, applog.rs, sluice.rs,
                               # limits.rs, load.rs, pool.rs, perf.rs,
                               # timeline.rs, arrange.rs, notice.rs, machine.rs, credits.rs,
-                              # freshen.rs
+                              # freshen.rs, screen.rs
                               # subscribe/ (filter, ledger, engine, sources), eventhub.rs,
                               # amqp/ (codec, conn, ws)
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers

@@ -2882,6 +2882,13 @@ pub const LOAD_PATH: &str = "/load/note/";
 /// unauthenticated caller to gain but a line in the register.
 pub const STALLED_PATH: &str = "/browser/stalled/";
 
+/// The browser host posts here before and after every browser tool call, with
+/// the card appended: `POST /browser/frames/<card>`. It holds the screen on
+/// while a card is at work in the browser and answers with a sentence for the
+/// card when the screen is locked or off — states no page can see from inside,
+/// because Playwright emulates focus. See `screen.rs`.
+pub const FRAMES_PATH: &str = "/browser/frames/";
+
 /// How long [`REMOVE_PATH`] holds its request before telling the hook the
 /// question is standing. Under `hooks::ROUTE_TIMEOUT`, which is under the
 /// `PreToolUse` ceiling, so the hook always has its answer before it is killed.
@@ -3148,6 +3155,15 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                         crate::chronicle::note_card(&app, &card, "bad", &mark, &detail);
                     }
                     let _ = req.respond(tiny_http::Response::empty(204));
+                    return;
+                }
+
+                if req.url().starts_with(FRAMES_PATH) {
+                    crate::screen::touch();
+                    let _ = match crate::screen::note() {
+                        Some(note) => req.respond(tiny_http::Response::from_string(note)),
+                        None => req.respond(tiny_http::Response::empty(204)),
+                    };
                     return;
                 }
 

@@ -21,6 +21,9 @@
  *      for A finds them again; after it, they are closed — and what A held is
  *      saved into the vault first
  *   6. Volery's release closes a card's tabs at once, saving them too
+ *   F. a page sharing its window with a popup tab is told its frames are not
+ *      real, once; a page a script opens with `page.context().newPage()` gets a
+ *      window of its own (`browserframes.cjs`)
  *
  * And, since each card became a browser context of its own (sinks 0ff8aa7f,
  * f3a07350, 38adbb03):
@@ -316,6 +319,24 @@ async function main() {
   check(la2.length === 2 && la2.join().includes("popup-of-a"), `4. A's popup is A's: ${la2.join(" | ")}`);
   const lb3 = tabLines(await B.call("browser_tabs", { action: "list" }));
   check(!lb3.join().includes("popup"), "4. ...and not B's");
+
+  // F: frames. A `target=_blank` popup is a tab in its opener's window, which
+  // Chrome draws only in front — the card is told on its next call. A page a
+  // script opens with `page.context().newPage()` gets a window of its own
+  // (it was a tab in front of the measured page until 2026-10-27).
+  const told = text(await A.call("browser_evaluate", { function: "() => 1" }));
+  check(/### Frames\nThis page shares its Chrome window with one other tab/.test(told), "F. a page sharing its window with a popup tab is told so");
+  const quiet = text(await A.call("browser_click", { element: "button", target: "#b" }));
+  check(!quiet.includes("### Frames"), "F. ...once on an ordinary call, not every time");
+  await A.call("browser_run_code_unsafe", { code: `async (page) => { const p = await page.context().newPage(); await p.goto("http://${HOST}:${PAGE_PORT}/sheet"); }` });
+  const aPages = (await cdpList()).filter((t: any) => /\/(a|popup-of-a|sheet)$/.test(t.url));
+  const sheet = aPages.find((t: any) => t.url.endsWith("/sheet"));
+  const others = aPages.filter((t: any) => t !== sheet);
+  const sheetWin = sheet ? (await windowOf(sheet.id)).windowId : -1;
+  let shared = 0;
+  for (const t of others) if ((await windowOf(t.id)).windowId === sheetWin) shared++;
+  check(!!sheet && shared === 0, `F. a page opened with page.context().newPage() has a window of its own (sharing with ${shared})`);
+  await A.call("browser_run_code_unsafe", { code: `async (page) => { for (const p of page.context().pages()) if (p.url().endsWith("/sheet")) await p.close(); }` });
 
   // 5
   await A.end();

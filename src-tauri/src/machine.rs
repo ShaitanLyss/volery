@@ -25,7 +25,8 @@
 //! goes looking.
 //!
 //! `PowerRequestSystemRequired` and never the display one. The screen may sleep;
-//! the machine may not.
+//! the machine may not. (`screen.rs` holds the display, only while a card is
+//! driving the browser — a frame timing needs the screen on.)
 //!
 //! **On mains only**, and power changes, so it is folded rather than sampled:
 //! `GUID_ACDC_POWER_SOURCE` delivers a callback on every change, and one at

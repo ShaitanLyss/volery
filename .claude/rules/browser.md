@@ -4,6 +4,8 @@ paths:
   - "src-tauri/src/browserhost.cjs"
   - "src-tauri/src/browsercdp.cjs"
   - "src-tauri/src/browserstall.cjs"
+  - "src-tauri/src/browserframes.cjs"
+  - "src-tauri/src/screen.rs"
   - "tools/probe-card-tabs.ts"
   - "src/lib/browser.ts"
   - "src/lib/pane.svelte.ts"
@@ -1316,6 +1318,69 @@ the CLI does, over a throwaway repository: a worktree added mid-session, a scree
 and console log saved in it, the relative and outside refusals, and the default screenshot
 still in the launch `.playwright-mcp`. No API turn; Chrome on 19334, host on 19447. Run against
 a host with the scope taken out, the three saves into the worktree fail.
+
+## Frames a card can trust (2026-10-27)
+
+Card 0c8147e8, timing a store hop in nova, recorded 0.997 fps in a tab that had given 56 earlier,
+with `visibilityState: "visible"` and `document.hasFocus()` true. It blamed Chrome being covered;
+earlier sessions had written "frames run at 1 Hz when the window is occluded" into their notes.
+**Neither was the cause**, and the measurement that found it is the part to keep.
+
+**The page cannot tell, ever, because Playwright emulates focus.** `Emulation.setFocusEmulationEnabled`
+makes Chrome count the page as visible whatever its window does (a background tab under it went
+from `hidden`, no frames, to `visible`, measured). So `visible` + focused is what *every* page a
+card drives reports, and is evidence of nothing.
+
+Measured on a private Chrome 154 (`--disable-backgrounding-occluded-windows`, as `raw_spawn`
+launches), an animated WebGL page, rAF over 40 frames:
+
+```text
+window on top                                    ~240 fps (the display's rate)
+window covered by another app's window           ~240 fps   — and 240 in a real tab of the
+                                                              shared browser, under Volery
+same, without the flag (control)                 0, hidden
+minimised, with the flag or any of: renderer /   0 in 8s, "visible"
+  timer backgrounding off, CalculateNativeWin-
+  Occlusion off
+a tab BEHIND another tab, window covered          0.998 fps, "visible", focused
+the same tab after Page.bringToFront              ~120 fps
+```
+
+The nova card's floor-plan tab was the fifth row: read in place, 0.998 fps, while the two other
+pages in the same window read 109 and 240. Its scripts opened pages with
+`page.context().newPage()` — a "sheet" for screenshots, an "other" for a second store — and
+**that path went round the one-window-per-page rule**: `windowed` was a `Proxy` handed to
+`BrowserBackend`, and `page.context()` is the real object, whose `newPage` is Playwright's own
+`Target.createTarget` with no `newWindow` — a tab, in front of the page being measured.
+
+So three things, and a fourth Lyss asked for:
+
+- **`newPage` is replaced on the context itself** (`windowed`), so every route to it opens a
+  window. `probe-card-tabs.ts` step F holds it, and fails with the line taken back out.
+- **A card is told** when its current page shares its window with other tabs, or its window is
+  minimised (`browserframes.cjs`, asked of the browser after every call, under a deadline). Said
+  on every call that measures (`browser_evaluate`, `run_code`) and once on any other. A popup
+  (`target=_blank`) still lands as a tab — nothing over CDP moves a tab into a window — which
+  is the case this is for.
+- **A minimised window is parked instead** (`browser::watch_minimise`): a WinEvent hook on
+  `EVENT_SYSTEM_MINIMIZESTART`, filtered to the browser's pid, restores the window without
+  activating it and moves it to `PARKED_AT`. Lyss's choice over a warning alone. Restoring onto
+  the desktop and moving is forced — `park_minimised` says why the two tidier sequences failed —
+  with DWM transitions off for the moment in between.
+- **The screen is held on while a card drives the browser** (`screen.rs`): the host posts to
+  `ask::FRAMES_PATH` around every call, which takes a display-required power request until two
+  minutes after the last one, and answers with a sentence when the screen is locked or off.
+  Locked was **not** measured — that would mean locking the machine under a probe — so the note
+  says "may".
+
+**`Page.bringToFront` is not a fix**, though it is what made the tab draw: it activates the
+window, and on the real wall it put the nova card's Chrome in front of Lyss's screen. Same for
+`Target.activateTarget`.
+
+What was not driven end to end: the hook and the display request inside a running wall. A lab
+shares the installed wall's Chrome on 9222 and host on 9245, so it never spawns a browser of its
+own to watch. The Win32 sequence `park_minimised` runs was replayed call for call against a
+private Chrome, and the host half runs in `probe-card-tabs.ts`.
 
 ## What is not built
 

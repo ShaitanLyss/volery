@@ -77,6 +77,7 @@ const { mergeStates, readVault, stateFromCdp, webOrigin } = require(path.join(__
 const { TargetFilter } = require(path.join(__dirname, "browsercdp.cjs"));
 const stall = require(path.join(__dirname, "browserstall.cjs"));
 const files = require(path.join(__dirname, "browserroots.cjs"));
+const frames = require(path.join(__dirname, "browserframes.cjs"));
 const { AsyncLocalStorage } = require("async_hooks");
 const { execFile } = require("child_process");
 
@@ -101,6 +102,12 @@ const ALLOWED = [`${HOST}:${PORT}`, `localhost:${PORT}`];
  *  appended — Volery's ask listener (`ask::STALLED_PATH`). Empty, and nothing
  *  is reported. */
 const REPORT = arg("report", "");
+/** Where to tell the wall a card is driving the browser, with the card
+ *  appended — Volery's ask listener (`ask::FRAMES_PATH`). It holds the screen
+ *  awake while a card is at work in the browser, and answers with a sentence
+ *  when the screen is locked or off, which no page can see from inside.
+ *  Empty, and nothing is asked. */
+const FRAMES = arg("frames", "");
 
 /* ── finding playwright-core ─────────────────────────────────────────────── */
 
@@ -322,6 +329,7 @@ async function contextFor(card) {
       const after = (await cdp.send("Target.getBrowserContexts")).browserContextIds;
       const id = after.find((x) => !before.has(x));
       const entry = { context, id, made: Date.now(), card };
+      windowed(entry, browser);
       contexts.set(card, entry);
       context.on("close", () => {
         if (contexts.get(card) === entry) contexts.delete(card);
@@ -588,11 +596,26 @@ async function placement(cdp) {
 }
 
 /** The card's context, with `newPage` opening a window rather than a tab.
- *  Everything else is Playwright's own, scoped to the context by Playwright. */
+ *  Everything else is Playwright's own, scoped to the context by Playwright.
+ *
+ *  **On the context itself, not on a wrapper handed to the backend**, and the
+ *  difference cost a card its measurements. It was a `Proxy` given to
+ *  `BrowserBackend`, so `browser_tabs new` opened a window — and an agent's
+ *  `browser_run_code_unsafe` holding `page.context()` reached the real
+ *  object, whose `newPage` is Playwright's: a *tab*, in the window of the page
+ *  the script was run on, in front of it. The page being measured was then a
+ *  background tab, which Chrome draws at one frame a second while focus
+ *  emulation has it report "visible" (2026-10-27, `browserframes.cjs`). The
+ *  client object is one per remote object, so `page.context()` is this one.
+ *
+ *  A popup the page opens itself (`window.open`, `target=_blank`) still lands
+ *  where Chrome puts it; nothing over CDP moves a tab into a window of its
+ *  own, which is why `frames.note` exists. */
 function windowed(entry, browser) {
   const { context, id } = entry;
+  const tab = context.newPage.bind(context);
   async function newPage() {
-    if (!id) return context.newPage();
+    if (!id) return tab();
     const cdp = await browser.newBrowserCDPSession();
     let targetId;
     try {
@@ -612,13 +635,49 @@ function windowed(entry, browser) {
     }
     throw new Error("the new tab did not appear");
   }
-  return new Proxy(context, {
-    get(target, prop) {
-      if (prop === "newPage") return newPage;
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
+  context.newPage = newPage;
+  return context;
+}
+
+/** Where the card's current page stands: whether it shares a window with other
+ *  tabs, and whether that window is minimised (`browserframes.cjs`). Asked of
+ *  the browser, not the page, so a page that has stopped answering cannot hold
+ *  it — and under a deadline anyway, because this runs after every call and a
+ *  note must never be what makes one slow. */
+async function whereFrames(entry, page) {
+  const look = (async () => {
+    const info = await targetInfo(entry.context, page);
+    if (!info) return null;
+    const browser = await connection();
+    const cdp = await browser.newBrowserCDPSession();
+    try {
+      const mine = await cdp.send("Browser.getWindowForTarget", { targetId: info.targetId });
+      const { targetInfos } = await cdp.send("Target.getTargets");
+      const others = [];
+      for (const t of targetInfos) {
+        if (t.type !== "page" || t.targetId === info.targetId) continue;
+        others.push(await cdp.send("Browser.getWindowForTarget", { targetId: t.targetId }).catch(() => null));
+      }
+      return frames.reading(mine, others);
+    } finally {
+      cdp.detach().catch(() => {});
+    }
+  })();
+  return Promise.race([look.catch(() => null), new Promise((r) => setTimeout(() => r(null), 1500))]);
+}
+
+/** What was last said about each page's frames, so a reading is said once on
+ *  ordinary calls (`frames.due`). */
+const framesSaid = new WeakMap();
+
+/** Tell Volery the card is at work in the browser, and hear back what the
+ *  screen is doing. A failure is silence: this is a courtesy to the card, and
+ *  a wall that cannot be reached has nothing to add. */
+function screenNote(card) {
+  if (!FRAMES) return Promise.resolve("");
+  return fetch(`${FRAMES}${encodeURIComponent(card)}`, { method: "POST", signal: AbortSignal.timeout(1000) })
+    .then((r) => (r.status === 200 ? r.text() : ""))
+    .catch(() => "");
 }
 
 /* ── a card's tab that stops answering ───────────────────────────────────── */
@@ -1048,7 +1107,7 @@ function sessionServer(card, streamOpened) {
           const entry = await contextFor(card);
           /* No dispose of our own: the context is the card's, not the
              session's, and outlives it by `GRACE`. */
-          const backend = new tools.BrowserBackend(config, windowed(entry, browser), toolList, {});
+          const backend = new tools.BrowserBackend(config, entry.context, toolList, {});
           await backend.initialize(clientInfo);
           scopeWorkspace(backend, clientInfo.cwd);
           /* Built here, outside any call's root: each tab of a context the
@@ -1080,6 +1139,8 @@ function sessionServer(card, streamOpened) {
       const tool = request.params.name;
       const args = request.params.arguments || {};
       const entry = contexts.get(card);
+      /* Before the call, so the screen is held awake for whatever it measures. */
+      void screenNote(card);
       /* A tab already known not to answer is looked at once more *before* the
          call is dispatched, so a refused call is one that was never made. */
       const refused = entry ? await upFront(backend, entry, tool) : null;
@@ -1112,7 +1173,16 @@ function sessionServer(card, streamOpened) {
           return { content: [{ type: "text", text: first.note }], isError: true };
         }
         settled = !first.r?.isError;
-        return mergeTextParts(first.r);
+        const merged = mergeTextParts(first.r);
+        /* Whether what this call measured could have been real: the page's
+           window, read by the browser, and the screen, read by Volery. */
+        const page = entry ? currentPage(backend, entry) : null;
+        const [where, screen] = await Promise.all([page ? whereFrames(entry, page) : null, screenNote(card)]);
+        const notes = [];
+        if (where && frames.due(where, framesSaid.get(page), tool)) notes.push(frames.note(where));
+        if (page && where) framesSaid.set(page, frames.key(where));
+        if (screen) notes.push(screen);
+        return notes.length ? { ...merged, content: [...merged.content, { type: "text", text: notes.join("\n\n") }] } : merged;
       } finally {
         watch?.stop(settled);
       }
