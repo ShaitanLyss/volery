@@ -952,6 +952,11 @@
                     onclick={() => void doneWith()}
                     title="nothing more to say — take it out of needs you (space then d a)">done with it</button
                   >
+                  <button
+                    type="button"
+                    onclick={() => void card.do("close")}
+                    title="close this conversation — the same close the wall's notice offers">close</button
+                  >
                 </p>
               {:else if endedOnQuestion && endedOnQuestion.kind === "notice"}
                 {@const q = endedOnQuestion.notice}
@@ -960,6 +965,7 @@
                   <button type="button" onclick={() => void card.acknowledge(q, "")} title="it needs nothing from you — take it out of needs you"
                     >dismiss</button
                   >
+                  <button type="button" onclick={() => void card.do("close")} title="close this conversation">close</button>
                 </p>
               {/if}
             {:else}
