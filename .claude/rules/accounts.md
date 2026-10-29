@@ -853,6 +853,49 @@ key the CLI has never sent, so it had never fired.
 `tools/lift-overage.ts` runs the Rust half (`credits_left`'s divisor, and `Overage` still
 deserializing an older wall's reading) on a machine with no MSVC.
 
+**Only in boost mode** (Lyss, later the same day: *"I want to use extra credits on accounts
+(over usage) only when boost mode is enabled"*). Boost already meant "spend money to keep
+working" for the API key; an account's usage credits are the same decision, so they share
+the switch. `standingOf` and `choose` take `overage`, **false by default** so a caller that
+forgets it spends nothing, and `Waterfall.overage` (`purse.boost`) is the one place it is
+read — the panel, the palette and `putOnAccount` ask `waterfall.standing` rather than
+calling `standingOf` with a flag they could leave off. With boost on, `route` keeps a card
+on its own account while that account stands ready, so its usage credits go before the API
+key's. Boost off with credits available: the row says `CREDITS_WAIT`, since a balance
+beside "spent" with nothing between them reads as a bug. What boost cannot stop is the
+server billing a turn that crosses the plan mid-flight — the CLI carries on into the credits
+itself; the stream then reads the account spent and the *next* send goes elsewhere.
+
+### Asking before moving a card onto an account
+
+Lyss, 2026-10-29: *"will volery first ask how much allowance is left when it doesn't know,
+before blindly trying to autoswitch?"* It did not. A swap, a wake and a new card chose
+against whatever reading was held — up to three minutes old, or none at all, which
+`standingOf` calls ready and `spentOf` calls empty, so the account the wall knew least
+about was the one its tier preferred. `Skein.#asked` now takes the decision again after one
+`waterfall.poll()` whenever it would move a card onto an account whose reading does not
+vouch for it (`accounts.ts::vouches`: present, not a fault, not kept through a failed ask,
+under `VOUCH_MS`), and before holding while any account is in that state. Staying put needs
+no ask — the card's own stream keeps that reading current — and `poll` now hands back a
+pass already in flight rather than returning at once, which also made `releaseHeld`'s
+"fresh reading before deciding" true when a beat happened to be running. `VOUCH_MS` is
+`limits.rs`'s `FLOOR_MS` and a test reads one against the other: asking inside the floor is
+answered out of Rust's cache, so a tighter bound buys a round trip and no fresher figure.
+
+**What it cannot fix is a reserve whose token has expired.** `limits.rs` reads a store's
+access token and never refreshes it (the race with the CLI is `usage.md`'s), so an account
+nothing has run on for a few hours stays unreadable however often it is asked. The way out
+that spends nothing was found the same day: **the CLI refreshes a store's token as it
+starts, before any prompt.** Probed against claude 2.1.312 on the leftover `probe` store —
+`claude -p --input-format stream-json` with nothing written to stdin, killed at 25s — and
+the credential file, untouched since 20 Aug, was rewritten (its refresh token had lapsed,
+so the CLI cleared it; a live one is rotated). The binary names the path:
+`checkAndRefreshOAuthTokenIfNeeded` on `auth: init`, saved through
+`saveRefreshedOAuthTokensRespectingLock`. So a keep-alive needs no turn: start the CLI on
+the store with no prompt, wait for `expiresAt` to move, end it. **Not built yet** — it is a
+Rust spawn in a job object on a timer, and the obvious way to verify it against a *live*
+token is to wait for one to expire.
+
 ### Finding Claude Code before installing it
 
 Every card is a `claude` child, so "claude is not on PATH" stops the whole wall

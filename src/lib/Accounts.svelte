@@ -33,7 +33,8 @@
     sayTier,
     sayUnmeasured,
     sayUnsigned,
-    standingOf,
+    creditsWaiting,
+    CREDITS_WAIT,
     tiers,
     type Merge,
   } from "./accounts";
@@ -187,7 +188,7 @@
   const standings = $derived(
     waterfall.list.map((a) => ({
       account: a,
-      standing: standingOf(a, waterfall.allowances[a.label], false),
+      standing: waterfall.standing(a),
     })),
   );
 
@@ -633,6 +634,11 @@
                     <!-- Only ever something with an amount in it: no credits, or
                          none left, is no line at all (`sayCredits`). -->
                     <span class="dim">{creditsOf(account.label)}</span>
+                    {#if standing.state === "blocked" && creditsWaiting(waterfall.allowances[account.label], waterfall.overage)}
+                      <!-- A balance beside a "spent" tag with nothing between them
+                           reads as a bug; boost is the switch that spends it. -->
+                      <span class="dim">{CREDITS_WAIT}</span>
+                    {/if}
                   {/if}
 
                   <span class="grow"></span>

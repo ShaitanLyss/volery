@@ -686,6 +686,9 @@ export function standingOf(
   account: Account,
   allowance: Allowance | undefined,
   bypass: boolean,
+  /** Whether usage credits may be spent at all — boost mode, and nothing else
+   *  (`covers`). False by default, so a caller that forgets it spends nothing. */
+  overage = false,
 ): Standing {
   const label = account.label;
   if (!account.enabled) return { state: "unusable", label, why: "switched off" };
@@ -709,7 +712,7 @@ export function standingOf(
   }
   if (!allowance.ok) return { state: "ready", label, unmeasured: allowance.fault };
 
-  const credits = covers(allowance.overage);
+  const credits = overage && covers(allowance.overage);
   const blockers = blockersFor(account, allowance.windows, bypass, credits);
   if (blockers.length === 0) {
     /* Ready, and whether the plan is what pays. Asked of the same rule with the
@@ -728,6 +731,17 @@ export function standingOf(
  *  as the server's refusal (`blockersFor`). The CLI spends them by itself the
  *  moment the plan runs out; the wall was the only thing in the way.
  *
+ *  And then, the same afternoon: *"I want to use extra credits on accounts
+ *  (over usage) only when boost mode is enabled."* So this answers whether the
+ *  credits *could* cover a send, and `standingOf`'s `overage` — boost, read in
+ *  one place, `Waterfall.overage` — says whether they *may*. Boost was already
+ *  the switch meaning "spend money to keep working" for the API key's credits;
+ *  an account's usage credits are the same decision, so they share the switch
+ *  rather than growing a second one. What boost cannot stop is the server
+ *  billing a turn that crosses the plan mid-flight — the CLI carries on into
+ *  the credits by itself. The wall's part is the *next* turn: with boost off,
+ *  the account reads blocked as soon as the stream says so (`observed`).
+ *
  *  `enabled` is the endpoint's `is_enabled`, which the CLI's schema defines as
  *  false *while extra usage cannot cover sends* — so a spent balance turns it
  *  off at the source. The amounts are checked as well, because the endpoint is
@@ -740,6 +754,41 @@ export function covers(overage: Overage | null | undefined): boolean {
   const limit = finiteOrNull(overage.limit);
   const spent = finiteOrNull(overage.spent);
   return !(limit !== null && spent !== null && spent >= limit);
+}
+
+/** Credits stand behind this account's spent plan, and boost is what keeps them
+ *  unspent — so the panel can say why a covered account still reads blocked,
+ *  rather than leaving a balance beside a "spent" tag with no word between them. */
+export function creditsWaiting(allowance: Allowance | undefined, overage: boolean): boolean {
+  return !overage && !!allowance?.ok && covers(allowance.overage);
+}
+
+export const CREDITS_WAIT = "its usage credits are spent only in boost mode (space then m b)";
+
+/** How old a reading may be and still be trusted to move a card onto its
+ *  account. A minute, which is `limits.rs`'s `FLOOR_MS`: asking sooner is
+ *  answered out of Rust's cache anyway, so a tighter bound would buy no fresher
+ *  figure, only another round trip. */
+export const VOUCH_MS = 60_000;
+
+/** Whether this reading is good enough to move a card onto its account without
+ *  asking first.
+ *
+ *  Lyss, 2026-10-29: *"so now will volery first asks how much allowance left
+ *  there is when it doesn't know before blindly trying to autoswitch"* — and it
+ *  did not. A swap, a wake and a new card all chose against whatever reading was
+ *  held: up to three minutes old for an idle account, and nothing at all for one
+ *  never read, which `standingOf` calls ready and `spentOf` calls empty — so the
+ *  account the wall knew *least* about was the one its tier preferred. A swap
+ *  onto an account that turns out spent costs a refused turn, a second swap and
+ *  a carry-on; asking first costs one request at most, under Rust's floor.
+ *
+ *  Not vouched for: no reading, a failed one, one kept through a failed ask
+ *  (`stale`), or one older than `VOUCH_MS`. Readings off a card's own stream
+ *  (`observed`) are dated when they arrive, so an account in use vouches for
+ *  itself. */
+export function vouches(allowance: Allowance | undefined, now: number): boolean {
+  return !!allowance && allowance.ok && !allowance.stale && now - allowance.at < VOUCH_MS;
 }
 
 function finiteOrNull(n: unknown): number | null {
@@ -952,7 +1001,7 @@ export type Choice =
 export function choose(
   accounts: Account[],
   allowances: Record<string, Allowance>,
-  opts: { bypass?: boolean; stickTo?: string | null } = {},
+  opts: { bypass?: boolean; stickTo?: string | null; overage?: boolean } = {},
 ): Choice {
   const bypass = opts.bypass ?? false;
   const stickTo = opts.stickTo ?? null;
@@ -960,7 +1009,7 @@ export function choose(
   const list = ordered(accounts);
   if (list.length === 0) return { kind: "none", why: "no accounts are set up" };
 
-  const standings = list.map((a) => standingOf(a, allowances[a.label], bypass));
+  const standings = list.map((a) => standingOf(a, allowances[a.label], bypass, opts.overage ?? false));
 
   /* Ahead of the waterfall, and only ever for an account that is genuinely
      ready — a card sticks to an account it is allowed to be on, not to one it

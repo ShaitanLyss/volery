@@ -131,7 +131,7 @@
      answer to "is that folder on this machine": a territory pointing nowhere is
      offered nothing to show in Explorer. */
   import { adrift, Portage } from "./lib/portage.svelte";
-  import { sayBlocked, standingOf, usable } from "./lib/accounts";
+  import { sayBlocked, usable } from "./lib/accounts";
   import { waterfall } from "./lib/waterfall.svelte";
   import { purse } from "./lib/purse.svelte";
   import { boostLabel, onCredits, sayBoost } from "./lib/credits";
@@ -3273,11 +3273,7 @@
    *  panel cannot come to disagree about which one has room. */
   $effect(() => {
     field.accounts = usable(waterfall.list).map((a) => {
-      const standing = standingOf(
-        a,
-        waterfall.allowances[a.label],
-        dockCard?.bypassCaps ?? false,
-      );
+      const standing = waterfall.standing(a, dockCard?.bypassCaps ?? false);
       return {
         value: a.label,
         summary:

@@ -26,9 +26,13 @@ import {
   sayImported,
   keptThrough,
   covers,
+  creditsWaiting,
+  CREDITS_WAIT,
   observed,
   polled,
   sayCredits,
+  vouches,
+  VOUCH_MS,
   sayStale,
   sayIdentity,
   saySeat,
@@ -1541,6 +1545,9 @@ function liveInfo(at = T0) {
 
 const CREDITS = { enabled: true, used: 24.7, limit: 5000, spent: 1234, currency: "usd" };
 
+/** Boost mode on — the only state in which usage credits are spent. */
+const BOOST = true;
+
 function withCredits(a: Allowance, overage: any = CREDITS): Allowance {
   return a.ok ? { ...a, overage } : a;
 }
@@ -1575,36 +1582,74 @@ describe("usage credits", () => {
   });
 
   test("an account billing credits stands ready, and says so", () => {
-    expect(standingOf(acct("a"), withCredits(spent(10, 100)), false)).toEqual({
+    expect(standingOf(acct("a"), withCredits(spent(10, 100)), false, BOOST)).toEqual({
       state: "ready",
       label: "a",
       onCredits: true,
     });
     /* Plan room is plain ready, credits or not. */
-    expect(standingOf(acct("a"), withCredits(fresh()), false)).toEqual({ state: "ready", label: "a" });
+    expect(standingOf(acct("a"), withCredits(fresh()), false, BOOST)).toEqual({ state: "ready", label: "a" });
     /* Spent through: the stop is back. */
     expect(
-      standingOf(acct("a"), withCredits(spent(10, 100), { ...CREDITS, spent: 5000 }), false).state,
+      standingOf(acct("a"), withCredits(spent(10, 100), { ...CREDITS, spent: 5000 }), false, BOOST).state,
     ).toBe("blocked");
-    expect(standingOf(acct("a"), spent(10, 100), false).state).toBe("blocked");
+    expect(standingOf(acct("a"), spent(10, 100), false, BOOST).state).toBe("blocked");
+  });
+
+  /* Lyss, the same afternoon: "use extra credits on accounts only when boost
+     mode is enabled". Off is the default, so a caller that forgets the flag
+     spends nothing. */
+  test("without boost, credits are not spent at all", () => {
+    expect(standingOf(acct("a"), withCredits(spent(10, 100)), false).state).toBe("blocked");
+    expect(standingOf(acct("a"), withCredits(spent(10, 100)), false, false).state).toBe("blocked");
+    const accounts = migrated(["company", "personal"]);
+    const allowances = { company: withCredits(spent(10, 100)), personal: fresh() };
+    expect(choose(accounts, allowances)).toEqual({ kind: "use", label: "personal", swapFrom: null });
+    expect(choose(accounts, allowances, { overage: true })).toEqual({
+      kind: "use",
+      label: "company",
+      swapFrom: null,
+    });
+    /* With nothing else free, it holds rather than billing. */
+    expect(choose([acct("a")], { a: withCredits(spent(10, 100)) }).kind).toBe("hold");
+    /* And a card already billing is moved off at its next send once boost goes. */
+    expect(choose(accounts, allowances, { stickTo: "company" })).toEqual({
+      kind: "use",
+      label: "personal",
+      swapFrom: "company",
+    });
+  });
+
+  test("the panel says why an account with credits is still held", () => {
+    const covered = withCredits(spent(10, 100));
+    expect(creditsWaiting(covered, false)).toBe(true);
+    expect(creditsWaiting(covered, true)).toBe(false);
+    expect(creditsWaiting(spent(10, 100), false)).toBe(false);
+    expect(creditsWaiting(withCredits(spent(10, 100), { ...CREDITS, spent: 5000 }), false)).toBe(false);
+    expect(creditsWaiting(undefined, false)).toBe(false);
+    expect(CREDITS_WAIT).toContain("space then m b");
   });
 
   test("inside a tier, plan room goes before credits", () => {
     const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
-    const c = choose(accounts, { a: withCredits(spent(10, 100)), b: spent(70, 80) });
+    const c = choose(accounts, { a: withCredits(spent(10, 100)), b: spent(70, 80) }, { overage: BOOST });
     expect(c).toEqual({ kind: "use", label: "b", swapFrom: null });
   });
 
   test("a card on credits moves to plan room when there is some", () => {
     const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
-    const c = choose(accounts, { a: withCredits(spent(10, 100)), b: fresh() }, { stickTo: "a" });
+    const c = choose(
+      accounts,
+      { a: withCredits(spent(10, 100)), b: fresh() },
+      { stickTo: "a", overage: BOOST },
+    );
     expect(c).toEqual({ kind: "use", label: "b", swapFrom: "a" });
   });
 
   test("a card on credits stays rather than moving onto other credits", () => {
     const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
     const allowances = { a: withCredits(spent(10, 100)), b: withCredits(spent(10, 100)) };
-    expect(choose(accounts, allowances, { stickTo: "b" })).toEqual({
+    expect(choose(accounts, allowances, { stickTo: "b", overage: BOOST })).toEqual({
       kind: "use",
       label: "b",
       swapFrom: null,
@@ -1617,7 +1662,11 @@ describe("usage credits", () => {
   test("credits are spent in their account's tier", () => {
     const accounts = migrated(["company", "personal"]);
     const allowances = { company: withCredits(spent(10, 100)), personal: fresh() };
-    expect(choose(accounts, allowances)).toEqual({ kind: "use", label: "company", swapFrom: null });
+    expect(choose(accounts, allowances, { overage: BOOST })).toEqual({
+      kind: "use",
+      label: "company",
+      swapFrom: null,
+    });
     /* Without the credits it is the waterfall it always was. */
     expect(choose(accounts, { company: spent(10, 100), personal: fresh() })).toEqual({
       kind: "use",
@@ -1637,7 +1686,34 @@ describe("usage credits", () => {
   test("a failed ask keeps the credits with the windows", () => {
     const kept = keptThrough(withCredits(spent(10, 100)), "offline", T0 + MIN);
     expect(kept.ok && kept.overage).toEqual(CREDITS);
-    expect(standingOf(acct("a"), kept, false)).toMatchObject({ state: "ready", onCredits: true });
+    expect(standingOf(acct("a"), kept, false, BOOST)).toMatchObject({ state: "ready", onCredits: true });
+  });
+});
+
+describe("a reading good enough to move a card on", () => {
+  test("a fresh reading vouches; none, a fault, a held one or an old one does not", () => {
+    expect(vouches(fresh(T0), T0 + 30_000)).toBe(true);
+    expect(vouches(fresh(T0), T0 + VOUCH_MS)).toBe(false);
+    expect(vouches(undefined, T0)).toBe(false);
+    expect(vouches({ ok: false, fault: "expired" }, T0)).toBe(false);
+    expect(vouches(keptThrough(fresh(T0), "offline", T0 + 1000), T0 + 2000)).toBe(false);
+  });
+
+  /* An account a card is running on is read off its own stream, so it vouches
+     for itself without the poll. */
+  test("a reading off the stream vouches from when it arrived", () => {
+    const old = spent(40, 10, T0 - 10 * MIN);
+    expect(vouches(old, T0)).toBe(false);
+    expect(vouches(observed(old, liveInfo(T0), T0)!, T0 + 1000)).toBe(true);
+  });
+
+  /* The floor is why a minute and not less: inside it Rust answers out of its
+     cache, so a tighter bound would buy a round trip and no fresher figure. */
+  test("the bound is limits.rs's floor", () => {
+    const rs = readFileSync(join(import.meta.dir, "..", "src-tauri", "src", "limits.rs"), "utf8");
+    const floor = /const FLOOR_MS:\s*i64\s*=\s*([\d_]+)/.exec(rs);
+    expect(floor).not.toBeNull();
+    expect(Number(floor![1]!.replace(/_/g, ""))).toBe(VOUCH_MS);
   });
 });
 
@@ -1686,11 +1762,12 @@ describe("a card's own stream", () => {
 
   /* The whole of the user's case in one line: the turn was answered, so the
      account must read as one the wall will send to. */
-  test("the observed account stands ready on credits", () => {
-    expect(standingOf(acct("a"), observed(undefined, liveInfo(), T0)!, false)).toMatchObject({
-      state: "ready",
-      onCredits: true,
-    });
+  test("the observed account stands ready on credits, in boost", () => {
+    const seen = observed(undefined, liveInfo(), T0)!;
+    expect(standingOf(acct("a"), seen, false, BOOST)).toMatchObject({ state: "ready", onCredits: true });
+    /* And out of boost the same reading holds the account: the stream saying a
+       turn was billed is exactly what moves the next one elsewhere. */
+    expect(standingOf(acct("a"), seen, false).state).toBe("blocked");
   });
 
   /* What makes the waterfall proactive: the poll said 97%, the stream says

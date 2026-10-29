@@ -115,9 +115,9 @@
      *  wide face can apply the caps you set. Null for the signed-in session,
      *  which is not an account in the order and has no caps of yours. */
     account: Account | null;
-    /** Usage credits stand behind a spent plan (`accounts.ts::covers`), so a
-     *  week at 100% is a bill rather than a stop — and the face must not draw
-     *  as spent an account the wall is still sending work to. */
+    /** Usage credits stand behind a spent plan (`accounts.ts::covers`) and boost
+     *  is on, so a week at 100% is a bill rather than a stop — and the face must
+     *  not draw as spent an account the wall is still sending work to. */
     credits: boolean;
   };
 
@@ -166,7 +166,9 @@
         fault: !got ? "not read yet" : got.ok ? (got.stale ?? null) : got.fault,
         source: `the '${a.label}' account`,
         account: a,
-        credits: got?.ok ? covers(got.overage) : false,
+        /* Boost decides whether credits are spent at all, read where the
+           chooser reads it, so this face and the wall cannot disagree. */
+        credits: waterfall.overage && got?.ok === true && covers(got.overage),
       };
     });
   });

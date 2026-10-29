@@ -35,12 +35,15 @@ import {
   several,
   standingOf,
   usable,
+  vouches,
   type Account,
   type Allowance,
   type Choice,
   type Refusal,
+  type Standing,
 } from "./accounts";
 import type { Report } from "./limits";
+import { purse } from "./purse.svelte";
 
 /** Three minutes, the same reasoning `ledger.svelte.ts` sets out at length: a
  *  five-hour window moves one percent in three of them and every face here
@@ -246,7 +249,22 @@ export class Waterfall {
    *  to `ready · unmeasured`, which is your caps switched off and the balancer
    *  reading three part-spent subscriptions as untouched, over a network blip
    *  that changed nothing about any of them. */
-  async poll() {
+  /** A pass already under way, so a caller that has to decide on a fresh
+   *  reading waits for it rather than deciding on the old one. `#busy` used to
+   *  return at once, which made `releaseHeld`'s "a fresh reading before
+   *  deciding" true only when no beat happened to be running. */
+  #inflight: Promise<void> | null = null;
+
+  poll(): Promise<void> {
+    if (this.#standIn) return Promise.resolve();
+    if (this.#inflight) return this.#inflight;
+    this.#inflight = this.#pass().finally(() => {
+      this.#inflight = null;
+    });
+    return this.#inflight;
+  }
+
+  async #pass() {
     if (this.#busy || this.#standIn) return;
     const labels = this.list
       .filter((a) => a.signedIn && a.enabled && !a.lapsed)
@@ -347,7 +365,29 @@ export class Waterfall {
    *  should aim its retry at, since a poll cannot see a spend cap and so cannot
    *  be what releases one. */
   next(opts: { bypass?: boolean; stickTo?: string | null } = {}): Choice {
-    return choose(this.list, this.#overlaid(Date.now()), opts);
+    return choose(this.list, this.#overlaid(Date.now()), { ...opts, overage: this.overage });
+  }
+
+  /** Whether an account's usage credits may be spent: boost mode, and nothing
+   *  else (Lyss, 2026-10-29). Read here and only here, so every surface that
+   *  draws a standing agrees with the chooser — a surface handed the flag as an
+   *  argument is one that can forget it, and forgetting would draw "ready" over
+   *  an account the wall will not send to. */
+  get overage(): boolean {
+    return purse.boost;
+  }
+
+  /** One account's standing as the panel and the palette draw it: the reading,
+   *  without the refusal overlay (`next` and `stateOf` carry that), with boost
+   *  deciding the credits. */
+  standing(account: Account, bypass = false): Standing {
+    return standingOf(account, this.allowances[account.label], bypass, this.overage);
+  }
+
+  /** Whether the reading in hand is good enough to move a card onto `label`
+   *  without asking first (`accounts.ts::vouches`). */
+  vouches(label: string): boolean {
+    return vouches(this.allowances[label], Date.now());
   }
 
   /** One account's state as `next` sees it — refusals included — for the
@@ -357,7 +397,7 @@ export class Waterfall {
   stateOf(label: string, bypass = false): "ready" | "blocked" | "unusable" {
     const acct = this.list.find((a) => a.label === label);
     if (!acct) return "unusable";
-    return standingOf(acct, this.#overlaid(Date.now())[label], bypass).state;
+    return standingOf(acct, this.#overlaid(Date.now())[label], bypass, this.overage).state;
   }
 
   /** The readings with every standing refusal laid over them; see `next`. */
