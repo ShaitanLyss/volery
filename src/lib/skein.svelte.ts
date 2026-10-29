@@ -841,6 +841,10 @@ export class Skein {
        about to be tried again — a retry that swallowed the failed attempt
        would make the day's figure understate what the wall actually
        spent. */
+    /* Before `#spend` and `#heal` for the reason `#spend` is before `#heal`:
+       whatever is chosen next must be chosen against what this account just
+       said about itself. */
+    this.#observe(c, event);
     /* Before `#heal`, which is the ordering the old in-`#heal` call had for
        the same reason: `choose` must have stopped offering the refused
        account by the time anything re-sends. */
@@ -3042,6 +3046,19 @@ export class Skein {
     return this.kin.some(
       (k) => k.parent === conv.id && this.#byId.get(k.child)?.dormant === false,
     );
+  }
+
+  /** Hand the waterfall what a card's own request just learned about the
+   *  account it is on. Every request carries the allowance in its response
+   *  headers and the CLI reports it as `rate_limit_event`; reading it here is
+   *  what lets the next send move off an account *before* it is refused rather
+   *  than after. `accounts.ts::observed` has the whole argument. Credits are
+   *  not an account, so a card on them says nothing about any row. */
+  #observe(conv: Conversation, ev: any) {
+    if (ev?.type !== "rate_limit_event") return;
+    const label = conv.accountLabel;
+    if (!label || onCredits(label)) return;
+    waterfall.observe(label, ev.rate_limit_info);
   }
 
   /** Tell the waterfall an account has just been refused.

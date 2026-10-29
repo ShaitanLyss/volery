@@ -82,6 +82,7 @@ import {
   type Tier,
 } from "./classify";
 import { onCredits } from "./credits";
+import { BILLED_NOTE } from "./accounts";
 import { holdOf, pending, readWaiting, sessionWakes, type Wake } from "./waiting";
 import { backupSettled } from "./repair";
 import {
@@ -1539,6 +1540,10 @@ export class Conversation {
    *  Consumed by the refusal and dropped, so a warning heard on an ordinary turn
    *  cannot colour one weeks later. */
   #refusalHint: number | null = null;
+  /** Whether this card's last request was billed to usage credits, as its own
+   *  `rate_limit_event` last said — so `BILLED_NOTE` is said when that starts
+   *  rather than on every turn it stays true. */
+  #billed = false;
 
   /** `TaskCreate` calls whose receipt has not yet named their number. */
   #creating = new Map<string, { subject: string; activeForm: string }>();
@@ -3667,13 +3672,29 @@ export class Conversation {
         break;
       }
 
-      /* Shape isn't documented and it fired once in an otherwise nominal run,
-         so this stays quiet unless it clearly isn't business as usual. */
+      /* The allowance off this request's response headers. Its windows are the
+         waterfall's (`Skein.#observe`); what is the card's is the reset a
+         refusal names, and saying when the work starts being billed.
+
+         This arm read `ev.rate_limit?.status` for its whole life, and the CLI
+         sends `rate_limit_info` — so it never fired. Fixed knowing what it
+         would then have done: top-level `status` reads `rejected` on every turn
+         *served* on credits (claude 2.1.312, observed), and a meta line per
+         such turn saying "rate limit: rejected" would have been a false alarm
+         on each one. So a refusal is only a refusal when credits are not in
+         use, and the line is kept for the one thing worth saying. */
       case "rate_limit_event": {
-        const status = ev.rate_limit?.status ?? ev.status;
-        if (typeof status === "string" && !/^(ok|allowed|nominal)$/i.test(status)) {
-          this.#push("meta", `rate limit: ${status}`);
+        const info = ev.rate_limit_info ?? ev.rate_limit;
+        const billed = info?.isUsingOverage === true;
+        if (info?.status === "rejected" && !billed) {
           this.#refusalHint = refusalResetOf(ev) ?? this.#refusalHint;
+        }
+        /* Said once each way it turns, by `healNote`'s rule: Skein spawns with
+           the bypass flag, and money spent on its own initiative is the thing
+           that must not be quiet. */
+        if (typeof info?.isUsingOverage === "boolean" && billed !== this.#billed) {
+          if (billed) this.note(BILLED_NOTE);
+          this.#billed = billed;
         }
         break;
       }

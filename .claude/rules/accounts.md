@@ -792,6 +792,67 @@ where a line still pending when *we* pulled the process is one nothing carried.
 Every retirement gets it, since `#recycle`'s repair-restart is the same situation
 one subsystem over.
 
+### Usage credits are room, and the account is read off its own stream
+
+Lyss, 2026-10-29: her manager gave her usage credits and Volery *"doesn't even try
+because of the expired weekly allowance"* — and, of the waterfall, that it *"waits for
+cards to autoswitch and fail to know instead of directly checking the allowance"*. Both
+were right, and both were the wall ignoring something it was already being told.
+
+**Credits.** `blockersFor` read any window at 100% (or `rejected`) as the server's stop.
+With extra usage on, it is not: one real Haiku turn on her own sign-in (claude 2.1.312)
+was *answered* while its `rate_limit_event` said `seven_day: { utilization: 1, status:
+"rejected" }` beside `overageStatus: "allowed", isUsingOverage: true`. The CLI's schema
+says it outright — a rejected window alone does not mean requests are refused. So
+`covers(overage)` waives the server's ceiling, and only the server's:
+
+- **`is_enabled` is the switch**, because the schema defines it as *can extra usage cover
+  a send right now* — false once the balance is gone, not merely when the feature is off.
+  The amounts (`monthly_limit`, `used_credits`, minor units of `currency`) are checked too,
+  since a polled figure at its ceiling is newer than a flag that has not caught up.
+- **Your caps still apply.** A cap on the week is a decision about spending; credits are
+  more spending. Bypass lifts it as ever.
+- **`onCredits` on a ready standing** says the next turn there is billed. Inside a tier it
+  needs nothing special — a billed account's window is at its ceiling, so `spentOf` reads
+  it at 1 and plan room in the same tier goes first. **The tier order is not bent for
+  credits**: a priority-1 account's credits are spent before a priority-2 plan, which is
+  what putting it first said. That is a policy, and the obvious alternative — credits
+  last across every tier — is a one-line change in `choose` if it is ever wanted; the
+  test `credits are spent in their account's tier` holds the current answer.
+- **Stickiness gives way to plan room.** A card on credits does not stick if the waterfall
+  would put it on an account with plan left (the uncached re-read is cheaper than the
+  bill), and does stick rather than move to *another* account's credits.
+- **A refusal still wins.** The refusal overlay carries no overage, so an account the
+  server has just refused — out of credits included — is blocked whatever the poll said.
+- The panel says what is left (`sayCredits`: *$37.66 of usage credits left*), and says
+  **nothing** when there are none, off or spent — her words. The card's transcript says
+  once when its turns start being billed (`BILLED_NOTE`), by `swapNote`'s rule.
+
+**The stream.** The poll is three minutes apart and a busy card crosses several percent in
+that, so the wall learned an account was full by being refused — then swapped, carried on,
+noted. Meanwhile every request was carrying the answer: the CLI emits `rate_limit_event`
+whenever a window's rounded percentage, reset or status moves, off the response headers of
+the request it just made. That is CLAUDE.md's rule — *look for an event that already exists
+near it and fold that* — and `Conversation` had a case for it that read `ev.rate_limit`, a
+key the CLI has never sent, so it had never fired.
+
+- `Skein.#observe` hands each card's event to `waterfall.observe`, which lays it over the
+  held reading (`accounts.ts::observed`): `utilization` is a **fraction** and `resetsAt`
+  **seconds** there, converted so nothing downstream learns a second scale; windows it
+  names replace the held ones, the rest stay less any that rolled. The next send is then
+  chosen against what the account's own last request said.
+- **`polled` keeps the newer of the two.** Rust answers inside its floor out of a cache and a
+  peer's reading arrives aged, so a poll could put a window the stream had just seen at 100%
+  back to 97%. The poll still brings the credit amounts, which only it carries.
+- The poll stays, as the reading for accounts nothing is running on.
+- The card's own case now reads `rate_limit_info`, and deliberately does **not** draw a line
+  per `rejected` status: on credits that status arrives on every served turn.
+- Not read: `seven_day_overage_included`, a per-model week whose display name only the
+  endpoint carries; the poll still reads it.
+
+`tools/lift-overage.ts` runs the Rust half (`credits_left`'s divisor, and `Overage` still
+deserializing an older wall's reading) on a machine with no MSVC.
+
 ### Finding Claude Code before installing it
 
 Every card is a `claude` child, so "claude is not on PATH" stops the whole wall

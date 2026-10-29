@@ -26,7 +26,7 @@
  *    promise work through a real refusal, so nothing here pretends to.
  */
 
-import { binding, until, type Window } from "./limits";
+import { binding, until, type Overage, type Window } from "./limits";
 import { MINUTE } from "./usage";
 
 /** One account as the registry holds it. No credential: an account *is* a
@@ -201,7 +201,7 @@ function agoOf(ms: number): string {
  *  figures are not current without any of them being taken away. See
  *  `keptThrough`. */
 export type Allowance =
-  | { ok: true; windows: Window[]; at: number; stale?: string }
+  | { ok: true; windows: Window[]; at: number; stale?: string; overage?: Overage | null }
   | { ok: false; fault: string };
 
 /** One window standing in the way, and whose ceiling it is.
@@ -220,8 +220,11 @@ export type Standing =
   /** Will take work. `unmeasured` is set when it will take work *without* its
    *  allowance having been read — the account is signed in and switched on, but
    *  nothing current is known about how full it is, so your caps cannot be
-   *  applied to it this moment. It still goes: see `standingOf`. */
-  | { state: "ready"; label: string; unmeasured?: string }
+   *  applied to it this moment. It still goes: see `standingOf`.
+   *
+   *  `onCredits` is set when the plan is spent and the work would be billed to
+   *  usage credits instead — ready, but at a price. See `covers`. */
+  | { state: "ready"; label: string; unmeasured?: string; onCredits?: boolean }
   /** Signed in, measured, and simply full — or full enough. */
   | { state: "blocked"; label: string; blockers: Blocker[]; availableAt: number | null }
   /** Cannot be used at all, and waiting will not change it: not signed in, or
@@ -260,17 +263,31 @@ export function capFor(account: Account, kind: string, bypass: boolean): number 
  *
  *  `>=` rather than `>` on both, and it matters at the edges. A window at
  *  exactly 100 is spent, and a cap of 80 that admitted work at 80.0 would be a
- *  ceiling you set and then stood on. */
+ *  ceiling you set and then stood on.
+ *
+ *  **Except where usage credits cover it** (`credits`, from `covers`). Then the
+ *  server's ceiling is not a stop: a turn past it is served and billed. Probed
+ *  2026-10-29 against claude 2.1.312 on an account whose week was spent with
+ *  extra usage on — the turn was answered, and its `rate_limit_event` read
+ *  `seven_day: { utilization: 1, status: "rejected" }` beside `overageStatus:
+ *  "allowed", isUsingOverage: true`. So a rejected *window* is not a refused
+ *  *request* while credits stand behind it, which the CLI's own schema says in
+ *  as many words. Your cap still applies — it is checked below as ever — because
+ *  a ceiling you set on the week is a decision about spending, and credits are
+ *  more spending, not less. */
 export function blockersFor(
   account: Account,
   windows: Window[],
   bypass: boolean,
+  credits = false,
 ): Blocker[] {
   const out: Blocker[] = [];
   for (const w of windows) {
     if (w.used >= 100 || REJECTED.has(w.severity.toLowerCase())) {
-      out.push({ window: w, by: "server", resetsAt: w.resetsAt });
-      continue;
+      if (!credits) {
+        out.push({ window: w, by: "server", resetsAt: w.resetsAt });
+        continue;
+      }
     }
     const cap = capFor(account, w.kind, bypass);
     if (cap < 100 && w.used >= cap) {
@@ -390,8 +407,11 @@ export type Spoken = {
  *  conversation told to ignore the caps you set — and this is a widget reading an
  *  account, where those caps are in force. A window past 100 or already refused
  *  is the server's and shows through either way. */
-export function speaksWith(account: Account, windows: Window[]): Spoken {
-  const weekly = blockersFor(account, windows, false).filter(
+export function speaksWith(account: Account, windows: Window[], credits = false): Spoken {
+  /* `credits` for the same reason `blockersFor` takes it: a week spent with
+     usage credits behind it is not finished, the wall is still sending work
+     there, and a face reading it as spent would disagree with the chooser. */
+  const weekly = blockersFor(account, windows, false, credits).filter(
     (b) => b.window.group === "weekly",
   );
   if (weekly.length > 0) {
@@ -453,8 +473,185 @@ export function keptThrough(
   if (windows.length === 0) return { ok: false, fault };
   /* `at` is the *reading's* age and not this pass's, so a poll that keeps
      failing goes on saying how old the figures really are rather than resetting
-     the clock on them every three minutes. */
-  return { ok: true, windows, at: held.at, stale: fault };
+     the clock on them every three minutes. The overage goes with them: a
+     credit balance is not unknown because one ask failed, and dropping it would
+     block an account on a spent window the credits were covering. */
+  return { ok: true, windows, at: held.at, stale: fault, ...(held.overage ? { overage: held.overage } : {}) };
+}
+
+/** What one account's reading becomes after a poll: the answer, or what the
+ *  held reading keeps through a failed ask (`keptThrough`) — or the held one,
+ *  where it is newer than the answer.
+ *
+ *  That third arm is `observed`'s doing. A card's own stream may have spoken
+ *  more recently than the poll's answer was taken: Rust answers inside its floor
+ *  out of a cache, and a reading another wall took arrives already aged. Taking
+ *  the older over the newer would put a window the stream had just seen at 100%
+ *  back to 97% and send the next turn there — the very refusal the stream was
+ *  read to get ahead of. A stale held reading is not newer than anything, so it
+ *  always gives way.
+ *
+ *  The credit amounts are the poll's alone (the stream carries none), so they
+ *  are taken from the answer whatever its age; whether credits can cover a send
+ *  stays the stream's newer word. */
+export function polled(
+  held: Allowance | undefined,
+  report: { windows: Window[]; at: number; overage: Overage | null } | null,
+  fault: string,
+  now: number,
+): Allowance {
+  if (!report) return keptThrough(held, fault, now);
+  if (held?.ok && !held.stale && held.at > report.at) {
+    const o = report.overage;
+    return o ? { ...held, overage: { ...o, enabled: held.overage?.enabled ?? o.enabled } } : held;
+  }
+  return { ok: true, windows: report.windows, at: report.at, overage: report.overage };
+}
+
+/* ── what a card's own stream says about its account ─────────────────────────*/
+
+/** The windows a `rate_limit_event` names, as the endpoint's `limits[]` calls
+ *  them. Only the two every account has; the third the CLI tracks
+ *  (`seven_day_overage_included`) is a per-model week whose display name only
+ *  the endpoint carries, and the poll still reads it. */
+const UNIFIED = [
+  ["five_hour", "session", "session"],
+  ["seven_day", "weekly_all", "weekly"],
+] as const;
+
+/** A held reading with what a card's own stream just said laid over it, or
+ *  `null` when the event says nothing usable.
+ *
+ *  **The wall used to learn an account was full by being refused**, and that is
+ *  the whole of what this replaces. The allowance poll is three minutes apart
+ *  (`waterfall.svelte.ts::EVERY`), a busy card crosses several percent in that
+ *  time, and so the next send went out on a reading that still said 97% — and
+ *  the swap, the carry-on and the note all came after a 429 rather than
+ *  before it. Meanwhile every turn of every card was carrying the answer: the
+ *  CLI emits `rate_limit_event` whenever any window's rounded percentage, reset
+ *  or status moves, read off the response headers of the request it just made.
+ *  That is the event the CLAUDE.md asks for when something seems to need a
+ *  poll — it was arriving all along and nothing folded it. (Skein's own case
+ *  for it read a key, `rate_limit`, that the CLI has never sent.)
+ *
+ *  Shape observed 2026-10-29 off claude 2.1.312, one real turn:
+ *
+ *  ```text
+ *  rate_limit_info: { status: "rejected", resetsAt: 1793509200,
+ *    rateLimitType: "seven_day", overageStatus: "allowed", isUsingOverage: true,
+ *    unifiedWindows: { five_hour: { utilization: 0, resetsAt: …, status: "allowed" },
+ *                      seven_day: { utilization: 1, resetsAt: …, status: "rejected" } } }
+ *  ```
+ *
+ *  `utilization` is a **fraction** where the endpoint speaks percent, and
+ *  `resetsAt` is epoch **seconds**; both are converted here so nothing
+ *  downstream learns a second scale. Windows the event names replace the held
+ *  ones of the same kind; the rest of the held reading stays, less any window
+ *  that has rolled — `keptThrough`'s argument, that inside its reset a figure is
+ *  a floor and past it is nothing. The top-level `status` is deliberately not
+ *  read as a refusal: with credits behind it, it read `rejected` on a turn that
+ *  was answered.
+ *
+ *  The overage is only ever *moved*, never invented: switched off by a refusal
+ *  or a reason it cannot cover sends, switched on by the CLI saying it is
+ *  allowed or in use, and otherwise whatever the poll last said — which is also
+ *  where the amounts come from, since the event carries none. */
+export function observed(
+  held: Allowance | undefined,
+  info: unknown,
+  now: number,
+): Allowance | null {
+  if (!info || typeof info !== "object") return null;
+  const i = info as Record<string, unknown>;
+  const unified =
+    i.unifiedWindows && typeof i.unifiedWindows === "object"
+      ? (i.unifiedWindows as Record<string, unknown>)
+      : null;
+
+  const seen: Window[] = [];
+  for (const [key, kind, group] of UNIFIED) {
+    const w = unified?.[key];
+    if (!w || typeof w !== "object") continue;
+    const r = w as Record<string, unknown>;
+    const used = finiteOrNull(r.utilization);
+    const reset = finiteOrNull(r.resetsAt);
+    if (used === null || reset === null || reset <= 0) continue;
+    const status = typeof r.status === "string" ? r.status : "";
+    seen.push({
+      kind,
+      group,
+      /* Rust clamps the endpoint's percent to 0–1000; the same bounds here, so
+         a past-the-cap figure ("values above 1 occur", says the schema) reads
+         as past it rather than wrapping or vanishing. */
+      used: Math.min(1000, Math.max(0, used * 100)),
+      severity: status === "rejected" || status === "allowed_warning" ? status : "normal",
+      resetsAt: reset < 1e12 ? reset * 1000 : reset,
+      scope: null,
+      active: i.rateLimitType === key,
+    });
+  }
+
+  const before = held?.ok ? (held.overage ?? null) : null;
+  let overage = before;
+  const reason = typeof i.overageDisabledReason === "string" && i.overageDisabledReason !== "";
+  if (reason || i.overageStatus === "rejected") {
+    if (before?.enabled !== false) overage = { ...(before ?? { used: null }), enabled: false };
+  } else if (
+    i.overageStatus === "allowed" ||
+    i.overageStatus === "allowed_warning" ||
+    i.isUsingOverage === true
+  ) {
+    if (before?.enabled !== true) overage = { ...(before ?? { used: null }), enabled: true };
+  }
+
+  if (seen.length === 0 && overage === before) return null;
+
+  const kept = (held?.ok ? held.windows : []).filter(
+    (w) =>
+      !seen.some((s) => s.kind === w.kind) && !(w.resetsAt !== null && w.resetsAt <= now),
+  );
+  const active = seen.some((s) => s.active);
+  const windows = [...kept.map((w) => (active && w.active ? { ...w, active: false } : w)), ...seen];
+  return { ok: true, windows, at: now, ...(overage ? { overage } : {}) };
+}
+
+/** What is left of the usage credits, for the account's row — or `null`, which
+ *  the panel draws as nothing at all.
+ *
+ *  Lyss asked for exactly that: *"reports how many credits are available if
+ *  any, or say nothing if none."* So off, spent through, or unreadable is
+ *  silence, and the only sentence is one with something in it. A ceiling the
+ *  account does not name is said as such rather than as a number, because
+ *  credits with no limit are credits available.
+ *
+ *  Minor units of the currency, divided by the currency's own digits — which
+ *  `Intl` knows, and which matters: a hundredth of a yen is not a thing. An
+ *  unknown code falls back to two digits and the code itself. */
+export function sayCredits(overage: Overage | null | undefined): string | null {
+  if (!covers(overage)) return null;
+  const limit = finiteOrNull(overage!.limit);
+  if (limit === null) return "usage credits on — no limit set";
+  const spent = finiteOrNull(overage!.spent) ?? 0;
+  const left = limit - spent;
+  if (left <= 0) return null;
+  return `${money(left, overage!.currency)} of usage credits left`;
+}
+
+/** The line a card's transcript keeps when its turns start being billed to
+ *  usage credits — once, when it starts. `swapNote`'s rule: nothing that spends
+ *  your money on the wall's initiative may be invisible afterwards. */
+export const BILLED_NOTE =
+  "this card is now running on usage credits — the plan's allowance is spent, so its turns are billed";
+
+function money(minor: number, currency: string | null | undefined): string {
+  const code = (currency || "USD").toUpperCase();
+  try {
+    const f = new Intl.NumberFormat("en", { style: "currency", currency: code });
+    const digits = f.resolvedOptions().maximumFractionDigits ?? 2;
+    return f.format(minor / 10 ** digits);
+  } catch {
+    return `${(minor / 100).toFixed(2)} ${code}`;
+  }
 }
 
 /** Where one account stands right now.
@@ -512,9 +709,41 @@ export function standingOf(
   }
   if (!allowance.ok) return { state: "ready", label, unmeasured: allowance.fault };
 
-  const blockers = blockersFor(account, allowance.windows, bypass);
-  if (blockers.length === 0) return { state: "ready", label };
+  const credits = covers(allowance.overage);
+  const blockers = blockersFor(account, allowance.windows, bypass, credits);
+  if (blockers.length === 0) {
+    /* Ready, and whether the plan is what pays. Asked of the same rule with the
+       credits taken away, so "on credits" means exactly "would be blocked by
+       the server without them" and cannot drift from it. */
+    const billed = credits && blockersFor(account, allowance.windows, bypass, false).length > 0;
+    return billed ? { state: "ready", label, onCredits: true } : { state: "ready", label };
+  }
   return { state: "blocked", label, blockers, availableAt: availableAt(blockers) };
+}
+
+/** Whether usage credits stand behind this account's spent plan right now.
+ *
+ *  Lyss, 2026-10-29: *"try whenever overage is enabled"* — her manager gave her
+ *  credits, and the wall would not try them, because every window at 100% read
+ *  as the server's refusal (`blockersFor`). The CLI spends them by itself the
+ *  moment the plan runs out; the wall was the only thing in the way.
+ *
+ *  `enabled` is the endpoint's `is_enabled`, which the CLI's schema defines as
+ *  false *while extra usage cannot cover sends* — so a spent balance turns it
+ *  off at the source. The amounts are checked as well, because the endpoint is
+ *  polled and a figure saying the ceiling is reached is newer evidence than a
+ *  flag that has not caught up. Being wrong in the generous direction costs one
+ *  refused turn, which `markSpent` remembers: the refusal overlay carries no
+ *  overage, so a refused account is blocked whatever this says. */
+export function covers(overage: Overage | null | undefined): boolean {
+  if (!overage?.enabled) return false;
+  const limit = finiteOrNull(overage.limit);
+  const spent = finiteOrNull(overage.spent);
+  return !(limit !== null && spent !== null && spent >= limit);
+}
+
+function finiteOrNull(n: unknown): number | null {
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
 }
 
 /** Accounts that could actually take work: signed in, and switched on.
@@ -735,10 +964,13 @@ export function choose(
 
   /* Ahead of the waterfall, and only ever for an account that is genuinely
      ready — a card sticks to an account it is allowed to be on, not to one it
-     has been cut off from. */
-  if (stickTo !== null) {
-    const held = standings.find((s) => s.label === stickTo);
-    if (held?.state === "ready") return { kind: "use", label: stickTo, swapFrom: null };
+     has been cut off from. One that is ready *on credits* sticks only where
+     the waterfall has no plan room to offer instead (below): stickiness saves
+     an uncached re-read, which is worth having until it is being paid for in
+     money the next account would not charge. */
+  const held = stickTo === null ? undefined : standings.find((s) => s.label === stickTo);
+  if (held?.state === "ready" && !held.onCredits) {
+    return { kind: "use", label: stickTo!, swapFrom: null };
   }
 
   /* The lowest tier with anything ready in it. Read off the ready accounts
@@ -756,8 +988,15 @@ export function choose(
     /* And the least-spent inside it. Strictly `<`, so a tie is won by whoever
        came first in `ordered` — rank, then label — which is both the promised
        tie-break and what makes a wall with no readings at all behave exactly as
-       the strict waterfall did. */
+       the strict waterfall did.
+
+       Credits need nothing of their own here: an account billing them has a
+       window at or past its ceiling, so `spentOf` reads it at 1 or more and any
+       account in the tier with plan left goes first. The tier order is not
+       bent for them — credits on a priority-1 account are spent before a
+       priority-2 plan is touched, which is what putting it first said. */
     let pick = list[0]!;
+    let pickAt = 0;
     let least = Infinity;
     for (let i = 0; i < list.length; i++) {
       const account = list[i]!;
@@ -766,7 +1005,15 @@ export function choose(
       if (spent < least) {
         least = spent;
         pick = account;
+        pickAt = i;
       }
+    }
+    /* A card already on credits stays on them rather than moving to another
+       account's credits: the move would cost the uncached re-read and save
+       nothing. It moves only to plan room. */
+    const picked = standings[pickAt]!;
+    if (held?.state === "ready" && picked.state === "ready" && picked.onCredits) {
+      return { kind: "use", label: stickTo!, swapFrom: null };
     }
     return {
       kind: "use",

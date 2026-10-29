@@ -25,6 +25,10 @@ import {
   sayCeiling,
   sayImported,
   keptThrough,
+  covers,
+  observed,
+  polled,
+  sayCredits,
   sayStale,
   sayIdentity,
   saySeat,
@@ -1508,3 +1512,285 @@ describe("a refusal that named its reset is not probed", () => {
   });
 });
 const MINUTE_FOR_TEST = 60_000;
+
+/* ── usage credits, and the account's own stream ──────────────────────────── */
+
+/** The `rate_limit_info` one real Haiku turn carried on 2026-10-29 (claude
+ *  2.1.312), on an account whose week was spent with extra usage on. The turn
+ *  was answered. Verbatim but for the reset stamps, moved relative to T0. */
+function liveInfo(at = T0) {
+  return {
+    status: "rejected",
+    resetsAt: Math.floor((at + 72 * HOUR) / 1000),
+    rateLimitType: "seven_day",
+    overageStatus: "allowed",
+    overageResetsAt: Math.floor((at + 48 * HOUR) / 1000),
+    isUsingOverage: true,
+    overageInUse: true,
+    unifiedWindows: {
+      five_hour: { utilization: 0, resetsAt: Math.floor((at + 2 * HOUR) / 1000), status: "allowed" },
+      seven_day: {
+        utilization: 1,
+        resetsAt: Math.floor((at + 72 * HOUR) / 1000),
+        status: "rejected",
+        surpassedThreshold: 1,
+      },
+    },
+  };
+}
+
+const CREDITS = { enabled: true, used: 24.7, limit: 5000, spent: 1234, currency: "usd" };
+
+function withCredits(a: Allowance, overage: any = CREDITS): Allowance {
+  return a.ok ? { ...a, overage } : a;
+}
+
+describe("usage credits", () => {
+  test("credits that can cover a send cover it; off, or spent through, do not", () => {
+    expect(covers(CREDITS)).toBe(true);
+    expect(covers({ enabled: true, used: null })).toBe(true);
+    expect(covers({ ...CREDITS, enabled: false })).toBe(false);
+    expect(covers({ ...CREDITS, spent: 5000 })).toBe(false);
+    expect(covers(null)).toBe(false);
+    expect(covers(undefined)).toBe(false);
+  });
+
+  /* The bug Lyss reported: a week at 100% read as the server's refusal with
+     credits behind it, so the wall never tried them. */
+  test("a spent window with credits behind it is not the server's stop", () => {
+    const w = (spent(10, 100) as any).windows;
+    expect(blockersFor(acct("a"), w, false)).toHaveLength(1);
+    expect(blockersFor(acct("a"), w, false, true)).toEqual([]);
+    const rejected = [win({ kind: "weekly_all", group: "weekly", used: 40, severity: "rejected" })];
+    expect(blockersFor(acct("a"), rejected, false, true)).toEqual([]);
+  });
+
+  test("your own cap still stops it — credits are more spending, not less", () => {
+    const a = acct("a", { caps: { weekly_all: 90 } });
+    const b = blockersFor(a, (spent(10, 100) as any).windows, false, true);
+    expect(b).toHaveLength(1);
+    expect(b[0]!.by).toBe("you");
+    /* And a bypass lifts that too, leaving nothing in the way. */
+    expect(blockersFor(a, (spent(10, 100) as any).windows, true, true)).toEqual([]);
+  });
+
+  test("an account billing credits stands ready, and says so", () => {
+    expect(standingOf(acct("a"), withCredits(spent(10, 100)), false)).toEqual({
+      state: "ready",
+      label: "a",
+      onCredits: true,
+    });
+    /* Plan room is plain ready, credits or not. */
+    expect(standingOf(acct("a"), withCredits(fresh()), false)).toEqual({ state: "ready", label: "a" });
+    /* Spent through: the stop is back. */
+    expect(
+      standingOf(acct("a"), withCredits(spent(10, 100), { ...CREDITS, spent: 5000 }), false).state,
+    ).toBe("blocked");
+    expect(standingOf(acct("a"), spent(10, 100), false).state).toBe("blocked");
+  });
+
+  test("inside a tier, plan room goes before credits", () => {
+    const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
+    const c = choose(accounts, { a: withCredits(spent(10, 100)), b: spent(70, 80) });
+    expect(c).toEqual({ kind: "use", label: "b", swapFrom: null });
+  });
+
+  test("a card on credits moves to plan room when there is some", () => {
+    const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
+    const c = choose(accounts, { a: withCredits(spent(10, 100)), b: fresh() }, { stickTo: "a" });
+    expect(c).toEqual({ kind: "use", label: "b", swapFrom: "a" });
+  });
+
+  test("a card on credits stays rather than moving onto other credits", () => {
+    const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
+    const allowances = { a: withCredits(spent(10, 100)), b: withCredits(spent(10, 100)) };
+    expect(choose(accounts, allowances, { stickTo: "b" })).toEqual({
+      kind: "use",
+      label: "b",
+      swapFrom: null,
+    });
+  });
+
+  /* The tier order is not bent for credits: a first priority's credits are
+     spent before a second priority's plan, which is what putting it first
+     said. Asserted so the choice stays visible. */
+  test("credits are spent in their account's tier", () => {
+    const accounts = migrated(["company", "personal"]);
+    const allowances = { company: withCredits(spent(10, 100)), personal: fresh() };
+    expect(choose(accounts, allowances)).toEqual({ kind: "use", label: "company", swapFrom: null });
+    /* Without the credits it is the waterfall it always was. */
+    expect(choose(accounts, { company: spent(10, 100), personal: fresh() })).toEqual({
+      kind: "use",
+      label: "personal",
+      swapFrom: null,
+    });
+  });
+
+  test("the face speaks with the session while credits cover the week", () => {
+    const w = (spent(12, 100) as any).windows;
+    expect(speaksWith(acct("a"), w).ceiling?.by).toBe("server");
+    const covered = speaksWith(acct("a"), w, true);
+    expect(covered.ceiling).toBeNull();
+    expect(covered.window!.kind).toBe("session");
+  });
+
+  test("a failed ask keeps the credits with the windows", () => {
+    const kept = keptThrough(withCredits(spent(10, 100)), "offline", T0 + MIN);
+    expect(kept.ok && kept.overage).toEqual(CREDITS);
+    expect(standingOf(acct("a"), kept, false)).toMatchObject({ state: "ready", onCredits: true });
+  });
+});
+
+describe("saying the credits", () => {
+  test("an amount left, in the currency's own units", () => {
+    expect(sayCredits(CREDITS)).toBe("$37.66 of usage credits left");
+    expect(sayCredits({ ...CREDITS, currency: "JPY" })).toBe("¥3,766 of usage credits left");
+    expect(sayCredits({ ...CREDITS, currency: "EUR", limit: 10000, spent: 0 })).toBe(
+      "€100.00 of usage credits left",
+    );
+  });
+
+  test("nothing at all when there are none", () => {
+    expect(sayCredits(null)).toBeNull();
+    expect(sayCredits({ ...CREDITS, enabled: false })).toBeNull();
+    expect(sayCredits({ ...CREDITS, spent: 5000 })).toBeNull();
+    expect(sayCredits({ ...CREDITS, spent: 6000 })).toBeNull();
+  });
+
+  test("credits with no ceiling are credits available", () => {
+    expect(sayCredits({ enabled: true, used: null, limit: null, spent: 300 })).toBe(
+      "usage credits on — no limit set",
+    );
+  });
+
+  test("a currency code nothing knows still reads", () => {
+    expect(sayCredits({ ...CREDITS, currency: "ZZZ1" })).toBe("37.66 ZZZ1 of usage credits left");
+  });
+});
+
+describe("a card's own stream", () => {
+  test("the live event becomes a reading in the endpoint's terms", () => {
+    const r = observed(undefined, liveInfo(), T0)!;
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const byKind = Object.fromEntries(r.windows.map((w) => [w.kind, w]));
+    expect(byKind.session!.used).toBe(0);
+    expect(byKind.weekly_all!.used).toBe(100);
+    expect(byKind.weekly_all!.severity).toBe("rejected");
+    expect(byKind.weekly_all!.group).toBe("weekly");
+    expect(byKind.weekly_all!.resetsAt).toBe(Math.floor((T0 + 72 * HOUR) / 1000) * 1000);
+    expect(byKind.weekly_all!.active).toBe(true);
+    expect(r.overage?.enabled).toBe(true);
+    expect(r.at).toBe(T0);
+  });
+
+  /* The whole of the user's case in one line: the turn was answered, so the
+     account must read as one the wall will send to. */
+  test("the observed account stands ready on credits", () => {
+    expect(standingOf(acct("a"), observed(undefined, liveInfo(), T0)!, false)).toMatchObject({
+      state: "ready",
+      onCredits: true,
+    });
+  });
+
+  /* What makes the waterfall proactive: the poll said 97%, the stream says
+     the session crossed, and the next send is chosen against the crossing. */
+  test("a crossing the stream saw blocks before the poll catches up", () => {
+    const held = spent(97, 10);
+    const info = {
+      status: "rejected",
+      rateLimitType: "five_hour",
+      unifiedWindows: {
+        five_hour: { utilization: 1, resetsAt: Math.floor((T0 + 2 * HOUR) / 1000), status: "rejected" },
+      },
+    };
+    const r = observed(held, info, T0 + MIN)!;
+    expect(standingOf(acct("a"), held, false).state).toBe("ready");
+    expect(standingOf(acct("a"), r, false).state).toBe("blocked");
+    /* The week the event did not name is kept from the held reading. */
+    expect(r.ok && r.windows.find((w) => w.kind === "weekly_all")?.used).toBe(10);
+    const accounts = [acct("a", { rank: 0 }), acct("b", { rank: 1 })];
+    expect(choose(accounts, { a: r, b: fresh() }, { stickTo: "a" })).toEqual({
+      kind: "use",
+      label: "b",
+      swapFrom: "a",
+    });
+  });
+
+  test("credits running out are heard, and the amounts already known are kept", () => {
+    const held = withCredits(spent(10, 100));
+    const info = {
+      ...liveInfo(),
+      overageStatus: "rejected",
+      overageDisabledReason: "out_of_credits",
+      isUsingOverage: false,
+    };
+    const r = observed(held, info, T0)!;
+    expect(r.ok && r.overage).toEqual({ ...CREDITS, enabled: false });
+    expect(standingOf(acct("a"), r, false).state).toBe("blocked");
+  });
+
+  test("a window that has rolled is not kept beside the new ones", () => {
+    const held: Allowance = {
+      ok: true,
+      at: T0,
+      windows: [
+        win({ kind: "weekly_scoped", group: "weekly", used: 100, resetsAt: T0 + MIN, scope: "Fable" }),
+      ],
+    };
+    const r = observed(held, liveInfo(T0 + 2 * MIN), T0 + 2 * MIN)!;
+    expect(r.ok && r.windows.some((w) => w.kind === "weekly_scoped")).toBe(false);
+    const still = observed(held, liveInfo(T0), T0)!;
+    expect(still.ok && still.windows.some((w) => w.kind === "weekly_scoped")).toBe(true);
+  });
+
+  test("an event that says nothing usable changes nothing", () => {
+    expect(observed(fresh(), null, T0)).toBeNull();
+    expect(observed(fresh(), { status: "allowed" }, T0)).toBeNull();
+    expect(
+      observed(fresh(), { unifiedWindows: { five_hour: { utilization: "x", resetsAt: 1 } } }, T0),
+    ).toBeNull();
+    /* Credits already on and said again is no change either. */
+    expect(observed(withCredits(fresh()), { overageStatus: "allowed" }, T0)).toBeNull();
+  });
+
+  test("a figure past the cap reads as past it, within the endpoint's bounds", () => {
+    const at = T0 / 1000 + 3600;
+    const r = observed(undefined, { unifiedWindows: { five_hour: { utilization: 1.3, resetsAt: at } } }, T0)!;
+    expect(r.ok && r.windows[0]!.used).toBeCloseTo(130);
+    const huge = observed(undefined, { unifiedWindows: { five_hour: { utilization: 99, resetsAt: at } } }, T0)!;
+    expect(huge.ok && huge.windows[0]!.used).toBe(1000);
+  });
+});
+
+describe("a poll's answer against what the stream said", () => {
+  const report = (at: number, overage: any = null) => ({
+    windows: (spent(97, 10) as any).windows as Window[],
+    at,
+    overage,
+  });
+
+  test("an older answer does not undo a newer reading", () => {
+    const seen = observed(spent(97, 10), liveInfo(), T0 + 2 * MIN)!;
+    expect(polled(seen, report(T0 + MIN), "x", T0 + 3 * MIN)).toBe(seen);
+  });
+
+  test("but brings the amounts, which only it carries", () => {
+    const seen = observed(spent(97, 10), liveInfo(), T0 + 2 * MIN)!;
+    const r = polled(seen, report(T0 + MIN, { ...CREDITS, enabled: false }), "x", T0 + 3 * MIN);
+    expect(r.ok && r.overage).toEqual({ ...CREDITS, enabled: true });
+  });
+
+  test("a newer answer wins, and so does any answer over a stale reading", () => {
+    const seen = observed(spent(97, 10), liveInfo(), T0 + 2 * MIN)!;
+    const newer = polled(seen, report(T0 + 3 * MIN, CREDITS), "x", T0 + 3 * MIN);
+    expect(newer).toEqual({ ok: true, windows: report(0).windows, at: T0 + 3 * MIN, overage: CREDITS });
+    const stale = keptThrough(seen, "offline", T0 + 3 * MIN);
+    expect(polled(stale, report(T0 + MIN), "x", T0 + 3 * MIN)).toMatchObject({ at: T0 + MIN });
+  });
+
+  test("no answer keeps what was held, as before", () => {
+    expect(polled(spent(40), null, "offline", T0 + MIN)).toMatchObject({ ok: true, stale: "offline" });
+    expect(polled(undefined, null, "offline", T0)).toEqual({ ok: false, fault: "offline" });
+  });
+});

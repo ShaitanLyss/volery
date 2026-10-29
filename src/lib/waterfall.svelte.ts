@@ -28,7 +28,8 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   type AfarSeat,
   choose,
-  keptThrough,
+  observed,
+  polled,
   probing,
   refuse,
   several,
@@ -262,13 +263,12 @@ export class Waterfall {
       const now = Date.now();
       const next: Record<string, Allowance> = {};
       for (const a of answers) {
-        next[a.label] = a.report
-          ? { ok: true, windows: a.report.windows, at: a.report.at }
-          : keptThrough(
-              this.allowances[a.label],
-              a.fault ?? "the allowance could not be read",
-              now,
-            );
+        next[a.label] = polled(
+          this.allowances[a.label],
+          a.report,
+          a.fault ?? "the allowance could not be read",
+          now,
+        );
       }
       this.allowances = next;
       missed = answers.some((a) => !a.report);
@@ -283,6 +283,22 @@ export class Waterfall {
       this.#busy = false;
       this.#retime(missed);
     }
+  }
+
+  /** What a card's own stream just said about the account it is on — a
+   *  `rate_limit_event`'s `rate_limit_info` — laid over the held reading.
+   *
+   *  This is what makes the waterfall proactive rather than three minutes
+   *  behind: the poll stays, as the reading for accounts nothing is running on,
+   *  but an account in use is now read off every request made against it, free.
+   *  `accounts.ts::observed` has the shape and the argument. An account not in
+   *  the registry is not read — a card on credits or on no managed account says
+   *  nothing about any row here. */
+  observe(label: string, info: unknown) {
+    if (this.#standIn) return;
+    if (!this.list.some((a) => a.label === label)) return;
+    const next = observed(this.allowances[label], info, Date.now());
+    if (next) this.allowances = { ...this.allowances, [label]: next };
   }
 
   /** Accounts the server has refused, until when, and how many times running.

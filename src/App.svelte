@@ -3285,7 +3285,9 @@
             ? sayBlocked(standing.blockers)
             : standing.state === "ready" && standing.unmeasured
               ? standing.unmeasured
-              : "ready",
+              : standing.state === "ready" && standing.onCredits
+                ? "ready · on credits"
+                : "ready",
       };
     });
   });

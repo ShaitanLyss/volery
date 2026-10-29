@@ -173,11 +173,22 @@ pub struct Window {
 /// Usage past the plan's allowance, when the account has it turned on. Carried
 /// because without it a window pinned at 100% is a lie in the other direction:
 /// work is still going through, it is simply being billed.
+///
+/// `enabled` is the CLI's own reading of `is_enabled`, which its schema defines
+/// as *can extra usage cover a send right now* — false once the credits are
+/// gone, not merely when the feature is off. That is what lets the waterfall
+/// treat it as room (`accounts.ts::covers`). The amounts are minor units of
+/// `currency` (cents for USD), per the same schema (claude 2.1.312).
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Overage {
     enabled: bool,
     used: Option<f64>,
+    /// The period's ceiling, or `None` where the account names none.
+    limit: Option<f64>,
+    /// What has been spent against it this period.
+    spent: Option<f64>,
+    currency: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -431,6 +442,42 @@ fn overage(doc: &serde_json::Value) -> Option<Overage> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         used: percent(x, "utilization"),
+        limit: amount(x, "monthly_limit"),
+        spent: amount(x, "used_credits"),
+        currency: text(x, "currency").map(|c| c.chars().take(8).collect()),
+    })
+}
+
+/// A sum of money off the wire, in minor units: finite and not negative, or
+/// nothing. Not `percent`, whose 1000 ceiling is a percentage's and would cap a
+/// ten-dollar limit.
+fn amount(v: &serde_json::Value, key: &str) -> Option<f64> {
+    v.get(key)
+        .and_then(|x| x.as_f64())
+        .filter(|n| n.is_finite() && *n >= 0.0)
+}
+
+/// What is left of the usage credits, as an amount a person reads — or nothing
+/// where the account names no ceiling, has not said what it spent, or has none
+/// left. The front end's `accounts.ts::sayCredits` is the panel's version and
+/// says the same figure.
+fn credits_left(o: &Overage) -> Option<String> {
+    let left = o.limit? - o.spent?;
+    if left <= 0.0 {
+        return None;
+    }
+    let code = o.currency.as_deref().unwrap_or("USD").to_ascii_uppercase();
+    /* Minor units, so the divisor is the currency's own: a cent is a hundredth
+       of a dollar and a yen has no fraction at all. The list is ISO 4217's
+       zero-decimal currencies; anything else is the usual two. */
+    const WHOLE: [&str; 16] = [
+        "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX",
+        "VND", "VUV", "XAF", "XOF",
+    ];
+    Some(if WHOLE.contains(&code.as_str()) {
+        format!("{left:.0} {code}")
+    } else {
+        format!("{:.2} {code}", left / 100.0)
     })
 }
 
@@ -793,7 +840,13 @@ fn afar_report(v: &serde_json::Value, host: &str, age_ms: u64, now: i64) -> Opti
     let age = i64::try_from(age_ms).ok()?;
     Some(Report {
         windows,
-        overage: r.overage.map(|o| Overage { enabled: o.enabled, used: o.used.filter(|u| u.is_finite()) }),
+        overage: r.overage.map(|o| Overage {
+            enabled: o.enabled,
+            used: o.used.filter(|u| u.is_finite()),
+            limit: o.limit.filter(|n| n.is_finite() && *n >= 0.0),
+            spent: o.spent.filter(|n| n.is_finite() && *n >= 0.0),
+            currency: o.currency.as_deref().map(|c| word(c).chars().take(8).collect()),
+        }),
         at: now.saturating_sub(age),
         source: format!("read on {}", word(host)),
         plan: r.plan.as_deref().map(word),
@@ -1477,9 +1530,12 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
                the percentage would report to the user that it had been cut off
                when in fact the work was going through and being charged for. */
             out.push_str(&format!(
-                "- past-plan usage is enabled{}, so a window at 100% does not stop the \
+                "- past-plan usage is enabled{}{}, so a window at 100% does not stop the \
                  work — it bills it. Say so if you mention being near a limit.\n",
-                o.used.map(|u| format!(" and at {u:.0}%")).unwrap_or_default()
+                o.used.map(|u| format!(" and at {u:.0}%")).unwrap_or_default(),
+                credits_left(o)
+                    .map(|left| format!(" ({left} of usage credits left this period)"))
+                    .unwrap_or_default()
             ));
         }
     }
@@ -2008,5 +2064,50 @@ mod tests {
 
         let none: serde_json::Value = serde_json::from_str(r#"{"extra_usage":null}"#).unwrap();
         assert!(overage(&none).is_none());
+    }
+
+    /* The amounts are what the panel and an agent are told is left, so a wrong
+       divisor is a wrong figure about money. Shape from claude 2.1.312's own
+       schema for the endpoint: minor units of `currency`. */
+    #[test]
+    fn credits_left_are_read_in_minor_units() {
+        let doc: serde_json::Value = serde_json::from_str(
+            r#"{"extra_usage":{"is_enabled":true,"monthly_limit":5000,"used_credits":1234,"utilization":24.7,"currency":"usd"}}"#,
+        )
+        .unwrap();
+        let o = overage(&doc).unwrap();
+        assert_eq!(o.limit, Some(5000.0));
+        assert_eq!(o.spent, Some(1234.0));
+        assert_eq!(credits_left(&o).as_deref(), Some("37.66 USD"));
+
+        let yen = Overage { currency: Some("JPY".into()), ..o.clone() };
+        assert_eq!(credits_left(&yen).as_deref(), Some("3766 JPY"));
+
+        /* Nothing to say: spent through, or no ceiling named. */
+        let gone = Overage { spent: Some(5000.0), ..o.clone() };
+        assert!(credits_left(&gone).is_none());
+        let open = Overage { limit: None, ..o.clone() };
+        assert!(credits_left(&open).is_none());
+
+        /* A negative or non-numeric amount is no amount. */
+        let bad: serde_json::Value = serde_json::from_str(
+            r#"{"extra_usage":{"is_enabled":true,"monthly_limit":-5,"used_credits":"x"}}"#,
+        )
+        .unwrap();
+        let b = overage(&bad).unwrap();
+        assert!(b.limit.is_none() && b.spent.is_none());
+    }
+
+    /* An older wall's reading carries no amounts, and `afar_report` reads every
+       peer's through this type — a missing field must be `None`, not a refusal
+       of the whole reading. */
+    #[test]
+    fn an_overage_without_amounts_still_deserializes() {
+        let o: Overage =
+            serde_json::from_value(serde_json::json!({"enabled": true, "used": null})).unwrap();
+        assert!(o.enabled && o.limit.is_none() && o.spent.is_none() && o.currency.is_none());
+        let back = serde_json::to_value(&o).unwrap();
+        assert_eq!(back["enabled"], true);
+        assert!(back.get("limit").is_some(), "camelCase keys, read by limits.ts: {back}");
     }
 }

@@ -28,6 +28,7 @@
     seatsToSign,
     REMOTE_SIGNIN_ADVICE,
     sayStale,
+    sayCredits,
     saySynced,
     sayTier,
     sayUnmeasured,
@@ -264,6 +265,12 @@
   function staleOf(label: string): string | null {
     const a = waterfall.allowances[label];
     return a?.ok && a.stale ? sayStale(a.at, a.stale, now) : null;
+  }
+
+  /** What is left of this account's usage credits, or null to say nothing. */
+  function creditsOf(label: string): string | null {
+    const a = waterfall.allowances[label];
+    return a?.ok ? sayCredits(a.overage) : null;
   }
 
   function usedOf(label: string, kind: string): number | null {
@@ -594,6 +601,11 @@
                            are in force, which is not a detail. -->
                       <span class="tag unmeasured">ready · unmeasured</span>
                       <span class="dim">{sayUnmeasured(standing.unmeasured)}</span>
+                    {:else if standing.onCredits}
+                      <!-- The plan is spent and the next turn here is billed. Still
+                           the ready tag, since it will take work — the words are
+                           what say it costs. -->
+                      <span class="tag ready">ready · on credits</span>
                     {:else}
                       <span class="tag ready">ready</span>
                     {/if}
@@ -615,6 +627,12 @@
                          difference from `unmeasured` above, and a second alarm
                          beside a working one is an alarm nobody reads. -->
                     <span class="dim">{staleOf(account.label)}</span>
+                  {/if}
+
+                  {#if creditsOf(account.label)}
+                    <!-- Only ever something with an amount in it: no credits, or
+                         none left, is no line at all (`sayCredits`). -->
+                    <span class="dim">{creditsOf(account.label)}</span>
                   {/if}
 
                   <span class="grow"></span>
