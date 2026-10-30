@@ -53,6 +53,7 @@ mod limits;
 mod load;
 mod machine;
 mod screen;
+mod cast;
 mod mcphost;
 mod open;
 mod perf;

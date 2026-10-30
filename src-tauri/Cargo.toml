@@ -239,6 +239,21 @@ windows = { version = "0.61", features = [
     # would pay the very start-up it stands in for. `LibraryLoader` is only for
     # the module handle its window class is registered against. See `splash.rs`.
     "Win32_Graphics_Gdi",
+    # Screens on the wall (`cast/`): Desktop Duplication hands back a D3D11
+    # texture on the adapter that owns the output, a D3D11 video processor
+    # turns it into NV12 at the size a tile wants, and Media Foundation's
+    # hardware H.264 encoder takes that texture without it ever reaching the
+    # CPU. MF's attributes are PROPVARIANTs, hence the last two. Added in one go
+    # with `docs/SCREENS.md` so the lanes building it never edit this list at
+    # the same time.
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_HiDpi",
     # `DWMWA_TRANSITIONS_FORCEDISABLED` on a browser window being parked out of
     # a minimise, so the restore it has to go through is not animated onto the
     # desktop first. See `browser::park_minimised`.
