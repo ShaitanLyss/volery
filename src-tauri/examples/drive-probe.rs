@@ -78,6 +78,11 @@
 //!                                                        # Moves windows, no input at all
 //! cargo run --example drive-probe -- drive <lab>         # `cast::drive` itself, end to end: clicks,
 //!                                                        # keys, wheel, drag. Never Escape — see STAGE
+//! cargo run --example drive-probe -- app <lab>           # the local drive in the real app, through a
+//!                                                        # screen tile, on a lab built with LOCAL_DRIVE
+//!                                                        # on; waits for a person's Escape hold at the end
+//! cargo run --example drive-probe -- exit <lab>          # getting out of a local drive: two clicks on
+//!                                                        # the lab, nothing forwarded, then a person's hold
 //! cargo run --example drive-probe -- hits <lab>          # what the tile's point hit-tests as while a
 //!                                                        # drive is on; no input at all
 //! ```
@@ -943,6 +948,8 @@ setInterval(show,50);show();
             "run" => run(lab, &dir, &args[2..]),
             "visible" => visible(lab, &dir),
             "drive" => drive(lab, &dir),
+            "app" => app(lab, name, &dir),
+            "exit" => exit_check(lab, name),
             "hits" => hits(lab, &dir, args.get(2).and_then(|v| v.parse().ok()).unwrap_or(4000)),
             _ => eprintln!("unknown mode {mode}"),
         }
@@ -1726,6 +1733,416 @@ setInterval(show,50);show();
         drop(guard);
         thread::sleep(Duration::from_millis(1500));
         println!("{}", read("restored", t1));
+    }
+
+    /// The lab's control surface: `%APPDATA%\dev.skein.lab.<name>\control.json`.
+    struct Ctl {
+        base: String,
+        token: String,
+    }
+
+    impl Ctl {
+        fn open(lab_name: &str) -> Ctl {
+            let path = PathBuf::from(std::env::var("APPDATA").unwrap())
+                .join(format!("dev.skein.lab.{lab_name}"))
+                .join("control.json");
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("control.json")).unwrap();
+            Ctl {
+                base: format!("http://127.0.0.1:{}", v["port"].as_u64().expect("port")),
+                token: v["token"].as_str().expect("token").to_string(),
+            }
+        }
+
+        fn op(&self, body: serde_json::Value) -> serde_json::Value {
+            let r = ureq::post(&format!("{}/op", self.base))
+                .set("X-Skein-Token", &self.token)
+                .send_json(body.clone());
+            match r {
+                Ok(r) => r.into_json().unwrap_or(serde_json::Value::Null),
+                Err(e) => panic!("control op {body} failed: {e}"),
+            }
+        }
+    }
+
+    /// The local drive in the real app, end to end: a screen tile showing this
+    /// laptop on a lab built with `LOCAL_DRIVE` on, real clicks on the tile,
+    /// real keys to whatever has the foreground — every one of them checked
+    /// against the test's own windows first (see `STAGE`). Never Escape: the
+    /// hold is a person's, and the run waits for it at the end.
+    fn app(lab: HWND, lab_name: &str, dir: &Path) {
+        let found = exstyle(lab);
+        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
+        if clean != found {
+            println!("the lab came in wearing ex=0x{found:08x}; scrubbed to 0x{clean:08x}");
+            set_exstyle(lab, clean);
+        }
+        let base_ex = exstyle(lab);
+        let mut guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
+        let ctl = Ctl::open(lab_name);
+
+        /* The tile: a screen widget showing this machine's main monitor. */
+        let added = ctl.op(serde_json::json!({ "op": "widget.add", "kind": "screen", "x": 260, "y": 220 }));
+        let id = added["id"].as_str().expect("a screen widget").to_string();
+        ctl.op(serde_json::json!({ "op": "widget.update", "id": id, "w": 720, "h": 450 }));
+        let mut fit = serde_json::Value::Null;
+        for _ in 0..80 {
+            thread::sleep(Duration::from_millis(250));
+            fit = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+            if fit["showing"]["state"] == "live" && fit["live"] == true {
+                break;
+            }
+        }
+        if fit["showing"]["state"] != "live" || fit["live"] != true {
+            panic!("the tile never went live and drivable: {fit}");
+        }
+
+        /* The test window, under the lab: raised to the top of the ordinary
+           windows, then the lab put back above it. */
+        let (ex, ey, ew, eh) = (420, 360, 800, 560);
+        let (edge_child, edge) = launch_edge(dir, ex, ey, ew, eh);
+        guard.edge = Some((edge_child, edge));
+        place(edge, None, ex, ey, ew, eh);
+        thread::sleep(Duration::from_millis(1200));
+        stage(&[lab, edge]);
+        raise_under_lab(edge);
+        zorder(lab, HWND_TOPMOST);
+        zorder(lab, HWND_NOTOPMOST);
+        thread::sleep(Duration::from_millis(300));
+        if !above(lab, edge) {
+            panic!("could not put the lab above the test window");
+        }
+        fit = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+
+        /* Desktop pixel → the screen pixel on the tile that shows it. */
+        let web = children(lab).into_iter().find(|&c| class_of(c) == "WRY_WEBVIEW").map(rect_of).expect("the lab's webview");
+        let dpr = fit["dpr"].as_f64().unwrap();
+        let st = &fit["stage"];
+        let (sx, sy, sw, sh) = (st["x"].as_f64().unwrap(), st["y"].as_f64().unwrap(), st["w"].as_f64().unwrap(), st["h"].as_f64().unwrap());
+        let (mw, mh) = unsafe { (GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN) as f64, GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN) as f64) };
+        let k = (sw / mw).min(sh / mh);
+        let (fw, fh) = (mw * k, mh * k);
+        let (fx, fy) = (sx + (sw - fw) / 2.0, sy + (sh - fh) / 2.0);
+        let css_to_screen = |x: f64, y: f64| (web.left + (x * dpr).round() as i32, web.top + (y * dpr).round() as i32);
+        let tile_of = |p: (i32, i32)| css_to_screen(fx + p.0 as f64 / mw * fw, fy + p.1 as f64 / mh * fh);
+        println!(
+            "\ntile {id}: stage css ({sx:.0},{sy:.0}) {sw:.0}x{sh:.0}, picture {fw:.0}x{fh:.0}, dpr {dpr}; webview at ({},{})",
+            web.left, web.top
+        );
+
+        let (ox, oy, scale) = page_origin(edge);
+        let at = |cx: f64, cy: f64| (ox + (cx * scale) as i32, oy + (cy * scale) as i32);
+        let (button, field) = (at(120.0, 60.0), at(180.0, 140.0));
+        let centre = css_to_screen(sx + sw / 2.0, sy + sh / 2.0);
+        let driven = |ctl: &Ctl| -> serde_json::Value {
+            ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }))["showing"]["driven"].clone()
+        };
+
+        /* 1. The first click on the tile takes focus, and the drive comes on. */
+        aim_direct(centre);
+        click_at(centre.0, centre.1);
+        thread::sleep(Duration::from_millis(700));
+        let lex = exstyle(lab);
+        println!(
+            "\n1. focus click: host says driven={}; lab TOPMOST {}, TRANSPARENT {}, NOACTIVATE {}",
+            driven(&ctl),
+            lex & WS_EX_TOPMOST.0 != 0,
+            lex & WS_EX_TRANSPARENT.0 != 0,
+            lex & 0x0800_0000 != 0
+        );
+        if lex & WS_EX_TOPMOST.0 == 0 {
+            panic!("the drive did not come on; stopping before any click into the picture");
+        }
+        bail_on_escape!();
+
+        /* 2. Clicks into the picture, at the test button. */
+        let tb = tile_of(button);
+        let p0 = settle_page(edge);
+        let mut hits = String::new();
+        for _ in 0..10 {
+            aim_direct(tb);
+            aim_through(lab, button);
+            let c0 = page_of(edge).unwrap_or_default().c;
+            click_at(tb.0, tb.1);
+            thread::sleep(Duration::from_millis(350));
+            hits.push(if page_of(edge).unwrap_or_default().c > c0 { 'x' } else { '.' });
+            thread::sleep(Duration::from_millis(350));
+        }
+        thread::sleep(Duration::from_millis(400));
+        let p1 = settle_page(edge);
+        println!(
+            "2. 10 clicks into the picture at the button {tb:?} → desktop {button:?}: {hits} — page counted {}; edge foreground {}, blurred {}, lab above {}",
+            p1.c - p0.c,
+            unsafe { GetForegroundWindow() } == edge,
+            p1.b - p0.b,
+            above(lab, edge)
+        );
+        let (r, v) = frame_rate(edge);
+        println!("   the page while driven: {r:.1} rAF/s vis={v}");
+        bail_on_escape!();
+
+        /* 3. Keys, as a keyboard reaches the foreground. */
+        let tf = tile_of(field);
+        aim_direct(tf);
+        aim_through(lab, field);
+        click_at(tf.0, tf.1);
+        thread::sleep(Duration::from_millis(400));
+        aim_keys(lab);
+        type_scans(&[SCAN_H, SCAN_E, SCAN_L, SCAN_L, SCAN_O, SCAN_ENTER]);
+        let p = settle_page(edge);
+        println!("3. keys after a click on the field: value {:?}, Enter saw {:?}", p.v, p.e);
+        bail_on_escape!();
+
+        /* 4. The wheel over the picture. */
+        let settled = || {
+            thread::sleep(Duration::from_millis(700));
+            page_of(edge).unwrap_or_default().y
+        };
+        aim_direct(tb);
+        aim_through(lab, button);
+        let y0 = settled();
+        send(&[move_to(tb.0, tb.1), mouse(MOUSEEVENTF_WHEEL, 0, 0, -120)]);
+        let y1 = settled();
+        aim_direct(tb);
+        send(&[move_to(tb.0, tb.1), mouse(MOUSEEVENTF_WHEEL, 0, 0, 120)]);
+        let y2 = settled();
+        println!("4. wheel over the picture: a notch down {}px, a notch up {}px", y1 - y0, y2 - y1);
+        bail_on_escape!();
+
+        /* 5. A short drag across the field. */
+        let (a, b) = (at(30.0, 140.0), at(230.0, 140.0));
+        let (ta, tb2) = (tile_of(a), tile_of(b));
+        aim_direct(ta);
+        aim_direct(tb2);
+        aim_through(lab, a);
+        aim_through(lab, b);
+        send(&[move_to(ta.0, ta.1), mouse(MOUSEEVENTF_LEFTDOWN, 0, 0, 0)]);
+        for i in 1..=10 {
+            thread::sleep(Duration::from_millis(15));
+            let x = ta.0 + (tb2.0 - ta.0) * i / 10;
+            send(&[move_to(x, ta.1)]);
+        }
+        send(&[mouse(MOUSEEVENTF_LEFTUP, 0, 0, 0)]);
+        thread::sleep(Duration::from_millis(600));
+        println!("5. drag across the field in the picture: selection {}", settle_page(edge).s);
+        bail_on_escape!();
+
+        /* 6. A click outside the tile ends the drive. */
+        // well outside the picture (a tile can hang off the wall's edge, which is
+        // how a first cut clicked *inside* it and forwarded a press to WhatsApp)
+        let wcss = (web.right - web.left) as f64 / dpr;
+        let (ox6, oy6) = (sx + sw + 90.0, sy + sh / 2.0);
+        if ox6 > wcss - 20.0 {
+            panic!("no empty wall to the right of the tile to click on");
+        }
+        let outside = css_to_screen(ox6, oy6);
+        aim_direct(outside);
+        click_at(outside.0, outside.1);
+        thread::sleep(Duration::from_millis(800));
+        let lex = exstyle(lab);
+        let fit6 = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+        println!(
+            "6. click outside the tile at {outside:?}: host says driven={}, stage focused {}; lab TOPMOST {}, TRANSPARENT {}, NOACTIVATE {}",
+            fit6["showing"]["driven"],
+            fit6["stageFocused"],
+            lex & WS_EX_TOPMOST.0 != 0,
+            lex & WS_EX_TRANSPARENT.0 != 0,
+            lex & 0x0800_0000 != 0
+        );
+        // the lab takes its own clicks now: a press on the lab where the test
+        // window is underneath, but off the tile, must not reach the page
+        let over_edge_off_tile = {
+            let cand = [(ex + 40, ey + eh - 40), (ex + ew - 40, ey + eh - 40), (ex + 40, ey + 40)];
+            cand.into_iter().find(|&p| {
+                let (cx, cy) = (((p.0 - web.left) as f64) / dpr, ((p.1 - web.top) as f64) / dpr);
+                !(cx >= sx - 10.0 && cx <= sx + sw + 10.0 && cy >= sy - 40.0 && cy <= sy + sh + 10.0)
+            })
+        };
+        let c0 = settle_page(edge).c;
+        if let Some(q) = over_edge_off_tile {
+            aim_direct(q);
+            click_at(q.0, q.1);
+            thread::sleep(Duration::from_millis(500));
+        }
+        aim_direct(tb);
+        let still = root_at(tb.0, tb.1) == lab;
+        let c1 = settle_page(edge).c;
+        println!(
+            "   after it: a press on the lab over the test window reached the page: {}; the tile's point hit-tests as the lab: {still}",
+            c1 != c0
+        );
+        bail_on_escape!();
+
+        /* 7. Set up for the Escape hold: drive on again, the test field in front. */
+        aim_direct(centre);
+        click_at(centre.0, centre.1);
+        thread::sleep(Duration::from_millis(700));
+        aim_direct(tf);
+        aim_through(lab, field);
+        click_at(tf.0, tf.1);
+        thread::sleep(Duration::from_millis(500));
+        let lex = exstyle(lab);
+        println!(
+            "7. re-armed: driven={}, lab TOPMOST {}, test field in front {}",
+            driven(&ctl),
+            lex & WS_EX_TOPMOST.0 != 0,
+            unsafe { GetForegroundWindow() } == edge
+        );
+        let k0 = text_of(edge).split("|k=").nth(1).unwrap_or("").to_string();
+        println!("READY_FOR_ESCAPE");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let t = Instant::now();
+        let mut off = false;
+        while t.elapsed() < Duration::from_secs(240) {
+            thread::sleep(Duration::from_millis(200));
+            if exstyle(lab) & WS_EX_TOPMOST.0 == 0 {
+                off = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(600));
+        let lex = exstyle(lab);
+        let k1 = text_of(edge).split("|k=").nth(1).unwrap_or("").to_string();
+        let fit8 = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+        println!(
+            "8. Escape held: drive let go {off} after {:.1} s; host says driven={}, stage focused {}; lab TOPMOST {}, TRANSPARENT {}, foreground is the lab {}; the page's last key before {k0:?}, after {k1:?}",
+            t.elapsed().as_secs_f64(),
+            fit8["showing"]["driven"],
+            fit8["stageFocused"],
+            lex & WS_EX_TOPMOST.0 != 0,
+            lex & WS_EX_TRANSPARENT.0 != 0,
+            unsafe { GetForegroundWindow() } == lab
+        );
+        let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
+        drop(guard);
+    }
+
+    /// Getting out of a local drive, in the real app, with nothing forwarded:
+    /// one click to focus the tile (refused unless the tile is unfocused, so it
+    /// can only focus), one on the empty wall beside it (refused unless it is
+    /// well outside the picture), then a person's Escape hold. The lab is made
+    /// the foreground first, so a tap that is replayed lands on the lab.
+    fn exit_check(lab: HWND, lab_name: &str) {
+        let found = exstyle(lab);
+        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
+        if clean != found {
+            println!("the lab came in wearing ex=0x{found:08x}; scrubbed to 0x{clean:08x}");
+            set_exstyle(lab, clean);
+        }
+        let base_ex = exstyle(lab);
+        let guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
+        let ctl = Ctl::open(lab_name);
+        stage(&[lab]);
+
+        let added = ctl.op(serde_json::json!({ "op": "widget.add", "kind": "screen", "x": 260, "y": 220 }));
+        let id = added["id"].as_str().expect("a screen widget").to_string();
+        ctl.op(serde_json::json!({ "op": "widget.update", "id": id, "w": 720, "h": 450 }));
+        let mut fit = serde_json::Value::Null;
+        for _ in 0..80 {
+            thread::sleep(Duration::from_millis(250));
+            fit = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+            if fit["showing"]["state"] == "live" && fit["live"] == true {
+                break;
+            }
+        }
+        let read = |ctl: &Ctl| ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+        let report = |label: &str, ctl: &Ctl| {
+            let f = read(ctl);
+            let ex = exstyle(lab);
+            println!(
+                "{label}: host says driven={}, stage focused {}, window focused {}; lab TOPMOST {}, TRANSPARENT {}, NOACTIVATE {}; foreground is the lab {}",
+                f["showing"]["driven"],
+                f["stageFocused"],
+                f["windowFocused"],
+                ex & WS_EX_TOPMOST.0 != 0,
+                ex & WS_EX_TRANSPARENT.0 != 0,
+                ex & 0x0800_0000 != 0,
+                unsafe { GetForegroundWindow() } == lab
+            );
+            f
+        };
+        if fit["live"] != true {
+            panic!("the tile never went live and drivable: {fit}");
+        }
+
+        let web = children(lab).into_iter().find(|&c| class_of(c) == "WRY_WEBVIEW").map(rect_of).expect("the lab's webview");
+        let dpr = fit["dpr"].as_f64().unwrap();
+        let st = &fit["stage"];
+        let (sx, sy, sw, sh) = (st["x"].as_f64().unwrap(), st["y"].as_f64().unwrap(), st["w"].as_f64().unwrap(), st["h"].as_f64().unwrap());
+        let css_to_screen = |x: f64, y: f64| (web.left + (x * dpr).round() as i32, web.top + (y * dpr).round() as i32);
+        let wcss = (web.right - web.left) as f64 / dpr;
+        let inside = |x: f64, y: f64| x >= sx - 20.0 && x <= sx + sw + 20.0 && y >= sy - 40.0 && y <= sy + sh + 20.0;
+
+        // the lab in front, so a replayed tap can only reach the lab
+        unsafe {
+            let front = GetWindowThreadProcessId(GetForegroundWindow(), None);
+            let me = GetCurrentThreadId();
+            let _ = AttachThreadInput(me, front, true);
+            let _ = SetForegroundWindow(lab);
+            let _ = AttachThreadInput(me, front, false);
+        }
+        thread::sleep(Duration::from_millis(400));
+        report("\n0. before", &ctl);
+
+        /* 1. Focus the tile: only while it is unfocused, so the press cannot be forwarded. */
+        let cx = (sx + sw / 2.0).clamp(30.0, wcss - 30.0);
+        let centre = css_to_screen(cx, sy + sh / 2.0);
+        if read(&ctl)["stageFocused"] == true {
+            panic!("the tile already has focus; a click on it would be forwarded to the desktop");
+        }
+        // a first click can be spent on the wall (selecting the widget); try
+        // again, only ever while the tile is still unfocused
+        for attempt in 1..=3 {
+            if read(&ctl)["stageFocused"] == true {
+                break;
+            }
+            aim_direct(centre);
+            click_at(centre.0, centre.1);
+            thread::sleep(Duration::from_millis(800));
+            report(&format!("1. focus click on the tile ({attempt})"), &ctl);
+        }
+        if read(&ctl)["showing"]["driven"] != true {
+            panic!("the drive never came on; nothing to get out of");
+        }
+
+        /* 2. The empty wall beside the tile. */
+        let (ox, oy) = (sx + sw + 90.0, sy + sh / 2.0);
+        if ox > wcss - 20.0 || inside(ox, oy) {
+            panic!("no empty wall to the right of the tile to click on (x {ox:.0} of {wcss:.0})");
+        }
+        let outside = css_to_screen(ox, oy);
+        aim_direct(outside);
+        click_at(outside.0, outside.1);
+        thread::sleep(Duration::from_millis(900));
+        let f = report("2. click on the wall beside it", &ctl);
+
+        /* 3. A person's Escape hold. Re-arm first if the click above ended the drive. */
+        if f["showing"]["driven"] != true {
+            if read(&ctl)["stageFocused"] == true {
+                panic!("the tile has focus without driving; not clicking it");
+            }
+            aim_direct(centre);
+            click_at(centre.0, centre.1);
+            thread::sleep(Duration::from_millis(800));
+            report("   re-armed for the hold", &ctl);
+        }
+        println!("READY_FOR_ESCAPE");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let t = Instant::now();
+        let mut off = false;
+        while t.elapsed() < Duration::from_secs(240) {
+            thread::sleep(Duration::from_millis(150));
+            if exstyle(lab) & WS_EX_TOPMOST.0 == 0 {
+                off = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(800));
+        println!("3. the hold let go: {off} after {:.1} s", t.elapsed().as_secs_f64());
+        report("   then", &ctl);
+        let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
+        drop(guard);
     }
 
     /// The window under a point, skipping the lab: walk the z-order below it
