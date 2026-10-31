@@ -78,9 +78,9 @@
 //!                                                        # Moves windows, no input at all
 //! cargo run --example drive-probe -- drive <lab>         # `cast::drive` itself, end to end: clicks,
 //!                                                        # keys, wheel, drag. Never Escape — see STAGE
-//! cargo run --example drive-probe -- app <lab>           # the local drive in the real app, through a
+//! cargo run --example drive-probe -- app <lab> [hold]    # the local drive in the real app, through a
 //!                                                        # screen tile, on a lab built with LOCAL_DRIVE
-//!                                                        # on; waits for a person's Escape hold at the end
+//!                                                        # on; `hold` waits for a person's Escape at the end
 //! cargo run --example drive-probe -- exit <lab>          # getting out of a local drive: two clicks on
 //!                                                        # the lab, nothing forwarded, then a person's hold
 //! cargo run --example drive-probe -- hits <lab>          # what the tile's point hit-tests as while a
@@ -948,7 +948,7 @@ setInterval(show,50);show();
             "run" => run(lab, &dir, &args[2..]),
             "visible" => visible(lab, &dir),
             "drive" => drive(lab, &dir),
-            "app" => app(lab, name, &dir),
+            "app" => app(lab, name, &dir, args.get(2).map(String::as_str) == Some("hold")),
             "exit" => exit_check(lab, name),
             "hits" => hits(lab, &dir, args.get(2).and_then(|v| v.parse().ok()).unwrap_or(4000)),
             _ => eprintln!("unknown mode {mode}"),
@@ -1769,7 +1769,7 @@ setInterval(show,50);show();
     /// real keys to whatever has the foreground — every one of them checked
     /// against the test's own windows first (see `STAGE`). Never Escape: the
     /// hold is a person's, and the run waits for it at the end.
-    fn app(lab: HWND, lab_name: &str, dir: &Path) {
+    fn app(lab: HWND, lab_name: &str, dir: &Path, with_hold: bool) {
         let found = exstyle(lab);
         let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
         if clean != found {
@@ -1858,24 +1858,41 @@ setInterval(show,50);show();
         let tb = tile_of(button);
         let p0 = settle_page(edge);
         let mut hits = String::new();
-        for _ in 0..10 {
+        let mut misses = Vec::new();
+        for i in 0..30 {
             aim_direct(tb);
             aim_through(lab, button);
             let c0 = page_of(edge).unwrap_or_default().c;
             click_at(tb.0, tb.1);
             thread::sleep(Duration::from_millis(350));
-            hits.push(if page_of(edge).unwrap_or_default().c > c0 { 'x' } else { '.' });
+            let landed = page_of(edge).unwrap_or_default().c > c0;
+            hits.push(if landed { 'x' } else { '.' });
+            if !landed {
+                let f = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+                misses.push(format!(
+                    "   miss #{}: host driven={}, stage focused {}, window focused {}, lab TOPMOST {}, foreground {}",
+                    i + 1,
+                    f["showing"]["driven"],
+                    f["stageFocused"],
+                    f["windowFocused"],
+                    exstyle(lab) & WS_EX_TOPMOST.0 != 0,
+                    if unsafe { GetForegroundWindow() } == edge { "the test page" } else { "something else" }
+                ));
+            }
             thread::sleep(Duration::from_millis(350));
         }
         thread::sleep(Duration::from_millis(400));
         let p1 = settle_page(edge);
         println!(
-            "2. 10 clicks into the picture at the button {tb:?} → desktop {button:?}: {hits} — page counted {}; edge foreground {}, blurred {}, lab above {}",
+            "2. 30 clicks into the picture at the button {tb:?} → desktop {button:?}: {hits} — page counted {}; edge foreground {}, blurred {}, lab above {}",
             p1.c - p0.c,
             unsafe { GetForegroundWindow() } == edge,
             p1.b - p0.b,
             above(lab, edge)
         );
+        for m in &misses {
+            println!("{m}");
+        }
         let (r, v) = frame_rate(edge);
         println!("   the page while driven: {r:.1} rAF/s vis={v}");
         bail_on_escape!();
@@ -1971,6 +1988,12 @@ setInterval(show,50);show();
             c1 != c0
         );
         bail_on_escape!();
+
+        if !with_hold {
+            let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
+            drop(guard);
+            return;
+        }
 
         /* 7. Set up for the Escape hold: drive on again, the test field in front. */
         aim_direct(centre);
