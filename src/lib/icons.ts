@@ -30,6 +30,7 @@ const RAW = {
   "quote": `<path d="M3 4.5h10M3 8h6M3 11.5h8"/><path d="M11.5 7.2v4.3"/>`,
   "pin": `<path d="M8 13.8V10M4.8 10h6.4l-1.2-2.2V4.4h.9V2.8H5.1v1.6H6v3.4z"/>`,
   "more": `<circle cx="3.6" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="12.4" cy="8" r=".6"/>`,
+  "screen": `<rect x="1.8" y="2.6" width="12.4" height="8.6" rx="1.4"/><path d="M6 13.6h4M8 11.2v2.4"/>`,
   "wall": `<rect x="2.3" y="2.8" width="4.8" height="4.2" rx="1.1"/><rect x="8.9" y="2.8" width="4.8" height="4.2" rx="1.1"/><rect x="2.3" y="9" width="4.8" height="4.2" rx="1.1"/><rect x="8.9" y="9" width="4.8" height="4.2" rx="1.1"/>`,
   "chat": `<path d="M2.6 4.6c0-1.1.9-2 2-2h6.8c1.1 0 2 .9 2 2v4.6c0 1.1-.9 2-2 2H7.2l-3 2.4v-2.5c-.9-.2-1.6-1-1.6-1.9z"/>`,
   "gear": `<circle cx="8" cy="8" r="2.1"/><path d="M8 1.9v1.7M8 12.4v1.7M14.1 8h-1.7M3.6 8H1.9M12.3 3.7l-1.2 1.2M4.9 11.1l-1.2 1.2M12.3 12.3l-1.2-1.2M4.9 4.9 3.7 3.7"/>`,

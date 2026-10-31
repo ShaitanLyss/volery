@@ -7,6 +7,7 @@ import {
   cursorCss,
   decoderConfig,
   driveText,
+  EscapeHold,
   fitIn,
   isKeyframe,
   KEY_TEXT,
@@ -24,6 +25,7 @@ import {
   sameWant,
   scaleRgba,
   screenKey,
+  screenOptions,
   snapUp,
   stateWords,
   statsLine,
@@ -158,6 +160,13 @@ describe("what a tile asks for", () => {
     expect(hidden.visible).toBe(false);
     /* Its size is still said, so the keyframe on return is the right shape. */
     expect(hidden.w).toBeGreaterThan(0);
+  });
+
+  test("a calm tile asks for a frame a second until it is driven or focused", () => {
+    expect(want({ ...base, calm: true }).fps).toBe(1);
+    expect(want({ ...base, calm: true, driving: true }).fps).toBe(30);
+    expect(want({ ...base, calm: true, focused: true }).fps).toBe(120);
+    expect(want({ ...base, calm: true, visible: false }).fps).toBe(0);
   });
 
   test("the size is device pixels of the picture, not of the letterbox", () => {
@@ -359,5 +368,66 @@ describe("naming a screen", () => {
     expect(stateWords("refused")).toBe("that machine doesn't take work from other walls");
     expect(stateWords("ended", "the socket closed")).toBe("ended — the socket closed");
     for (const s of ["connecting", "paused", "locked"] as const) expect(stateWords(s)).toBeTruthy();
+  });
+});
+
+describe("the screen knob's options", () => {
+  const one: Monitor = { id: "a:0", name: "Panel", w: 2880, h: 1800, x: 0, y: 0, hz: 120, primary: true };
+  const two: Monitor = { ...one, id: "a:1", x: 2880, primary: false };
+
+  test("one screen and nowhere else is not a choice", () => {
+    expect(screenOptions([one], [])).toEqual([]);
+  });
+
+  test("this machine's, then each other wall's, by host", () => {
+    const o = screenOptions([one, two], [{ host: "w2", name: "desk", monitors: [one] }]);
+    expect(o.map((x) => x.value)).toEqual(["here/a:0", "here/a:1", "w2/a:0"]);
+    expect(o[2].label).toBe("desk · Panel · 2880×1800");
+    expect(o[0].label).toBe("here · Panel · main · 2880×1800");
+  });
+});
+
+describe("escape, tapped or held", () => {
+  const fake = () => {
+    let f: (() => void) | null = null;
+    return {
+      timers: { set: (fn: () => void) => ((f = fn), 1), clear: () => (f = null) },
+      fire: () => f?.(),
+    };
+  };
+
+  test("a tap is sent whole when the key comes up, and leaves nothing behind", () => {
+    const t = fake();
+    const said: string[] = [];
+    const h = new EscapeHold({ tap: () => said.push("tap"), hold: () => said.push("hold") }, 500, t.timers);
+    h.down();
+    h.down(); // auto-repeat
+    expect(h.holding).toBe(true);
+    h.up();
+    expect(said).toEqual(["tap"]);
+    t.fire();
+    expect(said).toEqual(["tap"]);
+  });
+
+  test("a hold leaves, and its key-up sends no tap", () => {
+    const t = fake();
+    const said: string[] = [];
+    const h = new EscapeHold({ tap: () => said.push("tap"), hold: () => said.push("hold") }, 500, t.timers);
+    h.down();
+    t.fire();
+    h.down(); // still held, repeating
+    h.up();
+    expect(said).toEqual(["hold"]);
+  });
+
+  test("a press interrupted by losing focus is neither", () => {
+    const t = fake();
+    const said: string[] = [];
+    const h = new EscapeHold({ tap: () => said.push("tap"), hold: () => said.push("hold") }, 500, t.timers);
+    h.down();
+    h.cancel();
+    h.up();
+    t.fire();
+    expect(said).toEqual([]);
   });
 });

@@ -13,6 +13,9 @@
   import { SvelteSet } from "svelte/reactivity";
   import { boost } from "./boost.svelte";
   import CtxRing from "./CtxRing.svelte";
+  import { casts } from "./cast.svelte";
+  import { monitorLabel } from "./cast";
+  import { onMount } from "svelte";
   import { ctxSaid, ringShown, type Ghost, type Group, type Placed, type ProjectRow } from "./chatview";
 
   let {
@@ -161,6 +164,7 @@
       {@render group(g)}
     {/each}
     {@render folders()}
+    {@render screens()}
     {@render kept()}
     {#each rest as g (g.key)}
       {@render group(g)}
@@ -299,6 +303,57 @@
                 {#if f.live.length}<span class="dots">{#each f.live as t, i (i)}<i class={t}></i>{/each}</span>{/if}
                 <span class="count">{f.count}</span>
               </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+{/snippet}
+
+{#snippet screens()}
+  <!-- Every screen on the flyway, and the grid of all of them (`ScreenGrid`).
+       Choosing one shows it in the sheet, live and drivable, with this list
+       still beside it to step to the next; immersive is one more click there
+       (Lyss, 2026-10-31). Read off `casts` rather than handed in, so chat
+       view did not grow a prop a mount could forget. Absent while there is
+       no screen at all — a build without screens, or a machine that has not
+       answered — since a group offering nothing is a group to ignore. -->
+  {#if casts.every.length}
+    <section class="group" aria-label="screens">
+      <h2>screens<span class="n">{casts.every.length}</span></h2>
+      <ul>
+        <li>
+          <button
+            type="button"
+            class="row folder"
+            class:on={casts.sheet === "all"}
+            aria-current={casts.sheet === "all" ? "true" : undefined}
+            onclick={() => (casts.sheet = "all")}
+            title="every screen on the flyway at once (space then r a)"
+          >
+            <Icon name="wall" small />
+            <span class="t">all screens</span>
+          </button>
+        </li>
+        {#each casts.every as c (c.key)}
+          {@const s = casts.showing[`chat:${c.key}`]}
+          <li>
+            <button
+              type="button"
+              class="row folder"
+              class:on={casts.sheet === c.key}
+              aria-current={casts.sheet === c.key ? "true" : undefined}
+              onclick={() => (casts.sheet = c.key)}
+              title={`${c.machine} · ${monitorLabel(c.monitor, c.all)}`}
+            >
+              <Icon name="screen" small />
+              <span class="t">{c.machine} · {monitorLabel(c.monitor, c.all)}</span>
+              {#if s?.stats && s.state === "live"}
+                <span class="aside"><span class="count">{s.stats.fps} fps</span></span>
+              {:else if s && s.state !== "live" && s.state !== "connecting"}
+                <span class="aside"><span class="count">{s.state}</span></span>
+              {/if}
             </button>
           </li>
         {/each}

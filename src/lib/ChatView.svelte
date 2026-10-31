@@ -70,6 +70,8 @@
   import { boost } from "./boost.svelte";
   import { boostView } from "./boostview.svelte";
   import BoostIgnition from "./BoostIgnition.svelte";
+  import { casts } from "./cast.svelte";
+  import ScreenSheet from "./ScreenSheet.svelte";
   import { onCredits } from "./credits";
 
   let {
@@ -353,6 +355,7 @@
   export function openPile(kind: "sink" | "board", focus: string | null = null) {
     pile = { kind, focus };
     page = null;
+    casts.sheet = null;
     drawer = false;
   }
   /* The sidebar counts what is in each pile, so both are read for as long as
@@ -377,6 +380,7 @@
   function choose(id: string) {
     page = null;
     pile = null;
+    casts.sheet = null;
     drawer = false;
     onselect(id);
   }
@@ -411,6 +415,7 @@
   export function openProject(name: string) {
     page = name;
     pile = null;
+    casts.sheet = null;
   }
 
   /** A new conversation: the empty sheet, which is App's to clear the
@@ -418,7 +423,19 @@
   export function fresh() {
     page = null;
     pile = null;
+    casts.sheet = null;
   }
+
+  /* A screen chosen in the sidebar is a page in the sheet like the others: one
+     at a time, so choosing it closes a project's page or a pile. */
+  $effect(() => {
+    if (!casts.sheet) return;
+    untrack(() => {
+      page = null;
+      pile = null;
+      drawer = false;
+    });
+  });
 
   let looking = $state(false);
   /** Ctrl+K and the sidebar's *search*. */
@@ -824,7 +841,9 @@
         void focusAsk();
       }}
     />
-    {#if pile}
+    {#if casts.sheet}
+      <ScreenSheet which={casts.sheet} />
+    {:else if pile}
       {#key pile}
         <PilePage kind={pile.kind} focus={pile.focus} sink={skein.sink} board={skein.board} />
       {/key}

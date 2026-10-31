@@ -152,6 +152,12 @@ describe("a widget describes itself well enough to be offered blind", () => {
         { value: "AB12", label: "[Local] NOVA" },
         { value: "CD34", label: "localhost:8081" },
       ],
+      /* This machine's monitors and another wall's, as `cast.ts::screenOptions`
+         writes them. */
+      monitors: [
+        { value: "here/a:0", label: "here · Panel · 2880×1800" },
+        { value: "w2/b:0", label: "desk · Dell · 2560×1440" },
+      ],
     };
     for (const spec of WIDGETS) {
       const w = newWidget(spec.kind, 0, 0);

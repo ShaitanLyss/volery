@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>castlab — a fake screen through the real worker</title>
+    <style>
+      body {
+        margin: 0;
+        background: #151210;
+        color: #b4a89c;
+        font: 13px/1.5 Corbel, "Segoe UI", sans-serif;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        padding: 16px;
+      }
+      h1 {
+        grid-column: 1 / -1;
+        margin: 0;
+        font-size: 15px;
+        font-weight: normal;
+        color: #ede4d8;
+      }
+      .tile {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #000;
+        border: 1px solid #332c29;
+      }
+      .tile canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      .tile canvas.video {
+        object-fit: contain;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        color: #8a7e74;
+      }
+      #source {
+        width: 100%;
+        border: 1px solid #332c29;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>castlab — left: the source the fake host encodes · right: the real <code>cast.worker.ts</code> decoding it</h1>
+    <div><canvas id="source"></canvas><pre id="host"></pre></div>
+    <div><div class="tile" id="tile"></div><pre id="view"></pre></div>
+    <script type="module" src="./castlab.ts"></script>
+  </body>
+</html>

@@ -211,6 +211,8 @@ export const driveText = (on: boolean): string => JSON.stringify({ t: "drive", o
 export const FOCUS_FPS_CAP = 120;
 export const VISIBLE_FPS = 30;
 export const SMALL_FPS = 15;
+/** A `calm` tile's rate: a glance, not a picture of motion. */
+export const CALM_FPS = 1;
 /** Below this many device pixels across, a tile is a thumbnail. */
 export const SMALL_W = 480;
 
@@ -260,6 +262,11 @@ export type Seen = {
   hz: number;
   visible: boolean;
   focused: boolean;
+  /** The widget's `calm` reading: a frame a second while only watched. */
+  calm?: boolean;
+  /** Being driven, which overrides `calm` — a pointer you move over a
+   *  picture that changes once a second is a pointer that feels broken. */
+  driving?: boolean;
 };
 
 /** What to ask the host for: the adaptive table in `docs/SCREENS.md`, from
@@ -281,6 +288,8 @@ export function want(s: Seen): Want {
     ? 0
     : s.focused
       ? Math.min(FOCUS_FPS_CAP, s.hz > 0 ? s.hz : 60)
+      : s.calm && !s.driving
+        ? CALM_FPS
       : w < SMALL_W
         ? SMALL_FPS
         : VISIBLE_FPS;
@@ -629,6 +638,73 @@ export function cursorAt(
   return { x: fit.x + (pos.x - hot.x) * k, y: fit.y + (pos.y - hot.y) * k, k };
 }
 
+/* ── the way out ───────────────────────────────────────────────────────── */
+
+/** How long Escape is held to leave a screen you are driving. Lyss's pick
+ *  (2026-10-31), over a three-modifier chord and a bar at the top edge: Escape
+ *  belongs to the far machine — it closes its dialogs — so a *tap* still goes
+ *  there, and only a hold leaves. Half a second is longer than any tap a
+ *  person makes and short enough not to feel like waiting. */
+export const HOLD_MS = 500;
+
+type Timers = { set: (f: () => void, ms: number) => unknown; clear: (h: unknown) => void };
+const realTimers: Timers = {
+  set: (f, ms) => setTimeout(f, ms),
+  clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+};
+
+/** Escape, read as a tap or a hold. Nothing is sent at keydown, because
+ *  nothing can know then which it is: a tap is sent whole (down then up) when
+ *  the key comes up inside `HOLD_MS`, and a hold leaves without the far
+ *  machine ever having seen an Escape — which a stray one, arriving as you
+ *  leave, would have used to close whatever you were looking at. The cost is a
+ *  tap that lands a hundred milliseconds late, on the one key where that is
+ *  never felt. Auto-repeat is ignored: the first down is the press. */
+export class EscapeHold {
+  #timer: unknown = null;
+  #held = false;
+  constructor(
+    private on: { tap: () => void; hold: () => void; change?: (holding: boolean) => void },
+    private ms = HOLD_MS,
+    private timers: Timers = realTimers,
+  ) {}
+
+  get holding(): boolean {
+    return this.#timer !== null;
+  }
+
+  down() {
+    if (this.#timer !== null || this.#held) return;
+    this.#timer = this.timers.set(() => {
+      this.#timer = null;
+      this.#held = true;
+      this.on.change?.(false);
+      this.on.hold();
+    }, this.ms);
+    this.on.change?.(true);
+  }
+
+  up() {
+    if (this.#held) {
+      this.#held = false;
+      return;
+    }
+    if (this.#timer === null) return;
+    this.timers.clear(this.#timer);
+    this.#timer = null;
+    this.on.change?.(false);
+    this.on.tap();
+  }
+
+  /** Focus went elsewhere mid-press: neither a tap nor a hold. */
+  cancel() {
+    if (this.#timer !== null) this.timers.clear(this.#timer);
+    this.#timer = null;
+    this.#held = false;
+    this.on.change?.(false);
+  }
+}
+
 /* ── naming a screen ───────────────────────────────────────────────────── */
 
 /** A monitor as `cast_monitors` and the flyway roster announce it:
@@ -681,6 +757,25 @@ export function monitorLabel(m: Monitor, all: readonly Monitor[] = [m]): string 
   return `${m.name}${where} · ${m.w}×${m.h}`;
 }
 
+/** The `monitor` knob's options: this machine's monitors, then each other
+ *  wall's, labelled so a list of six "Generic PnP Monitor"s reads as six
+ *  places. Empty while there is only the one screen the default already
+ *  names — following it and naming it are the same answer, which is the rule
+ *  every other sourced knob on the wall keeps. */
+export function screenOptions(
+  here: readonly Monitor[],
+  elsewhere: readonly { host: string; name: string; monitors: readonly Monitor[] }[],
+): { value: string; label: string }[] {
+  const far = elsewhere.flatMap((e) =>
+    e.monitors.map((m) => ({ value: screenKey(e.host, m.id), label: `${e.name} · ${monitorLabel(m, e.monitors)}` })),
+  );
+  if (here.length <= 1 && far.length === 0) return [];
+  return [
+    ...here.map((m) => ({ value: screenKey(null, m.id), label: `here · ${monitorLabel(m, here)}` })),
+    ...far,
+  ];
+}
+
 /** What the tile's label says for each state, in the house's lowercase. Only
  *  `live` says nothing — the picture is the reading. */
 export function stateWords(state: CastState, why = ""): string | null {
@@ -688,7 +783,9 @@ export function stateWords(state: CastState, why = ""): string | null {
     case "connecting":
       return "connecting…";
     case "live":
-      return null;
+      /* Live with a reason is a relay holding the picture back — said
+         quietly, since the picture is still the reading. */
+      return why || null;
     case "paused":
       return "paused — out of sight";
     case "locked":

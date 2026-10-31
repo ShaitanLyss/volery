@@ -32,6 +32,7 @@ import { paceOf, type Pace } from "./clock";
    differently in two places is a widget that comes back off disk following
    nothing. */
 import { FOLLOW } from "./logface";
+import { HERE, PRIMARY } from "./cast";
 /* The spans a per-core graph offers, taken from the file that resolves them into
    durations — a knob whose label says "the last minute" against a window that is
    something else would be an instrument lying about its own axis. */
@@ -68,6 +69,7 @@ export type WidgetKind =
   | "applog"
   | "unreallog"
   | "browser"
+  | "screen"
   | "said"
   | "timeline";
 
@@ -101,7 +103,8 @@ export type Source =
   | "projects"
   | "editors"
   | "boards"
-  | "pages";
+  | "pages"
+  | "monitors";
 
 /** A group of widgets the right-click menu offers behind one row.
  *
@@ -1588,6 +1591,60 @@ export const WIDGETS: WidgetSpec[] = [
          what an agent does, and stops a stray click on the wall going into
          somebody's staging environment. */
       toggle("interactive", "clicks and keys reach the page", true),
+    ],
+  },
+  {
+    /* A machine's monitor, live, and drivable — this laptop minus Volery, or
+       any machine on the flyway (`docs/SCREENS.md`). The browser's sibling:
+       the other thing on this wall you work *in*, and it stands alone in the
+       menu for the browser's reason.
+
+       16:9 plus the header, because nearly every monitor is, and the face
+       letterboxes whatever it is given rather than stretching it. The floor is
+       a thumbnail you can still recognise a window in.
+
+       Everything per frame is off both main threads — the socket and the
+       decoder are a worker's (`cast.worker.ts`) — so a wall of these costs the
+       wall's own thread a stats line twice a second each. */
+    kind: "screen",
+    label: "screen",
+    note: "a machine's monitor, live — click into it to drive it",
+    box: { w: 640, h: 382 },
+    min: { w: 200, h: 134 },
+    params: [
+      /* Two readings, and they differ in what they cost the machine being
+         watched rather than in what they draw. `live` is the adaptive table —
+         30 fps while it is in sight, 15 as a thumbnail. `calm` is a frame a
+         second: a render box hung in a corner to see whether it is still
+         building, which does not need sixty pictures a minute of a progress
+         bar, and a wall of a dozen machines left up all day. Driving one, or
+         going immersive, is full rate either way. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "live", label: "live — as smooth as its size needs" },
+          { value: "calm", label: "calm — a frame a second, until you drive it" },
+        ],
+        "live",
+      ),
+      /* Which screen: this machine's monitors and every other wall's, in one
+         list, as `host/monitor` (`cast.ts::screenKey`). The default names a
+         role rather than a monitor — this machine's main one, whichever that
+         is today — for the logs' `FOLLOW` reason: a monitor id is an adapter
+         and an output, and both move when a dock is plugged in. */
+      choice(
+        "monitor",
+        "screen",
+        [{ value: `${HERE}/${PRIMARY}`, label: "this machine's main screen" }],
+        `${HERE}/${PRIMARY}`,
+        undefined,
+        "monitors",
+      ),
+      /* The browser's own knob and its own argument: off, it is a picture you
+         cannot touch — right for one hung in a corner, and a stray click on
+         the wall never lands on somebody's desktop. */
+      toggle("interactive", "clicks and keys reach the machine", true),
     ],
   },
   {

@@ -49,6 +49,8 @@
   import { freshening } from "./lib/freshening.svelte";
   import { Beacon } from "./lib/beacon.svelte";
   import { Pane } from "./lib/pane.svelte";
+  import { casts } from "./lib/cast.svelte";
+  import { screenOptions } from "./lib/cast";
   import { caption } from "./lib/browser";
   import { READY_LINE, sayOffer } from "./lib/update";
   import { Ledger } from "./lib/ledger.svelte";
@@ -57,6 +59,7 @@
   import {
     limitIn,
     offersOf,
+    specFor,
     optionFor,
     optionsOf,
     optionGroupsOf,
@@ -204,6 +207,9 @@
      `Finder.svelte`, which would be one module path to two files. See
      `.claude/rules/finding.md`. */
   import Spyglass from "./lib/Spyglass.svelte";
+  import ScreenFocus from "./lib/ScreenFocus.svelte";
+  import ScreenGrid from "./lib/ScreenGrid.svelte";
+  import ScreenMark from "./lib/ScreenMark.svelte";
   import { Finder } from "./lib/finder.svelte";
   /* The space leader itself, which is the wall's rather than the finder's —
      `<space>ff` opens a panel and `<space>ts` opens a toy, and a machine that
@@ -450,6 +456,10 @@
      Holds no socket and starts no Chrome until a widget attaches — the bargain
      `Meter`, `Ledger`, `DevOps` and `Board` all strike. */
   const pane = new Pane();
+  /* The screens' holder is a module singleton (`cast.svelte.ts`); this is
+     where it starts hearing the roster and the host's mark, and `onDestroy`
+     where it lets go. */
+  casts.start();
   /* Which organisations to ask about, read off the wall rather than configured:
      the AzDO orgs worth watching are the ones whose repos are standing on it.
      Injected as a function, the way `Cycle.watched` and `Widgets.others` are, so
@@ -680,6 +690,7 @@
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
+    else if (verb.kind === "screen") screenChord(verb.act);
     else if (verb.kind === "bright") {
       /* Said back, because a tenth of a step can be small enough to doubt,
          and with the skin's name, because the level belongs to that skin. */
@@ -938,6 +949,7 @@
      goes on ingesting events and writing rows for a wall nobody can see — one
      `result` used to become two `turn` rows, one per generation. */
   onDestroy(() => {
+    casts.release();
     whois.detach(cards);
     /* The peek's rest timer, which a superseded generation must not leave to
        fire into a component nobody is drawing. */
@@ -2872,6 +2884,34 @@
 
   /** Hang one at a point on the wall. Unlike a conversation it needs nothing
    *  else — no folder, no dialog, no process. */
+  /** The `r` family. Hanging one up lands it in the middle of what you are
+   *  looking at; immersive takes the screen in front — chat view's sheet, or
+   *  the selected screen widget, or the only one there is — and says so when
+   *  there is none rather than doing nothing. */
+  function screenChord(act: "hang" | "immersive" | "all") {
+    if (act === "all") {
+      if (view.current === "chat") casts.sheet = "all";
+      else casts.grid = !casts.grid;
+      return;
+    }
+    if (act === "hang") {
+      const spec = specFor("screen");
+      const c = canvas?.toCanvas(innerWidth / 2, innerHeight / 2) ?? { x: 0, y: 0 };
+      hangWidget("screen", { x: c.x - (spec?.box.w ?? 0) / 2, y: c.y - (spec?.box.h ?? 0) / 2 });
+      return;
+    }
+    if (view.current === "chat") {
+      if (casts.sheet && casts.sheet !== "all") casts.focus(`chat:${casts.sheet}`);
+      else leader.say("choose a screen in the sidebar first");
+      return;
+    }
+    const screens = widgets.items.filter((w) => w.kind === "screen");
+    const picked = screens.find((w) => studio.pickedOf("widget").includes(w.id));
+    const one = picked ?? (screens.length === 1 ? screens[0] : null);
+    if (one) casts.focus(one.id);
+    else leader.say(screens.length ? "select a screen first" : "no screen on the wall — space then r r hangs one up");
+  }
+
   function hangWidget(kind: string, at: { x: number; y: number }) {
     void widgets.add(kind as WidgetKind, at.x, at.y);
   }
@@ -2924,6 +2964,9 @@
          — it opens pages as it works — so the knob appears and disappears
          while you watch, which is correct and is why the face falls back to
          whichever page there is rather than to nothing. */
+      /* This machine's monitors and every other wall's — empty while the one
+         screen the default already names is all there is (`cast.ts`). */
+      monitors: screenOptions(casts.monitors, casts.elsewhere),
       pages:
         pane.targets.length > 1
           ? pane.targets.map((t) => ({ value: t.id, label: caption(t) }))
@@ -5614,6 +5657,20 @@
   {#if finder.open}
     <Spyglass {finder} {editor} />
   {/if}
+
+  <!-- Screens (`docs/SCREENS.md`): every screen at once over the wall, one
+       screen immersive over either view, and the mark this machine wears
+       while another wall watches it. Root overlays, for `Spyglass`'s reason —
+       both rooms reach them. -->
+  {#if casts.grid && view.current === "wall"}
+    <ScreenGrid onopen={(key) => casts.focus(`grid:${key}`)} onclose={() => (casts.grid = false)} />
+  {/if}
+  {#if casts.focused}
+    {#key casts.focused}
+      <ScreenFocus sid={casts.focused} />
+    {/key}
+  {/if}
+  <ScreenMark />
 
   {#if (leader.pending !== null || leader.said) && !finder.open}
     <Which open={leader.pending} said={leader.said} />

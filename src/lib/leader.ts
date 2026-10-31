@@ -107,7 +107,8 @@ export type Verb =
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
   | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" | "freshen" }
-  | { kind: "bright"; act: "up" | "down" | "reset" };
+  | { kind: "bright"; act: "up" | "down" | "reset" }
+  | { kind: "screen"; act: "hang" | "immersive" | "all" };
 
 /** One sequence the leader opens onto.
  *
@@ -374,6 +375,14 @@ export const CHORDS: readonly Chord[] = [
   { keys: "vk", label: "the wall brighter", verb: { kind: "bright", act: "up" } },
   { keys: "vj", label: "the wall dimmer", verb: { kind: "bright", act: "down" } },
   { keys: "v0", label: "the wall as its skin is", verb: { kind: "bright", act: "reset" } },
+  /* `r` is remote screens — a machine's monitor on the wall (`docs/SCREENS.md`).
+     `s` would have been the word, and it is the sink's. `rr` hangs one up,
+     the family's main verb doubled after `ff` and `ss`; `rf` fills the window
+     with the selected one (immersive; hold esc to come back); `ra` is every
+     screen on the flyway at once — over the wall, or in chat view's sheet. */
+  { keys: "rr", label: "hang up a screen", verb: { kind: "screen", act: "hang" } },
+  { keys: "rf", label: "this screen, immersive", verb: { kind: "screen", act: "immersive" } },
+  { keys: "ra", label: "every screen on the flyway", verb: { kind: "screen", act: "all" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];
@@ -494,6 +503,11 @@ export function actsOnWall(verb: Verb): boolean {
     case "plan":
     case "elsewhere":
       return true;
+    case "screen":
+      /* Hanging one up puts it on the wall. The other two mean the same in
+         either view: chat view shows the grid in its sheet, and immersive
+         fills the window whichever room is behind it. */
+      return verb.act === "hang";
     case "card":
       return verb.act === "glass" || verb.act === "keep" || verb.act === "keep-glass";
     case "dock":

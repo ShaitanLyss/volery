@@ -49,6 +49,7 @@
   import ServerLog from "./ServerLog.svelte";
   import AppLog from "./AppLog.svelte";
   import Browser from "./Browser.svelte";
+  import Screen from "./Screen.svelte";
   import BuildLog from "./BuildLog.svelte";
   import UnrealLog from "./UnrealLog.svelte";
   import Saying from "./Saying.svelte";
@@ -430,6 +431,18 @@
       <AppLog {widget} />
     {:else if widget.kind === "browser"}
       <Browser {widget} {pane} />
+    {:else if widget.kind === "screen"}
+      <!-- No holder threaded in: `casts` is a module singleton, because the
+           focused overlay and chat view reach the same sessions from subtrees
+           this file is not in (`cast.svelte.ts`). The zoom is handed down so
+           the host is asked for the tile's size in device pixels. -->
+      <Screen
+        sid={widget.id}
+        screen={typeof widget.config.monitor === "string" ? widget.config.monitor : "here/primary"}
+        interactive={widget.config.interactive !== false}
+        calm={widget.config.variant === "calm"}
+        {scale}
+      />
     {:else if widget.kind === "said"}
       <!-- The card, asked for by the id the widget carries. Null while it is
            not on the wall yet — a launch, or a wall not heard from — and the
