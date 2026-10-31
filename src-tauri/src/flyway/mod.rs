@@ -31,6 +31,10 @@
 //!   Pure; `link/moves.rs` is the wiring.
 //! - `opening` — a person opening a card on another wall from its menu: the
 //!   one ask allowed an empty brief, and why only a person's. Pure.
+//! - `cast` — a screen across the flyway: the media connection's own ALPN,
+//!   which shape each message rides, a key per connection and a counter for a
+//!   nonce, consent, and what a relayed path is held to. Pure;
+//!   `link/cast.rs` is the wiring.
 //! - `frame` — how those vocabularies share one frame.
 //! - `wire` — iroh: QUIC, dial by public key, relay fallback. The only file
 //!   that knows about the transport, so the transport stays replaceable.
@@ -52,6 +56,7 @@
 pub mod accounts;
 pub mod act;
 pub mod boards;
+pub mod cast;
 pub mod cards;
 pub mod fleet;
 pub mod frame;

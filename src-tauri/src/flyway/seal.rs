@@ -204,6 +204,26 @@ impl WallKey {
         Ok(out)
     }
 
+    /// A key of its own for one purpose on one occasion: HKDF over the wall
+    /// key, `salt` naming the occasion and `info` the purpose.
+    ///
+    /// For a channel that seals too often to pay `seal`'s price per message —
+    /// a screen's frames (`flyway/cast.rs`), which want a key built once and a
+    /// counter for a nonce. A counter is only safe under a key nothing else
+    /// counts under, so the occasion must be unique (a connection's own TLS
+    /// exporter) and each direction a purpose of its own.
+    pub fn derive(&self, salt: &[u8], info: &[u8]) -> Result<[u8; 32], String> {
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(&self.0);
+        let infos = [info];
+        let okm = prk
+            .expand(&infos, hkdf::HKDF_SHA256)
+            .map_err(|_| "could not derive a channel key".to_string())?;
+        let mut out = [0u8; 32];
+        okm.fill(&mut out)
+            .map_err(|_| "could not derive a channel key".to_string())?;
+        Ok(out)
+    }
+
     /// Seal a payload for one room.
     ///
     /// The room id is the associated data, which is what stops a frame being

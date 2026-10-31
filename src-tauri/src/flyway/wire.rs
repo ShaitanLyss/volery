@@ -48,15 +48,28 @@
 //! And dials are answered each on a task of their own: one at a time was right
 //! while the only dial was a pull every forty-five seconds, and wrong once a
 //! push can arrive mid-pull and wait out the pull's whole round trip behind it.
+//!
+//! ### A third language, and the one connection that is held open
+//!
+//! `volery/cast/1` is a screen (`cast.rs`). It is told apart *before* the
+//! handshake finishes — the ALPN is read off the dialler's first packet — so it
+//! can be accepted under a transport of its own (`cast_transport`) rather than
+//! the one every sink pull uses. And it is the one connection this file hands
+//! out whole instead of carrying frames over it, because the shapes that make a
+//! screen feel local — a stream per frame, datagrams for the pointer — are
+//! QUIC's own and would be lost behind any wrapper narrow enough to be worth
+//! having. `link/cast.rs` is the one caller, and it reads nothing of iroh but
+//! streams, datagrams and the path.
 
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iroh::endpoint::{presets, Connection, Incoming};
+use iroh::endpoint::{presets, ConnectOptions, Connection, Incoming, QuicTransportConfig, ServerConfig, VarInt};
 use iroh::tls::CaTlsConfig;
 use iroh::{Endpoint, EndpointId, SecretKey};
 
+use super::cast;
 use super::frame::{self, Frame};
 use super::seal::WallKey;
 
@@ -131,6 +144,46 @@ pub struct Wire {
     endpoint: Endpoint,
     key: Arc<WallKey>,
     room: String,
+    /// What a screen's connection is accepted under (`cast_transport`).
+    cast_server: Arc<ServerConfig>,
+}
+
+/// A connection that finished its handshake, told apart by its language.
+pub enum Arrival {
+    /// The sink, the fleet and the cards: one exchange, answered by `answer`.
+    Flyway(Connection),
+    /// A screen (`link/cast.rs`), held for as long as it is watched.
+    Cast(Connection),
+}
+
+/// The transport a screen's connection runs on, both ends.
+///
+/// - **BBR** rather than the default Cubic. A loss-based controller fills
+///   every buffer on the path before it backs off, and a full buffer is
+///   latency on every frame behind it; BBR paces to the bandwidth it measures
+///   and keeps the queue near empty, which is what "feels local" is made of.
+///   noq's `Bbr3` is the IETF draft's v3.
+/// - **A second's keep-alive and an eight-second idle**, so a laptop shut
+///   mid-screen reads as gone in seconds rather than the default thirty, and
+///   a NAT mapping on a quiet screen (paused, not visible) does not lapse.
+/// - **No send fairness**: streams go out in the order they were written, so
+///   the oldest frame finishes first instead of every frame in flight arriving
+///   late together; the control stream outranks them all by priority.
+/// - **Windows sized for a keyframe**: a 4K keyframe can pass the default
+///   1.25 MB stream window, which would stall it for a round trip mid-frame.
+pub fn cast_transport() -> QuicTransportConfig {
+    let mut b = QuicTransportConfig::builder()
+        .congestion_controller_factory(Arc::new(noq_proto::congestion::Bbr3Config::default()))
+        .keep_alive_interval(Duration::from_secs(1))
+        .send_fairness(false)
+        .max_concurrent_uni_streams(VarInt::from_u32(1024))
+        .max_concurrent_bidi_streams(VarInt::from_u32(4))
+        .stream_receive_window(VarInt::from_u32(8 * 1024 * 1024))
+        .send_window(32 * 1024 * 1024);
+    if let Ok(idle) = iroh::endpoint::IdleTimeout::try_from(Duration::from_secs(8)) {
+        b = b.max_idle_timeout(Some(idle));
+    }
+    b.build()
 }
 
 impl Wire {
@@ -150,12 +203,18 @@ impl Wire {
             .ca_tls_config(CaTlsConfig::system())
             /* Current first: when a dialler offers several, the order here is
                the preference. Ours only ever offer one at a time. */
-            .alpns(vec![ALPN.to_vec(), ALPN_V1.to_vec()])
+            .alpns(vec![ALPN.to_vec(), ALPN_V1.to_vec(), cast::ALPN.to_vec()])
             .bind()
             .await
             .map_err(|e| format!("could not take a place on the flyway: {e}"))?;
+        let cast_server = Arc::new(
+            endpoint
+                .create_server_config_builder(vec![cast::ALPN.to_vec()])
+                .set_transport_config(cast_transport())
+                .build(),
+        );
 
-        Ok(Self { endpoint, key: Arc::new(key), room })
+        Ok(Self { endpoint, key: Arc::new(key), room, cast_server })
     }
 
     /// Let go of the endpoint: every connection ends and `next_dial` answers
@@ -169,6 +228,12 @@ impl Wire {
     /// Who this wall is, to anybody dialling it.
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()
+    }
+
+    /// The wall key, for a channel that derives keys of its own from it
+    /// (`cast.rs`).
+    pub fn key(&self) -> &WallKey {
+        &self.key
     }
 
     /// Who a machine of that name is on this flyway.
@@ -233,19 +298,66 @@ impl Wire {
         self.endpoint.accept().await
     }
 
-    /// Answer one wall that dialled us.
+    /// Finish a dial's handshake, under the transport its language wants.
+    ///
+    /// The ALPN is read off the dialler's first packet, before anything is
+    /// agreed, because a server's transport is fixed at accept — a screen
+    /// accepted as a sink pull would run on Cubic with a thirty-second idle.
+    /// A packet that cannot be read is accepted the ordinary way, and the
+    /// handshake then says what it is.
+    pub async fn arrive(&self, incoming: Incoming) -> Result<Arrival, String> {
+        let casting = incoming
+            .decrypt()
+            .and_then(|d| d.alpns())
+            .is_some_and(|mut a| a.next().and_then(Result::ok).is_some_and(|p| &p[..] == cast::ALPN));
+        let conn = if casting {
+            incoming
+                .accept_with(self.cast_server.clone())
+                .map_err(|e| format!("a screen dialled and was not accepted: {e}"))?
+                .await
+        } else {
+            incoming.await
+        }
+        .map_err(|e| format!("a wall dialled and did not finish: {e}"))?;
+        Ok(if conn.alpn() == cast::ALPN { Arrival::Cast(conn) } else { Arrival::Flyway(conn) })
+    }
+
+    /// Open a screen's connection to another wall: one per pair of walls, held
+    /// by `link/cast.rs` while any screen between them is open.
+    pub async fn dial_cast(&self, peer: EndpointId) -> Result<Connection, String> {
+        let go = async {
+            let connecting = self
+                .endpoint
+                .connect_with_opts(peer, cast::ALPN, ConnectOptions::new().with_transport_config(cast_transport()))
+                .await
+                .map_err(|e| format!("could not reach that wall: {e}"))?;
+            connecting.await.map_err(|e| format!("could not reach that wall: {e}"))
+        };
+        match tokio::time::timeout(EXCHANGE_WITHIN, go).await {
+            Ok(got) => got.map_err(|why| {
+                if refused_protocol(&why) {
+                    format!("that wall runs a Volery that cannot show screens ({why})")
+                } else {
+                    why
+                }
+            }),
+            Err(_) => Err(format!(
+                "no answer within {}s — that wall is probably asleep",
+                EXCHANGE_WITHIN.as_secs()
+            )),
+        }
+    }
+
+    /// Answer one wall that dialled us, on a connection `arrive` finished.
     ///
     /// `reply` is handed what arrived and who sent it, and says what to send
     /// back, which keeps every decision about *meaning* in `link.rs` and leaves
     /// this file knowing only about bytes.
-    pub async fn answer<F, Fut>(&self, incoming: Incoming, reply: F) -> Result<(), String>
+    pub async fn answer<F, Fut>(&self, conn: Connection, reply: F) -> Result<(), String>
     where
         F: FnOnce(Vec<Frame>, Dialler) -> Fut,
         Fut: Future<Output = Vec<Frame>>,
     {
-        let conn = incoming
-            .await
-            .map_err(|e| format!("a wall dialled and did not finish: {e}"))?;
         let who = Dialler { id: conn.remote_id(), current: conn.alpn() == ALPN };
 
         let (mut send, mut recv) = conn
@@ -355,5 +467,14 @@ mod tests {
     fn the_two_languages_are_two() {
         assert_ne!(ALPN, ALPN_V1);
         assert!(ALPN.starts_with(b"volery/flyway/"));
+    }
+
+    /// A screen is its own language, so `arrive` can tell it apart, and it is
+    /// neither of the two a sink pull falls back between.
+    #[test]
+    fn a_screen_speaks_a_third_language() {
+        assert_ne!(cast::ALPN, ALPN);
+        assert_ne!(cast::ALPN, ALPN_V1);
+        let _ = cast_transport();
     }
 }

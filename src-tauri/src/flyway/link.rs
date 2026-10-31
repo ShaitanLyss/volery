@@ -108,11 +108,12 @@ use super::key;
 use super::look::{self, LookMsg};
 use super::session::Msg;
 use super::tail::{self, TailMsg};
-use super::wire::{Dialler, Fault, Wire};
+use super::wire::{Arrival, Dialler, Fault, Wire};
 use crate::store::Store;
 
 pub(crate) mod accounting;
 mod billboard;
+pub mod cast;
 mod leaving;
 mod moves;
 pub(crate) mod seen;
@@ -232,6 +233,9 @@ pub struct Link {
     /// Walls that said goodbye and have not been heard from since — not dialled
     /// on the strength of a stale `heard` entry or the invite's seed.
     left: StdMutex<BTreeSet<String>>,
+    /// Screens: the connections this wall holds open to watch other walls'
+    /// monitors, and its own monitors as last read (`link/cast.rs`).
+    media: cast::Media,
 }
 
 /// One of this wall's prompts to another wall's card.
@@ -387,6 +391,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         accounts_due: AtomicBool::new(false),
         tenure: Tenure::new(),
         left: StdMutex::new(BTreeSet::new()),
+        media: cast::Media::default(),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
     if let Some((snapshot, at)) = state.early_cards.lock().ok().and_then(|mut e| e.take()) {
@@ -410,10 +415,20 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
             let l = serving.clone();
             tauri::async_runtime::spawn(async move {
                 let me = l.clone();
-                let out = l
-                    .wire
-                    .answer(incoming, move |heard, who| async move { me.answer_all(heard, who).await })
-                    .await;
+                let out = match l.wire.arrive(incoming).await {
+                    /* A screen holds its connection for as long as it is
+                       watched, so it gets this task to itself. */
+                    Ok(Arrival::Cast(conn)) => {
+                        cast::host(l.clone(), conn).await;
+                        Ok(())
+                    }
+                    Ok(Arrival::Flyway(conn)) => {
+                        l.wire
+                            .answer(conn, move |heard, who| async move { me.answer_all(heard, who).await })
+                            .await
+                    }
+                    Err(e) => Err(e),
+                };
                 if let Err(e) = out {
                     /* A failed dial is somebody else's network, not a reason
                        to stop listening. */
@@ -568,6 +583,7 @@ impl Link {
            wait on the credential manager. Names only — `creds::holdings`. */
         (f.holds, f.lacks) = crate::creds::holdings();
         (f.build, f.dev) = fleet::this_build();
+        f.screens = super::cast::announced_screens(f.accepting, self.media.screens());
         f
     }
 
@@ -579,6 +595,8 @@ impl Link {
         if self.tenure.is_closed() {
             return Err("this wall has left the flyway".to_string());
         }
+        /* Before the announcement `housekeep` makes, so it carries them. */
+        self.refresh_screens().await;
         self.housekeep();
         let mut dials = Vec::new();
         for host in self.due_peers() {
@@ -2269,6 +2287,7 @@ impl Link {
                     wants_rate: e.facts.wants_rate,
                     build: e.facts.build.clone(),
                     dev: e.facts.dev,
+                    screens: e.facts.screens.clone(),
                 }
             })
             .collect()
@@ -2641,6 +2660,9 @@ pub struct RosterRow {
     build: String,
     /// A debug build, a lab or `tauri dev` (`Facts::dev`).
     dev: bool,
+    /// Its monitors, as `Facts::screens` says them — empty unless it takes
+    /// work. What the screen picker lists for that machine.
+    screens: Vec<crate::cast::Monitor>,
 }
 
 #[derive(Serialize)]

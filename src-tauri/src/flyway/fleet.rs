@@ -300,6 +300,12 @@ pub struct Facts {
     /// installed release. Same version string, different thing: a lab at
     /// `0.74.2` is the tree as it was built, not the release of that name.
     pub dev: bool,
+    /// The monitors this wall shows other walls (`flyway/cast.rs`) — **only
+    /// while it takes work**, since a wall that would refuse a screen does not
+    /// advertise one. Empty from a wall that cannot show screens, or one from
+    /// before it could. Read every announcement, so a monitor plugged in
+    /// appears within a tick.
+    pub screens: Vec<crate::cast::Monitor>,
 }
 
 /// The first release whose walls say their `Facts::build`. A wall that sent

@@ -142,7 +142,10 @@ librespot-connect = "0.8"
 # so every attempt costs the OS its full SYN timeout. Measured 2026-08-28: 253s
 # to exhaust six access points. And `net`/`io-util`, for the loopback CONNECT
 # tunnel in `tunnel.rs` that gets librespot onto an IPv4 address at all.
-tokio = { version = "1", features = ["time", "net", "io-util"] }
+# `macros` and `sync` for the flyway's media channel (`flyway/link/cast.rs`):
+# a frame's stream waits on being acknowledged *or* superseded by a newer
+# keyframe, which is a `select!`, and nothing else in the tree needs one.
+tokio = { version = "1", features = ["time", "net", "io-util", "sync", "macros"] }
 # `SessionConfig::proxy` is an `Option<Url>` and librespot-core re-exports only
 # six of its own types, so the one place this app builds a URL needs the crate
 # directly. See `tunnel.rs` for why there is a proxy at all.
@@ -206,6 +209,12 @@ iroh = { version = "1.3.0", default-features = false, features = [
     "tls-ring",
     "portmapper",
 ] }
+# A screen's connection (`flyway/wire.rs`, `cast`) runs BBR, which iroh does
+# not re-export — `noq-proto` is the QUIC stack iroh already runs on, at the
+# version it pins, so this names nothing new. `bytes` is what a datagram is
+# handed as; also already in the tree under iroh.
+noq-proto = { version = "1.3.0", default-features = false }
+bytes = "1"
 
 [target.'cfg(windows)'.dependencies]
 # `#[implement]` in dropzone.rs expands to paths in this crate by name.

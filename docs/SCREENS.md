@@ -104,7 +104,11 @@ Defined in `cast/mod.rs`; the types are there now, the functions arrive with the
 ```rust
 pub fn monitors() -> Vec<Monitor>;
 pub fn subscribe(monitor: &str, want: Want, viewer: Arc<dyn Viewer>) -> Result<Subscription, String>;
-impl Subscription { pub fn want(&self, w: Want); pub fn key(&self); }   // Drop unsubscribes
+impl Subscription {
+    pub fn want(&self, w: Want);
+    pub fn key(&self);
+    pub fn cap(&self, kbps: Option<u32>);   // bitrate ceiling; min over viewers sharing a rendition
+}                                            // Drop unsubscribes
 pub fn input(monitor: &str, events: &[Input]);                          // → inject.rs
 ```
 
@@ -114,9 +118,22 @@ however many viewers there are; the loopback socket and the flyway are dumb pipe
 asks for one (`Subscription::key`) — a stale frame is worth nothing in a remote desktop, and a
 queue is latency.
 
-The flyway lane provides the same shape for a far machine:
-`flyway::link::cast::subscribe(host, monitor, want, viewer) -> Result<RemoteSubscription, String>`,
-with `want`, `key` and `input`.
+`cap` is how the flyway steers the encoder from the path (agreed core ↔ flyway, 2026-10-30):
+`None` is the hub's own choice; the flyway calls it at most twice a second as RTT and loss move.
+Resolution and frame rate need no hook — the flyway hands the hub a smaller `Want` on a relayed
+path.
+
+The flyway lane provides the same shape for a far machine, **async** because it dials:
+
+```rust
+pub async fn flyway::link::cast::subscribe(app: &AppHandle, host: &str, monitor: &str,
+    want: Want, viewer: Arc<dyn Viewer>) -> Result<RemoteSubscription, String>;
+impl RemoteSubscription { fn want(&self, Want); fn key(&self); fn input(&self, &[Input]); } // Drop closes
+```
+
+It answers once the host has said yes; `Err` carries the host's reason in words, for the socket
+to draw as `refused`. Afterwards the `viewer` gets the host hub's `Out`s untouched, plus
+`stats` the viewer's end makes, and `state` `ended` if the host or the connection goes.
 
 ## The loopback socket (core serves, front connects)
 
@@ -184,6 +201,37 @@ branch at `wire.rs:249` must learn it), following the link's tenure so leaving c
 - `Facts` gains `screens: Vec<Monitor>`, announced **only while the wall takes work** — a wall
   that would refuse a session does not advertise one.
 - the host refuses `subscribe` unless it takes work, read fresh, and shows the mark.
+
+**As built** (`flyway/cast.rs` is the design, `flyway/link/cast.rs` the wiring):
+
+- **Sealing**: per connection and per direction, `HKDF(wall key, salt = the connection's TLS
+  exporter, info = direction)`, ChaCha20-Poly1305 with a 64-bit counter nonce carried in front of
+  each message. The exporter is what makes a counter safe — the room key is shared by every
+  connection.
+- **A keyframe's stream carries the `config` in front of it**, so the two cannot be reordered;
+  the viewer forwards a config only when it differs from the last. Frames finishing out of order
+  are fed to the decoder in `seq` order from a keyframe (`cast::Order`); a gap unfilled after
+  80 ms is dropped and a keyframe asked for.
+- **Cursor position rides datagrams**, cursor shape the control stream.
+- **Transport**: BBR (noq's `Bbr3`), 1 s keep-alive, 8 s idle, no send fairness, control stream
+  at a higher priority than every frame, 8 MB stream window.
+- **Host → viewer texts the front reads**, in addition to the hub's own:
+  - `{"t":"state","state":"live","why":"through a relay, so held to 1152×720 at 15 fps"}` when a
+    relayed path holds the screen back (and again with `why: null` when it stops). A relayed
+    screen is held to 1280×720 box, 15 fps, 800 kbit/s.
+  - `{"t":"state","state":"refused","why":…}` / `{"t":"state","state":"ended","why":…}`.
+  - `{"t":"stats","path":"direct"|"relay"|null,"rtt_ms":…,"loss":null,"offset_us":…,"held":null}`
+    once a second, made at the viewer's end (both ends ride the same path).
+    **`offset_us` is host clock − viewer clock**, so capture → paint is
+    `paint_us − (capture_us − offset_us)`.
+- **The host's mark**: event `cast:watched` on the host wall,
+  `{ viewer: string | null, monitor: string, sid: number, on: boolean, driven: boolean }` — on
+  open (`on: true, driven: false`), on the first input (`driven: true`), and at the end
+  (`on: false`). `viewer` is the watching wall's host name. A session is driven or not for its
+  whole life once input arrives; a session ended while driven gets a `ReleaseAll` first.
+- **Roster**: `RosterRow.screens: Monitor[]` (camelCase JSON, fields as `cast::Monitor`), empty
+  unless that wall takes work. The picker lists every machine's monitors from it.
+- **Turning the switch off mid-screen** ends every screen within two seconds with `refused`.
 
 ## Stages
 
