@@ -173,6 +173,13 @@ is most of what makes a remote desktop feel like it isn't one.
 Viewer → host, **text** (JSON): `{"t":"want","w","h","fps","visible","focused"}`,
 `{"t":"key"}` (decoder lost its place), `{"t":"drive","on":bool}` (local through-the-tile).
 
+`drive` is answered, host → viewer, with `{"t":"drive","on":bool}` saying what actually happened,
+and a `why` when the answer is `false` to an `on: true` (no main window, another screen already
+holds the keyboard). A **local** tile's binary input does nothing while drive is off and goes to
+`drive::Drive` while it is on — never `inject`. A **remote** tile's input always goes, and while
+its want says `focused` the keyboard is captured for it (`drive::Keys::Capture`), so system keys
+reach the far machine; `drive` there is acknowledged and changes nothing.
+
 Viewer → host, **binary**: one or more input events, concatenated:
 
 | kind | layout | |

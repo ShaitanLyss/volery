@@ -232,8 +232,11 @@ memory, measured rather than assumed (see SCREENS.md's *Probe*).
 - A session is two plain threads, reader and writer, on two `WebSocket`s over one cloned
   `TcpStream`. Nothing subscribes until the first `want`. A **local** session never injects:
   Volery covers the desktop it shows, so an injected click lands on Volery — local input goes
-  only through the input lane's through-the-tile mode (`drive.rs`). A remote session's input goes
-  to `RemoteSubscription::input`, and the far host holds the `inject::Driver`.
+  only to a `drive::Drive`, made on `{"t":"drive","on":true}` and dropped (Volery restored) when
+  the session ends. A remote session's input goes to `RemoteSubscription::input`, and the far host
+  holds the `inject::Driver`; while its want is `focused` the session also holds a
+  `drive::Keys::Capture` hook so system keys go across. Only one hook exists at a time, so a second
+  focused screen drives without the system keys rather than failing.
 - `exclude::Hold` is taken by every **local** session and protects every webview window from
   capture while at least one is held.
 

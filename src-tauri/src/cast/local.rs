@@ -114,30 +114,113 @@ enum Feed {
     /// This machine. Input reaches it only through the input lane's
     /// through-the-tile mode (`drive.rs`), never `inject` — injected clicks
     /// would land on Volery, which is covering the very desktop being shown.
-    /// Until that is wired, a local tile's input is dropped here.
-    Local { sub: hub::Subscription, _exclude: Option<super::exclude::Hold> },
-    Remote(crate::flyway::link::cast::RemoteSubscription),
+    /// While `drive` is `None` a local tile's input is dropped here.
+    Local {
+        sub: hub::Subscription,
+        monitor: super::Monitor,
+        drive: Option<super::drive::Drive>,
+        _exclude: Option<super::exclude::Hold>,
+    },
+    /// Another wall. Its input always goes; while the tile is focused, the
+    /// keyboard is captured too, so Win, Alt+Tab and Alt+F4 reach the far
+    /// machine rather than this one (`drive::Keys::Capture`).
+    Remote { sub: Arc<crate::flyway::link::cast::RemoteSubscription>, keys: Option<super::drive::Hold> },
 }
 
 impl Feed {
-    fn want(&self, w: Want) {
-        match self {
-            Feed::Local { sub, .. } => sub.want(w),
-            Feed::Remote(r) => r.want(w),
-        }
-    }
     fn key(&self) {
         match self {
             Feed::Local { sub, .. } => sub.key(),
-            Feed::Remote(r) => r.key(),
+            Feed::Remote { sub, .. } => sub.key(),
         }
     }
+
     fn input(&self, events: &[Input]) {
         match self {
-            Feed::Local { .. } => {
-                let _ = events;
+            Feed::Local { drive: Some(d), .. } => d.apply(events),
+            Feed::Local { drive: None, .. } => {}
+            Feed::Remote { sub, .. } => sub.input(events),
+        }
+    }
+
+    fn want(&mut self, w: Want, app: Option<&AppHandle>, viewer: &Arc<Outbox>) {
+        match self {
+            Feed::Local { sub, .. } => sub.want(w),
+            Feed::Remote { sub, keys } => {
+                sub.want(w);
+                if w.focused && keys.is_none() {
+                    *keys = capture_keys(app, sub.clone(), viewer.clone());
+                } else if !w.focused {
+                    keys.take();
+                }
             }
-            Feed::Remote(r) => r.input(events),
+        }
+    }
+
+    /// `{"t":"drive","on":…}`. Answered with the same message carrying what
+    /// actually happened, and a `why` when it did not.
+    fn drive(&mut self, on: bool, app: Option<&AppHandle>, viewer: &Arc<Outbox>) {
+        let said = match self {
+            Feed::Local { monitor, drive, .. } => {
+                if on && drive.is_none() {
+                    match volery_hwnd(app).and_then(|h| super::drive::Drive::start(h, monitor, viewer.clone())) {
+                        Ok(d) => {
+                            *drive = Some(d);
+                            Ok(true)
+                        }
+                        Err(why) => Err(why),
+                    }
+                } else if !on {
+                    if let Some(mut d) = drive.take() {
+                        // Waits for a click still in flight, then restores.
+                        d.leave();
+                        log_settles();
+                    }
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+            // A far screen is driven by its input alone; there is no mode.
+            Feed::Remote { .. } => Ok(on),
+        };
+        let msg = match said {
+            Ok(on) => serde_json::json!({ "t": "drive", "on": on }),
+            Err(why) => serde_json::json!({ "t": "drive", "on": false, "why": why }),
+        };
+        viewer.send(Out::Text(msg.to_string().into()));
+    }
+}
+
+/// Whether clicks through the tile land: the mouse hook's count of clicks it
+/// saw delivered, and of those it gave up on — a climbing second number is
+/// clicks landing on Volery (`drive::settles`). Logged at each drive's end,
+/// as the field reading for the settle bound.
+fn log_settles() {
+    let (confirmed, gave_up) = super::drive::settles();
+    log::info!("cast: drive settles so far: {confirmed} confirmed, {gave_up} gave up");
+}
+
+fn volery_hwnd(app: Option<&AppHandle>) -> Result<isize, String> {
+    use tauri::Manager;
+    let w = app.and_then(|a| a.get_webview_window("main")).ok_or("no main window to step aside")?;
+    Ok(w.hwnd().map_err(|e| e.to_string())?.0 as isize)
+}
+
+fn capture_keys(
+    app: Option<&AppHandle>,
+    sub: Arc<crate::flyway::link::cast::RemoteSubscription>,
+    viewer: Arc<Outbox>,
+) -> Option<super::drive::Hold> {
+    let hwnd = volery_hwnd(app).ok()?;
+    let sink: Arc<dyn Fn(&[Input]) + Send + Sync> = Arc::new(move |ev| sub.input(ev));
+    match super::drive::hold(super::drive::Keys::Capture(sink), hwnd, viewer, Box::new(|| {})) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            // Another screen holds the keyboard; this one still drives,
+            // without the system keys.
+            log::info!("cast: keyboard capture for a far screen refused: {e}");
+            None
         }
     }
 }
@@ -222,10 +305,14 @@ fn session(server: Arc<Server>, stream: TcpStream) {
                     Some("want") => {
                         let Some(w) = parse_want(&v) else { continue };
                         let mut f = feed.lock().unwrap();
-                        match f.as_ref() {
-                            Some(feed) => feed.want(w),
+                        match f.as_mut() {
+                            Some(feed) => feed.want(w, server.app.as_ref(), &outbox),
                             None => match attach(server.app.as_ref(), &minted, w, outbox.clone()) {
-                                Ok(made) => *f = Some(made),
+                                Ok(mut made) => {
+                                    // A first want may already be focused.
+                                    made.want(w, server.app.as_ref(), &outbox);
+                                    *f = Some(made);
+                                }
                                 Err(why) => {
                                     outbox.send(state_text("refused", Some(&why)));
                                     break;
@@ -238,8 +325,12 @@ fn session(server: Arc<Server>, stream: TcpStream) {
                             f.key();
                         }
                     }
-                    /* {"t":"drive"} is the input lane's through-the-tile mode
-                       (`cast/drive.rs`), not yet decided; heard and let go. */
+                    Some("drive") => {
+                        let on = v.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+                        if let Some(f) = feed.lock().unwrap().as_mut() {
+                            f.drive(on, server.app.as_ref(), &outbox);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -257,7 +348,9 @@ fn session(server: Arc<Server>, stream: TcpStream) {
     }
     // The socket is gone: unsubscribe (and lift every held key) before the
     // writer drains, so nothing more is sent to a viewer nobody reads.
-    feed.lock().unwrap().take();
+    if let Some(Feed::Local { drive: Some(_), .. }) = feed.lock().unwrap().take() {
+        log_settles();
+    }
     outbox.close();
     if let Ok(w) = write {
         let _ = w.join();
@@ -268,13 +361,14 @@ fn attach(app: Option<&AppHandle>, m: &Minted, want: Want, outbox: Arc<Outbox>) 
     let viewer: Arc<dyn Viewer> = outbox;
     match &m.host {
         None => {
+            let monitor = super::monitors::list().into_iter().find(|x| x.id == m.monitor).ok_or("that monitor is gone")?;
             let sub = hub::subscribe(&m.monitor, want, viewer)?;
-            Ok(Feed::Local { sub, _exclude: app.map(super::exclude::hold) })
+            Ok(Feed::Local { sub, monitor, drive: None, _exclude: app.map(super::exclude::hold) })
         }
         Some(host) => {
             let app = app.ok_or("no flyway without the app")?;
             let sub = tauri::async_runtime::block_on(crate::flyway::link::cast::subscribe(app, host, &m.monitor, want, viewer))?;
-            Ok(Feed::Remote(sub))
+            Ok(Feed::Remote { sub: Arc::new(sub), keys: None })
         }
     }
 }
