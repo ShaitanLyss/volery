@@ -33,7 +33,7 @@
 //! connection closing; `subscribe` refuses on a closed link.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -99,8 +99,46 @@ const IN_FLIGHT: usize = 6;
 /// The viewer's housekeeping tick: gaps given up on, and every tenth, a ping
 /// and the stats.
 const VIEW_TICK: Duration = Duration::from_millis(100);
+/// How long the tick waits for this machine's monitors (`refresh_screens`).
+const LIST_WITHIN: Duration = Duration::from_secs(5);
 /// Control outranks every frame on the connection.
 const CONTROL_PRIORITY: i32 = 10;
+
+/// What happened to one session's frames, counted where it happened and said
+/// at `debug` every couple of seconds — a remote tile that shows nothing has
+/// five places it could have stopped, and this names which.
+#[derive(Default)]
+struct Tally {
+    offered: AtomicU64,
+    keys: AtomicU64,
+    admitted: AtomicU64,
+    dropped: AtomicU64,
+    written: AtomicU64,
+    acked: AtomicU64,
+    reset: AtomicU64,
+    failed: AtomicU64,
+}
+
+impl Tally {
+    fn bump(c: &AtomicU64) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn say(&self) -> String {
+        let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        format!(
+            "offered {} (keys {}) admitted {} dropped {} written {} acked {} reset {} failed {}",
+            g(&self.offered),
+            g(&self.keys),
+            g(&self.admitted),
+            g(&self.dropped),
+            g(&self.written),
+            g(&self.acked),
+            g(&self.reset),
+            g(&self.failed)
+        )
+    }
+}
 
 fn now_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
@@ -119,6 +157,8 @@ pub(crate) struct Media {
     dialling: tokio::sync::Mutex<()>,
     next_sid: AtomicU32,
     screens: StdMutex<Vec<Monitor>>,
+    /// A monitor list is being read right now (`refresh_screens`).
+    listing: AtomicBool,
 }
 
 impl Media {
@@ -130,11 +170,29 @@ impl Media {
 impl Link {
     /// Read this machine's monitors for the next announcement. A few
     /// milliseconds of DXGI, so off the runtime's workers.
-    pub(super) async fn refresh_screens(&self) {
-        if let Ok(m) = crate::off_main(hub::monitors).await {
-            if let Ok(mut s) = self.media.screens.lock() {
+    ///
+    /// **Bounded, because the tick waits on it.** The announcement, every dial
+    /// and every push ride the tick, and an enumeration that does not come
+    /// back — a DXGI call stuck behind a capture, which lab walls were seen to
+    /// do on 2026-10-31 when the tick stopped for good — would take the wall
+    /// off the flyway while leaving it looking up. So the tick waits
+    /// `LIST_WITHIN` and announces the last list it had; the read that is
+    /// still out writes its answer when it comes, and no second one is started
+    /// behind it.
+    pub(super) async fn refresh_screens(self: &Arc<Self>) {
+        if self.media.listing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let l = self.clone();
+        let read = crate::off_main(move || {
+            let m = hub::monitors();
+            if let Ok(mut s) = l.media.screens.lock() {
                 *s = m;
             }
+            l.media.listing.store(false, Ordering::Release);
+        });
+        if tokio::time::timeout(LIST_WITHIN, read).await.is_err() {
+            log::warn!("flyway: this machine's monitors did not list within {}s — announcing the last list", LIST_WITHIN.as_secs());
         }
     }
 
@@ -178,6 +236,7 @@ impl Link {
             ctl: tx,
             sessions: StdMutex::new(HashMap::new()),
             clock: StdMutex::new(fc::Clock::default()),
+            heard: Tally::default(),
         });
         tauri::async_runtime::spawn(write_control(send, rx));
         tauri::async_runtime::spawn(peer.clone().read_control(recv));
@@ -268,6 +327,9 @@ struct Peer {
     ctl: mpsc::UnboundedSender<Vec<u8>>,
     sessions: StdMutex<HashMap<u32, Watching>>,
     clock: StdMutex<fc::Clock>,
+    /// Frame streams heard (`offered`), read whole (`written`), cut off
+    /// (`reset`), and frames handed to the tile in order (`admitted`).
+    heard: Tally,
 }
 
 /// One screen being watched from here.
@@ -429,6 +491,7 @@ impl Peer {
         let Ok(mut sessions) = self.sessions.lock() else { return };
         let Some(w) = sessions.get_mut(&sid) else { return };
         for (cfg, out) in w.order.arrive(h.seq, h.key, (h.w, h.h), now_ms(), (config, Out::Binary(frame))) {
+            Tally::bump(&self.heard.admitted);
             if let Some(c) = cfg {
                 if w.configs.fresh(&c) {
                     w.viewer.send(Out::Text(c.into()));
@@ -449,6 +512,7 @@ impl Peer {
 
     async fn read_frames(self: Arc<Self>) {
         while let Ok(mut recv) = self.conn.accept_uni().await {
+            Tally::bump(&self.heard.offered);
             let p = self.clone();
             tauri::async_runtime::spawn(async move {
                 let (mut sid, mut config, mut frame) = (None, None, None);
@@ -466,9 +530,13 @@ impl Peer {
                         Ok(None) => break,
                         /* Reset because a newer keyframe passed it, or cut off:
                            nothing on this stream is shown. */
-                        Err(_) => return,
+                        Err(_) => {
+                            Tally::bump(&p.heard.reset);
+                            return;
+                        }
                     }
                 }
+                Tally::bump(&p.heard.written);
                 if let (Some(sid), Some(frame)) = (sid, frame) {
                     p.frame(sid, config, frame);
                 }
@@ -509,6 +577,9 @@ impl Peer {
                 continue;
             }
             seal_datagram(&self.seal, &self.conn, fc::K_PING, 0, &now_us().to_le_bytes());
+            if n % 20 == 0 {
+                log::debug!("cast: from {} — {}", self.host, self.heard.say());
+            }
             let path = read_path(&self.conn);
             let offset = self.clock.lock().ok().and_then(|c| c.offset_us());
             let stats = fc::stats(path.map(|p| p.0), path.map(|p| p.1.rtt_ms), None, offset, None);
@@ -680,6 +751,7 @@ impl Hosting {
             config: StdMutex::new(None),
             want_key: Arc::new(Notify::new()),
             alive: AtomicBool::new(true),
+            tally: Arc::new(Tally::default()),
         });
         let (m, w, v) = (monitor.clone(), fit.want, viewer.clone() as Arc<dyn Viewer>);
         /* Starting a capture is driver work, and may take a moment. */
@@ -702,7 +774,15 @@ impl Hosting {
            capture would outlive the session for as long as the hub sent
            nothing (a paused tile sends nothing). Dropping `Shown` is what
            ends it. */
-        tauri::async_runtime::spawn(send_frames(self.conn.clone(), self.seal.clone(), sid, rx, Arc::downgrade(&sub), viewer.want_key.clone()));
+        tauri::async_runtime::spawn(send_frames(
+            self.conn.clone(),
+            self.seal.clone(),
+            sid,
+            rx,
+            Arc::downgrade(&sub),
+            viewer.want_key.clone(),
+            viewer.tally.clone(),
+        ));
         let held = fit.held.clone();
         if let Ok(mut s) = self.sessions.lock() {
             s.insert(sid, Shown { monitor: monitor.clone(), sub, viewer, want, fit, driven: false, driver });
@@ -780,6 +860,21 @@ impl Hosting {
                 }
                 continue;
             }
+            if n % 4 == 0 {
+                if let Ok(s) = self.sessions.lock() {
+                    for (sid, sh) in s.iter() {
+                        log::debug!(
+                            "cast: to {:?} sid {sid} — {} · want {}x{}@{} kbps cap {:?}",
+                            self.viewer_wall,
+                            sh.viewer.tally.say(),
+                            sh.fit.want.w,
+                            sh.fit.want.h,
+                            sh.fit.want.fps,
+                            sh.fit.kbps
+                        );
+                    }
+                }
+            }
             let Some((path, sample)) = read_path(&self.conn) else { continue };
             if let Ok(mut p) = self.path.lock() {
                 *p = Some(path);
@@ -807,6 +902,7 @@ struct Outgoing {
     config: StdMutex<Option<Arc<str>>>,
     want_key: Arc<Notify>,
     alive: AtomicBool,
+    tally: Arc<Tally>,
 }
 
 impl Viewer for Outgoing {
@@ -823,15 +919,23 @@ impl Viewer for Outgoing {
             Out::Text(t) => seal_send(&self.seal, &self.ctl, fc::K_TEXT, self.sid, t.as_bytes()),
             Out::Binary(b) if b.first() == Some(&cw::VIDEO) => {
                 let key = cw::is_keyframe(&b);
+                Tally::bump(&self.tally.offered);
+                if key {
+                    Tally::bump(&self.tally.keys);
+                }
                 let room = self.frames.capacity() > 0;
                 let admit = self.behind.lock().map(|mut g| g.admit(key, room)).unwrap_or(fc::Admit::Drop);
                 match admit {
                     fc::Admit::Send => {
+                        Tally::bump(&self.tally.admitted);
                         let cfg = if key { self.config.lock().ok().and_then(|c| c.clone()) } else { None };
                         let _ = self.frames.try_send((cfg, b));
                     }
-                    fc::Admit::Drop => {}
-                    fc::Admit::DropAndAskKey => self.want_key.notify_one(),
+                    fc::Admit::Drop => Tally::bump(&self.tally.dropped),
+                    fc::Admit::DropAndAskKey => {
+                        Tally::bump(&self.tally.dropped);
+                        self.want_key.notify_one();
+                    }
                 }
             }
             Out::Binary(b) if b.first() == Some(&cw::CURSOR_POS) => {
@@ -853,6 +957,7 @@ async fn send_frames(
     mut rx: mpsc::Receiver<(Option<Arc<str>>, Arc<[u8]>)>,
     sub: Weak<hub::Sub>,
     want_key: Arc<Notify>,
+    tally: Arc<Tally>,
 ) {
     let in_flight = Arc::new(Semaphore::new(IN_FLIGHT));
     let (epoch, _) = watch::channel(0u64);
@@ -881,20 +986,26 @@ async fn send_frames(
         }
         let Ok(m) = seal.seal(fc::K_BIN, sid, &frame) else { continue };
         msgs.push(m);
-        let (conn, mut passed) = (conn.clone(), epoch.subscribe());
+        let (conn, mut passed, tally) = (conn.clone(), epoch.subscribe(), tally.clone());
         tauri::async_runtime::spawn(async move {
             let _permit = permit;
-            let Ok(mut s) = conn.open_uni().await else { return };
+            let Ok(mut s) = conn.open_uni().await else {
+                Tally::bump(&tally.failed);
+                return;
+            };
             for m in &msgs {
                 let Ok(p) = fc::prefix(m.len()) else { return };
                 if s.write_all(&p).await.is_err() || s.write_all(m).await.is_err() {
+                    Tally::bump(&tally.failed);
                     return;
                 }
             }
             let _ = s.finish();
+            Tally::bump(&tally.written);
             tokio::select! {
-                _ = s.stopped() => {}
+                _ = s.stopped() => Tally::bump(&tally.acked),
                 _ = passed.wait_for(|e| *e > mine) => {
+                    Tally::bump(&tally.reset);
                     let _ = s.reset(VarInt::from_u32(0));
                 }
             }

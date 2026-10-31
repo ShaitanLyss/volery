@@ -168,25 +168,27 @@ pub enum Arrival {
 ///   16 ms and silence between — and noq's v3 reads that silence badly. The
 ///   bitrate is steered from above anyway (`cast::Steer`), which is the job
 ///   BBR would have been doing for the queue.
-/// - **A second's keep-alive and an eight-second idle**, so a laptop shut
-///   mid-screen reads as gone in seconds rather than the default thirty, and
-///   a NAT mapping on a quiet screen (paused, not visible) does not lapse.
+/// - **A second's keep-alive, and iroh's own idle timeout.** The keep-alive
+///   stops a NAT mapping lapsing on a quiet screen (paused, not visible). The
+///   idle was eight seconds, so a shut laptop would read as gone quickly — and
+///   that undercut iroh's per-path idle (fifteen) and its five-second path
+///   heartbeat, which its docs warn against: two lab walls on one machine saw
+///   the screen's connection close "timed out" every minute or so while the
+///   flyway beside it was fine (2026-10-31). A shut laptop now takes iroh's
+///   thirty seconds to read as gone, and the tile says `ended` then.
 /// - **No send fairness**: streams go out in the order they were written, so
 ///   the oldest frame finishes first instead of every frame in flight arriving
 ///   late together; the control stream outranks them all by priority.
 /// - **Windows sized for a keyframe**: a 4K keyframe can pass the default
 ///   1.25 MB stream window, which would stall it for a round trip mid-frame.
 pub fn cast_transport() -> QuicTransportConfig {
-    let mut b = QuicTransportConfig::builder()
+    let b = QuicTransportConfig::builder()
         .keep_alive_interval(Duration::from_secs(1))
         .send_fairness(false)
         .max_concurrent_uni_streams(VarInt::from_u32(1024))
         .max_concurrent_bidi_streams(VarInt::from_u32(4))
         .stream_receive_window(VarInt::from_u32(8 * 1024 * 1024))
         .send_window(32 * 1024 * 1024);
-    if let Ok(idle) = iroh::endpoint::IdleTimeout::try_from(Duration::from_secs(8)) {
-        b = b.max_idle_timeout(Some(idle));
-    }
     b.build()
 }
 
