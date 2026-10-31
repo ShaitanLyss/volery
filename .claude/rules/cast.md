@@ -151,6 +151,16 @@ asking process and only while asked). It took capture→encoded p50 from **47 ms
 processor's blt (kept — it is still correct to submit at once) and `SetGPUThreadPriority(7)`
 (accepted, no measurable effect; kept as the scheduler's own word for latency-bound work).
 
+## What did not help, so nobody tries it again blind
+
+- **MMCSS / thread priority** on the capture, encoder and writer threads (`capture::urgent`): no
+  measurable change in interleaved A/B runs. Kept because it is free and the CPU here is pinned more
+  often than not; `CAST_NORMAL_PRIORITY` turns it off for the probe.
+- **ARGB32 into the encoder** (`Settings::rgb`, probe only): Intel's MFT lists it, and it skips our
+  conversion at native size, but its own conversion is dearer — p50 37–42 ms against NV12's 21–24.
+- **The socket** was suspected of a 14 ms gap and holds none: the hub's `encode_ms` and the
+  client's acquire→received agree to a millisecond.
+
 ## The iGPU is shared with everything you are looking at
 
 During the probe Intel's 3D engine sat at ~100%: Chrome ~42%, the wall's own WebView2 ~42%,

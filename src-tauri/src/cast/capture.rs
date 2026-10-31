@@ -196,6 +196,31 @@ mod os {
         }
     }
 
+    /// Mark this thread as one a frame waits on: MMCSS's "Capture" task, or
+    /// failing that the highest normal priority.
+    ///
+    /// This machine is rarely quiet — a wall of agents compiling is its
+    /// ordinary state, with the CPU pinned for minutes — and a capture or an
+    /// encoder event thread at normal priority waits its turn behind rustc.
+    /// MMCSS is the scheduler's own channel for "late is useless" work (audio
+    /// uses it) and asks for no rights. Set once on a thread that does nothing
+    /// else, and left for the thread's end to clear. Measured: no change with
+    /// the iGPU as the bottleneck (SCREENS.md, Probe) — kept because it is free
+    /// and the CPU here is pinned more often than not. `CAST_NORMAL_PRIORITY`
+    /// turns it off, so the probe can measure it again.
+    pub fn urgent() {
+        use windows::Win32::System::Threading::{AvSetMmThreadCharacteristicsW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
+        if std::env::var_os("CAST_NORMAL_PRIORITY").is_some() {
+            return;
+        }
+        let mut index = 0u32;
+        if unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Capture"), &mut index) }.is_err() {
+            unsafe {
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            }
+        }
+    }
+
     pub fn wall_us() -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
     }

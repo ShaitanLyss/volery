@@ -543,6 +543,7 @@ mod live {
     fn capture_thread(source: Arc<Source>) {
         encode::mta();
         let _fine = crate::cast::capture::FineTimer::hold();
+        crate::cast::capture::urgent();
         if let Err(e) = run(&source) {
             log::warn!("cast: capture of {} ended: {e}", source.monitor.id);
             broadcast(&source, &state_text("ended", Some(&e)), false);
@@ -607,7 +608,7 @@ mod live {
                             None => {
                                 let token = NEXT.fetch_add(1, Ordering::SeqCst);
                                 sizes().lock().unwrap().insert(token, r.size);
-                                let settings = Settings { w: r.size.0, h: r.size.1, fps: r.fps, kbps: r.kbps };
+                                let settings = Settings { w: r.size.0, h: r.size.1, fps: r.fps, kbps: r.kbps, rgb: false };
                                 let scaler = Scaler::new(&dup.gpu, dup.size, r.size, r.fps).map_err(|e| format!("video processor: {e}"))?;
                                 let encoder = Encoder::new(&dup.gpu, settings, fan_out(source.clone(), token, r.fps))
                                     .map_err(|e| format!("encoder: {e}"))?;

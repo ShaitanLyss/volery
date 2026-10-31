@@ -62,10 +62,11 @@ mod probe {
         monitor: Option<String>,
         encode_on: Option<u64>,
         serve: bool,
+        rgb: bool,
     }
 
     fn args() -> Args {
-        let mut a = Args { secs: 5, size: None, fps: 60, monitor: None, encode_on: None, serve: false };
+        let mut a = Args { secs: 5, size: None, fps: 60, monitor: None, encode_on: None, serve: false, rgb: false };
         let mut it = std::env::args().skip(1);
         while let Some(k) = it.next() {
             match k.as_str() {
@@ -73,6 +74,7 @@ mod probe {
                 "--fps" => a.fps = it.next().and_then(|v| v.parse().ok()).unwrap_or(60),
                 "--monitor" => a.monitor = it.next(),
                 "--serve" => a.serve = true,
+                "--rgb" => a.rgb = true,
                 "--encode-on" => a.encode_on = it.next().and_then(|v| u64::from_str_radix(&v, 16).ok()),
                 "--size" => {
                     a.size = it.next().and_then(|v| {
@@ -225,6 +227,8 @@ mod probe {
         encode::start().expect("MFStartup");
         let _fine = (std::env::var_os("CAST_COARSE").is_none()).then(skein_lib::cast::capture::FineTimer::hold);
         println!("== system timer: {}", if _fine.is_some() { "1 ms (FineTimer held)" } else { "default (CAST_COARSE set)" });
+        skein_lib::cast::capture::urgent();
+        println!("== thread priority: {}", if std::env::var_os("CAST_NORMAL_PRIORITY").is_some() { "normal (CAST_NORMAL_PRIORITY set)" } else { "MMCSS Capture" });
 
         println!("== adapters");
         for ad in gpu::adapters().unwrap() {
@@ -239,6 +243,9 @@ mod probe {
         for c in encode::hardware_h264(None).unwrap() {
             let made: windows::core::Result<windows::Win32::Media::MediaFoundation::IMFTransform> = unsafe { c.activate.ActivateObject() };
             println!("  {}  {}  activates: {}", c.name, c.vendor.clone().unwrap_or_default(), match &made { Ok(_) => "yes".into(), Err(e) => e.to_string() });
+            if let Ok(t) = &made {
+                println!("    takes: {}", encode::input_subtypes(t).join(", "));
+            }
             unsafe {
                 let _ = c.activate.ShutdownObject();
             }
@@ -378,7 +385,14 @@ mod probe {
         let even = |v: u32| v & !1;
         let dst = a.size.map(|(w, h)| (even(w), even(h))).unwrap_or((even(src.0), even(src.1)));
         let kbps = ((dst.0 as f64 * dst.1 as f64 * a.fps as f64 * 0.08) / 1000.0).clamp(1000.0, 40000.0) as u32;
-        let settings = Settings { w: dst.0, h: dst.1, fps: a.fps, kbps };
+        let rgb = a.rgb && dst == src;
+        let settings = Settings { w: dst.0, h: dst.1, fps: a.fps, kbps, rgb };
+        if a.rgb && !rgb {
+            println!("  --rgb only at native size; converting to NV12 instead");
+        }
+        if rgb {
+            println!("  feeding BGRA straight to the encoder (ARGB32), no video processor");
+        }
         println!("  duplicating {}x{}, encoding {}x{}@{} at {} kbps CBR", src.0, src.1, dst.0, dst.1, a.fps, kbps);
 
         // Windows: the scene, the excluded square, the control square.
@@ -500,7 +514,14 @@ mod probe {
                     }
                     None => dup.latest.clone(),
                 };
-                scaler.blt(&gpu, &src_tex, &slot.texture, slot.index).map_err(|e| format!("blt: {e}"))?;
+                if rgb {
+                    unsafe {
+                        gpu.context.CopySubresourceRegion(&slot.texture, slot.index, 0, 0, 0, &src_tex, 0, None);
+                        gpu.context.Flush();
+                    }
+                } else {
+                    scaler.blt(&gpu, &src_tex, &slot.texture, slot.index).map_err(|e| format!("blt: {e}"))?;
+                }
                 let key = Instant::now() >= next_key;
                 if key {
                     next_key += Duration::from_secs(2);
@@ -522,7 +543,11 @@ mod probe {
         for _ in 0..3 {
             if let Some(slot) = encoder.slot() {
                 let src_tex = bridge.as_ref().map(|b| b.dst.clone()).unwrap_or_else(|| dup.latest.clone());
-                let _ = scaler.blt(&gpu, &src_tex, &slot.texture, slot.index);
+                if rgb {
+                    unsafe { gpu.context.CopySubresourceRegion(&slot.texture, slot.index, 0, 0, 0, &src_tex, 0, None) };
+                } else {
+                    let _ = scaler.blt(&gpu, &src_tex, &slot.texture, slot.index);
+                }
                 let t = wall_us() as i64 * 10;
                 captured.lock().unwrap().insert(t, Instant::now());
                 let fed = encoder.submit(slot, t, 10_000_000 / a.fps as i64, false);

@@ -183,6 +183,7 @@ fn session(server: Arc<Server>, stream: TcpStream) {
     // The writer: everything the hub (or the flyway) hands this viewer.
     let (wo, wf) = (outbox.clone(), feed.clone());
     let write = std::thread::Builder::new().name("cast-write".into()).spawn(move || {
+        crate::cast::capture::urgent();
         loop {
             if wo.take_key_request() {
                 if let Some(f) = wf.lock().unwrap().as_ref() {

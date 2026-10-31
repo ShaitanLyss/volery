@@ -273,6 +273,19 @@ hybrid laptop, with the machine busy (other lanes' cargo builds, Chrome and the 
 - **The iGPU is the bottleneck that remains.** Its 3D engine sat at ~100% during the run
   (Chrome 42%, the wall's WebView2 42%, DWM 15%), and the video processor's conversion queues
   behind them. `SetGPUThreadPriority(7)` was accepted and changed nothing measurable.
+- **The socket adds ~nothing.** In the `--serve` run the hub's own stats said `encode_ms` 26
+  (acquire → encoder output, inside the hub) and the client measured 25 ms acquire → *received*:
+  fan-out, the outbox, the writer thread and loopback TCP (`TCP_NODELAY`) are inside the noise.
+  The probe's own rows above were first stamped at the *feed*, which left out the wait for a frame
+  to fall due and the conversion; stamped at the acquire, as the hub stamps, 720p reads
+  p50 14–18 ms on a busy machine (acquire → `ProcessInput` p50 3–7 ms, inside the encoder 9–14).
+- **Thread priority buys nothing measurable here.** MMCSS "Capture" on the capture, encoder and
+  socket-writer threads, interleaved A/B ×3 at 720p: p50 14.3/18.5/16.3 ms with, 18.0/17.3/13.3
+  without. The CPU is not where a frame waits; the iGPU is. Kept, since a pinned CPU is this
+  machine's ordinary state and it costs nothing.
+- **ARGB32 straight in is slower.** Intel's MFT also takes `MFVideoFormat_ARGB32`, which would
+  skip our conversion at native size. A/B ×2 at 1440p: p50 37–42 ms and 33–36 fps against NV12's
+  21–24 ms and 44–47 fps. Its own conversion is dearer than the video processor's. NV12 stays.
 - **NVENC is not reachable through Media Foundation here.** NVIDIA's H.264 MFT is listed for the
   4080's LUID but `ActivateObject` fails with `E_UNEXPECTED` in this process, filtered or not and
   with an `NvOptimusEnablement` export. Using the 4080 would mean the NVENC SDK directly plus a

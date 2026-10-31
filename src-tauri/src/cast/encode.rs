@@ -112,6 +112,12 @@ pub struct Settings {
     pub h: u32,
     pub fps: u32,
     pub kbps: u32,
+    /// Feed the desktop's own BGRA (`MFVideoFormat_ARGB32`) rather than NV12,
+    /// leaving the colour conversion to the encoder: only at native size,
+    /// since the encoder does not scale. Measured *slower* on Intel's MFT
+    /// (SCREENS.md, Probe), so only the probe sets it — kept so the claim can
+    /// be measured again on another machine.
+    pub rgb: bool,
 }
 
 /// One encoded access unit.
@@ -259,6 +265,28 @@ mod os {
         take(list, count, luid)
     }
 
+    /// The input formats an encoder lists once given an H.264 output type, as
+    /// FourCCs — the probe's question of whether a frame could skip our own
+    /// conversion and go in as the BGRA the desktop already is.
+    pub fn input_subtypes(t: &IMFTransform) -> Vec<String> {
+        let s = Settings { w: 1280, h: 720, fps: 60, kbps: 4000, rgb: false };
+        unsafe {
+            let _ = t.GetAttributes().and_then(|a| a.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1));
+            if let Ok(o) = output_type(&s) {
+                let _ = t.SetOutputType(0, &o, 0);
+            }
+        }
+        let mut out = Vec::new();
+        for i in 0..32 {
+            let Ok(mt) = (unsafe { t.GetInputAvailableType(0, i) }) else { break };
+            if let Ok(g) = unsafe { mt.GetGUID(&MF_MT_SUBTYPE) } {
+                let cc = g.data1.to_le_bytes();
+                out.push(if cc.iter().all(|c| c.is_ascii_graphic()) { String::from_utf8_lossy(&cc).into_owned() } else { format!("{:?}", g) });
+            }
+        }
+        out
+    }
+
     struct Pending {
         sample: IMFSample,
         key: bool,
@@ -378,7 +406,7 @@ mod os {
         unsafe {
             let t = MFCreateMediaType()?;
             t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+            t.SetGUID(&MF_MT_SUBTYPE, if s.rgb { &MFVideoFormat_ARGB32 } else { &MFVideoFormat_NV12 })?;
             t.SetUINT64(&MF_MT_FRAME_SIZE, ((s.w as u64) << 32) | s.h as u64)?;
             t.SetUINT64(&MF_MT_FRAME_RATE, ((s.fps.max(1) as u64) << 32) | 1)?;
             t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1)?;
@@ -469,6 +497,7 @@ mod os {
                 .name("cast-encoder".into())
                 .spawn(move || {
                     mta();
+                    crate::cast::capture::urgent();
                     event_loop(thread_shared, gen, on_output);
                 })
                 .map_err(|e| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, e.to_string()))?;
