@@ -663,6 +663,31 @@ export function cursorAt(
   return { x: fit.x + (pos.x - hot.x) * k, y: fit.y + (pos.y - hot.y) * k, k };
 }
 
+/* ── whether a tile drives ─────────────────────────────────────────────── */
+
+/** **The switch for driving this machine's own screens.** Off for 0.91.0,
+ *  which ships watching first (Lyss's call, 2026-10-31): the host drops a
+ *  local tile's input until `cast/drive.rs` is wired into `cast/local.rs`,
+ *  and a tile that took the pointer and the keys and then did nothing with
+ *  them would be a tile pretending. Turn it on in the commit that lands
+ *  that wiring, and nothing else has to change. */
+export const LOCAL_DRIVE = false;
+
+/** Whether a tile takes the pointer and the keyboard for the machine it
+ *  shows. A far screen when its knob says so; this machine's only once
+ *  `LOCAL_DRIVE` is on. A tile that does not drive is a picture on the wall:
+ *  the wall's own gestures — select, drag, zoom — go on working over it. */
+export function drivableAt(host: string | null, interactive: boolean, local = LOCAL_DRIVE): boolean {
+  return interactive && (host !== null || local);
+}
+
+/** What a tile says when it only watches, or null when it drives. */
+export function watchingWords(host: string | null, interactive: boolean, local = LOCAL_DRIVE): string | null {
+  if (drivableAt(host, interactive, local)) return null;
+  if (host === null && !local) return "watching — driving this machine comes next";
+  return "watching — turn on “clicks and keys reach the machine” to drive it";
+}
+
 /* ── the way out ───────────────────────────────────────────────────────── */
 
 /** How long Escape is held to leave a screen you are driving. Lyss's pick

@@ -8,6 +8,8 @@ import {
   decoderConfig,
   driveText,
   EscapeHold,
+  drivableAt,
+  watchingWords,
   fitIn,
   isKeyframe,
   KEY_TEXT,
@@ -393,6 +395,22 @@ describe("the screen knob's options", () => {
     expect(o.map((x) => x.value)).toEqual(["here/a:0", "here/a:1", "w2/a:0"]);
     expect(o[2].label).toBe("desk · Panel · 2880×1800");
     expect(o[0].label).toBe("here · Panel · main · 2880×1800");
+  });
+});
+
+describe("whether a tile drives", () => {
+  test("this machine's screen only watches until local driving is switched on", () => {
+    expect(drivableAt(null, true)).toBe(false);
+    expect(drivableAt(null, true, true)).toBe(true);
+    expect(watchingWords(null, true)).toBe("watching — driving this machine comes next");
+    expect(watchingWords(null, true, true)).toBeNull();
+  });
+
+  test("a far screen drives only when its knob says so", () => {
+    expect(drivableAt("desk", false)).toBe(false);
+    expect(drivableAt("desk", true)).toBe(true);
+    expect(watchingWords("desk", false)).toMatch(/^watching — turn on/);
+    expect(watchingWords("desk", true)).toBeNull();
   });
 });
 

@@ -146,6 +146,10 @@ class Casts {
    *  view itself (`view.svelte.ts`), since where a vignette sits is about
    *  this window and not about the wall. */
   floats = $state<Float[]>(readFloats());
+  /** Whether each session's tile drives (`cast.ts::drivableAt`), as its tile
+   *  decided it — immersive borrows the session and must not take the keys
+   *  for a screen its tile only watches. */
+  drivable = $state<Record<string, boolean>>({});
   /** Every screen widget that is up, so chat view can list them without
    *  reaching into the widget registry. id → its key. */
   up = $state<Record<string, string>>({});
@@ -286,6 +290,7 @@ class Casts {
     this.#live.delete(id);
     delete this.showing[id];
     delete this.up[id];
+    delete this.drivable[id];
     if (this.focused === id) this.focused = null;
   }
 
@@ -430,6 +435,10 @@ class Casts {
         ? (bytes.buffer as ArrayBuffer)
         : (bytes.slice().buffer as ArrayBuffer);
     this.#post(id, { t: "input", bytes: buf }, [buf]);
+  }
+
+  setDrivable(id: string, on: boolean) {
+    if (this.drivable[id] !== on) this.drivable[id] = on;
   }
 
   /** The widget's reading: `calm` asks for a frame a second while watched. */

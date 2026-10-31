@@ -1643,8 +1643,13 @@ export const WIDGETS: WidgetSpec[] = [
       ),
       /* The browser's own knob and its own argument: off, it is a picture you
          cannot touch — right for one hung in a corner, and a stray click on
-         the wall never lands on somebody's desktop. */
-      toggle("interactive", "clicks and keys reach the machine", true),
+         the wall never lands on somebody's desktop.
+
+         **Off by default**, unlike the browser's: 0.91.0 ships watching first,
+         and turning a far machine's keyboard and mouse on from a wall is to
+         be a deliberate act. It reaches far screens only — this machine's
+         drive is `cast.ts::LOCAL_DRIVE`, which the knob cannot override. */
+      toggle("interactive", "clicks and keys reach the machine", false),
     ],
   },
   {

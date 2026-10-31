@@ -28,6 +28,12 @@
 
   let { sid }: { sid: string } = $props();
 
+  /* Read once: whether this session drives is its tile's decision
+     (`cast.ts::drivableAt`), and immersive only borrows the session. A
+     watched screen goes immersive as a bigger picture — nothing is sent, and
+     Escape simply leaves, since there is no machine for a tap to reach. */
+  const drives = untrack(() => casts.drivable[sid] === true);
+
   const showing = $derived(casts.showing[sid] ?? null);
   const key = $derived(casts.up[sid] ?? "");
   const monitor = $derived(casts.monitorOf(key));
@@ -50,7 +56,7 @@
     const { id, off } = untrack(() => {
       const id = sid;
       const off = casts.present(id, video, overlay);
-      casts.drive(id, true);
+      if (drives) casts.drive(id, true);
       return { id, off };
     });
     const ro = new ResizeObserver(() => casts.focusSize(id, el.clientWidth, el.clientHeight));
@@ -61,8 +67,10 @@
       clearTimeout(t);
       ro.disconnect();
       untrack(() => {
-        casts.input(id, releaseAll());
-        casts.drive(id, false);
+        if (drives) {
+          casts.input(id, releaseAll());
+          casts.drive(id, false);
+        }
         off();
       });
       video.remove();
@@ -94,30 +102,34 @@
       if (act === "down") el.setPointerCapture(e.pointerId);
       if (act === "up" && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       const fit = fitNow();
-      if (fit) casts.input(sid, pointerInput(e, fit, act));
+      if (fit && drives) casts.input(sid, pointerInput(e, fit, act));
     };
   }
 
   function onWheel(e: WheelEvent) {
     e.preventDefault();
     e.stopPropagation();
-    casts.input(sid, wheel(e));
+    if (drives) casts.input(sid, wheel(e));
   }
 
   function onKey(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     if (e.code === "Escape" || e.key === "Escape") {
+      if (!drives) {
+        if (e.type === "keydown") casts.unfocus();
+        return;
+      }
       if (e.type === "keydown") escape.down();
       else escape.up();
       return;
     }
-    casts.input(sid, keyInput(e));
+    if (drives) casts.input(sid, keyInput(e));
   }
 
   function onBlur() {
     escape.cancel();
-    casts.input(sid, releaseAll());
+    if (drives) casts.input(sid, releaseAll());
   }
 </script>
 
@@ -155,9 +167,9 @@
         <span class="ring" aria-hidden="true"></span>
         <span>keep holding esc to leave</span>
       {:else if showing && showing.state !== "live"}
-        <span>{label} · {showing.state}{showing.why ? ` — ${showing.why}` : ""} · hold esc to leave</span>
+        <span>{label} · {showing.state}{showing.why ? ` — ${showing.why}` : ""} · {drives ? "hold esc" : "esc"} to leave</span>
       {:else}
-        <span>{label}{statsLine(showing?.stats ?? null, showing?.path ?? null) ? ` · ${statsLine(showing?.stats ?? null, showing?.path ?? null)}` : ""} · hold esc to come back</span>
+        <span>{label}{statsLine(showing?.stats ?? null, showing?.path ?? null) ? ` · ${statsLine(showing?.stats ?? null, showing?.path ?? null)}` : ""}{drives ? " · hold esc to come back" : " · watching · esc to come back"}</span>
       {/if}
     </div>
   {/if}

@@ -32,14 +32,23 @@
 
   import { untrack, type Snippet } from "svelte";
   import { casts, useEscapeHold, type Room } from "./cast.svelte";
-  import { fitIn, monitorLabel, parseScreen, stateWords, statsLine, PRIMARY } from "./cast";
+  import {
+    drivableAt,
+    fitIn,
+    monitorLabel,
+    parseScreen,
+    stateWords,
+    statsLine,
+    watchingWords,
+    PRIMARY,
+  } from "./cast";
   import { keyInput, pointerInput, releaseAll, wheelAccumulator } from "./castinput";
 
   let {
     sid,
     screen: key,
     scale = 1,
-    interactive = true,
+    interactive = false,
     room = "wall",
     calm = false,
     onopen,
@@ -67,7 +76,17 @@
   const showing = $derived(casts.showing[sid] ?? null);
   const monitor = $derived(casts.monitorOf(key));
   const isFocused = $derived(casts.focused === sid);
-  const drivable = $derived(interactive && !onopen);
+  /* Driving is decided in one place (`cast.ts::drivableAt`): a far screen
+     when its knob says so, this machine's only once local driving is
+     switched on. Not drivable means a picture on the wall — no `data-live`,
+     so the wall's gestures go on working over it. */
+  const drivable = $derived(!onopen && drivableAt(parseScreen(key).host, interactive));
+  const watching = $derived(onopen ? null : watchingWords(parseScreen(key).host, interactive));
+  /* The holder is told, so immersive knows whether to take the keys. */
+  $effect(() => {
+    const [id, d] = [sid, drivable];
+    untrack(() => casts.setDrivable(id, d));
+  });
 
   /* The header's two halves: what this is, then how it is going. */
   const name = $derived.by(() => {
@@ -307,6 +326,9 @@
       <span class="what">{name.what}</span>
     </span>
     <span class="stats">{line}</span>
+    {#if watching}
+      <span class="watching" title={watching}>watching</span>
+    {/if}
     {#if showing?.state === "ended" || showing?.state === "refused"}
       <button class="act" title="dial it again" onclick={() => casts.reconnect(sid)}>again</button>
     {/if}
@@ -423,6 +445,10 @@
     margin-left: auto;
     color: var(--paper-faint);
     font-variant-numeric: tabular-nums;
+  }
+  .watching {
+    color: var(--paper-faint);
+    font-style: italic;
   }
   .act {
     font: inherit;
