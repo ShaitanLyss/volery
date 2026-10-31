@@ -23,7 +23,18 @@
   {:else}
     {#key which}
       <div class="one">
-        <Screen sid={`chat:${which}`} screen={which} room="any" />
+        <Screen sid={`chat:${which}`} screen={which} room="any">
+          {#snippet actions()}
+            {@const on = casts.floats.some((f) => f.key === which)}
+            <button
+              class="act"
+              title={on
+                ? "stop floating it over the conversation (space then r v)"
+                : "keep it floating over the conversation while you read (space then r v)"}
+              onclick={() => casts.toggleFloat(which)}>{on ? "unfloat" : "float"}</button
+            >
+          {/snippet}
+        </Screen>
       </div>
     {/key}
   {/if}
@@ -36,6 +47,20 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* The tile's own header buttons, which this snippet is drawn inside: a
+     component is the only CSS scope there is, so the look is said again here. */
+  .act {
+    font: inherit;
+    color: var(--paper-dim);
+    background: var(--raised);
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    padding: 0 0.35em;
+    cursor: pointer;
+  }
+  .act:hover {
+    color: var(--paper);
   }
   .one {
     flex: 1;

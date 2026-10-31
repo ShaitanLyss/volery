@@ -108,7 +108,7 @@ export type Verb =
   | { kind: "dock"; act: DockChord }
   | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" | "freshen" }
   | { kind: "bright"; act: "up" | "down" | "reset" }
-  | { kind: "screen"; act: "hang" | "immersive" | "all" };
+  | { kind: "screen"; act: "hang" | "immersive" | "all" | "float" };
 
 /** One sequence the leader opens onto.
  *
@@ -383,6 +383,9 @@ export const CHORDS: readonly Chord[] = [
   { keys: "rr", label: "hang up a screen", verb: { kind: "screen", act: "hang" } },
   { keys: "rf", label: "this screen, immersive", verb: { kind: "screen", act: "immersive" } },
   { keys: "ra", label: "every screen on the flyway", verb: { kind: "screen", act: "all" } },
+  /* Chat view's: the screen in the sheet kept floating over the conversation
+     while you read another one. The wall's version is a screen on the glass. */
+  { keys: "rv", label: "float this screen over the conversation / stop", verb: { kind: "screen", act: "float" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];

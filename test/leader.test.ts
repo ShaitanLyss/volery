@@ -253,6 +253,7 @@ describe("the which-key hint", () => {
       { keys: "ra", label: "every screen on the flyway" },
       { keys: "rf", label: "this screen, immersive" },
       { keys: "rr", label: "hang up a screen" },
+      { keys: "rv", label: "float this screen over the conversation / stop" },
       { keys: "sd", label: "drop something in the sink" },
       { keys: "ss", label: "the sink" },
       { keys: "tc", label: "casse-tête" },

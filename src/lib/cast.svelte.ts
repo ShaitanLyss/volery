@@ -27,6 +27,7 @@
  * around).
  */
 
+import { untrack } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { view } from "./view.svelte";
@@ -124,6 +125,13 @@ class Casts {
   sheet = $state<string | null>(null);
   /** The grid of every screen, over the wall (`space r a`). */
   grid = $state(false);
+  /** Screens kept floating over chat view's conversation, each where it was
+   *  last put — Lyss: *"it's nice to be able to have floating vignettes"*.
+   *  Chat view's own: on the wall the same thing is a screen widget stuck to
+   *  the glass, which the wall already has. Kept per machine, beside the
+   *  view itself (`view.svelte.ts`), since where a vignette sits is about
+   *  this window and not about the wall. */
+  floats = $state<Float[]>(readFloats());
   /** Every screen widget that is up, so chat view can list them without
    *  reaching into the widget registry. id → its key. */
   up = $state<Record<string, string>>({});
@@ -148,7 +156,11 @@ class Casts {
       $effect(() => {
         void view.current;
         void this.focused;
-        for (const id of this.#live.keys()) this.#push(id);
+        /* Only those two: `#push` reads every session's reading, and a stats
+           line twice a second is not a reason to recompute every want. */
+        untrack(() => {
+          for (const id of this.#live.keys()) this.#push(id);
+        });
       });
     });
   }
@@ -453,6 +465,22 @@ class Casts {
     );
   }
 
+  /** Float a screen over chat view, or stop floating it. */
+  toggleFloat(key: string) {
+    const at = this.floats.findIndex((f) => f.key === key);
+    if (at >= 0) this.floats.splice(at, 1);
+    else this.floats.push({ key, ...nextFloatSpot(this.floats) });
+    saveFloats(this.floats);
+  }
+
+  moveFloat(key: string, x: number, y: number) {
+    const f = this.floats.find((f) => f.key === key);
+    if (!f) return;
+    f.x = x;
+    f.y = y;
+    saveFloats(this.floats);
+  }
+
   /** Everything, for the window going away. */
   release() {
     this.#started = false;
@@ -536,6 +564,37 @@ class Casts {
     live.sent = next;
     this.#post(id, { t: "want", want: next });
   }
+}
+
+/** A vignette: which screen, and where its top-left sits, in pixels from the
+ *  window's bottom-right — so a window made smaller keeps them in reach rather
+ *  than leaving them stranded past an edge. */
+export type Float = { key: string; x: number; y: number };
+
+const FLOATS_KEY = "skein.cast.floats.v1";
+
+function readFloats(): Float[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(FLOATS_KEY) ?? "[]");
+    return Array.isArray(v)
+      ? v.filter((f) => f && typeof f.key === "string" && Number.isFinite(f.x) && Number.isFinite(f.y))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFloats(fs: Float[]) {
+  try {
+    localStorage.setItem(FLOATS_KEY, JSON.stringify(fs));
+  } catch {
+    /* A full or refused store loses where a vignette sat, not the vignette. */
+  }
+}
+
+/** Where a new vignette goes: stacked up the right edge above the last. */
+function nextFloatSpot(fs: Float[]): { x: number; y: number } {
+  return { x: 24, y: 120 + fs.length * 210 };
 }
 
 /** A development stand-in for this machine's screens: `tools/cast-relay.ts`

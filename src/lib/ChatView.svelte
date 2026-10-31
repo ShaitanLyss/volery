@@ -655,12 +655,21 @@
     !card ? "rest" : card.ask || card.face.tier === "ask" ? "ask" : card.face.tier === "fail" ? "fail" : card.face.working ? "work" : "rest",
   );
 
+  /* A screen in the sheet is named in the bar like a page is: the machine and
+     the monitor, or the grid. */
+  const screenTitle = $derived.by(() => {
+    const k = casts.sheet;
+    if (!k) return null;
+    if (k === "all") return "all screens";
+    const m = casts.monitorOf(k);
+    return m ? `${casts.machineOf(k)} · ${m.name}` : casts.machineOf(k);
+  });
   const title = $derived(
-    pile ? (pile.kind === "sink" ? "the sink" : "the billboard") : project ? project.name : card ? cardName(card.face.title, "").text || "new conversation" : "new conversation",
+    screenTitle ? screenTitle : pile ? (pile.kind === "sink" ? "the sink" : "the billboard") : project ? project.name : card ? cardName(card.face.title, "").text || "new conversation" : "new conversation",
   );
   const ctx = $derived(card ? Math.round((card.gist.ctx ?? 0) * 100) : 0);
   const place = $derived(
-    pile ? "across the wall" : project ? "project" : !card ? null : card.gist.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
+    screenTitle ? "screens" : pile ? "across the wall" : project ? "project" : !card ? null : card.gist.kind === "chat" ? "chat" : card.face.project + (card.remote ? ` · on ${card.remote.host}` : ""),
   );
   /* The account this conversation spends, for the foot. A card on no named
      account is on whatever Claude Code itself is signed in as, which is the
@@ -735,7 +744,7 @@
     <div class="where" data-tauri-drag-region>
       <span class="title" data-tauri-drag-region>{title}</span>
       {#if place}
-        <span class="chip"><Icon name={card?.gist.kind === "chat" ? "globe" : "folder"} small />{place}</span>
+        <span class="chip"><Icon name={screenTitle ? "screen" : card?.gist.kind === "chat" ? "globe" : "folder"} small />{place}</span>
       {/if}
       {#if card?.gist.planning}
         <span class="chip plan">planning</span>

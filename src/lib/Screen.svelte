@@ -30,7 +30,7 @@
    * Paints no background of its own: on the wall `WidgetNode` is the only
    * thing that fills. The stage's black is the letterbox, as the browser's is. */
 
-  import { untrack } from "svelte";
+  import { untrack, type Snippet } from "svelte";
   import { casts, useEscapeHold, type Room } from "./cast.svelte";
   import { fitIn, monitorLabel, parseScreen, stateWords, statsLine, PRIMARY } from "./cast";
   import { keyInput, pointerInput, releaseAll, wheelAccumulator } from "./castinput";
@@ -43,6 +43,7 @@
     room = "wall",
     calm = false,
     onopen,
+    actions,
   }: {
     /** The session's id: a widget's own, or `chat:`/`grid:` and the key. */
     sid: string;
@@ -58,6 +59,9 @@
     /** A tile that opens rather than drives — a cell in the grid. When set, a
      *  click is this and nothing reaches the machine. */
     onopen?: () => void;
+    /** More buttons for the header, before `immersive` — chat view's sheet
+     *  offers "float" there. */
+    actions?: Snippet;
   } = $props();
 
   const showing = $derived(casts.showing[sid] ?? null);
@@ -90,9 +94,16 @@
     video.className = "video";
     overlay.className = "cursor";
     el.append(video, overlay);
-    const id = untrack(() => sid);
-    const off = casts.attach(id, untrack(() => key), video, overlay, untrack(() => room));
-    const unobserve = casts.observe(id, el);
+    /* All of it untracked, not only the arguments: `attach` reads the
+       holder's state (the monitor list, to resolve the role) and writes it
+       (the session's first reading), and an attachment that tracked the read
+       re-ran on its own write — the loop a lab found as
+       `effect_update_depth_exceeded` and a tile stuck on "connecting". */
+    const { id, off, unobserve } = untrack(() => {
+      const id = sid;
+      const off = casts.attach(id, key, video, overlay, room);
+      return { id, off, unobserve: casts.observe(id, el) };
+    });
     const ro = new ResizeObserver(() => {
       /* Layout size, which a CSS transform does not change: wall units. The
          zoom is applied in `casts.size` from the prop. */
@@ -108,17 +119,22 @@
     };
   }
 
+  /* Each of these tracks only its own props: the holder reads its own state
+     to decide what to ask the host, and that is not a reason to run again. */
   $effect(() => {
-    casts.retarget(sid, key);
+    const [id, k] = [sid, key];
+    untrack(() => casts.retarget(id, k));
   });
 
   $effect(() => {
-    casts.setCalm(sid, calm);
+    const [id, c] = [sid, calm];
+    untrack(() => casts.setCalm(id, c));
   });
 
   $effect(() => {
     const s = scale;
-    if (stage) casts.size(sid, stage.clientWidth, stage.clientHeight, s);
+    const el = stage;
+    if (el) untrack(() => casts.size(sid, el.clientWidth, el.clientHeight, s));
   });
 
   /* ── driving ─────────────────────────────────────────────────────────── */
@@ -214,7 +230,7 @@
        machine — a stray letter would land in a card's draft. */
     e.preventDefault();
     e.stopPropagation();
-    if (e.code === "Escape") {
+    if (e.code === "Escape" || e.key === "Escape") {
       if (e.type === "keydown") escape.down();
       else escape.up();
       return;
@@ -249,6 +265,7 @@
     {#if showing?.state === "ended" || showing?.state === "refused"}
       <button class="act" title="dial it again" onclick={() => casts.reconnect(sid)}>again</button>
     {/if}
+    {@render actions?.()}
     {#if !onopen}
       <button
         class="act"

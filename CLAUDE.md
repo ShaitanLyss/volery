@@ -77,7 +77,8 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, projectview, gist, filed,
                          # sources, marks, whois, credits, boostmusic, boostfield,
-                         # browsercdp, browserstall, browserframes, browserroots, freshen
+                         # browsercdp, browserstall, browserframes, browserroots, freshen,
+                         # cast
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -334,6 +335,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `spotify.md` | music on the wall: why Volery *is* the player rather than a remote for one, what that costs in Spotify's terms, the two tools that let a card choose what plays without being able to silence you, and the loopback tunnel that gets librespot onto an address that answers | `spotify.rs`, `selector.rs`, `tunnel.rs`, `spotify.ts`, `Spotify.svelte` |
 | `browser.md` | a browser the wall owns and a page two things drive at once: why hosting it in a webview saves ~0, the profile collision two cards would have hit, the fixed port an MCP argument forces, the two Chrome flags that fail after everything looks fine, and why the input half needs no window focus | `browser.rs`, `browser.ts`, `pane.svelte.ts`, `Browser.svelte`, `tools/probe-browser.ts` |
 | `build.md` | building without MSVC — the four traps, and what a no-MSVC machine can check | `Cargo.toml`, `tools/*.ps1` |
+| `cast.md` | screens on the wall, the webview half: a decoder that is a worker's so neither main thread touches a frame, newest-frame-or-nothing, the one holder and the one tile over every surface, the effect loop the first lab found, the first click that only focuses, Escape held as the way out, immersive as a borrowed surface, chat view's sheet, grid and vignettes, and the fake host that let it be built before the capture existed (`docs/SCREENS.md` is the contract) | `cast.ts`, `cast.worker.ts`, `cast.svelte.ts`, `Screen*.svelte`, `tools/castlab.ts` |
 | `load.md` | ten cards on one laptop: one `@playwright/mcp` for the wall, a project's stdio server shared across its cards, the reaper that stopped killing Git Bash work, telling a card the machine is saturated, and the 403 the CLI remembers by server name machine-wide | `load.rs`, `mcphost.rs`, `pool.rs` |
 
 ## Architecture
@@ -442,7 +444,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `plates.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
 `glance.ts`, `tether.ts`, `brightness.ts`, `peeking.ts`,
-`starting.ts`, `allowance.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`) are pure
+`starting.ts`, `allowance.ts`, `cast.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

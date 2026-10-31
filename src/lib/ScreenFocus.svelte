@@ -46,19 +46,25 @@
     video.className = "video";
     overlay.className = "cursor";
     el.append(video, overlay);
-    const id = untrack(() => sid);
-    const off = casts.present(id, video, overlay);
+    /* Untracked as a whole — the tile's attachment says why. */
+    const { id, off } = untrack(() => {
+      const id = sid;
+      const off = casts.present(id, video, overlay);
+      casts.drive(id, true);
+      return { id, off };
+    });
     const ro = new ResizeObserver(() => casts.focusSize(id, el.clientWidth, el.clientHeight));
     ro.observe(el);
     el.focus();
-    casts.drive(id, true);
     const t = setTimeout(() => (hinting = false), 2400);
     return () => {
       clearTimeout(t);
       ro.disconnect();
-      casts.input(id, releaseAll());
-      casts.drive(id, false);
-      off();
+      untrack(() => {
+        casts.input(id, releaseAll());
+        casts.drive(id, false);
+        off();
+      });
       video.remove();
       overlay.remove();
     };
@@ -101,7 +107,7 @@
   function onKey(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (e.code === "Escape") {
+    if (e.code === "Escape" || e.key === "Escape") {
       if (e.type === "keydown") escape.down();
       else escape.up();
       return;

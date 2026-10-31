@@ -210,6 +210,7 @@
   import ScreenFocus from "./lib/ScreenFocus.svelte";
   import ScreenGrid from "./lib/ScreenGrid.svelte";
   import ScreenMark from "./lib/ScreenMark.svelte";
+  import ScreenFloats from "./lib/ScreenFloats.svelte";
   import { Finder } from "./lib/finder.svelte";
   /* The space leader itself, which is the wall's rather than the finder's —
      `<space>ff` opens a panel and `<space>ts` opens a toy, and a machine that
@@ -2888,7 +2889,12 @@
    *  looking at; immersive takes the screen in front — chat view's sheet, or
    *  the selected screen widget, or the only one there is — and says so when
    *  there is none rather than doing nothing. */
-  function screenChord(act: "hang" | "immersive" | "all") {
+  function screenChord(act: "hang" | "immersive" | "all" | "float") {
+    if (act === "float") {
+      if (view.current === "chat" && casts.sheet && casts.sheet !== "all") casts.toggleFloat(casts.sheet);
+      else leader.say("float a screen from chat view — choose one in the sidebar first");
+      return;
+    }
     if (act === "all") {
       if (view.current === "chat") casts.sheet = "all";
       else casts.grid = !casts.grid;
@@ -5669,6 +5675,9 @@
     {#key casts.focused}
       <ScreenFocus sid={casts.focused} />
     {/key}
+  {/if}
+  {#if view.current === "chat"}
+    <ScreenFloats />
   {/if}
   <ScreenMark />
 
