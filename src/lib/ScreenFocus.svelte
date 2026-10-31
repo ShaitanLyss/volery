@@ -69,7 +69,7 @@
       untrack(() => {
         if (drives) {
           casts.input(id, releaseAll());
-          casts.drive(id, false);
+          casts.drive(id, false, true);
         }
         off();
       });

@@ -171,7 +171,12 @@ the local pointer moves at the viewer's own refresh rate whatever the stream is 
 is most of what makes a remote desktop feel like it isn't one.
 
 Viewer → host, **text** (JSON): `{"t":"want","w","h","fps","visible","focused"}`,
-`{"t":"key"}` (decoder lost its place), `{"t":"drive","on":bool}` (local through-the-tile).
+`{"t":"key"}` (decoder lost its place), `{"t":"drive","on":bool,"back"?:true}` (local
+through-the-tile). `back: true` rides only on an off that is the person coming back to the wall
+— a click on it, Escape held, leaving immersive — and is the one time the host hands Volery the
+foreground on the way out (`Drive::leave`); any other off — the picture no longer live, the
+window hidden — lets go without taking anything (`Drive::release`), and so does a session that
+simply ends. Without it, a drive ended by a game taking the screen pulled Volery over the game.
 
 `drive` is answered, host → viewer, with `{"t":"drive","on":bool}` saying what actually happened,
 and a `why` when the answer is `false` to an `on: true` (no main window, another screen already

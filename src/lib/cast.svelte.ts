@@ -449,13 +449,14 @@ class Casts {
     this.#push(id);
   }
 
-  drive(id: string, on: boolean) {
+  /** `back`: an off that is the person coming back to the wall (`driveText`). */
+  drive(id: string, on: boolean, back = false) {
     const live = this.#live.get(id);
     if (live) {
       live.driving = on;
       this.#push(id);
     }
-    this.#post(id, { t: "drive", on });
+    this.#post(id, { t: "drive", on, back });
     if (!on) this.#patch(id, { cursor: "default" });
   }
 

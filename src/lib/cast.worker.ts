@@ -489,7 +489,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (driving === m.on) break;
       driving = m.on;
       lastCss = "";
-      send(driveText(m.on));
+      send(driveText(m.on, m.back ?? false));
       drawCursor();
       break;
     case "peek": {

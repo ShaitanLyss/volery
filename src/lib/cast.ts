@@ -220,7 +220,12 @@ export type Want = { w: number; h: number; fps: number; visible: boolean; focuse
 
 export const wantText = (w: Want): string => JSON.stringify({ t: "want", ...w });
 export const KEY_TEXT = JSON.stringify({ t: "key" });
-export const driveText = (on: boolean): string => JSON.stringify({ t: "drive", on });
+/** `back` marks an off that is the person coming back to the wall — a click on
+ *  it, Escape held — and is the one time the host hands Volery the foreground
+ *  on the way out (`cast/drive.rs::Drive::leave`). Every other off — the
+ *  picture gone, the window hidden — lets go without taking anything. */
+export const driveText = (on: boolean, back = false): string =>
+  JSON.stringify(!on && back ? { t: "drive", on, back: true } : { t: "drive", on });
 
 /* ── what a tile asks for ──────────────────────────────────────────────── */
 
@@ -624,7 +629,7 @@ export type ToWorker =
   | { t: "input"; bytes: ArrayBuffer }
   /** Driving: the worker stops drawing the cursor and reports its shape as CSS
    *  instead, and the host is told (`{"t":"drive"}`). */
-  | { t: "drive"; on: boolean }
+  | { t: "drive"; on: boolean; back?: boolean }
   /** The picture as it stands, as a PNG — for the control surface, which has
    *  no other way to see a frame: a wall showing its own machine is excluded
    *  from every capture API, `PrintWindow` included, so a lab's screenshot of

@@ -181,12 +181,16 @@
     casts.drive(sid, true);
   }
 
-  function end() {
+  /** `back`: the person is coming back to the wall — a click on it, Escape
+   *  held — so the host may hand Volery the foreground. Any other end (the
+   *  picture gone, the window hidden) must not: a drive that ended because a
+   *  game took the screen once pulled Volery in front of the game. */
+  function end(back = false) {
     escape.cancel();
     if (!driving) return;
     driving = false;
     casts.input(sid, releaseAll());
-    casts.drive(sid, false);
+    casts.drive(sid, false, back);
   }
 
   /** Focus leaving the stage. Two different things arrive as one event:
@@ -203,7 +207,7 @@
       if (parseScreen(key).host) casts.input(sid, releaseAll());
       return;
     }
-    end();
+    end(true);
   }
 
   /* Holding Escape lets go of the tile, the way it leaves the immersive
@@ -302,7 +306,7 @@
          then the blur below arrives as a window-level one that `onBlur`
          deliberately does not treat as leaving. */
       untrack(() => {
-        end();
+        end(true);
         stage?.blur();
       });
     }

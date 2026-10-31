@@ -503,9 +503,19 @@ impl Drive {
         }
     }
 
-    /// The tile let go: Volery is itself again and in front.
+    /// The tile let go and the person is coming back to the wall (a click on
+    /// it, Escape held): Volery is itself again and in front.
     pub fn leave(&mut self) {
         self.finish(true);
+    }
+
+    /// The tile let go and nobody asked for the wall: the picture stopped
+    /// being live, the window went away, the session ended. Volery is itself
+    /// again and takes nothing. The first cut always took the foreground, and
+    /// a drive that ended because a game took the screen pulled Volery in
+    /// front of the game Lyss had just switched to.
+    pub fn release(&mut self) {
+        self.finish(false);
     }
 
     /// Put Volery back, then wait for a click still in flight and put it back

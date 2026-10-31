@@ -158,8 +158,10 @@ impl Feed {
     }
 
     /// `{"t":"drive","on":…}`. Answered with the same message carrying what
-    /// actually happened, and a `why` when it did not.
-    fn drive(&mut self, on: bool, app: Option<&AppHandle>, viewer: &Arc<Outbox>) {
+    /// actually happened, and a `why` when it did not. An off with
+    /// `"back":true` is the person coming back to the wall, which is the one
+    /// time Volery takes the foreground on the way out.
+    fn drive(&mut self, on: bool, back: bool, app: Option<&AppHandle>, viewer: &Arc<Outbox>) {
         let said = match self {
             Feed::Local { monitor, drive, .. } => {
                 if on && drive.is_none() {
@@ -173,7 +175,11 @@ impl Feed {
                 } else if !on {
                     if let Some(mut d) = drive.take() {
                         // Waits for a click still in flight, then restores.
-                        d.leave();
+                        if back {
+                            d.leave();
+                        } else {
+                            d.release();
+                        }
                         log_settles();
                     }
                     Ok(false)
@@ -327,8 +333,9 @@ fn session(server: Arc<Server>, stream: TcpStream) {
                     }
                     Some("drive") => {
                         let on = v.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+                        let back = v.get("back").and_then(|x| x.as_bool()).unwrap_or(false);
                         if let Some(f) = feed.lock().unwrap().as_mut() {
-                            f.drive(on, server.app.as_ref(), &outbox);
+                            f.drive(on, back, server.app.as_ref(), &outbox);
                         }
                     }
                     _ => {}

@@ -146,6 +146,10 @@ describe("the text messages", () => {
     });
     expect(JSON.parse(KEY_TEXT)).toEqual({ t: "key" });
     expect(JSON.parse(driveText(true))).toEqual({ t: "drive", on: true });
+    // an off carries `back` only when the person is coming back to the wall
+    expect(JSON.parse(driveText(false))).toEqual({ t: "drive", on: false });
+    expect(JSON.parse(driveText(false, true))).toEqual({ t: "drive", on: false, back: true });
+    expect(JSON.parse(driveText(true, true))).toEqual({ t: "drive", on: true });
   });
 });
 
