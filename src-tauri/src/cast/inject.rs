@@ -101,6 +101,21 @@ const VK_NUMLOCK: u16 = 0x90;
 /// The viewer's Pause sentinel; see `src/lib/castinput.ts`.
 pub const PAUSE: u16 = 0xe11d;
 
+/// What every `SendInput` of this subsystem carries in `dwExtraInfo`, so the
+/// keyboard hook in `drive` can tell input Volery put in itself (pass it on)
+/// from a person's — and an injected key from anything else (an on-screen
+/// keyboard, a remote tool, a probe standing in for a hand) counts as a
+/// person's, which is what it stands for. "VOLY".
+pub const MARK: usize = 0x564f_4c59;
+
+/// The final move of one of `drive`'s clicks, which its mouse hook counts to
+/// know the click has been delivered. A value of its own rather than a
+/// sequence number packed above `MARK`: the first cut put one in the high 32
+/// bits of `dwExtraInfo`, the hook never saw it, and every click held Volery
+/// click-through for the whole timeout — long enough for the next real click
+/// on the tile to fall through Volery onto whatever was under it.
+pub const MARK_LAST: usize = 0x564f_4c5a;
+
 fn key_act(scan: u16, up: bool) -> Option<Act> {
     Some(match scan {
         PAUSE => Act::Vk { vk: VK_PAUSE, up },
@@ -376,7 +391,7 @@ mod os {
         INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
-                mi: MOUSEINPUT { dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+                mi: MOUSEINPUT { dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: super::MARK },
             },
         }
     }
@@ -385,7 +400,7 @@ mod os {
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
-                ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+                ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: super::MARK },
             },
         }
     }

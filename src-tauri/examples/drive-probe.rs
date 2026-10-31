@@ -76,10 +76,14 @@
 //! cargo run --example drive-probe -- visible <lab>       # which style of Volery's stops Chromium
 //!                                                        # painting under it; the wheel by message.
 //!                                                        # Moves windows, no input at all
+//! cargo run --example drive-probe -- drive <lab>         # `cast::drive` itself, end to end: clicks,
+//!                                                        # keys, wheel, drag. Never Escape — see STAGE
+//! cargo run --example drive-probe -- hits <lab>          # what the tile's point hit-tests as while a
+//!                                                        # drive is on; no input at all
 //! ```
 //!
 //! `run` moves windows, the cursor and clicks for about forty seconds. Ask the
-//! person at the machine first. A physical Escape at any point aborts and puts
+//! person at the machine first. A physical Escape between steps aborts and puts
 //! everything back.
 
 #[cfg(not(windows))]
@@ -386,6 +390,103 @@ mod win {
 
     /* ── input ─────────────────────────────────────────────────────────── */
 
+    /* Every injected event is aimed, and the aim is checked first.
+
+       A run on 2026-10-31 had the test Edge open *behind* Lyss's installed
+       wall instead of in front of it, and every "click through the lab" landed
+       on the installed wall; the keys typed a `hello` and an Enter into her
+       composer, which sent it to the card running this probe, and an Escape
+       stopped that card. Nothing checked where an event would land. So the
+       stage registers its own windows, every click and keystroke is refused
+       unless it would reach one of them, and a refusal ends the run (the
+       panic unwinds through `Restore`, which puts everything back). Escape is
+       no longer sent at all. */
+    static STAGE: std::sync::Mutex<Vec<isize>> = std::sync::Mutex::new(Vec::new());
+
+    fn stage(windows: &[HWND]) {
+        let mut st = STAGE.lock().unwrap();
+        st.clear();
+        st.extend(windows.iter().map(|h| h.0 as isize));
+    }
+
+    fn staged(h: HWND) -> bool {
+        STAGE.lock().unwrap().contains(&(h.0 as isize))
+    }
+
+    /// A press at `p` straight onto the screen must land on a stage window.
+    fn aim_direct(p: (i32, i32)) {
+        let r = root_at(p.0, p.1);
+        if !staged(r) {
+            // say what the screen looked like, so a refusal is a finding
+            let lab = HWND(STAGE.lock().unwrap()[0] as *mut _);
+            let lr = rect_of(lab);
+            println!(
+                "  REFUSED at {p:?}. lab ex=0x{:08x} rect=({},{})-({},{}) visible={}",
+                exstyle(lab),
+                lr.left,
+                lr.top,
+                lr.right,
+                lr.bottom,
+                unsafe { IsWindowVisible(lab).as_bool() }
+            );
+            println!("  windows holding that point, top to bottom:");
+            for h in top_levels() {
+                let w = rect_of(h);
+                if unsafe { IsWindowVisible(h).as_bool() } && p.0 >= w.left && p.0 < w.right && p.1 >= w.top && p.1 < w.bottom {
+                    println!(
+                        "    {:?} '{}' ({}) ex=0x{:08x}{}",
+                        h.0,
+                        text_of(h),
+                        class_of(h),
+                        exstyle(h),
+                        if h == lab { "  <- the lab" } else { "" }
+                    );
+                    if h == lab {
+                        break;
+                    }
+                }
+            }
+            panic!("refusing to click at {p:?}: it would land on '{}' ({}), not the test's own windows", text_of(r), class_of(r));
+        }
+    }
+
+    /// A press through the lab at `p` must land on a stage window under it.
+    fn aim_through(lab: HWND, p: (i32, i32)) {
+        let r = root_at_below(lab, p);
+        if r == lab || !staged(r) {
+            println!("  REFUSED through the lab at {p:?}. the z-order from the top, visible windows holding the point:");
+            for h in top_levels() {
+                let w = rect_of(h);
+                if unsafe { IsWindowVisible(h).as_bool() } && p.0 >= w.left && p.0 < w.right && p.1 >= w.top && p.1 < w.bottom {
+                    println!(
+                        "    {:?} '{}' ({}) ex=0x{:08x}{}{}",
+                        h.0,
+                        text_of(h),
+                        class_of(h),
+                        exstyle(h),
+                        if h == lab { "  <- the lab" } else { "" },
+                        if staged(h) && h != lab { "  <- staged" } else { "" }
+                    );
+                }
+            }
+            println!("  foreground: '{}' ({})", text_of(unsafe { GetForegroundWindow() }), class_of(unsafe { GetForegroundWindow() }));
+            panic!(
+                "refusing to click through the lab at {p:?}: under it is '{}' ({}), not the test's own windows",
+                text_of(r),
+                class_of(r)
+            );
+        }
+    }
+
+    /// Keys go to the foreground window, so it must be a stage window — and
+    /// never the lab, which is a Volery and would take them as a prompt.
+    fn aim_keys(lab: HWND) {
+        let f = unsafe { GetForegroundWindow() };
+        if f == lab || !staged(f) {
+            panic!("refusing to type: the foreground is '{}' ({}), not the test's own page", text_of(f), class_of(f));
+        }
+    }
+
     fn mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) -> INPUT {
         INPUT {
             r#type: INPUT_MOUSE,
@@ -424,6 +525,7 @@ mod win {
 
     /// What a physical click on the tile is: the press lands on Volery.
     fn click_at(x: i32, y: i32) {
+        aim_direct((x, y));
         send(&[move_to(x, y), mouse(MOUSEEVENTF_LEFTDOWN, 0, 0, 0), mouse(MOUSEEVENTF_LEFTUP, 0, 0, 0)]);
     }
 
@@ -509,6 +611,7 @@ mod win {
     /// at T (which proves the press has been hit-tested), close up again.
     /// Returns (time click-through was on, time the cursor was away).
     fn drive_click(lab: HWND, how: Through, p: (i32, i32), t: (i32, i32), base_ex: u32) -> (Duration, Duration) {
+        aim_through(lab, p);
         let start = Instant::now();
         through_on(lab, how, p, base_ex);
         let sent = Instant::now();
@@ -562,6 +665,15 @@ mod win {
         }
     }
 
+    /// Put a test window at the top of the ordinary windows — above anything
+    /// of Lyss's — without leaving it topmost. Left topmost, the first click
+    /// that activated it lifted it *above* the lab (two topmost windows
+    /// reorder on activation), which no driven app can do; the guard caught it.
+    fn raise_under_lab(h: HWND) {
+        zorder(h, HWND_TOPMOST);
+        zorder(h, HWND_NOTOPMOST);
+    }
+
     fn zorder(h: HWND, after: HWND) {
         unsafe {
             let _ = SetWindowPos(h, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -574,14 +686,14 @@ mod win {
 <style>body{margin:0;font:20px sans-serif;background:#dde}#b{position:absolute;left:20px;top:20px;width:200px;height:80px;font-size:20px}#t{position:absolute;left:20px;top:120px;width:320px;height:40px;font-size:20px}#long{height:6000px}</style>
 <button id=b>click</button><input id=t value="select me please"><div id=long></div>
 <script>
-let c=0,bl=0,fo=0,e='',r=0,md=0;
+let c=0,bl=0,fo=0,e='',r=0,md=0,k='';
 b.onclick=()=>{c++;show()};addEventListener('mousedown',()=>{md++});
-addEventListener('blur',()=>{bl++;show()});addEventListener('focus',()=>{fo++;show()});
+addEventListener('blur',()=>{bl++;show()});addEventListener('focus',()=>{fo++;show()});addEventListener('keydown',ev=>{k=ev.key;show()},true);
 t.addEventListener('keydown',ev=>{if(ev.key==='Enter'){e=t.value;show()}});
 t.addEventListener('input',show);addEventListener('scroll',show);
 document.addEventListener('selectionchange',show);document.addEventListener('visibilitychange',show);
 (function f(){r++;requestAnimationFrame(f)})();
-function show(){document.title=`dp|c=${c}|b=${bl}|f=${fo}|y=${Math.round(scrollY)}|e=${e}|v=${t.value}|s=${t.selectionStart}-${t.selectionEnd}|vis=${document.visibilityState[0]}|r=${r}|md=${md}`}
+function show(){document.title=`dp|c=${c}|b=${bl}|f=${fo}|y=${Math.round(scrollY)}|e=${e}|v=${t.value}|s=${t.selectionStart}-${t.selectionEnd}|vis=${document.visibilityState[0]}|r=${r}|md=${md}|k=${k}`}
 setInterval(show,50);show();
 </script>"#;
 
@@ -830,6 +942,8 @@ setInterval(show,50);show();
             }
             "run" => run(lab, &dir, &args[2..]),
             "visible" => visible(lab, &dir),
+            "drive" => drive(lab, &dir),
+            "hits" => hits(lab, &dir, args.get(2).and_then(|v| v.parse().ok()).unwrap_or(4000)),
             _ => eprintln!("unknown mode {mode}"),
         }
     }
@@ -848,6 +962,9 @@ setInterval(show,50);show();
         let (edit_frame, edit) = (HWND(ef as *mut _), HWND(ee as *mut _));
         guard.edit_frame = Some(edit_frame);
         thread::sleep(Duration::from_millis(1500));
+        stage(&[lab, edge, edit_frame]);
+        raise_under_lab(edge);
+        raise_under_lab(edit_frame);
         // HWND_TOP is refused across processes; topmost is what driving uses anyway
         zorder(lab, HWND_TOPMOST);
         thread::sleep(Duration::from_millis(300));
@@ -1000,8 +1117,10 @@ setInterval(show,50);show();
         drive_click(lab, how, field, tile, base_ex);
         thread::sleep(Duration::from_millis(150));
         let s = sample(lr);
+        aim_keys(lab);
         send(&[key(SCAN_CTRL, false), key(SCAN_A_POS, false), key(SCAN_A_POS, true), key(SCAN_CTRL, true)]);
         thread::sleep(Duration::from_millis(30));
+        aim_keys(lab);
         type_scans(&[SCAN_H, SCAN_E, SCAN_L, SCAN_L, SCAN_O, SCAN_ENTER]);
         let p = settle_page(edge);
         println!(
@@ -1026,6 +1145,7 @@ setInterval(show,50);show();
             ok
         };
         thread::sleep(Duration::from_millis(100));
+        aim_keys(lab);
         type_scans(&[SCAN_X, SCAN_Y]);
         let p = settle_page(edge);
         println!(
@@ -1049,6 +1169,7 @@ setInterval(show,50);show();
             let _ = PostMessageW(Some(target), WM_MOUSEWHEEL, wp, lp);
         }
         let y2 = settle_page(edge).y;
+        aim_through(lab, button);
         through_on(lab, how, button, base_ex);
         send(&[move_to(button.0, button.1), mouse(MOUSEEVENTF_WHEEL, 0, 0, -120), move_to(tile.0, tile.1)]);
         let deadline = Instant::now() + Duration::from_millis(300);
@@ -1073,6 +1194,8 @@ setInterval(show,50);show();
         let (a, b) = (at(30.0, 140.0), at(200.0, 140.0));
         click_at(tile.0, tile.1);
         thread::sleep(Duration::from_millis(120));
+        aim_through(lab, a);
+        aim_through(lab, b);
         let t = Instant::now();
         through_on(lab, how, a, base_ex);
         // a region hole only covers one point, so a drag needs the style
@@ -1099,6 +1222,7 @@ setInterval(show,50);show();
         thread::sleep(Duration::from_millis(120));
         drive_click(lab, how, edit_pt, tile, base_ex);
         thread::sleep(Duration::from_millis(150));
+        aim_keys(lab);
         type_scans(&[SCAN_H, SCAN_E, SCAN_L, SCAN_L, SCAN_O]);
         thread::sleep(Duration::from_millis(150));
         println!(
@@ -1317,6 +1441,291 @@ setInterval(show,50);show();
             thread::sleep(Duration::from_millis(300));
         }
         drop(guard);
+    }
+
+    /// A viewer that keeps what it was sent: the hold's phases, here.
+    struct Heard(std::sync::Mutex<Vec<String>>);
+
+    impl skein_lib::cast::Viewer for Heard {
+        fn send(&self, out: skein_lib::cast::Out) -> bool {
+            if let skein_lib::cast::Out::Text(t) = out {
+                self.0.lock().unwrap().push(t.to_string());
+            }
+            true
+        }
+    }
+
+    /// `cast::drive` itself, end to end against a lab's window: the drive
+    /// installed as the app will install it, and pointer events handed to it
+    /// as the tile would.
+    ///
+    /// **No Escape.** The hold is tested by a person pressing it, never by
+    /// this probe: see `STAGE` for the run that taught that. The run ends by
+    /// turning the drive off the way the app does.
+    fn drive(lab: HWND, dir: &Path) {
+        use skein_lib::cast::drive::Drive;
+        use skein_lib::cast::{Button as B, Input as I, Monitor};
+
+        let found = exstyle(lab);
+        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
+        if clean != found {
+            println!("the lab came in wearing ex=0x{found:08x}; scrubbed to 0x{clean:08x}");
+            set_exstyle(lab, clean);
+        }
+        let base_ex = exstyle(lab);
+        let mut guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
+        let (lx, ly, lw, lh) = (200, 120, 1300, 800);
+        place(lab, None, lx, ly, lw, lh);
+        let (edge_child, edge) = launch_edge(dir, lx + 60, ly + 60, 800, 600);
+        guard.edge = Some((edge_child, edge));
+        place(edge, None, lx + 60, ly + 60, 800, 600);
+        thread::sleep(Duration::from_millis(1500));
+
+        // the "monitor" is the whole virtual desktop, so a tile point is a desktop point
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        let mon = Monitor {
+            id: "probe".into(),
+            name: "virtual desktop".into(),
+            w: vw as u32,
+            h: vh as u32,
+            x: vx,
+            y: vy,
+            hz: 60,
+            primary: true,
+        };
+        let norm = |p: (i32, i32)| I::MouseAbs {
+            x: (((p.0 - vx) as i64 * 65535 + (vw as i64 - 1) / 2) / (vw as i64 - 1)) as u16,
+            y: (((p.1 - vy) as i64 * 65535 + (vh as i64 - 1) / 2) / (vh as i64 - 1)) as u16,
+        };
+
+        stage(&[lab, edge]);
+        raise_under_lab(edge);
+        let heard = Arc::new(Heard(std::sync::Mutex::new(Vec::new())));
+        let mut d = Drive::start(lab.0 as isize, &mon, heard.clone()).expect("drive starts");
+        thread::sleep(Duration::from_millis(200));
+        let ex = exstyle(lab);
+        println!(
+            "\n== drive on ==\n  lab style: TRANSPARENT {}, NOACTIVATE {}, TOPMOST {}; above edge {}",
+            ex & WS_EX_TRANSPARENT.0 != 0,
+            ex & 0x0800_0000 != 0,
+            ex & WS_EX_TOPMOST.0 != 0,
+            above(lab, edge)
+        );
+
+        let lr = rect_of(lab);
+        let tile = (lr.left + (lr.right - lr.left) * 3 / 4, lr.top + (lr.bottom - lr.top) / 2);
+        let (ox, oy, scale) = page_origin(edge);
+        let at = |cx: f64, cy: f64| (ox + (cx * scale) as i32, oy + (cy * scale) as i32);
+        let (button, field) = (at(120.0, 60.0), at(180.0, 140.0));
+
+        // a click on the tile, as a hand makes it: does it take the foreground?
+        let before = unsafe { GetForegroundWindow() };
+        click_at(tile.0, tile.1);
+        thread::sleep(Duration::from_millis(200));
+        println!(
+            "  a physical click on the tile: lab took the foreground {}",
+            unsafe { GetForegroundWindow() } == lab && before != lab
+        );
+        bail_on_escape!();
+
+        // clicks, as the tile hands them over: three ways, each trial scored
+        let one = |tile_click: bool, gap: u64| -> bool {
+            if tile_click {
+                click_at(tile.0, tile.1);
+            }
+            thread::sleep(Duration::from_millis(gap));
+            let c0 = page_of(edge).unwrap_or_default().c;
+            aim_through(lab, button);
+            d.apply(&[norm(button), I::Button { button: B::Left, down: true }, I::Button { button: B::Left, down: false }]);
+            thread::sleep(Duration::from_millis(250));
+            page_of(edge).unwrap_or_default().c > c0
+        };
+        let p0 = settle_page(edge);
+        for (label, tile_click, gap) in [
+            ("tile click, then 80 ms", true, 80u64),
+            ("no tile click", false, 80),
+            ("tile click, then 400 ms", true, 400),
+        ] {
+            let hits: String = (0..10).map(|_| if one(tile_click, gap) { 'x' } else { '.' }).collect();
+            // spaced past the double-click time, so no two trials make a double click
+            thread::sleep(Duration::from_millis(300));
+            println!("  {label:<24} {hits}  ({} of 10 landed)", hits.matches('x').count());
+        }
+        thread::sleep(Duration::from_millis(500));
+        let p1 = settle_page(edge);
+        println!(
+            "  the page's own count: {} of 30; it blurred {} times; edge foreground {}, lab above {}",
+            p1.c - p0.c,
+            p1.b - p0.b,
+            unsafe { GetForegroundWindow() } == edge,
+            above(lab, edge)
+        );
+        let (ok, gave_up) = skein_lib::cast::drive::settles();
+        println!("  clicks the hook saw delivered: {ok}; gave up waiting: {gave_up}");
+        let (r, v) = frame_rate(edge);
+        println!("  the page while driven, under the lab: {r:.1} rAF/s vis={v}");
+        bail_on_escape!();
+
+        // the field, then keys from "the keyboard"
+        aim_through(lab, field);
+        d.apply(&[norm(field), I::Button { button: B::Left, down: true }, I::Button { button: B::Left, down: false }]);
+        thread::sleep(Duration::from_millis(250));
+        aim_keys(lab);
+        type_scans(&[SCAN_H, SCAN_E, SCAN_L, SCAN_L, SCAN_O, SCAN_ENTER]);
+        let p = settle_page(edge);
+        println!("  keys after a drive click on the field: value {:?}, Enter saw {:?}", p.v, p.e);
+
+        // the wheel
+        // a page scrolls smoothly, so each reading waits out the animation
+        let settled = || {
+            thread::sleep(Duration::from_millis(700));
+            page_of(edge).unwrap_or_default().y
+        };
+        let y0 = settled();
+        aim_through(lab, button);
+        d.apply(&[norm(button), I::Wheel { dx: 0, dy: -120 }]);
+        let y1 = settled();
+        aim_through(lab, button);
+        d.apply(&[norm(button), I::Wheel { dx: 0, dy: -240 }]);
+        let y2 = settled();
+        println!("  wheel through drive: one notch down {}px, then two more {}px", y1 - y0, y2 - y1);
+        bail_on_escape!();
+
+        // a drag across the field
+        let (a, b) = (at(30.0, 140.0), at(220.0, 140.0));
+        let mut ev = vec![norm(a), I::Button { button: B::Left, down: true }];
+        for i in 1..=8 {
+            ev.push(norm((a.0 + (b.0 - a.0) * i / 8, a.1)));
+        }
+        ev.push(I::Button { button: B::Left, down: false });
+        aim_through(lab, a);
+        aim_through(lab, b);
+        d.apply(&ev);
+        thread::sleep(Duration::from_millis(400));
+        println!("  drag through drive: selection {}", settle_page(edge).s);
+        bail_on_escape!();
+
+        d.leave();
+        thread::sleep(Duration::from_millis(300));
+        let ex = exstyle(lab);
+        let c0 = settle_page(edge).c;
+        d.apply(&[norm(button), I::Button { button: B::Left, down: true }, I::Button { button: B::Left, down: false }]);
+        let c1 = settle_page(edge).c;
+        println!(
+            "  drive turned off: lab TRANSPARENT now {}, TOPMOST {}, foreground {}; a press after it reached the page: {}",
+            ex & WS_EX_TRANSPARENT.0 != 0,
+            ex & WS_EX_TOPMOST.0 != 0,
+            unsafe { GetForegroundWindow() } == lab,
+            c1 != c0
+        );
+        drop(d);
+        drop(guard);
+
+    }
+
+    /// What the tile's point hit-tests as while a drive is on, and the lab's
+    /// style, sampled with no input at all. Asked because a guarded run found
+    /// the point hit-testing as the window *under* the lab a moment after the
+    /// drive began — the lab gone click-through to real clicks too.
+    fn hits(lab: HWND, dir: &Path, wait_ms: u64) {
+        use skein_lib::cast::drive::Drive;
+        use skein_lib::cast::Monitor;
+
+        let found = exstyle(lab);
+        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
+        if clean != found {
+            println!("the lab came in wearing ex=0x{found:08x}; scrubbed to 0x{clean:08x}");
+            set_exstyle(lab, clean);
+        }
+        let base_ex = exstyle(lab);
+        stage(&[lab]);
+        let mut guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
+        let (lx, ly, lw, lh) = (200, 120, 1300, 800);
+        place(lab, None, lx, ly, lw, lh);
+        let (edge_child, edge) = launch_edge(dir, lx + 60, ly + 60, 800, 600);
+        guard.edge = Some((edge_child, edge));
+        place(edge, None, lx + 60, ly + 60, 800, 600);
+        thread::sleep(Duration::from_millis(1500));
+        raise_under_lab(edge);
+        let lr = rect_of(lab);
+        let tile = (lr.left + (lr.right - lr.left) * 3 / 4, lr.top + (lr.bottom - lr.top) / 2);
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        let mon = Monitor { id: "probe".into(), name: "virtual desktop".into(), w: vw as u32, h: vh as u32, x: vx, y: vy, hz: 60, primary: true };
+
+        let read = |label: &str, t0: Instant| {
+            let r = root_at(tile.0, tile.1);
+            let ex = exstyle(lab);
+            format!(
+                "{label:>10} +{:>5.0} ms: tile point hit-tests as {} — lab ex=0x{ex:08x}{}{}{}{}",
+                ms(t0.elapsed()),
+                if r == lab { "THE LAB".to_string() } else { format!("'{}' ({})", text_of(r), class_of(r)) },
+                if ex & WS_EX_TRANSPARENT.0 != 0 { " TRANSPARENT" } else { "" },
+                if ex & 0x0800_0000 != 0 { " NOACTIVATE" } else { "" },
+                if ex & WS_EX_LAYERED.0 != 0 { " LAYERED" } else { "" },
+                if ex & WS_EX_TOPMOST.0 != 0 { " TOPMOST" } else { "" },
+            )
+        };
+        let t0 = Instant::now();
+        println!("{}", read("before", t0));
+        let heard = Arc::new(Heard(std::sync::Mutex::new(Vec::new())));
+        let d = Drive::start(lab.0 as isize, &mon, heard.clone()).expect("drive starts");
+        let t0 = Instant::now();
+        let mut last = String::new();
+        while t0.elapsed() < Duration::from_millis(wait_ms) {
+            let line = read("driving", t0);
+            let key = line.split(": ").nth(1).unwrap_or("").to_string();
+            if key != last {
+                println!("{line}");
+                last = key;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        println!("{}", read("end", t0));
+
+        // one click on the tile, guarded, then watch again
+        let inner = |t0: Instant| {
+            let mut v = Vec::new();
+            for c in children(lab) {
+                v.push(format!("{}=0x{:08x}", class_of(c), exstyle(c)));
+            }
+            let deep = unsafe { windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(POINT { x: tile.0, y: tile.1 }) };
+            format!("   +{:>5.0} ms deepest at the point: {} ({}); inner: {}", ms(t0.elapsed()), class_of(deep), text_of(deep), v.join(" "))
+        };
+        println!("{}", inner(t0));
+        click_at(tile.0, tile.1);
+        let t1 = Instant::now();
+        let mut last = String::new();
+        while t1.elapsed() < Duration::from_millis(4000) {
+            let line = read("clicked", t1);
+            let key = line.split(": ").nth(1).unwrap_or("").to_string();
+            if key != last {
+                println!("{line}");
+                println!("{}", inner(t1));
+                last = key;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        println!("{}", read("end", t1));
+        drop(d);
+        thread::sleep(Duration::from_millis(200));
+        println!("{}", read("dropped", t1));
+        drop(guard);
+        thread::sleep(Duration::from_millis(1500));
+        println!("{}", read("restored", t1));
     }
 
     /// The window under a point, skipping the lab: walk the z-order below it

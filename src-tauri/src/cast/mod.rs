@@ -29,6 +29,7 @@
 #![allow(dead_code)]
 
 pub mod capture;
+pub mod drive;
 pub mod encode;
 pub mod exclude;
 #[cfg(windows)]
