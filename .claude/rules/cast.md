@@ -201,3 +201,14 @@ memory, measured rather than assumed (see SCREENS.md's *Probe*).
   to `RemoteSubscription::input`, and the far host holds the `inject::Driver`.
 - `exclude::Hold` is taken by every **local** session and protects every webview window from
   capture while at least one is held.
+
+### A lab cannot screenshot itself while it shows its own machine
+
+`WDA_EXCLUDEFROMCAPTURE` is set on the wall's windows while it shows one of its own monitors, and
+`PrintWindow` honours it like every other capture API: the lab capture script returns a solid
+black window exactly when screens work. That black is the proof the wall is absent from its own
+picture. The proof of what a tile draws is the control surface's `screen.peek`, which asks the
+session's worker for its canvas as a PNG (`convertToBlob`) and returns it as a data URL, along with
+what the session reports (state, stats, config). One frame crosses to the main thread because a
+test asked, never per frame. A static screen reads `0 fps`, and that is honest: Desktop
+Duplication sends nothing while nothing changes.
