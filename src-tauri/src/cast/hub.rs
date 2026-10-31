@@ -126,6 +126,49 @@ pub fn plan(native: (u32, u32), hz: u32, wants: &[(Want, Option<u32>)]) -> Plan 
     Plan { renditions, assign }
 }
 
+// ---- which encoder -------------------------------------------------------------
+
+/// Which hardware encoder a rendition runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choice {
+    /// Media Foundation's hardware MFT on the adapter that captured the frame.
+    Mf,
+    /// NVENC through `nvEncodeAPI64.dll`; `cross` when the frame has to be
+    /// carried there from another adapter first (`gpu::Bridge`).
+    Nvenc { cross: bool },
+}
+
+/// Whether NVENC across adapters beat the capturing adapter's own MFT when
+/// measured (SCREENS.md, Probe). Set from the probe, not from a guess: on the
+/// hybrid laptop the two tied on latency (p50 13–19 ms either way), because
+/// NVENC's faster encode is spent on the system-memory carry.
+pub const CROSS_NVENC_WINS: bool = false;
+
+/// The encoder for a machine, decided from what it has:
+///
+/// - `forced` (`VOLERY_CAST_ENCODER=mf|nvenc`) wins when it can be honoured,
+///   so the two can be compared on the same machine without a rebuild;
+/// - an NVIDIA adapter that drives the output itself gets NVENC — no copy,
+///   and NVIDIA's MFT is the one that would not activate here;
+/// - otherwise the owner's own MFT, unless NVENC across adapters measured
+///   better (`cross_wins`);
+/// - NVENC across adapters when the owner has no MFT at all.
+pub fn choose(owner_is_nvidia: bool, mf_on_owner: bool, nvenc: bool, cross_wins: bool, forced: Option<&str>) -> Option<Choice> {
+    let nv = Choice::Nvenc { cross: !owner_is_nvidia };
+    match forced {
+        Some("mf") if mf_on_owner => return Some(Choice::Mf),
+        Some("nvenc") if nvenc => return Some(nv),
+        _ => {}
+    }
+    if owner_is_nvidia && nvenc {
+        return Some(nv);
+    }
+    if mf_on_owner && !(nvenc && cross_wins) {
+        return Some(Choice::Mf);
+    }
+    nvenc.then_some(nv)
+}
+
 // ---- the queue a viewer drops into -------------------------------------------
 
 /// How many video frames may wait for a slow viewer before it is behind: one
@@ -289,6 +332,9 @@ mod live {
     use crate::cast::capture::{Cursor, Duplicator, Lost, Opened, Pointer};
     use crate::cast::encode::{self, codec_string, Encoder, ParamSets, Settings};
     use crate::cast::gpu::{Gpu, Scaler};
+    use crate::cast::nvenc::Nvenc;
+    use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+    use windows::Win32::Graphics::Dxgi::IDXGIAdapter1;
     use crate::cast::{monitors, Monitor};
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
@@ -436,12 +482,93 @@ mod live {
         Ok(Subscription { source, id })
     }
 
+    /// A rendition's encoder, whichever it is.
+    enum Engine {
+        Mf { scaler: Scaler, encoder: Encoder },
+        Nv(Nvenc),
+    }
+
+    impl Engine {
+        fn set_kbps(&mut self, kbps: u32) {
+            match self {
+                Engine::Mf { encoder, .. } => encoder.set_kbps(kbps),
+                Engine::Nv(n) => n.set_kbps(kbps),
+            }
+        }
+
+        /// Convert and hand over one frame. `Ok(false)` is a frame skipped
+        /// because the encoder holds every buffer it has.
+        fn feed(&mut self, from: &Gpu, latest: &ID3D11Texture2D, time: i64, fps: u32, key: bool) -> Result<bool, String> {
+            match self {
+                Engine::Mf { scaler, encoder } => {
+                    let Some(slot) = encoder.slot() else { return Ok(false) };
+                    scaler.blt(from, latest, &slot.texture, slot.index).map_err(|e| format!("converting a frame: {e}"))?;
+                    encoder.submit(slot, time, 10_000_000 / fps.max(1) as i64, key).map_err(|e| e.to_string())?;
+                    Ok(true)
+                }
+                Engine::Nv(n) => n.submit(latest, time, key).map(|()| true),
+            }
+        }
+    }
+
+    /// The NVIDIA adapter, if this machine has one and its driver's NVENC loads.
+    fn nvidia() -> Option<IDXGIAdapter1> {
+        crate::cast::nvenc::available().ok()?;
+        crate::cast::gpu::adapters().ok()?.into_iter().find(|a| unsafe { a.GetDesc1() }.map(|d| d.VendorId == 0x10de).unwrap_or(false))
+    }
+
+    fn is_nvidia(gpu: &Gpu) -> bool {
+        crate::cast::gpu::adapter_by_luid(gpu.luid).ok().and_then(|a| unsafe { a.GetDesc1() }.ok()).map(|d| d.VendorId == 0x10de).unwrap_or(false)
+    }
+
+    /// Make the encoder `choose` names for one rendition, falling back to the
+    /// other when the first will not start.
+    fn engine(dup: &Duplicator, nv_gpu: &mut Option<Arc<Gpu>>, r: &Rendition, source: &Arc<Source>, token: u64) -> Result<(Engine, String), String> {
+        let settings = Settings { w: r.size.0, h: r.size.1, fps: r.fps, kbps: r.kbps, rgb: false };
+        let nv_adapter = nvidia();
+        let owner_is_nvidia = is_nvidia(&dup.gpu);
+        let mf_on_owner = encode::hardware_h264(Some(dup.gpu.luid)).map(|v| !v.is_empty()).unwrap_or(false);
+        let forced = std::env::var("VOLERY_CAST_ENCODER").ok();
+        let first = choose(owner_is_nvidia, mf_on_owner, nv_adapter.is_some(), CROSS_NVENC_WINS, forced.as_deref())
+            .ok_or("no hardware H.264 encoder on this machine")?;
+        let make_mf = || -> Result<(Engine, String), String> {
+            let scaler = Scaler::new(&dup.gpu, dup.size, r.size, r.fps).map_err(|e| format!("video processor: {e}"))?;
+            let encoder = Encoder::new(&dup.gpu, settings, fan_out(source.clone(), token, r.fps, "mf")).map_err(|e| format!("encoder: {e}"))?;
+            let name = encoder.name.clone();
+            Ok((Engine::Mf { scaler, encoder }, name))
+        };
+        let mut make_nv = || -> Result<(Engine, String), String> {
+            let g = if owner_is_nvidia {
+                dup.gpu.clone()
+            } else if let Some(g) = nv_gpu.as_ref() {
+                g.clone()
+            } else {
+                let a = nv_adapter.as_ref().ok_or("no NVIDIA adapter")?;
+                let g = Arc::new(Gpu::open(a).map_err(|e| format!("a device on the NVIDIA adapter: {e}"))?);
+                *nv_gpu = Some(g.clone());
+                g
+            };
+            let n = Nvenc::new(dup.gpu.clone(), g, dup.size, settings, fan_out(source.clone(), token, r.fps, "nvenc"))?;
+            let name = n.name.clone();
+            Ok((Engine::Nv(n), name))
+        };
+        match first {
+            Choice::Mf => make_mf().or_else(|e| {
+                log::warn!("cast: the MFT would not start ({e}); trying NVENC");
+                make_nv()
+            }),
+            Choice::Nvenc { .. } => make_nv().or_else(|e| {
+                log::warn!("cast: NVENC would not start ({e}); trying the MFT");
+                make_mf()
+            }),
+        }
+    }
+
     /// One encoder at one size, as the capture thread holds it.
     struct Live {
         token: u64,
         plan: Rendition,
-        scaler: Scaler,
-        encoder: Encoder,
+        engine: Engine,
         last_fed: Option<Instant>,
         dirty: bool,
         key: bool,
@@ -461,7 +588,7 @@ mod live {
 
     /// The encoder's output, on its event thread: stamp it, then hand the
     /// same bytes to every viewer of this rendition that can use them.
-    fn fan_out(source: Arc<Source>, token: u64, fps: u32) -> Box<dyn FnMut(encode::Encoded) + Send> {
+    fn fan_out(source: Arc<Source>, token: u64, fps: u32, encoder: &'static str) -> Box<dyn FnMut(encode::Encoded) + Send> {
         let mut seq = 0u32;
         let mut sets = ParamSets::default();
         let mut codec = None::<String>;
@@ -493,6 +620,7 @@ mod live {
                         "fps": (window.1 as f64 / secs).round(),
                         "kbps": (window.2 as f64 * 8.0 / secs / 1000.0).round(),
                         "encode_ms": (window.3 / window.1.max(1) as f64 * 10.0).round() / 10.0,
+                        "encoder": encoder,
                         "w": w, "h": h,
                     })
                     .to_string()
@@ -578,6 +706,7 @@ mod live {
     fn run(source: &Arc<Source>) -> Result<(), String> {
         let mut dup = open(source)?;
         let mut live: Vec<Live> = Vec::new();
+        let mut nv_gpu: Option<Arc<Gpu>> = None;
         let mut planned_gen = u64::MAX;
         let mut frame_wall_us = crate::cast::capture::wall_us();
         let mut last_time = 0i64;
@@ -600,7 +729,7 @@ mod live {
                             Some(i) => {
                                 let mut l = live.remove(i);
                                 if l.plan.kbps != r.kbps {
-                                    l.encoder.set_kbps(r.kbps);
+                                    l.engine.set_kbps(r.kbps);
                                 }
                                 l.plan = *r;
                                 l
@@ -608,11 +737,9 @@ mod live {
                             None => {
                                 let token = NEXT.fetch_add(1, Ordering::SeqCst);
                                 sizes().lock().unwrap().insert(token, r.size);
-                                let settings = Settings { w: r.size.0, h: r.size.1, fps: r.fps, kbps: r.kbps, rgb: false };
-                                let scaler = Scaler::new(&dup.gpu, dup.size, r.size, r.fps).map_err(|e| format!("video processor: {e}"))?;
-                                let encoder = Encoder::new(&dup.gpu, settings, fan_out(source.clone(), token, r.fps))
-                                    .map_err(|e| format!("encoder: {e}"))?;
-                                Live { token, plan: *r, scaler, encoder, last_fed: None, dirty: true, key: true, refine: false }
+                                let (engine, name) = engine(&dup, &mut nv_gpu, r, source, token)?;
+                                log::info!("cast: {} at {}x{}@{} on {name}", source.monitor.id, r.size.0, r.size.1, r.fps);
+                                Live { token, plan: *r, engine, last_fed: None, dirty: true, key: true, refine: false }
                             }
                         };
                         next.push(l);
@@ -721,18 +848,20 @@ mod live {
                 if !(due && (l.dirty || l.key || settle)) {
                     continue;
                 }
-                let Some(slot) = l.encoder.slot() else { continue };
-                if let Err(e) = l.scaler.blt(&dup.gpu, &dup.latest, &slot.texture, slot.index) {
-                    return Err(format!("converting a frame: {e}"));
-                }
                 // Sample times must rise; the capture's own clock is the base.
                 let time = (frame_wall_us as i64 * 10).max(last_time + 1);
-                last_time = time;
                 let key = std::mem::take(&mut l.key);
-                if let Err(e) = l.encoder.submit(slot, time, 10_000_000 / l.plan.fps.max(1) as i64, key) {
-                    log::warn!("cast: encoder refused a frame: {e}");
-                    l.key = key;
-                    continue;
+                match l.engine.feed(&dup.gpu, &dup.latest, time, l.plan.fps, key) {
+                    Ok(true) => last_time = time,
+                    Ok(false) => {
+                        l.key = key;
+                        continue;
+                    }
+                    Err(e) => {
+                        log::warn!("cast: encoder refused a frame: {e}");
+                        l.key = key;
+                        continue;
+                    }
                 }
                 if settle {
                     l.refine = false;
@@ -825,6 +954,22 @@ mod tests {
         assert_eq!(p.renditions[0].kbps, 1500);
         assert_eq!(kbps_for((2560, 1440), 120, None), 35389);
         assert_eq!(kbps_for((320, 180), 15, None), 400);
+    }
+
+    #[test]
+    fn the_encoder_is_the_owners_unless_nvidia_owns_the_output_or_nothing_else_will_do() {
+        // The hybrid laptop: Intel owns the panel and has an MFT; NVENC is across.
+        assert_eq!(choose(false, true, true, false, None), Some(Choice::Mf));
+        assert_eq!(choose(false, true, true, true, None), Some(Choice::Nvenc { cross: true }));
+        // A desktop with the NVIDIA card driving the monitor: no copy.
+        assert_eq!(choose(true, true, true, false, None), Some(Choice::Nvenc { cross: false }));
+        // No MFT on the owner at all: NVENC across, or nothing.
+        assert_eq!(choose(false, false, true, false, None), Some(Choice::Nvenc { cross: true }));
+        assert_eq!(choose(false, false, false, false, None), None);
+        // Forcing wins where it can be honoured, and only there.
+        assert_eq!(choose(false, true, true, false, Some("nvenc")), Some(Choice::Nvenc { cross: true }));
+        assert_eq!(choose(true, true, true, false, Some("mf")), Some(Choice::Mf));
+        assert_eq!(choose(false, true, false, false, Some("nvenc")), Some(Choice::Mf));
     }
 
     fn video(key: bool, seq: u32) -> Out {

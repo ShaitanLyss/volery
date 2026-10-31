@@ -16,6 +16,7 @@
 //!   BGRA into NV12 at a tile's size.
 //! - `capture` — Desktop Duplication of one output, and the pointer.
 //! - `encode` — the hardware H.264 MFT, asynchronous, low latency.
+//! - `nvenc` — NVENC through the driver's own DLL, where the MFT will not do.
 //! - `hub` — one capture per monitor, at most two renditions, fan-out, and
 //!   the drop-until-keyframe queue every viewer uses.
 //! - `local` — the loopback WebSocket a tile's Worker dials.
@@ -37,6 +38,8 @@ pub mod inject;
 #[cfg(windows)]
 pub mod local;
 pub mod monitors;
+#[cfg(windows)]
+pub mod nvenc;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};

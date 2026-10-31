@@ -338,11 +338,17 @@ impl Bridge {
     }
 
     pub fn carry(&self, from: &Gpu, to: &Gpu, src: &ID3D11Texture2D) -> Result<()> {
+        self.carry_into(from, to, src, &self.dst)
+    }
+
+    /// The same, into a texture of the caller's on `to` (same size, BGRA):
+    /// NVENC's own input, so the frame is uploaded once rather than twice.
+    pub fn carry_into(&self, from: &Gpu, to: &Gpu, src: &ID3D11Texture2D, dst: &ID3D11Texture2D) -> Result<()> {
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         unsafe {
             from.context.CopyResource(&self.staging, src);
             from.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-            to.context.UpdateSubresource(&self.dst, 0, None, mapped.pData, mapped.RowPitch, mapped.RowPitch * self.size.1);
+            to.context.UpdateSubresource(dst, 0, None, mapped.pData, mapped.RowPitch, mapped.RowPitch * self.size.1);
             from.context.Unmap(&self.staging, 0);
         }
         Ok(())

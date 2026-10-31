@@ -168,6 +168,25 @@ DWM ~15%. The conversion (`ID3D11VideoProcessor`) queues behind them, which is t
 1440p latency. That is why `gpu::Bridge` exists — carrying a frame to the 4080 through system
 memory, measured rather than assumed (see SCREENS.md's *Probe*).
 
+## NVENC, and choosing an encoder
+
+- **NVIDIA's MFT will not activate in this process; NVENC's own API will.** `cast/nvenc.rs` is
+  hand-written FFI to `nvEncodeAPI64.dll` (shipped with the driver, loaded at run time, API 12.1).
+  **Its offsets are compiled, not counted**: a ten-line C program `offsetof`s every field it
+  touches against FFmpeg's MIT `nv-codec-headers` tag `n12.1.14.0`, and the structs are zeroed
+  buffers at least that large with the version word set. Moving to a newer API means re-running
+  that program against the newer header, not editing numbers by eye.
+- **A carry across adapters is two halves on two threads.** The capture thread queues a GPU copy
+  into a staging texture on its own adapter and moves on; the NVENC thread maps it (which waits
+  for the copy) and uploads. All of it on the capture thread cost 6 ms a frame and 11 fps.
+- **`hub::choose` is the policy, and it is pure:** NVENC where NVIDIA owns the output (no copy),
+  else the owner's MFT unless `CROSS_NVENC_WINS` (false; measured a tie, SCREENS.md *Probe*), else
+  NVENC across adapters. `VOLERY_CAST_ENCODER=mf|nvenc` forces one where it can, and a refusal at
+  start falls back to the other. `stats` names which one is running.
+- NVENC converts BGRA itself using the matrix the **VUI** names, so the VUI fields set in
+  `config_for` are also what make its colours right. The probe checks this by decoding a known
+  green window.
+
 ## The encoder
 
 - **Asynchronous by contract.** A thread per encoder blocks on its event queue: `NeedInput` is a

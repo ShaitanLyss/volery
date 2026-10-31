@@ -44,6 +44,7 @@ mod probe {
     use skein_lib::cast::encode::{self, codec_string, nals, Encoder, Settings, NAL_IDR, NAL_PPS, NAL_SPS};
     use skein_lib::cast::gpu::{self, Gpu, Scaler};
     use skein_lib::cast::monitors;
+    use skein_lib::cast::nvenc::Nvenc;
     use std::collections::HashMap;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
@@ -63,10 +64,11 @@ mod probe {
         encode_on: Option<u64>,
         serve: bool,
         rgb: bool,
+        nvenc: bool,
     }
 
     fn args() -> Args {
-        let mut a = Args { secs: 5, size: None, fps: 60, monitor: None, encode_on: None, serve: false, rgb: false };
+        let mut a = Args { secs: 5, size: None, fps: 60, monitor: None, encode_on: None, serve: false, rgb: false, nvenc: false };
         let mut it = std::env::args().skip(1);
         while let Some(k) = it.next() {
             match k.as_str() {
@@ -75,6 +77,7 @@ mod probe {
                 "--monitor" => a.monitor = it.next(),
                 "--serve" => a.serve = true,
                 "--rgb" => a.rgb = true,
+                "--nvenc" => a.nvenc = true,
                 "--encode-on" => a.encode_on = it.next().and_then(|v| u64::from_str_radix(&v, 16).ok()),
                 "--size" => {
                     a.size = it.next().and_then(|v| {
@@ -368,7 +371,14 @@ mod probe {
         let (adapter, output) = monitors::open(&m.id)?;
         let cap_gpu = Arc::new(Gpu::open(&adapter).map_err(|e| format!("device: {e}"))?);
         println!("  capture device on {} ({:016x})", cap_gpu.name, cap_gpu.luid);
-        let gpu = match a.encode_on {
+        /* --nvenc picks the NVIDIA adapter unless --encode-on names one. */
+        let encode_on = a.encode_on.or_else(|| {
+            a.nvenc.then(|| gpu::adapters().ok()?.into_iter().find(|ad| unsafe { ad.GetDesc1() }.map(|d| d.VendorId == 0x10de).unwrap_or(false)))
+                .flatten()
+                .and_then(|ad| unsafe { ad.GetDesc1() }.ok())
+                .map(|d| gpu::luid64(d.AdapterLuid))
+        });
+        let gpu = match encode_on {
             Some(l) if l != cap_gpu.luid => {
                 let g = Arc::new(Gpu::open(&gpu::adapter_by_luid(l).map_err(|e| e.to_string())?).map_err(|e| format!("device: {e}"))?);
                 println!("  convert + encode on {} ({:016x}), frames carried across through system memory", g.name, g.luid);
@@ -420,10 +430,7 @@ mod probe {
         }));
         let (c2, o2, s2) = (captured.clone(), out.clone(), sink.clone());
         let mut sets = encode::ParamSets::default();
-        let encoder = Encoder::new(
-            &gpu,
-            settings,
-            Box::new(move |e| {
+        let on_out: Box<dyn FnMut(skein_lib::cast::encode::Encoded) + Send> = Box::new(move |e| {
                 let au = sets.ensure(&e.annex_b).into_owned();
                 let mut o = o2.lock().unwrap();
                 if let Some(t0) = c2.lock().unwrap().remove(&e.time) {
@@ -448,10 +455,14 @@ mod probe {
                     }
                 }
                 let _ = s2.lock().unwrap().write_all(&au);
-            }),
-        )
-        .map_err(|e| format!("encoder: {e}"))?;
-        println!("  encoder: {}", encoder.name);
+            });
+        let (encoder, mut nv) = if a.nvenc {
+            let n = Nvenc::new(cap_gpu.clone(), gpu.clone(), src, settings, on_out).map_err(|e| format!("nvenc: {e}"))?;
+            (None, Some(n))
+        } else {
+            (Some(Encoder::new(&gpu, settings, on_out).map_err(|e| format!("encoder: {e}"))?), None)
+        };
+        println!("  encoder: {}", encoder.as_ref().map(|e| e.name.clone()).or(nv.as_ref().map(|n| n.name.clone())).unwrap_or_default());
         let mut scaler = Scaler::new(&gpu, src, dst, a.fps).map_err(|e| format!("video processor: {e}"))?;
         let bridge = if Arc::ptr_eq(&gpu, &cap_gpu) { None } else { Some(gpu::Bridge::new(&cap_gpu, &gpu, src).map_err(|e| format!("bridge: {e}"))?) };
         let mut carry_ms = Vec::new();
@@ -497,7 +508,23 @@ mod probe {
                 Err(_) => return Err("lost the duplication mid-run".into()),
             }
             let due = last_feed.elapsed() >= interval;
-            if dirty && due {
+            if dirty && due && nv.is_some() {
+                let time = frame_at.0.max(last_time + 1);
+                last_time = time;
+                captured.lock().unwrap().insert(time, frame_at.1);
+                let key = Instant::now() >= next_key;
+                if key {
+                    next_key += Duration::from_secs(2);
+                    forced += 1;
+                }
+                let t = Instant::now();
+                nv.as_mut().unwrap().submit(&dup.latest, time, key).map_err(|e| format!("nvenc submit: {e}"))?;
+                carry_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+                fed += 1;
+                dirty = false;
+                last_feed = Instant::now();
+            } else if dirty && due {
+                let encoder = encoder.as_ref().unwrap();
                 let Some(slot) = encoder.slot() else {
                     skipped_pool += 1;
                     continue;
@@ -541,6 +568,20 @@ mod probe {
         let before = out.lock().unwrap().frames;
         let mut lone = Vec::new();
         for _ in 0..3 {
+            if let Some(n) = nv.as_mut() {
+                let t = wall_us() as i64 * 10;
+                captured.lock().unwrap().insert(t, Instant::now());
+                let n0 = out.lock().unwrap().frames;
+                let t0 = Instant::now();
+                let _ = n.submit(&dup.latest, t, false);
+                while out.lock().unwrap().frames == n0 && t0.elapsed() < Duration::from_millis(400) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let got = out.lock().unwrap().frames > n0;
+                lone.push(if got { format!("out in {:.2} ms", t0.elapsed().as_secs_f64() * 1000.0) } else { "nothing within 400 ms".into() });
+                continue;
+            }
+            let encoder = encoder.as_ref().unwrap();
             if let Some(slot) = encoder.slot() {
                 let src_tex = bridge.as_ref().map(|b| b.dst.clone()).unwrap_or_else(|| dup.latest.clone());
                 if rgb {
@@ -566,6 +607,7 @@ mod probe {
         }
         println!("  lone frames after a rest ({} out before): {:?}", before, lone);
         drop(encoder);
+        drop(nv);
         unsafe {
             let _ = DestroyWindow(scene);
             let _ = DestroyWindow(excluded);
@@ -574,7 +616,7 @@ mod probe {
         pump();
         let _ = sink.lock().unwrap().flush();
 
-        let mut o = out.lock().unwrap();
+        let o = out.lock().unwrap();
         let span = match (o.first_at, o.last_at) {
             (Some(a), Some(b)) if b > a => b.duration_since(a).as_secs_f64(),
             _ => a.secs as f64,
@@ -599,7 +641,12 @@ mod probe {
             l.len()
         );
         if !carry_ms.is_empty() {
-            println!("    carrying a frame across adapters: p50 {:.2} ms p95 {:.2}", pct(&mut carry_ms, 0.5), pct(&mut carry_ms, 0.95));
+            println!(
+                "    {}: p50 {:.2} ms p95 {:.2}",
+                if a.nvenc { "handing a frame to NVENC (capture thread)" } else { "carrying a frame across adapters" },
+                pct(&mut carry_ms, 0.5),
+                pct(&mut carry_ms, 0.95)
+            );
         }
         let (mut h, mut f) = (o.held.clone(), o.fed.clone());
         println!(
@@ -625,6 +672,20 @@ mod probe {
         {
             Ok(p) => println!("  ffprobe: {}{}", String::from_utf8_lossy(&p.stdout).trim(), String::from_utf8_lossy(&p.stderr).trim()),
             Err(_) => println!("  ffprobe: not on PATH, decode unchecked"),
+        }
+        /* The colours: decode the green control window's centre from the
+           last frame, reading the stream as BT.709 limited range — what both
+           paths claim to write. Green that comes back green is the matrix
+           and the range agreeing end to end; read as 601 it would not. */
+        let (cx, cy) = (((x0 + 760 - m.x) as u64 * dst.0 as u64 / src.0 as u64) as u32, ((y0 + 320 - m.y) as u64 * dst.1 as u64 / src.1 as u64) as u32);
+        if let Ok(p) = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&file)
+            .args(["-vf", &format!("scale=in_color_matrix=bt709:in_range=tv:out_range=pc,crop=1:1:{cx}:{cy}"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+        {
+            let px = p.stdout.len().checked_sub(3).map(|i| &p.stdout[i..]).unwrap_or(&[]);
+            println!("  the green control window decoded (as BT.709 limited): rgb{:?}, written as rgb(0, 255, 0)", px);
         }
         Ok(())
     }

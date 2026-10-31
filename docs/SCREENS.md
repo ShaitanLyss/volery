@@ -286,12 +286,33 @@ hybrid laptop, with the machine busy (other lanes' cargo builds, Chrome and the 
 - **ARGB32 straight in is slower.** Intel's MFT also takes `MFVideoFormat_ARGB32`, which would
   skip our conversion at native size. A/B ×2 at 1440p: p50 37–42 ms and 33–36 fps against NV12's
   21–24 ms and 44–47 fps. Its own conversion is dearer than the video processor's. NV12 stays.
-- **NVENC is not reachable through Media Foundation here.** NVIDIA's H.264 MFT is listed for the
-  4080's LUID but `ActivateObject` fails with `E_UNEXPECTED` in this process, filtered or not and
-  with an `NvOptimusEnablement` export. Using the 4080 would mean the NVENC SDK directly plus a
-  copy through system memory (`gpu::Bridge`, built for the measurement). Not done; Intel holds the
-  numbers above. A MUX switch putting the panel on the 4080 would make it the owning adapter
-  and need no copy.
+- **NVENC: not through Media Foundation, yes through its own API.** NVIDIA's H.264 MFT is listed
+  for the 4080's LUID but `ActivateObject` fails with `E_UNEXPECTED` in this process, filtered or
+  not and with an `NvOptimusEnablement` export. ffmpeg's `h264_nvenc` encodes 1440p on the same
+  machine, so the hardware is fine and the wrapper refuses. `cast/nvenc.rs` loads
+  `nvEncodeAPI64.dll` at run time (API 12.1, every offset printed by MSVC from FFmpeg's MIT
+  `nv-codec-headers`), takes the capture as BGRA, and lets NVENC do the colour conversion at
+  native size. Across adapters the capture thread only queues a GPU copy into a staging texture
+  (0.12 ms); the NVENC thread maps it and uploads it to the 4080. The first cut did the whole
+  carry on the capture thread, 6 ms of it, which held NVENC to 39 fps.
+
+  Interleaved A/B, same moving scene, a quieter machine than the table above:
+
+  | | QSV (iGPU, owner) p50 / p95 | fps | NVENC (4080, across) p50 / p95 | fps |
+  |---|---|---|---|---|
+  | 2560×1440 | 18.7 / 31.9, 13.9 / 18.9 ms | 47–50 | 17.0 / 26.8, 16.8 / 28.1 ms | 52–53 |
+  | 1280×720 | 11.9 / 19.0, 12.5 / 19.6 ms | 49–50 | 14.5 / 24.8, 12.8 / 20.3 ms | 53 |
+
+  NVENC's encode alone is 2.5–4.7 ms against QSV's 7–10. The system-memory carry spends the
+  difference, so **a tie on latency**. NVENC has a little more throughput and takes the
+  conversion off an iGPU that the wall and Chrome keep busy. QSV stays the default here
+  (`hub::CROSS_NVENC_WINS = false`), and `VOLERY_CAST_ENCODER=nvenc` picks the other for
+  comparison. `hub::choose` gives NVENC with no copy where an NVIDIA card drives the output, and
+  falls back to either when the other will not start; `stats` says `"encoder":"mf"|"nvenc"`. Both
+  write BT.709 limited, and a green control window decodes as `rgb(0,254,0)` from either stream
+  (read back with ffmpeg as BT.709). NVENC at P1/ultra-low-latency spends about a third of the
+  CBR target on this scene (4–5 Mbit/s against QSV's 13 at 1440p), so equal-quality bitrates
+  were not compared.
 - **Every IDR carried SPS + PPS in-band** (keyframes forced every 2 s: 3 of 3, 2 of 2);
   `avc1.640033` at 1440p, `avc1.640020` at 720p, High profile, `yuv420p`, `color_range=tv`.
   ffprobe decodes every frame written, from the encoder and from the socket.
