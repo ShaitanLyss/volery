@@ -40,7 +40,7 @@ use skein_lib::flyway::frame::Frame;
 use skein_lib::flyway::link::answer_with;
 use skein_lib::flyway::seal::WallKey;
 use skein_lib::flyway::session::Msg;
-use skein_lib::flyway::wire::Wire;
+use skein_lib::flyway::wire::{Arrival, Wire};
 use skein_lib::store::Store;
 
 /// Both ends share this. In life it comes out of the credential vault; here it
@@ -138,10 +138,25 @@ async fn main() {
         tokio::spawn(async move {
             for _ in 0..3 {
                 let Some(incoming) = desk.next_dial().await else { break };
+                /* `answer` takes a connection that has already arrived, since
+                   `arrive` routes a screen's ALPN apart before any handshake
+                   (`link.rs`'s accept loop). The desk serves no screens, so a
+                   cast arrival here is this probe misrouting, said aloud. */
+                let arrived = match desk.arrive(incoming).await {
+                    Ok(Arrival::Flyway(c)) => c,
+                    Ok(Arrival::Cast(_)) => {
+                        eprintln!("  the desk was dialled for a screen, which it does not serve");
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("  the desk could not take a dial: {e}");
+                        continue;
+                    }
+                };
                 let store = store.clone();
                 let fleet = fleet.clone();
                 let out = desk
-                    .answer(incoming, move |heard, _who| async move {
+                    .answer(arrived, move |heard, _who| async move {
                         let mut out = Vec::new();
                         for f in heard {
                             match f {
