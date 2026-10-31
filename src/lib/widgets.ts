@@ -1645,11 +1645,17 @@ export const WIDGETS: WidgetSpec[] = [
          cannot touch — right for one hung in a corner, and a stray click on
          the wall never lands on somebody's desktop.
 
-         **Off by default**, unlike the browser's: 0.91.0 ships watching first,
-         and turning a far machine's keyboard and mouse on from a wall is to
-         be a deliberate act. It reaches far screens only — this machine's
-         drive is `cast.ts::LOCAL_DRIVE`, which the knob cannot override. */
-      toggle("interactive", "clicks and keys reach the machine", false),
+         **On by default**, and an opt-out. 0.91.0 shipped it off while a far
+         machine had only ever been driven in unit tests; once remote driving
+         had been run for real, Lyss: *"if takes work is on, I shouldn't need
+         to turn inputs on."* The far wall's "take work from other walls" is
+         the consent (`docs/SCREENS.md`), and a second switch on this side
+         would be the same question asked twice. It reaches far screens only —
+         this machine's drive is `cast.ts::LOCAL_DRIVE`, which the knob cannot
+         override. A widget hung under 0.91.0 carries the old `false` in its
+         config and keeps it: turned off then is indistinguishable from turned
+         off on purpose, and an off that switched itself on would be worse. */
+      toggle("interactive", "clicks and keys reach the machine", true),
     ],
   },
   {

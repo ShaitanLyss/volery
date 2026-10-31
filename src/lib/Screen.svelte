@@ -48,7 +48,7 @@
     sid,
     screen: key,
     scale = 1,
-    interactive = false,
+    interactive = true,
     room = "wall",
     calm = false,
     onopen,
@@ -229,7 +229,14 @@
     const fit = fitNow();
     if (!fit) return;
     e.preventDefault();
-    el.setPointerCapture(e.pointerId);
+    /* Guarded: a capture that throws (the pointer already gone, a synthetic
+       press) must not take the press with it — the down below is what the
+       far machine needs, and a lost down is a click that never happened. */
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* the press still goes */
+    }
     casts.input(sid, pointerInput(e, fit, "down"));
   }
 

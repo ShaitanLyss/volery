@@ -99,7 +99,15 @@
       e.preventDefault();
       e.stopPropagation();
       const el = e.currentTarget as HTMLElement;
-      if (act === "down") el.setPointerCapture(e.pointerId);
+      if (act === "down") {
+        /* Guarded for the tile's reason: a capture that throws must not
+           take the press with it. */
+        try {
+          el.setPointerCapture(e.pointerId);
+        } catch {
+          /* the press still goes */
+        }
+      }
       if (act === "up" && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       const fit = fitNow();
       if (fit && drives) casts.input(sid, pointerInput(e, fit, act));
