@@ -155,7 +155,9 @@ function onText(s: string) {
     say(m.state, m.why);
     if (m.state !== "live") clearCursor();
   } else {
-    hostStats = m.stats;
+    /* Two can arrive on a far tile — the host hub's own and the flyway's, which
+       carries `path` — and each must not wipe the other's fields. */
+    hostStats = { ...hostStats, ...m.stats };
     /* A far host says how far its clock is from ours (host − viewer, µs), so
        a capture time can be put on this machine's clock before it is
        subtracted from when the frame was painted. A local one says nothing
@@ -489,6 +491,18 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       send(driveText(m.on));
       drawCursor();
       break;
+    case "peek": {
+      const c = here()?.surface.video;
+      if (!c) {
+        post({ t: "peek", nonce: m.nonce, png: null });
+        break;
+      }
+      c.convertToBlob({ type: "image/png" }).then(
+        (png) => post({ t: "peek", nonce: m.nonce, png }),
+        () => post({ t: "peek", nonce: m.nonce, png: null }),
+      );
+      break;
+    }
     case "close":
       closing = true;
       clearInterval(timer);

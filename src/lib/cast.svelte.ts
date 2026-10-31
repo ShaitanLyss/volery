@@ -142,6 +142,8 @@ class Casts {
   watched = $state<Record<number, { viewer: string | null; monitor: string; driven: boolean }>>({});
 
   #live = new Map<string, Live>();
+  #peeks = new Map<number, (png: Blob | null) => void>();
+  #peekN = 0;
   #unlisten: UnlistenFn[] = [];
   #started = false;
   #io: IntersectionObserver | null = null;
@@ -481,6 +483,26 @@ class Casts {
     saveFloats(this.floats);
   }
 
+  /** The session's picture as it stands, as a PNG, or null. For the control
+   *  surface only (`screen.peek`): one frame crosses to this thread because a
+   *  test asked, never per frame. */
+  peek(id: string): Promise<Blob | null> {
+    if (!this.#live.has(id)) return Promise.resolve(null);
+    const nonce = ++this.#peekN;
+    return new Promise((done) => {
+      this.#peeks.set(nonce, done);
+      this.#post(id, { t: "peek", nonce });
+      setTimeout(() => {
+        if (this.#peeks.delete(nonce)) done(null);
+      }, 5000);
+    });
+  }
+
+  /** Every session's id, for the control surface. */
+  get sessions(): string[] {
+    return [...this.#live.keys()];
+  }
+
   /** Everything, for the window going away. */
   release() {
     this.#started = false;
@@ -519,6 +541,12 @@ class Casts {
       case "cursor":
         this.#patch(id, { cursor: m.css });
         break;
+      case "peek": {
+        const done = this.#peeks.get(m.nonce);
+        this.#peeks.delete(m.nonce);
+        done?.(m.png);
+        break;
+      }
     }
   }
 

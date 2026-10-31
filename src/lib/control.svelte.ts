@@ -22,6 +22,7 @@
  * what the app can be asked to do; an eval hole is a description of nothing. */
 
 import { view } from "./view.svelte";
+import { casts } from "./cast.svelte";
 import { skin } from "./palette.svelte";
 import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
@@ -2455,6 +2456,31 @@ export class Control {
         }
         h.widgets.update(id, patch);
         return { id, patch };
+      },
+
+      /** A screen's picture as it stands — a PNG data url — and what each
+       *  session reports. The one way to see a frame from outside: a wall
+       *  showing its own machine is excluded from every capture API, so a
+       *  lab's screenshot of itself is black exactly when screens work
+       *  (`.claude/rules/cast.md`). `id` is a session (a widget's id, or
+       *  `chat:`/`grid:`/`float:` and a key); the first one if omitted. */
+      "screen.peek": async (op) => {
+        const id = String(op.id ?? casts.sessions[0] ?? "");
+        const png = id ? await casts.peek(id) : null;
+        const url = png
+          ? await new Promise<string>((done) => {
+              const r = new FileReader();
+              r.onload = () => done(String(r.result));
+              r.readAsDataURL(png);
+            })
+          : null;
+        return {
+          id,
+          sessions: casts.sessions,
+          showing: id ? (casts.showing[id] ?? null) : null,
+          focused: casts.focused,
+          png: url,
+        };
       },
 
       "widget.remove": async (op) => {

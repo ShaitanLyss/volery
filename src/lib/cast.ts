@@ -608,6 +608,11 @@ export type ToWorker =
   /** Driving: the worker stops drawing the cursor and reports its shape as CSS
    *  instead, and the host is told (`{"t":"drive"}`). */
   | { t: "drive"; on: boolean }
+  /** The picture as it stands, as a PNG — for the control surface, which has
+   *  no other way to see a frame: a wall showing its own machine is excluded
+   *  from every capture API, `PrintWindow` included, so a lab's screenshot of
+   *  itself is black exactly when it is working. */
+  | { t: "peek"; nonce: number }
   | { t: "close" };
 
 export type FromWorker =
@@ -625,7 +630,8 @@ export type FromWorker =
     }
   /** The remote cursor as a CSS `cursor` value, while driving. `none` when the
    *  far machine has hidden it. */
-  | { t: "cursor"; css: string };
+  | { t: "cursor"; css: string }
+  | { t: "peek"; nonce: number; png: Blob | null };
 
 /** Where a remote cursor's image goes in a surface, in that surface's pixels. */
 export function cursorAt(
