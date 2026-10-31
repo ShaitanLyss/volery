@@ -216,6 +216,12 @@ memory, measured rather than assumed (see SCREENS.md's *Probe*).
   and the encoder only sharpens what it is fed.
 - `ACCESS_LOST` re-duplicates; while that answers `E_ACCESSDENIED` the viewers are told
   `locked`. A new mode may be a new size, so the renditions are rebuilt from scratch.
+- **Never drop an encoder while holding `source.subs`.** Its `Drop` joins the event thread, which
+  may be inside `fan_out` waiting for that lock. The capture thread then waited for ever and every
+  viewer of the monitor froze at its first rendition change (found by the flyway lane across two
+  labs). Renditions a re-plan replaces go into `retired` and are dropped after the lock is let go.
+  `cast-probe --serve` resizes mid-session and says so loudly if frames stop; with the drop put
+  back inside the lock it stopped 2 runs out of 2.
 
 ## The socket
 

@@ -307,9 +307,17 @@ mod probe {
         let mut texts = Vec::new();
         let mut first_key = None;
         let mut asked_key = false;
+        /* A third of the way in the tile grows to native size: a new
+           rendition mid-session, which once deadlocked the hub (see `run` in
+           hub.rs). Frames must keep coming after it. */
+        let mut resized_at: Option<usize> = None;
         while start.elapsed() < Duration::from_secs(a.secs) {
             animate(scene, start.elapsed().as_secs_f64());
             pump();
+            if resized_at.is_none() && start.elapsed() > Duration::from_secs_f64(a.secs as f64 / 3.0) {
+                resized_at = Some(frames);
+                ws.send(Message::text(format!(r#"{{"t":"want","w":{},"h":{},"fps":{},"visible":true,"focused":true}}"#, m.w, m.h, a.fps))).ok();
+            }
             if !asked_key && start.elapsed() > Duration::from_secs(a.secs / 2) {
                 asked_key = true;
                 ws.send(Message::text(r#"{"t":"key"}"#)).ok();
@@ -354,6 +362,15 @@ mod probe {
             frames as f64 / secs,
             bytes as f64 * 8.0 / secs / 1e6
         );
+        if let Some(at) = resized_at {
+            println!(
+                "  resized to {}x{} after {at} frames; {} frames since{}",
+                m.w,
+                m.h,
+                frames - at,
+                if frames - at < 10 { " — THE STREAM STOPPED AT THE RESIZE" } else { "" }
+            );
+        }
         println!("  capture → received over the socket: p50 {:.2} ms, p95 {:.2} ms", pct(&mut lat, 0.5), pct(&mut lat, 0.95));
         drop(f);
         match std::process::Command::new("ffprobe")

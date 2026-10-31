@@ -714,6 +714,16 @@ mod live {
         let hz = source.monitor.hz;
 
         while !source.stop.load(Ordering::SeqCst) {
+            /* Renditions a re-plan replaces are dropped only once the lock on
+               the subscribers is let go. Dropping an encoder joins its event
+               thread, and that thread may at that moment be in `fan_out`
+               waiting for the very same lock: the capture thread then waited
+               on it for ever, and every viewer of the monitor froze on the
+               first rendition change (flyway lane, two labs, a tile resized
+               from 1280x720 to native — sent nothing for 40 s and never came
+               back). A first rendition has nothing to drop, which is why a
+               tile that never changes size never saw it. */
+            let mut retired: Vec<Live> = Vec::new();
             // Re-plan when the wants changed; take key requests either way.
             {
                 let mut s = source.subs.lock().unwrap();
@@ -746,6 +756,7 @@ mod live {
                     }
                     for old in live.drain(..) {
                         sizes().lock().unwrap().remove(&old.token);
+                        retired.push(old);
                     }
                     live = next;
                     let cursor = s.cursor.clone();
@@ -779,6 +790,7 @@ mod live {
                     }
                 }
             }
+            drop(retired);
 
             let wait = if live.is_empty() { 100 } else { 4 };
             match dup.next(wait) {
