@@ -630,29 +630,50 @@ pub const HOLD_MS: u64 = 80;
 /// it is the next one, held when one in front of it is still on its way, and
 /// dropped when it is older than what was already shown. A keyframe needs
 /// nothing in front of it, and passes everything held behind it.
+///
+/// **A sequence is one encoder's, and the hub starts a new one at 0 whenever
+/// it makes a new encoder** — a rendition changing size, a tile resized. The
+/// first cut read that 0 as a stale keyframe and dropped it, and every frame
+/// after it as older than what was shown, so a remote tile resized from small
+/// to large froze until the new count overtook the old one (found by the
+/// two-lab drive test, 2026-10-31). So a keyframe is a *new* sequence when its
+/// size differs from what is on screen, or when it is further behind than
+/// anything still in flight could be (`STALE_WITHIN`); only a keyframe a few
+/// frames behind, at the same size, is a straggler to drop.
 pub struct Order<T> {
     last: Option<u32>,
+    size: Option<(u16, u16)>,
     held: std::collections::BTreeMap<u32, (T, u64)>,
 }
 
+/// How far behind the newest frame shown a straggler can be: the host queues
+/// two frames and has six in flight (`link/cast.rs`), so a keyframe further
+/// back than that cannot be one of this sequence's late arrivals.
+pub const STALE_WITHIN: u32 = 8;
+
 impl<T> Default for Order<T> {
     fn default() -> Self {
-        Self { last: None, held: Default::default() }
+        Self { last: None, size: None, held: Default::default() }
     }
 }
 
 impl<T> Order<T> {
     /// A frame finished arriving. Returns what may go to the decoder now, in
     /// order.
-    pub fn arrive(&mut self, seq: u32, key: bool, now_ms: u64, item: T) -> Vec<T> {
+    pub fn arrive(&mut self, seq: u32, key: bool, size: (u16, u16), now_ms: u64, item: T) -> Vec<T> {
         let mut out = Vec::new();
         if key {
-            /* An older keyframe than what is on screen would rewind it. */
-            if self.last.is_some_and(|l| seq <= l) {
+            let restart = self.size != Some(size) || self.last.is_some_and(|l| seq < l && l - seq > STALE_WITHIN);
+            if restart {
+                self.held.clear();
+            } else if self.last.is_some_and(|l| seq <= l) {
+                /* A straggler: an older keyframe of this sequence would rewind
+                   the screen. */
                 return out;
             }
             self.held.retain(|s, _| *s > seq);
             self.last = Some(seq);
+            self.size = Some(size);
             out.push(item);
         } else {
             match self.last {
@@ -698,34 +719,59 @@ mod tests {
     use super::*;
     use crate::cast::Button;
 
+    const S: (u16, u16) = (1280, 720);
+
     #[test]
     fn frames_reach_the_decoder_in_order_from_a_keyframe() {
         let mut o = Order::default();
-        assert!(o.arrive(1, false, 0, 1).is_empty(), "nothing before a keyframe");
-        assert_eq!(o.arrive(2, true, 0, 2), vec![2]);
+        assert!(o.arrive(1, false, S, 0, 1).is_empty(), "nothing before a keyframe");
+        assert_eq!(o.arrive(2, true, S, 0, 2), vec![2]);
         /* 4 finishes before 3: held, then both go when 3 lands. */
-        assert!(o.arrive(4, false, 1, 4).is_empty());
-        assert_eq!(o.arrive(3, false, 2, 3), vec![3, 4]);
+        assert!(o.arrive(4, false, S, 1, 4).is_empty());
+        assert_eq!(o.arrive(3, false, S, 2, 3), vec![3, 4]);
         /* Late and already passed. */
-        assert!(o.arrive(3, false, 3, 3).is_empty());
+        assert!(o.arrive(3, false, S, 3, 3).is_empty());
         /* A keyframe skips the gap and passes what was held behind it. */
-        assert!(o.arrive(7, false, 4, 7).is_empty());
-        assert!(o.arrive(9, false, 4, 9).is_empty());
-        assert_eq!(o.arrive(8, true, 5, 8), vec![8, 9]);
+        assert!(o.arrive(7, false, S, 4, 7).is_empty());
+        assert!(o.arrive(9, false, S, 4, 9).is_empty());
+        assert_eq!(o.arrive(8, true, S, 5, 8), vec![8, 9]);
         /* An older keyframe arriving late would rewind the screen. */
-        assert!(o.arrive(6, true, 6, 6).is_empty());
+        assert!(o.arrive(6, true, S, 6, 6).is_empty());
+    }
+
+    #[test]
+    fn a_new_encoder_starts_a_new_sequence_rather_than_reading_as_a_rewind() {
+        let mut o = Order::default();
+        assert_eq!(o.arrive(0, true, S, 0, 0), vec![0]);
+        for i in 1..=30 {
+            assert_eq!(o.arrive(i, false, S, 0, i), vec![i]);
+        }
+        /* Resized: the hub's new encoder counts from 0 at another size. */
+        let big = (2560, 1440);
+        assert_eq!(o.arrive(0, true, big, 1, 100), vec![100]);
+        assert_eq!(o.arrive(1, false, big, 1, 101), vec![101]);
+        /* Same size, far behind: a re-made encoder, not a straggler. */
+        for i in 2..=40 {
+            o.arrive(i, false, big, 2, 100 + i);
+        }
+        assert_eq!(o.arrive(0, true, big, 3, 200), vec![200]);
+        /* And a keyframe a few frames behind at the same size is a straggler. */
+        for i in 1..=5 {
+            o.arrive(i, false, big, 4, 200 + i);
+        }
+        assert!(o.arrive(3, true, big, 4, 999).is_empty());
     }
 
     #[test]
     fn a_gap_that_never_fills_is_given_up_and_a_keyframe_asked_for() {
         let mut o = Order::default();
-        o.arrive(1, true, 0, 1);
-        assert!(o.arrive(3, false, 100, 3).is_empty());
+        o.arrive(1, true, S, 0, 1);
+        assert!(o.arrive(3, false, S, 100, 3).is_empty());
         assert!(!o.expire(100 + HOLD_MS));
         assert!(o.expire(101 + HOLD_MS));
         /* And then only a keyframe restarts it. */
-        assert!(o.arrive(4, false, 200, 4).is_empty());
-        assert_eq!(o.arrive(5, true, 200, 5), vec![5]);
+        assert!(o.arrive(4, false, S, 200, 4).is_empty());
+        assert_eq!(o.arrive(5, true, S, 200, 5), vec![5]);
     }
 
     fn wall() -> WallKey {

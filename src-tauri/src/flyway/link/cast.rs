@@ -428,7 +428,7 @@ impl Peer {
         let Some((h, _)) = cw::read_video(&frame) else { return };
         let Ok(mut sessions) = self.sessions.lock() else { return };
         let Some(w) = sessions.get_mut(&sid) else { return };
-        for (cfg, out) in w.order.arrive(h.seq, h.key, now_ms(), (config, Out::Binary(frame))) {
+        for (cfg, out) in w.order.arrive(h.seq, h.key, (h.w, h.h), now_ms(), (config, Out::Binary(frame))) {
             if let Some(c) = cfg {
                 if w.configs.fresh(&c) {
                     w.viewer.send(Out::Text(c.into()));
