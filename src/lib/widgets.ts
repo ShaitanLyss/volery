@@ -307,6 +307,11 @@ export const VARIANT = "variant";
 /** How much of a frame a widget wears. */
 export const FRAME = "frame";
 
+/** A screen whose config was written under drive-by-default — see the note on
+ *  the screen spec's `interactive` knob, and `normalizeWidget`, which
+ *  migrates one written without it. */
+export const DRIVE_STAMP = "drives";
+
 /** Whether a clock is telling the time or is off somewhere of its own. */
 export const PACE = "pace";
 
@@ -1652,11 +1657,17 @@ export const WIDGETS: WidgetSpec[] = [
          the consent (`docs/SCREENS.md`), and a second switch on this side
          would be the same question asked twice. It reaches far screens only —
          this machine's drive is `cast.ts::LOCAL_DRIVE`, which the knob cannot
-         override. A widget hung under 0.91.0 carries the old `false` in its
-         config and keeps it: turned off then is indistinguishable from turned
-         off on purpose, and an off that switched itself on would be worse. */
+         override.
+
+         A widget hung under 0.91.0 carries that build's `false`, which was
+         a safety default and never a choice of Lyss's. `DRIVE_STAMP` is how
+         one is told apart from an opt-out made since: every screen written
+         from here on carries it, and `normalizeWidget` turns input on for
+         one that does not and stamps it — once. Keying on `false` alone
+         would undo a real opt-out on every read. */
       toggle("interactive", "clicks and keys reach the machine", true),
     ],
+    state: [{ key: DRIVE_STAMP, def: 1 }],
   },
   {
     /* A card's last message, kept where you can see it — the glance
@@ -2073,6 +2084,15 @@ export function normalizeWidget(raw: unknown): Widget | null {
     const raw = cfg[s.key];
     config[s.key] =
       typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, raw) : s.def;
+  }
+  /* A screen written before drive-by-default (0.91.0, a few hours) carries
+     that build's safety `false`: turn input on and stamp it. Read off the
+     *raw* config, since the state loop above has already filled the stamp in
+     from its default — a stamped one, opted out or not, is left exactly as
+     stored. See the screen spec's `interactive` note. */
+  if (spec.kind === "screen" && cfg[DRIVE_STAMP] === undefined) {
+    config.interactive = true;
+    config[DRIVE_STAMP] = 1;
   }
   /* A view of one card with no card named is a view of nothing, and there is
      no default that could stand in for it — the next card along would be

@@ -10,6 +10,7 @@ import {
   frameOf,
   newWidget,
   normalizeWidget,
+  DRIVE_STAMP,
   onOf,
   optionFor,
   optionsOf,
@@ -256,6 +257,47 @@ describe("a widget read back is always drawable", () => {
     z: 5,
     config: { variant: "digital", seconds: false, h24: true, date: false },
     ...over,
+  });
+
+  /* 0.91.0 shipped screens with input off as a safety default, never anybody's
+     choice; drive-by-default followed hours later. The stamp is what lets the
+     migration run once rather than on every read. */
+  test("a screen from before drive-by-default drives, and is stamped", () => {
+    const old = normalizeWidget({
+      id: "s1",
+      kind: "screen",
+      x: 0,
+      y: 0,
+      w: 640,
+      h: 382,
+      z: 1,
+      config: { variant: "live", monitor: "here/primary", interactive: false, frame: "framed" },
+    })!;
+    expect(old.config.interactive).toBe(true);
+    expect(old.config[DRIVE_STAMP]).toBe(1);
+  });
+
+  test("a stamped screen's opt-out is left exactly as stored", () => {
+    const kept = normalizeWidget({
+      id: "s2",
+      kind: "screen",
+      x: 0,
+      y: 0,
+      w: 640,
+      h: 382,
+      z: 1,
+      config: { variant: "live", monitor: "here/primary", interactive: false, frame: "framed", [DRIVE_STAMP]: 1 },
+    })!;
+    expect(kept.config.interactive).toBe(false);
+    expect(kept.config[DRIVE_STAMP]).toBe(1);
+  });
+
+  test("a screen hung today is born stamped, so its first opt-out survives", () => {
+    const born = defaultConfig("screen");
+    expect(born[DRIVE_STAMP]).toBe(1);
+    expect(born.interactive).toBe(true);
+    const off = normalizeWidget({ id: "s3", kind: "screen", x: 0, y: 0, w: 640, h: 382, z: 1, config: { ...born, interactive: false } })!;
+    expect(off.config.interactive).toBe(false);
   });
 
   test("a whole config survives the round trip", () => {
