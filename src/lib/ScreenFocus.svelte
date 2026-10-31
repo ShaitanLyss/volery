@@ -146,9 +146,12 @@
     e.stopPropagation();
   }}
 >
-  {#if hinting || escape.holding || showing?.state !== "live"}
-    <div class="pill" class:holding={escape.holding}>
-      {#if escape.holding}
+  {#if hinting || escape.holding || showing?.holding || showing?.state !== "live"}
+    <div class="pill" class:holding={escape.holding || showing?.holding}>
+      <!-- The host's hook has the keyboard for a far screen held immersive, so
+           the ring may be the host's report (`showing.holding`) rather than
+           ours; leaving on `done` is the holder's. -->
+      {#if escape.holding || showing?.holding}
         <span class="ring" aria-hidden="true"></span>
         <span>keep holding esc to leave</span>
       {:else if showing && showing.state !== "live"}

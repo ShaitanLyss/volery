@@ -62,6 +62,16 @@ export type Showing = {
   path: "direct" | "relay" | null;
   /** The remote cursor as CSS, while driving. */
   cursor: string;
+  /** What the host last said about driving — the truth, where ours is a
+   *  request — and why not, when it refused. Null until it has answered. */
+  driven: boolean | null;
+  driveWhy: string;
+  /** Escape held on the host's hook, for the ring. */
+  holding: boolean;
+  /** Bumped each time the host's hook hears Escape held to the end: the
+   *  tile lets go, and immersive leaves. A counter, so two holds in a row are
+   *  two changes. */
+  left: number;
 };
 
 const FRESH: Showing = {
@@ -74,6 +84,10 @@ const FRESH: Showing = {
   paintMs: 0,
   path: null,
   cursor: "default",
+  driven: null,
+  driveWhy: "",
+  holding: false,
+  left: 0,
 };
 
 /** A far wall's screens, as its roster row announces them. Empty until the
@@ -541,6 +555,20 @@ class Casts {
       case "cursor":
         this.#patch(id, { cursor: m.css });
         break;
+      case "drive":
+        this.#patch(id, { driven: m.on, driveWhy: m.on ? "" : m.why });
+        break;
+      case "hold": {
+        const cur = this.showing[id];
+        this.#patch(id, {
+          holding: m.phase === "down",
+          left: m.phase === "done" ? (cur?.left ?? 0) + 1 : (cur?.left ?? 0),
+        });
+        /* Immersive leaves here rather than in its face: the face may be the
+           one thing that did not hear it, and leaving is the holder's word. */
+        if (m.phase === "done" && this.focused === id) this.focused = null;
+        break;
+      }
       case "peek": {
         const done = this.#peeks.get(m.nonce);
         this.#peeks.delete(m.nonce);

@@ -151,6 +151,7 @@ function onText(s: string) {
   const m = readText(s);
   if (!m) return;
   if (m.t === "config") configure(m);
+  else if (m.t === "drive" || m.t === "hold") post(m);
   else if (m.t === "state") {
     say(m.state, m.why);
     if (m.state !== "live") clearCursor();

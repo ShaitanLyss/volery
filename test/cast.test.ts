@@ -120,6 +120,15 @@ describe("the text messages", () => {
     expect(readText('{"t":"state","state":"melted"}')).toBeNull();
     expect(readText('{"t":"stats","rtt":12}')).toEqual({ t: "stats", stats: { rtt: 12 } });
     expect(readText('{"t":"later"}')).toBeNull();
+    expect(readText('{"t":"drive","on":false,"why":"a screen already holds the keyboard"}')).toEqual({
+      t: "drive",
+      on: false,
+      why: "a screen already holds the keyboard",
+    });
+    expect(readText('{"t":"drive","on":true}')).toEqual({ t: "drive", on: true, why: "" });
+    expect(readText('{"t":"drive"}')).toBeNull();
+    expect(readText('{"t":"hold","phase":"done"}')).toEqual({ t: "hold", phase: "done" });
+    expect(readText('{"t":"hold","phase":"sideways"}')).toBeNull();
     expect(readText("not json")).toBeNull();
     expect(readText("7")).toBeNull();
   });

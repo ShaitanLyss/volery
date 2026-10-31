@@ -158,7 +158,17 @@ export type Config = { codec: string; w: number; h: number; fps: number };
 export type Text =
   | ({ t: "config" } & Config)
   | { t: "state"; state: CastState; why: string }
-  | { t: "stats"; stats: Record<string, unknown> };
+  | { t: "stats"; stats: Record<string, unknown> }
+  /** The host's answer to a `drive`: what actually happened, and why not. */
+  | { t: "drive"; on: boolean; why: string }
+  /** Escape, as the host's keyboard hook heard it. While a local tile is
+   *  driven the app under it has the keyboard, and while a far screen is
+   *  immersive the hook captures every key for it — either way Volery never
+   *  sees the Escape, so the hook tells the tile: `down` (draw the ring),
+   *  `up` (a tap, already replayed), `done` (held: leave). */
+  | { t: "hold"; phase: HoldPhase };
+
+export type HoldPhase = "down" | "up" | "done";
 
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -191,6 +201,13 @@ export function readText(s: string): Text | null {
       const { t: _, ...stats } = o;
       return { t: "stats", stats };
     }
+    case "drive":
+      if (typeof o.on !== "boolean") return null;
+      return { t: "drive", on: o.on, why: typeof o.why === "string" ? o.why : "" };
+    case "hold":
+      return o.phase === "down" || o.phase === "up" || o.phase === "done"
+        ? { t: "hold", phase: o.phase }
+        : null;
     default:
       return null;
   }
@@ -631,7 +648,9 @@ export type FromWorker =
   /** The remote cursor as a CSS `cursor` value, while driving. `none` when the
    *  far machine has hidden it. */
   | { t: "cursor"; css: string }
-  | { t: "peek"; nonce: number; png: Blob | null };
+  | { t: "peek"; nonce: number; png: Blob | null }
+  | { t: "drive"; on: boolean; why: string }
+  | { t: "hold"; phase: HoldPhase };
 
 /** Where a remote cursor's image goes in a surface, in that surface's pixels. */
 export function cursorAt(

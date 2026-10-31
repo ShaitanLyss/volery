@@ -170,6 +170,23 @@
     casts.drive(sid, false);
   }
 
+  /** Focus leaving the stage. Two different things arrive as one event:
+   *  focus moving elsewhere *inside* the window — a click on the wall, which
+   *  is the way out — and the window itself losing focus. The second is what
+   *  driving *this machine's* screen does on purpose: the host makes the app
+   *  under the tile the foreground window so the physical keyboard reaches it
+   *  natively (`cast/drive.rs`), and ending the drive there would end it the
+   *  instant it began. So a window-level blur keeps the drive, and only lifts
+   *  what is held on a far machine — Alt+Tab away mid-chord must not leave a
+   *  key down over there. */
+  function onBlur() {
+    if (!document.hasFocus()) {
+      if (parseScreen(key).host) casts.input(sid, releaseAll());
+      return;
+    }
+    end();
+  }
+
   /* Holding Escape lets go of the tile, the way it leaves the immersive
      overlay; a tap is the machine's. */
   const escape = useEscapeHold(
@@ -248,6 +265,34 @@
     return () => document.removeEventListener("visibilitychange", onHide);
   });
 
+  /* The host's hook heard Escape held to the end — a local tile's app had the
+     keyboard, so this tile never saw the key. Let go as if it had. */
+  let leftSeen = 0;
+  $effect(() => {
+    const n = showing?.left ?? 0;
+    if (n > leftSeen) {
+      leftSeen = n;
+      /* `end` first: the window may not have focus (the app had it), and
+         then the blur below arrives as a window-level one that `onBlur`
+         deliberately does not treat as leaving. */
+      untrack(() => {
+        end();
+        stage?.blur();
+      });
+    }
+  });
+
+  /* The host refused to drive (no window to step aside from, or another
+     screen holds the keyboard): let go here too, and say why in the note. */
+  $effect(() => {
+    if (showing?.driven === false && showing.driveWhy && untrack(() => driving)) {
+      untrack(() => {
+        end();
+        stage?.blur();
+      });
+    }
+  });
+
   /* A tile that stops being drivable mid-drive lets go. */
   $effect(() => {
     if (!live) untrack(end);
@@ -294,7 +339,7 @@
     style:cursor={onopen ? "pointer" : driving ? (showing?.cursor ?? "default") : "default"}
     {@attach surface}
     onfocus={begin}
-    onblur={end}
+    onblur={onBlur}
     onpointerdown={onDown}
     onpointerup={onUp}
     onpointermove={onMove}
@@ -312,8 +357,10 @@
       <p class="note">immersive — hold esc there to come back</p>
     {:else if note}
       <p class="note">{note}</p>
+    {:else if showing?.driveWhy}
+      <p class="note">not driving — {showing.driveWhy}</p>
     {/if}
-    {#if escape.holding}
+    {#if escape.holding || showing?.holding}
       <span class="hold" aria-hidden="true"></span>
     {/if}
   </div>
