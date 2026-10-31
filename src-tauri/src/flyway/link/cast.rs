@@ -43,6 +43,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
+use crate::cast::inject::Driver;
 use crate::cast::{wire as cw, Input, Monitor, Out, Viewer, Want};
 use crate::store::Store;
 
@@ -50,28 +51,37 @@ use super::super::cast::{self as fc, Ctl, Opened, Opener, Path, Sealer};
 use super::super::here;
 use super::{current, Link};
 
-/// The hub, as this lane calls it (`docs/SCREENS.md`, "The hub API"). The core
-/// lane's `cast::hub` replaces these bodies one for one; until it lands every
-/// session is refused with a reason the tile can draw.
+/// The hub, as this lane calls it (`docs/SCREENS.md`, "The hub API"). The
+/// capture and encoder are Windows', so elsewhere every session is refused
+/// with a reason the tile can draw rather than the module failing to build.
 mod hub {
     use super::*;
 
+    #[cfg(windows)]
+    pub use crate::cast::hub::Subscription as Sub;
+
+    #[cfg(windows)]
+    pub fn subscribe(monitor: &str, want: Want, viewer: Arc<dyn Viewer>) -> Result<Sub, String> {
+        crate::cast::hub::subscribe(monitor, want, viewer)
+    }
+
+    #[cfg(not(windows))]
     pub struct Sub;
 
+    #[cfg(not(windows))]
     impl Sub {
         pub fn want(&self, _w: Want) {}
         pub fn key(&self) {}
         pub fn cap(&self, _kbps: Option<u32>) {}
     }
 
+    #[cfg(not(windows))]
     pub fn subscribe(_monitor: &str, _want: Want, _viewer: Arc<dyn Viewer>) -> Result<Sub, String> {
-        Err("this build cannot show its screens yet".into())
+        Err("this machine cannot show its screens".into())
     }
 
-    pub fn input(_monitor: &str, _events: &[Input]) {}
-
     pub fn monitors() -> Vec<Monitor> {
-        Vec::new()
+        crate::cast::monitors()
     }
 }
 
@@ -548,6 +558,10 @@ struct Shown {
     want: Want,
     fit: fc::Fit,
     driven: bool,
+    /// This viewer's hands on the monitor: input goes through it, and
+    /// dropping it — the session ending, however it ends — lifts whatever the
+    /// viewer still held down (`cast::inject`).
+    driver: Option<Driver>,
 }
 
 /// Answer a screen's connection from another wall, for as long as it stays.
@@ -669,8 +683,13 @@ impl Hosting {
         });
         let (m, w, v) = (monitor.clone(), fit.want, viewer.clone() as Arc<dyn Viewer>);
         /* Starting a capture is driver work, and may take a moment. */
-        let sub = match crate::off_main(move || hub::subscribe(&m, w, v)).await {
-            Ok(Ok(sub)) => Arc::new(sub),
+        let started = crate::off_main(move || {
+            let driver = hub::monitors().into_iter().find(|x| x.id == m).map(|x| Driver::new(&x));
+            hub::subscribe(&m, w, v).map(|sub| (sub, driver))
+        })
+        .await;
+        let (sub, driver) = match started {
+            Ok(Ok((sub, driver))) => (Arc::new(sub), driver),
             Ok(Err(why)) | Err(why) => {
                 viewer.alive.store(false, Ordering::Release);
                 self.say(fc::K_CTL, sid, &Ctl::Refused { why }.to_body());
@@ -686,7 +705,7 @@ impl Hosting {
         tauri::async_runtime::spawn(send_frames(self.conn.clone(), self.seal.clone(), sid, rx, Arc::downgrade(&sub), viewer.want_key.clone()));
         let held = fit.held.clone();
         if let Ok(mut s) = self.sessions.lock() {
-            s.insert(sid, Shown { monitor: monitor.clone(), sub, viewer, want, fit, driven: false });
+            s.insert(sid, Shown { monitor: monitor.clone(), sub, viewer, want, fit, driven: false, driver });
         }
         self.say(fc::K_CTL, sid, &Ctl::Opened.to_body());
         if let Some(h) = held {
@@ -722,6 +741,10 @@ impl Hosting {
         let (monitor, first) = {
             let Ok(mut s) = self.sessions.lock() else { return };
             let Some(sh) = s.get_mut(&sid) else { return };
+            /* Never blocks: the driver hands the batch to the injector's
+               thread, so this goes straight back to reading. */
+            let Some(driver) = &sh.driver else { return };
+            driver.apply(&events);
             let first = !sh.driven;
             sh.driven = true;
             (sh.monitor.clone(), first)
@@ -729,18 +752,16 @@ impl Hosting {
         if first {
             self.mark(sid, &monitor, true, true);
         }
-        hub::input(&monitor, &events);
     }
 
-    /// A session over: the hub let go of, anything held down lifted, the mark
-    /// taken down.
+    /// A session over: the hub let go of and anything held down lifted (both
+    /// by dropping the session), and the mark taken down.
     fn end(&self, sid: u32) {
         let Some(sh) = self.sessions.lock().ok().and_then(|mut s| s.remove(&sid)) else { return };
         sh.viewer.alive.store(false, Ordering::Release);
-        if sh.driven {
-            hub::input(&sh.monitor, &[Input::ReleaseAll]);
-        }
-        self.mark(sid, &sh.monitor, false, sh.driven);
+        let (monitor, driven) = (sh.monitor.clone(), sh.driven);
+        drop(sh);
+        self.mark(sid, &monitor, false, driven);
     }
 
     /// Every half-second: read the path, steer the encoder, and every two
