@@ -109,8 +109,15 @@ impl Subscription {
     pub fn key(&self);
     pub fn cap(&self, kbps: Option<u32>);   // bitrate ceiling; min over viewers sharing a rendition
 }                                            // Drop unsubscribes
-pub fn input(monitor: &str, events: &[Input]);                          // → inject.rs
 ```
+
+**Input is per session, not per monitor** (agreed core ↔ input ↔ flyway, 2026-10-31). Whoever
+holds a session that may drive a machine holds a `cast::inject::Driver::new(&monitor)` beside its
+`Subscription` and calls `driver.apply(&events)`; dropping it lifts every key and button *that
+viewer* still holds. So the flyway's host side holds one per remote session. A **local** session
+never injects — Volery covers the desktop it shows, so an injected click lands on Volery — and
+drives only through the input lane's through-the-tile mode (`cast/drive.rs`).
+`crate::cast::monitors()` (a function beside the `cast::monitors` module) is the fresh list.
 
 `Viewer::send` is handed messages **already encoded to wire bytes** (`Out`), once per frame
 however many viewers there are; the loopback socket and the flyway are dumb pipes over them.
@@ -213,12 +220,17 @@ branch at `wire.rs:249` must learn it), following the link's tenure so leaving c
   are fed to the decoder in `seq` order from a keyframe (`cast::Order`); a gap unfilled after
   80 ms is dropped and a keyframe asked for.
 - **Cursor position rides datagrams**, cursor shape the control stream.
-- **Transport**: BBR (noq's `Bbr3`), 1 s keep-alive, 8 s idle, no send fairness, control stream
+- **Transport**: Cubic (see below), 1 s keep-alive, 8 s idle, no send fairness, control stream
   at a higher priority than every frame, 8 MB stream window.
 - **Host → viewer texts the front reads**, in addition to the hub's own:
   - `{"t":"state","state":"live","why":"through a relay, so held to 1152×720 at 15 fps"}` when a
     relayed path holds the screen back (and again with `why: null` when it stops). A relayed
-    screen is held to 1280×720 box, 15 fps, 800 kbit/s.
+    screen is held to at most 800 kbit/s, steered lower by queueing delay and loss, and its
+    size follows the bitrate: ≥600 kbit/s → 1280×720 at 15 fps, ≥250 → 960×540 at 10, else
+    640×360 at 5. **Measured 2026-10-31**: n0's relay from this machine gave ~0.1 Mbit/s at a
+    412 ms RTT (`examples/cast-flyway-probe.rs`), so the bottom rung is the realistic one.
+- **Congestion control is Cubic**, not BBR: measured on loopback, noq 1.3's `Bbr3` delivered
+  paced 100 KB frames at p50 125 ms / p95 1.57 s against Cubic's 1.95 / 2.89 ms.
   - `{"t":"state","state":"refused","why":…}` / `{"t":"state","state":"ended","why":…}`.
   - `{"t":"stats","path":"direct"|"relay"|null,"rtt_ms":…,"loss":null,"offset_us":…,"held":null}`
     once a second, made at the viewer's end (both ends ride the same path).
@@ -232,6 +244,48 @@ branch at `wire.rs:249` must learn it), following the link's tenure so leaving c
 - **Roster**: `RosterRow.screens: Monitor[]` (camelCase JSON, fields as `cast::Monitor`), empty
   unless that wall takes work. The picker lists every machine's monitors from it.
 - **Turning the switch off mid-screen** ends every screen within two seconds with `refused`.
+
+## Probe (core lane, 2026-10-31)
+
+`cargo run --example cast-probe` drives the shipped `gpu`/`capture`/`encode`/`hub`/`local` code
+on every monitor, over a moving scene it draws itself; `--serve` dials the real loopback socket as
+a tile does; `--encode-on <luid>` converts and encodes on another adapter. Debug build, on the
+hybrid laptop, with the machine busy (other lanes' cargo builds, Chrome and the wall drawing).
+
+**Adapters.** Intel UHD (`…14146`, the panel's — the only output), RTX 4080 Laptop (`…14596`,
+`outputs=0`), a second Intel UHD with no outputs, Basic Render. One monitor:
+`0000000000014146-0`, 2560×1440 @ 240 Hz. The Parsec virtual adapter showed no attached output.
+
+**Encoder: Intel Quick Sync H.264 MFT, on the iGPU that owns the panel.** Found by asking
+`MFTEnum2` for that LUID; the activates `MFTEnumEx` returns carry no `MFT_ENUM_ADAPTER_LUID`.
+
+| encode size | fps achieved | bitrate | capture→encoded p50 / p95 | of which in the encoder p50 |
+|---|---|---|---|---|
+| 2560×1440 | 44 | 9.6 Mbit/s | 18 ms / 33 ms | 15 ms |
+| 1280×720 | 44 | 2.6 Mbit/s | 11 ms / 23 ms | 9 ms |
+| 1280×720 through the socket | 46 | 3.0 Mbit/s | 25 ms / 40 ms capture→*received* | |
+
+(fps is the scene's, a GDI window repainted as fast as the probe loop runs, not a ceiling.)
+
+- **The timer tick was the latency.** Before `timeBeginPeriod(1)` every frame spent a whole
+  multiple of 15.6 ms inside the encoder (p50 47 ms at 1440p, 44 ms at 720p) while a lone frame
+  after a rest came back in 8 ms. Held per capture thread (`capture::FineTimer`).
+- **The iGPU is the bottleneck that remains.** Its 3D engine sat at ~100% during the run
+  (Chrome 42%, the wall's WebView2 42%, DWM 15%), and the video processor's conversion queues
+  behind them. `SetGPUThreadPriority(7)` was accepted and changed nothing measurable.
+- **NVENC is not reachable through Media Foundation here.** NVIDIA's H.264 MFT is listed for the
+  4080's LUID but `ActivateObject` fails with `E_UNEXPECTED` in this process, filtered or not and
+  with an `NvOptimusEnablement` export. Using the 4080 would mean the NVENC SDK directly plus a
+  copy through system memory (`gpu::Bridge`, built for the measurement). Not done; Intel holds the
+  numbers above. A MUX switch putting the panel on the 4080 would make it the owning adapter
+  and need no copy.
+- **Every IDR carried SPS + PPS in-band** (keyframes forced every 2 s: 3 of 3, 2 of 2);
+  `avc1.640033` at 1440p, `avc1.640020` at 720p, High profile, `yuv420p`, `color_range=tv`.
+  ffprobe decodes every frame written, from the encoder and from the socket.
+- **Exclusion holds.** A magenta window with `WDA_EXCLUDEFROMCAPTURE` read back as the desktop
+  behind it (`rgb(33,30,26)`); a green control window beside it read back green.
+- **The socket refuses a wrong token** (HTTP 403) and serves the right one: `live`, cursor shape
+  and position, `config`, keyframe first, stats.
 
 ## Stages
 

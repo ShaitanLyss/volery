@@ -11,6 +11,15 @@ paths:
   - "src/lib/ScreenMark.svelte"
   - "tools/castlab.ts"
   - "tools/cast-relay.ts"
+  - "src-tauri/src/cast/mod.rs"
+  - "src-tauri/src/cast/gpu.rs"
+  - "src-tauri/src/cast/capture.rs"
+  - "src-tauri/src/cast/encode.rs"
+  - "src-tauri/src/cast/hub.rs"
+  - "src-tauri/src/cast/local.rs"
+  - "src-tauri/src/cast/monitors.rs"
+  - "src-tauri/src/cast/exclude.rs"
+  - "src-tauri/examples/cast-probe.rs"
 ---
 
 # Screens on the wall — the front end
@@ -114,3 +123,81 @@ key requests, plus the real worker beside it. A **debug** build dials the relay 
 (`$env:VITE_CAST_RELAY="ws://127.0.0.1:14399"; bun run lab <name>`) or `skein.cast.relay` is in
 `localStorage`, and offers one monitor called *castlab*. An installed build never honours either.
 Run vite for castlab on a port of your own (`bun x vite --port 1499`), never 1420.
+
+# The host half — capture, encode, the hub and the loopback socket
+
+`examples/cast-probe.rs` drives the same `gpu`/`capture`/`encode` code the hub does and is how
+every number below was taken; `docs/SCREENS.md`'s *Probe* section has the table. Run it again
+after touching any of them — a probe that measures a rehearsal of the code measures nothing.
+
+## The adapter that owns the output, and nothing else
+
+Desktop Duplication works only on a device made on the adapter that drives the output. On the
+hybrid laptop that is the Intel iGPU; the RTX 4080 reports `outputs=0`. So a monitor's id *is*
+its adapter LUID and output index (`monitors.rs`), and the encoder is the one Media Foundation
+offers **for that LUID**. The LUID is a *filter*, not an attribute: the activates `MFTEnumEx`
+hands back carry no `MFT_ENUM_ADAPTER_LUID` at all on this machine, so it is asked of
+`MFTEnum2` as an 8-byte blob. Unfiltered, NVIDIA's MFT sorts first and would be handed a
+texture it cannot see.
+
+## The 15.6 ms that was not the encoder
+
+Under continuous feed every frame spent a **whole multiple of 15.6 ms** inside Intel's encoder MFT
+— 15, 30, 46, 61, never between — while a lone frame after a rest came back in 8 ms. That is the
+default Windows timer tick: something on the driver's path sleeps on the coarse timer.
+`capture::FineTimer` holds `timeBeginPeriod(1)` per capture thread (Windows 11 scopes it to the
+asking process and only while asked). It took capture→encoded p50 from **47 ms to 14 ms** at
+1440p and **44 ms to 8 ms** at 720p. Nothing else tried moved it: a `Flush()` after the video
+processor's blt (kept — it is still correct to submit at once) and `SetGPUThreadPriority(7)`
+(accepted, no measurable effect; kept as the scheduler's own word for latency-bound work).
+
+## The iGPU is shared with everything you are looking at
+
+During the probe Intel's 3D engine sat at ~100%: Chrome ~42%, the wall's own WebView2 ~42%,
+DWM ~15%. The conversion (`ID3D11VideoProcessor`) queues behind them, which is the rest of the
+1440p latency. That is why `gpu::Bridge` exists — carrying a frame to the 4080 through system
+memory, measured rather than assumed (see SCREENS.md's *Probe*).
+
+## The encoder
+
+- **Asynchronous by contract.** A thread per encoder blocks on its event queue: `NeedInput` is a
+  credit, `HaveOutput` is a `ProcessOutput` and the fan-out. The capture thread feeds the moment a
+  credit exists and otherwise leaves **one** pending frame, which a newer capture replaces.
+- **Samples come from `IMFVideoSampleAllocatorEx`** bound to the device manager, so a texture
+  goes back to the pool exactly when the encoder lets go of it; an empty pool skips the frame.
+- **CBR, no B-frames, `AVLowLatencyMode`, GOP of 432 000** — a GOP of 0 means *default* to some
+  encoders, which is a keyframe every second or two. Keyframes are forced
+  (`AVEncVideoForceKeyFrame`) when a viewer joins or loses its place. Intel's MFT repeats SPS/PPS
+  on every IDR as measured; `encode::ParamSets` prepends the last ones seen to an IDR that lacks
+  them anyway, because a joining decoder with no `description` has nothing else to start from.
+- **BT.709 limited range** out of the video processor, and said in the output type, so the VUI and
+  the pixels agree.
+
+## The hub
+
+- One capture thread per monitor, started by the first `subscribe` and stopped by the last
+  `Subscription` dropped. It owns the duplication, scalers and encoders; only finished bytes leave.
+- `plan` collapses wants into **at most two renditions** — the largest wanted and a thumbnail for
+  whoever wants half of that or less — on a fixed **ladder** of fractions of native size
+  (`rung`), so a tile resized a few pixels does not rebuild an encoder. fps by the SCREENS.md
+  table (`fps_for`); bitrate 0.08 bits per pixel per frame, bounded, under any viewer's `cap`.
+- A joiner waits for a keyframe (deltas are not sent to it), gets the current cursor shape and
+  position at once, and a `config` text before the first keyframe of every new shape.
+- After motion stops, one more encode of the still frame 120 ms later: CBR under motion is soft,
+  and the encoder only sharpens what it is fed.
+- `ACCESS_LOST` re-duplicates; while that answers `E_ACCESSDENIED` the viewers are told
+  `locked`. A new mode may be a new size, so the renditions are rebuilt from scratch.
+
+## The socket
+
+- `Outbox` is the drop-until-keyframe queue: more than two video frames waiting purges them all
+  and drops deltas to the next keyframe, raising a key request the session turns into
+  `Subscription::key`. Cursor positions coalesce. The flyway keeps its own (`cast::Behind`) because
+  it also bounds in-flight QUIC streams.
+- A session is two plain threads, reader and writer, on two `WebSocket`s over one cloned
+  `TcpStream`. Nothing subscribes until the first `want`. A **local** session never injects:
+  Volery covers the desktop it shows, so an injected click lands on Volery — local input goes
+  only through the input lane's through-the-tile mode (`drive.rs`). A remote session's input goes
+  to `RemoteSubscription::input`, and the far host holds the `inject::Driver`.
+- `exclude::Hold` is taken by every **local** session and protects every webview window from
+  capture while at least one is held.

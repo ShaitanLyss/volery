@@ -11,12 +11,32 @@
 //! - `wire` — the bytes a frame and an input event are on every boundary: the
 //!   loopback socket and the flyway carry the same messages. Pure.
 //!
-//! The rest arrive with their lanes (see the table in `docs/SCREENS.md`).
+//! - `monitors` — what can be shown, named by adapter LUID and output index.
+//! - `gpu` — a D3D11 device per adapter and the video processor that turns
+//!   BGRA into NV12 at a tile's size.
+//! - `capture` — Desktop Duplication of one output, and the pointer.
+//! - `encode` — the hardware H.264 MFT, asynchronous, low latency.
+//! - `hub` — one capture per monitor, at most two renditions, fan-out, and
+//!   the drop-until-keyframe queue every viewer uses.
+//! - `local` — the loopback WebSocket a tile's Worker dials.
+//! - `exclude` — Volery out of its own picture while a self-view is open.
+//!
+//! `.claude/rules/cast.md` has the reasoning and the measurements behind them.
 
 /* Built ahead of the lanes that call it, as `flyway` once was; this comes off
    when the hub is reached from `lib.rs`. */
 #![allow(dead_code)]
 
+pub mod capture;
+pub mod encode;
+pub mod exclude;
+#[cfg(windows)]
+pub mod gpu;
+pub mod hub;
+pub mod inject;
+#[cfg(windows)]
+pub mod local;
+pub mod monitors;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
@@ -107,4 +127,36 @@ impl Out {
 /// returns false once the viewer is gone, and the hub forgets it.
 pub trait Viewer: Send + Sync + 'static {
     fn send(&self, out: Out) -> bool;
+}
+
+/// Every monitor this machine can show, read fresh (`monitors::list`).
+pub fn monitors() -> Vec<Monitor> {
+    monitors::list()
+}
+
+/// What this machine can show. A few milliseconds of DXGI, so off the main
+/// thread like everything else here.
+#[tauri::command]
+pub async fn cast_monitors() -> Result<Vec<Monitor>, String> {
+    crate::off_main(monitors::list).await
+}
+
+#[derive(Serialize)]
+pub struct Opened {
+    pub url: String,
+}
+
+/// A loopback socket for one tile: `host` null is this machine, otherwise a
+/// wall on the flyway. The socket is where everything else happens.
+#[tauri::command]
+pub async fn cast_open(app: tauri::AppHandle, host: Option<String>, monitor: String) -> Result<Opened, String> {
+    #[cfg(windows)]
+    {
+        crate::off_main(move || local::open(&app, host, monitor).map(|url| Opened { url })).await?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, host, monitor);
+        Err("screens are Windows-only".into())
+    }
 }

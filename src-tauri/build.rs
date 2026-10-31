@@ -3,7 +3,25 @@
 /// See `.claude/rules/build.md` for the whole of the no-MSVC story.
 fn main() {
     warn_if_gnu_without_the_shim();
+    manifest_for_examples();
     tauri_build::build()
+}
+
+/// Examples that link `tauri` die at load with `STATUS_ENTRYPOINT_NOT_FOUND`
+/// (0xC0000139, exit 127 from a shell) and print nothing: `tauri-build` embeds
+/// the Common-Controls v6 manifest in the app's binaries only, and without it
+/// Windows binds comctl32 v5, which has no `TaskDialogIndirect`. Found when
+/// `examples/cast-probe.rs` started reaching `cast::local` and stopped running
+/// at all. MSVC only; the gnu toolchain's linker takes no such flag.
+fn manifest_for_examples() {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if windows && msvc {
+        println!("cargo:rustc-link-arg-examples=/MANIFEST:EMBED");
+        println!(
+            "cargo:rustc-link-arg-examples=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    }
 }
 
 /// Say why the build is about to fail, at the moment it is about to fail.

@@ -53,7 +53,7 @@ mod limits;
 mod load;
 mod machine;
 mod screen;
-mod cast;
+pub mod cast;
 mod mcphost;
 mod open;
 mod perf;
@@ -928,6 +928,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             window::span_screens,
+            cast::cast_monitors,
+            cast::cast_open,
             supervisor::spawn_conversation,
             supervisor::send_prompt,
             supervisor::interrupt_conversation,
