@@ -158,11 +158,16 @@ pub enum Arrival {
 
 /// The transport a screen's connection runs on, both ends.
 ///
-/// - **BBR** rather than the default Cubic. A loss-based controller fills
-///   every buffer on the path before it backs off, and a full buffer is
-///   latency on every frame behind it; BBR paces to the bandwidth it measures
-///   and keeps the queue near empty, which is what "feels local" is made of.
-///   noq's `Bbr3` is the IETF draft's v3.
+/// - **Cubic, noq's default, and not BBR** — which is the opposite of what
+///   the textbook says for real-time media, and was measured rather than
+///   assumed (`examples/cast-flyway-probe.rs`, 2026-10-31, loopback, release):
+///   100 KB frames paced at 60 fps arrived p50 1.95 ms / p95 2.89 ms under
+///   Cubic and p50 125 ms / p95 1.57 s under noq 1.3's `Bbr3`, and a burst ran
+///   546 against 254 Mbit/s. BBR's startup and probing are built for a bulk
+///   flow that keeps the pipe full; a screen is app-limited — a burst every
+///   16 ms and silence between — and noq's v3 reads that silence badly. The
+///   bitrate is steered from above anyway (`cast::Steer`), which is the job
+///   BBR would have been doing for the queue.
 /// - **A second's keep-alive and an eight-second idle**, so a laptop shut
 ///   mid-screen reads as gone in seconds rather than the default thirty, and
 ///   a NAT mapping on a quiet screen (paused, not visible) does not lapse.
@@ -173,7 +178,6 @@ pub enum Arrival {
 ///   1.25 MB stream window, which would stall it for a round trip mid-frame.
 pub fn cast_transport() -> QuicTransportConfig {
     let mut b = QuicTransportConfig::builder()
-        .congestion_controller_factory(Arc::new(noq_proto::congestion::Bbr3Config::default()))
         .keep_alive_interval(Duration::from_secs(1))
         .send_fairness(false)
         .max_concurrent_uni_streams(VarInt::from_u32(1024))

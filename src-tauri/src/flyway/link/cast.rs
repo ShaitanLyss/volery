@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iroh::endpoint::{Connection, RecvStream, ReadExactError, SendStream, VarInt};
@@ -678,7 +678,12 @@ impl Hosting {
             }
         };
         sub.cap(fit.kbps);
-        tauri::async_runtime::spawn(send_frames(self.conn.clone(), self.seal.clone(), sid, rx, sub.clone(), viewer.want_key.clone()));
+        /* Weak: the hub holds this session's viewer, which holds the frame
+           queue, so a task holding the subscription strongly is a cycle — the
+           capture would outlive the session for as long as the hub sent
+           nothing (a paused tile sends nothing). Dropping `Shown` is what
+           ends it. */
+        tauri::async_runtime::spawn(send_frames(self.conn.clone(), self.seal.clone(), sid, rx, Arc::downgrade(&sub), viewer.want_key.clone()));
         let held = fit.held.clone();
         if let Ok(mut s) = self.sessions.lock() {
             s.insert(sid, Shown { monitor: monitor.clone(), sub, viewer, want, fit, driven: false });
@@ -747,11 +752,9 @@ impl Hosting {
             n = n.wrapping_add(1);
             if n % 4 == 0 && !link.takes_work() {
                 let sids: Vec<u32> = self.sessions.lock().map(|s| s.keys().copied().collect()).unwrap_or_default();
+                let why = fc::may_show(false, &self.me).err().unwrap_or_default();
                 for sid in sids {
-                    if let Err(why) = fc::may_show(false, &self.me) {
-                        self.say(fc::K_TEXT, sid, fc::state("refused", Some(&why)).as_bytes());
-                    }
-                    self.say(fc::K_CTL, sid, &Ctl::Close.to_body());
+                    self.say(fc::K_CTL, sid, &Ctl::Refused { why: why.clone() }.to_body());
                     self.end(sid);
                 }
                 continue;
@@ -827,7 +830,7 @@ async fn send_frames(
     seal: Arc<Sealer>,
     sid: u32,
     mut rx: mpsc::Receiver<(Option<Arc<str>>, Arc<[u8]>)>,
-    sub: Arc<hub::Sub>,
+    sub: Weak<hub::Sub>,
     want_key: Arc<Notify>,
 ) {
     let in_flight = Arc::new(Semaphore::new(IN_FLIGHT));
@@ -839,7 +842,10 @@ async fn send_frames(
                 None => break,
             },
             _ = want_key.notified() => {
-                sub.key();
+                match sub.upgrade() {
+                    Some(s) => s.key(),
+                    None => break,
+                }
                 continue;
             }
         };

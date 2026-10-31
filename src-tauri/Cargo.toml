@@ -209,11 +209,8 @@ iroh = { version = "1.3.0", default-features = false, features = [
     "tls-ring",
     "portmapper",
 ] }
-# A screen's connection (`flyway/wire.rs`, `cast`) runs BBR, which iroh does
-# not re-export — `noq-proto` is the QUIC stack iroh already runs on, at the
-# version it pins, so this names nothing new. `bytes` is what a datagram is
-# handed as; also already in the tree under iroh.
-noq-proto = { version = "1.3.0", default-features = false }
+# What a QUIC datagram is handed as (`flyway/link/cast.rs`, a screen's
+# pointer and cursor); already in the tree under iroh.
 bytes = "1"
 
 [target.'cfg(windows)'.dependencies]
@@ -319,3 +316,9 @@ windows = { version = "0.61", features = [
 # dev-dependency is how it stays buildable without putting any of that back in
 # the shipped binary.
 portable-pty = "0.9"
+# Only `examples/cast-flyway-probe.rs`, which races noq's BBR against the
+# default Cubic on a screen's connection — the measurement that decided
+# `wire::cast_transport` runs Cubic. iroh re-exports neither controller's
+# config, and `noq-proto` is the QUIC stack it already runs on at the version
+# it pins, so this names nothing new.
+noq-proto = { version = "1.3.0", default-features = false }

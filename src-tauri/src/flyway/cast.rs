@@ -53,10 +53,13 @@
 //!
 //! ### What the path may cost
 //!
-//! Through n0's relay the code assumes about a megabit (`look.rs`). A screen
-//! that tried to push 1440p60 through that would stutter with nothing to say
-//! why, so a relayed path is held to `RELAY_BOX` at `RELAY_FPS` and
-//! `RELAY_KBPS` and **says so** in the state the tile draws (`fit`). A direct
+//! Through n0's relay the code assumes about a megabit (`look.rs`), and from
+//! this machine on 2026-10-31 it gave about a tenth of that at a 412 ms round
+//! trip (`examples/cast-flyway-probe.rs`). A screen that tried to push 1440p60
+//! through that would stutter with nothing to say why, so a relayed path is
+//! held to `RELAY_KBPS` at most, steered down from there like any path, and
+//! its size and frame rate follow the bitrate down a ladder (`RELAY_TIERS`) —
+//! and the tile is **told** what it is held to (`fit`). A direct
 //! path is steered by loss and queueing delay (`Steer`), which is the half a
 //! congestion controller cannot do for us: it can only pace what the encoder
 //! already made, and a frame made too big is latency whichever way it is paced.
@@ -399,13 +402,17 @@ impl Path {
     }
 }
 
-/// The largest a relayed screen is sent at. 720p is where desktop text is
-/// still text; any larger and a megabit buys mush.
-pub const RELAY_BOX: (u32, u32) = (1280, 720);
-pub const RELAY_FPS: u32 = 15;
-/// A little under the relay's assumed megabit, for the control stream, the
-/// cursor and everybody else's flyway traffic beside it.
+/// The most a relayed screen is sent at: a little under the relay's assumed
+/// megabit, for the control stream, the cursor and everybody else's flyway
+/// traffic beside it. Steering takes it lower where the relay gives less.
 pub const RELAY_KBPS: u32 = 800;
+
+/// What a relayed screen is sent at for the bitrate it has: from this many
+/// kbit/s, at most this box at this frame rate. 720p is where desktop text is
+/// still text, and a bitrate that cannot carry it buys a smaller picture that
+/// stays sharp rather than a large one that smears; frame rate goes first,
+/// because a desktop is mostly still.
+pub const RELAY_TIERS: [(u32, (u32, u32), u32); 3] = [(600, (1280, 720), 15), (250, (960, 540), 10), (0, (640, 360), 5)];
 
 /// What the host asks of the hub for one viewer, given the path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -433,16 +440,17 @@ pub fn fit(want: Want, path: Path, steered: Option<u32>) -> Fit {
     match path {
         Path::Direct => Fit { want, kbps: steered, held: None },
         Path::Relay => {
-            let (w, h) = into_box(want.w, want.h, RELAY_BOX.0, RELAY_BOX.1);
-            let fps = want.fps.min(RELAY_FPS);
+            let kbps = steered.map_or(RELAY_KBPS, |s| s.min(RELAY_KBPS));
+            let (_, (bw, bh), top) = RELAY_TIERS.iter().copied().find(|(from, _, _)| kbps >= *from).unwrap_or(RELAY_TIERS[2]);
+            let (w, h) = into_box(want.w, want.h, bw, bh);
+            let fps = want.fps.min(top);
             let shrunk = (w, h) != (want.w, want.h) || fps != want.fps;
-            let kbps = Some(steered.map_or(RELAY_KBPS, |s| s.min(RELAY_KBPS)));
             let held = Some(if shrunk {
                 format!("through a relay, so held to {w}×{h} at {fps} fps")
             } else {
-                format!("through a relay, so held to {:.1} Mbit/s", RELAY_KBPS as f64 / 1000.0)
+                format!("through a relay, so held to {:.1} Mbit/s", kbps as f64 / 1000.0)
             });
-            Fit { want: Want { w, h, fps, ..want }, kbps, held }
+            Fit { want: Want { w, h, fps, ..want }, kbps: Some(kbps), held }
         }
     }
 }
@@ -459,9 +467,11 @@ pub struct Sample {
 }
 
 pub const STEER_EVERY_MS: u64 = 500;
-/// The least a steered screen is sent at — below this the picture is not
-/// worth the frames.
-pub const STEER_FLOOR_KBPS: u32 = 500;
+/// The least a steered screen is sent at. Low, because the relay measured
+/// gave about this much (see the module note) and a 360p screen at five frames
+/// a second is still a screen you can read; `RELAY_TIERS` shrinks the picture
+/// to match rather than smearing a large one.
+pub const STEER_FLOOR_KBPS: u32 = 100;
 /// Above this the cap is lifted rather than raised: the encoder's own choice is
 /// already less than the path can carry.
 pub const STEER_CEIL_KBPS: u32 = 60_000;
@@ -882,11 +892,17 @@ mod tests {
         assert_eq!((f.want.w, f.want.h, f.want.fps), (1152, 720, 15));
         assert_eq!(f.kbps, Some(RELAY_KBPS));
         assert_eq!(f.held.as_deref(), Some("through a relay, so held to 1152×720 at 15 fps"));
+        /* Steered lower, the picture follows the bitrate down the ladder. */
+        let mid = fit(want(2560, 1600, 60), Path::Relay, Some(400));
+        assert_eq!((mid.want.w, mid.want.h, mid.want.fps, mid.kbps), (864, 540, 10, Some(400)));
+        let low = fit(want(2560, 1600, 60), Path::Relay, Some(120));
+        assert_eq!((low.want.w, low.want.h, low.want.fps, low.kbps), (576, 360, 5, Some(120)));
+        /* A steered cap above the relay's ceiling is still the ceiling. */
+        assert_eq!(fit(want(2560, 1600, 60), Path::Relay, Some(5000)).kbps, Some(RELAY_KBPS));
         /* Already small: nothing shrinks, and it still says what it is held to. */
-        let small = fit(want(640, 360, 15), Path::Relay, Some(400));
-        assert_eq!((small.want.w, small.want.h, small.want.fps), (640, 360, 15));
-        assert_eq!(small.kbps, Some(400));
-        assert!(small.held.unwrap().contains("Mbit/s"));
+        let small = fit(want(640, 360, 5), Path::Relay, Some(400));
+        assert_eq!((small.want.w, small.want.h, small.want.fps), (640, 360, 5));
+        assert_eq!(small.held.as_deref(), Some("through a relay, so held to 0.4 Mbit/s"));
         /* Direct: untouched, and the steered cap passes through. */
         let d = fit(want(2560, 1600, 120), Path::Direct, Some(9000));
         assert_eq!((d.want, d.kbps, d.held), (want(2560, 1600, 120), Some(9000), None));
