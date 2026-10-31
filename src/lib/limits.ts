@@ -43,7 +43,18 @@ export type Window = {
   active: boolean;
 };
 
-export type Overage = { enabled: boolean; used: number | null };
+/** Usage past the plan, as `limits.rs::Overage` hands it over. `enabled` is
+ *  whether extra usage can cover a send *now* — the CLI's schema says it reads
+ *  false once the credits are gone — so it is the one field the waterfall
+ *  treats as room. The amounts are minor units of `currency` (cents for USD),
+ *  optional because a reading from an older wall carries none of them. */
+export type Overage = {
+  enabled: boolean;
+  used: number | null;
+  limit?: number | null;
+  spent?: number | null;
+  currency?: string | null;
+};
 
 export type Report = {
   windows: Window[];

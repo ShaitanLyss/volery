@@ -20,7 +20,6 @@ import {
   putOnBlockedNote,
   putOnNote,
   sayBlocked,
-  standingOf,
   swapNote,
   type Choice,
 } from "./accounts";
@@ -841,6 +840,10 @@ export class Skein {
        about to be tried again — a retry that swallowed the failed attempt
        would make the day's figure understate what the wall actually
        spent. */
+    /* Before `#spend` and `#heal` for the reason `#spend` is before `#heal`:
+       whatever is chosen next must be chosen against what this account just
+       said about itself. */
+    this.#observe(c, event);
     /* Before `#heal`, which is the ordering the old in-`#heal` call had for
        the same reason: `choose` must have stopped offering the refused
        account by the time anything re-sends. */
@@ -2054,15 +2057,22 @@ export class Skein {
          switched off or signed out — spawns straight onto credits rather than
          waiting for its first send to be held (Lyss, 2026-10-24). `route` with
          nothing to stick to is the ladder exactly, plus that. */
+      /* Asked on a fresh reading where the one in hand cannot vouch for the
+         account it lands on (`#asked`) — a new card is the one move that starts
+         blind every time. */
       const opening =
         waterfall.list.length > 0
-          ? route({
-              current: null,
-              home: null,
-              credits: purse.standing(),
-              ladder: () => waterfall.next({ stickTo: prefer }),
-              state: (label) => waterfall.stateOf(label),
-            })
+          ? await this.#asked(
+              () =>
+                route({
+                  current: null,
+                  home: null,
+                  credits: purse.standing(),
+                  ladder: () => waterfall.next({ stickTo: prefer }),
+                  state: (label) => waterfall.stateOf(label),
+                }),
+              null,
+            )
           : null;
       const account = opening?.kind === "use" ? opening.label : null;
       /* No `worktree` here: `spawn_conversation` reads it back off the row for
@@ -3044,6 +3054,19 @@ export class Skein {
     );
   }
 
+  /** Hand the waterfall what a card's own request just learned about the
+   *  account it is on. Every request carries the allowance in its response
+   *  headers and the CLI reports it as `rate_limit_event`; reading it here is
+   *  what lets the next send move off an account *before* it is refused rather
+   *  than after. `accounts.ts::observed` has the whole argument. Credits are
+   *  not an account, so a card on them says nothing about any row. */
+  #observe(conv: Conversation, ev: any) {
+    if (ev?.type !== "rate_limit_event") return;
+    const label = conv.accountLabel;
+    if (!label || onCredits(label)) return;
+    waterfall.observe(label, ev.rate_limit_info);
+  }
+
   /** Tell the waterfall an account has just been refused.
    *
    *  Separate from `#heal` because the fact and the policy are separate: the
@@ -3605,7 +3628,7 @@ export class Skein {
   ): Promise<boolean> {
     if (!this.#managing) return true;
 
-    const choice = this.#decide(conv);
+    const choice = await this.#asked(() => this.#decide(conv), conv.accountLabel);
 
     if (choice.kind === "use") {
       if (choice.label !== conv.accountLabel) await this.#shift(conv, choice);
@@ -3668,6 +3691,35 @@ export class Skein {
    *  thing an app like that owes you is that nothing it did on its own is
    *  invisible afterwards, and a card that moved itself onto the subscription
    *  you were holding in reserve is precisely that. */
+  /** A decision, taken again on a fresh reading wherever the first one rests on
+   *  a reading that cannot vouch for it (`accounts.ts::vouches`).
+   *
+   *  Two shapes need the ask. A move onto an account other than `current` — a
+   *  swap, a wake, a new card — is the blind switch Lyss asked about: without
+   *  this, an account never read was ready and empty by default and the tier's
+   *  first choice. And a hold, which is the wall deciding to wait on figures that
+   *  may be minutes old across a reset. Staying where the card is needs nothing:
+   *  that account's own stream keeps its reading current (`#observe`). Credits
+   *  are not an account and have no reading to vouch.
+   *
+   *  One `poll`, which waits for a pass already under way rather than starting a
+   *  second, and which Rust floors to a request per account per minute — so a
+   *  burst of cards waking together costs the same one ask. An account that
+   *  still cannot be read afterwards (an expired token on a reserve nothing has
+   *  run on) is decided on as before: unmeasured, and said so on the face. */
+  async #asked<D extends Decision>(decide: () => D, current: string | null): Promise<D> {
+    const first = decide();
+    if (!this.#needsAsking(first, current)) return first;
+    await waterfall.poll();
+    return decide();
+  }
+
+  #needsAsking(d: Decision, current: string | null): boolean {
+    if (d.kind === "use") return d.label !== current && !onCredits(d.label) && !waterfall.vouches(d.label);
+    if (d.kind === "hold") return waterfall.usable.some((a) => !waterfall.vouches(a.label));
+    return false;
+  }
+
   /** Where this card's next turn runs: the waterfall, with credits in the
    *  picture when boost is on. `credits.ts::route` is the whole of the policy;
    *  with boost off and the card on an account it is exactly `waterfall.next`. */
@@ -3796,7 +3848,7 @@ export class Skein {
       this.fault = `there is no account called ${to} on this wall`;
       return;
     }
-    const standing = standingOf(acct, waterfall.allowances[to], conv.bypassCaps);
+    const standing = waterfall.standing(acct, conv.bypassCaps);
     if (standing.state === "unusable") {
       /* The one refusal, and it is not about allowance at all: an account that
          is switched off or not signed in has no credential to spawn against, so

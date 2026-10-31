@@ -792,6 +792,110 @@ where a line still pending when *we* pulled the process is one nothing carried.
 Every retirement gets it, since `#recycle`'s repair-restart is the same situation
 one subsystem over.
 
+### Usage credits are room, and the account is read off its own stream
+
+Lyss, 2026-10-29: her manager gave her usage credits and Volery *"doesn't even try
+because of the expired weekly allowance"* — and, of the waterfall, that it *"waits for
+cards to autoswitch and fail to know instead of directly checking the allowance"*. Both
+were right, and both were the wall ignoring something it was already being told.
+
+**Credits.** `blockersFor` read any window at 100% (or `rejected`) as the server's stop.
+With extra usage on, it is not: one real Haiku turn on her own sign-in (claude 2.1.312)
+was *answered* while its `rate_limit_event` said `seven_day: { utilization: 1, status:
+"rejected" }` beside `overageStatus: "allowed", isUsingOverage: true`. The CLI's schema
+says it outright — a rejected window alone does not mean requests are refused. So
+`covers(overage)` waives the server's ceiling, and only the server's:
+
+- **`is_enabled` is the switch**, because the schema defines it as *can extra usage cover
+  a send right now* — false once the balance is gone, not merely when the feature is off.
+  The amounts (`monthly_limit`, `used_credits`, minor units of `currency`) are checked too,
+  since a polled figure at its ceiling is newer than a flag that has not caught up.
+- **Your caps still apply.** A cap on the week is a decision about spending; credits are
+  more spending. Bypass lifts it as ever.
+- **`onCredits` on a ready standing** says the next turn there is billed. Inside a tier it
+  needs nothing special — a billed account's window is at its ceiling, so `spentOf` reads
+  it at 1 and plan room in the same tier goes first. **The tier order is not bent for
+  credits**: a priority-1 account's credits are spent before a priority-2 plan, which is
+  what putting it first said. That is a policy, and the obvious alternative — credits
+  last across every tier — is a one-line change in `choose` if it is ever wanted; the
+  test `credits are spent in their account's tier` holds the current answer.
+- **Stickiness gives way to plan room.** A card on credits does not stick if the waterfall
+  would put it on an account with plan left (the uncached re-read is cheaper than the
+  bill), and does stick rather than move to *another* account's credits.
+- **A refusal still wins.** The refusal overlay carries no overage, so an account the
+  server has just refused — out of credits included — is blocked whatever the poll said.
+- The panel says what is left (`sayCredits`: *$37.66 of usage credits left*), and says
+  **nothing** when there are none, off or spent — her words. The card's transcript says
+  once when its turns start being billed (`BILLED_NOTE`), by `swapNote`'s rule.
+
+**The stream.** The poll is three minutes apart and a busy card crosses several percent in
+that, so the wall learned an account was full by being refused — then swapped, carried on,
+noted. Meanwhile every request was carrying the answer: the CLI emits `rate_limit_event`
+whenever a window's rounded percentage, reset or status moves, off the response headers of
+the request it just made. That is CLAUDE.md's rule — *look for an event that already exists
+near it and fold that* — and `Conversation` had a case for it that read `ev.rate_limit`, a
+key the CLI has never sent, so it had never fired.
+
+- `Skein.#observe` hands each card's event to `waterfall.observe`, which lays it over the
+  held reading (`accounts.ts::observed`): `utilization` is a **fraction** and `resetsAt`
+  **seconds** there, converted so nothing downstream learns a second scale; windows it
+  names replace the held ones, the rest stay less any that rolled. The next send is then
+  chosen against what the account's own last request said.
+- **`polled` keeps the newer of the two.** Rust answers inside its floor out of a cache and a
+  peer's reading arrives aged, so a poll could put a window the stream had just seen at 100%
+  back to 97%. The poll still brings the credit amounts, which only it carries.
+- The poll stays, as the reading for accounts nothing is running on.
+- The card's own case now reads `rate_limit_info`, and deliberately does **not** draw a line
+  per `rejected` status: on credits that status arrives on every served turn.
+- Not read: `seven_day_overage_included`, a per-model week whose display name only the
+  endpoint carries; the poll still reads it.
+
+`tools/lift-overage.ts` runs the Rust half (`credits_left`'s divisor, and `Overage` still
+deserializing an older wall's reading) on a machine with no MSVC.
+
+**Only in boost mode** (Lyss, later the same day: *"I want to use extra credits on accounts
+(over usage) only when boost mode is enabled"*). Boost already meant "spend money to keep
+working" for the API key; an account's usage credits are the same decision, so they share
+the switch. `standingOf` and `choose` take `overage`, **false by default** so a caller that
+forgets it spends nothing, and `Waterfall.overage` (`purse.boost`) is the one place it is
+read — the panel, the palette and `putOnAccount` ask `waterfall.standing` rather than
+calling `standingOf` with a flag they could leave off. With boost on, `route` keeps a card
+on its own account while that account stands ready, so its usage credits go before the API
+key's. Boost off with credits available: the row says `CREDITS_WAIT`, since a balance
+beside "spent" with nothing between them reads as a bug. What boost cannot stop is the
+server billing a turn that crosses the plan mid-flight — the CLI carries on into the credits
+itself; the stream then reads the account spent and the *next* send goes elsewhere.
+
+### Asking before moving a card onto an account
+
+Lyss, 2026-10-29: *"will volery first ask how much allowance is left when it doesn't know,
+before blindly trying to autoswitch?"* It did not. A swap, a wake and a new card chose
+against whatever reading was held — up to three minutes old, or none at all, which
+`standingOf` calls ready and `spentOf` calls empty, so the account the wall knew least
+about was the one its tier preferred. `Skein.#asked` now takes the decision again after one
+`waterfall.poll()` whenever it would move a card onto an account whose reading does not
+vouch for it (`accounts.ts::vouches`: present, not a fault, not kept through a failed ask,
+under `VOUCH_MS`), and before holding while any account is in that state. Staying put needs
+no ask — the card's own stream keeps that reading current — and `poll` now hands back a
+pass already in flight rather than returning at once, which also made `releaseHeld`'s
+"fresh reading before deciding" true when a beat happened to be running. `VOUCH_MS` is
+`limits.rs`'s `FLOOR_MS` and a test reads one against the other: asking inside the floor is
+answered out of Rust's cache, so a tighter bound buys a round trip and no fresher figure.
+
+**What it cannot fix is a reserve whose token has expired.** `limits.rs` reads a store's
+access token and never refreshes it (the race with the CLI is `usage.md`'s), so an account
+nothing has run on for a few hours stays unreadable however often it is asked. The way out
+that spends nothing was found the same day: **the CLI refreshes a store's token as it
+starts, before any prompt.** Probed against claude 2.1.312 on the leftover `probe` store —
+`claude -p --input-format stream-json` with nothing written to stdin, killed at 25s — and
+the credential file, untouched since 20 Aug, was rewritten (its refresh token had lapsed,
+so the CLI cleared it; a live one is rotated). The binary names the path:
+`checkAndRefreshOAuthTokenIfNeeded` on `auth: init`, saved through
+`saveRefreshedOAuthTokensRespectingLock`. So a keep-alive needs no turn: start the CLI on
+the store with no prompt, wait for `expiresAt` to move, end it. **Not built yet** — it is a
+Rust spawn in a job object on a timer, and the obvious way to verify it against a *live*
+token is to wait for one to expire.
+
 ### Finding Claude Code before installing it
 
 Every card is a `claude` child, so "claude is not on PATH" stops the whole wall

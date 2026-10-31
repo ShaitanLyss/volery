@@ -21,7 +21,7 @@
    * The arithmetic and the words are `limits.ts` and `usage.ts`, both pure and
    * tested; the reading is one shared `Ledger`. Nothing here decides anything. */
 
-  import { sayCeiling, speaksWith, type Account } from "./accounts";
+  import { covers, sayCeiling, speaksWith, type Account } from "./accounts";
   import { clock } from "./conversation.svelte";
   import type { Ledger } from "./ledger.svelte";
   import { waterfall } from "./waterfall.svelte";
@@ -115,6 +115,10 @@
      *  wide face can apply the caps you set. Null for the signed-in session,
      *  which is not an account in the order and has no caps of yours. */
     account: Account | null;
+    /** Usage credits stand behind a spent plan (`accounts.ts::covers`) and boost
+     *  is on, so a week at 100% is a bill rather than a stop — and the face must
+     *  not draw as spent an account the wall is still sending work to. */
+    credits: boolean;
   };
 
   /** The knob's value for the globally signed-in session — the account this
@@ -132,6 +136,7 @@
     fault: ledger.limits ? null : ledger.limitsFault,
     source: ledger.limits?.source ?? "",
     account: null,
+    credits: false,
   }));
 
   const faces = $derived.by<Face[]>(() => {
@@ -161,6 +166,9 @@
         fault: !got ? "not read yet" : got.ok ? (got.stale ?? null) : got.fault,
         source: `the '${a.label}' account`,
         account: a,
+        /* Boost decides whether credits are spent at all, read where the
+           chooser reads it, so this face and the wall cannot disagree. */
+        credits: waterfall.overage && got?.ok === true && covers(got.overage),
       };
     });
   });
@@ -191,7 +199,7 @@
   const every = $derived(
     faces.map((f) => {
       const spoke = f.account
-        ? speaksWith(f.account, f.windows)
+        ? speaksWith(f.account, f.windows, f.credits)
         : { window: binding(f.windows), ceiling: null };
       const worst = spoke.window;
       return {
