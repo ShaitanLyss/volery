@@ -416,6 +416,15 @@ pub fn settles() -> (u64, u64) {
     (CONFIRMED.load(Ordering::Relaxed), GAVE_UP.load(Ordering::Relaxed))
 }
 
+static WAITED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many clicks waited for Volery's own windows to let go of the mouse
+/// before being forwarded (`os::wait_released`). Logged beside [`settles`]:
+/// it is the figure that says whether that wait is doing anything.
+pub fn waits() -> u64 {
+    WAITED.load(Ordering::Relaxed)
+}
+
 struct Window {
     hwnd: isize,
     /// The extended style before the drive, put back after it.
@@ -552,14 +561,14 @@ mod os {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
         MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
         MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics,
+        CallNextHookEx, EnumChildWindows, GetAncestor, GetClassNameW, GetCursorPos, GetGUIThreadInfo, GUITHREADINFO, GetForegroundWindow, GetMessageW, GetSystemMetrics,
         GetWindowLongPtrW, GetWindowThreadProcessId, KillTimer, PostThreadMessageW, SendMessageTimeoutW,
         SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
         SetWindowsHookExW, UnhookWindowsHookEx, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, HWND_NOTOPMOST,
@@ -792,7 +801,60 @@ mod os {
         CallNextHookEx(None, code, w, l)
     }
 
+    /// Wait, briefly, until Volery's own windows have let go of the mouse.
+    ///
+    /// A click on the tile is a real press on Volery's webview, which takes
+    /// mouse capture for it; a forwarded click that arrives while that capture
+    /// is still held is routed to Volery, not to the app under the point. The
+    /// hook still sees it delivered — it was, to the wrong window — so this
+    /// read as clicks confirmed and lost: 25 of 30 landed in the app, every
+    /// miss with the drive on and the page in front, and with no tile click
+    /// before them 10 of 10 did (drive-probe, 2026-10-31). Capture belongs to
+    /// a thread, and the webview's input windows are another process's
+    /// children of ours, so each child's thread is asked.
+    fn wait_released(h: isize) {
+        let threads: Vec<u32> = {
+            let mut v = Vec::new();
+            unsafe extern "system" fn each(c: HWND, l: LPARAM) -> windows::core::BOOL {
+                let v = &mut *(l.0 as *mut Vec<u32>);
+                let t = GetWindowThreadProcessId(c, None);
+                if t != 0 && !v.contains(&t) {
+                    v.push(t);
+                }
+                windows::core::BOOL(1)
+            }
+            // SAFETY: the callback only pushes into the Vec it is handed.
+            unsafe {
+                let _ = EnumChildWindows(Some(hwnd(h)), Some(each), LPARAM(&mut v as *mut _ as isize));
+            }
+            v
+        };
+        let held = || {
+            let button = [0x01, 0x02, 0x04].iter().any(|&vk| {
+                // SAFETY: a key-state read.
+                (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
+            });
+            button
+                || threads.iter().any(|&t| {
+                    let mut info = GUITHREADINFO { cbSize: std::mem::size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+                    // SAFETY: a sized out-parameter for a thread that may have gone.
+                    unsafe { GetGUIThreadInfo(t, &mut info) }.is_ok() && !info.hwndCapture.is_invalid()
+                })
+        };
+        if !held() {
+            return;
+        }
+        super::WAITED.fetch_add(1, Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while held() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    }
+
     pub fn perform(h: isize, ex0: u32, g: &Gesture, left: &std::sync::atomic::AtomicBool) {
+        if !matches!(g, Gesture::Wheel { .. }) {
+            wait_released(h);
+        }
         let v = virt();
         let back = cursor();
         open(h, ex0);

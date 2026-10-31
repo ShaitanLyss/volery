@@ -204,7 +204,8 @@ impl Feed {
 /// as the field reading for the settle bound.
 fn log_settles() {
     let (confirmed, gave_up) = super::drive::settles();
-    log::info!("cast: drive settles so far: {confirmed} confirmed, {gave_up} gave up");
+    let waited = super::drive::waits();
+    log::info!("cast: drive settles so far: {confirmed} confirmed, {gave_up} gave up; {waited} waited for Volery to let go of the mouse");
 }
 
 fn volery_hwnd(app: Option<&AppHandle>) -> Result<isize, String> {
