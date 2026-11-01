@@ -1866,10 +1866,13 @@ setInterval(show,50);show();
         let mut hits = String::new();
         let mut misses = Vec::new();
         let mut hidden_flips = 0u32;
+        let took_thread = start_took();
+        let took_from = took_len();
         for i in 0..30 {
             aim_direct(tb);
             aim_through(lab, button);
             let b4 = page_of(edge).unwrap_or_default();
+            let n_before = took_len();
             click_at(tb.0, tb.1);
             thread::sleep(Duration::from_millis(350));
             let af = page_of(edge).unwrap_or_default();
@@ -1877,6 +1880,9 @@ setInterval(show,50);show();
             hidden_flips += af.hid - b4.hid;
             hits.push(if landed { 'x' } else if af.hid > b4.hid { 'h' } else { '.' });
             if !landed {
+                for line in took_since(n_before) {
+                    misses.push(format!("      {line}"));
+                }
                 let f = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
                 misses.push(format!(
                     "   miss #{}: the page got down +{}, up +{}, click +{}, went hidden +{} (vis now {}); host driven={}, stage focused {}, window focused {}, lab TOPMOST {}, foreground {}",
@@ -1904,6 +1910,23 @@ setInterval(show,50);show();
             p1.b - p0.b,
             above(lab, edge)
         );
+        thread::sleep(Duration::from_millis(300));
+        stop_took(took_thread);
+        {
+            let v = TOOK.lock().unwrap();
+            let fwd: Vec<&Took> = v.iter().skip(took_from).filter(|t| t.forwarded).collect();
+            let tally = |o: &str| fwd.iter().filter(|t| owner(t, lab, edge) == o).count();
+            println!(
+                "   forwarded presses seen by the recording hook: {} — taken by Edge {}, by Volery {}, by neither {}",
+                fwd.len(),
+                tally("Edge"),
+                tally("Volery"),
+                tally("neither")
+            );
+            if let Some(t) = fwd.iter().find(|t| owner(t, lab, edge) == "Edge") {
+                println!("   a press that landed, for comparison: {}", describe_took(t));
+            }
+        }
         for m in &misses {
             println!("{m}");
         }
@@ -2181,6 +2204,127 @@ setInterval(show,50);show();
         report("   then", &ctl);
         let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
         drop(guard);
+    }
+
+    /* ── who takes each press ─────────────────────────────────────────── */
+
+    /// One left press as Windows was about to deliver it: the window under the
+    /// point at that moment, read inside a low-level mouse hook — which runs
+    /// before the raw input thread hit-tests the event, so it is the window
+    /// the press goes to.
+    struct Took {
+        forwarded: bool,
+        class: String,
+        pid: u32,
+        root: isize,
+        root_class: String,
+        root_title: String,
+        root_pid: u32,
+        root_ex: u32,
+    }
+
+    static TOOK: std::sync::Mutex<Vec<Took>> = std::sync::Mutex::new(Vec::new());
+
+    unsafe extern "system" fn took_proc(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if code >= 0 && w.0 == 0x0201 {
+            let m = &*(l.0 as *const windows::Win32::UI::WindowsAndMessaging::MSLLHOOKSTRUCT);
+            let hw = windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(m.pt);
+            let root = GetAncestor(hw, GA_ROOT);
+            let t = Took {
+                // drive.rs marks everything it injects; the probe's own presses carry 0
+                forwarded: m.dwExtraInfo & 0xffff_ffff == 0x564f_4c59,
+                class: class_of(hw),
+                pid: pid_of(hw),
+                root: root.0 as isize,
+                root_class: class_of(root),
+                root_title: text_of(root).chars().take(40).collect(),
+                root_pid: pid_of(root),
+                root_ex: exstyle(root),
+            };
+            if let Ok(mut v) = TOOK.lock() {
+                v.push(t);
+            }
+        }
+        windows::Win32::UI::WindowsAndMessaging::CallNextHookEx(None, code, w, l)
+    }
+
+    /// Put the hook in on a thread of its own with a message loop, which is
+    /// what a low-level hook is called on. Returns the thread to stop.
+    fn start_took() -> u32 {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || unsafe {
+            let module = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).ok();
+            let hook = windows::Win32::UI::WindowsAndMessaging::SetWindowsHookExW(
+                windows::Win32::UI::WindowsAndMessaging::WH_MOUSE_LL,
+                Some(took_proc),
+                module.map(|m| m.into()),
+                0,
+            )
+            .expect("the press-recording hook");
+            tx.send(GetCurrentThreadId()).unwrap();
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {}
+            let _ = windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(hook);
+        });
+        rx.recv().unwrap()
+    }
+
+    fn stop_took(thread: u32) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                thread,
+                windows::Win32::UI::WindowsAndMessaging::WM_QUIT,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+
+    fn took_since(n: usize) -> Vec<String> {
+        let v = TOOK.lock().unwrap();
+        v.iter().skip(n).map(describe_took).collect()
+    }
+
+    fn took_len() -> usize {
+        TOOK.lock().unwrap().len()
+    }
+
+    fn describe_took(t: &Took) -> String {
+        let ex = t.root_ex;
+        let flags = [
+            (WS_EX_TOPMOST.0, "TOPMOST"),
+            (WS_EX_LAYERED.0, "LAYERED"),
+            (WS_EX_TRANSPARENT.0, "TRANSPARENT"),
+            (0x0800_0000, "NOACTIVATE"),
+        ]
+        .iter()
+        .filter(|(b, _)| ex & b != 0)
+        .map(|(_, n)| *n)
+        .collect::<Vec<_>>()
+        .join("|");
+        let exe = image_of(t.root_pid);
+        let exe = exe.rsplit('\\').next().unwrap_or("").to_string();
+        format!(
+            "{} press → {} (pid {}) in root {} '{}' [{}] of {}",
+            if t.forwarded { "forwarded" } else { "tile" },
+            t.class,
+            t.pid,
+            t.root_class,
+            t.root_title,
+            if flags.is_empty() { "-".to_string() } else { flags },
+            exe
+        )
+    }
+
+    /// Whose root took a forwarded press: Volery's, the test page's, or a third.
+    fn owner(t: &Took, lab: HWND, edge: HWND) -> &'static str {
+        if t.root == lab.0 as isize {
+            "Volery"
+        } else if t.root == edge.0 as isize {
+            "Edge"
+        } else {
+            "neither"
+        }
     }
 
     /// The window under a point, skipping the lab: walk the z-order below it
