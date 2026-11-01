@@ -234,11 +234,33 @@ pub fn start() -> Result<String, String> {
 /// rather than the reading: the panel keeps it hidden and reveals on a press,
 /// and forgets it when the panel closes. A press is a time somebody chose.
 ///
-/// Nothing is derived or re-minted here — the vault holds the invite in its
-/// canonical spelling (`start` and `join` both store it that way), so this is
-/// the same string, not a second opinion about what it was.
+/// ### It names this machine, not the one the vault remembers
+///
+/// The key is read back from the vault; the name after the dot is **this
+/// wall's**, not the stored one. They used to be the same string, and on a wall
+/// that *joined* the stored name is its seed — so every invite anywhere on a
+/// flyway named the machine that started it, and that one machine being off was
+/// enough to strand anybody new: a joiner learns every other wall from the one
+/// it dials first, and its only name was that one. Any wall that can hand out
+/// the key can be dialled, since an identity is the key and a name
+/// (`WallKey::node_secret`), so the invite names the wall you are standing at,
+/// which is also the one you know is up.
+///
+/// The vault keeps the seed as it was. `joined_peer` and the goodbye still read
+/// it, and this wall's own name is useless there — it is the one name a wall
+/// never dials.
 pub fn invite() -> Option<String> {
-    crate::vault::read_at(target())
+    invite_naming(&crate::vault::read_at(target())?, &host_name())
+}
+
+/// The stored invite's key, with `host` after the dot. `None` for an entry
+/// with no key in it, so a panel never reveals half an invite.
+fn invite_naming(held: &str, host: &str) -> Option<String> {
+    let phrase = held.split(SPLIT).next()?.trim();
+    if phrase.is_empty() {
+        return None;
+    }
+    Some(format!("{phrase}{SPLIT}{host}"))
 }
 
 /// Whether this process may leave at all — a lab flying on the installed wall's
@@ -365,6 +387,35 @@ mod tests {
     fn a_borrowed_key_cannot_be_changed() {
         assert!(refuse_if_borrowed(true).is_err());
         assert!(refuse_if_borrowed(false).is_ok());
+    }
+
+    /// A joined wall's vault names its seed. Its invite must name itself, or
+    /// every invite on the flyway leads to the one machine that started it.
+    #[test]
+    fn an_invite_names_the_wall_handing_it_out() {
+        let key = WallKey::generate().unwrap().phrase();
+        let joined = format!("{key}{SPLIT}seed-box");
+        let invite = invite_naming(&joined, "laptop").unwrap();
+        assert_eq!(invite, format!("{key}{SPLIT}laptop"));
+        assert!(!invite.contains("seed-box"));
+        /* And it is something `join` takes: the same key, a machine to dial. */
+        let mut parts = invite.splitn(2, SPLIT);
+        assert_eq!(WallKey::from_phrase(parts.next().unwrap()).unwrap().phrase(), key);
+        assert_eq!(parts.next(), Some("laptop"));
+    }
+
+    /// The wall that started the flyway hands out the same invite it always did.
+    #[test]
+    fn a_starting_wall_s_invite_is_unchanged() {
+        let key = WallKey::generate().unwrap().phrase();
+        let started = format!("{key}{SPLIT}desk");
+        assert_eq!(invite_naming(&started, "desk").as_deref(), Some(started.as_str()));
+    }
+
+    #[test]
+    fn an_entry_with_no_key_is_no_invite() {
+        assert_eq!(invite_naming("", "desk"), None);
+        assert_eq!(invite_naming(&format!("{SPLIT}seed"), "desk"), None);
     }
 
     #[test]

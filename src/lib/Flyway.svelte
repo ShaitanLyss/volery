@@ -201,8 +201,10 @@
           <button class="act" onclick={() => (phrase = "")}>i have it</button>
         </div>
         <p class="aside">
-          Enter it on every other machine that should be on this flyway. It is kept hidden
-          here, not thrown away — "show my invite" brings it back.
+          Enter it on every other machine that should be on this flyway. It names this
+          machine, so the one joining finds the flyway through this one — any wall on it
+          can hand out an invite. It is kept hidden here, not thrown away — "show my invite"
+          brings it back.
         </p>
       </section>
     {/if}
