@@ -691,20 +691,23 @@ mod win {
 <style>body{margin:0;font:20px sans-serif;background:#dde}#b{position:absolute;left:20px;top:20px;width:200px;height:80px;font-size:20px}#t{position:absolute;left:20px;top:120px;width:320px;height:40px;font-size:20px}#long{height:6000px}</style>
 <button id=b>click</button><input id=t value="select me please"><div id=long></div>
 <script>
-let c=0,bl=0,fo=0,e='',r=0,md=0,k='';
-b.onclick=()=>{c++;show()};addEventListener('mousedown',()=>{md++});
+let c=0,bl=0,fo=0,e='',r=0,md=0,mu=0,hid=0,k='';
+b.onclick=()=>{c++;show()};addEventListener('mousedown',()=>{md++;show()},true);addEventListener('mouseup',()=>{mu++;show()},true);
 addEventListener('blur',()=>{bl++;show()});addEventListener('focus',()=>{fo++;show()});addEventListener('keydown',ev=>{k=ev.key;show()},true);
 t.addEventListener('keydown',ev=>{if(ev.key==='Enter'){e=t.value;show()}});
 t.addEventListener('input',show);addEventListener('scroll',show);
-document.addEventListener('selectionchange',show);document.addEventListener('visibilitychange',show);
+document.addEventListener('selectionchange',show);document.addEventListener('visibilitychange',()=>{if(document.hidden)hid++;show()});
 (function f(){r++;requestAnimationFrame(f)})();
-function show(){document.title=`dp|c=${c}|b=${bl}|f=${fo}|y=${Math.round(scrollY)}|e=${e}|v=${t.value}|s=${t.selectionStart}-${t.selectionEnd}|vis=${document.visibilityState[0]}|r=${r}|md=${md}|k=${k}`}
+function show(){document.title=`dp|c=${c}|b=${bl}|f=${fo}|y=${Math.round(scrollY)}|e=${e}|v=${t.value}|s=${t.selectionStart}-${t.selectionEnd}|vis=${document.visibilityState[0]}|r=${r}|md=${md}|mu=${mu}|hid=${hid}|k=${k}`}
 setInterval(show,50);show();
 </script>"#;
 
     #[derive(Debug, Default, Clone)]
     struct Page {
         c: u32,
+        md: u32,
+        mu: u32,
+        hid: u32,
         b: u32,
         y: i64,
         e: String,
@@ -724,6 +727,9 @@ setInterval(show,50);show();
             let (k, v) = kv.split_once('=')?;
             match k {
                 "c" => p.c = v.parse().ok()?,
+                "md" => p.md = v.parse().ok()?,
+                "mu" => p.mu = v.parse().ok()?,
+                "hid" => p.hid = v.parse().ok()?,
                 "b" => p.b = v.parse().ok()?,
                 "y" => p.y = v.parse().ok()?,
                 "e" => p.e = v.into(),
@@ -1859,19 +1865,27 @@ setInterval(show,50);show();
         let p0 = settle_page(edge);
         let mut hits = String::new();
         let mut misses = Vec::new();
+        let mut hidden_flips = 0u32;
         for i in 0..30 {
             aim_direct(tb);
             aim_through(lab, button);
-            let c0 = page_of(edge).unwrap_or_default().c;
+            let b4 = page_of(edge).unwrap_or_default();
             click_at(tb.0, tb.1);
             thread::sleep(Duration::from_millis(350));
-            let landed = page_of(edge).unwrap_or_default().c > c0;
-            hits.push(if landed { 'x' } else { '.' });
+            let af = page_of(edge).unwrap_or_default();
+            let landed = af.c > b4.c;
+            hidden_flips += af.hid - b4.hid;
+            hits.push(if landed { 'x' } else if af.hid > b4.hid { 'h' } else { '.' });
             if !landed {
                 let f = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
                 misses.push(format!(
-                    "   miss #{}: host driven={}, stage focused {}, window focused {}, lab TOPMOST {}, foreground {}",
+                    "   miss #{}: the page got down +{}, up +{}, click +{}, went hidden +{} (vis now {}); host driven={}, stage focused {}, window focused {}, lab TOPMOST {}, foreground {}",
                     i + 1,
+                    af.md - b4.md,
+                    af.mu - b4.mu,
+                    af.c - b4.c,
+                    af.hid - b4.hid,
+                    af.vis,
                     f["showing"]["driven"],
                     f["stageFocused"],
                     f["windowFocused"],
@@ -1893,6 +1907,7 @@ setInterval(show,50);show();
         for m in &misses {
             println!("{m}");
         }
+        println!("   the page went hidden {hidden_flips} times across the 30 clicks ('h' marks a miss that coincided with one)");
         let (r, v) = frame_rate(edge);
         println!("   the page while driven: {r:.1} rAF/s vis={v}");
         bail_on_escape!();
