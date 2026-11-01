@@ -81,6 +81,8 @@
 //! cargo run --example drive-probe -- app <lab> [hold]    # the local drive in the real app, through a
 //!                                                        # screen tile, on a lab built with LOCAL_DRIVE
 //!                                                        # on; `hold` waits for a person's Escape at the end
+//! cargo run --example drive-probe -- win32 <lab>         # the same 30 clicks into a plain Win32 window
+//!                                                        # counting its own presses — is the loss Chromium's?
 //! cargo run --example drive-probe -- exit <lab>          # getting out of a local drive: two clicks on
 //!                                                        # the lab, nothing forwarded, then a person's hold
 //! cargo run --example drive-probe -- hits <lab>          # what the tile's point hit-tests as while a
@@ -956,6 +958,7 @@ setInterval(show,50);show();
             "drive" => drive(lab, &dir),
             "app" => app(lab, name, &dir, args.get(2).map(String::as_str) == Some("hold")),
             "exit" => exit_check(lab, name),
+            "win32" => app_win32(lab, name),
             "hits" => hits(lab, &dir, args.get(2).and_then(|v| v.parse().ok()).unwrap_or(4000)),
             _ => eprintln!("unknown mode {mode}"),
         }
@@ -2325,6 +2328,184 @@ setInterval(show,50);show();
         } else {
             "neither"
         }
+    }
+
+    /* ── a plain Win32 target, counting its own presses ───────────────── */
+
+    static W32_DOWNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static W32_UPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    unsafe extern "system" fn count_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        match m {
+            0x0201 | 0x0203 => {
+                W32_DOWNS.fetch_add(1, Ordering::SeqCst);
+            }
+            0x0202 => {
+                W32_UPS.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        DefWindowProcW(h, m, w, l)
+    }
+
+    /// A plain window of the probe's own that counts WM_LBUTTONDOWN in its
+    /// window procedure — no browser between Windows and the count.
+    fn count_window(x: i32, y: i32, w: i32, h: i32) -> isize {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let inst = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(count_proc),
+                hInstance: inst.into(),
+                lpszClassName: w!("DriveProbeCount"),
+                hbrBackground: windows::Win32::Graphics::Gdi::HBRUSH(
+                    windows::Win32::Graphics::Gdi::GetStockObject(windows::Win32::Graphics::Gdi::LTGRAY_BRUSH).0,
+                ),
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            let win = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("DriveProbeCount"),
+                w!("drive-probe count"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                x,
+                y,
+                w,
+                h,
+                None,
+                None,
+                Some(inst.into()),
+                None,
+            )
+            .unwrap();
+            tx.send(win.0 as isize).unwrap();
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+        rx.recv().unwrap()
+    }
+
+    /// Discriminator: the same 30 clicks through the tile, into a plain Win32
+    /// window instead of a Chromium page. 30 of 30 here and ~25 in Edge says
+    /// the loss is Chromium's.
+    fn app_win32(lab: HWND, lab_name: &str) {
+        let found = exstyle(lab);
+        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
+        if clean != found {
+            set_exstyle(lab, clean);
+        }
+        let base_ex = exstyle(lab);
+        let mut guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
+        let ctl = Ctl::open(lab_name);
+
+        let added = ctl.op(serde_json::json!({ "op": "widget.add", "kind": "screen", "x": 260, "y": 220 }));
+        let id = added["id"].as_str().expect("a screen widget").to_string();
+        ctl.op(serde_json::json!({ "op": "widget.update", "id": id, "w": 720, "h": 450 }));
+        let mut fit = serde_json::Value::Null;
+        for _ in 0..80 {
+            thread::sleep(Duration::from_millis(250));
+            fit = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
+            if fit["showing"]["state"] == "live" && fit["live"] == true {
+                break;
+            }
+        }
+        if fit["live"] != true {
+            panic!("the tile never went live and drivable: {fit}");
+        }
+
+        let (cx0, cy0, cw, ch) = (420, 360, 800, 560);
+        let target = HWND(count_window(cx0, cy0, cw, ch) as *mut _);
+        guard.edit_frame = Some(target);
+        thread::sleep(Duration::from_millis(600));
+        stage(&[lab, target]);
+        raise_under_lab(target);
+        zorder(lab, HWND_TOPMOST);
+        zorder(lab, HWND_NOTOPMOST);
+        thread::sleep(Duration::from_millis(300));
+        if !above(lab, target) {
+            panic!("could not put the lab above the counting window");
+        }
+
+        let web = children(lab).into_iter().find(|&c| class_of(c) == "WRY_WEBVIEW").map(rect_of).expect("the lab's webview");
+        let dpr = fit["dpr"].as_f64().unwrap();
+        let st = &fit["stage"];
+        let (sx, sy, sw, sh) = (st["x"].as_f64().unwrap(), st["y"].as_f64().unwrap(), st["w"].as_f64().unwrap(), st["h"].as_f64().unwrap());
+        let (mw, mh) = unsafe {
+            (
+                GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN) as f64,
+                GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN) as f64,
+            )
+        };
+        let k = (sw / mw).min(sh / mh);
+        let (fw, fh) = (mw * k, mh * k);
+        let (fx, fy) = (sx + (sw - fw) / 2.0, sy + (sh - fh) / 2.0);
+        let css_to_screen = |x: f64, y: f64| (web.left + (x * dpr).round() as i32, web.top + (y * dpr).round() as i32);
+        let tile_of = |p: (i32, i32)| css_to_screen(fx + p.0 as f64 / mw * fw, fy + p.1 as f64 / mh * fh);
+        let centre = css_to_screen(sx + sw / 2.0, sy + sh / 2.0);
+        // a point in the counting window's client area, away from its edges
+        let tr = rect_of(target);
+        let p = (tr.left + 190, tr.top + 135);
+
+        aim_direct(centre);
+        click_at(centre.0, centre.1);
+        thread::sleep(Duration::from_millis(700));
+        if exstyle(lab) & WS_EX_TOPMOST.0 == 0 {
+            panic!("the drive did not come on");
+        }
+
+        let tp = tile_of(p);
+        let took_thread = start_took();
+        let took_from = took_len();
+        let mut hits = String::new();
+        let mut misses = Vec::new();
+        for i in 0..30 {
+            aim_direct(tp);
+            aim_through(lab, p);
+            let d0 = W32_DOWNS.load(Ordering::SeqCst);
+            let u0 = W32_UPS.load(Ordering::SeqCst);
+            let n_before = took_len();
+            click_at(tp.0, tp.1);
+            thread::sleep(Duration::from_millis(350));
+            let (d1, u1) = (W32_DOWNS.load(Ordering::SeqCst), W32_UPS.load(Ordering::SeqCst));
+            let landed = d1 > d0;
+            hits.push(if landed { 'x' } else { '.' });
+            if !landed {
+                misses.push(format!("   miss #{}: window got down +{}, up +{}", i + 1, d1 - d0, u1 - u0));
+                for line in took_since(n_before) {
+                    misses.push(format!("      {line}"));
+                }
+            }
+            thread::sleep(Duration::from_millis(350));
+        }
+        thread::sleep(Duration::from_millis(300));
+        stop_took(took_thread);
+        let fwd = TOOK.lock().unwrap().iter().skip(took_from).filter(|t| t.forwarded).count();
+        println!(
+            "\nWIN32 target: 30 clicks through the tile at {tp:?} → desktop {p:?}: {hits} — the window counted {} downs, {} ups; the recording hook saw {fwd} forwarded presses",
+            W32_DOWNS.load(Ordering::SeqCst),
+            W32_UPS.load(Ordering::SeqCst)
+        );
+        for m in &misses {
+            println!("{m}");
+        }
+
+        // end the drive the way a person does: the empty wall beside the tile
+        let wcss = (web.right - web.left) as f64 / dpr;
+        let (ox, oy) = (sx + sw + 90.0, sy + sh / 2.0);
+        if ox < wcss - 20.0 {
+            let outside = css_to_screen(ox, oy);
+            aim_direct(outside);
+            click_at(outside.0, outside.1);
+            thread::sleep(Duration::from_millis(600));
+        }
+        println!("drive ended: lab TOPMOST now {}", exstyle(lab) & WS_EX_TOPMOST.0 != 0);
+        let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
+        drop(guard);
     }
 
     /// The window under a point, skipping the lab: walk the z-order below it
