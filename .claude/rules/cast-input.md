@@ -98,7 +98,52 @@ taking Win, Alt+Tab, Alt+F4 and Ctrl+Esc off this machine, and only while Volery
   not inside the tile. Accepted 2026-10-31 for ordinary apps.
 - **The cursor blinks at the target for each click** — away from the tile ~24 ms median
   (16–46), a few frames at 240 Hz. Cosmetic, accepted the same day.
-- **Drag-select is unreliable**: it selected in two runs and not in the last.
+- **Chromium drops about one forwarded click in six** — every browser, and every app built on
+  one (VS Code, Slack, Teams). Shipped on 2026-11-02 with a caveat the tile shows while driving
+  this machine (`cast.ts::drivingCaveat`), on Lyss's call, rather than held back. Six in-app runs
+  of 30 clicks into a screen tile showing this laptop, an Edge page under it:
+
+  | run | change under test | landed | lab log |
+  |---|---|---|---|
+  | 2 | (baseline) | 25/30 | 32 confirmed, 0 gave up |
+  | 3 | wait for Volery to let go of mouse capture | 25/30 | 0 waits |
+  | 4 | click-through layered at α254, not 255 | 28/30 | 0 hidden flips |
+  | 5 | a hook naming the window each press went to | 26/30 | 30/30 to Edge's render widget |
+  | 6 | the pointer arrives 16 ms before the press | 26/30 | — |
+  | 6b | the same 30 clicks into a plain Win32 window | **30/30** | 62 confirmed |
+
+  What is ruled out, and how:
+  - **Volery closing up too early**: the mouse hook confirmed every forwarded press delivered while
+    Volery was click-through, and never gave up waiting (all runs).
+  - **Routing**: a hook reading `WindowFromPoint` as Windows processed each press found all 30,
+    misses included, taken by Edge's `Chrome_RenderWidgetHostHWND` — none by Volery, none by a
+    third window (run 5).
+  - **Mouse capture held by Volery's webview**: the wait for it never fired (run 3; reverted).
+  - **Occlusion** (a fully opaque layered Volery counted as a cover): the page never went hidden
+    across 30 clicks (runs 4–6). α254 stayed in; it is right on its own.
+  - **The pen/touch signature** Chromium filters on (`0xFF515700` under `0xFFFFFF00`): the marks
+    mask to `0x564F4C00` and cannot match; a unit test holds it.
+  - **The press racing the pointer's arrival**: no better with a frame between (run 6; reverted).
+
+  What is left: each lost press reaches the page as nothing at all — no mousedown, no mouseup —
+  and the losses are near-periodic, every 5–8 clicks (~4–5 s) in every run that recorded them.
+  The leading idea, built but **not yet measured**: after each click the cursor came back to the
+  tile with nothing moving afterwards, so Windows noticed the pointer leaving the app only at the
+  *next* real press on the tile — the instant the next forwarded press arrived. `perform` now
+  moves the cursor a pixel there and back once Volery is solid again, so the leave lands while
+  nothing else is in flight. The next in-app run (`drive-probe app <lab>`) says whether it worked;
+  if it did, `drivingCaveat` comes off. Sink item "Chromium drops ~1 in 6 clicks forwarded through
+  the tile, periodically" is where the research resumes.
+- **A release once went missing**: the plain window counted 30 presses and 29 releases, and the
+  logs could not say which. So after every forwarded click, if its button still reads down to
+  Windows and the person's own hand (the hook sees which presses were injected) is not holding
+  it, Volery sends the release (`drive::lift`, tested); `drive::lifted()` is logged beside the
+  settles and should stay 0.
+- **Drag-select works in the app** (1-21 in every in-app run); the one cross-process run where it
+  did not select is not repeated.
+- **The first click acts** (Lyss, 2026-11-02): a click on an unfocused tile turns the drive on and
+  goes through in the same gesture — the drive message reaches the host ahead of the press on the
+  same socket. See `cast.md`, Driving.
 
 ## Testing with real input on Lyss's machine
 
