@@ -145,6 +145,27 @@ impl Presses {
     }
 }
 
+/* ── a button left down, pure ──────────────────────────────────────────── */
+
+/// Whether a forwarded click left its button down and Volery must let it go.
+///
+/// Down to Windows (`logical`) and not held by the person's own hand
+/// (`physical`, from the low-level hook, which sees which presses were
+/// injected) means nothing will ever release it — and a button stuck down in
+/// Lyss's own apps is the one outcome driving her own machine cannot have.
+/// Held by her hand means it is hers, and is left alone.
+pub fn lift(logical: bool, physical: bool) -> bool {
+    logical && !physical
+}
+
+static LIFTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many releases Volery has had to send for a forwarded click whose own
+/// release never landed. Logged beside [`settles`]; it should stay 0.
+pub fn lifted() -> u64 {
+    LIFTED.load(Ordering::Relaxed)
+}
+
 /* ── the Escape hold, pure ─────────────────────────────────────────────── */
 
 /// How long Escape must be held to let go of a screen — Lyss's number, the
@@ -552,7 +573,7 @@ mod os {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
         MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
@@ -784,9 +805,57 @@ mod os {
         super::CONFIRMED.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// The person's own buttons — left, right, middle, back, forward — as the
+    /// mouse hook last saw them, injected presses excluded.
+    static HELD_BY_HAND: [std::sync::atomic::AtomicBool; 5] = [
+        std::sync::atomic::AtomicBool::new(false),
+        std::sync::atomic::AtomicBool::new(false),
+        std::sync::atomic::AtomicBool::new(false),
+        std::sync::atomic::AtomicBool::new(false),
+        std::sync::atomic::AtomicBool::new(false),
+    ];
+
+    /// After a forwarded click has been taken: if its button still reads down
+    /// and the person is not holding it, send the release it lost. Asked
+    /// because a plain window once counted 30 presses and 29 releases, and the
+    /// logs could not say whether the missing one was real.
+    fn lift_if_left(b: Button) {
+        let (vk, bit) = match b {
+            Button::Left => (0x01, 0),
+            Button::Right => (0x02, 1),
+            Button::Middle => (0x04, 2),
+            Button::Back => (0x05, 3),
+            Button::Forward => (0x06, 4),
+        };
+        // SAFETY: a key-state read.
+        let logical = (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0;
+        if super::lift(logical, HELD_BY_HAND[bit].load(Ordering::Relaxed)) {
+            send(&[press(b, true)]);
+            super::LIFTED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     unsafe extern "system" fn mouse_proc(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
         if code >= 0 {
             let m = &*(l.0 as *const MSLLHOOKSTRUCT);
+            // a press that was not injected is the person's own hand
+            if m.flags & 0x01 == 0 {
+                let x = if (m.mouseData >> 16) == 2 { 4 } else { 3 };
+                let (bit, down) = match w.0 as u32 {
+                    0x0201 => (0, true),
+                    0x0202 => (0, false),
+                    0x0204 => (1, true),
+                    0x0205 => (1, false),
+                    0x0207 => (2, true),
+                    0x0208 => (2, false),
+                    0x020B => (x, true),
+                    0x020C => (x, false),
+                    _ => (usize::MAX, false),
+                };
+                if bit < HELD_BY_HAND.len() {
+                    HELD_BY_HAND[bit].store(down, Ordering::Relaxed);
+                }
+            }
             if m.dwExtraInfo == MARK_LAST {
                 let (lock, cv) = &SEEN;
                 if let Ok(mut seen) = lock.lock() {
@@ -808,6 +877,7 @@ mod os {
                     let (last, seq) = move_back(back, v);
                     send(&[move_to(*at, v), press(*button, false), press(*button, true), last]);
                     settle(seq);
+                    lift_if_left(*button);
                 }
             }
             Gesture::Drag { button, path } => {
@@ -820,6 +890,7 @@ mod os {
                     let (last, seq) = move_back(back, v);
                     send(&[press(*button, true), last]);
                     settle(seq);
+                    lift_if_left(*button);
                 }
             }
             Gesture::Wheel { at, delta, horizontal } => {
@@ -842,6 +913,19 @@ mod os {
             restore(h, ex0);
         } else {
             close(h, ex0);
+        }
+        /* Tell the app at once that the pointer has left it. The click ended
+           with the cursor back on the tile and Volery solid again, but nothing
+           moved after that, so Windows only noticed the pointer leaving the app
+           at the *next* real press on the tile — the very moment the next
+           forwarded press arrived. Chromium then took its mouse-leave and that
+           press together and dropped about one press in six, never raising a
+           mousedown, while a plain Win32 window took 30 of 30 the same way
+           (drive-probe `app` against `win32`, 2026-11-02). A pixel there and
+           back, now, makes the leave happen while nothing else is in flight. */
+        if !matches!(g, Gesture::Wheel { .. }) {
+            let (bx, by) = back;
+            send(&[move_to((bx + 1, by), v), move_to((bx, by), v)]);
         }
     }
 
@@ -1086,6 +1170,14 @@ mod tests {
     #[test]
     fn an_escape_released_that_the_hook_never_saw_pressed_is_not_a_tap() {
         assert_eq!(EscHold::default().key(false), Esc::End);
+    }
+
+    #[test]
+    fn a_button_left_down_is_lifted_unless_the_hand_holds_it() {
+        assert!(lift(true, false), "down to Windows, nobody holding it: let it go");
+        assert!(!lift(true, true), "the person is holding it: theirs, left alone");
+        assert!(!lift(false, false), "already up: nothing to do");
+        assert!(!lift(false, true));
     }
 
     #[test]

@@ -204,7 +204,8 @@ impl Feed {
 /// as the field reading for the settle bound.
 fn log_settles() {
     let (confirmed, gave_up) = super::drive::settles();
-    log::info!("cast: drive settles so far: {confirmed} confirmed, {gave_up} gave up");
+    let lifted = super::drive::lifted();
+    log::info!("cast: drive settles so far: {confirmed} confirmed, {gave_up} gave up; {lifted} releases sent for a button left down");
 }
 
 fn volery_hwnd(app: Option<&AppHandle>) -> Result<isize, String> {
