@@ -83,10 +83,6 @@
 //!                                                        # on; `hold` waits for a person's Escape at the end
 //! cargo run --example drive-probe -- win32 <lab>         # the same 30 clicks into a plain Win32 window
 //!                                                        # counting its own presses — is the loss Chromium's?
-//! cargo run --example drive-probe -- exit <lab>          # getting out of a local drive: two clicks on
-//!                                                        # the lab, nothing forwarded, then a person's hold
-//! cargo run --example drive-probe -- hits <lab>          # what the tile's point hit-tests as while a
-//!                                                        # drive is on; no input at all
 //! ```
 //!
 //! `run` moves windows, the cursor and clicks for about forty seconds. Ask the
@@ -957,9 +953,7 @@ setInterval(show,50);show();
             "visible" => visible(lab, &dir),
             "drive" => drive(lab, &dir),
             "app" => app(lab, name, &dir, args.get(2).map(String::as_str) == Some("hold")),
-            "exit" => exit_check(lab, name),
             "win32" => app_win32(lab, name),
-            "hits" => hits(lab, &dir, args.get(2).and_then(|v| v.parse().ok()).unwrap_or(4000)),
             _ => eprintln!("unknown mode {mode}"),
         }
     }
@@ -1646,104 +1640,6 @@ setInterval(show,50);show();
 
     }
 
-    /// What the tile's point hit-tests as while a drive is on, and the lab's
-    /// style, sampled with no input at all. Asked because a guarded run found
-    /// the point hit-testing as the window *under* the lab a moment after the
-    /// drive began — the lab gone click-through to real clicks too.
-    fn hits(lab: HWND, dir: &Path, wait_ms: u64) {
-        use skein_lib::cast::drive::Drive;
-        use skein_lib::cast::Monitor;
-
-        let found = exstyle(lab);
-        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
-        if clean != found {
-            println!("the lab came in wearing ex=0x{found:08x}; scrubbed to 0x{clean:08x}");
-            set_exstyle(lab, clean);
-        }
-        let base_ex = exstyle(lab);
-        stage(&[lab]);
-        let mut guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
-        let (lx, ly, lw, lh) = (200, 120, 1300, 800);
-        place(lab, None, lx, ly, lw, lh);
-        let (edge_child, edge) = launch_edge(dir, lx + 60, ly + 60, 800, 600);
-        guard.edge = Some((edge_child, edge));
-        place(edge, None, lx + 60, ly + 60, 800, 600);
-        thread::sleep(Duration::from_millis(1500));
-        raise_under_lab(edge);
-        let lr = rect_of(lab);
-        let tile = (lr.left + (lr.right - lr.left) * 3 / 4, lr.top + (lr.bottom - lr.top) / 2);
-        let (vx, vy, vw, vh) = unsafe {
-            (
-                GetSystemMetrics(SM_XVIRTUALSCREEN),
-                GetSystemMetrics(SM_YVIRTUALSCREEN),
-                GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                GetSystemMetrics(SM_CYVIRTUALSCREEN),
-            )
-        };
-        let mon = Monitor { id: "probe".into(), name: "virtual desktop".into(), w: vw as u32, h: vh as u32, x: vx, y: vy, hz: 60, primary: true };
-
-        let read = |label: &str, t0: Instant| {
-            let r = root_at(tile.0, tile.1);
-            let ex = exstyle(lab);
-            format!(
-                "{label:>10} +{:>5.0} ms: tile point hit-tests as {} — lab ex=0x{ex:08x}{}{}{}{}",
-                ms(t0.elapsed()),
-                if r == lab { "THE LAB".to_string() } else { format!("'{}' ({})", text_of(r), class_of(r)) },
-                if ex & WS_EX_TRANSPARENT.0 != 0 { " TRANSPARENT" } else { "" },
-                if ex & 0x0800_0000 != 0 { " NOACTIVATE" } else { "" },
-                if ex & WS_EX_LAYERED.0 != 0 { " LAYERED" } else { "" },
-                if ex & WS_EX_TOPMOST.0 != 0 { " TOPMOST" } else { "" },
-            )
-        };
-        let t0 = Instant::now();
-        println!("{}", read("before", t0));
-        let heard = Arc::new(Heard(std::sync::Mutex::new(Vec::new())));
-        let d = Drive::start(lab.0 as isize, &mon, heard.clone()).expect("drive starts");
-        let t0 = Instant::now();
-        let mut last = String::new();
-        while t0.elapsed() < Duration::from_millis(wait_ms) {
-            let line = read("driving", t0);
-            let key = line.split(": ").nth(1).unwrap_or("").to_string();
-            if key != last {
-                println!("{line}");
-                last = key;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        println!("{}", read("end", t0));
-
-        // one click on the tile, guarded, then watch again
-        let inner = |t0: Instant| {
-            let mut v = Vec::new();
-            for c in children(lab) {
-                v.push(format!("{}=0x{:08x}", class_of(c), exstyle(c)));
-            }
-            let deep = unsafe { windows::Win32::UI::WindowsAndMessaging::WindowFromPoint(POINT { x: tile.0, y: tile.1 }) };
-            format!("   +{:>5.0} ms deepest at the point: {} ({}); inner: {}", ms(t0.elapsed()), class_of(deep), text_of(deep), v.join(" "))
-        };
-        println!("{}", inner(t0));
-        click_at(tile.0, tile.1);
-        let t1 = Instant::now();
-        let mut last = String::new();
-        while t1.elapsed() < Duration::from_millis(4000) {
-            let line = read("clicked", t1);
-            let key = line.split(": ").nth(1).unwrap_or("").to_string();
-            if key != last {
-                println!("{line}");
-                println!("{}", inner(t1));
-                last = key;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        println!("{}", read("end", t1));
-        drop(d);
-        thread::sleep(Duration::from_millis(200));
-        println!("{}", read("dropped", t1));
-        drop(guard);
-        thread::sleep(Duration::from_millis(1500));
-        println!("{}", read("restored", t1));
-    }
-
     /// The lab's control surface: `%APPDATA%\dev.skein.lab.<name>\control.json`.
     struct Ctl {
         base: String,
@@ -1841,18 +1737,22 @@ setInterval(show,50);show();
         let (ox, oy, scale) = page_origin(edge);
         let at = |cx: f64, cy: f64| (ox + (cx * scale) as i32, oy + (cy * scale) as i32);
         let (button, field) = (at(120.0, 60.0), at(180.0, 140.0));
-        let centre = css_to_screen(sx + sw / 2.0, sy + sh / 2.0);
         let driven = |ctl: &Ctl| -> serde_json::Value {
             ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }))["showing"]["driven"].clone()
         };
 
-        /* 1. The first click on the tile takes focus, and the drive comes on. */
-        aim_direct(centre);
-        click_at(centre.0, centre.1);
+        /* 1. The first click on an unfocused tile acts: the drive comes on and
+              the press goes through, in one gesture (Lyss, 2026-11-02). */
+        let tb = tile_of(button);
+        aim_direct(tb);
+        aim_through(lab, button);
+        let c_first = settle_page(edge).c;
+        click_at(tb.0, tb.1);
         thread::sleep(Duration::from_millis(700));
         let lex = exstyle(lab);
         println!(
-            "\n1. focus click: host says driven={}; lab TOPMOST {}, TRANSPARENT {}, NOACTIVATE {}",
+            "\n1. first click on the unfocused tile: it went through {}; host says driven={}; lab TOPMOST {}, TRANSPARENT {}, NOACTIVATE {}",
+            settle_page(edge).c > c_first,
             driven(&ctl),
             lex & WS_EX_TOPMOST.0 != 0,
             lex & WS_EX_TRANSPARENT.0 != 0,
@@ -1864,7 +1764,6 @@ setInterval(show,50);show();
         bail_on_escape!();
 
         /* 2. Clicks into the picture, at the test button. */
-        let tb = tile_of(button);
         let p0 = settle_page(edge);
         let mut hits = String::new();
         let mut misses = Vec::new();
@@ -2036,10 +1935,8 @@ setInterval(show,50);show();
             return;
         }
 
-        /* 7. Set up for the Escape hold: drive on again, the test field in front. */
-        aim_direct(centre);
-        click_at(centre.0, centre.1);
-        thread::sleep(Duration::from_millis(700));
+        /* 7. Set up for the Escape hold: one click on the field turns the drive
+              on again and puts the test field in front. */
         aim_direct(tf);
         aim_through(lab, field);
         click_at(tf.0, tf.1);
@@ -2077,134 +1974,6 @@ setInterval(show,50);show();
             lex & WS_EX_TRANSPARENT.0 != 0,
             unsafe { GetForegroundWindow() } == lab
         );
-        let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
-        drop(guard);
-    }
-
-    /// Getting out of a local drive, in the real app, with nothing forwarded:
-    /// one click to focus the tile (refused unless the tile is unfocused, so it
-    /// can only focus), one on the empty wall beside it (refused unless it is
-    /// well outside the picture), then a person's Escape hold. The lab is made
-    /// the foreground first, so a tap that is replayed lands on the lab.
-    fn exit_check(lab: HWND, lab_name: &str) {
-        let found = exstyle(lab);
-        let clean = found & !(WS_EX_TRANSPARENT.0 | 0x0800_0000 | WS_EX_LAYERED.0);
-        if clean != found {
-            println!("the lab came in wearing ex=0x{found:08x}; scrubbed to 0x{clean:08x}");
-            set_exstyle(lab, clean);
-        }
-        let base_ex = exstyle(lab);
-        let guard = Restore { lab, ex: base_ex, rect: rect_of(lab), cursor: cursor(), edge: None, edit_frame: None };
-        let ctl = Ctl::open(lab_name);
-        stage(&[lab]);
-
-        let added = ctl.op(serde_json::json!({ "op": "widget.add", "kind": "screen", "x": 260, "y": 220 }));
-        let id = added["id"].as_str().expect("a screen widget").to_string();
-        ctl.op(serde_json::json!({ "op": "widget.update", "id": id, "w": 720, "h": 450 }));
-        let mut fit = serde_json::Value::Null;
-        for _ in 0..80 {
-            thread::sleep(Duration::from_millis(250));
-            fit = ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
-            if fit["showing"]["state"] == "live" && fit["live"] == true {
-                break;
-            }
-        }
-        let read = |ctl: &Ctl| ctl.op(serde_json::json!({ "op": "screen.fit", "id": id }));
-        let report = |label: &str, ctl: &Ctl| {
-            let f = read(ctl);
-            let ex = exstyle(lab);
-            println!(
-                "{label}: host says driven={}, stage focused {}, window focused {}; lab TOPMOST {}, TRANSPARENT {}, NOACTIVATE {}; foreground is the lab {}",
-                f["showing"]["driven"],
-                f["stageFocused"],
-                f["windowFocused"],
-                ex & WS_EX_TOPMOST.0 != 0,
-                ex & WS_EX_TRANSPARENT.0 != 0,
-                ex & 0x0800_0000 != 0,
-                unsafe { GetForegroundWindow() } == lab
-            );
-            f
-        };
-        if fit["live"] != true {
-            panic!("the tile never went live and drivable: {fit}");
-        }
-
-        let web = children(lab).into_iter().find(|&c| class_of(c) == "WRY_WEBVIEW").map(rect_of).expect("the lab's webview");
-        let dpr = fit["dpr"].as_f64().unwrap();
-        let st = &fit["stage"];
-        let (sx, sy, sw, sh) = (st["x"].as_f64().unwrap(), st["y"].as_f64().unwrap(), st["w"].as_f64().unwrap(), st["h"].as_f64().unwrap());
-        let css_to_screen = |x: f64, y: f64| (web.left + (x * dpr).round() as i32, web.top + (y * dpr).round() as i32);
-        let wcss = (web.right - web.left) as f64 / dpr;
-        let inside = |x: f64, y: f64| x >= sx - 20.0 && x <= sx + sw + 20.0 && y >= sy - 40.0 && y <= sy + sh + 20.0;
-
-        // the lab in front, so a replayed tap can only reach the lab
-        unsafe {
-            let front = GetWindowThreadProcessId(GetForegroundWindow(), None);
-            let me = GetCurrentThreadId();
-            let _ = AttachThreadInput(me, front, true);
-            let _ = SetForegroundWindow(lab);
-            let _ = AttachThreadInput(me, front, false);
-        }
-        thread::sleep(Duration::from_millis(400));
-        report("\n0. before", &ctl);
-
-        /* 1. Focus the tile: only while it is unfocused, so the press cannot be forwarded. */
-        let cx = (sx + sw / 2.0).clamp(30.0, wcss - 30.0);
-        let centre = css_to_screen(cx, sy + sh / 2.0);
-        if read(&ctl)["stageFocused"] == true {
-            panic!("the tile already has focus; a click on it would be forwarded to the desktop");
-        }
-        // a first click can be spent on the wall (selecting the widget); try
-        // again, only ever while the tile is still unfocused
-        for attempt in 1..=3 {
-            if read(&ctl)["stageFocused"] == true {
-                break;
-            }
-            aim_direct(centre);
-            click_at(centre.0, centre.1);
-            thread::sleep(Duration::from_millis(800));
-            report(&format!("1. focus click on the tile ({attempt})"), &ctl);
-        }
-        if read(&ctl)["showing"]["driven"] != true {
-            panic!("the drive never came on; nothing to get out of");
-        }
-
-        /* 2. The empty wall beside the tile. */
-        let (ox, oy) = (sx + sw + 90.0, sy + sh / 2.0);
-        if ox > wcss - 20.0 || inside(ox, oy) {
-            panic!("no empty wall to the right of the tile to click on (x {ox:.0} of {wcss:.0})");
-        }
-        let outside = css_to_screen(ox, oy);
-        aim_direct(outside);
-        click_at(outside.0, outside.1);
-        thread::sleep(Duration::from_millis(900));
-        let f = report("2. click on the wall beside it", &ctl);
-
-        /* 3. A person's Escape hold. Re-arm first if the click above ended the drive. */
-        if f["showing"]["driven"] != true {
-            if read(&ctl)["stageFocused"] == true {
-                panic!("the tile has focus without driving; not clicking it");
-            }
-            aim_direct(centre);
-            click_at(centre.0, centre.1);
-            thread::sleep(Duration::from_millis(800));
-            report("   re-armed for the hold", &ctl);
-        }
-        println!("READY_FOR_ESCAPE");
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-        let t = Instant::now();
-        let mut off = false;
-        while t.elapsed() < Duration::from_secs(240) {
-            thread::sleep(Duration::from_millis(150));
-            if exstyle(lab) & WS_EX_TOPMOST.0 == 0 {
-                off = true;
-                break;
-            }
-        }
-        thread::sleep(Duration::from_millis(800));
-        println!("3. the hold let go: {off} after {:.1} s", t.elapsed().as_secs_f64());
-        report("   then", &ctl);
         let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
         drop(guard);
     }
@@ -2446,19 +2215,21 @@ setInterval(show,50);show();
         let (fx, fy) = (sx + (sw - fw) / 2.0, sy + (sh - fh) / 2.0);
         let css_to_screen = |x: f64, y: f64| (web.left + (x * dpr).round() as i32, web.top + (y * dpr).round() as i32);
         let tile_of = |p: (i32, i32)| css_to_screen(fx + p.0 as f64 / mw * fw, fy + p.1 as f64 / mh * fh);
-        let centre = css_to_screen(sx + sw / 2.0, sy + sh / 2.0);
         // a point in the counting window's client area, away from its edges
         let tr = rect_of(target);
         let p = (tr.left + 190, tr.top + 135);
 
-        aim_direct(centre);
-        click_at(centre.0, centre.1);
+        let tp = tile_of(p);
+        // the first click on the unfocused tile turns the drive on and goes through
+        aim_direct(tp);
+        aim_through(lab, p);
+        let d_first = W32_DOWNS.load(Ordering::SeqCst);
+        click_at(tp.0, tp.1);
         thread::sleep(Duration::from_millis(700));
         if exstyle(lab) & WS_EX_TOPMOST.0 == 0 {
             panic!("the drive did not come on");
         }
-
-        let tp = tile_of(p);
+        println!("first click on the unfocused tile went through: {}", W32_DOWNS.load(Ordering::SeqCst) > d_first);
         let took_thread = start_took();
         let took_from = took_len();
         let mut hits = String::new();
