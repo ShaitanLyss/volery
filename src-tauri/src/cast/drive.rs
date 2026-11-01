@@ -1089,6 +1089,18 @@ mod tests {
     }
 
     #[test]
+    fn the_marks_never_look_like_a_pen_or_touch_press() {
+        /* Chromium ignores a mouse message whose extra info carries Windows'
+           pen/touch signature (`ui::IsMouseEventFromTouch`: masked with
+           0xFFFFFF00 it equals MI_WP_SIGNATURE, 0xFF515700). A mark that
+           matched would be a press Chromium throws away. */
+        for m in [super::super::inject::MARK, super::super::inject::MARK_LAST] {
+            assert_ne!(m & 0xFFFF_FF00, 0xFF51_5700, "mark {m:#x}");
+            assert_eq!(m >> 32, 0, "only the low 32 bits survive; {m:#x}");
+        }
+    }
+
+    #[test]
     fn the_hooks_keys_read_as_the_wires_scancodes() {
         assert_eq!(wire_scan(0x41, 0x1e, false), Some(0x1e));
         assert_eq!(wire_scan(0x26, 0x48, true), Some(0xe048)); // up arrow
