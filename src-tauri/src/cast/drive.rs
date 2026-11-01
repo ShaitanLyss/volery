@@ -686,9 +686,15 @@ mod os {
     fn open(h: isize, ex0: u32) {
         set_exstyle(h, ex0 | WS_EX_TRANSPARENT.0 | WS_EX_NOACTIVATE.0 | WS_EX_LAYERED.0);
         if ex0 & WS_EX_LAYERED.0 == 0 {
-            // SAFETY: a fully opaque layered window draws as it did.
+            /* 254, not 255: a layered window at full opacity is one Chromium
+               counts as covering the app beneath it (drive-probe `visible`:
+               0 rAF/s at 255, 239 at 254), and the misses this is under test
+               for follow a real click on Volery — a foreground change, which
+               is when Chromium recomputes occlusion. One step short of opaque
+               draws the same and is never counted as a cover. */
+            // SAFETY: an all-but-opaque layered window draws as it did.
             unsafe {
-                let _ = SetLayeredWindowAttributes(hwnd(h), COLORREF(0), 255, LWA_ALPHA);
+                let _ = SetLayeredWindowAttributes(hwnd(h), COLORREF(0), 254, LWA_ALPHA);
             }
         }
     }
