@@ -10,6 +10,7 @@ import {
   EscapeHold,
   drivableAt,
   watchingWords,
+  drivingCaveat,
   fitIn,
   isKeyframe,
   KEY_TEXT,
@@ -404,9 +405,9 @@ describe("the screen knob's options", () => {
 
 describe("whether a tile drives", () => {
   test("this machine's screen only watches until local driving is switched on", () => {
-    expect(drivableAt(null, true)).toBe(false);
+    expect(drivableAt(null, true, false)).toBe(false);
     expect(drivableAt(null, true, true)).toBe(true);
-    expect(watchingWords(null, true)).toBe("watching — driving this machine comes next");
+    expect(watchingWords(null, true, false)).toBe("watching — driving this machine comes next");
     expect(watchingWords(null, true, true)).toBeNull();
   });
 
@@ -460,5 +461,19 @@ describe("escape, tapped or held", () => {
     h.up();
     t.fire();
     expect(said).toEqual([]);
+  });
+});
+
+describe("local driving is on", () => {
+  test("this machine's own tile drives by default now", () => {
+    expect(drivableAt(null, true)).toBe(true);
+    expect(watchingWords(null, true)).toBeNull();
+  });
+});
+
+describe("driving this machine says what it cannot promise", () => {
+  test("only this machine's own tile carries the caveat", () => {
+    expect(drivingCaveat(null)).toMatch(/one time in six — click again$/);
+    expect(drivingCaveat("desk")).toBeNull();
   });
 });

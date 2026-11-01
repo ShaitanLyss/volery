@@ -676,7 +676,7 @@ export function cursorAt(
  *  and a tile that took the pointer and the keys and then did nothing with
  *  them would be a tile pretending. Turn it on in the commit that lands
  *  that wiring, and nothing else has to change. */
-export const LOCAL_DRIVE = false;
+export const LOCAL_DRIVE = true;
 
 /** Whether a tile takes the pointer and the keyboard for the machine it
  *  shows. A far screen when its knob says so; this machine's only once
@@ -691,6 +691,19 @@ export function watchingWords(host: string | null, interactive: boolean, local =
   if (drivableAt(host, interactive, local)) return null;
   if (host === null && !local) return "watching — driving this machine comes next";
   return "watching — turn on “clicks and keys reach the machine” to drive it";
+}
+
+/** The one thing driving this machine through its own tile cannot promise
+ *  yet, said while it is being done, or null. Measured 2026-11-02: every click
+ *  is handed to the right window, a plain Windows app takes 30 of 30, and
+ *  Chromium — every browser, and every app built on one — drops about one in
+ *  six without a trace (`.claude/rules/cast-input.md`). Shipped with the
+ *  caveat on Lyss's call rather than held back; a far machine is not affected,
+ *  since nothing there passes through Volery's window. */
+export function drivingCaveat(host: string | null): string | null {
+  return host === null
+    ? "a click into a browser, or an app built on one, goes missing about one time in six — click again"
+    : null;
 }
 
 /* ── the way out ───────────────────────────────────────────────────────── */

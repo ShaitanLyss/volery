@@ -17,10 +17,13 @@
    * **Escape goes to the machine too** — a remote desktop whose Escape belonged
    * to the wall is one you cannot close a dialog on — and *holding* it is the
    * way out (`cast.ts::EscapeHold`, Lyss's pick), as it is out of the
-   * immersive overlay. **The first click into a tile that does not have focus
-   * only takes focus**: on a wall you drag things across, a press that landed
-   * on somebody's desktop because it started a few pixels too far right is a
-   * click nobody meant.
+   * immersive overlay. **The first click acts** (Lyss, 2026-11-02: "I can
+   * click in the different tiles and it works out of the blue"): it takes
+   * focus, which turns the drive on, and goes through as a click in the same
+   * gesture. It used to only take focus, on the argument that a press starting
+   * a few pixels off a tile you meant to drag would land on somebody's desktop
+   * — the stage is `data-live`, so the wall never drags from inside it anyway,
+   * and the cost of that caution was every tile needing two clicks.
    *
    * The event-to-bytes half is `castinput.ts` (the input lane's); this file
    * owns the listeners, the letterbox and the focus, and hands bytes to the
@@ -40,6 +43,7 @@
     stateWords,
     statsLine,
     watchingWords,
+    drivingCaveat,
     PRIMARY,
   } from "./cast";
   import { keyInput, pointerInput, releaseAll, wheelAccumulator } from "./castinput";
@@ -159,6 +163,8 @@
   /* ── driving ─────────────────────────────────────────────────────────── */
 
   let driving = $state(false);
+  /* Said only while driving this machine's own tile: see `drivingCaveat`. */
+  const caveat = $derived(driving ? drivingCaveat(parseScreen(key).host) : null);
   const wheel = wheelAccumulator();
   const live = $derived(drivable && showing?.state === "live");
 
@@ -224,12 +230,11 @@
       return;
     }
     if (!live) return;
-    if (document.activeElement !== el) {
-      /* Focus only: see the note at the top. */
-      el.focus();
-      e.preventDefault();
-      return;
-    }
+    /* The first click acts (see the note at the top): focusing runs `begin`
+       synchronously, so the drive message is posted ahead of this press and
+       the host has a drive to hand it to by the time it arrives. */
+    if (document.activeElement !== el) el.focus();
+    if (!driving) return;
     const fit = fitNow();
     if (!fit) return;
     e.preventDefault();
@@ -339,6 +344,8 @@
     <span class="stats">{line}</span>
     {#if watching}
       <span class="watching" title={watching}>watching</span>
+    {:else if caveat}
+      <span class="watching" title={caveat}>clicks can miss</span>
     {/if}
     {#if showing?.state === "ended" || showing?.state === "refused"}
       <button class="act" title="dial it again" onclick={() => casts.reconnect(sid)}>again</button>

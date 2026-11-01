@@ -82,9 +82,12 @@ same. Anything added to the holder that reads state on its way to writing some o
 
 ## Driving
 
-- **The first click into a tile that does not have focus only takes focus.** On a wall you drag
-  things across, a press that lands on somebody's desktop because it started a few pixels to the
-  right is a click nobody meant.
+- **The first click acts** (Lyss, 2026-11-02: click into any tile and it works, no click to focus
+  first). It takes focus, which turns the drive on, and goes through as a click in the same
+  gesture: `begin` runs inside `focus()`, so the drive message is posted to the worker, and sent on
+  the socket, ahead of the press. It used to only take focus, against a press that started a few
+  pixels off a tile you meant to drag; the stage is `data-live`, so the wall never drags from
+  inside it, and that caution cost every tile a second click.
 - **Escape is the machine's, and holding it is the way out** — Lyss's pick on 2026-10-31, over a
   three-modifier chord and an RDP-style top bar (asked with pictures). `cast.ts::EscapeHold`: nothing
   is sent at keydown; a release inside `HOLD_MS` sends the tap whole, a hold leaves without the
