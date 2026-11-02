@@ -1445,7 +1445,7 @@ impl Link {
             /* The far wall's allowance is not this one's, so a card asked
                for from there is admitted against *this* wall's accounts —
                the ones it will spend — by the rule a local spawn meets. */
-            queued: crate::admit::queued(&self.app, None),
+            queued: crate::admit::queued(&self.app, None, None),
             worktree: group.as_deref().map(crate::worktree::group_branch),
         };
         let Some(key) = group else {

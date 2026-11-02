@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   blockersFor,
   bypassNote,
+  covers,
   putOnBlockedNote,
   putOnNote,
   sayBlocked,
@@ -27,7 +28,7 @@ import { waterfall } from "./waterfall.svelte";
 import { freshening } from "./freshening.svelte";
 import { currentCli, runRow, staleCards, type Run as FreshRun, type Stale } from "./freshen";
 import { purse } from "./purse.svelte";
-import { allowanceFacts, sameFacts, type AllowanceFacts, type Queued } from "./admit";
+import { allowanceFacts, facetOf, RELEASE_GAP_MS, sameFacts, type AllowanceFacts, type Looked, type Queued } from "./admit";
 import { wallHold } from "./wallhold.svelte";
 import { untrack } from "svelte";
 import { boost } from "./boost.svelte";
@@ -886,7 +887,7 @@ export class Skein {
     this.#lapseHeld(c);
     this.#heal(c);
     this.#nudge(c);
-    this.#drain(c);
+    this.#drain(c, event?.type === "result");
     this.#settleRepair(c);
   }
 
@@ -1197,8 +1198,11 @@ export class Skein {
          Then the answer goes back, and it has to go back exactly once
          (`Fleet::opened` / `failed`): until it does, the ask counts against
          this wall's bound and the asking card is parked waiting. Opened means
-         the card is on the wall *and* its brief has been handed to it, since
-         `openSpawned` sends before it returns. `#openIn` reports a failure by
+         the card is on the wall and its brief is in its hands — sent, since
+         `openSpawned` sends before it returns, or **held** behind this wall's
+         admission when `queued` says the allowance wants running work to
+         finish first (`admit.rs`); the brief then goes by itself, and the
+         asker's receipt says it is queued. `#openIn` reports a failure by
          writing `fault` and returning nothing, so the reason is read off that —
          and only if it changed, or an unrelated error from earlier would be
          sent to another machine as the reason this card did not open. */
@@ -4139,8 +4143,39 @@ export class Skein {
   }
 
   /** Try every held card again — the timer above, and the allowance poll, both
-   *  come here, so a hold ends on whichever arrives first. */
-  async releaseHeld() {
+   *  come here, so a hold ends on whichever arrives first.
+   *
+   *  **One pass at a time.** The sweep, a reset timer, boost and a turn ending
+   *  can all call this within a second of each other, and two passes each
+   *  asking `admit_now` before either's card had started its turn would admit
+   *  two queued spawns against a window the rule had room for one in. A call
+   *  that lands during a pass is folded into one more pass after it, which is
+   *  what makes it safe to call from anywhere. */
+  releaseHeld(): Promise<void> {
+    if (this.#releaseAll) {
+      this.#releaseAgain = true;
+      return this.#releaseAll;
+    }
+    this.#releaseAll = (async () => {
+      try {
+        do {
+          this.#releaseAgain = false;
+          await this.#releasePass();
+        } while (this.#releaseAgain && !this.#gone);
+      } finally {
+        this.#releaseAll = null;
+      }
+    })();
+    return this.#releaseAll;
+  }
+
+  #releaseAll: Promise<void> | null = null;
+  #releaseAgain = false;
+  /** Rounds `#releaseCard` has sent, so a pass can tell a card it released
+   *  from one it only looked at. */
+  #releasedRounds = 0;
+
+  async #releasePass() {
     if (this.#gone) return;
     /* A fresh reading before deciding. The whole reason a card is held is that
        an allowance was full, and releasing against a three-minute-old figure is
@@ -4149,8 +4184,19 @@ export class Skein {
     await waterfall.poll();
     /* And Rust told what that reading admits, before a queued spawn asks it. */
     await this.#noteAllowance(true);
+    let sent = this.#releasedRounds;
     for (const conv of this.convs) {
       if (this.#gone) return;
+      if (!conv.held) continue;
+      /* Paced once something has gone: a reset frees every card held behind
+         it at once, each with a cache gone cold in the wait, and a dozen full
+         rewrites in one second is the herd the hold existed to avoid
+         (`admit.ts::RELEASE_GAP_MS`, `admit.rs` for the wakes beside it). */
+      if (this.#releasedRounds !== sent) {
+        await new Promise((r) => setTimeout(r, RELEASE_GAP_MS));
+        if (this.#gone) return;
+        sent = this.#releasedRounds;
+      }
       if (conv.held) await this.#releaseCard(conv);
     }
   }
@@ -4167,6 +4213,16 @@ export class Skein {
    *  is no allowance it could know about and nothing should wait on one. */
   async #noteAllowance(force = false): Promise<void> {
     if (this.#gone) return;
+    /* Nothing until the registry has been read, and — where there are accounts
+       — until a reading of them has arrived. Rust holds a wall that has not
+       spoken since launch (`admit::FIRST_WORD_MS`), so the wakes that came due
+       while it was shut are not handed out ahead of the allowance; a `forget`
+       sent before `list_accounts` answers, or a "ready" said of accounts
+       nobody has read yet (`standingOf` calls an unread account ready), ended
+       that hold on every launch before it had done anything (review of 0.94).
+       Silence is safe: Rust reads it as room again after ninety seconds. */
+    if (!waterfall.ready) return;
+    if (this.#managing && Object.keys(waterfall.allowances).length === 0) return;
     if (!this.#managing) {
       if (this.#notedManaging !== false) {
         this.#notedManaging = false;
@@ -4176,17 +4232,25 @@ export class Skein {
       }
       return;
     }
-    const d = route({
-      current: null,
-      home: null,
-      credits: purse.standing(),
-      ladder: (stickTo) => waterfall.next({ stickTo }),
-      state: (label) => waterfall.stateOf(label),
-    });
-    const facts = allowanceFacts(d, (label) => {
-      const account = waterfall.list.find((a) => a.label === label);
-      return account ? { account, allowance: waterfall.allowances[label] } : null;
-    });
+    /* A new card's decision, as `#openIn` makes it: nothing to stick to, or a
+       spawn's named account as `stickTo` — and once more with the caps ignored,
+       since a wake for a card bypassing them is held only by the server. */
+    const decide = (prefer: string | null, bypass = false) =>
+      route({
+        current: null,
+        home: null,
+        credits: purse.standing(),
+        ladder: () => waterfall.next({ stickTo: prefer, bypass }),
+        state: (label) => waterfall.stateOf(label, bypass),
+      });
+    const facts = allowanceFacts(
+      decide(null),
+      (label) => this.#looked(label),
+      {
+        bypass: decide(null, true),
+        asked: waterfall.list.map((a) => ({ account: a.label, decision: decide(a.label) })),
+      },
+    );
     if (!force && this.#notedManaging === true && sameFacts(this.#noted, facts)) return;
     this.#noted = facts;
     /* The same fact for the faces: a wake the wall is holding is not late. */
@@ -4196,17 +4260,41 @@ export class Skein {
     await invoke("note_allowance", {
       held: facts.held,
       until: facts.until,
+      heldBypass: facts.heldBypass,
+      untilBypass: facts.untilBypass,
       landing: facts.landing,
       spent: facts.spent,
       resetsAt: facts.resetsAt,
+      asked: facts.asked,
     }).catch(() => {});
+  }
+
+  /** One account as `admit.ts` weighs it. */
+  #looked(label: string): Looked | null {
+    const account = waterfall.list.find((a) => a.label === label);
+    if (!account) return null;
+    const allowance = waterfall.allowances[label];
+    return {
+      account,
+      allowance,
+      /* Boost on and the account's own usage credits behind it: the window
+         filling is a bill, not a wall, so nothing need finish first. */
+      credits: waterfall.overage && !!allowance?.ok && covers(allowance.overage),
+    };
   }
 
   /** What is left of a queue goes when the round ahead of it has finished its
    *  turn. Read after every event, like `#heal` and `#nudge`; `#releaseCard`
    *  owns every reason not to. */
-  #drain(conv: Conversation) {
+  #drain(conv: Conversation, ended = false) {
     if (conv.held?.waiting === "turn") void this.#releaseCard(conv);
+    /* And a turn ending anywhere is the event a queued spawn waits on —
+       "the cards already working finish" — so it is asked then rather than at
+       the sweep's next minute. `releaseHeld` is one pass at a time and Rust's
+       floor makes the poll in it cheap. */
+    if (ended && this.convs.some((c) => c.held?.waiting === "admission")) {
+      void this.releaseHeld();
+    }
   }
 
   /** Send the next round of what a card is holding, if anything will take it.
@@ -4231,7 +4319,15 @@ export class Skein {
          `releaseHeld` has just noted a fresh reading, so this is asked of the
          wall as it is. A failed ask keeps it queued — the reset timer and the
          next sweep ask again. */
-      const still = await invoke<Queued | null>("admit_now").catch(() => conv.held?.waiting === "admission" ? { why: conv.held.why, until: conv.held.until } : null);
+      /* Weighed where the release will really put it: `#decide` is the decision
+         the send makes — the card's own account, its bypass of your caps, and
+         boost's credits all in it — so Rust is handed that landing rather than
+         re-deriving it from a summary made for a card with no bypass. With no
+         accounts managed there is nothing to hand, and Rust reads nothing. */
+      const facet = this.#managing ? facetOf(this.#decide(conv), (label) => this.#looked(label)) : null;
+      const still = await invoke<Queued | null>("admit_now", { id: conv.id, facet }).catch(() =>
+        conv.held?.waiting === "admission" ? { why: conv.held.why, until: conv.held.until } : null,
+      );
       if (!conv.held || conv.held.waiting !== "admission") return;
       if (still) {
         if (still.why !== conv.held.why || still.until !== conv.held.until) {
@@ -4343,6 +4439,7 @@ export class Skein {
       const { content, echo } = composeRound(
         whole.map((p) => ({ text: p.item.text, pictures: p.pictures })),
       );
+      this.#releasedRounds += 1;
       /* The turn `echoHeld` gave back is taken again here rather than at the
          `echo` that never happens on this path — the lines were drawn when you
          typed them, minutes or hours ago, and only the sending is new. */

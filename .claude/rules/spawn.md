@@ -380,10 +380,24 @@ other, twice in a day. All of them then paid a cold full-context cache rewrite t
 reset. With the bounds in this file switched off, nothing between a coordinator and the window
 was reading the window.
 
-**The rule, and it is Lyss's:** a new card **queues** when the account it would land on is
-past **85%** of its ceiling (`admit::CEILING`) **and some other card on the wall is mid-turn**.
-Otherwise it starts. Running work finishes before new work starts. That is what stops a
-window ending with N half-done contexts that all re-pay their cache writes at the same reset.
+**The rule, and it is Lyss's:** a new card **queues** when the **five-hour window** of the
+account it would land on is past **85%** of its ceiling (`admit::CEILING`) **and some other card
+is mid-turn on that same account**. Otherwise it starts. Running work finishes before new work
+starts. That is what stops a window ending with N half-done contexts that all re-pay their cache
+writes at the same reset.
+
+**Which window, and whose work, is the half the first cut got wrong** (review of 0.94, findings
+2 and 3). The number was chosen against the five hours — "roughly 45 minutes of a busy wall's
+spend" — and the first cut read the account's *fullest* window, so a week at 86% or the Opus
+week full under a Haiku lane queued a fan-out for days. It counted every mid-turn card on the
+wall, so cards on other accounts, whose spending gives this window nothing back, held a spawn
+up. And at release it excluded nobody, so a parent holding its turn open for its queued child (a
+Monitor loop, a parked question, a poll) blocked that child until the window reset: a deadlock
+nothing on the wall could see. Now `nearness` reads the `session` group alone, `admit::queued`
+counts mid-turn cards by their `account_label` against the landing account, and the card's
+whole ancestry (`lineage_up` over `spawned`) is left out — at the spawn and at every release
+alike. A week that is genuinely spent is not a nearness question at all: `blockersFor` blocks
+the account and the ladder lands somewhere else.
 
 - **The front end says the outcome; Rust holds the rule.** Which account a new card would land
   on is `credits.ts::route` over `accounts.ts::choose`. Caps, tiers, refusals heard on the
@@ -394,13 +408,21 @@ window ending with N half-done contexts that all re-pay their cache writes at th
   `note_allowance`, `quit::note_busy`'s shape: every minute on the hold sweep, on a rate-limit
   event, on a refusal and on `accounts:changed`. `admit::verdict` is the only place 85% is
   written, and `test/admit.test.ts` holds that the TypeScript never names it.
+- **And the same summary for a card asked onto each account** (`asked`). A spawn naming an
+  `account` lands there while it has room (`stickTo`), so that is the account its admission is
+  weighed on — not wherever a card with no preference would go. At release the queued card is
+  weighed on the account it opened on, which is where the waterfall keeps it. The note also
+  carries the decision with your caps ignored (`heldBypass`), for the held wakes below.
 - **A reserve with room means nothing queues.** The landing account is the one the ladder would
   actually use, so a spent tier 1 with tier 2 free lands on tier 2 and is admitted. Credits
   admit everything: boost is a decision already made to keep work moving with money, and a
-  queue would overrule it.
-- **The caller does not count as working.** It is mid-turn by definition, since it is making
-  the call. With nothing else working, a nearly spent window admits the card. Nobody is left to
-  finish first, and holding it would only wait for a reset that nothing is spending towards.
+  queue would overrule it. That includes an account's **own usage credits** with boost on
+  (`covers(overage)`): its window filling is then a bill rather than a wall.
+- **The card's ancestry does not count as working.** The caller is mid-turn by definition at
+  the spawn, since it is making the call, and very often still mid-turn at release, waiting on
+  this card. With nothing else working on the landing account, a nearly spent window admits the
+  card. Nobody is left to finish first, and holding it would only wait for a reset that nothing
+  is spending towards.
 - **The card opens anyway, with its brief held** (Lyss's choice over a hidden queue).
   `SpawnAsked.queued` carries `{why, until}` and `openSpawned` holds the brief through the
   ordinary `#hold` instead of sending it: the line drawn held, the reason on the face,
@@ -409,16 +431,28 @@ window ending with N half-done contexts that all re-pay their cache writes at th
   writes), since `held_why` is stored and `waiting` is not.
 - **It is let go by Rust's say-so, not the waterfall's.** By every reading the account still
   has room, so `#releaseCard` would release it at once. An admission hold instead asks
-  `admit_now` (off the main thread, since it takes the supervisor's lock) after `releaseHeld`
-  has noted a fresh reading. Admitted, it becomes an ordinary hold, and the waterfall decides
-  where it runs. The ways out are the reset timer (`until`), the minute's sweep, and a card
-  finishing.
+  `admit_now(id, facet)` (off the main thread, since it takes the supervisor's lock) after
+  `releaseHeld` has noted a fresh reading. The facet is the front end's own `#decide` for the
+  card — its account, its bypass of your caps and boost's credits all in it — so the card is
+  weighed where the release will really put it rather than on a summary made for a card with
+  none of those. Admitted, it becomes an ordinary hold, and the
+  waterfall decides where it runs. The ways out are the reset timer (`until`), the minute's
+  sweep, and **any card's turn ending** — `#drain` asks `releaseHeld` on every `result` while an
+  admission hold stands, which is the event "the cards already working finish" is waiting on.
+- **`releaseHeld` is one pass at a time, and paced.** The sweep, a reset timer, boost and a turn
+  ending can all call it within a second; two passes each asking `admit_now` before either's
+  card had opened its turn would admit two cards against room for one. A call during a pass is
+  folded into one more pass after it. And once a pass has released a card, the next waits
+  `RELEASE_GAP_MS` (3s, the same number Rust paces wakes and notices by): a reset frees every
+  held card at once, each with a cache gone cold, and a dozen full rewrites in one second is the
+  herd the hold existed to avoid.
 - **The receipt says it, and says what not to do.** "**It is queued, not started**: …. Do not
   open more lanes to make up for it." A parent that read a quiet child as a slow one would do
   exactly the wrong thing.
 - **Across the flyway the card is admitted where it runs.** The far wall's `link.rs` asks
   `admit::queued` against *its* accounts, the ones the card will spend, and `flyway:spawn`
-  carries the verdict. The asker's receipt does not yet say "queued". The digest carries a
+  carries the verdict — with no ancestry to leave out, since the asking card is on another
+  wall. The asker's receipt does not yet say "queued". The digest carries a
   queued card as held for allowance with its own words, so a wall from before this reads it
   unchanged (`gist.ts`).
 - **A reading too old to trust admits everything.** `STALE_MS` is five minutes against a
@@ -758,6 +792,20 @@ and two minutes later the stop notice is another one, about the same news.
   `spawn::reported`). It is noted *before* the delivery, because the turn making the call
   may close the instant the receipt is read, and the settle has to find it already there.
   Queued into a dormant parent's inbox counts too: it is still the report.
+- **Only if it was addressed, and only if it was the last thing done** (review of 0.94,
+  finding 1). A `project` broadcast reaches the parent too and is news for everybody, so it is
+  not a report. A send followed by more work — "starting on the decoder", then five minutes of
+  edits and builds — is a progress ping, and folding the stop after it is the parent at rest
+  never hearing: `spawn::watch`, on the stdout reader thread, takes the report back at the next
+  assistant message calling any tool that is not bookkeeping (`spawn::BOOKKEEPING`: `wisp`,
+  `post`, `unpost`, `drop`, `notice`, `send`, the timeline, `TodoWrite` and the task tools,
+  `ToolSearch`). An allowlist, because the prefix `mcp__skein__` also covers `ask_user`,
+  `server` and `remove`, which are work, and leaves out `TodoWrite`, which is not. And a turn whose `result` is an error (a
+  limit, an overload, a stop) is never folded, whatever it said: it was cut short of whatever it
+  meant to do after saying so. The suggested backstop — any fold the parent has not been handed
+  within two minutes becomes an ordinary notice — was weighed and not built: after a genuine
+  final report the parent is handed nothing else for exactly that long, so it would bring back
+  every second turn sink `c334ee2d` measured.
 - **A report speaks for the turn it was made in and no longer.** `stirring` clears it when a
   turn opens, and `REPORT_FRESH_MS` (ten minutes) bounds it from the other side. That bound is
   what keeps the case the notice exists for: a lane that sent "starting" at the top of an
@@ -769,10 +817,13 @@ and two minutes later the stop notice is another one, about the same news.
   through `do_send`, a message drained from its inbox, or a stop notice for a silent sibling.
   `folded_for` adds one line under it: `(also, from the wall: "x" has stopped since it reported
   to you; 2 of your 5 are still working. Nothing to answer.)`. The fraction is still the
-  point: it is the number the parent would otherwise call `list` for. It peeks and
-  `fold_spent` takes the entries only once a live delivery lands, so a message that went to an
+  point: it is the number the parent would otherwise call `list` for. It **takes** the entries
+  under the brood's lock, so two reports landing in the same moment cannot both carry the line,
+  and a delivery that did not land hands them back (`fold_back`), so a message that went to an
   inbox loses nothing. It is verified against the wall at that moment, like `notice`, and an
-  entry older than `FOLD_KEEP_MS` (six hours) is history, which `list` answers better.
+  entry older than `FOLD_KEEP_MS` (six hours) is history, which `list` answers better. `prune`,
+  on the sweep's tick, lets go of reports, folds and floors nothing needs any more — including a
+  report from a child closed without taking another turn, which nothing else ever cleared.
 - **Nothing else changed.** The silent child still gets the grace, the floor, coalescing and
   the verification pass, and the envelope is word for word what it was. The success criterion
   is that on a fan-out where children report, the parent takes about zero zero-tool turns
@@ -785,9 +836,13 @@ and two minutes later the stop notice is another one, about the same news.
 
 ### A stop notice waits while every account is spent
 
-`sweep` returns before taking anything when `admit::wall_held` says every account (and
-credits, with boost on) is spent. The pending settles stay due and go as one batch once the
-wall has room: held, never dropped. A notice delivered into a spent wall is a turn that never
+`sweep` leaves a parent's settles in the map when `admit::held_for` says every account (and
+credits, with boost on) is spent — asked per parent, since a parent bypassing your caps is held
+only by the server's ceiling. They stay due and go as one batch once the wall has room: held,
+never dropped. A parent bypassing your caps is held only by the server's ceiling. And one parent
+is handed its notice per tick of the waker (five seconds): a reset frees every parent at once,
+each with a cache gone cold. Paced by the tick rather than by sleeping, because a sleep between
+the verification pass and the delivery would send a reading that had moved. A notice delivered into a spent wall is a turn that never
 reaches a model, and the coordinator measured above got seventeen of those on 2026-10-30.
 `admit.rs` reads silence from the webview as room, so a wall that has stopped noting
 cannot strand a notice.

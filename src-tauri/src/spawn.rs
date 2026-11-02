@@ -2118,9 +2118,14 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
 
     /* Asked after the store lock is down: `queued` takes the supervisor's to
        count who is working, and holding both is an ordering somebody else will
-       one day take the other way round. The caller is mid-turn by definition —
-       it is making this call — so it is not a card the new one waits behind. */
-    let queued = crate::admit::queued(app, Some(caller));
+       one day take the other way round. Asked about the new card, whose
+       `spawned` row is already written, so the caller and everything above it
+       are left out of the count — the caller is mid-turn by definition, since
+       it is making this call, and the same rule has to hold again when the card
+       is asked at release (`admit_now`), where the caller is very likely still
+       mid-turn *waiting on this card*. Weighed on the account it was asked
+       onto, where it lands while that has room. */
+    let queued = crate::admit::queued(app, Some(&id), account.as_deref());
 
     let _ = app.emit(
         "spawn:asked",
@@ -2643,6 +2648,14 @@ struct Brood {
     /// was not handed a turn for them; the news rides with the next thing it is
     /// handed (`folded_for`).
     folded: std::collections::HashMap<String, Vec<(String, i64)>>,
+    /// Cards whose last `result` was an error — a limit, an overload, a turn
+    /// stopped. Written by `watch` on the reader thread a moment before the same
+    /// event closes the turn, read and cleared by `settling`.
+    erred: std::collections::HashSet<String>,
+    /// child id → when it last opened a turn, so a fold taken for a delivery
+    /// that then failed is not handed back about a child that has worked since
+    /// (`fold_back`).
+    stirred: std::collections::HashMap<String, i64>,
 }
 
 static BROOD: std::sync::OnceLock<std::sync::Mutex<Brood>> = std::sync::OnceLock::new();
@@ -2660,6 +2673,7 @@ pub fn stirring(id: &str) {
     if let Ok(mut b) = brood().lock() {
         b.pending.remove(id);
         b.reported.remove(id);
+        b.stirred.insert(id.to_string(), crate::store::now());
         /* Working again, so not stopped: a fold naming it would be stale news
            by the time it rode anywhere. */
         for v in b.folded.values_mut() {
@@ -2668,8 +2682,9 @@ pub fn stirring(id: &str) {
     }
 }
 
-/// A card wrote to the card that opened it. Called from `relay::do_send` once
-/// the store has said the recipient is this card's spawner.
+/// A card wrote to the card that opened it, by name rather than in a broadcast.
+/// Called from `relay::do_send` once the store has said the recipient is this
+/// card's spawner.
 ///
 /// **This is the whole of sink c334ee2d.** A child that reports and then stops
 /// used to cost its parent two turns: one for the report, and one two minutes
@@ -2687,6 +2702,86 @@ pub fn reported(child: &str) {
 /// Did the turn that just closed carry its own report? Pure, for the test.
 pub(crate) fn reported_this_turn(reported_at: Option<i64>, now: i64) -> bool {
     reported_at.is_some_and(|t| now.saturating_sub(t) <= REPORT_FRESH_MS)
+}
+
+/// What the reader thread sees that decides whether a message to the parent
+/// was the *report* of a turn or only something said along the way.
+///
+/// **A report is the turn's last piece of work.** A lane that sends "starting
+/// on the decoder" and then edits and builds for five minutes has not reported
+/// — its parent is waiting for the stop, and folding it away is the parent
+/// never hearing (the review of 0.94, finding 1). So any tool call after the
+/// send that is not bookkeeping ([`BOOKKEEPING`]) takes the report back. And a turn that ends in an error is
+/// never a report's turn: a limit, an overload or a stop cut it short of
+/// whatever it was going to do after saying so, which is exactly the turn the
+/// parent should be told stopped.
+///
+/// Called for every event, so it does nothing at all but a type test unless
+/// the event is an `assistant` message holding a tool call or a `result`.
+pub fn watch(id: &str, event: &serde_json::Value) {
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("assistant") => {
+            if works(event) {
+                if let Ok(mut b) = brood().lock() {
+                    b.reported.remove(id);
+                }
+            }
+        }
+        Some("result") => {
+            let erred = event.get("is_error").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            if let Ok(mut b) = brood().lock() {
+                if erred {
+                    b.erred.insert(id.to_string());
+                } else {
+                    b.erred.remove(id);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The tools a lane reaches for *after* its report without that being more
+/// work: saying it on the wall (`wisp`, `post`, `unpost`, `drop`, `notice`,
+/// another `send`), ticking its plan off (the timeline, `TodoWrite` and the
+/// task list), and `ToolSearch`, which a deferred one of those needs first.
+/// An allowlist rather than "anything `mcp__skein__`", because that prefix also
+/// covers `ask_user`, `server` and `remove` — a ping, a question, an answer and
+/// a stop would fold the stop away — while `TodoWrite` and `ToolSearch` would
+/// count as work and cost the parent the turn a report saves.
+pub(crate) const BOOKKEEPING: &[&str] = &[
+    "mcp__skein__wisp",
+    "mcp__skein__post",
+    "mcp__skein__unpost",
+    "mcp__skein__drop",
+    "mcp__skein__notice",
+    "mcp__skein__send",
+    "mcp__skein__done",
+    "mcp__skein__timeline",
+    "mcp__skein__timeline_set",
+    "mcp__skein__timeline_mark",
+    "mcp__skein__timeline_complete",
+    "TodoWrite",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
+    "TaskGet",
+    "ToolSearch",
+];
+
+/// Does this assistant message call a tool that is work rather than
+/// bookkeeping? Pure, for the test.
+pub(crate) fn works(event: &serde_json::Value) -> bool {
+    let Some(blocks) = event.pointer("/message/content").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    blocks.iter().any(|b| {
+        b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
+            && !b
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|n| BOOKKEEPING.contains(&n))
+    })
 }
 
 /// Is a report about a card this one opened on its way to it?
@@ -2713,7 +2808,14 @@ pub fn settling(app: &AppHandle, id: &str, replied_to: Option<&str>) {
         return;
     };
     let now = crate::store::now();
-    let reported = reported_this_turn(brood().lock().ok().and_then(|b| b.reported.get(id).copied()), now);
+    /* A turn that ended in an error is never folded, whatever it said on the
+       way (`watch`), and the mark is spent here either way so it cannot outlive
+       the turn it was about. */
+    let (reported_at, erred) = brood()
+        .lock()
+        .map(|mut b| (b.reported.get(id).copied(), b.erred.remove(id)))
+        .unwrap_or((None, false));
+    let reported = !erred && reported_this_turn(reported_at, now);
     let parent_id = {
         let Ok(conn) = store.0.lock() else { return };
         let parent = crate::store::stop_to_arm(&conn, id, replied_to);
@@ -2745,25 +2847,26 @@ pub fn settling(app: &AppHandle, id: &str, replied_to: Option<&str>) {
 
 /// The stops `parent` was not handed a turn for, said as a line to put under
 /// the next thing it is handed — or `None` if there is nothing to say by now.
-/// Peeks: [`fold_spent`] takes them once the delivery has actually landed, so a
-/// message that went to an inbox instead does not lose them.
+///
+/// **Takes them**, under the brood's lock, so two deliveries racing to one
+/// parent cannot both carry the same line (two cards' reports landing in the
+/// same moment were exactly that). A delivery that did not land — the parent
+/// was dormant and the message went to its inbox — hands them back with
+/// [`fold_back`], so nothing is lost.
 ///
 /// Verified against the wall as it is *now*, the rule `notice` follows: a child
 /// closed since, or speaking again, drops out.
-pub fn folded_for(app: &AppHandle, parent: &str) -> Option<(String, Vec<String>)> {
+pub fn folded_for(app: &AppHandle, parent: &str) -> Option<(String, Folded)> {
     let now = crate::store::now();
-    let ids: Vec<String> = {
-        let b = brood().lock().ok()?;
-        b.folded
-            .get(parent)?
-            .iter()
-            .filter(|(_, at)| now.saturating_sub(*at) <= FOLD_KEEP_MS)
-            .map(|(c, _)| c.clone())
-            .collect()
+    let taken: Folded = {
+        let mut b = brood().lock().ok()?;
+        let v = b.folded.remove(parent)?;
+        v.into_iter().filter(|(_, at)| now.saturating_sub(*at) <= FOLD_KEEP_MS).collect()
     };
-    if ids.is_empty() {
+    if taken.is_empty() {
         return None;
     }
+    let ids: Vec<String> = taken.iter().map(|(c, _)| c.clone()).collect();
     let store = app.try_state::<Store>()?;
     let sup = app.state::<crate::supervisor::Supervisor>();
     let (kin, titles) = {
@@ -2780,26 +2883,41 @@ pub fn folded_for(app: &AppHandle, parent: &str) -> Option<(String, Vec<String>)
             .collect();
         (kin, titles)
     };
-    let names: Vec<String> = ids
-        .iter()
-        .filter(|c| kin.contains(c) && !sup.liveness(c).1)
-        .map(|c| named(c, titles.get(c)))
+    let still: Folded = taken
+        .into_iter()
+        .filter(|(c, _)| kin.contains(c) && !sup.liveness(c).1)
         .collect();
-    if names.is_empty() {
-        fold_spent(parent, &ids);
+    if still.is_empty() {
         return None;
     }
+    let names: Vec<String> = still.iter().map(|(c, _)| named(c, titles.get(c))).collect();
     let busy = kin.iter().filter(|c| sup.liveness(c).1).count();
-    Some((folded_line(&names, busy, kin.len()), ids))
+    Some((folded_line(&names, busy, kin.len()), still))
 }
 
-/// The folded stops went out with something the parent was handed.
-pub fn fold_spent(parent: &str, ids: &[String]) {
+/// Folded stops, each with when it was folded.
+pub type Folded = Vec<(String, i64)>;
+
+/// A delivery carrying folded stops did not land, so they go back to wait for
+/// the next one — beside anything folded since, never twice, and never about a
+/// child that has opened a turn since it was folded: that stop is over, and
+/// handing it back would tell the parent about work it has not heard of.
+pub fn fold_back(parent: &str, entries: Folded) {
+    if entries.is_empty() {
+        return;
+    }
     if let Ok(mut b) = brood().lock() {
-        if let Some(v) = b.folded.get_mut(parent) {
-            v.retain(|(c, _)| !ids.contains(c));
-            if v.is_empty() {
-                b.folded.remove(parent);
+        let fresh: Folded = entries
+            .into_iter()
+            .filter(|(c, at)| b.stirred.get(c).map_or(true, |s| s < at))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        let list = b.folded.entry(parent.to_string()).or_default();
+        for (c, at) in fresh {
+            if !list.iter().any(|(x, _)| *x == c) {
+                list.push((c, at));
             }
         }
     }
@@ -2852,13 +2970,41 @@ pub(crate) fn arms_stop(told: bool, reply: bool) -> bool {
 /// identical thing at the identical interval would be a second thing to get
 /// wrong, for nothing.
 pub fn sweep(app: &AppHandle) {
-    /* Every account spent: a notice now is a turn that never reaches a model.
-       Nothing is taken out of the map, so the pending settles stay due and go
-       as one batch once the wall has room — held, not dropped (`admit.rs`). */
-    if crate::admit::wall_held(app).is_some() {
-        return;
-    }
     let now = crate::store::now();
+    prune(now);
+
+    /* Which parents have something due past their floor, before anything is
+       taken: whether one may be handed a turn is asked per parent
+       (`admit::held_for`), since a parent bypassing your caps is held only by
+       the server's ceiling, and that asks the store — which must not be done
+       under the brood's lock. Earliest due first. */
+    let mut parents: Vec<(i64, String)> = {
+        let Ok(b) = brood().lock() else { return };
+        let mut first: std::collections::HashMap<&str, i64> = Default::default();
+        for s in b.pending.values().filter(|s| s.due_at <= now) {
+            let last = b.told_at.get(&s.parent_id).copied().unwrap_or(i64::MIN);
+            if now.saturating_sub(last) < SETTLE_APART_MS {
+                continue;
+            }
+            let e = first.entry(s.parent_id.as_str()).or_insert(s.due_at);
+            *e = (*e).min(s.due_at);
+        }
+        first.into_iter().map(|(p, d)| (d, p.to_string())).collect()
+    };
+    parents.sort();
+    /* Every account spent: a notice now is a turn that never reaches a model.
+       Nothing is taken out of the map for such a parent, so its settles stay due
+       and go as one batch once the wall has room — held, not dropped.
+
+       And **one parent a tick** (`later::TICK`, five seconds, past
+       `admit::RELEASE_GAP_MS`): a reset frees every parent held behind it at
+       once, each with a cache gone cold, and handing them all a turn in the
+       same second is the herd the hold existed to avoid. The rest stay due and
+       go on the ticks after. Paced by the tick rather than a sleep, so nothing
+       waits on this thread and the verification below is never a sleep stale. */
+    let Some(open) = parents.into_iter().map(|(_, p)| p).find(|p| crate::admit::held_for(app, p).is_none()) else {
+        return;
+    };
 
     /* Taken out of the map as they are read, before anything is delivered, for
        `later::serve_due`'s reason: a notice lost is a parent that goes back to
@@ -2870,7 +3016,7 @@ pub fn sweep(app: &AppHandle) {
         let due: Vec<String> = b
             .pending
             .iter()
-            .filter(|(_, s)| s.due_at <= now)
+            .filter(|(_, s)| s.due_at <= now && s.parent_id == open)
             .map(|(id, _)| id.clone())
             .collect();
         for child in due {
@@ -2904,7 +3050,8 @@ pub fn sweep(app: &AppHandle) {
         }
         /* A dormant parent gets nothing and nothing is kept — see the note
            above. The entries are already out of the map, which is what makes
-           that true rather than merely intended. */
+           that true rather than merely intended. The folded stops are the
+           exception: they were never this notice's to drop, so they go back. */
         if crate::supervisor::deliver(app, &parent, &text).is_ok() {
             /* Written down as told, so a reply this child makes later — a sibling's
                question, after a restart or not — is not a second stop. */
@@ -2915,13 +3062,30 @@ pub fn sweep(app: &AppHandle) {
                     }
                 }
             }
-            if let Some((_, ids)) = &fold {
-                fold_spent(&parent, ids);
-            }
             if let Ok(mut b) = brood().lock() {
                 b.told_at.insert(parent, now);
             }
+        } else if let Some((_, entries)) = fold {
+            fold_back(&parent, entries);
         }
+    }
+}
+
+/// What the brood no longer needs, let go. A report older than
+/// `REPORT_FRESH_MS` speaks for no turn any more — and one from a child closed
+/// without taking another turn was otherwise kept for the life of the process;
+/// a fold past `FOLD_KEEP_MS` is history; a parent's last-told time past the
+/// floor bounds nothing. Rides the sweep's tick, so it costs one walk of maps
+/// that hold a few entries per card.
+fn prune(now: i64) {
+    if let Ok(mut b) = brood().lock() {
+        b.reported.retain(|_, at| now.saturating_sub(*at) <= REPORT_FRESH_MS);
+        b.folded.retain(|_, v| {
+            v.retain(|(_, at)| now.saturating_sub(*at) <= FOLD_KEEP_MS);
+            !v.is_empty()
+        });
+        b.told_at.retain(|_, at| now.saturating_sub(*at) < SETTLE_APART_MS);
+        b.stirred.retain(|_, at| now.saturating_sub(*at) <= FOLD_KEEP_MS);
     }
 }
 
@@ -4237,5 +4401,106 @@ mod tests {
         let text = q["questions"][0]["question"].as_str().unwrap();
         assert!(text.contains("not a card it opened"));
         assert!(text.contains("archive"));
+    }
+    /* ── the review of 0.94: what counts as a report, and what a fold owes ── */
+
+    fn tool(name: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "assistant", "message": { "content": [
+            { "type": "text", "text": "on it" },
+            { "type": "tool_use", "id": "t1", "name": name, "input": {} }
+        ] } })
+    }
+
+    #[test]
+    fn work_after_a_report_is_a_tool_call_that_is_not_the_walls() {
+        assert!(works(&tool("Bash")));
+        assert!(works(&tool("Edit")));
+        assert!(works(&tool("mcp__browser__browser_click")));
+        /* The wall's tools that are not bookkeeping: a question waits on an
+           answer, a server and a delete are work. */
+        assert!(works(&tool("mcp__skein__ask_user")));
+        assert!(works(&tool("mcp__skein__server")));
+        assert!(works(&tool("mcp__skein__remove")));
+        assert!(works(&tool("mcp__skein__wake_me")));
+        assert!(!works(&tool("mcp__skein__wisp")));
+        assert!(!works(&tool("mcp__skein__send")));
+        assert!(!works(&tool("mcp__skein__timeline_complete")));
+        assert!(!works(&tool("TodoWrite")));
+        assert!(!works(&tool("ToolSearch")));
+        assert!(!works(&serde_json::json!({ "type": "assistant", "message": { "content": [
+            { "type": "text", "text": "done" }
+        ] } })));
+        assert!(!works(&serde_json::json!({ "type": "assistant" })));
+    }
+
+    /// A lane that pings "starting" and then works has not reported: the ping
+    /// is taken back at its next tool call, so its stop is armed as a notice.
+    /// A report followed only by the wall's own bookkeeping still stands.
+    #[test]
+    fn a_ping_followed_by_work_is_taken_back() {
+        let pinged = "review-ping-child";
+        reported(pinged);
+        watch(pinged, &tool("mcp__skein__wisp"));
+        assert!(brood().lock().unwrap().reported.contains_key(pinged), "bookkeeping is not work");
+        watch(pinged, &tool("Bash"));
+        assert!(!brood().lock().unwrap().reported.contains_key(pinged), "a build after the ping");
+        /* And events that are neither cost nothing and change nothing. */
+        reported(pinged);
+        watch(pinged, &serde_json::json!({ "type": "stream_event" }));
+        watch(pinged, &serde_json::json!({ "type": "user" }));
+        assert!(brood().lock().unwrap().reported.contains_key(pinged));
+        brood().lock().unwrap().reported.remove(pinged);
+    }
+
+    /// A turn that ended in an error is marked for `settling`, and a clean one
+    /// clears the mark, so it cannot outlive the turn it was about.
+    #[test]
+    fn an_erred_turn_is_marked_for_the_settle() {
+        let c = "review-erred-child";
+        watch(c, &serde_json::json!({ "type": "result", "is_error": true, "result": "You've hit your session limit" }));
+        assert!(brood().lock().unwrap().erred.contains(c));
+        watch(c, &serde_json::json!({ "type": "result", "is_error": false }));
+        assert!(!brood().lock().unwrap().erred.contains(c));
+    }
+
+    /// A delivery that did not land hands its folds back, once each, beside
+    /// anything folded since.
+    #[test]
+    fn a_fold_handed_back_is_kept_once() {
+        let parent = "review-fold-parent";
+        let t = crate::store::now();
+        brood().lock().unwrap().folded.insert(parent.into(), vec![("later".into(), t)]);
+        fold_back(parent, vec![("early".into(), t - 1), ("later".into(), t - 2)]);
+        let got = brood().lock().unwrap().folded.remove(parent).unwrap();
+        assert_eq!(got, vec![("later".to_string(), t), ("early".to_string(), t - 1)]);
+        fold_back(parent, Vec::new());
+        assert!(!brood().lock().unwrap().folded.contains_key(parent), "nothing handed back is no entry");
+        /* A child that has opened a turn since it was folded is not handed back. */
+        stirring("review-fold-stirred");
+        fold_back(parent, vec![("review-fold-stirred".into(), t - 10_000)]);
+        assert!(!brood().lock().unwrap().folded.contains_key(parent), "it worked since");
+        brood().lock().unwrap().stirred.remove("review-fold-stirred");
+    }
+
+    /// What the brood no longer needs goes: a report past its freshness, a fold
+    /// past its keep and the parent key it leaves empty, a floor that has run.
+    #[test]
+    fn the_brood_lets_go_of_what_it_no_longer_needs() {
+        let now = 50 * 60 * 60 * 1_000;
+        {
+            let mut b = brood().lock().unwrap();
+            b.reported.insert("prune-old-report".into(), now - REPORT_FRESH_MS - 1);
+            b.reported.insert("prune-new-report".into(), now);
+            b.folded.insert("prune-parent".into(), vec![("old".into(), now - FOLD_KEEP_MS - 1)]);
+            b.folded.insert("prune-parent-2".into(), vec![("new".into(), now)]);
+            b.told_at.insert("prune-told".into(), now - SETTLE_APART_MS);
+        }
+        prune(now);
+        let mut b = brood().lock().unwrap();
+        assert!(!b.reported.contains_key("prune-old-report"));
+        assert!(b.reported.remove("prune-new-report").is_some());
+        assert!(!b.folded.contains_key("prune-parent"));
+        assert!(b.folded.remove("prune-parent-2").is_some());
+        assert!(!b.told_at.contains_key("prune-told"));
     }
 }

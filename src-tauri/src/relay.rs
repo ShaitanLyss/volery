@@ -704,8 +704,13 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
        delivery rather than after it: the turn that ends this call may close the
        instant the receipt is read, and the stop it closes on has to find the
        report already there (`spawn::settling`). Queued or delivered alike — a
-       report waiting in a dormant parent's inbox is still the report. */
-    if spawner.as_ref().is_some_and(|p| ids.contains(p)) {
+       report waiting in a dormant parent's inbox is still the report.
+
+       Addressed to the parent, never a broadcast: a `project` broadcast reaches
+       the parent too, and is news for everybody rather than a report to the one
+       card waiting on this one. And it is only the report if nothing else is
+       done after it — `spawn::watch` takes it back at the next tool call. */
+    if !broadcast && spawner.as_ref().is_some_and(|p| ids.contains(p)) {
         crate::spawn::reported(caller);
     }
     for to_id in &ids {
@@ -719,8 +724,8 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             sent.push_str(line);
         }
         let awake = crate::supervisor::deliver(app, to_id, &sent).is_ok();
-        if let (true, Some((_, spent))) = (awake, &fold) {
-            crate::spawn::fold_spent(to_id, spent);
+        if let (false, Some((_, entries))) = (awake, fold) {
+            crate::spawn::fold_back(to_id, entries);
         }
         let relay_id = crate::store::uuid_v4();
         if let Ok(conn) = store.0.lock() {
@@ -935,10 +940,11 @@ pub fn drain_inbox(app: &AppHandle, id: &str) {
         if let Some((line, _)) = &fold {
             text.push_str(line);
         }
-        if crate::supervisor::deliver(app, id, &text).is_ok() {
-            if let Some((_, spent)) = &fold {
-                crate::spawn::fold_spent(id, spent);
-            }
+        let delivered = crate::supervisor::deliver(app, id, &text).is_ok();
+        if let (false, Some((_, entries))) = (delivered, fold) {
+            crate::spawn::fold_back(id, entries);
+        }
+        if delivered {
             if let Ok(conn) = store.0.lock() {
                 crate::store::mark_delivered(&conn, &q.id);
             }

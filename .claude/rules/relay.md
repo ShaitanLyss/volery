@@ -309,9 +309,10 @@ second mechanism beside it would be a second thing for `relay.ts` to learn to dr
 Sink `d0a91bf0`, Lyss on 2026-10-16: with every account session-capped, a `wake_me` fired
 anyway. The woken turn never reached a model, and the card got the confusing "attempt 1 of 4 /
 the turn before never reached a model" note in exchange for its wake. So `serve_due` asks
-`admit::wall_held` first. While the wall says no account, and no credits with boost on, would
-take a turn, **nothing is taken**: the rows stay due, and the first tick after the wall has
-room serves them. That is `turns.md`'s rule for the nudge ("a deferred nudge is put back, not
+`admit::held_for` first, per wake. While the wall says no account, and no credits with boost
+on, would take a turn, **that wake is not taken**: the row stays due, and the first tick after
+the wall has room serves it. Per wake, because a card bypassing your caps is held only by the
+server's ceiling (`heldBypass`, the same decision made with the caps ignored). That is `turns.md`'s rule for the nudge ("a deferred nudge is put back, not
 dropped") carried to the prompt Rust writes on its own initiative. The DELETE is still the
 claim, so nothing about once-only changed.
 
@@ -325,9 +326,20 @@ claim, so nothing about once-only changed.
   grey rather than warming to amber over a wait that is the wall's doing. The CLI's own
   schedules (`CronCreate`, `ScheduleWakeup`) are not held. They fire inside the process
   whatever the wall thinks, so they can still be late.
-- **All at once on release** is a known roughness. A tick serves every wake that came due
-  during the hold. That is one turn per waiting card, which is what they asked for, but they
-  land together at the reset.
+- **Paced on release.** A tick still serves every wake that came due during the hold — one turn
+  per waiting card, which is what they asked for — but one live delivery a tick (five seconds,
+  `later::TICK`, asserted to be no shorter than `admit::RELEASE_GAP_MS`), so a reset is not a
+  dozen cold full-context rewrites in the same second. The rest stay due for the next tick;
+  nothing sleeps on the waker's thread, which `spawn::sweep` shares. A wake into a dormant card's
+  inbox starts no turn and is not held back.
+- **A wall that has not spoken since launch holds**, for `FIRST_WORD_MS` (90s). Silence reads
+  as room only once the webview *has* spoken and gone quiet: at launch the waker's first tick
+  found every wake that came due while the wall was shut, handed each to a card with no process,
+  and it went into the inbox, which `drain_inbox` writes on the next spawn past any hold. A note
+  or a forget ends it, so the front end says neither until the registry has been listed and, with
+  accounts, until a reading of them has arrived (`#noteAllowance`) — the first cut forgot before
+  `list_accounts` had answered and ended the hold on every launch. A webview that never loads
+  costs ninety seconds.
 - A wall with no accounts registered never holds. Nothing there knows when the CLI's own
   sign-in has run out (`accounts.md`, *Not built*).
 

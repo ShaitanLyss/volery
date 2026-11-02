@@ -107,6 +107,11 @@ const MAX_NOTE: usize = crate::store::MAX_SINK_BODY;
 /// that happens to anything.
 const TICK: std::time::Duration = std::time::Duration::from_secs(5);
 
+/* The tick is what paces a release — one live wake and one parent's notice per
+   tick (`serve_due`, `spawn::sweep`) — so it may not be shorter than the gap the
+   wall promises between two turns it hands out on its own. */
+const _: () = assert!(TICK.as_millis() as u64 >= crate::admit::RELEASE_GAP_MS);
+
 pub fn wake_schema() -> Value {
     json!({
         "name": WAKE_TOOL,
@@ -493,22 +498,35 @@ pub fn spawn_waker(app: AppHandle) {
 
 fn serve_due(app: &AppHandle) {
     let Some(store) = app.try_state::<Store>() else { return };
-    /* Every account spent: a wake delivered now is a turn that never reaches a
-       model, and the card comes back to a "the turn before never reached a
-       model" note about a wake it asked for (sink d0a91bf0). So nothing is
-       taken — the rows stay due, which is what makes this a hold rather than
-       a drop, and the first tick after the wall says there is room serves
-       them. `admit.rs` reads a wall that has said nothing as room, so a
-       silent webview cannot strand a wake. */
-    if crate::admit::wall_held(app).is_some() {
-        return;
-    }
     let now = crate::store::now();
     let due = {
         let Ok(conn) = store.0.lock() else { return };
         crate::store::wakes_due(&conn, now)
     };
+    let mut served_live = false;
     for w in due {
+        /* Every account spent: a wake delivered now is a turn that never reaches
+           a model, and the card comes back to a "the turn before never reached
+           a model" note about a wake it asked for (sink d0a91bf0). So it is not
+           taken — the row stays due, which is what makes this a hold rather than
+           a drop, and the first tick after the wall says there is room serves
+           it. Asked per card, because a card bypassing your caps is held only
+           by the server's ceiling. `admit.rs` reads a wall that has gone quiet
+           as room, so a silent webview cannot strand a wake — and one that has
+           not spoken yet since launch as held, briefly, so the wakes that came
+           due while the wall was shut do not slip into inboxes ahead of it. */
+        if crate::admit::held_for(app, &w.conversation_id).is_some() {
+            continue;
+        }
+        /* One live wake a tick: a reset frees every wake held behind it at once,
+           and each is a card whose cache went cold in the wait. The rest stay
+           due and go on the ticks after — `TICK` is past
+           `admit::RELEASE_GAP_MS` — so nothing sleeps on this thread, which
+           `spawn::sweep` shares. A wake into a dormant card's inbox starts no
+           turn and is not held back. */
+        if served_live && crate::supervisor::turn_open(app, &w.conversation_id).is_some() {
+            continue;
+        }
         /* Taken before it is delivered, and that ordering is the whole of what
            stops a wake being served twice. A delivery is a write to a pipe and a
            turn; if this thread were interrupted between the two, losing one wake
@@ -528,6 +546,7 @@ fn serve_due(app: &AppHandle) {
         let waited = ((now - w.armed_at).max(0)) / 1_000;
         let text = envelope(&w.note, waited);
         let delivered = crate::supervisor::deliver(app, &w.conversation_id, &text).is_ok();
+        served_live |= delivered;
         if !delivered {
             /* Dormant: it goes to the inbox the relay already drains on spawn,
                rather than rousing the card. A wake is armed by a card that is

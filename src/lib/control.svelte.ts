@@ -2636,10 +2636,17 @@ export class Control {
        *  causes is the app's own path from the send onward. Keep every account
        *  spent while it stands: one the chooser would *use* is moved onto, and
        *  a stood-in label has no credential store to spawn with. */
-      /** What Rust would say to a new card right now (`admit.rs`): null to
-       *  start it, or why it waits. Asks the real command, after noting nothing
-       *  new — so a test reads the verdict the next `spawn` would get. */
-      admit: async () => ({ queued: await invoke("admit_now") }),
+      /** What Rust would say to a card queued at spawn right now (`admit.rs`):
+       *  null to start it, or why it waits. Asks the real command, after noting
+       *  nothing new — so a test reads the verdict the card's release would
+       *  get. `card` names it (its ancestry is left out of the count and its
+       *  account is the one weighed); with none, it is a card with no parent
+       *  and no account, which is what a far wall's spawn is asked as. */
+      admit: async (op) => ({
+        queued: await invoke("admit_now", {
+          id: op.card !== undefined || op.id !== undefined ? this.#card(op).id : "",
+        }),
+      }),
 
       allowance: async (op) => {
         if (op.clear) {

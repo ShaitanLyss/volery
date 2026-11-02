@@ -1761,6 +1761,12 @@ fn spawn_now(
                 }
                 match serde_json::from_str::<serde_json::Value>(&line) {
                     Ok(event) => {
+                        /* Whether a child's message to its parent was the
+                           report of this turn — a tool call after it, or the
+                           turn ending in an error, says it was not. Ahead of
+                           the turn mark, since a `result` is read here a moment
+                           before it closes the turn `spawn::settling` weighs. */
+                        crate::spawn::watch(&id, &event);
                         /* Read before the value is handed over, since the emit
                            takes it. Cheap next to the parse above and the hop
                            into the webview below. */
