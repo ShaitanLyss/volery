@@ -1534,9 +1534,13 @@ mod tests {
         let dir = dir_for(&r.root(), "wt/a");
         std::fs::create_dir_all(dir.join("build")).unwrap();
         std::fs::write(dir.join("build").join("lock.bin"), "x").unwrap();
+        /* Compared as places, not strings: on CI %TEMP% is spelled with an 8.3
+           short name (`runner~1`) and git answers with the long one
+           (`runneradmin`), which failed v0.94.1's build on a true hazard. */
+        let place = |p: &str| std::fs::canonicalize(p).unwrap();
         assert_eq!(
-            run(&dir.to_string_lossy(), &["rev-parse", "--show-toplevel"]).1.replace('\\', "/").to_lowercase(),
-            r.root().replace('\\', "/").to_lowercase(),
+            place(&run(&dir.to_string_lossy(), &["rev-parse", "--show-toplevel"]).1),
+            place(&r.root()),
             "the hazard: git inside the leftover answers the main repository"
         );
         let head = r.git(&["rev-parse", "HEAD"]);
