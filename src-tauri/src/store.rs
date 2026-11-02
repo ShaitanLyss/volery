@@ -4998,6 +4998,10 @@ pub fn clear_conversation(
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
     crate::subscribe::clear_for(&app, &id);
+    /* And a renewal it had scheduled: a cleared card is not carrying the work
+       the note hands over, and a note left undelivered would open the cleared
+       session as though it had been renewed (`renew::cleared`). */
+    crate::renew::cleared(&app, &id);
     /* And a delete it handed the wall to ask about: the session that asked is
        gone, and a question has no deadline to end it (`ask::drop_handoffs`). */
     if let Some(asks) = tauri::Manager::try_state::<crate::ask::Asks>(&app) {
@@ -5784,6 +5788,9 @@ pub fn close_conversation_record(
            in the same lock, so the census does not count the card leaving. */
         retire_group_if_last(&app, &conn, &id);
     }
+    /* And a renewal it had scheduled, which would otherwise outlive it in
+       memory and refuse a spawn of a card that is no longer there. */
+    crate::renew::forget(&id);
     /* And the files written for it — browser drags and pasted blobs, which
        were kept for the life of the card because a later turn may read one
        again (`attachments.rs`). After the hold above: the front end has
@@ -7821,7 +7828,7 @@ pub fn inbox(conn: &Connection, to_id: &str) -> Result<Vec<QueuedRelay>, String>
         .prepare(
             "SELECT id, from_id, body, chain, hops FROM relay
               WHERE to_id = ?1 AND delivered_at IS NULL
-              ORDER BY sent_at",
+              ORDER BY sent_at, rowid",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt

@@ -119,7 +119,7 @@ import { cliCommand, effortForModel, isEffort, type SlashCommand } from "./comma
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
 import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
-import { RENEW_AFTER_MS, RENEW_ASK } from "./renewing";
+import { RENEW_AFTER_MS, RENEW_ASK, renewBlocker, renewDeclined } from "./renewing";
 import { handleOf } from "./relay";
 import { UNNAMED, isNamed, nameBesideProject, titleFromPrompt } from "./naming";
 import {
@@ -590,7 +590,9 @@ export class Skein {
    *  (`renew.rs`), each with the timer that will check the turn stayed over.
    *  Held for `#heals`' reason: a superseded Skein must not renew anything. */
   #renewals = new Map<string, ReturnType<typeof setTimeout> | null>();
-  #renewing = new Set<string>();
+  /** A renewal being performed, per card — single-flight, so a timer, an exit
+   *  and a wake arriving together run one renewal and share its answer. */
+  #renewing = new Map<string, Promise<"spawned" | "already" | "failed">>();
   #studio: Studio;
   /** Held so `detach` can give them back — see ./listeners.ts for why that
    *  matters to a class with no lifecycle of its own. */
@@ -1307,6 +1309,17 @@ export class Skein {
       }),
     );
     keep(
+      /* Rust gave a scheduled renewal up — the card was woken on its old
+         session, or something would have been lost and it was told why. Stop
+         waiting for it: an id left in `#renewals` is a card whose every later
+         turn ends in an attempt to renew it. */
+      listen<{ id: string; why: string }>("renew:dropped", (e) => {
+        this.#unschedule(e.payload.id);
+        const c = this.#byId.get(e.payload.id);
+        if (c && !this.#renewing.has(c.id)) c.activity = "renewal not performed — the card was told why";
+      }),
+    );
+    keep(
       listen<{ id: string; parent_id: string }>("close:asked", (e) => {
         const conv = this.#byId.get(e.payload.id);
         if (conv) void this.close(conv, "agent");
@@ -1605,10 +1618,15 @@ export class Skein {
          opened. */
       /* A renewal scheduled before this window was listening — a reload
          mid-renewal — is picked up rather than left holding the card's post. */
-      void invoke<string[]>("renewals_pending")
-        .then((ids) => {
-          for (const id of ids ?? []) {
-            const c = this.#byId.get(id);
+      void invoke<{ id: string; session: string | null }[]>("renewals_pending")
+        .then((rows) => {
+          /* Scheduled ones wait for their turn as before; a performed one — its
+             card stopped and repointed, nothing spawned yet — goes through the
+             same door, and `renew_conversation` answers it with the session it
+             was already given. Rust says whether a process is running, so the
+             `dormant` every restored card is drawn with decides nothing. */
+          for (const r of rows ?? []) {
+            const c = this.#byId.get(r.id);
             if (c) this.#renewAsked(c);
           }
         })
@@ -2491,6 +2509,11 @@ export class Skein {
     if (!conv.dormant) return "already";
     const inflight = this.#waking.get(conv.id);
     if (inflight) return inflight;
+    /* A card with a renewal scheduled is renewed rather than woken: a spawn
+       now would be on the session it is leaving — resuming the old
+       conversation whole, then handing it a note saying it is fresh. The
+       renewal ends in the spawn, on the new session (`#renew`). */
+    if (this.#renewals.has(conv.id)) return this.#renew(conv);
     const attempt = this.#spawnNow(conv).finally(() => this.#waking.delete(conv.id));
     this.#waking.set(conv.id, attempt);
     return attempt;
@@ -5020,6 +5043,12 @@ export class Skein {
       const no = stillMay();
       if (no) return no;
     }
+    /* A renewal under way finishes first, and one scheduled is over: a cleared
+       card is not carrying the work its note hands over, and left in
+       `#renewals` the clear's own kill would re-arm it (`renew::cleared` takes
+       the note on the Rust side). */
+    await this.#renewing.get(conv.id)?.catch(() => {});
+    this.#unschedule(conv.id);
     this.#dropHeal(conv);
     this.#dropNudge(conv);
     /* A cleared card is a new session with nothing owed to it, so held
@@ -5064,6 +5093,15 @@ export class Skein {
     if (!c.working) this.#renewSoon(c);
   }
 
+  /** Stop waiting for a card's renewal: its timer and its place in
+   *  `#renewals`. Every way a renewal ends goes through here, so an id cannot
+   *  be left behind to try again after each of the card's later turns. */
+  #unschedule(id: string) {
+    const t = this.#renewals.get(id);
+    if (t) clearTimeout(t);
+    this.#renewals.delete(id);
+  }
+
   /** Renew once the card has been idle for `RENEW_AFTER_MS` — long enough for
    *  a message queued behind the turn to be taken up in the session it was
    *  sent to, rather than lost with that session's process. A turn that does
@@ -5084,41 +5122,141 @@ export class Skein {
     );
   }
 
-  /** The renewal itself: `clear`'s shape, keeping what a clear lets go of.
+  /** The renewal itself: `clear`'s shape, keeping what a clear lets go of —
+   *  and, unlike a clear, **decided in Rust**.
    *
-   *  Rust has already written the note into the card's inbox and is holding
-   *  everything sent to it behind the note (`renew.rs`). This ends the old
-   *  process, points the card at a fresh session without resetting its title
-   *  (`renew_conversation`), and gives it a process again — whose spawn drains
-   *  the inbox, note first. */
-  async #renew(c: Conversation) {
-    if (this.#renewing.has(c.id)) return;
-    this.#renewing.add(c.id);
+   *  Rust has already written the note into the card's inbox and keeps the old
+   *  process from anything sent to it (`renew.rs`). `renew_conversation` stops
+   *  that process if there is one and it is not mid-turn, repoints the card at
+   *  a fresh session while holding its spawn claim, and answers with the
+   *  session; this then spawns it, and the spawn drains the inbox, note first.
+   *
+   *  Two things this used to get wrong, both in the gap between the kill and
+   *  the spawn (0.94 review):
+   *
+   *  - **It asked `dormant` whether to kill.** After a reload every restored
+   *    card is dormant, live process or not, so the old process was left
+   *    running on a repointed row. Rust answers that now; nothing here reads
+   *    `dormant` to decide anything about the process.
+   *  - **A spawn could land in the gap** — a stir, a relay wake, a send — with
+   *    the old `sessionId` still on the card, resuming the old conversation
+   *    and handing it the note. The whole renewal now runs inside the card's
+   *    spawn single-flight (`#waking`), so every `#spawn` meanwhile waits for
+   *    it and gets its answer; `spawn_blocks` in Rust refuses any spawn that
+   *    did not.
+   *
+   *  Single-flight on its own (`#renewing`) as well, since a timer, an exit and
+   *  a wake can all arrive at once. */
+  #renew(c: Conversation): Promise<"spawned" | "already" | "failed"> {
+    const inflight = this.#renewing.get(c.id);
+    if (inflight) return inflight;
+    const run = this.#renewInFlight(c).finally(() => this.#renewing.delete(c.id));
+    this.#renewing.set(c.id, run);
+    return run;
+  }
+
+  async #renewInFlight(c: Conversation): Promise<"spawned" | "already" | "failed"> {
+    /* Wait out a spawn already under way, then take the card's flight for the
+       whole renewal. Re-read after each wait, and set in the same tick as the
+       last read, so nothing can slip between. */
+    for (let w = this.#waking.get(c.id); w; w = this.#waking.get(c.id)) await w.catch(() => {});
+    let settle!: (how: "spawned" | "already" | "failed") => void;
+    this.#waking.set(c.id, new Promise((r) => (settle = r)));
+    let how: "spawned" | "already" | "failed" = c.dormant ? "failed" : "already";
+    try {
+      how = await this.#performRenewal(c);
+      return how;
+    } finally {
+      this.#waking.delete(c.id);
+      settle(how);
+    }
+  }
+
+  async #performRenewal(c: Conversation): Promise<"spawned" | "already" | "failed"> {
+    /* Asked again before every spawn below, not once: a card closed while
+       Rust was performing (a parent's `close` on a child that has just
+       renewed) would otherwise be given a process for a card on no wall —
+       with the machine in its hands and nothing left that can stop it. */
+    const here = () => !this.#gone && this.#byId.has(c.id);
+    const spawn = () => (here() ? this.#spawnNow(c) : Promise.resolve<"failed">("failed"));
+    if (!here()) return c.dormant ? "failed" : "already";
+    const t = this.#renewals.get(c.id);
+    if (t) clearTimeout(t);
     this.#dropHeal(c);
     this.#dropNudge(c);
-    const dropping = this.#dropHold(c, "cleared");
+    /* `retiring` before Rust may stop the process, or our own exit lands on the
+       card as a crash — `#recycle` and `#moveTo` need the same ordering. */
+    c.retiring = true;
+    const exits = c.exitCount;
+    let done: { session: string; stopped: boolean };
     try {
-      await this.#waking.get(c.id)?.catch(() => {});
-      if (!c.dormant) {
-        c.retiring = true;
-        await invoke("close_conversation", { id: c.id });
-      }
-      const sessionId = crypto.randomUUID();
-      await invoke("renew_conversation", { id: c.id, sessionId });
-      await invoke("forget_jobs", { conversationId: c.id }).catch(() => {});
-      await dropping;
-      c.clear(sessionId, { keepName: true });
-      const t = this.#renewals.get(c.id);
-      if (t) clearTimeout(t);
-      this.#renewals.delete(c.id);
-      c.activity = "renewed — reading its note";
-      if (!(await this.wake(c))) c.activity = "renewed — its note waits for the next wake";
+      done = await invoke<{ session: string; stopped: boolean }>("renew_conversation", {
+        id: c.id,
+        sessionId: crypto.randomUUID(),
+        /* What only this side can see would be lost: jobs folded off the
+           stream, the CLI's own schedules not yet fired. Rust abandons on it
+           and tells the card, rather than holding its post while the work runs. */
+        blocker: renewBlocker({ jobs: c.jobs.length, timers: c.timers, now: Date.now() }),
+      });
     } catch (err) {
-      c.retiring = false;
-      this.fault = `could not renew ${c.title}: ${String(err)}`;
-    } finally {
-      this.#renewing.delete(c.id);
+      const why = String(err);
+      /* A process Rust stopped before it gave up keeps its exit quiet. */
+      if (!why.includes("its old process was stopped")) c.retiring = false;
+      switch (renewDeclined(why)) {
+        case "later":
+          /* Mid-turn, or a spawn was starting. The turn's `result` comes back
+             to `#renewSoon`; the timer covers the spawn. A card drawn dormant
+             that is not (a reload) is let through to the ordinary spawn, which
+             Rust answers "already open" — the truth about it. */
+          this.#renewSoon(c);
+          return c.dormant ? spawn() : "already";
+        case "gone":
+          this.#unschedule(c.id);
+          c.activity = "ready";
+          /* Nothing is scheduled, so a spawn on the session the card is on is
+             an ordinary one — and the one a `#spawn` that came here wanted. */
+          return c.dormant ? spawn() : "already";
+        case "dropped":
+          this.#unschedule(c.id);
+          c.activity = "renewal not performed — the card was told why";
+          return c.dormant ? spawn() : "already";
+        default:
+          this.#unschedule(c.id);
+          this.fault = `could not renew ${c.title}: ${why}`;
+          return c.dormant ? "failed" : "already";
+      }
     }
+    /* Rust has repointed the row, so the card takes the session **now**, before
+       any further await: anything that throws or stalls below must not leave
+       this side spawning the session Rust has just refused (`spawn_blocks`).
+       The hold's synchronous half runs first, on the lines it marks. */
+    this.#unschedule(c.id);
+    const dropping = this.#dropHold(c, "cleared");
+    c.clear(done.session, { keepName: true });
+    c.activity = "renewed — reading its note";
+    try {
+      if (done.stopped && c.exitCount === exits) {
+        /* The stopped process's exit has not been heard yet. Waited for by
+           count, not by `dormant` — `clear` has just set that, and a reloaded
+           wall drew it anyway — and if it still has not come, the late one is
+           swallowed rather than folded onto the process spawned below. */
+        const until = Date.now() + 4_000;
+        while (c.exitCount === exits && Date.now() < until && here()) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        if (c.exitCount === exits) c.swallowExit = true;
+      }
+      /* The card keeps its id and takes a new session, so anything remembered
+         about the old one would be reported at the next launch against a
+         session that never ran it. */
+      await invoke("forget_jobs", { conversationId: c.id }).catch(() => {});
+      await dropping.catch(() => {});
+    } finally {
+      c.retiring = false;
+    }
+    const how = await spawn();
+    if (how === "failed") c.activity = "renewed — its note waits for the next wake";
+    return how;
   }
 
   /** Call a card something else, and have it stay called that.
@@ -5882,6 +6020,18 @@ export class Skein {
       /* Closing sets `closed_at` and deletes no row, so the foreign key never
          fires — see `migrate_v17`. Same bargain the billboard's sweep strikes. */
       await invoke("forget_jobs", { conversationId: conv.id }).catch(() => {});
+      /* A spawn already under way when the card was closed — a wake, a stir,
+         the end of a renewal — has nothing in the supervisor's map for the
+         close above to kill, and lands a moment later: a process for a card on
+         no wall, with the machine in its hands. Found driving renewals in a lab
+         (a close 3,050ms after `renew`), and not a renewal's alone. So it is
+         waited out and closed again; a card with nothing in flight pays a map
+         lookup. */
+      const inflight = this.#waking.get(conv.id);
+      if (inflight) {
+        await inflight.catch(() => {});
+        await invoke("close_conversation", { id: conv.id }).catch(() => {});
+      }
     } catch (err) {
       this.fault = String(err);
     }

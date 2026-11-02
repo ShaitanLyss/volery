@@ -3816,8 +3816,23 @@ export class Conversation {
     if (!opts.keepName) this.#push("meta", "cleared · a fresh session, in the same place");
   }
 
+  /** How many exits this card has heard — not reactive, read by
+   *  `Skein.#performRenewal` to tell whether the process it stopped has been
+   *  heard going yet, since `dormant` cannot say (a reloaded wall draws every
+   *  card dormant, and the exit can land before the stop's own answer does). */
+  exitCount = 0;
+  /** Set by a renewal whose stopped process had not been heard exiting when the
+   *  new one was spawned: that late exit is the old process's, and folded it
+   *  would put the new one to sleep. Spent on the next exit. */
+  swallowExit = false;
+
   /** stdout closed — the process is gone. */
   markExited(code: number | null) {
+    this.exitCount += 1;
+    if (this.swallowExit) {
+      this.swallowExit = false;
+      return;
+    }
     /* A kill we asked for. Say nothing: the card has already been given its new
        state and an exit code from `close_conversation` describes the process we
        deliberately ended, not anything that went wrong. */

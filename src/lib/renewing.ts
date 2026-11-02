@@ -63,3 +63,73 @@ export const RENEW_ASK =
   "next, and which files hold your durable notes — and call `mcp__skein__renew` with it, then " +
   "end your turn. Your children, subscriptions, wakes and notices stay yours; the wall lists " +
   "them under your note, so you need not.";
+
+/** The three ways `renew_conversation` declines, as the prefixes `renew.rs`
+ *  writes (`NOT_SCHEDULED`, `BUSY`, `DROPPED`). `test/renewing.test.ts` reads
+ *  them out of the Rust so the two cannot drift. */
+export const RENEW_NOT_SCHEDULED = "not-scheduled:";
+export const RENEW_BUSY = "busy:";
+export const RENEW_DROPPED = "dropped:";
+
+/** What the wall does with a renewal Rust declined to perform.
+ *
+ *  - `gone` — nothing is scheduled any more (performed elsewhere, dropped, the
+ *    wall restarted): stop waiting for it. Keeping the id is how a renewal
+ *    abandoned once used to kill the card three seconds after every later turn.
+ *  - `later` — mid-turn, or a spawn was starting: ask again after it.
+ *  - `dropped` — Rust gave it up because something would be lost, and told the
+ *    card why; stop waiting, and say so on the card.
+ *  - `failed` — anything else: stop waiting and raise it, since an error this
+ *    side cannot read is not one a retry is known to fix. */
+export type RenewDeclined = "gone" | "later" | "dropped" | "failed";
+
+export function renewDeclined(err: string): RenewDeclined {
+  const s = err.replace(/^Error:\s*/, "");
+  if (s.startsWith(RENEW_NOT_SCHEDULED)) return "gone";
+  if (s.startsWith(RENEW_BUSY)) return "later";
+  if (s.startsWith(RENEW_DROPPED)) return "dropped";
+  return "failed";
+}
+
+/** Whether the CLI holds a schedule that has **not fired yet** — the question a
+ *  renewal asks, which is not the reaper's. `timersArmed` errs late on purpose
+ *  (`until` carries fifteen minutes of slack, so a stood-down card never loses a
+ *  firing); asked here, that slack refused a renewal for a quarter of an hour
+ *  after a `ScheduleWakeup` had already woken the card — exactly the loop a
+ *  coordinator renews in. So a one-shot counts while its moment is ahead, a
+ *  recurring job while it lives, and a one-shot whose moment could not be read
+ *  not at all: refusing on it would refuse for the life of the process. */
+export function scheduleAhead(
+  timers: readonly { at: number | null; until: number | null }[],
+  now: number,
+): boolean {
+  return timers.some((t) => (t.at !== null ? t.at > now : t.until !== null && t.until > now));
+}
+
+/** What only the front end can see that a renewal would destroy: background
+ *  jobs it has folded (a row may not be written yet) and the CLI's own
+ *  `CronCreate` / `ScheduleWakeup`, which live in the old process and nowhere
+ *  else — `keptFrom`'s `jobs` and `scheduled` arms, for the same reason. Rust
+ *  abandons the renewal with this sentence and tells the card it, rather than
+ *  holding its post for as long as the work runs. `null` when nothing would be
+ *  lost. Worded to finish `not performed: …`. */
+export function renewBlocker(card: {
+  jobs: number;
+  timers: readonly { at: number | null; until: number | null }[];
+  now: number;
+}): string | null {
+  if (card.jobs > 0) {
+    return (
+      `this card has ${card.jobs} background job${card.jobs === 1 ? "" : "s"} still running, ` +
+      `and renewing would end ${card.jobs === 1 ? "it" : "them"} with the process. Renew once ` +
+      `${card.jobs === 1 ? "it has" : "they have"} reported in.`
+    );
+  }
+  if (scheduleAhead(card.timers, card.now)) {
+    return (
+      "this card has a schedule armed in its own process (CronCreate or ScheduleWakeup), and " +
+      "renewing would end it with the process. Delete it or let it fire, then renew."
+    );
+  }
+  return null;
+}

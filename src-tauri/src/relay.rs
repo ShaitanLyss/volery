@@ -723,7 +723,12 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
         if let Some((line, _)) = &fold {
             sent.push_str(line);
         }
-        let awake = crate::supervisor::deliver(app, to_id, &sent).is_ok();
+        /* A card renewing itself keeps its old process from what is sent to it,
+           and a message is queued here rather than held by `deliver`, so its
+           row keeps its sender, chain and hops and nothing is armed for a turn
+           the old session will never take (`renew.rs`). */
+        let renewing = crate::renew::holds(app, to_id);
+        let awake = !renewing && crate::supervisor::deliver(app, to_id, &sent).is_ok();
         if let (false, Some((_, entries))) = (awake, fold) {
             crate::spawn::fold_back(to_id, entries);
         }
@@ -754,7 +759,7 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
            Spawning from here would be a second birth path with none of that,
            which is the arrangement `spawn.rs` already refused for the same
            reasons. */
-        let waking = !awake && !broadcast;
+        let waking = !awake && !broadcast && !renewing;
         if waking {
             let _ = app.emit("relay:wake", RelayWake { to: to_id.clone() });
         }
@@ -765,6 +770,12 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             .unwrap_or_else(|| handle_of(to_id));
         receipts.push(if awake {
             format!("delivered to \"{name}\" ({})", handle_of(to_id))
+        } else if renewing {
+            format!(
+                "kept for \"{name}\" ({}) — that card is renewing onto a fresh session, and \
+                 this will be the first thing that session reads after its own note",
+                handle_of(to_id)
+            )
         } else if waking {
             /* Said without claiming the wake has happened: the spawn is a
                process and it can fail, and this receipt is written before it is
@@ -949,7 +960,16 @@ pub fn drain_inbox(app: &AppHandle, id: &str) {
                 crate::store::mark_delivered(&conn, &q.id);
             }
             if let Some(relays) = app.try_state::<Relays>() {
-                arm(&relays, app, id, Some(&q.from_id), &q.chain, q.hops);
+                let note = q.from_id == id && q.chain.starts_with(crate::renew::NOTE_CHAIN);
+                /* Not armed at all: the note is the card's own work resumed, not
+                   a message it is acting on. Armed, its turn would be a hop into
+                   a chain that is only a marker — so a renewed coordinator's
+                   first broadcast would be refused as one made while acting on
+                   another card's message — and its close would read to
+                   `spawn::is_reply` as a reply, withholding its stop. */
+                if !note {
+                    arm(&relays, app, id, Some(&q.from_id), &q.chain, q.hops);
+                }
             }
             let _ = app.emit(
                 "relay:sent",
@@ -1407,7 +1427,7 @@ pub(crate) fn afar_envelope(host: &str, from_card: &str, title: Option<&str>, pr
 pub(crate) fn deliver_from_afar(app: &AppHandle, card: &str, text: &str) -> Result<&'static str, String> {
     let store = app.try_state::<Store>().ok_or("the store is unavailable")?;
     let relays = app.try_state::<Relays>().ok_or("the relay is unavailable")?;
-    let awake = crate::supervisor::deliver(app, card, text).is_ok();
+    let awake = !crate::renew::holds(app, card) && crate::supervisor::deliver(app, card, text).is_ok();
     let chain = crate::store::uuid_v4();
     {
         let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;

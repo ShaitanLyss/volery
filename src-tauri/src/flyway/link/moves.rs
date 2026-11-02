@@ -178,6 +178,12 @@ impl Link {
         if to.eq_ignore_ascii_case(&self.me) {
             return Err("that is this wall — the card is already here".into());
         }
+        /* A renewal in flight is a note in this wall's inbox and a session
+           about to change under the card; carrying the card off half-way would
+           leave the note here and the old session there. */
+        if crate::renew::pending_has(card) {
+            return Err("that card is renewing onto a fresh session — move it once it has; nothing was moved".into());
+        }
         let (territories, accepting) = {
             let f = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
             let Some(e) = f.entry(&to) else {

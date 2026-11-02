@@ -250,6 +250,14 @@ fn do_compact(app: &AppHandle, caller: &str) -> String {
     if let Some(why) = refusal(tokens, since) {
         return why;
     }
+    /* A renewal scheduled: the `/compact` would be held behind the note and
+       compact the fresh session it opens, which is the one conversation that
+       has nothing in it worth summarising. */
+    if crate::renew::scheduled(caller) {
+        return "Not queued: this card is renewing when this turn ends, and the fresh session \
+                starts from your note — there is nothing to compact. Nothing was changed."
+            .into();
+    }
     match crate::supervisor::deliver(app, caller, COMPACT_PROMPT) {
         Ok(()) => {
             /* Counted on delivery, and only on delivery: a send that never left

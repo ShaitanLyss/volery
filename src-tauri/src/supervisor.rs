@@ -1202,6 +1202,13 @@ fn spawn_now(
         return Err(why);
     }
     let session = session_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(&id);
+    /* A card renewed onto a fresh session must never be spawned on the one it
+       left — that resumes the old conversation whole and hands it the note
+       saying it is new (`renew.rs`). Asked after the claim, which the renewal
+       holds while it repoints, so the two cannot interleave. */
+    if let Some(why) = crate::renew::spawn_blocks(&id, session) {
+        return Err(why);
+    }
 
     /* Asked of the store, never of the caller — see `store::kind_of`. `wake`
        and `open` both reach this line and only one of them would have
@@ -2308,7 +2315,7 @@ pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<()
     /* A card renewing itself takes nothing into the session it is leaving:
        whatever arrives is written to its inbox, behind the note its new session
        opens on, and drained when that session spawns (`renew.rs`). */
-    if crate::renew::holding(id) {
+    if crate::renew::holds(app, id) {
         return crate::renew::hold(app, id, content);
     }
     {
@@ -3152,6 +3159,27 @@ pub(crate) fn stop_unless_turning(app: &AppHandle, id: &str) -> Result<bool, ()>
             Ok(true)
         }
     }
+}
+
+/// Stop a card's process unless it is mid-turn, then hold its spawn claim while
+/// `then` runs — so nothing can give the card a process between the stop and
+/// whatever `then` changes about how it will next be spawned. `then` is told
+/// whether a process was stopped. `Err` when the card is mid-turn (nothing was
+/// stopped), or a spawn was already starting or landed between the stop and the
+/// claim — then `then` did not run, and that spawn is somebody else's; it reaches
+/// `renew::release`, which says the renewal was not performed.
+///
+/// `renew::perform` is the caller: a renewal repoints the row at a fresh
+/// session, and a spawn that slipped in between would resume the old one.
+pub(crate) fn claimed_for<R>(
+    app: &AppHandle,
+    id: &str,
+    then: impl FnOnce(bool) -> R,
+) -> Result<R, (&'static str, bool)> {
+    let stopped = stop_unless_turning(app, id).map_err(|_| ("the card is mid-turn", false))?;
+    let sup = app.state::<Supervisor>();
+    let _claim = sup.claim(id).ok_or(("the card is being given a process", stopped))?;
+    Ok(then(stopped))
 }
 
 /// Should the wall skip rousing its restored cards on load?
