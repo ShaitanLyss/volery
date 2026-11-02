@@ -13,6 +13,11 @@ vite.config.ts.timestamp-*
 /.scratch
 /.scratch-*
 
+# worktree groups: `spawn` with a `worktree` key makes its trees here
+# (worktree.rs). Each holds a `.git` file, so a broad `git add` would take one
+# in as an embedded repository; `.git/info/exclude` covered only one machine.
+/.claude/worktrees/
+
 # the windres shim tools/build-gnu.ps1 compiles from tools/windres-shim.c — a
 # binary, and one built against whatever cygwin is on the machine
 /.build-tools
