@@ -914,19 +914,6 @@ mod os {
         } else {
             close(h, ex0);
         }
-        /* Tell the app at once that the pointer has left it. The click ended
-           with the cursor back on the tile and Volery solid again, but nothing
-           moved after that, so Windows only noticed the pointer leaving the app
-           at the *next* real press on the tile — the very moment the next
-           forwarded press arrived. Chromium then took its mouse-leave and that
-           press together and dropped about one press in six, never raising a
-           mousedown, while a plain Win32 window took 30 of 30 the same way
-           (drive-probe `app` against `win32`, 2026-11-02). A pixel there and
-           back, now, makes the leave happen while nothing else is in flight. */
-        if !matches!(g, Gesture::Wheel { .. }) {
-            let (bx, by) = back;
-            send(&[move_to((bx + 1, by), v), move_to((bx, by), v)]);
-        }
     }
 
     /// A whole Escape, for a tap the hook swallowed. Marked, so the hook lets
