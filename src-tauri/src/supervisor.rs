@@ -164,16 +164,42 @@ use crate::hooks::BROWSER_PREFIX;
 /// invariant behind it — **the paragraph and the config are one decision** — and
 /// a condition with one input today is a condition with two the next time
 /// somebody has a reason to withhold the browser from some other kind of card.
+/// What a card in a worktree group is told about where it works (sink
+/// 93ecd434). Its own tree is invisible from inside it — a checkout looks like
+/// a checkout — and the two things it must not do there are the two a card in
+/// the shared tree does by habit: assume the main tree sees its edits, and
+/// treat its branch as something to push or leave. The orchestrator was told
+/// the other half, how to merge it back, in the spawn's receipt.
+fn group_note(key: &str, dir: &str) -> String {
+    let branch = crate::worktree::group_branch(key);
+    format!(
+        "**You work in worktree group `{key}`**: the branch `{branch}`, checked out at \
+         `{dir}`, shared only with the other cards opened into that group. Your edits, \
+         commits and builds stay in this tree; the main checkout and other groups see none \
+         of them until whoever opened the group merges `{branch}` back. So commit your work \
+         on `{branch}` when it stands up, and do not switch branches, push it, or merge it \
+         into anything yourself. The tree started cold: install dependencies and build here \
+         before running anything, and expect the first build to be a slow one."
+    )
+}
+
 fn system_prompt(
     chat: bool,
     ask: bool,
     shared_browser: bool,
     standing: Option<String>,
     me: Option<&Selfhood>,
+    tree: Option<&str>,
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if ask {
         parts.push(append_prompt(chat, shared_browser, me));
+    }
+    /* Where the card works, when that is a worktree group (`group_note`).
+       After Volery's paragraph and before the person's instructions, which
+       close the prompt as they always have. */
+    if let Some(note) = tree {
+        parts.push(note.to_string());
     }
     if let Some(text) = standing {
         let text = text.trim();
@@ -1618,7 +1644,14 @@ fn spawn_now(
        ask server was up, which is always, so the feature was inert rather than
        flaky. A conditional second flag is worse than an unconditional one — it
        looks like it works in the one configuration nobody runs. */
-    if let Some(text) = system_prompt(chat, ask_port != 0, card_browser.is_some(), standing, Some(&me))
+    /* A card in a worktree group is told so, at every spawn — the same
+       derived-not-remembered argument as `Selfhood`: its tree is on the row,
+       and a card roused next month is in it still. */
+    let tree = match worktree.as_deref().and_then(crate::worktree::group_of) {
+        Some(key) if !chat => Some(group_note(key, &run_dir)),
+        _ => None,
+    };
+    if let Some(text) = system_prompt(chat, ask_port != 0, card_browser.is_some(), standing, Some(&me), tree.as_deref())
     {
         cmd.args(["--append-system-prompt", &text]);
     }
@@ -1836,6 +1869,9 @@ fn spawn_now(
        of them would have remembered. Before anything else can be written to the
        card, so a wake caused by a prompt you typed still reads what it was told
        while it slept first — which is the order the two actually happened in. */
+    /* A renewing card's deliveries were held in its inbox, behind the note its
+       new session opens on (`renew.rs`); from here they go out in order. */
+    crate::renew::release(&app, &id);
     crate::relay::drain_inbox(&app, &id);
     Ok(())
 }
@@ -2263,6 +2299,12 @@ pub fn turn_open(app: &AppHandle, id: &str) -> Option<bool> {
 
 /// `deliver`, for a turn that is more than words.
 pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<(), String> {
+    /* A card renewing itself takes nothing into the session it is leaving:
+       whatever arrives is written to its inbox, behind the note its new session
+       opens on, and drained when that session spawns (`renew.rs`). */
+    if crate::renew::holding(id) {
+        return crate::renew::hold(app, id, content);
+    }
     {
         let sup = app.state::<Supervisor>();
         let mut map = sup.0.lock().unwrap();
@@ -3607,7 +3649,7 @@ mod tests {
     fn everything_appended_to_the_prompt_survives_being_composed() {
         let standing = "# Standing instructions\n\nMy name is Lyss.";
         for chat in [false, true] {
-            let out = system_prompt(chat, true, true, Some(standing.to_string()), None)
+            let out = system_prompt(chat, true, true, Some(standing.to_string()), None, None)
                 .expect("something to say");
             assert!(
                 out.contains(standing),
@@ -3633,21 +3675,36 @@ mod tests {
     fn either_half_of_the_prompt_can_be_missing() {
         let standing = "do the thing".to_string();
 
-        let no_guidance = system_prompt(false, true, true, None, None).expect("the prompt alone");
+        let no_guidance = system_prompt(false, true, true, None, None, None).expect("the prompt alone");
         assert!(no_guidance.contains(&format!("{MCP_PREFIX}ask_user")));
 
         /* No ask server: naming tools that are not there is the failure
            `the_prompt_names_only_tools_the_server_advertises` guards from the
            other side, so the roster goes and the instructions still land. */
         let no_ask =
-            system_prompt(false, false, true, Some(standing.clone()), None).expect("the guidance alone");
+            system_prompt(false, false, true, Some(standing.clone()), None, None).expect("the guidance alone");
         assert_eq!(no_ask, standing);
         assert!(!no_ask.contains(MCP_PREFIX));
 
         /* Nothing to say is `None` rather than an empty argument. A bare
            `--append-system-prompt ""` is a flag the CLI still reads. */
-        assert!(system_prompt(false, false, true, None, None).is_none());
-        assert!(system_prompt(false, false, true, Some("   ".to_string()), None).is_none());
+        assert!(system_prompt(false, false, true, None, None, None).is_none());
+        assert!(system_prompt(false, false, true, Some("   ".to_string()), None, None).is_none());
+    }
+
+    /// A card in a worktree group is told where it works and what not to do
+    /// there, and the note sits between Volery's paragraph and the person's
+    /// instructions, which still close the prompt.
+    #[test]
+    fn a_group_card_is_told_its_tree() {
+        let note = group_note("auth", "C:/r/.claude/worktrees/wt+auth");
+        for want in ["`wt/auth`", "wt+auth", "commit your work", "do not switch branches, push it", "started cold"] {
+            assert!(note.contains(want), "{want:?} missing from {note}");
+        }
+        let out = system_prompt(false, true, true, Some("# Standing\n\nmine".into()), None, Some(&note)).unwrap();
+        let at_note = out.find("worktree group").unwrap();
+        assert!(at_note < out.find("# Standing").unwrap(), "the person's instructions close the prompt");
+        assert!(system_prompt(false, true, true, None, None, None).unwrap().find("worktree group").is_none());
     }
 
     /// `--agents` takes JSON, so a definition that does not parse is a flag the
@@ -4057,6 +4114,8 @@ mod tests {
         ("notice.rs", include_str!("notice.rs")),
         ("update.rs", include_str!("update.rs")),
         ("freshen.rs", include_str!("freshen.rs")),
+        ("compact.rs", include_str!("compact.rs")),
+        ("renew.rs", include_str!("renew.rs")),
         /* In a subdirectory, so the scan below cannot find them: listed by
            hand because both answer tool calls — `reach.rs` its own and
            `link.rs` the receipts a remote spawn, send, recall and close

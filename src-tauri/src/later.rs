@@ -493,6 +493,16 @@ pub fn spawn_waker(app: AppHandle) {
 
 fn serve_due(app: &AppHandle) {
     let Some(store) = app.try_state::<Store>() else { return };
+    /* Every account spent: a wake delivered now is a turn that never reaches a
+       model, and the card comes back to a "the turn before never reached a
+       model" note about a wake it asked for (sink d0a91bf0). So nothing is
+       taken — the rows stay due, which is what makes this a hold rather than
+       a drop, and the first tick after the wall says there is room serves
+       them. `admit.rs` reads a wall that has said nothing as room, so a
+       silent webview cannot strand a wake. */
+    if crate::admit::wall_held(app).is_some() {
+        return;
+    }
     let now = crate::store::now();
     let due = {
         let Ok(conn) = store.0.lock() else { return };

@@ -82,6 +82,7 @@ export type CardChord =
   | "bypass"
   | "wake"
   | "clear"
+  | "renew"
   | "copy-resume"
   | "copy-cwd"
   | "processes"
@@ -316,6 +317,7 @@ export const CHORDS: readonly Chord[] = [
   { keys: "cb", label: "ignore the account caps / respect them", verb: { kind: "card", act: "bypass" } },
   { keys: "cw", label: "wake it", verb: { kind: "card", act: "wake" } },
   { keys: "cx", label: "clear it — start fresh", verb: { kind: "card", act: "clear" } },
+  { keys: "cn", label: "renew it — a fresh session from its own note", verb: { kind: "card", act: "renew" } },
   { keys: "cy", label: "copy its resume command", verb: { kind: "card", act: "copy-resume" } },
   { keys: "cd", label: "copy its working directory", verb: { kind: "card", act: "copy-cwd" } },
   { keys: "cp", label: "its processes", verb: { kind: "card", act: "processes" } },

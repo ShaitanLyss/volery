@@ -425,6 +425,6 @@ because it keeps the context that is the cost.
 - **No lineage.** The maker is opened through `Skein.open`, not `spawn.rs`, so the wall draws
   no parent line between the two cards. It would be a real reading — "this card came out of
   that plan" — and it is a separate piece of work from making the handoff exist.
-- **No cost instrument.** A card's context size *is* its per-turn price, and the wall could say
-  so on the card's face, which is what would make this gesture feel motivated rather than
-  clever. Deliberately its own piece of work; the handoff should not wait on it.
+- **No cost instrument** — built since, as its own piece of work (2026-11-02, `context.md`):
+  the ring's hover says what every request re-reads, a coordinator past 300k wears a quiet
+  renew mark, and a card can read its own size in `allowance` and `compact` or `renew` itself.

@@ -14,6 +14,7 @@
  * list in; what comes back is drawn. */
 
 import { queueOrder, type Waiting } from "./queue";
+import { rereads } from "./renewing";
 
 /** One conversation, as far as the sidebar is concerned. */
 export type ChatRow = {
@@ -124,8 +125,8 @@ export function ctxSaid(ctx: number, tokens: number | null | undefined): string 
   const pct = Math.round(Math.max(0, Math.min(1, ctx || 0)) * 100);
   const head = `memory ${pct}% full`;
   if (tokens == null || !(tokens > 0)) return head;
-  const t = tokens >= 10_000 ? `${Math.round(tokens / 1000)}k` : tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-  return `${head} · ${t} tokens`;
+  /* Said as a price, since that is what it is (sink `ef384c69`, `renewing.ts`). */
+  return `${head} · ${rereads(tokens)}`;
 }
 
 /** A row as drawn. */

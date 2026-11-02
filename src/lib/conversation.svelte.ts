@@ -84,6 +84,7 @@ import {
 import { onCredits } from "./credits";
 import { BILLED_NOTE } from "./accounts";
 import { holdOf, pending, readWaiting, sessionWakes, type Wake } from "./waiting";
+import { wallHold } from "./wallhold.svelte";
 import { backupSettled } from "./repair";
 import {
   compactEstimate,
@@ -96,7 +97,7 @@ import {
 import { costStep } from "./usage";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
-import type { Held, HeldItem } from "./holding";
+import { isQueuedSpawn, type Held, type HeldItem } from "./holding";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
@@ -960,7 +961,7 @@ export class Conversation {
   /** The wake this card is waiting on, if it is — from either clock, read the
    *  same way. Null while it is working or running background work: what it has
    *  armed for later is not what it is doing now. See `waiting.ts`. */
-  waiting = $derived(readWaiting(this.pendingWakes, clock.t));
+  waiting = $derived(readWaiting(this.pendingWakes, clock.t, wallHold.now));
 
   /** A job reported in, and no turn followed.
    *
@@ -1719,8 +1720,10 @@ export class Conversation {
         until: row.heldUntil ?? null,
         /* Whatever it was waiting on when the wall closed, it is the
            allowance's question now: `Skein.load` asks it straight away, and a
-           round that was in flight then is a turn this process never had. */
-        waiting: "allowance",
+           round that was in flight then is a turn this process never had.
+           Except a queued spawn, which is Rust's question (`admit.rs`) and is
+           known by its words, since that is what the store kept. */
+        waiting: isQueuedSpawn(row.held_why) ? "admission" : "allowance",
       };
       c.activity = c.held.why;
       /* And drawn again. A held message is in no session file, so the history
@@ -3720,7 +3723,7 @@ export class Conversation {
    *  `everSpoke` going false is what makes the next send spawn with
    *  `--session-id <new>` rather than `--resume`: there is no transcript to
    *  resume yet, and resuming an id that has never been written is an error. */
-  clear(sessionId: string) {
+  clear(sessionId: string, opts: { keepName?: boolean } = {}) {
     this.sessionId = sessionId;
     this.lines = [];
     this.history = [];
@@ -3795,15 +3798,22 @@ export class Conversation {
        model and its window are kept: which model this card talks to is a fact
        about the card, and the ring should read 0% of the same size rather than
        fall back to 200k until `system/init` arrives. */
-    this.title = UNNAMED;
-    /* And the name you gave goes with the name — a flag that outlived the title
-       it was protecting would leave the card refusing every generated title for
-       a session it has nothing to do with. */
-    this.namedByHand = false;
+    /* Unless it is renewing (`renew.rs`): the renewed card is doing the same
+       work under the same name, which Lyss chose (2026-11-02), and the
+       divider its note is drawn under says what happened. */
+    if (!opts.keepName) {
+      this.title = UNNAMED;
+      /* And the name you gave goes with the name — a flag that outlived the
+         title it was protecting would leave the card refusing every generated
+         title for a session it has nothing to do with. */
+      this.namedByHand = false;
+    }
     this.dormant = true;
     this.activity = "cleared — will wake on send";
-    /* One line, so an empty panel is an answer rather than a question. */
-    this.#push("meta", "cleared · a fresh session, in the same place");
+    /* One line, so an empty panel is an answer rather than a question. A
+       renewal says nothing here: its note arrives as the first line and is
+       drawn under its own divider. */
+    if (!opts.keepName) this.#push("meta", "cleared · a fresh session, in the same place");
   }
 
   /** stdout closed — the process is gone. */

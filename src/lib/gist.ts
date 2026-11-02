@@ -107,7 +107,7 @@ export type GistSource = {
   compactFrac: number | null;
   working: boolean;
   turnSince: number | null;
-  held: { why: string; until: number | null; waiting: "allowance" | "turn"; queue: readonly unknown[] } | null;
+  held: { why: string; until: number | null; waiting: "allowance" | "turn" | "admission"; queue: readonly unknown[] } | null;
   holding: { excess: number; fleet: number } | null;
   ending: Ending | null;
   /** `Conversation.owed`, decided there over the fold only it holds. */
@@ -132,7 +132,17 @@ export function gistOf(c: GistSource, live: Timeline | null): Gist {
     costUsd: c.costUsd,
     compactFrac: c.compactFrac,
     turnSince: c.working ? c.turnSince : null,
-    held: c.held ? { why: c.held.why, until: c.held.until, waiting: c.held.waiting, queue: c.held.queue.length } : null,
+    /* A spawn queued for allowance (`admit.rs`) travels as a card held for
+       allowance — which is what it is, from where the other wall stands — with
+       its own words in `why`, so a wall from before it reads it unchanged. */
+    held: c.held
+      ? {
+          why: c.held.why,
+          until: c.held.until,
+          waiting: c.held.waiting === "turn" ? "turn" : "allowance",
+          queue: c.held.queue.length,
+        }
+      : null,
     holding: c.holding,
     timeline: live
       ? { id: live.id, title: live.title, plan: live.plan, bornAt: live.bornAt, updatedAt: live.updatedAt }

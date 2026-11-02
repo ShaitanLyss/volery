@@ -6,6 +6,8 @@ import {
   handleOf,
   isRelayPrompt,
   isWakePrompt,
+  isRenewPrompt,
+  RENEW_NAME,
   relayBody,
   relayCap,
   relayFrom,
@@ -294,5 +296,29 @@ describe("a message this card sent, as a letter draws it", () => {
   test("any other call is not a message", () => {
     expect(sentOf({ name: "Bash", input: {} })).toBeNull();
     expect(sentOf(undefined)).toBeNull();
+  });
+});
+
+describe("a renewed card's note", () => {
+  /* What `renew.rs::compose` writes; the head is the contract. */
+  const note =
+    "[skein relay] renewed — this card has a fresh session. You wrote the note below to yourself before renewing — you are the same card, with the same handle, children and responsibilities; only the conversation is new.\n\n" +
+    "Round 4 done; waiting on ab12cd34.\n\nWhat the wall carried across for you (it holds all of this; none of it moved):\n- Children: none open.\n";
+
+  test("is the card's own and not another card's", () => {
+    expect(isRelayPrompt(note)).toBe(true);
+    expect(isRenewPrompt(note)).toBe(true);
+    expect(relayFrom(note)?.name).toBe(RENEW_NAME);
+    expect(relayCap(note)).toContain("renewed");
+    expect(relayCap(note)).not.toContain("another card");
+  });
+
+  test("is told apart from every other relay", () => {
+    expect(isRenewPrompt("[skein relay] from the wall —\n\nstopped")).toBe(false);
+    expect(isRenewPrompt("renewed — but typed by you")).toBe(false);
+  });
+
+  test("draws the note itself as its body", () => {
+    expect(relayBody(note).startsWith("Round 4 done")).toBe(true);
   });
 });

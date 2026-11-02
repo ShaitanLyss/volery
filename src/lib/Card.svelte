@@ -56,6 +56,10 @@
     /** The scrollback read off disk — what a card restored at launch holds
      *  until it speaks again. A card on another wall has none. */
     history?: readonly { kind: string; text: string }[];
+    /** How big its context is, in tokens — its price per request
+     *  (`renewing.ts`). Optional because an older wall's digest carries none;
+     *  then the ring says only how full it is. */
+    ctxTokens?: number | null;
   };
 </script>
 
@@ -63,6 +67,8 @@
   import { waterfall } from "./waterfall.svelte";
   import { onCredits } from "./credits";
   import CtxRing from "./CtxRing.svelte";
+  import { ctxSaid } from "./chatview";
+  import { renewMarkTitle, renewWorth } from "./renewing";
   import { boost } from "./boost.svelte";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
@@ -81,6 +87,7 @@
     pinned = false,
     lod = "wall",
     inbox = 0,
+    children = 0,
     draft = "",
     onfocus,
     onclose,
@@ -94,6 +101,10 @@
     /** Messages another card sent here while this one was dormant, waiting to
      *  be handed over when it wakes. See `.claude/rules/relay.md`. */
     inbox?: number;
+    /** How many cards it has open under it, wherever they run — what makes a
+     *  big card a coordinator worth renewing rather than a long piece of work
+     *  (`renewing.ts::renewWorth`). */
+    children?: number;
     /** What is typed in the dock, if this card is one the dock is aimed at.
      *  Empty for every other card, and for a draft the palette has claimed. */
     draft?: string;
@@ -106,6 +117,11 @@
      *  open it — the peek window draws cards too and has no file viewer. */
     onplan?: (path: string) => void;
   } = $props();
+
+  /** The quiet mark on a coordinator worth renewing, as its hover text. */
+  const renewMark = $derived(
+    renewWorth(conv.ctxTokens ?? 0, children) ? renewMarkTitle(conv.ctxTokens ?? 0, children) : null,
+  );
 
   /** What this card is called, or what it is about to be called.
    *
@@ -302,7 +318,15 @@
       </span>
       <span class="title" class:provisional={name.provisional}>{name.text}</span>
     </span>
-    <CtxRing ctx={conv.ctx} dormant={conv.dormant} />
+    <span class="ring" title={ctxSaid(conv.ctx, conv.ctxTokens)}
+      ><CtxRing ctx={conv.ctx} dormant={conv.dormant} /></span
+    >
+    {#if renewMark}
+      <!-- The quiet mark Lyss chose over a wall that prompts the card itself
+           (2026-11-02): a big coordinator, said in its price, nothing sent.
+           Achromatic — it is a suggestion, not a status. -->
+      <span class="renew" title={renewMark} aria-label={renewMark}>↻</span>
+    {/if}
     </span>
 
     <span class="act" title={conv.waiting ? waitTitle(conv.waiting, clock.t) : undefined}
@@ -488,6 +512,18 @@
 </div>
 
 <style>
+  .ring {
+    display: inline-flex;
+    flex: none;
+  }
+  .renew {
+    flex: none;
+    color: var(--paper-mute);
+    font-size: 0.8rem;
+    line-height: 1;
+    margin-left: -0.15rem;
+    cursor: help;
+  }
   .slot {
     position: relative;
     flex: 0 0 auto;

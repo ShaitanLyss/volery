@@ -1216,7 +1216,7 @@ pub fn handle(
         ALLOWANCE_TOOL => Some(format!(
             "{}\n\n{}",
             do_allowance(app, caller),
-            crate::compact::context_line(crate::compact::tokens_of(caller))
+            crate::compact::context_answer(app, caller)
         )),
         ACCOUNTS_TOOL => Some(do_accounts(app, caller)),
         _ => None,

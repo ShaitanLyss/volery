@@ -148,7 +148,7 @@ fn grouped(n: u64) -> String {
 /// sent, a long investigation concluded into a file — which is a judgement the
 /// card is better placed to make than any threshold, and the user explicitly
 /// wanted it to stay a judgement rather than `--autocompact` (sink `859c486d`).
-pub fn context_line(tokens: Option<u64>) -> String {
+pub fn context_line(tokens: Option<u64>, children: i64) -> String {
     let Some(t) = tokens else {
         return "This card's own context size has not been read yet — its process has not \
                 answered since it last started."
@@ -169,8 +169,35 @@ pub fn context_line(tokens: Option<u64>) -> String {
          conversation into a summary after this turn ends. Use it at a boundary — a round \
          done, a report sent, findings written to a file — not in the middle of work whose \
          detail you are still using; and anything you must keep exactly (paths, ids, the \
-         handles of cards you coordinate) belongs in a file or your last message first."
+         handles of cards you coordinate) belongs in a file or your last message first.{}",
+        renew_clause(children)
     )
+}
+
+/// For a card that has children open — a coordinator, the card this matters
+/// most for — the second remedy, which keeps no summary at all: a fresh session
+/// that starts from a note the card writes (`renew.rs`). Said only to the cards
+/// it fits, since a renewal is a judgement about a role and not about a size.
+fn renew_clause(children: i64) -> String {
+    if children <= 0 {
+        return String::new();
+    }
+    format!(
+        " You have {children} card(s) open under you, so `mcp__skein__renew` is the other \
+         option: at a round boundary it starts this same card on a fresh session that opens \
+         on a handoff note you write — your children, subscriptions, wakes and notices all \
+         stay yours — which leaves the next round far cheaper than a summary would."
+    )
+}
+
+/// `allowance`'s closing line for one card, read off the wall.
+pub fn context_answer(app: &AppHandle, caller: &str) -> String {
+    use tauri::Manager;
+    let children = app
+        .try_state::<crate::store::Store>()
+        .and_then(|s| s.0.lock().ok().map(|c| crate::store::live_children_of(&c, caller)))
+        .unwrap_or(0);
+    context_line(tokens_of(caller), children)
 }
 
 pub fn compact_schema() -> Value {
@@ -303,14 +330,17 @@ mod tests {
 
     #[test]
     fn the_line_says_a_number_not_a_ratio_and_names_the_tool() {
-        let big = context_line(Some(480_123));
+        let big = context_line(Some(480_123), 0);
         assert!(big.contains("480,123 tokens"), "{big}");
         assert!(big.contains("mcp__skein__compact"));
         assert!(!big.contains('%'), "an absolute size, never a percentage: {big}");
-        let small = context_line(Some(12_000));
+        let small = context_line(Some(12_000), 3);
         assert!(small.contains("12,000"));
         assert!(!small.contains("compact"), "nothing to suggest at this size: {small}");
-        assert!(context_line(None).contains("not been read yet"));
+        assert!(context_line(None, 0).contains("not been read yet"));
+        assert!(!big.contains("renew"), "a card with no children is not a coordinator: {big}");
+        let coord = context_line(Some(480_123), 3);
+        assert!(coord.contains("3 card(s) open under you") && coord.contains("mcp__skein__renew"), "{coord}");
     }
 
     #[test]

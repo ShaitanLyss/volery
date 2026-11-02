@@ -73,10 +73,13 @@ pub enum Cost {
 }
 
 /// Every verb this build will do for a person on another wall.
-pub const VERBS: [(&str, Cost); 8] = [
+pub const VERBS: [(&str, Cost); 9] = [
     ("stop", Cost::Person),
     ("wake", Cost::Work),
     ("clear", Cost::Work),
+    /* Asks the card to renew itself (`renew.rs`): a prompt into it, so the
+       owner's switch gates it exactly as a prompt is gated. */
+    ("renew", Cost::Work),
     ("account", Cost::Work),
     ("bypass", Cost::Work),
     ("aside", Cost::Cosmetic),

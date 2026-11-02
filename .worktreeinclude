@@ -1,0 +1,5 @@
+# Ignored files a fresh worktree needs, copied in when the wall makes one
+# (worktree::seed). One path per line, relative to this directory.
+
+# The voice runtime: fetched, not tracked, and tauri refuses to build without it.
+src-tauri/sherpa/

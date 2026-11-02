@@ -818,6 +818,14 @@
    *  Its own map rather than shadows added to `cardBoxes`, which `Flow` and
    *  `Wisps` are handed too — no strand box is one of the things a shadow does
    *  not get (`elsewhere.md`), and a map both read is a guard both share. */
+  /** How many cards each card has open under it, wherever either runs — the
+   *  same pairs the roots are drawn from, so a card wearing the renew mark is
+   *  one you can see roots coming out of (`renewing.ts`). */
+  const childCount = $derived.by(() => {
+    const out = new Map<string, number>();
+    for (const k of lineage) out.set(k.parent, (out.get(k.parent) ?? 0) + 1);
+    return out;
+  });
   const rootBoxes = $derived.by(() => {
     const out = new Map(cardBoxes);
     const lod = studio.lod;
@@ -2894,6 +2902,7 @@
     <Card
       conv={n.conv}
       focused={n.conv.id === focusedId}
+      children={childCount.get(n.conv.id) ?? 0}
       lod={glass ? "wall" : studio.lod}
       onfocus={(e) => {
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
@@ -2915,6 +2924,7 @@
     pinned={n.pinned}
     {lod}
     inbox={flights.inbox[n.conv.id] ?? 0}
+    children={childCount.get(n.conv.id) ?? 0}
     draft={draftIds.includes(n.conv.id) ? draft : ""}
     onfocus={(e) => {
       /* Only the focus. What is *selected* was settled by the press, up in

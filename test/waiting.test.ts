@@ -5,6 +5,7 @@ import {
   hereAt,
   holdOf,
   pending,
+  readWaiting,
   sessionWakes,
   waitLine,
   waitTitle,
@@ -220,5 +221,35 @@ describe("a subscription to an event source", () => {
     const hold = holdOf(waitingOf([sub("nova-feedback")], now - 3 * 3600 * S, now));
     expect(hold).toEqual({ lateS: null });
     expect(urgencyFor("ok", CLEAN_BLOOM_S + 3600, false, false, hold)).toBe("rest");
+  });
+});
+
+describe("a wake the wall is holding for allowance", () => {
+  const wake = (at: number, from: "wall" | "session" = "wall") => ({ id: "w", at, note: "check the build", from });
+
+  /** `admit.rs` keeps a due wake due while every account is spent, so it is not
+   *  late — it is waiting on an account, and the face says so. */
+  test("is not late, and says what it waits on", () => {
+    const now = 10 * 60_000;
+    const w = readWaiting([wake(now - 5 * 60_000)], now, { until: now + 30 * 60_000 })!;
+    expect(w.lateS).toBeNull();
+    expect(w.held).toEqual({ until: now + 30 * 60_000 });
+    expect(waitLine(w, now)).toContain("held for allowance until");
+    expect(waitTitle(w, now)).toContain("every account is spent");
+    const unknown = readWaiting([wake(now - 5 * 60_000)], now, { until: null })!;
+    expect(waitLine(unknown, now)).toBe("waiting — its wake is held until an account has room");
+  });
+
+  /** Before its time a wake waits on its time; and the CLI's own schedules fire
+   *  in the process whatever the wall thinks, so they can still be late. */
+  test("only once due, and only the wall's own", () => {
+    const now = 10 * 60_000;
+    const early = readWaiting([wake(now + 60_000)], now, { until: null })!;
+    expect(early.held).toBeUndefined();
+    const cli = readWaiting([wake(now - 5 * 60_000, "session")], now, { until: null })!;
+    expect(cli.held).toBeUndefined();
+    expect(cli.lateS).not.toBeNull();
+    const free = readWaiting([wake(now - 5 * 60_000)], now, null)!;
+    expect(free.lateS).not.toBeNull();
   });
 });

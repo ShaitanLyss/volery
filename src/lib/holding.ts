@@ -59,13 +59,27 @@ export type HeldItem = {
  *  `allowance` — no account will take work; `why` and `until` say which and
  *  for how long, and a timer and the allowance poll are the ways out.
  *  `turn` — an account is free and a round has gone out; what is left goes
- *  when that round's turn has finished, so nothing jumps it. */
+ *  when that round's turn has finished, so nothing jumps it.
+ *  `admission` — a card opened by `spawn` whose brief waits because the
+ *  account it would land on is nearly spent and other cards are working
+ *  (`admit.rs`). Rust is asked again whether it may start (`admit_now`); the
+ *  waterfall alone would let it go at once, since the account still has room. */
 export type Held = {
   queue: HeldItem[];
   why: string;
   until: number | null;
-  waiting: "allowance" | "turn";
+  waiting: "allowance" | "turn" | "admission";
 };
+
+/** How a queued spawn's `why` begins — Rust writes it (`admit::verdict`). It is
+ *  what a hold read back off the store is known by, since `held_why` is stored
+ *  and `waiting` is not: a queued spawn restored as an ordinary hold would be
+ *  released by the first sweep that found its account with room. */
+export const QUEUED_SPAWN = "queued — ";
+
+export function isQueuedSpawn(why: string | null | undefined): boolean {
+  return !!why && why.startsWith(QUEUED_SPAWN);
+}
 
 /** What a held line says under your words. Quiet and achromatic, unlike
  *  `· not sent`: nothing has gone wrong, and the card is keeping them. */

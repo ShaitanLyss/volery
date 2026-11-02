@@ -216,6 +216,7 @@ describe("the which-key hint", () => {
       { keys: "ck", label: "keep what it last said on the wall" },
       { keys: "cl", label: "keep what it last said on the glass" },
       { keys: "cm", label: "its menu — everything the right-click offers" },
+      { keys: "cn", label: "renew it — a fresh session from its own note" },
       { keys: "cp", label: "its processes" },
       { keys: "cr", label: "read what it last said" },
       { keys: "cw", label: "wake it" },

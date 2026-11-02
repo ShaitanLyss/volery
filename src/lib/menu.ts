@@ -509,6 +509,11 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            something to clear; on a card that has never spoken it would do
            nothing but mint an id. */
         has("clear") && t.spoken ? item("clear", "clear it — start fresh") : null,
+        /* Beside `clear`, as its gentler sibling: the card writes a handoff
+           note and comes back on a fresh session from it, keeping its children,
+           subscriptions, wakes and notices (`renew.rs`). Not danger, for clear's
+           reason, and less so — nothing is let go of. */
+        has("renew") && t.spoken ? item("renew", "renew it — fresh session, carries on") : null,
         has("close") ? item("close", t.host ? `close it on ${t.host}` : "close", true) : null,
   ];
 }

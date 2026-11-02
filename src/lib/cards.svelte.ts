@@ -283,6 +283,9 @@ export class LocalCard implements CardHandle {
       case "clear":
         await s.clear(c);
         break;
+      case "renew":
+        await s.askRenew(c);
+        break;
       /* The session id is what `--resume` takes, and this is the only place
          the UI hands it over. `sessionId` rather than `id`, or a cleared card
          would hand over a resume command for a session that never existed. */

@@ -173,6 +173,86 @@ pub fn base_ref(root: &str) -> String {
     "HEAD".into()
 }
 
+/* ── worktree groups ───────────────────────────────────────────────────────
+ *
+ * `spawn` takes a `worktree` key, and every card given the same key shares one
+ * tree (sink 93ecd434, Lyss 2026-10-16). A group is nothing but a branch name
+ * in a reserved namespace: the key `auth` is the branch `wt/auth`, the folder
+ * `.claude/worktrees/wt+auth`, and the row's existing `worktree` column holds
+ * the branch — so every reader that already resolves a worktree card
+ * (`run_dir`, `store::session_of`, the transcript reads, a wake) resolves a
+ * group card with no change, and two cards with one key land in one folder
+ * because `ensure` finds the second one already made.
+ *
+ * The namespace is what lets the wall treat a group differently from a branch
+ * a person typed: only a `wt/` tree is ever taken down by the wall
+ * (`retire`), because only those are trees the wall decided to make. */
+
+/// The branch namespace a worktree group lives in.
+pub const GROUP_PREFIX: &str = "wt/";
+
+/// The longest key a group may have. A folder name and half a branch name; long
+/// enough to say what the group is for, short enough to sit on a card.
+pub const MAX_KEY: usize = 40;
+
+/// A key as `spawn` was given it, made into the one spelling it is stored and
+/// compared in — or the reason it cannot be one.
+///
+/// Lowercase, because two agents writing `Auth` and `auth` mean one group and
+/// the folder would be one folder on Windows anyway — a case-only difference
+/// would be two branches in one directory, which git refuses half-way through.
+/// Letters, digits, `-`, `_` and `.` only: it becomes a branch component and a
+/// folder name, and refusing what either cannot hold is cheaper than folding it
+/// into something the caller did not write and will not recognise in a
+/// receipt. No `/`, so a group is exactly one level under `wt/`.
+pub fn group_key(raw: &str) -> Result<String, String> {
+    let key = raw.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        return Err("the worktree key was empty — leave `worktree` out to work in the \
+                    shared tree, or give the group a short name such as `auth`"
+            .into());
+    }
+    if key.len() > MAX_KEY {
+        return Err(format!(
+            "the worktree key {raw:?} is longer than {MAX_KEY} characters — it becomes a \
+             branch name and a folder, so give the group a short name"
+        ));
+    }
+    let ok_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
+    if !key.chars().all(ok_char)
+        || key.starts_with(['.', '-'])
+        || key.ends_with('.')
+        || key.contains("..")
+        || key.ends_with(".lock")
+    {
+        return Err(format!(
+            "the worktree key {raw:?} cannot be a branch name — use letters, digits, `-`, \
+             `_` and `.` only (no `/`, no spaces), for example `auth` or `ui-pass`"
+        ));
+    }
+    Ok(key)
+}
+
+/// The branch a group's cards share.
+pub fn group_branch(key: &str) -> String {
+    format!("{GROUP_PREFIX}{key}")
+}
+
+/// The group a card's worktree name belongs to, if it is one.
+pub fn group_of(worktree: &str) -> Option<&str> {
+    worktree.trim().strip_prefix(GROUP_PREFIX).filter(|k| !k.is_empty())
+}
+
+/// One lock for every tree this process makes.
+///
+/// Two cards spawned into one group a moment apart reach `ensure` on two
+/// threads, and both can find the folder absent: the second `git worktree add`
+/// then fails on a directory the first is still filling, and a card refuses to
+/// open over a race nobody can see. Making a tree takes about a second and is
+/// rare, so one lock across all of them costs nothing that matters; the check
+/// that the folder exists is repeated under it.
+static MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The tree for `name` under `root`, made if it is not there yet.
 ///
 /// Idempotent, and that is load-bearing rather than tidy: `spawn_now` reaches
@@ -182,6 +262,18 @@ pub fn base_ref(root: &str) -> String {
 /// match the CLI's, since the trees made before this module exist under that
 /// name and would otherwise each gain a duplicate beside them.
 pub fn ensure(root: &str, name: &str) -> Result<String, String> {
+    ensure_at(root, name, None)
+}
+
+/// `ensure`, with the commit a new branch starts from chosen by the caller.
+///
+/// A worktree group is opened by an orchestrator that will merge it back into
+/// the tree it is standing in, so its base is *that tree's* `HEAD` rather than
+/// the remote's main: an orchestrator that has committed a scaffold and not yet
+/// pushed it would otherwise hand its cards a tree without the scaffold. No
+/// fetch either — the base is a local commit, and the network has nothing to
+/// say about it. `None` is the ladder below, unchanged.
+pub fn ensure_at(root: &str, name: &str, base: Option<&str>) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("a worktree needs a branch name".into());
@@ -194,6 +286,10 @@ pub fn ensure(root: &str, name: &str) -> Result<String, String> {
        existing: a tree somebody has moved or deleted the guts of is a mess this
        cannot mend, and git will say so more precisely than a check here would
        when the agent runs its first command. */
+    if dir.exists() {
+        return Ok(path);
+    }
+    let _making = MAKING.lock().unwrap_or_else(|e| e.into_inner());
     if dir.exists() {
         return Ok(path);
     }
@@ -213,9 +309,13 @@ pub fn ensure(root: &str, name: &str) -> Result<String, String> {
        ignored on purpose: offline, or a credential that has expired, is not a
        reason to refuse to open a card, and the local ref is still a reasonable
        base. */
-    let _ = run(root, &["fetch", "origin", "--quiet"]);
-
-    let base = base_ref(root);
+    let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(b) => b.to_string(),
+        None => {
+            let _ = run(root, &["fetch", "origin", "--quiet"]);
+            base_ref(root)
+        }
+    };
     /* An existing branch is checked out rather than re-created. Typing a name
        that already exists reads as "put a card on that branch", which is a
        thing people do — and `-b` on an existing branch is a hard error, so the
@@ -250,12 +350,398 @@ pub fn ensure(root: &str, name: &str) -> Result<String, String> {
         let why = if err.is_empty() { "git worktree add failed".into() } else { err };
         return Err(format!("could not make a worktree for {name}: {why}"));
     }
+    seed(root, &dir);
     Ok(path)
+}
+
+/// The file at a repository's root naming what a new tree needs that git does
+/// not carry. The name is Claude Code's own, so a repository that already
+/// declares one for the CLI's worktrees gets the same files in the wall's.
+pub const INCLUDE_FILE: &str = ".worktreeinclude";
+
+/// Copy into a fresh tree the ignored files it cannot build without.
+///
+/// A worktree is a checkout, so it has exactly what git tracks — and a
+/// repository's working copy usually holds things git deliberately does not:
+/// a `.env`, a downloaded runtime, a generated key. This one is the case that
+/// found it: skein's `src-tauri/sherpa/` (the voice runtime, gitignored because
+/// it is fetched) is absent from a new tree, and `cargo build` there fails in
+/// tauri's resource check after two minutes of compiling — measured 2026-11-02
+/// on the first group tree ever made. A card in a group is a card that cannot
+/// build until somebody notices why.
+///
+/// `.worktreeinclude` at the root lists them, one per line: a path relative to
+/// the root, a directory taking everything under it, `*` allowed in the last
+/// component, `#` for a comment. Only what is in the main tree is copied, only
+/// into a tree being made for the first time, and never over a file already
+/// there — so it cannot clobber anything git checked out. A path that climbs
+/// out of the root is ignored rather than followed. Best effort throughout: a
+/// file that will not copy costs that file, never the card.
+pub fn seed(root: &str, tree: &Path) -> Vec<String> {
+    let Ok(listing) = std::fs::read_to_string(Path::new(root).join(INCLUDE_FILE)) else {
+        return Vec::new();
+    };
+    let mut copied = Vec::new();
+    for line in listing.lines() {
+        let rel = line.trim().trim_end_matches(['/', '\\']);
+        if rel.is_empty() || rel.starts_with('#') {
+            continue;
+        }
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute()
+            || rel_path.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        for found in expand(Path::new(root), rel_path) {
+            let Ok(inside) = found.strip_prefix(root) else { continue };
+            if copy_missing(&found, &tree.join(inside)) {
+                copied.push(inside.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    copied
+}
+
+/// The paths under `root` a `.worktreeinclude` line names: itself, or — with a
+/// `*` in its last component — every sibling that matches.
+fn expand(root: &Path, rel: &Path) -> Vec<PathBuf> {
+    let last = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !last.contains('*') {
+        let p = root.join(rel);
+        return if p.exists() { vec![p] } else { Vec::new() };
+    }
+    let parent = root.join(rel.parent().unwrap_or(Path::new("")));
+    let Ok(entries) = std::fs::read_dir(&parent) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| wildcard(&last, &e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect()
+}
+
+/// `*` matches any run of characters; nothing else is special.
+fn wildcard(pattern: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut rest = name;
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            let Some(r) = rest.strip_prefix(part) else { return false };
+            rest = r;
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else {
+            let Some(at) = rest.find(part) else { return false };
+            rest = &rest[at + part.len()..];
+        }
+    }
+    rest.is_empty()
+}
+
+/// Copy a file or a whole directory, skipping anything already at the
+/// destination. Whether anything was copied.
+fn copy_missing(from: &Path, to: &Path) -> bool {
+    if from.is_dir() {
+        let _ = std::fs::create_dir_all(to);
+        let Ok(entries) = std::fs::read_dir(from) else { return false };
+        let mut any = false;
+        for e in entries.flatten() {
+            any |= copy_missing(&e.path(), &to.join(e.file_name()));
+        }
+        any
+    } else if to.exists() {
+        false
+    } else {
+        if let Some(parent) = to.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::copy(from, to).is_ok()
+    }
+}
+
+/// What became of a group's tree when its last card closed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Retired {
+    /// Not a group, or no tree on disk: there was nothing to take down.
+    Nothing,
+    /// The tree is gone, and its branch with it when git agreed it was merged.
+    Removed,
+    /// Left exactly as it was, and why — the work in it is not anywhere else.
+    Kept(String),
+}
+
+/// Take a worktree group's tree down, **only if nothing in it would be lost.**
+///
+/// Called when the last open card in a group closes. The rule is the one Lyss
+/// gave the design — never delete unmerged work — and it is enforced three
+/// times over rather than once, because a wrong answer here destroys the very
+/// thing the group was opened to make:
+///
+/// - **Clean**: `git status --porcelain` says nothing, so there is no edit and
+///   no new file that is not in a commit. Ignored files (`node_modules`, a
+///   `target`) are not work and do not count.
+/// - **Merged**: the branch's tip is an ancestor of the main tree's `HEAD` or
+///   of the remote's main — so every commit the group made is on a branch that
+///   outlives it. A group merged back by rebase and fast-forward passes; one
+///   whose commits were cherry-picked does not, and is kept, which is the safe
+///   way to be wrong.
+/// - **Git agrees**: the removal is `git worktree remove` without `--force`,
+///   which refuses a dirty tree on its own, and the branch goes with `-d`,
+///   which refuses an unmerged one. Both checks above could be wrong and git
+///   would still say no.
+///
+/// Only a `wt/` tree is ever considered: a branch a person typed is theirs to
+/// tidy, and the wall never decided to make it.
+pub fn retire(root: &str, name: &str) -> Retired {
+    let Some(_) = group_of(name) else { return Retired::Nothing };
+    let branch = name.trim();
+    let dir = dir_for(root, branch);
+    if !dir.exists() {
+        return Retired::Nothing;
+    }
+    let d = dir.to_string_lossy().to_string();
+    /* Under the making lock, so a card being born into this group on another
+       thread is not handed a folder this is in the middle of deleting. */
+    let _making = MAKING.lock().unwrap_or_else(|e| e.into_inner());
+
+    let (ok, status, err) = run(&d, &["status", "--porcelain", "--untracked-files=normal"]);
+    if !ok {
+        return Retired::Kept(format!("git could not read the tree ({err}), so it was left alone"));
+    }
+    if !status.is_empty() {
+        let n = status.lines().count();
+        return Retired::Kept(format!(
+            "it has uncommitted work — {n} path{} changed or new",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    let tip = format!("refs/heads/{branch}");
+    let base = base_ref(root);
+    let merged = ["HEAD", base.as_str()]
+        .iter()
+        .any(|into| run(root, &["merge-base", "--is-ancestor", &tip, into]).0);
+    if !merged {
+        let (_, ahead, _) = run(root, &["rev-list", "--count", &format!("HEAD..{tip}")]);
+        let ahead = if ahead.is_empty() { "some".to_string() } else { ahead };
+        return Retired::Kept(format!(
+            "{ahead} commit(s) on {branch} are not on the main tree's branch — merge it back \
+             (rebase onto it, then fast-forward) or delete the branch yourself"
+        ));
+    }
+    let (ok, _, err) = run(root, &["worktree", "remove", &d]);
+    if !ok {
+        return Retired::Kept(format!("git would not remove it: {err}"));
+    }
+    let _ = run(root, &["branch", "-d", branch]);
+    Retired::Removed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* ── groups ────────────────────────────────────────────────────────── */
+
+    #[test]
+    fn a_key_is_folded_to_one_spelling() {
+        assert_eq!(group_key("  Auth ").unwrap(), "auth");
+        assert_eq!(group_key("ui-pass_2.b").unwrap(), "ui-pass_2.b");
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_a_branch_is_refused() {
+        for bad in ["", "   ", "a/b", "two words", ".hidden", "-x", "x.", "a..b", "x.lock", "é"] {
+            assert!(group_key(bad).is_err(), "{bad:?} was accepted");
+        }
+        assert!(group_key(&"k".repeat(MAX_KEY + 1)).is_err());
+        assert!(group_key(&"k".repeat(MAX_KEY)).is_ok());
+    }
+
+    #[test]
+    fn one_key_is_one_tree_and_two_keys_are_two() {
+        /* The whole mapping: the same key from two cards resolves to one
+           folder, so `ensure` finds the second card's tree already made, and
+           a different key never lands in it. */
+        let a1 = run_dir("C:/repo", Some(&group_branch(&group_key("A").unwrap())));
+        let a2 = run_dir("C:/repo", Some(&group_branch(&group_key("a").unwrap())));
+        let b = run_dir("C:/repo", Some(&group_branch(&group_key("b").unwrap())));
+        assert_eq!(a1, a2);
+        assert_ne!(a1, b);
+        assert!(a1.replace('\\', "/").ends_with(".claude/worktrees/wt+a"), "{a1}");
+    }
+
+    #[test]
+    fn only_the_wt_namespace_is_a_group() {
+        assert_eq!(group_of("wt/auth"), Some("auth"));
+        assert_eq!(group_of("feat/auth"), None);
+        assert_eq!(group_of("wt/"), None);
+    }
+
+    /* A real repository, because `retire` is a decision about what git says
+       and a stub would only test the stub. */
+    struct Repo(PathBuf);
+    impl Repo {
+        fn new(tag: &str) -> Repo {
+            let dir = std::env::temp_dir()
+                .join(format!("volery-wt-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let r = Repo(dir);
+            r.git(&["init", "-q", "-b", "main"]);
+            r.git(&["config", "user.email", "t@example.invalid"]);
+            r.git(&["config", "user.name", "t"]);
+            std::fs::write(r.0.join(".gitignore"), "ignored/\n").unwrap();
+            std::fs::write(r.0.join("a.txt"), "one\n").unwrap();
+            r.git(&["add", "."]);
+            r.git(&["commit", "-q", "-m", "one"]);
+            r
+        }
+        fn root(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+        fn git(&self, args: &[&str]) -> String {
+            let (ok, out, err) = run(&self.root(), args);
+            assert!(ok, "git {args:?}: {err}");
+            out
+        }
+        fn group(&self, key: &str) -> String {
+            let head = self.git(&["rev-parse", "HEAD"]);
+            ensure_at(&self.root(), &group_branch(key), Some(&head)).unwrap()
+        }
+        fn commit_in(&self, dir: &str, file: &str) {
+            std::fs::write(Path::new(dir).join(file), "work\n").unwrap();
+            assert!(run(dir, &["add", file]).0);
+            assert!(run(dir, &["commit", "-q", "-m", file]).0);
+        }
+    }
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn two_cards_in_one_group_share_a_tree_and_its_edits() {
+        let r = Repo::new("share");
+        let first = r.group("a");
+        let second = r.group("a");
+        assert_eq!(first, second);
+        std::fs::write(Path::new(&first).join("b.txt"), "x").unwrap();
+        assert!(Path::new(&second).join("b.txt").exists());
+        let other = r.group("b");
+        assert!(!Path::new(&other).join("b.txt").exists(), "a second group saw the first's edit");
+        assert!(!r.0.join("b.txt").exists(), "the main tree saw a group's edit");
+        assert_eq!(r.git(&["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+        let (_, branch, _) = run(&first, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        assert_eq!(branch, "wt/a");
+    }
+
+    #[test]
+    fn a_group_starts_from_the_commit_it_was_given() {
+        /* An unpushed local commit is the orchestrator's scaffold; a group
+           based on the remote's main would not have it. */
+        let r = Repo::new("base");
+        r.commit_in(&r.root(), "scaffold.txt");
+        let tree = r.group("a");
+        assert!(Path::new(&tree).join("scaffold.txt").exists());
+    }
+
+    #[test]
+    fn a_dirty_group_is_kept() {
+        let r = Repo::new("dirty");
+        let tree = r.group("a");
+        std::fs::write(Path::new(&tree).join("new.txt"), "unsaved").unwrap();
+        assert!(matches!(retire(&r.root(), "wt/a"), Retired::Kept(why) if why.contains("uncommitted")));
+        assert!(Path::new(&tree).join("new.txt").exists());
+    }
+
+    #[test]
+    fn an_unmerged_group_is_kept() {
+        let r = Repo::new("unmerged");
+        let tree = r.group("a");
+        r.commit_in(&tree, "feature.txt");
+        match retire(&r.root(), "wt/a") {
+            Retired::Kept(why) => assert!(why.contains("1 commit"), "{why}"),
+            other => panic!("unmerged work was not kept: {other:?}"),
+        }
+        assert!(Path::new(&tree).exists());
+        assert!(run(&r.root(), &["rev-parse", "--verify", "refs/heads/wt/a"]).0);
+    }
+
+    #[test]
+    fn a_merged_clean_group_is_taken_down_with_its_ignored_files() {
+        let r = Repo::new("merged");
+        let tree = r.group("a");
+        r.commit_in(&tree, "feature.txt");
+        /* What the orchestrator is told to do: rebase onto main (a no-op
+           here), then fast-forward main to the group. */
+        r.git(&["merge", "--ff-only", "wt/a"]);
+        /* A build output: ignored, and not work. */
+        std::fs::create_dir_all(Path::new(&tree).join("ignored")).unwrap();
+        std::fs::write(Path::new(&tree).join("ignored").join("big.bin"), "x").unwrap();
+        assert_eq!(retire(&r.root(), "wt/a"), Retired::Removed);
+        assert!(!Path::new(&tree).exists());
+        assert!(!run(&r.root(), &["rev-parse", "--verify", "refs/heads/wt/a"]).0);
+        assert!(r.0.join("feature.txt").exists(), "the merged work is on main");
+    }
+
+    #[test]
+    fn an_empty_group_is_taken_down() {
+        /* Opened, nothing committed, nothing left behind: its tip is the base,
+           which is on main already. */
+        let r = Repo::new("empty");
+        let tree = r.group("a");
+        assert_eq!(retire(&r.root(), "wt/a"), Retired::Removed);
+        assert!(!Path::new(&tree).exists());
+    }
+
+    #[test]
+    fn a_new_tree_is_seeded_with_what_worktreeinclude_names() {
+        let r = Repo::new("seed");
+        std::fs::write(
+            r.0.join(".gitignore"),
+            "ignored/\nruntime/\n.env*\nnot-listed.txt\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(r.0.join("runtime").join("lib")).unwrap();
+        std::fs::write(r.0.join("runtime").join("lib").join("a.dll"), "dll").unwrap();
+        std::fs::write(r.0.join(".env.local"), "KEY=1").unwrap();
+        std::fs::write(r.0.join("not-listed.txt"), "x").unwrap();
+        std::fs::write(
+            r.0.join(INCLUDE_FILE),
+            "# what a fresh tree needs\nruntime/\n.env*\n../outside\nC:\\abs\n",
+        )
+        .unwrap();
+        r.git(&["add", ".gitignore", INCLUDE_FILE]);
+        r.git(&["commit", "-q", "-m", "include"]);
+        let tree = r.group("a");
+        let t = Path::new(&tree);
+        assert!(t.join("runtime").join("lib").join("a.dll").exists());
+        assert!(t.join(".env.local").exists());
+        assert!(!t.join("not-listed.txt").exists());
+        /* Ignored, so the seed does not make the tree dirty — which is what
+           lets an untouched group still be retired. */
+        let (_, status, _) = run(&tree, &["status", "--porcelain"]);
+        assert!(status.is_empty(), "{status}");
+    }
+
+    #[test]
+    fn the_wildcard_matches_what_a_shell_would() {
+        assert!(wildcard(".env*", ".env"));
+        assert!(wildcard(".env*", ".env.local"));
+        assert!(wildcard("*.dll", "a.dll"));
+        assert!(wildcard("a*b*c", "aXXbYYc"));
+        assert!(!wildcard("*.dll", "a.lib"));
+        assert!(!wildcard(".env*", "x.env"));
+    }
+
+    #[test]
+    fn a_branch_a_person_named_is_never_retired() {
+        let r = Repo::new("person");
+        let tree = ensure_at(&r.root(), "feat/x", Some("HEAD")).unwrap();
+        assert_eq!(retire(&r.root(), "feat/x"), Retired::Nothing);
+        assert!(Path::new(&tree).exists());
+    }
 
     #[test]
     fn the_slug_matches_what_the_cli_makes() {

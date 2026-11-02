@@ -304,6 +304,33 @@ second mechanism beside it would be a second thing for `relay.ts` to learn to dr
   `mcp__skein__cancel_wake` beside the id — `servers`' argument for its siblings. The same
   receipt used to promise a note "in 10 minutes ago"; `within` is the forward half of `said`.
 
+### A wake waits while every account is spent (2026-11-02)
+
+Sink `d0a91bf0`, Lyss on 2026-10-16: with every account session-capped, a `wake_me` fired
+anyway. The woken turn never reached a model, and the card got the confusing "attempt 1 of 4 /
+the turn before never reached a model" note in exchange for its wake. So `serve_due` asks
+`admit::wall_held` first. While the wall says no account, and no credits with boost on, would
+take a turn, **nothing is taken**: the rows stay due, and the first tick after the wall has
+room serves them. That is `turns.md`'s rule for the nudge ("a deferred nudge is put back, not
+dropped") carried to the prompt Rust writes on its own initiative. The DELETE is still the
+claim, so nothing about once-only changed.
+
+- **The fact is the front end's** (`Skein.#noteAllowance`, `admit.rs`). It re-notes every
+  minute and on every refusal, and Rust reads a note older than five minutes as room. So a wall
+  whose webview has gone quiet serves wakes exactly as before, and the failure is a turn tried
+  and refused, never a wake that silently never fires.
+- **The face says it.** `waiting.ts::readWaiting` takes the wall's hold (`wallhold.svelte.ts`).
+  A due wake from the wall's own table reads `waiting — its wake is held for allowance until
+  15:40` instead of `should have woken at … · 4m ago`, and is never `late`, so the card stays
+  grey rather than warming to amber over a wait that is the wall's doing. The CLI's own
+  schedules (`CronCreate`, `ScheduleWakeup`) are not held. They fire inside the process
+  whatever the wall thinks, so they can still be late.
+- **All at once on release** is a known roughness. A tick serves every wake that came due
+  during the hold. That is one turn per waiting card, which is what they asked for, but they
+  land together at the reset.
+- A wall with no accounts registered never holds. Nothing there knows when the CLI's own
+  sign-in has run out (`accounts.md`, *Not built*).
+
 ### A card waiting on a wake says so (2026-10-15)
 
 `at rest` covered two states that want opposite things from you — **finished, nothing will
@@ -402,6 +429,9 @@ survive `--resume` reading the CLI's own file.
   for whose words they are: instructions written by another agent for this one, which is
   exactly the register nobody reads. Opened, the *whole* envelope shows, including the note
   addressed to the model, because what is worth reading is what the agent was actually handed.
+- **A sixth shape: `[skein relay] renewed —`**, the note a renewed card's fresh session opens
+  on (`renew.rs`, `context.md`). Its author is the card itself, earlier. `isRenewPrompt` tells it
+  apart so `Thread.svelte` can draw it under a divider in both rooms, never as a letter.
 - **`relayFrom` degrades rather than refuses.** A header this build cannot parse is still a
   message the agent was given and acted on, so it is drawn as a relay from nobody. Getting it
   wrong in the other direction is the thing that must not happen.

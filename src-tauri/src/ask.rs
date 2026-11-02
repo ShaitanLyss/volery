@@ -2229,6 +2229,14 @@ pub(crate) fn roster() -> Vec<Value> {
              summarise the conversation so far, reduce context size, every turn is \
              expensive, /compact, free up context before the next round",
         ),
+        /* Deferred on `compact`'s argument: `allowance`'s answer names it in
+           full for a card with children open, which is the card it is for. */
+        found_by(
+            crate::renew::renew_schema(),
+            "renew myself, start a fresh session, clear my context and carry on, hand off \
+             to my next session, coordinator context too large, rotate the coordinator, \
+             reset context at a round boundary keeping my children and subscriptions",
+        ),
         found_by(
             crate::spawn::close_schema(),
             "take a card off the wall, close a conversation I opened, tidy up a \
@@ -3875,6 +3883,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             })
                             .or_else(|| crate::limits::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::compact::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| crate::renew::handle(&app, &conversation_id, &tool, &args))
                             /* A census of the process table, so not free in
                                time — a few hundred milliseconds on a loaded
                                machine — but on this request's own thread, so it

@@ -62,7 +62,7 @@
   import { RELEASE } from "./follow.svelte";
   import { others } from "./others.svelte";
   import { spawnedHandle } from "./chatview";
-  import { isWakePrompt, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
+  import { isRenewPrompt, isWakePrompt, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
   import { ageOf } from "./chatview";
   import { cardName } from "./naming";
 
@@ -579,10 +579,19 @@
       class:here={hunt.here === b.key}
       class:sought={sought === b.key}
     >
+    {#if b.kind === "long" && b.line.kind === "relay" && isRenewPrompt(b.line.text)}
+      <!-- A session boundary inside one card (`renew.rs`): the card renewed
+           itself, and everything above was the conversation it left. Drawn as a
+           rule in both rooms, with the note it carried across as an ordinary
+           fold under it — never as a letter, since nobody sent it. -->
+      <div class="renewed" role="separator">
+        <span>renewed — a fresh session starts here, from the note below</span>
+      </div>
+    {/if}
     {#if b.kind === "line"}
       {@render one(b.line, lineKey(b.line, b.key))}
       {#if b.line.call}{@render linked([b.line])}{/if}
-    {:else if b.kind === "long" && chat && b.line.kind === "relay"}
+    {:else if b.kind === "long" && chat && b.line.kind === "relay" && !isRenewPrompt(b.line.text)}
       <!-- In chat view a relay is a message *from* whoever sent it, not a fold
            of machinery and never your own words (§5.5) — a letter: the sender
            named and openable where they are on the wall, then what they said.
@@ -663,7 +672,7 @@
           title={open[b.key] ? "fold it away" : fold.hint}
         >
           <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
-          {#if b.line.kind === "relay" && !isWakePrompt(b.line.text)}
+          {#if b.line.kind === "relay" && !isWakePrompt(b.line.text) && !isRenewPrompt(b.line.text)}
             <!-- The landing swallow chat view's letter wears, on the wall's fold
                  of the same message: one mark per direction, every surface. A
                  wake is not one — nobody sent it. -->
@@ -1388,6 +1397,21 @@
      mono; in chat view a quiet card, the mockups' `.work` — set by custom
      properties (`--run-*`) whose defaults are exactly the panel's, so nothing
      here reaches in from outside and the panel does not move. */
+  .renewed {
+    display: flex;
+    align-items: center;
+    gap: 0.75em;
+    margin: 0.6em 0 0.1em;
+    color: var(--paper-mute);
+    font-size: 0.78em;
+    letter-spacing: 0.02em;
+  }
+  .renewed::before,
+  .renewed::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--edge);
+  }
   .fold {
     display: flex;
     flex-direction: column;

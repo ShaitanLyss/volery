@@ -1,4 +1,5 @@
 mod actions;
+mod admit;
 mod amqp;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
@@ -68,6 +69,7 @@ mod project;
 mod reap;
 mod quit;
 mod relay;
+mod renew;
 /// Deleting a path from a card, behind the user's own click. See
 /// `.claude/rules/remove.md` — and note the deny it complements is the *user's*
 /// own, in `~/.claude/settings.json`, rather than anything Volery owns.
@@ -808,6 +810,9 @@ pub fn run() {
         .manage(Quit::default())
         /* Off until the wall says boost is on — see `credits.rs`. */
         .manage(credits::Boost::default())
+        /* Nothing until the wall says what its allowance admits — see
+           `admit.rs`, which reads silence as room. */
+        .manage(admit::Allowance::default())
         /* Whether the studio is spread over every screen, and the frame it came
            from. See `window.rs`. */
         .manage(window::Span::default())
@@ -1034,6 +1039,8 @@ pub fn run() {
             store::chat_home,
             store::update_conversation,
             store::clear_conversation,
+            renew::renew_conversation,
+            renew::renewals_pending,
             store::record_turn,
             store::spend_since,
             store::record_file_touch,
@@ -1132,6 +1139,9 @@ pub fn run() {
             joblog::job_output,
             quit::note_busy,
             credits::note_boost,
+            admit::note_allowance,
+            admit::forget_allowance,
+            admit::admit_now,
             credits::credits_spent,
             quit::stay,
             perf::sample_performance,

@@ -72,6 +72,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # bang,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
+                         # renewing,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
@@ -115,7 +116,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # tunnel.rs, applog.rs, sluice.rs,
                               # limits.rs, load.rs, pool.rs, perf.rs,
                               # timeline.rs, arrange.rs, notice.rs, machine.rs, credits.rs,
-                              # freshen.rs, screen.rs
+                              # freshen.rs, screen.rs, compact.rs, renew.rs
                               # subscribe/ (filter, ledger, engine, sources), eventhub.rs,
                               # amqp/ (codec, conn, ws)
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
@@ -293,6 +294,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `ask.md` | the `ask_user` MCP server, parking a `tools/call`, and several questions in one call | `ask.rs`, `asking.ts`, `Ask.svelte` |
 | `away.md` | being away: why a deferred question does not park at all, converting the one already on the wall, the agent-facing note that is in the reply rather than the schema, a tool that may say you are gone and not that you are back, the whole notification ladder muted, the morning pile — and then what the wall does with nobody watching, where touching it is not coming back and the hue rule becomes a condition | `presence.rs`, `presence.ts`, `presence.svelte.ts`, `Vigil.svelte`, `attention.svelte.ts`, `away.ts`, `pieces.ts`, `Away.svelte`, `gate.ts`, `Gate.svelte`, `sketch.ts`, `sketch.rs` |
 | `attach.md` | showing an agent a picture: an image written *into* the sentence rather than bolted onto it, what the CLI was probed to accept, the echo that is a second string because the replay drops the tokens, why deleting the token is the detach gesture, and what is never written to disk | `attach.ts`, `attach.svelte.ts`, `attach.rs`, `drafts.ts` |
+| `context.md` | a card's context as its per-request price: the size folded in Rust and said in `allowance`, `compact` queued behind the turn, and `renew` — the same card on a fresh session from a note it writes, keeping its children, subscriptions, wakes and notices, with deliveries held behind the note — plus the price on the ring and the coordinator's quiet mark | `compact.rs`, `renew.rs`, `renewing.ts` |
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
@@ -444,7 +446,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `plates.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
 `glance.ts`, `tether.ts`, `brightness.ts`, `peeking.ts`,
-`starting.ts`, `allowance.ts`, `cast.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`) are pure
+`starting.ts`, `allowance.ts`, `cast.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`, `renewing.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

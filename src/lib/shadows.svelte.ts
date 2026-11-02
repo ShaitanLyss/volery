@@ -386,6 +386,11 @@ export class Shadow {
   get ctx() {
     return this.digest.ctx;
   }
+  /** Its context size, off the gist, so a far coordinator wears the same
+   *  price and the same renew mark a card here does (`renewing.ts`). */
+  get ctxTokens() {
+    return this.gist.ctxTokens;
+  }
   /** Off while the wall is unheard: the card face says `set aside` ahead of
    *  everything else, and that would hide the one line that matters then. */
   get aside() {
@@ -2136,6 +2141,13 @@ export class Elsewhere {
           if (no) return answer("refused", no);
           conv.note(`cleared from ${p.host}`);
           return answer("taken");
+        }
+        /* The card is asked, by the prompt this wall's own menu sends; it is
+           the card that decides and writes the note (`renew.rs`). */
+        case "renew": {
+          conv.note(`asked to renew from ${p.host}`);
+          const sent = await this.#skein.askRenew(conv);
+          return sent ? answer("taken") : answer("refused", `${me} could not reach it — ${conv.activity}`);
         }
         default:
           return answer("refused", `${me} does not know how to ${p.verb} a card from another wall`);

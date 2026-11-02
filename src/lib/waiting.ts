@@ -115,7 +115,15 @@ export type Waiting = {
   lateS: number | null;
   /** The others, soonest first, for the tooltip. */
   rest: readonly Wake[];
+  /** Due, and held by the wall because every account is spent (`admit.rs`):
+   *  the wake stays due and fires once one has room, so it is not late — and
+   *  the face says what it is waiting on instead. `until` is the first door,
+   *  where one is known. */
+  held?: { until: number | null };
 };
+
+/** Every account spent, as the wall last said (`Skein.#noteAllowance`). */
+export type WallHold = { until: number | null } | null;
 
 /** Past its time, how long before a wake that has not woken anything is late. */
 export const LATE_AFTER_S = 60;
@@ -166,17 +174,22 @@ export function waitingOf(wakes: readonly Wake[], endedAt: number, now: number):
 /** The same, over a list `pending` already chose — so a caller can hold that
  *  list apart from the clock. The digest does: which wakes are pending changes
  *  on an event, and how late one is changes every second. */
-export function readWaiting(pend: readonly Wake[], now: number): Waiting | null {
+export function readWaiting(pend: readonly Wake[], now: number, wallHold: WallHold = null): Waiting | null {
   const [first, ...rest] = pend;
   if (!first) return null;
+  /* Only the wall's own wakes are held — the CLI's schedules fire in the
+     process whatever the wall thinks of the allowance — and only once due,
+     since before its time a wake is waiting on its time, not on an account. */
+  const held = wallHold !== null && first.from === "wall" && first.at !== null && first.at <= now;
   return {
     at: first.at,
     note: first.note,
     from: first.from,
     ...(first.on !== undefined ? { on: first.on } : {}),
     count: rest.length + 1,
-    lateS: lateFor(first.at, now),
+    lateS: held ? null : lateFor(first.at, now),
     rest,
+    ...(held ? { held: { until: wallHold.until } } : {}),
   };
 }
 
@@ -224,6 +237,11 @@ export function waitLine(w: Waiting, now: number): string {
     return `waiting — on ${w.on ?? "an event"}${others.size ? ` +${others.size}` : ""}`;
   }
   if (w.at === null) return "waiting — on a schedule";
+  if (w.held) {
+    return w.held.until !== null && w.held.until > now
+      ? `waiting — its wake is held for allowance until ${clockOf(w.held.until, now)}`
+      : "waiting — its wake is held until an account has room";
+  }
   const ahead = Math.ceil((w.at - now) / 1000);
   if (ahead > COUNTDOWN_UNDER_S) return `waiting — wakes at ${clockOf(w.at, now)}`;
   if (ahead > 0) return `waiting — wakes in ${span(ahead)}`;
@@ -247,8 +265,9 @@ function said(w: { at: number | null; note: string; from: WakeFrom; on?: string 
 
 /** The tooltip: why, in the card's own words, for each wake it is waiting on. */
 export function waitTitle(w: Waiting, now: number): string {
-  const head =
-    w.lateS !== null
+  const head = w.held
+    ? "this card's wake is due, and the wall is holding it because every account is spent — it fires once one has room, rather than into a turn that could not reach a model"
+    : w.lateS !== null
       ? "this card armed a wake that has not woken it — nothing has happened since its time"
       : w.from === "event"
         ? `this card is subscribed to ${w.on ?? "an event source"} and is waiting on it, not finished — it is woken only when a matching event arrives`

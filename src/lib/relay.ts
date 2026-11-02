@@ -85,6 +85,20 @@ const ORPHANED =
   /^\[skein relay\] from a card that has since been closed \(([0-9a-f]{4,36})\) —\s*$/;
 const NOTICE = /^\[skein relay\] from the billboard —/;
 const WALL = /^\[skein relay\] from the wall —/;
+/* A sixth, and the one whose author is the card itself, earlier: the note a
+   card wrote before renewing (`renew.rs::compose`), which its fresh session
+   opens on. Under the relay mark for the reason the comment above gives. Its
+   own predicate because the thread draws it as a divider — a session
+   boundary inside one card — rather than as a message among messages. */
+const RENEWED = /^\[skein relay\] renewed —/;
+
+/** The name the cap gives a renewal's note. */
+export const RENEW_NAME = "renewed";
+
+/** Whether this line is the note a renewed card's fresh session opened on. */
+export function isRenewPrompt(text: string): boolean {
+  return RENEWED.test(text.trimStart());
+}
 /* The fifth shape, and the only one under the other mark. `later::envelope`
    writes "…woken about this 5 minutes ago, and it is now:"; the elapsed phrase
    is the one thing in that header worth keeping, so it is lifted into the name
@@ -141,6 +155,7 @@ export function relayFrom(text: string): RelayFrom | null {
      Naming the wall is what stops it reading as "from another card", which
      would be the panel inventing an author for a line that has none. */
   if (WALL.test(head)) return { name: "the wall", handle: "", project: null };
+  if (RENEWED.test(head)) return { name: RENEW_NAME, handle: "", project: null };
   return { name: "another card", handle: "", project: null };
 }
 
@@ -179,6 +194,7 @@ export function relayCap(text: string): string {
   if (from?.name === WAKE_NAME) {
     return from.waitedS === undefined ? WAKE_NAME : `${WAKE_NAME} · waited ${spanWords(from.waitedS)}`;
   }
+  if (from?.name === RENEW_NAME) return "renewed · the note this session started from";
   return from ? `from ${from.name}` : "from another card";
 }
 

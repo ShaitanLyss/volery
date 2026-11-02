@@ -27,6 +27,9 @@ import { waterfall } from "./waterfall.svelte";
 import { freshening } from "./freshening.svelte";
 import { currentCli, runRow, staleCards, type Run as FreshRun, type Stale } from "./freshen";
 import { purse } from "./purse.svelte";
+import { allowanceFacts, sameFacts, type AllowanceFacts, type Queued } from "./admit";
+import { wallHold } from "./wallhold.svelte";
+import { untrack } from "svelte";
 import { boost } from "./boost.svelte";
 import {
   CREDITS,
@@ -93,6 +96,7 @@ import {
   NO_ACCOUNT_HELD,
   QUEUED_LINE,
   admit,
+  isQueuedSpawn,
   composeRound,
   handedBackNote,
   nextRound,
@@ -114,6 +118,7 @@ import { cliCommand, effortForModel, isEffort, type SlashCommand } from "./comma
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
 import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
+import { RENEW_AFTER_MS, RENEW_ASK } from "./renewing";
 import { handleOf } from "./relay";
 import { UNNAMED, isNamed, nameBesideProject, titleFromPrompt } from "./naming";
 import {
@@ -580,6 +585,11 @@ export class Skein {
    *  grows, one entry per card closed all day, and the timer that trims it would
    *  outlive this Skein — which in dev is every file save. */
   #leaves = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Cards that called `renew` and are waiting for their turn to end
+   *  (`renew.rs`), each with the timer that will check the turn stayed over.
+   *  Held for `#heals`' reason: a superseded Skein must not renew anything. */
+  #renewals = new Map<string, ReturnType<typeof setTimeout> | null>();
+  #renewing = new Set<string>();
   #studio: Studio;
   /** Held so `detach` can give them back — see ./listeners.ts for why that
    *  matters to a class with no lifecycle of its own. */
@@ -701,7 +711,26 @@ export class Skein {
       boost.mark({ kind: "ignite", at: Date.now() });
       if (this.convs.some((c) => c.held)) void this.releaseHeld();
     };
+    /* And whenever the readings, the registry or boost change, rather than at
+       the sweep's next minute: a wake due in forty seconds was served into a
+       wall that had just run out, because only the minute told Rust (found by
+       the lab run). `allowances` is reassigned on every change, so reading it
+       here is the subscription; the note itself runs untracked. */
+    this.#allowanceWatch = $effect.root(() => {
+      $effect(() => {
+        void waterfall.list;
+        void waterfall.allowances;
+        void purse.boost;
+        void purse.keyHeld;
+        untrack(() => void this.#noteAllowance());
+      });
+    });
+    this.#noteAllowance(true);
     this.#holdSweep = setInterval(() => {
+      /* What the allowance admits, said to Rust every minute so it never goes
+         stale there (`admit.rs` trusts a note for five) and a wake or a stop
+         notice held behind a spent wall goes the minute the wall has room. */
+      this.#noteAllowance(true);
       /* Only when something is actually waiting. The per-hold timer is the
          precise way out and this is the backstop for the case it cannot cover:
          a blocker that named no reset, so there was no instant to aim at. */
@@ -716,6 +745,7 @@ export class Skein {
   }
 
   #holdSweep: ReturnType<typeof setInterval> | null = null;
+  #allowanceWatch: (() => void) | null = null;
 
   /** This Skein has been let go of — see `detach`. Read by the rousing queue,
    *  which is the one loop here that outlives a single tick.
@@ -749,6 +779,8 @@ export class Skein {
     purse.whenOn = null;
     if (this.#holdSweep !== null) clearInterval(this.#holdSweep);
     this.#holdSweep = null;
+    this.#allowanceWatch?.();
+    this.#allowanceWatch = null;
     for (const t of this.#holds.values()) clearTimeout(t);
     this.#holds.clear();
     for (const t of this.#heals.values()) clearTimeout(t);
@@ -759,6 +791,8 @@ export class Skein {
     this.#nudges.clear();
     for (const t of this.#leaves.values()) clearTimeout(t);
     this.#leaves.clear();
+    for (const t of this.#renewals.values()) if (t !== null) clearTimeout(t);
+    this.#renewals.clear();
     /* The gate reader holds no subscription of its own — `keep` above owns that
        — but it does hold every observed run for every watched tree, which is the
        busiest table in the app. In dev a superseded Skein is constructed on
@@ -833,6 +867,7 @@ export class Skein {
   #fold(c: Conversation, event: any) {
     c.ingest(event);
     this.#persistConv(c, event);
+    if (event?.type === "result" && this.#renewals.has(c.id)) this.#renewSoon(c);
     this.#writeJobs(c);
     this.#writeGates(c);
     /* After the persist, deliberately. The turn that just broke is a `turn`
@@ -863,7 +898,7 @@ export class Skein {
        (`accountsync.rs`). The waterfall caches the registry, and a cached one
        would go on choosing an account switched off on the other laptop until
        somebody pressed something here; so it re-reads, and the panel with it. */
-    keep(listen("accounts:changed", () => void waterfall.refresh()));
+    keep(listen("accounts:changed", () => void waterfall.refresh().then(() => this.#noteAllowance())));
 
     keep(
       /* A batch, in stream order, at most twenty a second per card — the
@@ -895,7 +930,12 @@ export class Skein {
     );
     keep(
       listen<{ id: string; code: number | null }>("conv:exit", (e) => {
-        this.#byId.get(e.payload.id)?.markExited(e.payload.code);
+        const c = this.#byId.get(e.payload.id);
+        c?.markExited(e.payload.code);
+        /* A card that died between scheduling a renewal and its turn ending
+           is renewed all the same — the note is written, and the process is
+           already gone, which is the half of a renewal that was left. */
+        if (c && this.#renewals.has(c.id) && !this.#renewing.has(c.id)) this.#renewSoon(c);
       }),
     );
 
@@ -1125,10 +1165,14 @@ export class Skein {
          *  room, or null for the ladder — `asked_account` refuses anything
          *  else before a card is minted. A preference, not a pin. */
         account: string | null;
+        /** Set when the allowance would not start it yet (`admit.rs`): the
+         *  card opens with its brief held, and Rust is asked again before it
+         *  goes. */
+        queued?: Queued | null;
       }>(
         "spawn:asked",
         (e) => {
-          const { id, parent_id, cwd, worktree, prompt, title, model, effort, account } =
+          const { id, parent_id, cwd, worktree, prompt, title, model, effort, account, queued } =
             e.payload;
           /* The root is recorded before the card is opened, and `born` is
              stamped here rather than read back off the row: this is the moment
@@ -1137,7 +1181,7 @@ export class Skein {
              the row (`record_spawn`), so nothing is being claimed early — this
              is the same fact, in the frame that draws it. */
           this.kin = [...this.kin, { child: id, parent: parent_id, born: Date.now() }];
-          void this.openSpawned(id, cwd, worktree, prompt, title, model, effort, account);
+          void this.openSpawned(id, cwd, worktree, prompt, title, model, effort, account, queued ?? null);
         },
       ),
     );
@@ -1167,11 +1211,16 @@ export class Skein {
         effort: string | null;
         fromHost: string;
         fromCard: string | null;
+        /** This wall's admission, for a card asked for from another wall. */
+        queued?: Queued | null;
+        /** The worktree group's branch, its tree already made by Rust — or
+         *  absent from a wall before groups, which is no group. */
+        worktree?: string | null;
       }>("flyway:spawn", (e) => {
-        const { id, cwd, prompt, title, model, effort } = e.payload;
+        const { id, cwd, prompt, title, model, effort, queued, worktree } = e.payload;
         const before = this.fault;
         void (async () => {
-          await this.openSpawned(id, cwd, null, prompt, title, model, effort, null);
+          await this.openSpawned(id, cwd, worktree ?? null, prompt, title, model, effort, null, queued ?? null);
           if (this.#byId.has(id)) {
             await invoke("flyway_opened", { id }).catch(() => {});
           } else {
@@ -1246,6 +1295,14 @@ export class Skein {
          indistinguishable from a card you misremembered being there; your own
          close needs no such thing, because your hand is what did it. See
          `close`, and `LEAVE_MS`. */
+      /* A card called `renew` (`renew.rs`). Nothing happens until its turn is
+         over; the wall only notes it and says so on the card. */
+      listen<{ id: string }>("renew:asked", (e) => {
+        const c = this.#byId.get(e.payload.id);
+        if (c) this.#renewAsked(c);
+      }),
+    );
+    keep(
       listen<{ id: string; parent_id: string }>("close:asked", (e) => {
         const conv = this.#byId.get(e.payload.id);
         if (conv) void this.close(conv, "agent");
@@ -1542,6 +1599,16 @@ export class Skein {
          unset, so every restored root is drawn already grown — the alternative
          is twenty cards sprouting at launch as though each had just been
          opened. */
+      /* A renewal scheduled before this window was listening — a reload
+         mid-renewal — is picked up rather than left holding the card's post. */
+      void invoke<string[]>("renewals_pending")
+        .then((ids) => {
+          for (const id of ids ?? []) {
+            const c = this.#byId.get(id);
+            if (c) this.#renewAsked(c);
+          }
+        })
+        .catch(() => {});
       void invoke<[string, string][]>("lineage")
         .then((pairs) => {
           this.kin = (pairs ?? []).map(([child, parent]) => ({ child, parent }));
@@ -1857,6 +1924,10 @@ export class Skein {
     /* Required for the same reason: a label that quietly failed to arrive is
        a card on an account the parent did not choose. Null is the ladder. */
     account: string | null,
+    /* Rust's admission (`admit.rs`): null to start at once, or why it waits
+       and until when. Required so a caller cannot drop a queue on the floor
+       and start a lane the wall had decided should wait. */
+    queued: Queued | null,
   ): Promise<void> {
     const conv = await this.#openIn(
       cwd,
@@ -1875,7 +1946,26 @@ export class Skein {
        sends no brief (`flyway/opening.rs`): the card waits for its first
        message, as one opened by this wall's own `+` does. Only that ask may
        arrive empty — `link.rs` refuses an agent's before it gets here. */
-    if (prompt.trim()) await this.send(conv, prompt, undefined, { own: true });
+    if (!prompt.trim()) return;
+    if (queued) {
+      this.#queueSpawn(conv, prompt, queued);
+      return;
+    }
+    await this.send(conv, prompt, undefined, { own: true });
+  }
+
+  /** A spawned card whose brief waits (`admit.rs`), drawn the way a prompt
+   *  waiting for allowance is: the line held, the why on the face, the time it
+   *  starts at the latest. Lyss, 2026-11-02: visible, so it can be seen and
+   *  cancelled. Escape drops it like any hold; the brief is Skein's to send, so
+   *  it is not handed to your draft. It goes when `releaseHeld` finds Rust
+   *  admitting it — the window reset, another account free, or nothing else
+   *  working. */
+  #queueSpawn(conv: Conversation, prompt: string, queued: Queued) {
+    const item = this.#hold(conv, prompt, undefined, queued.why, queued.until, true);
+    conv.held = { ...conv.held!, waiting: "admission" };
+    conv.drawHeld(item.key, item.text);
+    conv.note(queued.why);
   }
 
   /** A card that moved here from another wall: born through `#openIn` like
@@ -3065,6 +3155,10 @@ export class Skein {
     const label = conv.accountLabel;
     if (!label || onCredits(label)) return;
     waterfall.observe(label, ev.rate_limit_info);
+    /* The stream is the first to know an account crossed a line, so Rust
+       hears it then rather than at the sweep's next minute. Written only when
+       the summary changed. */
+    void this.#noteAllowance();
   }
 
   /** Tell the waterfall an account has just been refused.
@@ -3115,6 +3209,9 @@ export class Skein {
       return;
     }
     waterfall.markSpent(label, hint);
+    /* A refusal can be the one that leaves the wall with nowhere to go, and
+       a wake should not be served into that for the minute until the sweep. */
+    void this.#noteAllowance();
     /* A limit that lands mid-turn is not re-sent (`mayHeal`) but is carried on
        (`CARRY_ON_TEXT`), which arms a heal and so skips this. What reaches here
        is the card whose carry budget is spent, or one with nothing to send: it
@@ -4050,10 +4147,59 @@ export class Skein {
        how a card gets woken in order to be refused. Rust's floor makes this
        cheap when it has just been asked. */
     await waterfall.poll();
+    /* And Rust told what that reading admits, before a queued spawn asks it. */
+    await this.#noteAllowance(true);
     for (const conv of this.convs) {
       if (this.#gone) return;
       if (conv.held) await this.#releaseCard(conv);
     }
+  }
+
+  /** The last allowance facts said to Rust, so the stream's many readings
+   *  write only when something changed. */
+  #noted: AllowanceFacts | null = null;
+  #notedManaging: boolean | null = null;
+
+  /** Tell Rust what the allowance admits (`admit.ts`, `admit.rs`): the
+   *  decision a card with nothing to stick to would get, summarised. `force`
+   *  writes even an unchanged fact, which is the sweep's minute keeping it
+   *  fresh. A wall managing no accounts tells Rust to forget, since then there
+   *  is no allowance it could know about and nothing should wait on one. */
+  async #noteAllowance(force = false): Promise<void> {
+    if (this.#gone) return;
+    if (!this.#managing) {
+      if (this.#notedManaging !== false) {
+        this.#notedManaging = false;
+        this.#noted = null;
+        wallHold.now = null;
+        await invoke("forget_allowance").catch(() => {});
+      }
+      return;
+    }
+    const d = route({
+      current: null,
+      home: null,
+      credits: purse.standing(),
+      ladder: (stickTo) => waterfall.next({ stickTo }),
+      state: (label) => waterfall.stateOf(label),
+    });
+    const facts = allowanceFacts(d, (label) => {
+      const account = waterfall.list.find((a) => a.label === label);
+      return account ? { account, allowance: waterfall.allowances[label] } : null;
+    });
+    if (!force && this.#notedManaging === true && sameFacts(this.#noted, facts)) return;
+    this.#noted = facts;
+    /* The same fact for the faces: a wake the wall is holding is not late. */
+    const hold = facts.held ? { until: facts.until } : null;
+    if (hold?.until !== wallHold.now?.until || !hold !== !wallHold.now) wallHold.now = hold;
+    this.#notedManaging = true;
+    await invoke("note_allowance", {
+      held: facts.held,
+      until: facts.until,
+      landing: facts.landing,
+      spent: facts.spent,
+      resetsAt: facts.resetsAt,
+    }).catch(() => {});
   }
 
   /** What is left of a queue goes when the round ahead of it has finished its
@@ -4079,6 +4225,27 @@ export class Skein {
   async #releaseCard(conv: Conversation) {
     if (!conv.held || this.#releasing.has(conv.id)) return;
     if (conv.working || conv.pendingHeal || this.#heals.has(conv.id)) return;
+    if (conv.held.waiting === "admission") {
+      /* Rust's question, not the waterfall's: the account still has room by
+         every reading here, which is exactly why the waterfall would let it go.
+         `releaseHeld` has just noted a fresh reading, so this is asked of the
+         wall as it is. A failed ask keeps it queued — the reset timer and the
+         next sweep ask again. */
+      const still = await invoke<Queued | null>("admit_now").catch(() => conv.held?.waiting === "admission" ? { why: conv.held.why, until: conv.held.until } : null);
+      if (!conv.held || conv.held.waiting !== "admission") return;
+      if (still) {
+        if (still.why !== conv.held.why || still.until !== conv.held.until) {
+          conv.held = { ...conv.held, why: still.why, until: still.until };
+          conv.activity = still.why;
+          this.#writeHold(conv);
+          this.#aimHold(conv, still.until);
+        }
+        return;
+      }
+      /* Admitted: from here it is an ordinary hold, and the waterfall decides
+         where it runs. */
+      conv.held = { ...conv.held, waiting: "allowance" };
+    }
     if (this.#managing) {
       /* The same decision the send will make, so a hold boost can take onto
          credits is released rather than re-held. */
@@ -4783,6 +4950,77 @@ export class Skein {
       conv.retiring = false;
       this.fault = String(err);
       return this.fault;
+    }
+  }
+
+  /** Ask a card to renew itself: Lyss's gesture (the card's menu, `space c n`,
+   *  or another wall's act). Only the card can write the note — it alone knows
+   *  what it decided — so this is a prompt asking it to, drawn as hers because
+   *  it is. True if the prompt went (or is held for an account). */
+  async askRenew(conv: Conversation): Promise<boolean> {
+    return this.send(conv, RENEW_ASK, undefined, { own: true });
+  }
+
+  #renewAsked(c: Conversation) {
+    if (!this.#renewals.has(c.id)) this.#renewals.set(c.id, null);
+    c.activity = "renewing — after this turn";
+    if (!c.working) this.#renewSoon(c);
+  }
+
+  /** Renew once the card has been idle for `RENEW_AFTER_MS` — long enough for
+   *  a message queued behind the turn to be taken up in the session it was
+   *  sent to, rather than lost with that session's process. A turn that does
+   *  start meanwhile ends with a `result`, which comes back here. */
+  #renewSoon(c: Conversation) {
+    /* Said again here, after the turn's own fold has written its last word
+       over the one `#renewAsked` set — so the gap before the renewal reads as
+       what it is rather than as a card at rest. */
+    c.activity = "renewing — after this turn";
+    const old = this.#renewals.get(c.id);
+    if (old) clearTimeout(old);
+    this.#renewals.set(
+      c.id,
+      setTimeout(() => {
+        if (this.#gone || !this.#byId.has(c.id) || c.working) return;
+        void this.#renew(c);
+      }, RENEW_AFTER_MS),
+    );
+  }
+
+  /** The renewal itself: `clear`'s shape, keeping what a clear lets go of.
+   *
+   *  Rust has already written the note into the card's inbox and is holding
+   *  everything sent to it behind the note (`renew.rs`). This ends the old
+   *  process, points the card at a fresh session without resetting its title
+   *  (`renew_conversation`), and gives it a process again — whose spawn drains
+   *  the inbox, note first. */
+  async #renew(c: Conversation) {
+    if (this.#renewing.has(c.id)) return;
+    this.#renewing.add(c.id);
+    this.#dropHeal(c);
+    this.#dropNudge(c);
+    const dropping = this.#dropHold(c, "cleared");
+    try {
+      await this.#waking.get(c.id)?.catch(() => {});
+      if (!c.dormant) {
+        c.retiring = true;
+        await invoke("close_conversation", { id: c.id });
+      }
+      const sessionId = crypto.randomUUID();
+      await invoke("renew_conversation", { id: c.id, sessionId });
+      await invoke("forget_jobs", { conversationId: c.id }).catch(() => {});
+      await dropping;
+      c.clear(sessionId, { keepName: true });
+      const t = this.#renewals.get(c.id);
+      if (t) clearTimeout(t);
+      this.#renewals.delete(c.id);
+      c.activity = "renewed — reading its note";
+      if (!(await this.wake(c))) c.activity = "renewed — its note waits for the next wake";
+    } catch (err) {
+      c.retiring = false;
+      this.fault = `could not renew ${c.title}: ${String(err)}`;
+    } finally {
+      this.#renewing.delete(c.id);
     }
   }
 

@@ -25,6 +25,7 @@ export type Verb =
   | "bypass"
   | "account"
   | "clear"
+  | "renew"
   | "copy-resume"
   | "copy-cwd"
   | "processes"
@@ -70,6 +71,9 @@ export const COST: Record<Verb, Cost> = {
   stop: "person",
   wake: "work",
   clear: "work",
+  /* Asks the card to renew itself (`renew.rs`, `renewing.ts`): a prompt, so
+     it starts a turn where the card runs, and is held to that wall's switch. */
+  renew: "work",
   // An account is spent where the card runs: the owner's money, the owner's caps.
   account: "work",
   bypass: "work",
@@ -395,6 +399,10 @@ export function canDo(remote: Remote | null, verb: Verb, face: VerbFace): Can {
        screen, which a cleared card still has. See the menu's own note. */
     case "clear":
       return face.spoken || face.working ? "yes" : { no: "nothing to clear yet" };
+    /* A note is written by a turn, so a card that has said nothing has nothing
+       to carry across — and a fresh card is already as cheap as a renewal. */
+    case "renew":
+      return face.spoken ? "yes" : { no: "nothing to renew yet — it has not spoken" };
     case "processes":
       return face.dormant ? { no: "it is dormant, so it holds no processes" } : "yes";
     default:
@@ -445,6 +453,7 @@ export function actFor(
       return { verb, args: { sawWorking: face.working } };
     case "wake":
     case "stop":
+    case "renew":
     case "copy-resume":
     case "copy-cwd":
       return { verb, args: {} };
