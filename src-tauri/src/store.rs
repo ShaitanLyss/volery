@@ -4567,6 +4567,75 @@ fn worktree_row(conn: &Connection, id: &str) -> Option<String> {
     .filter(|n: &String| !n.trim().is_empty())
 }
 
+/// How many open cards stand in one tree — the territory at `cwd`, on the
+/// branch `worktree`. A worktree group's census: `spawn` says it in the
+/// receipt of a card joining one, and a close asks it to know whether the card
+/// leaving was the group's last (`worktree::retire`). Open means not closed;
+/// a dormant card is still in its group and still holds the tree.
+pub fn open_in_tree(conn: &Connection, cwd: &str, worktree: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM conversation
+          WHERE closed_at IS NULL AND cwd = ?1 AND worktree = ?2",
+        params![cwd, worktree],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// When a closed card was the last in a worktree group, take the group's tree
+/// down if nothing in it would be lost — on a thread of its own, since removing
+/// a tree with a build in it can take a while and the close is a command. The
+/// verdict goes in the chronicle either way: a tree kept is work the user may
+/// not know is still out there, and a tree removed is a branch they may look
+/// for. `worktree::retire` is the whole of the safety argument.
+fn retire_group_if_last(app: &tauri::AppHandle, conn: &Connection, id: &str) {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT cwd, worktree, project_id FROM conversation WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some((cwd, Some(tree), project)) = row else { return };
+    if crate::worktree::group_of(&tree).is_none() || open_in_tree(conn, &cwd, &tree) > 0 {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        /* A beat first. The close kills the card's process tree as a separate
+           command, and a process still standing in the tree holds files that
+           make `git worktree remove` refuse — which would be safe, and would
+           keep a tree for no reason. Then the census again: a card can be
+           spawned into the group inside that beat, and a group with a card in
+           it is not finished. */
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        {
+            use tauri::Manager;
+            let Some(store) = app.try_state::<Store>() else { return };
+            let Ok(conn) = store.0.lock() else { return };
+            if open_in_tree(&conn, &cwd, &tree) > 0 {
+                return;
+            }
+        }
+        let (level, mark, detail) = match crate::worktree::retire(&cwd, &tree) {
+            crate::worktree::Retired::Nothing => return,
+            crate::worktree::Retired::Removed => (
+                "note",
+                format!("removed worktree group {tree}"),
+                "its last card closed, and everything in it was committed and merged".to_string(),
+            ),
+            crate::worktree::Retired::Kept(why) => (
+                "note",
+                format!("kept worktree group {tree}"),
+                format!("its last card closed, but {why}"),
+            ),
+        };
+        crate::chronicle::note(&app, project.as_deref(), "volery", level, &mark, &detail);
+    });
+}
+
 /// The two standing instructions a card is to be told: the wall's, and its own
 /// territory's. `crate::guidance` composes them; this is only the reading.
 ///
@@ -5710,6 +5779,10 @@ pub fn close_conversation_record(
            causes: the front end hands the words back before it gets here
            (`Skein.close`). */
         forget_held(&conn, &id)?;
+        /* And its worktree group's tree, if it was the last card in one and
+           nothing in the tree would be lost. Asked after `closed_at` is set,
+           in the same lock, so the census does not count the card leaving. */
+        retire_group_if_last(&app, &conn, &id);
     }
     /* And the files written for it — browser drags and pasted blobs, which
        were kept for the life of the card because a later turn may read one

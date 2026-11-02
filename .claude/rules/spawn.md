@@ -63,6 +63,22 @@ reading all turn.
   `Standing::Here` inherits `me.worktree` now, and only `Here` does — a card opened in another
   territory has no business carrying this one's branch name, and `worktree::ensure` would make
   a tree for it there.
+- **`worktree` overrides the inheritance, and it is the one way a spawn changes trees.** A key
+  puts the child in a worktree group — the branch `wt/<key>`, shared only with cards given the
+  same key — whichever tree the parent stands in, here or in a named territory or on another
+  wall (`host`). `.claude/rules/worktree.md`, *Worktree groups*, has the mechanism; what belongs
+  here is the tool's half. The tree is made **inside the call** (`make_group`), after the
+  territory is resolved and before the id is minted, with the store lock dropped around the git
+  work and taken again for `record_spawn` — so a key that cannot become a tree is a refusal that
+  wrote nothing. The receipt (`group_receipt`) says three different things for three cases:
+  a **fresh** group gets its branch, folder and base, that it starts cold, and the exact merge
+  — `git rebase <your branch>` in its tree, `git merge --ff-only wt/<key>` in yours — because the
+  caller acts on that long after the call and a merge done wrong is a merge commit on a linear
+  main; **joining** says how many open cards are already in it, and that a `worktree_base` was
+  not used; the caller's **own** group is the shared-checkout warning below. The description
+  teaches when to group (a lane that writes and commits; one key for cards that must see each
+  other's edits), that a group's builds are not shared with the caller's tree, and that the
+  choice is now or never. `spawn` is in the deferred tier, so none of that is paid per turn.
 - **And the receipt says they share a checkout**, because that is the one thing about a card
   opened here that the caller cannot see and has to act on. Two agents in one tree is how a
   morning's work ends up under somebody else's commit message (sink 8d3dab75, and the five
@@ -355,6 +371,59 @@ The fix is a check rather than a transport:
 - **An unknown word refuses** (`asked_needs`), for `asked_model`'s reason: a dropped need is
   a card believed checked. `mcp__skein__walls` shows each wall's `holds` and `lacks`, and only
   for a wall that says so — an older one's empty lists would be a statement it never made.
+
+### A spawn is admitted against the allowance (2026-11-02)
+
+Sink `d08fa95e`. On 2026-10-30 every card of the Remote Desktop fan-out (`4866b334` and four
+lanes) and the RISE coordinator hit "You've hit your 5-hour limit" within minutes of each
+other, twice in a day. All of them then paid a cold full-context cache rewrite together at the
+reset. With the bounds in this file switched off, nothing between a coordinator and the window
+was reading the window.
+
+**The rule, and it is Lyss's:** a new card **queues** when the account it would land on is
+past **85%** of its ceiling (`admit::CEILING`) **and some other card on the wall is mid-turn**.
+Otherwise it starts. Running work finishes before new work starts. That is what stops a
+window ending with N half-done contexts that all re-pay their cache writes at the same reset.
+
+- **The front end says the outcome; Rust holds the rule.** Which account a new card would land
+  on is `credits.ts::route` over `accounts.ts::choose`. Caps, tiers, refusals heard on the
+  stream and boost all live there, and a Rust copy would drift. So `Skein.#noteAllowance`
+  summarises one decision for a card with nothing to stick to (`admit.ts::allowanceFacts`):
+  held, or the landing account and how close it is to its ceiling (`nearness`, `spentOf`'s
+  arithmetic with the window kept so its reset is known). It notes that to Rust through
+  `note_allowance`, `quit::note_busy`'s shape: every minute on the hold sweep, on a rate-limit
+  event, on a refusal and on `accounts:changed`. `admit::verdict` is the only place 85% is
+  written, and `test/admit.test.ts` holds that the TypeScript never names it.
+- **A reserve with room means nothing queues.** The landing account is the one the ladder would
+  actually use, so a spent tier 1 with tier 2 free lands on tier 2 and is admitted. Credits
+  admit everything: boost is a decision already made to keep work moving with money, and a
+  queue would overrule it.
+- **The caller does not count as working.** It is mid-turn by definition, since it is making
+  the call. With nothing else working, a nearly spent window admits the card. Nobody is left to
+  finish first, and holding it would only wait for a reset that nothing is spending towards.
+- **The card opens anyway, with its brief held** (Lyss's choice over a hidden queue).
+  `SpawnAsked.queued` carries `{why, until}` and `openSpawned` holds the brief through the
+  ordinary `#hold` instead of sending it: the line drawn held, the reason on the face,
+  persisted in `held_prompt`, and Escape drops it. `Held.waiting` is `"admission"`, and after a
+  restart a queued spawn is recognised by its words (`holding.ts::QUEUED_SPAWN`, which Rust
+  writes), since `held_why` is stored and `waiting` is not.
+- **It is let go by Rust's say-so, not the waterfall's.** By every reading the account still
+  has room, so `#releaseCard` would release it at once. An admission hold instead asks
+  `admit_now` (off the main thread, since it takes the supervisor's lock) after `releaseHeld`
+  has noted a fresh reading. Admitted, it becomes an ordinary hold, and the waterfall decides
+  where it runs. The ways out are the reset timer (`until`), the minute's sweep, and a card
+  finishing.
+- **The receipt says it, and says what not to do.** "**It is queued, not started**: …. Do not
+  open more lanes to make up for it." A parent that read a quiet child as a slow one would do
+  exactly the wrong thing.
+- **Across the flyway the card is admitted where it runs.** The far wall's `link.rs` asks
+  `admit::queued` against *its* accounts, the ones the card will spend, and `flyway:spawn`
+  carries the verdict. The asker's receipt does not yet say "queued". The digest carries a
+  queued card as held for allowance with its own words, so a wall from before this reads it
+  unchanged (`gist.ts`).
+- **A reading too old to trust admits everything.** `STALE_MS` is five minutes against a
+  minute's re-note. A wall whose webview has stopped saying anything must fail the way it did
+  before this (a turn tried and refused), never with a card that waits on nothing.
 
 ### And why building fans out to cards rather than to subagents
 
@@ -674,6 +743,54 @@ is such a reply, while the row stands, does not arm the grace. Three choices wor
   purpose: the parent is owed word of how it went, and it asked for it.
 - **It is a row, not a flag in the map**, so a restart cannot turn a child's later reply into
   news. The brood (pending settles) is still memory only. Schema v55, no backfill.
+
+### A child that reported has already told its parent (2026-11-02)
+
+Sink `c334ee2d`, and the measurement is the argument. The RISE coordinator's session from
+2026-10-09 to 10-31 had a median context of 493k tokens, so every turn it took, even one that
+said nothing, re-read about half a million tokens. The wall's stop notices handed it **172
+turns (~14.7M base-input units); 144 made no tool call at all, and about 74 ended "nothing to
+do / still working"**. Real child reports were about 231. The common shape: a child does its
+lane, `send`s its report to the parent and ends its turn. The report is a turn for the parent,
+and two minutes later the stop notice is another one, about the same news.
+
+- **A `send` to the card that opened you is a report** (`relay::do_send` →
+  `spawn::reported`). It is noted *before* the delivery, because the turn making the call
+  may close the instant the receipt is read, and the settle has to find it already there.
+  Queued into a dormant parent's inbox counts too: it is still the report.
+- **A report speaks for the turn it was made in and no longer.** `stirring` clears it when a
+  turn opens, and `REPORT_FRESH_MS` (ten minutes) bounds it from the other side. That bound is
+  what keeps the case the notice exists for: a lane that sent "starting" at the top of an
+  hour-long turn and then went quiet has not reported.
+- **A reported stop is not armed; it is written down as told and folded.** `settling` marks
+  `stop_told`, the same row a delivered notice writes, so a sibling's question answered later
+  does not turn into a second stop. The child goes into `folded[parent]` instead of `pending`.
+- **The fold rides with the next thing the parent is handed anyway.** That is a child's report
+  through `do_send`, a message drained from its inbox, or a stop notice for a silent sibling.
+  `folded_for` adds one line under it: `(also, from the wall: "x" has stopped since it reported
+  to you; 2 of your 5 are still working. Nothing to answer.)`. The fraction is still the
+  point: it is the number the parent would otherwise call `list` for. It peeks and
+  `fold_spent` takes the entries only once a live delivery lands, so a message that went to an
+  inbox loses nothing. It is verified against the wall at that moment, like `notice`, and an
+  entry older than `FOLD_KEEP_MS` (six hours) is history, which `list` answers better.
+- **Nothing else changed.** The silent child still gets the grace, the floor, coalescing and
+  the verification pass, and the envelope is word for word what it was. The success criterion
+  is that on a fan-out where children report, the parent takes about zero zero-tool turns
+  triggered by the wall. A fan-out where they do not report costs what it did before, and
+  that is correct.
+- **And a far child sends no stop notice at all**, before or after this. The brood arms only
+  off the local `spawned` table, and a card opened on another wall is in `flyway_birth`
+  there, so there is nothing across the flyway for this to suppress. If cross-wall stop
+  notices are ever built, `reported` must be fed from `deliver_from_afar` as well.
+
+### A stop notice waits while every account is spent
+
+`sweep` returns before taking anything when `admit::wall_held` says every account (and
+credits, with boost on) is spent. The pending settles stay due and go as one batch once the
+wall has room: held, never dropped. A notice delivered into a spent wall is a turn that never
+reaches a model, and the coordinator measured above got seventeen of those on 2026-10-30.
+`admit.rs` reads silence from the webview as room, so a wall that has stopped noting
+cannot strand a notice.
 
 ### What it deliberately does not do
 

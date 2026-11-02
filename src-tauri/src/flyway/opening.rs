@@ -98,6 +98,8 @@ pub fn person_request(
         model,
         effort,
         needs: Vec::new(),
+        worktree: None,
+        worktree_base: None,
     })
 }
 

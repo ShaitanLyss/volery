@@ -1387,6 +1387,16 @@ impl Link {
         if let Some(why) = super::opening::brief_refusal(&s.brief, s.asked_by.card.as_deref()) {
             return refuse(why.into());
         }
+        /* The worktree key, judged again on this side for the model's reason:
+           it becomes a branch and a folder on this machine. */
+        let group = match s.worktree.as_deref() {
+            None => None,
+            Some(k) => match crate::worktree::group_key(k) {
+                Ok(k) => Some(k),
+                Err(why) => return refuse(why),
+            },
+        };
+        let group_base = s.worktree_base.clone();
         let own = self.own_dirs();
         let own: Vec<&std::path::Path> = own.iter().map(|p| p.as_path()).collect();
         let cwd = {
@@ -1423,19 +1433,58 @@ impl Link {
                 None => "asked for over the flyway, and it runs on this machine".to_string(),
             },
         );
-        let _ = self.app.emit(
-            "flyway:spawn",
-            SpawnHere {
-                id: card,
-                cwd,
-                prompt: s.brief,
-                title: s.title,
-                model,
-                effort,
-                from_host: s.asked_by.host,
-                from_card: s.asked_by.card,
-            },
-        );
+        let here = SpawnHere {
+            id: card,
+            cwd,
+            prompt: s.brief,
+            title: s.title,
+            model,
+            effort,
+            from_host: s.asked_by.host,
+            from_card: s.asked_by.card,
+            /* The far wall's allowance is not this one's, so a card asked
+               for from there is admitted against *this* wall's accounts —
+               the ones it will spend — by the rule a local spawn meets. */
+            queued: crate::admit::queued(&self.app, None),
+            worktree: group.as_deref().map(crate::worktree::group_branch),
+        };
+        let Some(key) = group else {
+            let _ = self.app.emit("flyway:spawn", here);
+            return;
+        };
+        /* A worktree group's tree is made before the card is opened, as a local
+           spawn's is, so a key that cannot become a tree is an answer the asker
+           reads rather than a card that fails to start. On a thread: making one
+           fetches, and this is the link's. Off the asker's commit only if it
+           named one this repository has — its own `HEAD` means nothing here —
+           and otherwise the ladder `worktree::ensure` has always used. */
+        let me = Arc::clone(self);
+        std::thread::spawn(move || {
+            let branch = crate::worktree::group_branch(&key);
+            let base = match group_base.as_deref() {
+                None => Ok(None),
+                Some(b) => {
+                    let (ok, sha, _) = crate::worktree::run(
+                        &here.cwd,
+                        &["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")],
+                    );
+                    if ok && !sha.is_empty() {
+                        Ok(Some(sha))
+                    } else {
+                        Err(format!("`worktree_base` {b:?} is not a commit or branch in {}", here.cwd))
+                    }
+                }
+            };
+            match base.and_then(|b| crate::worktree::ensure_at(&here.cwd, &branch, b.as_deref())) {
+                Ok(_) => {
+                    let _ = me.app.emit("flyway:spawn", here);
+                }
+                Err(why) => {
+                    let id = here.id.clone();
+                    me.failed(&id, &why);
+                }
+            }
+        });
     }
 
     fn opened(self: &Arc<Self>, card: &str) {
@@ -2604,6 +2653,12 @@ struct SpawnHere {
     effort: Option<String>,
     from_host: String,
     from_card: Option<String>,
+    /// Set when this wall's allowance would not start it yet (`admit.rs`):
+    /// the card still opens, its brief held, exactly as a local spawn's is.
+    queued: Option<crate::admit::Queued>,
+    /// The worktree group's branch (`wt/<key>`), its tree already made here,
+    /// or null. The front end writes it on the row as any card's worktree.
+    worktree: Option<String>,
 }
 
 #[derive(Serialize, Clone)]

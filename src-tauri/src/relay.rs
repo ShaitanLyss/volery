@@ -626,7 +626,7 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
     let relays = app.state::<Relays>();
     let store = app.state::<Store>();
 
-    let (rows, me) = {
+    let (rows, me, spawner) = {
         let Ok(conn) = store.0.lock() else {
             return "the store is unavailable".into();
         };
@@ -635,7 +635,10 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             Err(e) => return format!("could not read the roster: {e}"),
         };
         let me = rows.iter().find(|r| r.id == caller).cloned();
-        (rows, me)
+        /* Who opened this card, so a message to it can be known as the report
+           of this turn (`spawn::reported`). */
+        let spawner = crate::store::spawner_of(&conn, caller);
+        (rows, me, spawner)
     };
     let Some(me) = me else {
         return "this card is not on the wall, so it cannot send".into();
@@ -697,8 +700,28 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
 
     let text = envelope(&me, body);
     let mut receipts = Vec::new();
+    /* A child writing to the card that opened it has reported. Noted before the
+       delivery rather than after it: the turn that ends this call may close the
+       instant the receipt is read, and the stop it closes on has to find the
+       report already there (`spawn::settling`). Queued or delivered alike — a
+       report waiting in a dormant parent's inbox is still the report. */
+    if spawner.as_ref().is_some_and(|p| ids.contains(p)) {
+        crate::spawn::reported(caller);
+    }
     for to_id in &ids {
-        let awake = crate::supervisor::deliver(app, to_id, &text).is_ok();
+        /* Stops this recipient was spared a turn for ride with what it is being
+           handed now — a parent's next child report, on a fan-out. Only on a
+           live delivery: a message that goes to an inbox carries nothing, and
+           the stops wait for the next thing that lands. */
+        let fold = crate::spawn::folded_for(app, to_id);
+        let mut sent = text.clone();
+        if let Some((line, _)) = &fold {
+            sent.push_str(line);
+        }
+        let awake = crate::supervisor::deliver(app, to_id, &sent).is_ok();
+        if let (true, Some((_, spent))) = (awake, &fold) {
+            crate::spawn::fold_spent(to_id, spent);
+        }
         let relay_id = crate::store::uuid_v4();
         if let Ok(conn) = store.0.lock() {
             let _ = crate::store::record_relay(
@@ -905,7 +928,17 @@ pub fn drain_inbox(app: &AppHandle, id: &str) {
                 ),
             }
         };
+        /* And the stops this card was spared a turn for, under the first thing
+           it is handed on waking — the same ride `do_send` gives them. */
+        let fold = crate::spawn::folded_for(app, id);
+        let mut text = text;
+        if let Some((line, _)) = &fold {
+            text.push_str(line);
+        }
         if crate::supervisor::deliver(app, id, &text).is_ok() {
+            if let Some((_, spent)) = &fold {
+                crate::spawn::fold_spent(id, spent);
+            }
             if let Ok(conn) = store.0.lock() {
                 crate::store::mark_delivered(&conn, &q.id);
             }

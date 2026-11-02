@@ -584,6 +584,156 @@ fn asked_account(args: &Value, seats: &[(&str, bool, bool)]) -> Result<Option<St
     Ok(Some(label.to_string()))
 }
 
+/* ── worktree groups ───────────────────────────────────────────────────────
+ *
+ * `worktree` puts the card in a git worktree shared only with the cards given
+ * the same key (sink 93ecd434). The mapping is `worktree.rs`'s: a key is the
+ * branch `wt/<key>`, which is what the row's `worktree` column already holds
+ * for any card on a branch — so nothing past this point, here or on the wall,
+ * needed to learn what a group is. What this file adds is the tree being made
+ * at the call rather than at the child's first spawn, from the commit the
+ * caller stands on, and a receipt that tells the caller how to get the work
+ * back. */
+
+/// The worktree group a spawn asked for and the base it named, or why the
+/// spawn cannot go. An empty key is no key — an agent that writes `""` means
+/// "no group" — but a base with no group is refused, because it is a sentence
+/// about a tree that the call does not ask for, and dropping it would leave
+/// the caller believing its card starts somewhere it does not.
+pub(crate) fn asked_group(args: &Value) -> Result<(Option<String>, Option<String>), String> {
+    let nonempty = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let base = nonempty("worktree_base");
+    let Some(raw) = nonempty("worktree") else {
+        if base.is_some() {
+            return Err("`worktree_base` says where a worktree group's branch starts, and no \
+                        `worktree` was given — so no card was opened. Name the group with \
+                        `worktree`, or leave `worktree_base` out."
+                .into());
+        }
+        return Ok((None, None));
+    };
+    let key = crate::worktree::group_key(&raw).map_err(|why| format!("{why}. No card was opened."))?;
+    Ok((Some(key), base))
+}
+
+/// What making a group's tree found, for the receipt.
+#[derive(Debug)]
+struct Made {
+    dir: String,
+    /// Made by this call, rather than found from an earlier card in the group.
+    fresh: bool,
+    /// The commit a fresh group started from, when it was not the ladder's.
+    base: Option<String>,
+    /// The branch the caller stands on, which is what the group merges into.
+    into: Option<String>,
+}
+
+/// Make — or find — a group's tree.
+///
+/// `mine` is the directory the caller's own child runs in, when the card is
+/// going into the caller's territory. A fresh group starts from that tree's
+/// `HEAD` (Lyss, 2026-11-02: "the orchestrator's current commit by default"),
+/// because that is what the group will be merged back into and an unpushed
+/// scaffold must be in it. `worktree_base` overrides it with any commit or
+/// branch, resolved where the caller stands. In another territory there is no
+/// tree of the caller's to start from, so the ladder `worktree::ensure` has
+/// always used decides, unless a base was named.
+fn make_group(
+    cwd: &str,
+    branch: &str,
+    mine: Option<&str>,
+    base_asked: Option<&str>,
+) -> Result<Made, String> {
+    use crate::worktree::run;
+    let dir = crate::worktree::dir_for(cwd, branch);
+    let fresh = !dir.exists();
+    let into = mine.and_then(|m| {
+        let (ok, b, _) = run(m, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        (ok && !b.is_empty() && b != "HEAD").then_some(b)
+    });
+    let base = if !fresh {
+        None
+    } else if let Some(b) = base_asked {
+        let at = mine.unwrap_or(cwd);
+        let (ok, sha, _) = run(at, &["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")]);
+        if !ok || sha.is_empty() {
+            return Err(format!(
+                "`worktree_base` {b:?} is not a commit or branch in {at}, so no card was \
+                 opened — name a branch, tag or commit that exists there, or leave it out to \
+                 start from {}.",
+                if mine.is_some() { "the commit you are on" } else { "that territory's main branch" }
+            ));
+        }
+        Some(sha)
+    } else {
+        mine.and_then(|m| {
+            let (ok, sha, _) = run(m, &["rev-parse", "HEAD"]);
+            (ok && !sha.is_empty()).then_some(sha)
+        })
+    };
+    let dir = crate::worktree::ensure_at(cwd, branch, base.as_deref())
+        .map_err(|why| format!("{why}. No card was opened."))?;
+    Ok(Made { dir, fresh, base, into })
+}
+
+/// The group half of a spawn's receipt — the one channel by which the caller
+/// learns where the card's work is and how to get it back. Said in full for a
+/// fresh group because the caller has to *act* on it later, long after the
+/// call, and a merge done wrong is a merge commit on a linear main.
+fn group_receipt(key: &str, made: &Made, peers: i64, yours: bool, base_asked: bool) -> String {
+    let branch = crate::worktree::group_branch(key);
+    let dir = &made.dir;
+    if yours {
+        return format!(
+            " It works in your own worktree group, `{key}` (`{branch}`), so you are both \
+             editing one checkout — say what each of you owns, and stage exact paths rather \
+             than `-A`."
+        );
+    }
+    let into = made.into.as_deref().unwrap_or("the branch you merge into");
+    if made.fresh {
+        let from = match &made.base {
+            Some(b) => format!(", started from {}", &b[..b.len().min(9)]),
+            None => String::new(),
+        };
+        format!(
+            " It works in a new worktree group, `{key}`: the branch `{branch}`, checked out at \
+             {dir}{from}. **Nothing it edits reaches your tree until you merge it back**, and \
+             nothing you change reaches it — give the same `worktree` key to any card that \
+             must see its edits. The tree starts cold: no build output and no installed \
+             dependencies, so its first install and build run from scratch there and are not \
+             shared with your tree. To merge it back when the group is done: in its tree \
+             `git rebase {into}`, then in yours `git merge --ff-only {branch}` — linear, no \
+             merge commit. When the last card in the group closes, the wall removes the tree \
+             and the branch only if both are clean and merged; anything else is left exactly \
+             where it is."
+        )
+    } else {
+        let others = match peers {
+            0 => "no other open card".to_string(),
+            1 => "one other open card".to_string(),
+            n => format!("{n} other open cards"),
+        };
+        let unused = if base_asked {
+            " `worktree_base` was not used: the group already existed, so the card joins it \
+             where it is."
+        } else {
+            ""
+        };
+        format!(
+            " It joins worktree group `{key}` — `{branch}` at {dir}, with {others} in it — so \
+             they share one checkout: say what each owns, and stage exact paths rather than \
+             `-A`. Nothing in the group reaches your tree until you merge `{branch}` back.{unused}"
+        )
+    }
+}
+
 #[derive(Clone, Serialize)]
 struct SpawnAsked {
     /// The id the wall must use, so the handle in the receipt is the handle of
@@ -616,6 +766,10 @@ struct SpawnAsked {
     /// label — or null to take whatever the ladder picks. A preference rather
     /// than a pin; see [`asked_account`].
     account: Option<String>,
+    /// Set when the allowance would not start it yet (`admit.rs`): the card
+    /// opens with its brief held, and starts when the window resets, another
+    /// account frees up, or nothing else is working.
+    queued: Option<crate::admit::Queued>,
 }
 
 #[derive(Clone, Serialize)]
@@ -705,6 +859,42 @@ pub fn spawn_schema() -> Value {
                          already opened on this wall: an arbitrary directory is refused, and \
                          so is a name that matches nothing — which is answered with the list \
                          of what is here."
+                },
+                "worktree": {
+                    "type": "string",
+                    "description":
+                        "Optional. Put the card in a **worktree group**: a git worktree of its \
+                         own, shared only with the other cards you give the same key. One key \
+                         is one tree — cards in it see each other's edits as they are made — \
+                         and different keys are separate trees. Leave it out and the card \
+                         works where you stand, in the checkout you share.\n\n\
+                         **Group a lane that writes and commits.** Its tree has its own index \
+                         and HEAD, so no other card's hunks, `git stash` or `git reset` can \
+                         reach its work, and its commits are not mixed into anybody's. Put \
+                         cards that must see each other's edits under one key; give lanes that \
+                         only meet at the merge a key each. Reading and answering needs no \
+                         group. You decide now: a card cannot move to another tree after it \
+                         opens.\n\n\
+                         A key is a short name — `auth`, `ui-pass` — and becomes the branch \
+                         `wt/<key>`, started from the commit you are on. **The tree starts \
+                         cold**: no build output and no installed dependencies, so each group \
+                         installs and builds from scratch (for a Rust or Node repository that \
+                         is minutes and gigabytes), and nothing it builds is shared with your \
+                         tree or another group's. Ignored files a build needs are copied in if \
+                         the repository lists them in `.worktreeinclude`.\n\n\
+                         **You merge it back**, and the receipt says how: rebase the group onto \
+                         your branch, then fast-forward — no merge commit. When the last card \
+                         in a group closes, the wall removes the tree only if it is clean and \
+                         merged; otherwise it is left exactly as it is."
+                },
+                "worktree_base": {
+                    "type": "string",
+                    "description":
+                        "Optional, only with `worktree`, and only used when the group is new: \
+                         the branch, tag or commit its branch starts from. By default it is \
+                         the commit you are on now, which is what it will be merged back into. \
+                         Name another — `origin/main`, a sha — when the group's work should \
+                         start somewhere else."
                 },
                 "title": {
                     "type": "string",
@@ -822,7 +1012,9 @@ pub fn spawn_schema() -> Value {
                          there with your own project's name. `account` cannot go with it — \
                          accounts belong to a machine, and that wall's own ladder picks. \
                          `model` and `effort` travel as they do here, and `needs` is checked \
-                         against what that wall holds.\n\n\
+                         against what that wall holds. `worktree` makes the group's tree on \
+                         that machine, from that repository's main branch unless \
+                         `worktree_base` names something it has.\n\n\
                          The call waits for that wall to answer, which is usually a few \
                          seconds, and returns the card's handle there or the reason it \
                          refused. That wall must have been switched to take work from other \
@@ -1735,6 +1927,12 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
     if let Some(why) = lacked_here(&needs) {
         return why;
     }
+    /* The worktree group, judged with the other words and for their reason:
+       a key that cannot be a branch is a correction, not a spawn. */
+    let (group, base_asked) = match asked_group(args) {
+        Ok(g) => g,
+        Err(why) => return why,
+    };
 
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
@@ -1753,7 +1951,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
     let data_real = std::path::PathBuf::from(crate::store::canonical_root(
         &store.1.to_string_lossy(),
     ));
-    let Ok(conn) = store.0.lock() else {
+    let Ok(mut conn) = store.0.lock() else {
         return "the store is unavailable".into();
     };
 
@@ -1875,6 +2073,39 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         }
     };
 
+    /* A worktree group replaces whatever tree the child would have inherited:
+       the key is the caller saying where this card works. Its tree is made
+       *here*, before anything is written down, rather than left to the child's
+       first spawn — a key that cannot become a tree (no repository, a base
+       that is not a commit) is then a refusal the caller reads in this call,
+       instead of a card that opens and fails to start, and the receipt can say
+       whether the group was new. Git runs off the store lock: it takes about a
+       second, and the lock is the wall's. */
+    let (worktree, grouped) = match &group {
+        None => (worktree, None),
+        Some(key) => {
+            let branch = crate::worktree::group_branch(key);
+            let peers = crate::store::open_in_tree(&conn, &cwd, &branch);
+            drop(conn);
+            /* Where the caller's own work is: its tree when it stands here,
+               nothing it can see when the card goes to another territory. */
+            let mine = match stands {
+                Standing::Here => Some(crate::worktree::run_dir(&me.cwd, me.worktree.as_deref())),
+                _ => None,
+            };
+            let yours = matches!(stands, Standing::Here) && me.worktree.as_deref() == Some(branch.as_str());
+            let made = match make_group(&cwd, &branch, mine.as_deref(), base_asked.as_deref()) {
+                Ok(m) => m,
+                Err(why) => return why,
+            };
+            let Ok(again) = store.0.lock() else {
+                return "the store is unavailable".into();
+            };
+            conn = again;
+            (Some(branch), Some((key.clone(), made, peers, yours)))
+        }
+    };
+
     let id = crate::store::uuid_v4();
     /* Recorded before the emit, so the one-generation guard is true of the child
        from the moment it exists rather than from whenever the wall gets round to
@@ -1884,6 +2115,12 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         return format!("could not open a card: {e}");
     }
     drop(conn);
+
+    /* Asked after the store lock is down: `queued` takes the supervisor's to
+       count who is working, and holding both is an ordering somebody else will
+       one day take the other way round. The caller is mid-turn by definition —
+       it is making this call — so it is not a card the new one waits behind. */
+    let queued = crate::admit::queued(app, Some(caller));
 
     let _ = app.emit(
         "spawn:asked",
@@ -1897,6 +2134,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
             model: model.clone(),
             effort: effort.clone(),
             account: account.clone(),
+            queued: queued.clone(),
         },
     );
 
@@ -1944,12 +2182,15 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        the caller cannot see and has to act on: two agents in one checkout is
        how a morning's work ends up under somebody else's commit message. The
        wall has no other way to tell either of them. */
-    let sharing = match &worktree {
-        Some(name) => format!(
+    let sharing = match (&grouped, &worktree) {
+        (Some((key, made, peers, yours)), _) => {
+            group_receipt(key, made, *peers, *yours, base_asked.is_some())
+        }
+        (None, Some(name)) => format!(
             " It works in the same tree as you, on {name}, so you are both editing one \
              checkout — say what each of you owns, and stage exact paths rather than `-A`."
         ),
-        None => String::new(),
+        (None, None) => String::new(),
     };
     /* The other end of the marker in `clip_brief`, and the end that can do
        something about it. Telling only the child costs a turn each way — it has
@@ -1967,13 +2208,25 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              starts."
         ),
     };
+    /* Said because the parent would otherwise read a quiet child as a slow one,
+       and the thing to do about it is the opposite of sending it more work: let
+       what is running finish. */
+    let waits = match &queued {
+        Some(q) => format!(
+            " **It is queued, not started**: {}. The card is on the wall with your brief \
+             held, and it starts by itself — when the window resets, another account frees \
+             up, or nothing else is working. Do not open more lanes to make up for it.",
+            q.why.trim_start_matches("queued — ")
+        ),
+        None => String::new(),
+    };
     match elsewhere {
         None => format!(
             "opening a card in {cwd} — its handle is {handle}. It has the brief you wrote and \
              nothing else of yours. Tell the user you have opened it and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, which takes a \
-             moment.{called}{on}{starts}{sharing}{ate}"
+             moment.{called}{on}{starts}{sharing}{ate}{waits}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:
@@ -1989,7 +2242,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              be in the brief. Tell the user you have opened it, where, and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, and then only under \
-             `scope: \"skein\"`, since it is not in your project.{called}{on}{starts}{ate}"
+             `scope: \"skein\"`, since it is not in your project.{called}{on}{starts}{ate}{waits}"
         ),
     }
 }
@@ -2141,6 +2394,12 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         Ok(n) => n,
         Err(why) => return Elsewhere::Now(why),
     };
+    /* Validated here and carried as a key; the far wall makes the tree, from
+       its own repository, and `Fleet::ask` refuses a wall too old to. */
+    let (worktree, worktree_base) = match asked_group(args) {
+        Ok(g) => g,
+        Err(why) => return Elsewhere::Now(why),
+    };
     let me = {
         let Some(store) = app.try_state::<Store>() else {
             return Elsewhere::Now("the store is unavailable".into());
@@ -2217,6 +2476,8 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         model,
         effort,
         needs,
+        worktree,
+        worktree_base,
     };
     match link.ask_spawn(request) {
         Ok(rx) => Elsewhere::Wait(rx, host),
@@ -2346,6 +2607,21 @@ const SETTLE_GRACE_MS: i64 = 2 * 60 * 1_000;
 /// The least time between two notices to one parent. See the note above.
 const SETTLE_APART_MS: i64 = 5 * 60 * 1_000;
 
+/// How recent a child's message to its parent must be, at the moment its turn
+/// closes, to count as the report of that turn.
+///
+/// Ten minutes, against the shape it has to tell apart: a lane that does its
+/// work and ends on a `send` to the card that opened it (the report — its turn
+/// closes seconds later), and one that acknowledged at the start of a long turn
+/// and then went quiet for an hour (no report at all). The second is the case
+/// the notice exists for, and it is the one this bound keeps.
+const REPORT_FRESH_MS: i64 = 10 * 60 * 1_000;
+
+/// How long a stop the parent was not handed a turn for waits to ride along
+/// with the next thing it *is* handed. Past this it is not news, it is history,
+/// and `list` answers it better.
+const FOLD_KEEP_MS: i64 = 6 * 60 * 60 * 1_000;
+
 /// A rest waiting to see whether it is a stop.
 struct Settling {
     parent_id: String,
@@ -2359,6 +2635,14 @@ struct Brood {
     pending: std::collections::HashMap<String, Settling>,
     /// parent id → when it was last told anything.
     told_at: std::collections::HashMap<String, i64>,
+    /// child id → when it last wrote to the card that opened it, inside the
+    /// turn it is in. Cleared when a turn opens (`stirring`), so a report only
+    /// ever speaks for the turn it was made in.
+    reported: std::collections::HashMap<String, i64>,
+    /// parent id → children that stopped after reporting, and when. The parent
+    /// was not handed a turn for them; the news rides with the next thing it is
+    /// handed (`folded_for`).
+    folded: std::collections::HashMap<String, Vec<(String, i64)>>,
 }
 
 static BROOD: std::sync::OnceLock<std::sync::Mutex<Brood>> = std::sync::OnceLock::new();
@@ -2375,7 +2659,34 @@ fn brood() -> &'static std::sync::Mutex<Brood> {
 pub fn stirring(id: &str) {
     if let Ok(mut b) = brood().lock() {
         b.pending.remove(id);
+        b.reported.remove(id);
+        /* Working again, so not stopped: a fold naming it would be stale news
+           by the time it rode anywhere. */
+        for v in b.folded.values_mut() {
+            v.retain(|(c, _)| c != id);
+        }
     }
+}
+
+/// A card wrote to the card that opened it. Called from `relay::do_send` once
+/// the store has said the recipient is this card's spawner.
+///
+/// **This is the whole of sink c334ee2d.** A child that reports and then stops
+/// used to cost its parent two turns: one for the report, and one two minutes
+/// later for the wall saying the child had stopped. Measured on the RISE
+/// coordinator (`.scratch-12fa2a91/`, 2026-10-09..31): 172 such notices, 144
+/// of them answered with no tool call at all, each re-reading a context of
+/// about half a million tokens to say there was nothing to do. The report *is*
+/// the news that the child is done; the stop after it is not news.
+pub fn reported(child: &str) {
+    if let Ok(mut b) = brood().lock() {
+        b.reported.insert(child.to_string(), crate::store::now());
+    }
+}
+
+/// Did the turn that just closed carry its own report? Pure, for the test.
+pub(crate) fn reported_this_turn(reported_at: Option<i64>, now: i64) -> bool {
+    reported_at.is_some_and(|t| now.saturating_sub(t) <= REPORT_FRESH_MS)
 }
 
 /// Is a report about a card this one opened on its way to it?
@@ -2401,17 +2712,113 @@ pub fn settling(app: &AppHandle, id: &str, replied_to: Option<&str>) {
     let Some(store) = app.try_state::<Store>() else {
         return;
     };
+    let now = crate::store::now();
+    let reported = reported_this_turn(brood().lock().ok().and_then(|b| b.reported.get(id).copied()), now);
     let parent_id = {
         let Ok(conn) = store.0.lock() else { return };
-        crate::store::stop_to_arm(&conn, id, replied_to)
+        let parent = crate::store::stop_to_arm(&conn, id, replied_to);
+        /* The report told the parent, so it is written down as told — the same
+           row a delivered notice writes. Without it a sibling's question
+           answered later would be a fresh rest, and the parent would be told
+           about a stop it had already heard of from the child itself. */
+        if parent.is_some() && reported {
+            crate::store::mark_stop_told(&conn, id);
+        }
+        parent
     };
     let Some(parent_id) = parent_id else { return };
     if let Ok(mut b) = brood().lock() {
-        b.pending.insert(
-            id.to_string(),
-            Settling { parent_id, due_at: crate::store::now() + SETTLE_GRACE_MS },
-        );
+        if reported {
+            /* No turn of its own. Folded instead, so the parent still learns it
+               — and how many are left working — with whatever it is handed
+               next, which on a fan-out is very nearly always the next child's
+               report. */
+            b.pending.remove(id);
+            let list = b.folded.entry(parent_id).or_default();
+            list.retain(|(c, at)| c != id && now.saturating_sub(*at) <= FOLD_KEEP_MS);
+            list.push((id.to_string(), now));
+            return;
+        }
+        b.pending.insert(id.to_string(), Settling { parent_id, due_at: now + SETTLE_GRACE_MS });
     }
+}
+
+/// The stops `parent` was not handed a turn for, said as a line to put under
+/// the next thing it is handed — or `None` if there is nothing to say by now.
+/// Peeks: [`fold_spent`] takes them once the delivery has actually landed, so a
+/// message that went to an inbox instead does not lose them.
+///
+/// Verified against the wall as it is *now*, the rule `notice` follows: a child
+/// closed since, or speaking again, drops out.
+pub fn folded_for(app: &AppHandle, parent: &str) -> Option<(String, Vec<String>)> {
+    let now = crate::store::now();
+    let ids: Vec<String> = {
+        let b = brood().lock().ok()?;
+        b.folded
+            .get(parent)?
+            .iter()
+            .filter(|(_, at)| now.saturating_sub(*at) <= FOLD_KEEP_MS)
+            .map(|(c, _)| c.clone())
+            .collect()
+    };
+    if ids.is_empty() {
+        return None;
+    }
+    let store = app.try_state::<Store>()?;
+    let sup = app.state::<crate::supervisor::Supervisor>();
+    let (kin, titles) = {
+        let conn = store.0.lock().ok()?;
+        let kin: Vec<String> = crate::store::lineage(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, p)| p == parent)
+            .map(|(c, _)| c)
+            .collect();
+        let titles: std::collections::HashMap<String, String> = ids
+            .iter()
+            .filter_map(|c| crate::store::roster_one(&conn, c).map(|r| (c.clone(), r.title)))
+            .collect();
+        (kin, titles)
+    };
+    let names: Vec<String> = ids
+        .iter()
+        .filter(|c| kin.contains(c) && !sup.liveness(c).1)
+        .map(|c| named(c, titles.get(c)))
+        .collect();
+    if names.is_empty() {
+        fold_spent(parent, &ids);
+        return None;
+    }
+    let busy = kin.iter().filter(|c| sup.liveness(c).1).count();
+    Some((folded_line(&names, busy, kin.len()), ids))
+}
+
+/// The folded stops went out with something the parent was handed.
+pub fn fold_spent(parent: &str, ids: &[String]) {
+    if let Ok(mut b) = brood().lock() {
+        if let Some(v) = b.folded.get_mut(parent) {
+            v.retain(|(c, _)| !ids.contains(c));
+            if v.is_empty() {
+                b.folded.remove(parent);
+            }
+        }
+    }
+}
+
+/// The line itself. Pure; worded so it cannot be mistaken for the words of the
+/// sender it rides under, and so it asks for nothing.
+fn folded_line(names: &[String], busy: usize, kin: usize) -> String {
+    let what = if names.len() == 1 {
+        format!("{} has stopped since it reported to you", names[0])
+    } else {
+        format!("{} have stopped since they reported to you", list(names))
+    };
+    let rest = match busy {
+        0 => "nothing you opened is working now".to_string(),
+        1 => format!("1 of your {kin} is still working"),
+        n => format!("{n} of your {kin} are still working"),
+    };
+    format!("\n\n(also, from the wall: {what}; {rest}. Nothing to answer.)")
 }
 
 /// Was the turn that just closed a reply to a card other than the parent?
@@ -2445,6 +2852,12 @@ pub(crate) fn arms_stop(told: bool, reply: bool) -> bool {
 /// identical thing at the identical interval would be a second thing to get
 /// wrong, for nothing.
 pub fn sweep(app: &AppHandle) {
+    /* Every account spent: a notice now is a turn that never reaches a model.
+       Nothing is taken out of the map, so the pending settles stay due and go
+       as one batch once the wall has room — held, not dropped (`admit.rs`). */
+    if crate::admit::wall_held(app).is_some() {
+        return;
+    }
     let now = crate::store::now();
 
     /* Taken out of the map as they are read, before anything is delivered, for
@@ -2480,9 +2893,15 @@ pub fn sweep(app: &AppHandle) {
     }
 
     for (parent, children) in by_parent {
-        let Some(text) = notice(app, &parent, &children) else {
+        let Some(mut text) = notice(app, &parent, &children) else {
             continue;
         };
+        /* A notice is a turn the parent is being handed anyway, so the stops it
+           was spared ride with it. */
+        let fold = folded_for(app, &parent);
+        if let Some((line, _)) = &fold {
+            text.push_str(line);
+        }
         /* A dormant parent gets nothing and nothing is kept — see the note
            above. The entries are already out of the map, which is what makes
            that true rather than merely intended. */
@@ -2495,6 +2914,9 @@ pub fn sweep(app: &AppHandle) {
                         crate::store::mark_stop_told(&conn, c);
                     }
                 }
+            }
+            if let Some((_, ids)) = &fold {
+                fold_spent(&parent, ids);
             }
             if let Ok(mut b) = brood().lock() {
                 b.told_at.insert(parent, now);
@@ -2661,6 +3083,70 @@ mod tests {
     /// this file and asserts the table resolves every one of them. This half
     /// asserts the schema offers exactly what the validator accepts, since an
     /// `enum` and a `contains` drifting apart is the same bug one step earlier.
+    /* ── worktree groups ──────────────────────────────────────────────── */
+
+    #[test]
+    fn a_worktree_key_is_read_folded_and_an_empty_one_is_no_group() {
+        assert_eq!(asked_group(&json!({})).unwrap(), (None, None));
+        assert_eq!(asked_group(&json!({ "worktree": "  " })).unwrap(), (None, None));
+        assert_eq!(asked_group(&json!({ "worktree": "Auth" })).unwrap(), (Some("auth".into()), None));
+        assert_eq!(
+            asked_group(&json!({ "worktree": "auth", "worktree_base": "origin/main" })).unwrap(),
+            (Some("auth".into()), Some("origin/main".into()))
+        );
+    }
+
+    #[test]
+    fn a_bad_key_or_a_base_with_no_group_opens_nothing() {
+        let why = asked_group(&json!({ "worktree": "a/b" })).unwrap_err();
+        assert!(why.contains("No card was opened"), "{why}");
+        let why = asked_group(&json!({ "worktree_base": "main" })).unwrap_err();
+        assert!(why.contains("no card was opened"), "{why}");
+    }
+
+    #[test]
+    fn a_fresh_group_receipt_says_where_it_is_and_how_to_merge_it_back() {
+        let made = Made {
+            dir: "C:/r/.claude/worktrees/wt+auth".into(),
+            fresh: true,
+            base: Some("0123456789abcdef".into()),
+            into: Some("main".into()),
+        };
+        let r = group_receipt("auth", &made, 0, false, false);
+        for want in [
+            "`wt/auth`",
+            "wt+auth",
+            "012345678",
+            "starts cold",
+            "git rebase main",
+            "git merge --ff-only wt/auth",
+            "no merge commit",
+            "clean and merged",
+        ] {
+            assert!(r.contains(want), "{want:?} missing from {r}");
+        }
+    }
+
+    #[test]
+    fn joining_a_group_counts_who_is_in_it_and_says_a_base_was_unused() {
+        let made = Made { dir: "D".into(), fresh: false, base: None, into: None };
+        let r = group_receipt("auth", &made, 2, false, true);
+        assert!(r.contains("2 other open cards"), "{r}");
+        assert!(r.contains("`worktree_base` was not used"), "{r}");
+        let own = group_receipt("auth", &made, 1, true, false);
+        assert!(own.contains("your own worktree group"), "{own}");
+    }
+
+    #[test]
+    fn the_schema_teaches_when_to_group_and_that_builds_are_not_shared() {
+        let props = &spawn_schema()["inputSchema"]["properties"];
+        let d = props["worktree"]["description"].as_str().unwrap();
+        for want in ["writes and commits", "same key", "starts cold", "shared with your tree", "cannot move", "merge it back"] {
+            assert!(d.contains(want), "{want:?} missing from the worktree description");
+        }
+        assert!(props["worktree_base"]["description"].as_str().unwrap().contains("only with `worktree`"));
+    }
+
     #[test]
     fn the_three_names_are_the_ones_the_wall_resolves() {
         let e = spawn_schema()["inputSchema"]["properties"]["model"]["enum"].clone();
@@ -3446,6 +3932,35 @@ mod tests {
            the parent subtract. */
         let all = envelope(&["\"a\" (aaaaaaaa)".into(), "\"b\" (bbbbbbbb)".into()], 0, 2);
         assert!(all.contains("Nothing else you opened is working."), "{all}");
+    }
+
+    /// Sink c334ee2d: a child that ended its turn on a report to its parent is
+    /// not handed to the parent again as a stop, and a child that acknowledged
+    /// at the start of a long turn and then went quiet still is.
+    #[test]
+    fn a_report_speaks_for_the_turn_it_closed_and_no_longer() {
+        let now = 100 * 60_000;
+        assert!(reported_this_turn(Some(now - 30_000), now), "a report seconds before the close");
+        assert!(reported_this_turn(Some(now - REPORT_FRESH_MS), now), "at the bound");
+        assert!(!reported_this_turn(Some(now - REPORT_FRESH_MS - 1), now), "an ack an hour ago is not a report");
+        assert!(!reported_this_turn(None, now), "silence is the case the notice exists for");
+    }
+
+    /// The stops a parent was spared ride under somebody else's words, so the
+    /// line must say whose it is, that it asks for nothing, and how many are
+    /// left — the count the parent would otherwise call `list` for.
+    #[test]
+    fn a_folded_stop_says_whose_it_is_and_asks_nothing() {
+        let one = folded_line(&["\"a\" (aaaaaaaa)".into()], 2, 3);
+        assert!(one.starts_with("\n\n(also, from the wall:"), "{one}");
+        assert!(one.contains("\"a\" (aaaaaaaa) has stopped since it reported to you"), "{one}");
+        assert!(one.contains("2 of your 3 are still working"), "{one}");
+        assert!(one.contains("Nothing to answer."), "{one}");
+        let two = folded_line(&["\"a\" (aaaaaaaa)".into(), "\"b\" (bbbbbbbb)".into()], 0, 2);
+        assert!(two.contains("have stopped since they reported to you"), "{two}");
+        assert!(two.contains("nothing you opened is working now"), "{two}");
+        let last = folded_line(&["\"a\" (aaaaaaaa)".into()], 1, 4);
+        assert!(last.contains("1 of your 4 is still working"), "{last}");
     }
 
     #[test]

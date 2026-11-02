@@ -597,6 +597,16 @@ pub struct Ask {
     /// from a wall before it, which needs nothing — the old behaviour.
     #[serde(default)]
     pub needs: Vec<String>,
+    /// The worktree group the card is opened in (`spawn`'s `worktree`), as a
+    /// key — the far wall makes the tree. Absent from a wall before groups,
+    /// which is why the asker refuses a wall not announcing `CAN_WORKTREE`
+    /// rather than letting this be read as absent and the card opened in the
+    /// shared checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    /// Where a new group's branch starts there (`worktree_base`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_base: Option<String>,
     /// The card on the addressee's wall that `brief` is for — set on a
     /// **prompt** and on nothing else. A prompt travels under its own tag
     /// (`FleetMsg::Prompt`), never under `Ask`: a wall from before prompts
@@ -683,9 +693,15 @@ pub const CAN_NEEDS: &str = "needs";
 /// never receive.
 pub const CAN_PICTURES: &str = "pictures";
 
+/// The word that says a wall makes worktree groups for a card asked for with
+/// `worktree` (`Ask::worktree`). Asked before sending: a wall from before it
+/// would read the key as absent and open the card in the shared checkout,
+/// which is exactly what the key was asked to prevent.
+pub const CAN_WORKTREE: &str = "worktree";
+
 /// Everything this wall announces in `Facts::can`.
 pub fn can_now() -> Vec<String> {
-    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES]).map(str::to_string).collect()
+    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES, CAN_WORKTREE]).map(str::to_string).collect()
 }
 
 /// One picture riding a person's prompt — what `attach.ts::Carried` is, field
@@ -1035,6 +1051,9 @@ pub struct Spawn {
     /// As the ask carried them. See `Ask::model`.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// See `Ask::worktree`.
+    pub worktree: Option<String>,
+    pub worktree_base: Option<String>,
 }
 
 /// A prompt this wall has agreed to hand to one of its cards. The wiring gives
@@ -1143,6 +1162,11 @@ impl Unsendable {
             Unsendable::Older { host, what } if *what == CAN_PERSON_CLOSE => {
                 format!("{host} needs updating to close cards from here")
             }
+            Unsendable::Older { host, what } if *what == CAN_WORKTREE => format!(
+                "{host} runs a Volery from before worktree groups, so no card was asked for — it \
+                 would open the card in the shared checkout. Leave `worktree` out, or ask the user \
+                 to update Volery on {host}"
+            ),
             Unsendable::Older { host, what } if *what == CAN_PICTURES => format!(
                 "{host} runs a Volery from before pictures could be sent to its cards — it would \
                  take the words and not the pictures, so nothing was sent. send the words alone, \
@@ -1175,6 +1199,9 @@ pub struct Request {
     pub effort: Option<String>,
     /// See `Ask::needs`.
     pub needs: Vec<String>,
+    /// See `Ask::worktree`.
+    pub worktree: Option<String>,
+    pub worktree_base: Option<String>,
 }
 
 /// What a person or a card hands `Fleet::prompt`.
@@ -1457,6 +1484,9 @@ impl Fleet {
         if !lacking.is_empty() {
             return Err(Unsendable::Lacks { host: r.to, needs: lacking });
         }
+        if r.worktree.is_some() && !there.facts.can.iter().any(|c| c == CAN_WORKTREE) {
+            return Err(Unsendable::Older { host: r.to, what: CAN_WORKTREE });
+        }
         let ask = Ask {
             id: r.id.clone(),
             from: Origin { host: self.me.clone(), card: r.card },
@@ -1468,6 +1498,8 @@ impl Fleet {
             model: r.model,
             effort: r.effort,
             needs: r.needs,
+            worktree: r.worktree,
+            worktree_base: r.worktree_base,
             card: None,
             answers: None,
             pictures: Vec::new(),
@@ -1546,6 +1578,8 @@ impl Fleet {
             model: None,
             effort: None,
             needs: Vec::new(),
+            worktree: None,
+            worktree_base: None,
             card: Some(r.card),
             answers: r.answers,
             pictures,
@@ -1926,6 +1960,8 @@ impl Fleet {
             asked_by: ask.from.clone(),
             model: ask.model.clone(),
             effort: ask.effort.clone(),
+            worktree: ask.worktree.clone(),
+            worktree_base: ask.worktree_base.clone(),
         })
     }
 
@@ -2158,6 +2194,8 @@ fn clean_ask(a: Ask) -> Ask {
         model: sc_opt(a.model),
         effort: sc_opt(a.effort),
         needs: words(a.needs),
+        worktree: sc_opt(a.worktree),
+        worktree_base: sc_opt(a.worktree_base),
         card: sc_opt(a.card),
         answers: sc_opt(a.answers),
         /* Passed on as they came. A picture is refused whole where it would be
@@ -2342,6 +2380,8 @@ mod tests {
             model: None,
             effort: None,
             needs: Vec::new(),
+            worktree: None,
+            worktree_base: None,
         }
     }
 
@@ -2357,6 +2397,8 @@ mod tests {
             model: None,
             effort: None,
             needs: Vec::new(),
+            worktree: None,
+            worktree_base: None,
             card: None,
             answers: None,
             pictures: Vec::new(),
@@ -3564,6 +3606,44 @@ mod tests {
         let ask = Ask { card: Some(String::new()), ..raw_ask("p", "lap", "desk", 0) };
         let r = desk.on(FleetMsg::Prompt { ask, age_ms: 0 }, 0, &open_facts());
         assert!(r.deliver.is_empty() && r.say.is_empty());
+    }
+
+    /// A worktree group's key and base cross with the ask and reach the card
+    /// to be opened, and an ask from a build before groups reads as none.
+    #[test]
+    fn a_worktree_key_travels_with_the_ask() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask {
+            worktree: Some("auth".into()),
+            worktree_base: Some("origin/main".into()),
+            ..raw_ask("r", "lap", "desk", 0)
+        };
+        let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
+        assert_eq!(r.open[0].worktree.as_deref(), Some("auth"));
+        assert_eq!(r.open[0].worktree_base.as_deref(), Some("origin/main"));
+        let v = serde_json::to_value(FleetMsg::Ask { ask: raw_ask("r2", "lap", "desk", 0), age_ms: 0 }).unwrap();
+        assert!(v["ask"].get("worktree").is_none(), "no key is not said at all");
+        let r = desk.on(serde_json::from_value(v).unwrap(), 0, &open_facts());
+        assert_eq!(r.open[0].worktree, None);
+    }
+
+    /// **A wall from before groups is refused a grouped card, not handed one.**
+    /// It would read the key as absent and open the card in the shared
+    /// checkout — the one thing the key was asked to prevent.
+    #[test]
+    fn a_grouped_card_is_not_asked_of_a_wall_before_groups() {
+        let older: Vec<String> = can_now().into_iter().filter(|c| c != CAN_WORKTREE).collect();
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: older, ..open_facts() }, None, 0), 0, &open_facts());
+        let grouped = Request { worktree: Some("auth".into()), ..request("g", "desk", skein()) };
+        match lap.ask(grouped, 10) {
+            Err(u @ Unsendable::Older { .. }) => assert!(u.reason().contains("before worktree groups"), "{}", u.reason()),
+            other => panic!("a grouped ask went to a wall before groups: {other:?}"),
+        }
+        assert!(lap.ask(request("plain", "desk", skein()), 10).is_ok(), "an ungrouped ask still goes");
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: can_now(), ..open_facts() }, None, 0), 0, &open_facts());
+        assert!(lap.ask(Request { worktree: Some("auth".into()), ..request("g", "desk", skein()) }, 10).is_ok());
     }
 
     /// What a card costs is the asker's decision and has to arrive whole — and

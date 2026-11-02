@@ -261,6 +261,8 @@ async fn main() {
                 model: Some("sonnet".into()),
                 effort: None,
                 needs: Vec::new(),
+                worktree: None,
+                worktree_base: None,
             },
             now(),
         )

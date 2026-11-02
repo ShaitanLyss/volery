@@ -111,4 +111,110 @@ Things that are load-bearing:
 the child process moves. That is what keeps a
 worktree card in its parent's territory, sharing its dev servers and its shell (`shell.md`),
 and it is the reason this change touched no schema. The card's own name carries the branch
-(`skein · fix`), which is where a person reads it.
+(`skein · fix`), which is where a person reads it — and since 2026-11-02 the card's qualifier
+row does too (`Card.svelte`, beside `on <host>`), as chat view's place line does, off the
+card's `Gist` so a card on another wall shows it as well.
+
+## Worktree groups: a tree an orchestrator hands out (2026-11-02, sink 93ecd434)
+
+Lyss decided it on 2026-10-16 and it was built on 2026-11-02: `spawn` takes a `worktree`
+**key**, cards given the same key share one tree, different keys get separate trees, and leaving
+it out is the shared checkout exactly as before. The orchestrator decides grouping at spawn; a
+card cannot change trees after birth, because its process is bound to a directory. Every
+shared-tree trap in sinks `5aca5e82` and `53bfad8a` — one index, one HEAD, one `tsbuildinfo`,
+somebody else's `git stash` — is a trap a group card is not standing in.
+
+**A group is a branch name and nothing else, which is why nearly nothing had to change.** The
+key `auth` is the branch `wt/auth`, the folder `.claude/worktrees/wt+auth` (the CLI's slug, so
+every rule above holds), and the row's existing `worktree` column holds the branch. So
+`run_dir`, `store::session_of`, the transcript reads, a wake, `worktree_of` and the front end's
+`#openIn` resolve a group card with no change, and two cards with one key land in one folder
+because `ensure` finds the second one already made. **No schema change.** The `wt/` namespace is
+what lets the wall treat a group differently from a branch a person typed: only a `wt/` tree is
+ever taken down by the wall.
+
+- **The key is folded and refused, not mangled** (`group_key`): lowercase, `[a-z0-9._-]`, at most
+  40, no leading `.`/`-`, no `..`, no `.lock`. Lowercase because `Auth` and `auth` would be two
+  branches in what Windows treats as one folder, which git refuses half-way through.
+- **Made at the call, not at the child's first spawn** (`spawn::make_group`). A key that cannot
+  become a tree — no repository, a base that is not a commit — is a refusal the orchestrator reads
+  in the same call, rather than a card that opens and fails to start; and the receipt can say
+  whether the group was new. Git runs off the store lock. `MAKING` serialises every tree this
+  process makes, so two cards spawned into one new group a moment apart cannot both run
+  `git worktree add` on one folder.
+- **A fresh group starts from the orchestrator's own `HEAD`** (Lyss: *"the orchestrator's current
+  commit by default + the option to choose which commit or branch"*), resolved in the caller's run
+  directory — its tree, if it is in one. That is what the group merges back into, and an
+  orchestrator that committed a scaffold and has not pushed it would otherwise hand its workers a
+  tree without the scaffold. No fetch: the base is local. `worktree_base` overrides it with any
+  commit-ish, resolved where the caller stands and refused if it is not one. `ensure_at` is
+  `ensure` with that base passed; `ensure` itself is unchanged (the ladder, with its fetch).
+- **In another territory, or on another wall, the ladder decides** unless `worktree_base` names
+  something that repository has — the caller's `HEAD` means nothing there.
+- **Merge-back is the orchestrator's, linear, and the receipt says how**: in the group's tree
+  `git rebase <its branch>`, then in its own `git merge --ff-only wt/<key>`. Never a merge commit,
+  because this repository keeps a linear main. Nothing merges automatically: deciding when a
+  group's work is done is the orchestrator's judgement, and an automatic merge is a commit nobody
+  reviewed landing on main.
+- **The group card is told where it works** (`supervisor::group_note`, in the system prompt and
+  derived at every spawn like `Selfhood`): its branch and folder, that nothing reaches the main
+  checkout until merged, to commit on the branch, not to switch, push or merge it, and that the
+  tree starts cold.
+
+### Taking a group down, only when nothing would be lost
+
+`worktree::retire`, called from `store::close_conversation_record` through `retire_group_if_last`
+when the closed card was the last open one on that tree (`store::open_in_tree` — dormant counts as
+open; a dormant card is still in its group). Lyss: *"remove only when clean and merged"*. Enforced
+three times, because a wrong answer here deletes the thing the group was opened to make:
+
+1. **Clean** — `git status --porcelain` empty. Ignored files are not work: `node_modules`, a
+   `target`, a seeded `.env` do not keep a tree.
+2. **Merged** — the branch tip is an ancestor of the main tree's `HEAD` or of the remote's main. A
+   rebase-and-fast-forward passes; cherry-picks do not, and the tree is kept — the safe way to be
+   wrong.
+3. **Git agrees** — `git worktree remove` without `--force` (refuses a dirty tree itself) and
+   `git branch -d` (refuses an unmerged branch itself). Tested: `worktree remove` takes ignored
+   build output with it, so a merged group leaves nothing behind.
+
+On a thread, three seconds after the close (the card's process is killed by a separate command and
+a process still standing in the tree makes `remove` refuse), with the census asked again after the
+wait so a card spawned into the group inside it keeps the tree. The verdict goes in the chronicle
+either way — *kept worktree group wt/x: N commit(s) … are not on the main tree's branch* is work
+the user may not know is still out there. A person's branch (`feat/x`) is never retired.
+
+### What a group costs, measured 2026-11-02 on this repository
+
+A fresh worktree of skein is **22 MB** of tracked source. `bun install` there: **15 s, 264 MB**.
+A cold `cargo build` (debug) in it: **~4 min 10 s → 12 GB**; adding `cargo test --lib --no-run`:
+**~2 min 50 s more → 15 GB** — on a 24-core machine with other cards working. That is the cost
+*per group*, not per card: cards in one group share the tree's `target`. The main tree's own
+`target` (62 GB) is neither touched nor shared. The spawn description and the receipt both say a
+group starts cold, so an orchestrator weighs a group against that.
+
+**And it did not build at all until `.worktreeinclude`.** The first measured tree failed after two
+minutes of compiling: `src-tauri/sherpa/` (the voice runtime, fetched and gitignored) is not in a
+checkout, and tauri's resource check refuses. So `worktree::seed` copies into every *new* tree the
+ignored paths the repository lists in `.worktreeinclude` (Claude Code's own name for the same
+file) — a path, a directory, or `*` in the last component; never over a file git checked out;
+never a path climbing out of the root. This repository lists `src-tauri/sherpa/`. It applies to a
+person's worktree as well as a group's, since both were missing it.
+
+**A build-output root was designed and deliberately not built.** The brief proposed
+`CARGO_TARGET_DIR=<root>\<territory>\<key>` on an external drive, refusing a spawn when the drive
+is unplugged. Lyss: the drive is a spinning disk — *"I think we can forego it for now"*. So a
+group's builds land in its own tree on C:. If it comes back: the variable goes where `SKEIN_CARD`
+is set in `spawn_now`, the drive check is "does the root's drive exist" (an external USB SSD
+reports `DRIVE_FIXED`, so `GetDriveTypeW` cannot be the test), and the folder wants retiring with
+the group. Worktrees themselves never leave the repository's disk, so the `git worktree lock` a
+removable drive would need has nothing to lock.
+
+### Across walls
+
+`spawn` with `host` carries the key (and `worktree_base`) in the flyway `Ask`; the far wall's
+`open_for` validates it, makes the tree on a thread (its own repository, the ladder unless the
+base names something it has), and only then emits `flyway:spawn` with the branch, which
+`#openIn` writes on the row. A tree that cannot be made answers the asker as a failed open. A wall
+from before groups would read the key as absent and open the card in the shared checkout, so this
+build announces `worktree` in `Facts::can` and `Fleet::ask` refuses a wall that does not
+(`Unsendable::Older`).
