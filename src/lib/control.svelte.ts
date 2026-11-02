@@ -27,7 +27,8 @@ import { skin } from "./palette.svelte";
 import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
-import type { Conversation } from "./conversation.svelte";
+import { clock, type Conversation } from "./conversation.svelte";
+import { waitLine } from "./waiting";
 import { SKIPPED, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
 import { noticeLine } from "./notice";
 import { stripAnsi } from "./ansi";
@@ -1006,7 +1007,7 @@ export class Control {
         /* And a card waiting on a wake reads `rest` too, until it is late — so
            the reading is reported rather than left for a test to infer. */
         waiting: c.waiting
-          ? { at: c.waiting.at, lateS: c.waiting.lateS, count: c.waiting.count, from: c.waiting.from, on: c.waiting.on ?? null }
+          ? { at: c.waiting.at, lateS: c.waiting.lateS, count: c.waiting.count, from: c.waiting.from, on: c.waiting.on ?? null, held: c.waiting.held ?? null, line: waitLine(c.waiting, clock.t) }
           : null,
         /* The wall that asked for this card, if one did — what its face says. */
         bornFor: c.bornFor,
@@ -2635,6 +2636,11 @@ export class Control {
        *  causes is the app's own path from the send onward. Keep every account
        *  spent while it stands: one the chooser would *use* is moved onto, and
        *  a stood-in label has no credential store to spawn with. */
+      /** What Rust would say to a new card right now (`admit.rs`): null to
+       *  start it, or why it waits. Asks the real command, after noting nothing
+       *  new — so a test reads the verdict the next `spawn` would get. */
+      admit: async () => ({ queued: await invoke("admit_now") }),
+
       allowance: async (op) => {
         if (op.clear) {
           waterfall.standIn(null);
