@@ -85,6 +85,18 @@ not call the child "not a card it opened". Either way the close itself archives 
 clearing). The control surface's `close` op — a test's hand, or a spoken sentence through the
 steward — asks nobody, so it refuses a card with a live timeline unless given `force`.
 
+**The plate's *close it* must read its card before it lets go of the plate.** Until 2026-11-02 the
+handler did `unfinished = null` and then `held.card.do(…)`, where `held` is the block's
+`{@const}` — a derived of `unfinished`, not a copy. So it read null and threw, and every card with
+a plan in flight (or work in hand) could not be closed from its ✕, its menu or `<space> c c`, on
+the wall and in chat view alike. The plate went away and the card stayed, with nothing said
+anywhere but an uncaught error the installed wall does not log (sink `156043ee`). Lyss reported it
+as a card that would not close. It was opened from another wall and its plan was the one in
+flight, so the report pointed at the flyway; that was a coincidence. The move-all plate had the
+same line. `test/consts.test.ts` scans every component for a write to a `{@const}`'s state
+followed by a read of the const in the same handler. The one case it cannot see is the write
+made inside a function the handler calls, so read what a handler needs on its first line.
+
 A **cleared** card leaves its timeline too (`clear_conversation`): the agent that drew the plan
 is gone though the card stays. `leave_for` therefore never re-reads the session — after a clear
 it is already the new one — and keeps the one `set` recorded, which is the conversation that

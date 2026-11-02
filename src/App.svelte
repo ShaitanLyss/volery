@@ -5632,8 +5632,14 @@
       warnings={held.warnings}
       onkeep={() => (unfinished = null)}
       onclose={() => {
+        /* Read before letting go. `{@const held}` is a derived of `unfinished`,
+           not a copy: once that is null so is `held`, and reading `held.card`
+           after it threw — the plate went away and the card stayed, so every
+           card with a plan in flight or work in hand could not be closed at
+           all (Lyss, 2026-11-02). `test/consts.test.ts` holds the shape. */
+        const card = held.card;
         unfinished = null;
-        void held.card.do("close", { sure: true });
+        void card.do("close", { sure: true });
       }}
     />
   {/if}
@@ -5647,8 +5653,10 @@
       lines={departure(going.cards.length, going.host)}
       onkeep={() => (exodus = null)}
       ongo={() => {
+        /* Read before letting go, for the close plate's reason above. */
+        const { cards, host } = going;
         exodus = null;
-        void moveAll(going.cards, going.host);
+        void moveAll(cards, host);
       }}
     />
   {/if}
