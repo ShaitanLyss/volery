@@ -321,6 +321,9 @@ struct Opening {
     asked_by: String,
     request: String,
     since: i64,
+    /// This wall's admission for the card (`admit.rs`), said back to the asker
+    /// so a parent does not read a quiet child as a slow one.
+    queued: Option<String>,
 }
 
 fn current(app: &AppHandle) -> Option<Arc<Link>> {
@@ -1212,7 +1215,7 @@ impl Link {
         };
         if w.wants == Wants::Open {
             let (outcome, card, why) = match &a.outcome {
-                Outcome::Opened { card } => ("opened", Some(card.clone()), None),
+                Outcome::Opened { card, .. } => ("opened", Some(card.clone()), None),
                 Outcome::Refused { refusal } => ("refused", None, Some(prompt_why(refusal, &a.by))),
                 Outcome::Said { .. } => ("refused", None, Some(format!("{} answered with something other than a card", a.by))),
             };
@@ -1226,7 +1229,7 @@ impl Link {
            it is what lets that card's report back through this wall's switch
            (`fleet::may_reach`, `migrate_v48`). Before the receipt, so a reply
            that races the receipt still finds it. */
-        if let (Wants::Spawn, Outcome::Opened { card }, Some(parent)) = (w.wants, &a.outcome, &w.card) {
+        if let (Wants::Spawn, Outcome::Opened { card, .. }, Some(parent)) = (w.wants, &a.outcome, &w.card) {
             if let Some(store) = self.store() {
                 if let Ok(conn) = store.0.lock() {
                     if let Err(e) = here::record_child(&conn, &a.by, card, parent, &a.request, self.now()) {
@@ -1417,8 +1420,21 @@ impl Link {
             }
             cwd
         };
+        /* The far wall's allowance is not this one's, so a card asked for from
+           there is admitted against *this* wall's accounts — the ones it will
+           spend — by the rule a local spawn meets; with no ancestry here to
+           leave out, since the card that asked is on another wall. */
+        let queued = crate::admit::queued(&self.app, None, None);
         if let Ok(mut o) = self.opening.lock() {
-            o.insert(card.clone(), Opening { asked_by: s.asked_by.host.clone(), request: s.request.clone(), since: now });
+            o.insert(
+                card.clone(),
+                Opening {
+                    asked_by: s.asked_by.host.clone(),
+                    request: s.request.clone(),
+                    since: now,
+                    queued: queued.as_ref().map(|q| q.why.clone()),
+                },
+            );
         }
         /* The minimum `spawn.md` asks of a card nobody in this room asked for:
            a row saying who did. The card's own face says it too (`flyway:born`). */
@@ -1442,10 +1458,7 @@ impl Link {
             effort,
             from_host: s.asked_by.host,
             from_card: s.asked_by.card,
-            /* The far wall's allowance is not this one's, so a card asked
-               for from there is admitted against *this* wall's accounts —
-               the ones it will spend — by the rule a local spawn meets. */
-            queued: crate::admit::queued(&self.app, None, None),
+            queued,
             worktree: group.as_deref().map(crate::worktree::group_branch),
         };
         let Some(key) = group else {
@@ -1490,7 +1503,7 @@ impl Link {
     fn opened(self: &Arc<Self>, card: &str) {
         let Some(o) = self.opening.lock().ok().and_then(|mut o| o.remove(card)) else { return };
         let now = self.now();
-        let m = self.fleet.lock().ok().and_then(|mut f| f.opened(&o.asked_by, &o.request, card, now));
+        let m = self.fleet.lock().ok().and_then(|mut f| f.opened_queued(&o.asked_by, &o.request, card, o.queued.clone(), now));
         if let Some(m) = m {
             self.route(&[m], None);
         }
@@ -2409,12 +2422,26 @@ impl Link {
 /// The sentence the asking card reads.
 fn receipt(a: &Answer, w: &Waiter, me: &str) -> String {
     match &a.outcome {
-        Outcome::Opened { card } => {
+        Outcome::Opened { card, queued } => {
             let handle = crate::relay::handle_of(card);
             let mut called = match &w.title {
                 Some(t) => format!(" It is called {t:?} until it names itself."),
                 None => String::new(),
             };
+            /* The same words a local spawn's receipt uses (`spawn::do_spawn`),
+               and for the same reason: a parent that read a quiet child as a
+               slow one would open more lanes to make up for it, which is the
+               opposite of what a spent window wants. */
+            if let Some(why) = queued {
+                called.push_str(&format!(
+                    " **It is queued on {by}, not started**: {}. It is on that wall with your brief \
+                     held, and it starts by itself — when the window resets, another account \
+                     there frees up, or nothing else there is working. Do not open more lanes to \
+                     make up for it.",
+                    why.trim_start_matches("queued — "),
+                    by = a.by,
+                ));
+            }
             if let Some(n) = &w.note {
                 called.push_str(&format!("\n\n{n}"));
             }
@@ -2467,13 +2494,13 @@ fn reached(a: &Answer, w: &Waiter) -> String {
             format!("{there} on {by} was not closed: {}", prompt_why(refusal, by))
         }
         (Outcome::Said { card, title, said }, _) => crate::relay::recalled(title, card, Some(by.as_str()), said),
-        (Outcome::Opened { card }, Wants::Close) => format!(
+        (Outcome::Opened { card, .. }, Wants::Close) => format!(
             "{by} is taking {} off its wall. Its transcript stays on {by} and the session can be \
              adopted back there, so this is the card going away rather than the work. Tell the user \
              which one you closed, on which machine, and what it finished.",
             crate::relay::handle_of(card)
         ),
-        (Outcome::Opened { card }, _) => format!(
+        (Outcome::Opened { card, .. }, _) => format!(
             "delivered to {} on {by} — that card has it, or, if it was asleep, is being woken and \
              will read this first. Neither is it having answered: a reply comes back as a message \
              from it, if one is needed.",

@@ -452,7 +452,9 @@ the account and the ladder lands somewhere else.
 - **Across the flyway the card is admitted where it runs.** The far wall's `link.rs` asks
   `admit::queued` against *its* accounts, the ones the card will spend, and `flyway:spawn`
   carries the verdict — with no ancestry to leave out, since the asking card is on another
-  wall. The asker's receipt does not yet say "queued". The digest carries a
+  wall. The asker's receipt says it in the local receipt's words: `Outcome::Opened` carries
+  `queued` (skipped when absent, so an older wall reads the frame it always did, and its frame
+  reads here as not queued). The digest carries a
   queued card as held for allowance with its own words, so a wall from before this reads it
   unchanged (`gist.ts`).
 - **A reading too old to trust admits everything.** `STALE_MS` is five minutes against a
