@@ -111,6 +111,7 @@ taking Win, Alt+Tab, Alt+F4 and Ctrl+Esc off this machine, and only while Volery
   | 5 | a hook naming the window each press went to | 26/30 | 30/30 to Edge's render widget |
   | 6 | the pointer arrives 16 ms before the press | 26/30 | — |
   | 6b | the same 30 clicks into a plain Win32 window | **30/30** | 62 confirmed |
+  | 7 | the cursor nudged a pixel once Volery is solid again | 24/30 | 33 confirmed, 0 lifted |
 
   What is ruled out, and how:
   - **Volery closing up too early**: the mouse hook confirmed every forwarded press delivered while
@@ -124,21 +125,20 @@ taking Win, Alt+Tab, Alt+F4 and Ctrl+Esc off this machine, and only while Volery
   - **The pen/touch signature** Chromium filters on (`0xFF515700` under `0xFFFFFF00`): the marks
     mask to `0x564F4C00` and cannot match; a unit test holds it.
   - **The press racing the pointer's arrival**: no better with a frame between (run 6; reverted).
+  - **A late mouse-leave**: nudging the cursor a pixel once Volery was solid again, so Edge heard
+    the pointer leave at once rather than at the next tile press, changed nothing (run 7; reverted).
 
   What is left: each lost press reaches the page as nothing at all — no mousedown, no mouseup —
   and the losses are near-periodic, every 5–8 clicks (~4–5 s) in every run that recorded them.
-  The leading idea, built but **not yet measured**: after each click the cursor came back to the
-  tile with nothing moving afterwards, so Windows noticed the pointer leaving the app only at the
-  *next* real press on the tile — the instant the next forwarded press arrived. `perform` now
-  moves the cursor a pixel there and back once Volery is solid again, so the leave lands while
-  nothing else is in flight. The next in-app run (`drive-probe app <lab>`) says whether it worked;
-  if it did, `drivingCaveat` comes off. Sink item "Chromium drops ~1 in 6 clicks forwarded through
-  the tile, periodically" is where the research resumes.
+  Next candidates, untried: Chromium's mouse-move coalescing or hover timer (a move inside the
+  page shortly before the press; a gap between down and up). Sink item "Chromium drops ~1 in 6
+  clicks forwarded through the tile, periodically" is where the research resumes; `drivingCaveat`
+  comes off when a run lands 29 of 30 or better.
 - **A release once went missing**: the plain window counted 30 presses and 29 releases, and the
   logs could not say which. So after every forwarded click, if its button still reads down to
   Windows and the person's own hand (the hook sees which presses were injected) is not holding
   it, Volery sends the release (`drive::lift`, tested); `drive::lifted()` is logged beside the
-  settles and should stay 0.
+  settles and should stay 0. Run 7: 0 lifted, and nothing held afterwards across every virtual key.
 - **Drag-select works in the app** (1-21 in every in-app run); the one cross-process run where it
   did not select is not repeated.
 - **The first click acts** (Lyss, 2026-11-02): a click on an unfocused tile turns the drive on and
