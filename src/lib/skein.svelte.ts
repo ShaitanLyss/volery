@@ -1710,8 +1710,9 @@ export class Skein {
     return this.projects.find((p) => p.id === id);
   }
 
-  /** `worktree` branches the conversation into its own git worktree via the
-   *  CLI's own `--worktree`, so we never shell out to git ourselves.
+  /** `worktree` is the branch the conversation works on, in its own git
+   *  worktree that Rust makes and finds (`worktree.rs` — no longer the CLI's
+   *  `--worktree`, which mangled the branch name).
    *
    *  `preset` is the model and effort the card is opened with, and it has three
    *  states rather than two — which is what changed when the wall gained a

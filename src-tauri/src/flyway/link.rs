@@ -1488,7 +1488,7 @@ impl Link {
                     }
                 }
             };
-            match base.and_then(|b| crate::worktree::ensure_at(&here.cwd, &branch, b.as_deref())) {
+            match base.and_then(|b| crate::worktree::ensure_at(&here.cwd, &branch, b.as_deref(), &here.id)) {
                 Ok(_) => {
                     let _ = me.app.emit("flyway:spawn", here);
                 }

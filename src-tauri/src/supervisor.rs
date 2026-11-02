@@ -179,7 +179,11 @@ fn group_note(key: &str, dir: &str) -> String {
          of them until whoever opened the group merges `{branch}` back. So commit your work \
          on `{branch}` when it stands up, and do not switch branches, push it, or merge it \
          into anything yourself. The tree started cold: install dependencies and build here \
-         before running anything, and expect the first build to be a slow one."
+         before running anything, and expect the first build to be a slow one. When the \
+         group is done the wall removes this tree only if it is clean, merged, on `{branch}` \
+         (not a detached HEAD or a paused rebase) and holds no ignored files but build \
+         output — so a `.scratch-` folder or an edited `.env` left here keeps the tree; \
+         delete what you no longer need before you finish."
     )
 }
 

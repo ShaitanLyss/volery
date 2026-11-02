@@ -728,6 +728,11 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        because `freshen_state` reads it, and the automatic run waits out a
        minute after launch before its first look. See `freshen.rs`. */
     freshen::start(app.handle());
+    /* Worktree groups: which wall this is, so a group's branch is marked as
+       ours and a lab in the same repository never takes down our trees; then,
+       after a delay, the trees no close ever retired. See `worktree.md`. */
+    worktree::set_owner(&app.config().identifier);
+    store::sweep_worktree_groups(app.handle().clone());
     /* Whether the main thread is answering — the one reading no event can
        give. It waits out the launch itself before its first look. */
     watchdog::start(app.handle().clone());

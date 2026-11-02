@@ -139,9 +139,14 @@ ever taken down by the wall.
 - **Made at the call, not at the child's first spawn** (`spawn::make_group`). A key that cannot
   become a tree — no repository, a base that is not a commit — is a refusal the orchestrator reads
   in the same call, rather than a card that opens and fails to start; and the receipt can say
-  whether the group was new. Git runs off the store lock. `MAKING` serialises every tree this
-  process makes, so two cards spawned into one new group a moment apart cannot both run
-  `git worktree add` on one folder.
+  whether the group was new, resumed an existing branch, replaced a merged one or moved a leftover
+  folder aside (`worktree::Ensured`). Git runs off the store lock. A lock **per tree**
+  (`tree_lock`, keyed on the folder case-folded) serialises making and taking down that tree, and
+  is taken before the folder is looked at, so two cards spawned into one new group a moment apart
+  cannot both run `git worktree add` on one folder, and neither can land in a tree `retire` is
+  removing. Per tree because what it is held across is slow — a `git fetch` with no timeout, a
+  seed, a retirement's byte compares — and one lock for the process had every worktree card on the
+  wall waiting behind any of them to wake.
 - **A fresh group starts from the orchestrator's own `HEAD`** (Lyss: *"the orchestrator's current
   commit by default + the option to choose which commit or branch"*), resolved in the caller's run
   directory — its tree, if it is in one. That is what the group merges back into, and an
@@ -165,23 +170,128 @@ ever taken down by the wall.
 
 `worktree::retire`, called from `store::close_conversation_record` through `retire_group_if_last`
 when the closed card was the last open one on that tree (`store::open_in_tree` — dormant counts as
-open; a dormant card is still in its group). Lyss: *"remove only when clean and merged"*. Enforced
-three times, because a wrong answer here deletes the thing the group was opened to make:
+open; a dormant card is still in its group), and once per launch by `store::sweep_worktree_groups`.
+Lyss: *"remove only when clean and merged"*. The first version enforced that with three checks, and
+an adversarial review the same day broke all three (2026-11-02, git 2.55.0.windows.3). What it
+found is now the design, so it is written down here finding by finding.
 
-1. **Clean** — `git status --porcelain` empty. Ignored files are not work: `node_modules`, a
-   `target`, a seeded `.env` do not keep a tree.
-2. **Merged** — the branch tip is an ancestor of the main tree's `HEAD` or of the remote's main. A
-   rebase-and-fast-forward passes; cherry-picks do not, and the tree is kept — the safe way to be
-   wrong.
-3. **Git agrees** — `git worktree remove` without `--force` (refuses a dirty tree itself) and
-   `git branch -d` (refuses an unmerged branch itself). Tested: `worktree remove` takes ignored
-   build output with it, so a merged group leaves nothing behind.
+**`git worktree remove` is not atomic, and its exit code does not say whether it finished.**
+Probed: a tree holding a `node_modules` junction is unregistered, emptied of tracked files and its
+`.git` link deleted — and the folder stays, holding the junction, with exit **0**. A tree with an
+ignored file held open does the same and exits 255. Either leftover is a folder with no `.git`, so
+git inside it walks *up*: `rev-parse --show-toplevel` answers the main repository, on main. The
+next spawn with that key found the folder (`ensure` checked only that it existed), said "joins
+worktree group", and the card's `git commit -am` landed on main. So:
 
-On a thread, three seconds after the close (the card's process is killed by a separate command and
-a process still standing in the tree makes `remove` refuse), with the census asked again after the
-wait so a card spawned into the group inside it keeps the tree. The verdict goes in the chronicle
-either way — *kept worktree group wt/x: N commit(s) … are not on the main tree's branch* is work
-the user may not know is still out there. A person's branch (`feat/x`) is never retired.
+- **A folder is a tree only while `<folder>/.git` exists** (`lost_its_link`). `ensure`/`ensure_at`
+  move a folder without one aside to `.leftover-<slug>-<secs>` — renamed, nothing deleted, and the
+  receipt says where — and make a fresh tree; one that cannot be moved is a refusal. A folder whose
+  `.git` answers to another repository is refused (`same_repository`).
+- **The in-use check is a rename, because Windows makes it one.** Probed: a file held open with
+  *any* share mode, or a process whose cwd is anywhere inside, makes renaming the tree's folder fail
+  with nothing changed. So `retire` begins with `git worktree move` to `.retiring-<slug>-<secs>`
+  and keeps the tree if that fails. That one step covers a card's leftover process, a dev server
+  group run in the tree and an escaped WMI child alike, and it cannot race: a removal that has
+  started is a removal of a tree nobody holds.
+- **Then links are unlinked, never followed** (`unlink_links`), `git worktree remove` runs without
+  `--force`, and whatever it leaves is deleted — every byte of it having passed the checks below —
+  or reported as `Retired::Partial`, a `bad` chronicle row naming the folder.
+
+**An ignored file is not a disposable one.** `worktree remove` takes ignored files with it, and
+CLAUDE.md sends every card's working files to `.scratch-$SKEIN_CARD/`, which is ignored. So is an
+edited `.env`, a local database, a generated key. `retire` asks `status --ignored` and lets the
+tree go only when every ignored path is build output by name — an ignored *directory* git
+collapsed (`build/`) whose own name is in `REGENERABLE_DIRS` (`node_modules`, `target`,
+`.svelte-kit`, `dist`, `build`, …), or a file named like `*.tsbuildinfo`; never a file merely
+*inside* a folder called `build`, since a tracked `build/` can hold an ignored `secret.env` — or a
+byte-for-byte copy of the same path in the main tree — which is what a `.worktreeinclude` seed is
+until somebody edits it. Anything else **keeps** the tree, and the chronicle names up to three of
+the paths. Kept rather than moved aside: a group whose cards left notes behind is a group a person
+should look at, and the spawn receipt and `group_note` both say a `.scratch-` folder keeps it.
+
+**"Merged" is a claim about the branch, and the work may not be on it.** A detached `HEAD` with
+commits (a bisect, `checkout <sha>`, a rebase paused on a conflict — which the merge-back recipe
+itself can cause) leaves `wt/<key>` at its base, which is merged, so the tree and its reflog went
+with the only reference to that work. `retire` requires `symbolic-ref HEAD == refs/heads/wt/<key>`
+and no `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` or
+`BISECT_LOG` in the tree's git dir. A commit made detached and then abandoned *before* returning to
+the branch is not caught — the reflog check that would catch it also refuses every group merged
+back by rebase, whose pre-rebase commits are in the reflog by design.
+
+**A spawn could land in a tree being deleted.** `ensure_at`'s fast path skipped `MAKING`, and the
+store's census only sees a card once the front end writes its row, after `spawn:asked`. Now
+the tree's lock is taken before the folder is looked at on every path; a birth (`ensure_at`, from
+`spawn` and the flyway) leaves a **claim naming the card** (its id, minted before the tree for
+this), written under the lock; and `retire` hands the claims to the census (`in_use`) under the
+same lock, which counts a claimed card with no row yet as in the tree. The branch
+is deleted *under the lock* too, after detaching the tombstone, so a spawn the moment the lock is
+let go starts a fresh group rather than finding `wt/<key>` checked out by a tombstone. The slow
+delete runs after the lock is let go. A wake does not claim, or a card closed minutes after it was
+woken would keep its tree.
+
+**"Merged into the main tree" means into the branch it is *on*.** `merged_somewhere` counts the
+main tree only through `symbolic-ref`, never its raw `HEAD`, and never when that branch is the
+group's own; and the remote's main. Two reproductions by the review of these fixes: a main tree
+detached at the group's tip (a paused `git rebase wt/x`, a bisect, `switch --detach wt/x` to look)
+made the group "merged" into a commit nothing would keep once `HEAD` moved; and a main tree with
+`wt/x` *checked out* made it trivially merged, so a birth with key `x` deleted the branch under the
+person standing on it and orphaned their commits. A birth also refuses to replace a branch any
+worktree has checked out (`checked_out`).
+
+**A swallowed `branch -d` left a branch the next group silently resumed.** With no upstream,
+`branch -d` judges against the main tree's `HEAD`, so a group merged into the remote's main while
+the main tree stood on another branch kept its branch; the next spawn with that key checked the
+*old* branch out, ignored its base and said "new worktree group … started from <your commit>".
+Now `drop_branch` falls back to `update-ref -d <ref> <tip>` (the tip `retire` proved merged), and
+`ensure_at` handles an existing branch two ways, both said back in the receipt: one this wall
+marked as a group and already merged is deleted and the group starts where it was asked to
+(`Ensured::replaced`); anything else is **resumed** as it is (`Ensured::resumed`), and the receipt
+says it resumes that branch at that commit and that the caller's base was not used.
+
+**`wt/` is a name; the mark is the fact.** A group the wall makes gets
+`branch.wt/<key>.voleryGroup = <app identifier>` in the repository's config, and `retire` takes
+down only a branch carrying *this* wall's identifier. A person's own `wt/` branch, a group from
+0.94.0 (before the mark), and a lab's group in the same repository all read as "not ours" and are
+kept. `git branch -d/-D` drop the section with the branch. And since the *folder* is what collides
+on a case-folding disk, any name whose folder would be `wt+…` must be exactly a group branch
+(`reserved`): `WT/Auth`, `wt+auth` and `Wt/auth` are refused — at a birth, and on a wake only when
+it is about to make something, so a card from before groups whose row already names `wt/Spike` can
+still come back to its own tree. And a group's folder found on some *other* branch (a person's
+`wt+auth`, slugged to the group `auth`'s folder) is refused rather than joined (`holds_the_group`);
+detached is allowed, since that is a group mid-rebase.
+
+**A retirement only ran at a close**, so a crash in the three-second beat, a card moved to another
+wall or a territory forgotten with its cards left a 12–15 GB tree forever. `sweep_worktree_groups`
+runs two minutes after launch over every territory root and every `cwd` a group card ever had (a
+forgotten territory is not in `project`), puts each `wt+<key>` folder through the same `retire`,
+and finishes any `.retiring-*` tombstone a crash interrupted — sparing anything ten minutes young
+(`SWEEP_SPARES`), which may be a tombstone a retirement is still finishing or a tree another process
+(a lab on the same repository) is still birthing behind a claim this one cannot see. It says only
+what it removed; a kept tree was said at its close.
+
+**A claim names a card, not a moment.** It was a two-minute clock first, and both readings of a
+clock were wrong. As a veto, a card spawned and closed inside its own two minutes — the first lab
+run did exactly that — left its tree for good. As a wait (the next cut, `Retired::Claimed`), a
+front end starved past two minutes (2026-10-19's freeze) had its fresh tree retired before the
+row landed, and the wake rebuilt it off the ladder without the orchestrator's base. "This card has
+no row yet" is true however slowly the front end draws and false the moment it has one, which is
+the whole question. Claims are forgotten after an hour, which bounds memory only: a row that never
+landed was a spawn that failed, and its tree is the sweep's.
+
+**A mark must not outlive its branch.** Probed by the second review: with `config.lock` held by a
+tree being made beside it, `git branch -d` deletes the ref, fails to rewrite the config and exits
+0, leaving `voleryGroup` for the next `wt/<key>` to inherit. `unmark` checks the mark is gone after
+every delete and retries, as `mark` does on the way in.
+
+The census compares directories as places (case, separators, trailing
+slash), because the sweep's roots come from `project`, and a census that read zero for an occupied
+group is the one wrong answer that deletes something.
+
+On a thread, three seconds after the close (the card's process is killed by a separate command,
+and a process still standing in the tree makes the move fail, which keeps the tree for no reason).
+The verdict goes in the chronicle either way — *kept worktree group wt/x: N commit(s) … are not on
+the main tree's branch* is work the user may not know is still out there. A person's branch
+(`feat/x`) is never retired.
 
 ### What a group costs, measured 2026-11-02 on this repository
 
@@ -197,7 +307,9 @@ minutes of compiling: `src-tauri/sherpa/` (the voice runtime, fetched and gitign
 checkout, and tauri's resource check refuses. So `worktree::seed` copies into every *new* tree the
 ignored paths the repository lists in `.worktreeinclude` (Claude Code's own name for the same
 file) — a path, a directory, or `*` in the last component; never over a file git checked out;
-never a path climbing out of the root. This repository lists `src-tauri/sherpa/`. It applies to a
+never a path climbing out of the root; never into `.git` or `.claude/worktrees` (a line of `*`
+once meant copying the tree into itself, under the lock); never through a symlink or junction;
+and at most 2 GB in all. This repository lists `src-tauri/sherpa/`. It applies to a
 person's worktree as well as a group's, since both were missing it.
 
 **A build-output root was designed and deliberately not built.** The brief proposed

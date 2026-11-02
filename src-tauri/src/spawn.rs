@@ -632,6 +632,15 @@ struct Made {
     base: Option<String>,
     /// The branch the caller stands on, which is what the group merges into.
     into: Option<String>,
+    /// The group's branch already existed and was resumed at this commit, so
+    /// neither the caller's `HEAD` nor `worktree_base` was used.
+    resumed: Option<String>,
+    /// How many commits that resumed branch has that `into` does not.
+    ahead: Option<String>,
+    /// An earlier, already-merged branch of this name was replaced: its tip.
+    replaced: Option<String>,
+    /// A leftover folder at the tree's path was moved here first.
+    moved_aside: Option<String>,
 }
 
 /// Make — or find — a group's tree.
@@ -649,17 +658,17 @@ fn make_group(
     branch: &str,
     mine: Option<&str>,
     base_asked: Option<&str>,
+    card: &str,
 ) -> Result<Made, String> {
     use crate::worktree::run;
-    let dir = crate::worktree::dir_for(cwd, branch);
-    let fresh = !dir.exists();
     let into = mine.and_then(|m| {
         let (ok, b, _) = run(m, &["rev-parse", "--abbrev-ref", "HEAD"]);
         (ok && !b.is_empty() && b != "HEAD").then_some(b)
     });
-    let base = if !fresh {
-        None
-    } else if let Some(b) = base_asked {
+    /* Resolved whether or not the group turns out to be new: whether it is
+       is only known under the lock `ensure_at` takes, and a `worktree_base`
+       that names nothing is a wrong argument either way. */
+    let base = if let Some(b) = base_asked {
         let at = mine.unwrap_or(cwd);
         let (ok, sha, _) = run(at, &["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")]);
         if !ok || sha.is_empty() {
@@ -677,9 +686,25 @@ fn make_group(
             (ok && !sha.is_empty()).then_some(sha)
         })
     };
-    let dir = crate::worktree::ensure_at(cwd, branch, base.as_deref())
+    let made = crate::worktree::ensure_at(cwd, branch, base.as_deref(), card)
         .map_err(|why| format!("{why}. No card was opened."))?;
-    Ok(Made { dir, fresh, base, into })
+    let ahead = match (&made.resumed, mine, &into) {
+        (Some(tip), Some(m), Some(i)) => {
+            let (ok, n, _) = run(m, &["rev-list", "--count", &format!("{i}..{tip}")]);
+            (ok && !n.is_empty()).then_some(n)
+        }
+        _ => None,
+    };
+    Ok(Made {
+        dir: made.dir,
+        fresh: made.made,
+        base: if made.made && made.resumed.is_none() { base } else { None },
+        into,
+        resumed: made.resumed,
+        ahead,
+        replaced: made.replaced,
+        moved_aside: made.moved_aside,
+    })
 }
 
 /// The group half of a spawn's receipt — the one channel by which the caller
@@ -697,22 +722,62 @@ fn group_receipt(key: &str, made: &Made, peers: i64, yours: bool, base_asked: bo
         );
     }
     let into = made.into.as_deref().unwrap_or("the branch you merge into");
+    let short = |sha: &str| sha[..sha.len().min(9)].to_string();
+    /* What the call had to do on the way, said because each one changes what
+       the caller can assume: a moved folder is something only a person can
+       judge, a replaced branch is history the group no longer carries, and a
+       resumed one is a group that did *not* start where it was asked to. */
+    let aside = match &made.moved_aside {
+        Some(p) => format!(
+            " A folder left at that path by an earlier removal that did not finish was moved \
+             aside to {p} — nothing in it was deleted; tell the user it is there."
+        ),
+        None => String::new(),
+    };
+    if made.fresh && made.resumed.is_some() {
+        let tip = made.resumed.as_deref().unwrap_or_default();
+        let ahead = match made.ahead.as_deref() {
+            Some("0") => format!(", with nothing on it that {into} lacks"),
+            Some(n) => format!(", {n} commit(s) ahead of {into}"),
+            None => String::new(),
+        };
+        let unused = if base_asked { "`worktree_base`" } else { "your commit" };
+        return format!(
+            " It works in worktree group `{key}`, which **resumes the existing branch \
+             `{branch}` at {}**{ahead}, checked out at {dir} — that branch was already there \
+             (unmerged, or not one this wall made), so {unused} was not used and the card \
+             starts on that branch's work rather than yours. If that is not what you meant, \
+             close the card and use another key. Nothing it edits reaches your tree until you \
+             merge it back: in its tree `git rebase {into}`, then in yours `git merge \
+             --ff-only {branch}`. The tree starts cold (no build output, no installed \
+             dependencies).{aside}",
+            short(tip)
+        );
+    }
     if made.fresh {
         let from = match &made.base {
-            Some(b) => format!(", started from {}", &b[..b.len().min(9)]),
+            Some(b) => format!(", started from {}", short(b)),
+            None => String::new(),
+        };
+        let replaced = match &made.replaced {
+            Some(old) => format!(
+                " An older `{branch}` (at {}, already merged) was in the way and was replaced.",
+                short(old)
+            ),
             None => String::new(),
         };
         format!(
             " It works in a new worktree group, `{key}`: the branch `{branch}`, checked out at \
-             {dir}{from}. **Nothing it edits reaches your tree until you merge it back**, and \
+             {dir}{from}.{replaced}{aside} **Nothing it edits reaches your tree until you merge it back**, and \
              nothing you change reaches it — give the same `worktree` key to any card that \
              must see its edits. The tree starts cold: no build output and no installed \
              dependencies, so its first install and build run from scratch there and are not \
              shared with your tree. To merge it back when the group is done: in its tree \
              `git rebase {into}`, then in yours `git merge --ff-only {branch}` — linear, no \
              merge commit. When the last card in the group closes, the wall removes the tree \
-             and the branch only if both are clean and merged; anything else is left exactly \
-             where it is."
+             and the branch only if everything is committed and merged and every ignored file \
+             in it is build output — a `.scratch-` folder, an edited `.env` or anything else \
+             keeps it, exactly where it is."
         )
     } else {
         let others = match peers {
@@ -2081,6 +2146,10 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        instead of a card that opens and fails to start, and the receipt can say
        whether the group was new. Git runs off the store lock: it takes about a
        second, and the lock is the wall's. */
+    /* Minted before the tree, so a group's birth claim names the card it is
+       for: `retire` asks the store whether that card has a row yet, which is
+       true however slowly the front end draws (`worktree.rs`, claims). */
+    let id = crate::store::uuid_v4();
     let (worktree, grouped) = match &group {
         None => (worktree, None),
         Some(key) => {
@@ -2094,7 +2163,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
                 _ => None,
             };
             let yours = matches!(stands, Standing::Here) && me.worktree.as_deref() == Some(branch.as_str());
-            let made = match make_group(&cwd, &branch, mine.as_deref(), base_asked.as_deref()) {
+            let made = match make_group(&cwd, &branch, mine.as_deref(), base_asked.as_deref(), &id) {
                 Ok(m) => m,
                 Err(why) => return why,
             };
@@ -2106,7 +2175,6 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         }
     };
 
-    let id = crate::store::uuid_v4();
     /* Recorded before the emit, so the one-generation guard is true of the child
        from the moment it exists rather than from whenever the wall gets round to
        drawing it. `set_mid_turn`'s shape again: bookkeeping about what something
@@ -3275,6 +3343,10 @@ mod tests {
             fresh: true,
             base: Some("0123456789abcdef".into()),
             into: Some("main".into()),
+            resumed: None,
+            ahead: None,
+            replaced: None,
+            moved_aside: None,
         };
         let r = group_receipt("auth", &made, 0, false, false);
         for want in [
@@ -3285,7 +3357,8 @@ mod tests {
             "git rebase main",
             "git merge --ff-only wt/auth",
             "no merge commit",
-            "clean and merged",
+            "committed and merged",
+            "`.scratch-` folder",
         ] {
             assert!(r.contains(want), "{want:?} missing from {r}");
         }
@@ -3293,12 +3366,46 @@ mod tests {
 
     #[test]
     fn joining_a_group_counts_who_is_in_it_and_says_a_base_was_unused() {
-        let made = Made { dir: "D".into(), fresh: false, base: None, into: None };
+        let made = Made {
+            dir: "D".into(),
+            fresh: false,
+            base: None,
+            into: None,
+            resumed: None,
+            ahead: None,
+            replaced: None,
+            moved_aside: None,
+        };
         let r = group_receipt("auth", &made, 2, false, true);
         assert!(r.contains("2 other open cards"), "{r}");
         assert!(r.contains("`worktree_base` was not used"), "{r}");
         let own = group_receipt("auth", &made, 1, true, false);
         assert!(own.contains("your own worktree group"), "{own}");
+    }
+
+    #[test]
+    fn a_group_that_did_not_start_where_it_was_asked_says_so() {
+        /* Review finding 5: 0.94.0 said "a new worktree group … started from
+           <your commit>" while checking out an old `wt/<key>` as it was. */
+        let made = Made {
+            dir: "C:/r/.claude/worktrees/wt+auth".into(),
+            fresh: true,
+            base: None,
+            into: Some("main".into()),
+            resumed: Some("fedcba9876543210".into()),
+            ahead: Some("3".into()),
+            replaced: None,
+            moved_aside: Some("C:/r/.claude/worktrees/.leftover-wt+auth-1".into()),
+        };
+        let r = group_receipt("auth", &made, 0, false, false);
+        for want in ["resumes the existing branch", "fedcba987", "3 commit(s) ahead of main", "was not used", ".leftover-wt+auth-1", "nothing in it was deleted"] {
+            assert!(r.contains(want), "{want:?} missing from {r}");
+        }
+        assert!(!r.contains("a new worktree group"), "{r}");
+
+        let replaced = Made { resumed: None, ahead: None, replaced: Some("aaaaaaaaaaaa".into()), moved_aside: None, base: Some("bbbbbbbbbbbb".into()), ..made };
+        let r = group_receipt("auth", &replaced, 0, false, false);
+        assert!(r.contains("a new worktree group") && r.contains("aaaaaaaaa") && r.contains("replaced"), "{r}");
     }
 
     #[test]

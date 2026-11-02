@@ -4572,14 +4572,87 @@ fn worktree_row(conn: &Connection, id: &str) -> Option<String> {
 /// receipt of a card joining one, and a close asks it to know whether the card
 /// leaving was the group's last (`worktree::retire`). Open means not closed;
 /// a dormant card is still in its group and still holds the tree.
+///
+/// The directory is compared as a place rather than as a string — case,
+/// separators and a trailing slash folded — because a census that reads zero
+/// for a group with a card in it is the one wrong answer that deletes
+/// something, and the launch sweep asks it with a root that came from the
+/// `project` table rather than from the card's own row.
 pub fn open_in_tree(conn: &Connection, cwd: &str, worktree: &str) -> i64 {
-    conn.query_row(
-        "SELECT COUNT(*) FROM conversation
-          WHERE closed_at IS NULL AND cwd = ?1 AND worktree = ?2",
-        params![cwd, worktree],
-        |r| r.get(0),
-    )
-    .unwrap_or(0)
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT cwd FROM conversation
+          WHERE closed_at IS NULL AND worktree = ?1 COLLATE NOCASE",
+    ) else {
+        /* Unreadable is not empty: say "in use", the answer that keeps. */
+        return 1;
+    };
+    let Ok(rows) = stmt.query_map(params![worktree.trim()], |r| r.get::<_, String>(0)) else {
+        return 1;
+    };
+    let here = same_place(cwd);
+    rows.flatten().filter(|c| same_place(c) == here).count() as i64
+}
+
+fn same_place(dir: &str) -> String {
+    dir.trim().replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// `worktree::retire`, with this wall's census as the in-use check — asked
+/// by `retire` itself under the tree's lock, so a card spawned into the group
+/// between the close and the removal keeps the tree. `born` is the cards
+/// `retire` holds a birth claim for: one with no row yet is a card the front
+/// end has not written down, and is in the tree however long that takes.
+fn retire_group(app: &tauri::AppHandle, cwd: &str, tree: &str) -> crate::worktree::Retired {
+    use tauri::Manager;
+    let in_use = |born: &[String]| match app.try_state::<Store>() {
+        Some(store) => match store.0.lock() {
+            Ok(conn) => open_in_tree(&conn, cwd, tree) > 0 || born.iter().any(|id| !has_row(&conn, id)),
+            Err(_) => true,
+        },
+        None => true,
+    };
+    crate::worktree::retire(cwd, tree, &in_use)
+}
+
+/// Whether a card has a row at all, open or closed. Unreadable is "yes" only
+/// in the sense that keeps: it is asked by `retire_group`, where "no row"
+/// means "in use".
+fn has_row(conn: &Connection, id: &str) -> bool {
+    conn.query_row("SELECT 1 FROM conversation WHERE id = ?1", params![id], |_| Ok(()))
+        .optional()
+        .map_or(false, |r| r.is_some())
+}
+
+/// What a retirement says in the chronicle, or nothing.
+fn retired_row(
+    verdict: crate::worktree::Retired,
+    tree: &str,
+    when: &str,
+    say_kept: bool,
+) -> Option<(&'static str, String, String)> {
+    use crate::worktree::Retired;
+    match verdict {
+        Retired::Nothing => None,
+        Retired::Removed(note) => Some((
+            "note",
+            format!("removed worktree group {tree}"),
+            match note {
+                Some(n) => format!("{when}, and everything in it was committed and merged — but {n}"),
+                None => format!("{when}, and everything in it was committed and merged"),
+            },
+        )),
+        Retired::Kept(why) => say_kept.then(|| {
+            ("note", format!("kept worktree group {tree}"), format!("{when}, but {why}"))
+        }),
+        Retired::Partial(why) => Some((
+            "bad",
+            format!("partly removed worktree group {tree}"),
+            format!(
+                "{when}, and every check passed before the removal began — so nothing left \
+                 there is work — but {why}"
+            ),
+        )),
+    }
 }
 
 /// When a closed card was the last in a worktree group, take the group's tree
@@ -4605,35 +4678,93 @@ fn retire_group_if_last(app: &tauri::AppHandle, conn: &Connection, id: &str) {
     let app = app.clone();
     std::thread::spawn(move || {
         /* A beat first. The close kills the card's process tree as a separate
-           command, and a process still standing in the tree holds files that
-           make `git worktree remove` refuse — which would be safe, and would
-           keep a tree for no reason. Then the census again: a card can be
-           spawned into the group inside that beat, and a group with a card in
-           it is not finished. */
+           command, and a process still standing in the tree makes the move to
+           a tombstone fail — which keeps the tree, safely, for no reason.
+           The census is asked again inside `retire`, under the lock. */
         std::thread::sleep(std::time::Duration::from_secs(3));
-        {
+        let verdict = retire_group(&app, &cwd, &tree);
+        if let Some((level, mark, detail)) = retired_row(verdict, &tree, "its last card closed", true) {
+            crate::chronicle::note(&app, project.as_deref(), "volery", level, &mark, &detail);
+        }
+    });
+}
+
+/// How long after launch the sweep waits: past the front end's first paint and
+/// the rouse, and long enough that a spawn made in the first moments has its
+/// row (or its claim).
+const SWEEP_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A group's tree is retired when its last card closes — and that is the only
+/// moment it was. A crash in the beat before the retirement, a card moved to
+/// another wall, a territory forgotten with its cards: each left a 12–15 GB
+/// tree on disk with nothing that would ever look at it again. So once per
+/// launch every `wt+<key>` folder under a root this wall knows is put through
+/// the same `retire` — ours, empty, clean, merged, nothing ignored that is
+/// work, nothing holding it — and a tombstone a crash interrupted is finished.
+/// Only what it removes is said; a tree it keeps was said at its close, and
+/// would otherwise be said again at every launch.
+pub fn sweep_worktree_groups(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(SWEEP_AFTER);
+        let roots: Vec<(String, Option<String>)> = {
             use tauri::Manager;
             let Some(store) = app.try_state::<Store>() else { return };
             let Ok(conn) = store.0.lock() else { return };
-            if open_in_tree(&conn, &cwd, &tree) > 0 {
-                return;
+            sweep_roots(&conn)
+        };
+        for (root, project) in roots {
+            let (groups, tombs) = crate::worktree::leftovers(&root);
+            for tomb in tombs {
+                if let Err(why) = crate::worktree::finish(&root, &tomb) {
+                    crate::chronicle::note(
+                        &app,
+                        project.as_deref(),
+                        "volery",
+                        "bad",
+                        "a worktree group's removal is still unfinished",
+                        &format!("{why}. Every check passed before it began, so nothing there is work"),
+                    );
+                }
+            }
+            for tree in groups {
+                let verdict = retire_group(&app, &root, &tree);
+                if let Some((level, mark, detail)) =
+                    retired_row(verdict, &tree, "no card on the wall was in it", false)
+                {
+                    crate::chronicle::note(&app, project.as_deref(), "volery", level, &mark, &detail);
+                }
             }
         }
-        let (level, mark, detail) = match crate::worktree::retire(&cwd, &tree) {
-            crate::worktree::Retired::Nothing => return,
-            crate::worktree::Retired::Removed => (
-                "note",
-                format!("removed worktree group {tree}"),
-                "its last card closed, and everything in it was committed and merged".to_string(),
-            ),
-            crate::worktree::Retired::Kept(why) => (
-                "note",
-                format!("kept worktree group {tree}"),
-                format!("its last card closed, but {why}"),
-            ),
-        };
-        crate::chronicle::note(&app, project.as_deref(), "volery", level, &mark, &detail);
     });
+}
+
+/// Every directory a group's tree could be under: each territory's root, and
+/// the `cwd` of any card that has ever been in a group (a forgotten territory
+/// is no longer in `project`, and its trees are still on disk).
+fn sweep_roots(conn: &Connection) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    let mut add = |dir: String, project: Option<String>| {
+        if !out.iter().any(|(d, _)| same_place(d) == same_place(&dir)) {
+            out.push((dir, project));
+        }
+    };
+    if let Ok(mut stmt) = conn.prepare("SELECT root_path, id FROM project") {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            for (dir, id) in rows.flatten() {
+                add(dir, Some(id));
+            }
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT cwd FROM conversation WHERE worktree LIKE 'wt/%' AND kind IS NOT 'chat'",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for dir in rows.flatten() {
+                add(dir, None);
+            }
+        }
+    }
+    out
 }
 
 /// The two standing instructions a card is to be told: the wall's, and its own
@@ -11440,6 +11571,25 @@ mod tests {
             None,
             "an unknown id means the card every card without a worktree is"
         );
+    }
+
+    /// A worktree group's census reads zero only when no open card is in the
+    /// tree — the one wrong answer that deletes something. The launch sweep
+    /// asks it with a root out of `project`, which need not be spelled the way
+    /// a card's row spells its `cwd`.
+    #[test]
+    fn a_groups_census_counts_a_card_however_its_directory_is_spelled() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        record_row(&conn, "a", "p1", "t1", "C:\\X\\", Some("wt/auth"), None, None, None).unwrap();
+        record_row(&conn, "b", "p1", "t1", "C:/x", Some("wt/other"), None, None, None).unwrap();
+        assert_eq!(open_in_tree(&conn, "C:/x", "wt/auth"), 1);
+        assert_eq!(open_in_tree(&conn, "c:\\x", "wt/auth"), 1);
+        assert_eq!(open_in_tree(&conn, "C:/y", "wt/auth"), 0);
+        conn.execute("UPDATE conversation SET closed_at = 1 WHERE id = 'a'", []).unwrap();
+        assert_eq!(open_in_tree(&conn, "C:/x", "wt/auth"), 0, "a closed card is not in its group");
+        let roots = sweep_roots(&conn);
+        assert_eq!(roots.len(), 1, "one place, however it is spelled: {roots:?}");
     }
 
     /// The pair every per-directory question about a card is asked with. The
