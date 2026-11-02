@@ -1932,6 +1932,8 @@ setInterval(show,50);show();
         if !with_hold {
             let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
             drop(guard);
+            thread::sleep(Duration::from_millis(300));
+            println!("7. held afterwards (every virtual key read with GetAsyncKeyState): {}", held_keys());
             return;
         }
 
@@ -2277,6 +2279,20 @@ setInterval(show,50);show();
         println!("drive ended: lab TOPMOST now {}", exstyle(lab) & WS_EX_TOPMOST.0 != 0);
         let _ = ctl.op(serde_json::json!({ "op": "widget.remove", "id": id }));
         drop(guard);
+    }
+
+    /// Every virtual key that reads down right now — anything left held by a
+    /// run is a key or button stuck on Lyss's machine. "none" is the pass.
+    fn held_keys() -> String {
+        let down: Vec<String> = (1..=254)
+            .filter(|&vk| unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0)
+            .map(|vk| format!("0x{vk:02x}"))
+            .collect();
+        if down.is_empty() {
+            "none".into()
+        } else {
+            down.join(" ")
+        }
     }
 
     /// The window under a point, skipping the lab: walk the z-order below it
