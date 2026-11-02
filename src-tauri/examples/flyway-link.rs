@@ -279,7 +279,7 @@ async fn main() {
 
     println!("\n=== what this run established ===");
     let both = lap_has.len() == 2 && desk_has.len() == 2;
-    let opened = matches!(answered.first().map(|a| &a.outcome), Some(Outcome::Opened { card }) if card == "card-on-the-desk");
+    let opened = matches!(answered.first().map(|a| &a.outcome), Some(Outcome::Opened { card, .. }) if card == "card-on-the-desk");
     if both {
         println!("The sink crossed in BOTH directions from one dial: the laptop pulled the");
         println!("desk's finding, then pushed its own to the desk off the desk's watermark.");
