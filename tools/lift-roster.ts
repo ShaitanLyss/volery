@@ -253,6 +253,15 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     file: "src-tauri/src/freshen.rs",
     items: ["const FRESHEN_TOOL", "fn freshen_schema"],
   },
+  /* Both registered in `roster()`'s deferred tier in 0.94 — `context.md`. */
+  {
+    file: "src-tauri/src/compact.rs",
+    items: ["const COMPACT_TOOL", "fn compact_schema"],
+  },
+  {
+    file: "src-tauri/src/renew.rs",
+    items: ["const RENEW_TOOL", "fn renew_schema"],
+  },
   /* Registered in `roster()` in 0.31 without a line here, which left this lift
      failing to compile — so for that stretch nothing on this machine could
      measure the loaded tier at all. */
@@ -524,6 +533,7 @@ const MODULES = [
   "board",
   "clean",
   "chronicle",
+  "compact",
   "browser",
   "freshen",
   "later",
@@ -535,6 +545,7 @@ const MODULES = [
   "show",
   "relay",
   "remove",
+  "renew",
   "selector",
   "servers",
   "sink",
