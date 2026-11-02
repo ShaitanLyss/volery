@@ -1210,7 +1210,14 @@ pub fn handle(
     _args: &serde_json::Value,
 ) -> Option<String> {
     match tool {
-        ALLOWANCE_TOOL => Some(do_allowance(app, caller)),
+        /* The account's figures, then what this card's own context costs it per
+           request — the half of "what can I afford" that is in the card's own
+           hands, and the line that names `compact` (`compact.rs`). */
+        ALLOWANCE_TOOL => Some(format!(
+            "{}\n\n{}",
+            do_allowance(app, caller),
+            crate::compact::context_line(crate::compact::tokens_of(caller))
+        )),
         ACCOUNTS_TOOL => Some(do_accounts(app, caller)),
         _ => None,
     }

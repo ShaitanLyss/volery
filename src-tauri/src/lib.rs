@@ -18,6 +18,7 @@ mod browser;
 pub mod claude;
 mod clean;
 mod clip;
+mod compact;
 mod board;
 mod chronicle;
 /// Public so `examples/azdo-probe.rs` can drive the real reading rather than a

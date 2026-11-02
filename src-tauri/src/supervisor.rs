@@ -1751,6 +1751,9 @@ fn spawn_now(
                             note_browser(&app, &id, down);
                         }
                         note_pooled(&app, &id, &event);
+                        /* The card's context size, for `allowance` and
+                           `compact` to say back to the card (`compact.rs`). */
+                        crate::compact::fold(&id, &event);
                         events.push(event);
                     }
                     Err(_) => {

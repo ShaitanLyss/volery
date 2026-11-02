@@ -2218,6 +2218,17 @@ pub(crate) fn roster() -> Vec<Value> {
              labels, which account am I on, which one has room, pick an account \
              for a new card, priority tiers, is another account usable",
         ),
+        /* Deferred: `allowance`'s answer ends with this card's context size and
+           names this tool in full beside it — `servers`' argument for its two
+           siblings, a tool result being free per turn. The hint carries the
+           symptom, because a card reaching for it is holding "my context is
+           huge", not the CLI's word for the fix. See `compact.rs`. */
+        found_by(
+            crate::compact::compact_schema(),
+            "compact my own context, conversation too long, context window full, \
+             summarise the conversation so far, reduce context size, every turn is \
+             expensive, /compact, free up context before the next round",
+        ),
         found_by(
             crate::spawn::close_schema(),
             "take a card off the wall, close a conversation I opened, tidy up a \
@@ -3863,6 +3874,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 crate::chronicle::handle(&app, &conversation_id, &tool, &args)
                             })
                             .or_else(|| crate::limits::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| crate::compact::handle(&app, &conversation_id, &tool, &args))
                             /* A census of the process table, so not free in
                                time — a few hundred milliseconds on a loaded
                                machine — but on this request's own thread, so it
