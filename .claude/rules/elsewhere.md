@@ -61,8 +61,9 @@ a shadow gets on the wall:
   (see *A picture crosses with its prompt* below). What cannot arrive is the handle's to say: a
   quiet wall, a picture to a wall too old to take one, or a prompt past the frame's ceiling is
   refused by `CardHandle.carries` before the draft is cleared, a `!` line has no card here to run in, and
-  Volery's own commands are refused with the reason unless they are a verb (`/clear`,
-  `/account`), which is asked of the far wall as the right-click would. **The palette is the
+  Volery's own commands are refused with the reason unless they are a card verb — and every
+  verb is one (`/renew`, `/stop`, `/clear`, `/account` …, `verbslash.ts`) — which is asked of
+  the far wall as the right-click would. **The palette is the
   trap here**: it still opens over a `/` offering this wall's commands, and its line sent raw put
   `/gear planning` in front of the far agent as a prompt about the word "planning" and `/btw …`
   into the conversation as a real turn (found in review). So a half-typed name completes as it

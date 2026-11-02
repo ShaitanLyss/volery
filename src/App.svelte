@@ -143,6 +143,7 @@
   import { boostScore } from "./lib/boostscore.svelte";
   import { paletteExtras, stirsCard } from "./lib/commands";
   import { planFile, planRoot } from "./lib/gears";
+  import { wallValues } from "./lib/verbslash";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
   import { rowVerb, type Verb } from "./lib/handle";
   import { Cards, type CardHandle } from "./lib/cards.svelte";
@@ -3355,6 +3356,19 @@
    *  card for its own reasons, and one derived is the only way two readings of
    *  "the card the dock is pointed at" cannot drift apart. */
   const bangCard = $derived(dockCard);
+  /* What the card's right-click offers as lists — its project's other
+     groupings, the walls it could move to, the presets its plan can go to —
+     as the values of the verbs' slash commands, so `/regroup` and the menu's
+     `move it to ▸` cannot come to offer different things
+     (`verbslash.ts::wallValues`). The card in the ring, here or elsewhere. */
+  $effect(() => {
+    /* Written only when it changed: `menu()` reads the roster, the usage poll
+       and the placements, and a fresh object on every such tick would reset
+       the lit row under the hand choosing from `/move `'s values. */
+    const next = wallValues(card?.menu());
+    if (JSON.stringify(next) !== JSON.stringify(untrack(() => field.wall))) field.wall = next;
+  });
+
 
   /* An offering standing over a draft that is no longer a shell line would be a
      popup completing paths into a sentence. */

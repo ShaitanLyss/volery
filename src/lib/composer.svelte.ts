@@ -43,7 +43,8 @@ import {
   type Command,
 } from "./commands";
 import { isGear } from "./gears";
-import { whyNot, type Verb } from "./handle";
+import { whyNot } from "./handle";
+import { menuRefusal, oneAtATime, settled, unoffered, verbNamed, verbOf, verbTakesWall } from "./verbslash";
 import { BANG, type Completion, type Match, applyCompletion, commandCursor } from "./bang";
 import { keyFor, type Step } from "./composer";
 import { view } from "./view.svelte";
@@ -335,25 +336,32 @@ export class Composer {
     if (cmd.by !== "skein") {
       return this.sendText(arg ? `/${cmd.name} ${arg}` : `/${cmd.name}`, broadcast);
     }
-    /* The two of Volery's own that are a card's verbs reach a card wherever it
-       is, through its handle: `/clear` and `/account` on a card on another
-       wall are the right-click's clear and put-it-on, asked of its wall. The
-       rest are this wall's own. Asked before the field is cleared, so a lone
-       card that cannot be asked keeps the draft and says why. */
-    const asVerb: { verb: Verb; args: Record<string, unknown> } | null =
-      cmd.name === "clear"
-        ? { verb: "clear", args: {} }
-        : cmd.name === "account"
-          ? { verb: "account", args: { account: arg } }
-          : null;
+    /* Every card verb is a command (`verbslash.ts`), and reaches a card
+       wherever it is through its handle — `/renew` on a card on another wall
+       is the right-click's renew, asked of its wall. The rest of Volery's own
+       are this wall's. Asked before the field is cleared, so a lone card that
+       cannot be asked keeps the draft and says why — `can()`'s reason, the one
+       the menu and the chord give. */
+    let asVerb = verbOf(cmd, arg);
     const lone = cmd.needsCard && reach.length === 1 ? reach[0]! : null;
-    const no = !lone
-      ? null
-      : asVerb
-        ? whyNot(lone.can(asVerb.verb))
-        : lone.remote
-          ? `/${cmd.name} reaches this wall's cards — not yet one on ${lone.remote.host}`
-          : null;
+    /* A verb is asked of every card it reaches, each with its own reason, and
+       one whose answer is a single thing on screen goes to one card at a
+       time. The first refusal is the one said. */
+    const why = (c: CardHandle, verb: NonNullable<typeof asVerb>["verb"]) =>
+      whyNot(c.can(verb)) ?? menuRefusal(verb, c.menu());
+    const no = asVerb
+      ? ((reach.length > 1 ? oneAtATime(asVerb.verb) : null) ??
+        reach.map((c) => why(c, asVerb!.verb)).find((r) => r !== null) ??
+        null)
+      : lone?.remote
+        ? `/${cmd.name} reaches this wall's cards — not yet one on ${lone.remote.host}`
+        : null;
+    /* A toggle over a gathering says which side, off the card in the ring,
+       so a mixed gathering ends one way rather than each card flipping. */
+    if (asVerb && reach.length > 1) {
+      const lead = this.#h.card() ?? reach[0]!;
+      asVerb = { verb: asVerb.verb, args: settled(asVerb.verb, asVerb.args, lead.menu()) };
+    }
     if (no) {
       skein.fault = no;
       return field.refuse();
@@ -382,7 +390,8 @@ export class Composer {
        clear ends a process, and five at once is a herd aimed at the one thing on
        this wall that is already the slowest. */
     if (asVerb) {
-      for (const c of [...reach]) await c.do(asVerb.verb, asVerb.args);
+      const { verb, args } = asVerb;
+      for (const c of [...reach]) await c.do(verb, args);
       return;
     }
     const on = [...this.targets];
@@ -493,8 +502,22 @@ export class Composer {
     /* A command typed in full and sent without the palette ever opening. Only
        Skein's own arrive here: the CLI's, and every unknown name, fall through
        and go to the agent as the prompts they are. */
-    const found = resolveCommand(text);
+    const found = resolveCommand(text, field.values);
     if (found) return this.runCommand(found.cmd, broadcast, found.arg);
+    /* A wall-valued verb's name whose row is not drawn for this card — `/move` with
+       nowhere to go, `/regroup` in a project of one grouping — or given a
+       value the card does not have. It is Volery's name, so it is never sent
+       to the agent as a sentence about moving; it is refused with the reason
+       the menu's silence stands for, the draft kept. */
+    /* Only for those that take their values off the card: a fixed verb with
+       words after it — `/clear the deck` — is a sentence, and goes to the
+       agent as it always has (`commands.md`). */
+    const named = verbNamed(text);
+    if (named && verbTakesWall(named)) {
+      const one = this.reach.length === 1 ? this.reach[0]! : null;
+      this.#h.skein.fault = (one && whyNot(one.can(named))) ?? unoffered(named, text, field.values);
+      return field.refuse();
+    }
 
     await this.sendText(text, broadcast);
   }

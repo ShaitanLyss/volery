@@ -128,6 +128,133 @@ export const VERB_STAYS: Readonly<Partial<Record<Verb, string>>> = {
     "what a card is holding is a job object on the machine it runs on; listing it from here is not built as a read (sink dbfd0857)",
 };
 
+/* ── every verb is a slash command, unless it says why not ───────────────
+ *
+ * Lyss, 2026-11-03: *"any action callable on a card should have a slash
+ * command version by design with no slash commands being exceptions."* `/renew`
+ * did nothing on the day `renew` became a verb, because the slash commands
+ * were a hand list beside this table and a new verb was missing until
+ * somebody remembered. So the dock's vocabulary is derived from this
+ * (`verbslash.ts`), and a verb added to `COST` is a compile error here until
+ * somebody writes its name or its reason — `VERB_STAYS`'s shape, one concern
+ * over. Today there are no exceptions.
+ *
+ * `summary` is the right-click's label for it (both sides of a toggle, as the
+ * chord's label has them); `detail` is what it will do, said on the lit row.
+ * `takes` is the argument the menu offers as a submenu: a fixed pair, or a
+ * list off the wall the card's own `menu()` fills. */
+
+/** The values a verb takes, where it takes any. `wall` is a list the card's
+ *  right-click offers (`menu.ts`), handed in rather than known. */
+export type VerbTakes = { fixed: { value: string; summary: string }[] } | { wall: true };
+
+export type VerbSlash =
+  | { slash: string; summary: string; detail: string; takes?: VerbTakes }
+  | { noSlash: string };
+
+export const VERB_SLASH: { readonly [K in Verb]-?: VerbSlash } = {
+  glass: {
+    slash: "glass",
+    summary: "put it on the glass / back on the wall",
+    detail: "the card stays where you are looking while you pan the wall — the same command takes it off again",
+  },
+  keep: {
+    slash: "keep",
+    summary: "keep what it last said, on the wall or the glass",
+    detail: "its last message hung up beside it and redrawn as it speaks, taken down when it closes",
+    takes: {
+      fixed: [
+        { value: "wall", summary: "beside it on the wall" },
+        { value: "glass", summary: "on the glass, wherever you look" },
+      ],
+    },
+  },
+  close: {
+    slash: "close",
+    summary: "close it",
+    detail: "the card leaves the wall — asks first when it is working or has a plan in flight",
+  },
+  stop: {
+    slash: "stop",
+    summary: "stop the turn it is taking",
+    detail: "what escape does: the turn ends, the context survives, and the next thing can be said at once",
+  },
+  wake: {
+    slash: "wake",
+    summary: "wake it",
+    detail: "starts its process on the session it had, before you say anything to it",
+  },
+  aside: {
+    slash: "aside",
+    summary: "set it aside / pick it back up",
+    detail: "an aside card stops warming and asking for you — sending to it picks it back up",
+  },
+  bypass: {
+    slash: "bypass",
+    summary: "ignore the account caps / respect them",
+    detail: "whether this card may spend past the caps you set on its accounts",
+  },
+  account: {
+    slash: "account",
+    summary: "put this card on a particular subscription",
+    detail:
+      "the waterfall picks for you and this overrides it — the card's process ends and comes back against the same session, so it keeps everything it has read and re-reads it uncached. the wall still moves it off an account that has no room",
+    takes: { wall: true },
+  },
+  clear: {
+    slash: "clear",
+    summary: "start this card fresh",
+    detail: "a new session in the same place — the old one stays on disk and can be adopted back",
+  },
+  renew: {
+    slash: "renew",
+    summary: "renew it — fresh session, carries on",
+    detail:
+      "it writes a handoff note and comes back on a fresh session from it, keeping its children, subscriptions, wakes and notices",
+  },
+  "copy-resume": {
+    slash: "copy-resume",
+    summary: "copy its resume command",
+    detail: "`claude --resume` and its session, so a terminal can pick up the same conversation",
+  },
+  "copy-cwd": {
+    slash: "copy-cwd",
+    summary: "copy its working directory",
+    detail: "the directory it runs in, on the machine it runs on",
+  },
+  processes: {
+    slash: "processes",
+    summary: "what it is holding",
+    detail: "the processes under the card — servers, shells, anything its tools started",
+  },
+  /* The menu only ever offers the way back — a card is pinned by dragging it
+     — so the command is named for that. */
+  pin: {
+    slash: "unpin",
+    summary: "let it flow again",
+    detail: "a card you dragged somewhere goes back to its place in its grouping's flow",
+  },
+  regroup: {
+    slash: "regroup",
+    summary: "move it to another grouping of its project",
+    detail: "the card stands in that grouping from now on — nothing it is doing is touched",
+    takes: { wall: true },
+  },
+  hand: {
+    slash: "hand",
+    summary: "hand the plan to a maker",
+    detail: "a fresh card opens on the plan this one wrote, on the preset you pick — the saving is the context reset",
+    takes: { wall: true },
+  },
+  move: {
+    slash: "move",
+    summary: "move it to another machine",
+    detail:
+      "the card, its whole conversation, picked up on another wall — refused for a dirty tree, and not let go here until it has answered with its history there",
+    takes: { wall: true },
+  },
+};
+
 export const HANDLE_CROSSING: { readonly [K in keyof CardHandle]-?: Crossing } = {
   id: "crosses",
   conv: {
@@ -253,7 +380,7 @@ export const FEATURE_STAYS: Readonly<Record<string, Exclude<Crossing, "crosses">
   },
   commands: {
     stays:
-      "Volery's own commands other than `/clear` and `/account` (`/rename`, `/btw`, `/gear`, `/plan` …) are carried out by this wall on its own cards; a card elsewhere is refused with the reason, the draft kept",
+      "Volery's own commands that are not a card verb (`/rename`, `/btw`, `/gear`, `/plan`) are carried out by this wall on its own cards; a card elsewhere is refused with the reason, the draft kept — every verb's command (`/renew`, `/stop`, `/clear` …) crosses as the right-click does (`verbslash.ts`)",
     sink: "732243e9",
   },
   selection: {

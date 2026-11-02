@@ -76,6 +76,9 @@
  * and until then `paletteExtras` treats every row as mid-line-eligible — see
  * its note on why not knowing means offering *more*. */
 
+import type { Verb } from "./handle";
+import { VERB_COMMANDS, VERB_NAMES, wallCommands, type WallValues } from "./verbslash";
+
 /** One of a command's fixed values, offered the way the commands are. */
 export type Choice = {
   /** Typed after the name. */
@@ -165,6 +168,18 @@ export type Command = {
    *  thing, and it is the canonical name that gets sent — so what you pick is
    *  what the agent sees. */
   aliases?: string[];
+  /** The card verb this command asks (`handle.ts`), run through the card's
+   *  handle so it reaches a card on another wall as the right-click does and
+   *  is refused with the same reason. Derived — `verbslash.ts` makes every
+   *  row that has one, out of `handle.ts::VERB_SLASH`. */
+  verb?: Verb;
+  /** It ends something you cannot get back by typing again — the close.
+   *  Sorted last in its band, so an abbreviation never lights it ahead of a
+   *  gentler name: `/cl` + Enter clears, as it did before `/close` existed. */
+  danger?: boolean;
+  /** The leader chord for the same thing, as `leader.ts`'s `CHORDS` spells
+   *  its `keys` (`"cn"`), drawn beside the row. */
+  chord?: string;
 };
 
 /* The models `--model` takes as aliases, read out of the 2.1.232 binary
@@ -321,14 +336,6 @@ export const COMMANDS: Command[] = [
     choices: GEAR_CHOICES,
   },
   {
-    name: "clear",
-    summary: "start this card fresh",
-    detail:
-      "a new session in the same place — the old one stays on disk and can be adopted back",
-    needsCard: true,
-    by: "skein",
-  },
-  {
     name: "btw",
     summary: "ask a side question without interrupting",
     detail:
@@ -346,6 +353,10 @@ export const COMMANDS: Command[] = [
     by: "skein",
     opens: true,
   },
+  /* And every card verb that needs nothing off the wall — `/clear` among
+     them, which was the first, and `/renew`, which was missing for a release
+     because this list used to be written by hand. `verbslash.ts`. */
+  ...VERB_COMMANDS,
 ];
 
 /** The name being typed, while it is still only a name.
@@ -377,7 +388,10 @@ export function stirsCard(draft: string): boolean {
   const head = /^\/([a-z0-9-]+)(?:\s|$)/i.exec(draft);
   if (!head) return true;
   const name = head[1].toLowerCase();
-  return !COMMANDS.some((c) => c.by === "skein" && c.name === name);
+  /* Every verb's name too, drawn or not: `/move` or `/account` into a dormant
+     card must not start its process while the verb that ends or moves that
+     process is still being typed. */
+  return !COMMANDS.some((c) => c.by === "skein" && c.name === name) && !VERB_NAMES.has(name);
 }
 
 /** A slash-name sitting in a draft, and where it starts and stops.
@@ -546,7 +560,10 @@ export function paletteExtras(
   skillsKnown = false,
 ): Command[] {
   const isSkill = new Set(skills.map((s) => (s ?? "").trim().toLowerCase()).filter(Boolean));
-  const seen = new Set(COMMANDS.map((c) => c.name));
+  /* Every verb's name is Volery's whether or not its row is drawn now — a
+     skill called `move` would otherwise appear in the palette on a card with
+     nowhere to move to, and run as a skill on the one that had. */
+  const seen = new Set([...COMMANDS.map((c) => c.name), ...VERB_NAMES]);
   const out: Command[] = [];
   for (const one of vocab) {
     const name = (one?.name ?? "").trim().toLowerCase();
@@ -577,7 +594,7 @@ export function matchCommands(
   draft: string,
   caret?: number | null,
   extra: readonly Command[] = [],
-  accounts: readonly Choice[] = [],
+  accounts: Values = [],
 ): Command[] {
   const span = slashAt(draft, caret);
   if (span === null) return [];
@@ -614,10 +631,13 @@ export function matchCommands(
   const exact = (c: Command) => names(c).includes(name);
   const leads = (c: Command) => names(c).some((n) => n.startsWith(name));
   const holds = (c: Command) => names(c).some((n) => n.includes(name));
+  /* Within a band a dangerous row goes last, and only there: typed whole,
+     `/close` is exact and lit; abbreviated, `/cl` lights `clear`. */
+  const safe = (rows: Command[]) => [...rows.filter((c) => !c.danger), ...rows.filter((c) => c.danger)];
   return [
-    ...pool.filter(exact),
-    ...pool.filter((c) => !exact(c) && leads(c)),
-    ...pool.filter((c) => !leads(c) && holds(c)),
+    ...safe(pool.filter(exact)),
+    ...safe(pool.filter((c) => !exact(c) && leads(c))),
+    ...safe(pool.filter((c) => !leads(c) && holds(c))),
   ];
 }
 
@@ -625,53 +645,46 @@ export function matchCommands(
  *
  *  Case-folded, since the palette completes in lowercase but nothing stops you
  *  typing it yourself. */
-/** The one command this window has whose *values* come off the wall.
+/** What the rows whose values come off the wall are given: the accounts
+ *  `/account` offers, and the lists the card's own right-click offers for the
+ *  other verbs that take one (`verbslash.ts::wallValues`). An array is the
+ *  accounts alone, which is the shape every caller had before the other
+ *  verbs grew commands.
+ *
+ *  Threaded as an argument rather than read from a store because this file is
+ *  pure and is tested as such. The caller has the registry; everything in here
+ *  only has to decide what to do with it. */
+export type Values = readonly Choice[] | WallValues;
+
+function wallOf(values: Values): WallValues {
+  return Array.isArray(values) ? { account: values as readonly Choice[] } : (values as WallValues);
+}
+
+/** Volery's own commands, plus the ones whose values come off the wall where
+ *  there are values to have.
  *
  *  **Deliberately not in `COMMANDS`**, which is the fixed vocabulary and is
  *  asserted as one — every row in it can be typed, resolved and carried out
- *  with nothing else in hand. This row cannot: with no accounts registered it
- *  has no values, so `resolveCommand` would refuse the very name the palette
- *  had just offered. Keeping it apart is what lets both claims stay true.
+ *  with nothing else in hand. These cannot: `/account` with fewer than two
+ *  accounts has nothing to choose, and `/move` with no wall to go to has
+ *  nowhere — so `resolveCommand` would refuse the very name the palette had
+ *  just offered. Keeping them apart is what lets both claims stay true, and
+ *  `menu.ts`'s standing answer applies: offering nothing is a real answer.
  *
- *  It is also why the detail says what it costs. The move ends the card's
- *  process and brings it back against the same session, so the next turn pays
- *  for the whole conversation uncached — the one thing somebody choosing an
- *  account from a menu has no way to know. */
-const ACCOUNT_COMMAND: Command = {
-  name: "account",
-  summary: "put this card on a particular subscription",
-  detail:
-    "the waterfall picks for you and this overrides it — the card's process ends and comes back against the same session, so it keeps everything it has read and re-reads it uncached. the wall still moves it off an account that has no room",
-  needsCard: true,
-  by: "skein",
-  choices: [],
-};
-
-/** Volery's own commands, plus the dynamic one where there is one to have.
+ *  `/account`'s detail says what it costs: the move ends the card's process
+ *  and brings it back against the same session, so the next turn pays for the
+ *  whole conversation uncached — the one thing somebody choosing an account
+ *  from a menu has no way to know.
  *
- *  **The only vocabulary in this file that is not knowledge about the CLI**,
- *  and it is threaded as an argument rather than read from a store because this
- *  file is pure and is tested as such. The caller has the registry; everything
- *  in here only has to decide what to do with it.
- *
- *  Fewer than two accounts and the row is not there at all. That is `accounts
- *  .ts::accountChoice`'s rule, applied to the palette for the reason it is
- *  applied to the wall: with one account there is nothing to choose, and with
- *  none the gesture has nothing behind it. It is also what keeps `stillWriting`
- *  honest — a `choices` command whose choices are empty is one where Enter
- *  opens an empty palette and the draft can never be completed. `menu.ts`'s
- *  standing answer, one file over: offering nothing is a real answer.
- *
- *  Appended rather than slotted in, and that is the honest place for it: it is
- *  the one row in the palette that may not be there, and the bare-slash order
- *  is the only order it affects — `matchCommands` sorts into bands the moment a
- *  name is typed. */
-function withAccounts(accounts: readonly Choice[]): Command[] {
-  if (accounts.length < 2) return [...COMMANDS];
-  return [...COMMANDS, { ...ACCOUNT_COMMAND, choices: [...accounts] }];
+ *  Appended rather than slotted in, and that is the honest place for them:
+ *  they are the rows in the palette that may not be there, and the bare-slash
+ *  order is the only order they affect — `matchCommands` sorts into bands the
+ *  moment a name is typed. */
+function withAccounts(values: Values): Command[] {
+  return [...COMMANDS, ...wallCommands(wallOf(values))];
 }
 
-function byName(name: string, accounts: readonly Choice[] = []): Command | null {
+function byName(name: string, accounts: Values = []): Command | null {
   const want = name.trim().toLowerCase();
   return withAccounts(accounts).find((c) => c.name === want) ?? null;
 }
@@ -690,7 +703,7 @@ function byName(name: string, accounts: readonly Choice[] = []): Command | null 
  *  been picked too. */
 export function typingChoice(
   draft: string,
-  accounts: readonly Choice[] = [],
+  accounts: Values = [],
 ): { cmd: Command; part: string } | null {
   const m = /^\/([a-z0-9-]+) ([^\s]*)$/i.exec(draft);
   if (!m) return null;
@@ -702,7 +715,7 @@ export function typingChoice(
 /** What the palette should offer once a command with values is named. */
 export function matchChoices(
   draft: string,
-  accounts: readonly Choice[] = [],
+  accounts: Values = [],
 ): Choice[] {
   const at = typingChoice(draft, accounts);
   if (!at) return [];
@@ -751,7 +764,7 @@ export type Resolved = {
  *  can decide this is `/rename` and then disagree about where the name starts. */
 export function resolveCommand(
   draft: string,
-  accounts: readonly Choice[] = [],
+  accounts: Values = [],
 ): Resolved | null {
   /* Anchored rather than trimmed at the front, because leading whitespace says
      prose: a line beginning with a space is a sentence that happens to contain
@@ -773,7 +786,10 @@ export function resolveCommand(
        an open palette (`stillWriting`), so refusing it here would send `/gear`
        to the agent as a prompt rather than offering the two gears. */
     if (!arg) return { cmd, arg: "" };
-    return cmd.choices.some((c) => c.value === arg) ? { cmd, arg } : null;
+    /* Case-folded, since the palette offers its values in lowercase and a
+       host is spelt `AU-LT-288` by the machine that has it. */
+    const value = cmd.choices.find((c) => c.value.toLowerCase() === arg.toLowerCase());
+    return value ? { cmd, arg: value.value } : null;
   }
   return arg ? null : { cmd, arg: "" };
 }

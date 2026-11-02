@@ -1,4 +1,5 @@
 import type { Choice, Command } from "./commands";
+import type { WallValues } from "./verbslash";
 import {
   cliCommand,
   matchChoices,
@@ -122,6 +123,16 @@ export class Field {
    *  with a single subscription there is nothing to choose. */
   accounts = $state<Choice[]>([]);
 
+  /** The lists the card's right-click offers for the other verbs that take
+   *  one — its project's other groupings, the walls it could move to, the
+   *  presets its plan can go to (`verbslash.ts::wallValues`). Given, as
+   *  `accounts` is, by whoever knows which card the dock is aimed at. */
+  wall = $state<WallValues>({});
+
+  /** Both, as `commands.ts` takes them — the card's own accounts winning
+   *  where it has them, which is a card on another wall. */
+  values = $derived<WallValues>({ account: this.accounts, ...this.wall });
+
   /** Escape dismissed the palette for this draft — the text stays, so `/clear`
    *  can still be sent to an agent as words if that is what you meant. */
   commandsOff = $state(false);
@@ -159,17 +170,17 @@ export class Field {
   commands = $derived(
     this.commandsOff
       ? []
-      : matchCommands(this.text, this.caret, this.extra, this.accounts),
+      : matchCommands(this.text, this.caret, this.extra, this.values),
   );
 
   /** The second stage: a command with a fixed set of values, named but not yet
    *  given one. `/model ` is not a thing that can be run, so the palette stays
    *  up past the space and offers the values — see `typingChoice`. */
   choosing = $derived(
-    this.commandsOff ? null : typingChoice(this.text, this.accounts),
+    this.commandsOff ? null : typingChoice(this.text, this.values),
   );
   choices = $derived(
-    this.commandsOff ? [] : matchChoices(this.text, this.accounts),
+    this.commandsOff ? [] : matchChoices(this.text, this.values),
   );
 
   commandPick = $derived(
@@ -227,7 +238,7 @@ export class Field {
        card previewing `!bun run check` would be showing a name no card can ever
        wear. */
     if (this.banging) return "";
-    const found = resolveCommand(this.text, this.accounts);
+    const found = resolveCommand(this.text, this.values);
     if (found?.cmd.name === "rename") return found.arg;
     /* Withheld for a palette that is choosing the *whole* draft, which is what
        "a command is not a name" was always about. A palette open over a word

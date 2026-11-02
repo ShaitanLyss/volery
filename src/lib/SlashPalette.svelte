@@ -82,10 +82,12 @@
                the draft is cleared while the caret is somewhere else. */
             e.preventDefault();
             field.at = i;
-            void composer.sendText(
-              completionForChoice(field.choosing!.cmd, choice),
-              targets.length > 1,
-            );
+            /* Volery's own are run with the value, as Enter runs them —
+               sent as text, `/regroup docs` would reach the agent as a
+               sentence about the word "docs". */
+            const cmd = field.choosing!.cmd;
+            if (cmd.by === "skein") void composer.runCommand(cmd, targets.length > 1, choice.value);
+            else void composer.sendText(completionForChoice(cmd, choice), targets.length > 1);
           }}
           onmouseenter={() => (field.at = i)}
         >
@@ -140,6 +142,11 @@
                `/resume` would be a claim about a gathering it will not touch. -->
           {#if targets.length > 1 && cmd.needsCard}
             <span class="reach">{targets.length} cards</span>
+          {/if}
+          <!-- The chord that does the same thing, so the command teaches the
+               key — the menus' convention, in the house spelling. -->
+          {#if cmd.chord}
+            <span class="chord">space {cmd.chord.split("").join(" ")}</span>
           {/if}
         </button>
       {/each}
@@ -257,6 +264,17 @@
     white-space: nowrap;
   }
   .palette .cmd.on .hint {
+    color: var(--paper-mute);
+  }
+  /* The key for the same thing, faint and last: something learned off the
+     row, not something to read before choosing it. */
+  .palette .chord {
+    font-family: var(--mono);
+    font-size: 0.64rem;
+    color: var(--paper-faint);
+    white-space: nowrap;
+  }
+  .palette .cmd.on .chord {
     color: var(--paper-mute);
   }
   .palette .summary {

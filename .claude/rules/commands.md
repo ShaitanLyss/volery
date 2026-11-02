@@ -5,6 +5,8 @@ paths:
   - "src/lib/field.svelte.ts"
   - "src-tauri/src/slash.rs"
   - "test/commands.test.ts"
+  - "src/lib/verbslash.ts"
+  - "test/verbslash.test.ts"
 ---
 
 # Slash commands, and clearing a card
@@ -438,6 +440,51 @@ The control surface has a `clear` op, and `snapshot` carries each card's `sessio
 only way to see from outside that a clear repointed it), the palette's current `commands`,
 and its `choices` — reported apart, because the two stages are never both up and an empty
 `commands` is otherwise a palette that is down and one that has moved on to the values.
+
+### Every card verb is a command, by derivation (2026-11-03)
+
+Lyss: *"I tried to do /renew on a card but it didn't show anything despite being on latest
+version. any action callable on a card should have a slash command version by design with no
+slash commands being exceptions."* `renew` became a card verb in 0.94 — menu, chord `c n`,
+handle — and had no command, because the commands were a hand list beside `handle.ts`'s verb
+table and only `/clear` and `/account` had ever been written into it. CLAUDE.md's *a capability
+every surface should have is not a prop*, with the dock as the surface that forgot.
+
+- **The registry is `handle.ts::VERB_SLASH`**, a mapped type over `Verb` beside `VERB_STAYS`:
+  each verb is `{ slash, summary, detail, takes? }` or `{ noSlash: why }`. A verb added to the
+  union is a compile error there until somebody decides, and `test/verbslash.test.ts` reads the
+  union off the source so the runtime half does not rest on the compiler (watched to fail with
+  a verb added by hand). **There are no exceptions**, and the test says so; one written later is
+  a sentence, and goes in the report to Lyss.
+- **`verbslash.ts` derives the rows.** A verb with no argument, or a pair it knows (`/keep
+  wall|glass`), is a row of `COMMANDS` (`VERB_COMMANDS`) — so the catalogue's claim that every
+  row there runs with nothing else in hand still holds. A verb whose values are the *card's* —
+  `/account`, `/regroup`, `/hand`, `/move` — is made per draft by `wallCommands`, out of the
+  lists the card's own right-click offers (`wallValues(card.menu())`, fed by one `$effect` in
+  `App.svelte`), and is absent where the menu would offer nothing: `/account`'s rule, below,
+  generalised. Values are typable words (`Docs Work` → `docs-work`, a host lowercased) carrying
+  the menu row's id as `sends`, and `verbOf` turns a command and its value into exactly the
+  `{ verb, args }` `handle.ts::rowVerb` gives the menu row — the test walks the menu to hold it.
+  `pin`'s command is `/unpin`, since the menu only ever offers the way back.
+- **Run through the handle, refused as the menu refuses.** `Composer.runCommand` asks
+  `handle.can(verb)` (and `menuRefusal`, for what only the menu's fields know — an unpinned card
+  has no `let it flow again`) before the draft is cleared, says the reason as a fault and keeps
+  the draft, then calls `handle.do(verb, args)` — so a command reaches a card on another wall
+  as the right-click does, the close goes through the same plate, and a verb that wall did not
+  announce is refused with `refusal()`'s words. A gathering takes the fixed verbs behind the
+  usual modifier; a wall-valued one other than `/account` reaches one card at a time, since its
+  values are that card's.
+- **A wall verb's name is never sent as a sentence.** `/move somewhere` with nowhere to move, or
+  a value the card does not have, is refused naming what it does offer (`unoffered`). The fixed
+  verbs keep the old rule exactly: `/clear the deck` is a sentence and goes to the agent.
+- **Collisions were decided, not shadowed.** Probed 2026-11-03 (`tools/probe-skills.ts
+  initialize`, 92 names): no verb's name is a CLI built-in, alias or skill here except `clear`,
+  which has been Volery's since the first command. `paletteExtras` drops any extra named like a
+  verb whether or not the verb's row is drawn now, so a skill called `move` cannot appear on a
+  card with nowhere to move and run on one that has. The probed list is in the test.
+- **The chord is drawn beside the row** (`space c n`), read off `leader.ts`'s `CHORDS` by verb
+  (`chordFor`), and `Command.chord` is `CHORDS`'s own `keys` string — the action palette
+  (`search.ts`) keys on it to draw a verb once rather than as a chord and a command.
 
 ### `/account` — the first command whose values are not in this file
 
