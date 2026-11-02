@@ -204,6 +204,11 @@ export const SKEIN_SUBSCRIBE_TOOL = "mcp__skein__subscribe";
 export const SKEIN_SUBSCRIPTIONS_TOOL = "mcp__skein__subscriptions";
 export const SKEIN_UNSUBSCRIBE_TOOL = "mcp__skein__unsubscribe";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
+/** A card asking to be compacted, or to be renewed on a fresh session from a
+ *  note it writes (`compact.rs`, `renew.rs`). Both are queued behind the turn
+ *  that calls them, so the line says what was asked for, not that it happened. */
+export const SKEIN_COMPACT_TOOL = "mcp__skein__compact";
+export const SKEIN_RENEW_TOOL = "mcp__skein__renew";
 /** The user has gone, and the card was the one told.
  *
  *  The only tool on this server that changes what happens to *every other card
@@ -791,6 +796,10 @@ export function describeTool(name: string, input: any, nameOf: (address: string)
       return input?.all === true ? "stopped its subscriptions" : "stopped a subscription";
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
+    case SKEIN_COMPACT_TOOL:
+      return "asked to be compacted after this turn";
+    case SKEIN_RENEW_TOOL:
+      return "asked to be renewed on a fresh session";
     case SKEIN_AWAY_TOOL: {
       const note = arg(input?.note);
       return note ? `put the wall away — ${clip(note, 30)}` : "put the wall into away mode";
