@@ -1532,6 +1532,22 @@ export class Control {
         if (!sel) throw new Error("dom needs a selector");
         const nodes = [...document.querySelectorAll<HTMLElement>(sel)];
         const wanted: string[] = Array.isArray(op.styles) ? op.styles.map(String) : [];
+        /* What a real pointer at the node's centre would land on. A node can be
+           drawn and still be under something else in the hit-test — the
+           overflow panel's second row lay beneath the wall's stacking context
+           and ignored every press while looking perfectly ordinary — and
+           paint cannot be asked that, only `elementFromPoint`. `top` is true
+           when the topmost element there is the node or inside it; `over`
+           names whatever it was otherwise. */
+        const hit = (n: HTMLElement, x: number, y: number) => {
+          const at = document.elementFromPoint(x, y);
+          if (!at) return { top: false, over: null };
+          if (n === at || n.contains(at)) return { top: true, over: null };
+          const tag = at.tagName.toLowerCase();
+          /* `getAttribute`, since an SVG node's `className` is an object. */
+          const cls = (at.getAttribute("class") ?? "").trim().split(/\s+/).filter(Boolean).join(".");
+          return { top: false, over: cls ? `${tag}.${cls}` : tag };
+        };
         const read = (n: HTMLElement) => {
           const r = n.getBoundingClientRect();
           const cs = wanted.length ? getComputedStyle(n) : null;
@@ -1550,6 +1566,10 @@ export class Control {
               cx: Math.round(r.x + r.width / 2),
               cy: Math.round(r.y + r.height / 2),
             },
+            hit:
+              r.width > 0 && r.height > 0
+                ? hit(n, r.x + r.width / 2, r.y + r.height / 2)
+                : { top: false, over: null },
             styles: cs
               ? Object.fromEntries(wanted.map((p) => [p, cs.getPropertyValue(p).trim()]))
               : undefined,
@@ -3570,6 +3590,41 @@ export class Control {
         await emitTo({ kind: "Window", label: "main" }, on ? "tauri://focus" : "tauri://blur", null);
         await settle();
         return { windowFocused: h.attention.focused };
+      },
+
+      /** Size the window, in logical pixels, through Tauri's own `setSize` —
+       *  what a person dragging an edge ends in, and the only way to put the
+       *  header into its fold from outside, since nothing folds until the bar
+       *  stops fitting. Answers with the size it was, so a test can put it
+       *  back. With no `w`/`h`, only reads. Refused while spread: the window is
+       *  then every screen and is not a size anybody chose. */
+      "window.size": async (op) => {
+        const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        const scale = await win.scaleFactor();
+        const was = (await win.innerSize()).toLogical(scale);
+        const before = {
+          w: Math.round(was.width),
+          h: Math.round(was.height),
+          maximized: await win.isMaximized(),
+        };
+        if (op.w !== undefined || op.h !== undefined) {
+          /* A maximised window given a size stops being maximised, and putting
+             the old size back would not make it so again — the wall would be
+             left a work-area-sized window that only looks maximised. */
+          if (before.maximized) throw new Error("the window is maximised; restore it before sizing");
+          if (document.querySelector(".studio.spanning")) {
+            throw new Error("the studio is spread over every screen; un-spread it before sizing");
+          }
+          const w = Number(op.w ?? before.w);
+          const h = Number(op.h ?? before.h);
+          if (!(w >= 200 && h >= 200)) throw new Error("window.size wants w and h of at least 200");
+          await win.setSize(new LogicalSize(w, h));
+          /* The resize lands as an event; the fold reads it on the next frame. */
+          await new Promise((r) => setTimeout(r, 150));
+          await settle();
+        }
+        return { was: before, w: window.innerWidth, h: window.innerHeight };
       },
 
       /** The whole pointer ladder, not just the click at the end of it.

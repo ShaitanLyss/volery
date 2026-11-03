@@ -3741,6 +3741,49 @@ t("a file named out loud opens in the viewer", async () => {
   expect(heard.escalated).toBe(true);
 });
 
+/* ── the header's fold ───────────────────────────────────────────────── */
+
+t("every item folded into the header's overflow is what a pointer at it lands on", async () => {
+  /* 2026-11-03: the panel was drawn inside the title bar, which is a stacking
+     context at the wall's own level, so the wall — later in the document —
+     was painted over every row hanging below the bar. The panel stayed
+     visible (the wall's ground is see-through) and deaf to every press.
+     `hit.top` is `elementFromPoint` at each item's centre, the same hit-test a
+     real pointer is routed by, so this holds whether or not the mouse is lent. */
+  const size = await ctl("window.size");
+  /* Spread or maximised, the window is not a size this test may change. */
+  if (size.was.maximized) return;
+  if ((await ctl("dom", { selector: ".studio.spanning" })).count > 0) return;
+  try {
+    await ctl("window.size", { w: 760, h: Math.max(size.was.h, 600) });
+    await until(
+      "the header to fold",
+      async () => (await ctl("dom", { selector: "[data-overflow]" })).count,
+      (n) => n > 0,
+    );
+    /* Opened from shut, whatever an earlier run left behind: the button
+       toggles, so pressing an open one would shut it. */
+    const more = (await ctl("dom", { selector: "[data-overflow]" })).nodes[0];
+    if (!/\bon\b/.test(more.classes)) await ctl("press", { selector: "[data-overflow]" });
+    const items = await ctl("dom", { selector: "[aria-label=\"the rest of the header\"] > *", limit: 100 });
+    expect(items.count).toBeGreaterThan(0);
+    /* More than one row, or the case that was worst is not being asked. */
+    expect(new Set(items.nodes.map((n: Reply) => n.rect.cy)).size).toBeGreaterThan(1);
+    const deaf = items.nodes
+      .filter((n: Reply) => !n.hit.top)
+      .map((n: Reply) => `${n.text || n.classes} under ${n.hit.over}`);
+    expect(deaf).toEqual([]);
+    /* And it still closes on a press over the wall, since the catcher moved
+       with it. A bare point, so the press lands on whatever is on top there —
+       the catcher — the way a hand's would. */
+    const wall = (await ctl("dom", { selector: ".wall" })).nodes[0].rect;
+    await ctl("press", { x: wall.cx, y: wall.cy });
+    expect((await ctl("dom", { selector: "[aria-label=\"the rest of the header\"]" })).count).toBe(0);
+  } finally {
+    await ctl("window.size", { w: size.was.w, h: size.was.h });
+  }
+});
+
 /* ── nothing broke on the way past ───────────────────────────────────── */
 
 t("the page threw nothing while all of that happened", async () => {

@@ -26,10 +26,15 @@
    * window, so it cannot open off the right edge, which is the whole failure
    * this button exists to fix.
    *
+   * Fixed escapes the cluster's clip but not the bar's stacking context, which
+   * is why the panel and its catcher are lifted to the studio root as well —
+   * see `layer.ts` for the press it cost.
+   *
    * What is inside it is App.svelte's business. This owns the button, the
    * placement, and the two ways a panel like this gets closed. */
 
   import type { Snippet } from "svelte";
+  import { toStudio } from "./layer";
 
   let {
     count,
@@ -76,9 +81,51 @@
   $effect(() => {
     if (open && count === 0) open = false;
   });
+
+  /* Opened from the keyboard, the first item takes the focus — the panel is
+     lifted to the end of the studio (`layer.ts`), so Tab from the button would
+     otherwise walk the rest of the bar and then the whole app before it
+     reached a single folded item. A press leaves the focus alone, the way the
+     context menu does. `detail` is zero for a click the keyboard made. */
+  let keyed = false;
+  $effect(() => {
+    if (!open || !panel || !keyed) return;
+    items()[0]?.focus();
+  });
+
+  const items = () =>
+    panel ? [...panel.querySelectorAll<HTMLElement>("button:not(:disabled)")] : [];
+
+  /** Shut, and give the focus back to the button if it was in the panel. */
+  function shut() {
+    const inside = !!panel && panel.contains(document.activeElement);
+    open = false;
+    if (inside) btn?.focus();
+  }
+
+  /* Arrows or `j`/`k` move between the items, Tab past either end leaves the
+     panel the way it came in, and Escape is the window handler below. */
+  function panelKey(e: KeyboardEvent) {
+    const all = items();
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const by =
+      e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "j"
+        ? 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "k"
+          ? -1
+          : 0;
+    if (by && all.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      all[(at + by + all.length) % all.length].focus();
+    } else if (e.key === "Tab" && (e.shiftKey ? at <= 0 : at === all.length - 1)) {
+      e.preventDefault();
+      shut();
+    }
+  }
 </script>
 
-<svelte:window onkeydown={(e) => open && e.key === "Escape" && (open = false)} />
+<svelte:window onkeydown={(e) => open && e.key === "Escape" && shut()} />
 
 {#if count > 0}
   <button
@@ -86,7 +133,10 @@
     class:on={open}
     bind:this={btn}
     data-overflow
-    onclick={() => (open = !open)}
+    onclick={(e) => {
+      keyed = e.detail === 0;
+      open = !open;
+    }}
     aria-expanded={open}
     aria-label="{count} more in the header"
     title="{count} more &mdash; the window is too narrow to draw them across the bar"
@@ -100,21 +150,46 @@
 {/if}
 
 {#if open && count > 0}
-  <!-- The catcher takes the next press anywhere, which is what closes the
-       panel. `pointerdown`, so it is gone before whatever is underneath decides
-       what that press meant — and it does not cover the bar's drag region, so
-       the window can still be moved with the panel up. -->
+  <!-- The catcher takes the next press anywhere — the title bar and the
+       window buttons included — which is what closes the panel. `pointerdown`,
+       so it is gone before whatever is underneath decides what that press
+       meant. -->
+  <!-- Both are lifted to the studio root (`layer.ts`): the bar is a stacking
+       context at the wall's own level, so drawn inside it the panel was
+       painted under the band and the wall wherever it hung below the bar —
+       visible, and deaf to every press on its second row. The wrapper stays
+       where Svelte put it, because a block's top-level node may not move.
+
+       Out of the bar, it is also out of the bar's `onmousedown`, which is what
+       declines Tauri's window drag while the studio is spread — and the
+       folded `tag` carries `data-tauri-drag-region`. Tauri listens for
+       `mousedown` on `document`, so the panel stops it here: dragging the
+       window by something inside a popover is never the gesture meant.
+
+       Using an item shuts the panel. It sits above the studio's dialogs now
+       (z 61 against their 40–55), so a dialog an item opens would otherwise
+       come up under it, with the catcher eating the first press inside. -->
+  <div class="slot">
+  <div class="lifted" {@attach toStudio}>
   <div class="catch" onpointerdown={() => (open = false)} role="presentation"></div>
+  <!-- A group of buttons, not a control: its handlers only route what the
+       buttons inside it already do (the arrows, the shut on use). -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="panel"
     bind:this={panel}
     style:right="calc({right}px - var(--span-r, 0px))"
     style:top="calc({anchor.bottom + 4}px - var(--span-y, 0px))"
     onpointerdown={(e) => e.stopPropagation()}
+    onmousedown={(e) => e.stopPropagation()}
+    onclick={(e) => (e.target as Element).closest("button") && shut()}
+    onkeydown={panelKey}
     role="group"
     aria-label="the rest of the header"
   >
     {@render children()}
+  </div>
+  </div>
   </div>
 {/if}
 
@@ -147,6 +222,13 @@
     width: 16px;
     height: 4px;
     fill: currentColor;
+  }
+
+  /* Neither wrapper is a box: the slot is an empty marker in the bar and the
+     lifted span is only a handle on the two fixed layers inside it. */
+  .slot,
+  .lifted {
+    display: contents;
   }
 
   /* The whole window rather than `inset: 0`, which while the studio is spread
