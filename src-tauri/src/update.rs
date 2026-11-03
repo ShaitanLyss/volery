@@ -700,30 +700,115 @@ fn watch(exe: &Path, installer: Option<u32>) {
         } while ((Get-Date) -lt $until); \
         Remove-Item Env:VOLERY_RELAUNCH_EXE, Env:VOLERY_INSTALLER_PID, Env:VOLERY_OLD_PID; \
         Start-Process -FilePath $exe";
+    detached_powershell(
+        SCRIPT,
+        &[
+            ("VOLERY_RELAUNCH_EXE", exe.to_string_lossy().to_string()),
+            ("VOLERY_INSTALLER_PID", installer.unwrap_or(0).to_string()),
+            ("VOLERY_OLD_PID", std::process::id().to_string()),
+        ],
+        "[update] watchdog",
+    );
+}
+
+/// Start this wall again once this process has gone, for a restart nobody
+/// asked for in person (`watchdog.rs`, a window that stopped answering).
+///
+/// Not `AppHandle::restart`: Tauri's spawns the new process from inside this
+/// one, before it exits, and the new one meets `claim_wall`'s lock still held
+/// and refuses to start — a restart that leaves the machine with no wall at
+/// all. So the same detached shell `watch` uses waits this process out first,
+/// for the same reason: it is the one thing that has to be running after this
+/// process is not. `extra` rides into the new process's environment.
+pub fn relaunch_after_exit(extra: &[(&str, String)]) -> Result<(), String> {
+    /* Each step is appended to `relaunch_log` (`logs/relaunch.log`): a
+       restart that does not come back must leave something to read, and this
+       shell is the one part of it no log of ours can see. */
+    const SCRIPT: &str = "$ErrorActionPreference = 'SilentlyContinue'; \
+        $log = $env:VOLERY_RELAUNCH_LOG; \
+        function say($w) { if ($log) { Add-Content -Path $log -Value ((Get-Date -Format o) + ' ' + $w) } }; \
+        $exe = $env:VOLERY_RELAUNCH_EXE; \
+        $old = [int]$env:VOLERY_OLD_PID; \
+        say ('waiting for ' + $old + ' to exit, to start ' + $exe); \
+        if ($old -gt 0) { $q = Get-Process -Id $old; if ($q) { [void]$q.WaitForExit(120000) } }; \
+        Remove-Item Env:VOLERY_RELAUNCH_EXE, Env:VOLERY_OLD_PID, Env:VOLERY_RELAUNCH_LOG; \
+        $p = Start-Process -FilePath $exe -PassThru; \
+        if ($p) { say ('started ' + $p.Id) } else { say ('could not start: ' + $Error[0]) }";
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut env = vec![
+        ("VOLERY_RELAUNCH_EXE", exe.to_string_lossy().to_string()),
+        ("VOLERY_OLD_PID", std::process::id().to_string()),
+    ];
+    if let Some(log) = relaunch_log() {
+        env.push(("VOLERY_RELAUNCH_LOG", log.to_string_lossy().to_string()));
+    }
+    env.extend(extra.iter().map(|(k, v)| (*k, v.clone())));
+    if detached_powershell(SCRIPT, &env, "[restart] relauncher") {
+        Ok(())
+    } else {
+        Err("could not start the relauncher".into())
+    }
+}
+
+/// Where the relauncher says what it did: beside the app log, which
+/// `applog::install` has already made, or nowhere if there is none.
+fn relaunch_log() -> Option<PathBuf> {
+    crate::applog::dir().map(|d| d.join("relaunch.log"))
+}
+
+/// A hidden PowerShell outside every job of ours, handed its data through the
+/// environment so no path is quoted through two command-line parsers.
+fn detached_powershell(script: &str, env: &[(&str, String)], what: &str) -> bool {
     let shell = std::env::var_os("SystemRoot")
         .map(|r| PathBuf::from(r).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
         .filter(|p| p.is_file())
         .unwrap_or_else(|| PathBuf::from("powershell.exe"));
     let mut cmd = std::process::Command::new(shell);
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT])
-        .env("VOLERY_RELAUNCH_EXE", exe)
-        .env("VOLERY_INSTALLER_PID", installer.unwrap_or(0).to_string())
-        .env("VOLERY_OLD_PID", std::process::id().to_string())
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     /* Outside every job of ours for `launch_detached`'s reason: it is the one
        thing that has to be running after this process is not. */
     #[cfg(windows)]
-    {
+    let spawned = {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        /* A hidden console, **not** `DETACHED_PROCESS`. Windows PowerShell 5.1
+           started with no console at all runs nothing — no error, no exit code
+           anybody reads, just a process that is gone. Measured 2026-11-04 by
+           spawning this very script both ways from a parent that exits:
+           `CREATE_NO_WINDOW` wrote its breadcrumbs and started the target,
+           `DETACHED_PROCESS` wrote nothing. That had been the flag since this
+           shell was written, so the update watcher above never once started a
+           wall either; installers that relaunch with `/R` hid it. */
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    match cmd.spawn() {
-        Ok(c) => eprintln!("[update] watchdog started as {}", c.id()),
-        Err(e) => eprintln!("[update] could not start the watchdog: {e}"),
+        /* And out of whatever job *we* were started in, where that job allows
+           it. Explorer starts the installed wall in none, but a wall started
+           from a terminal, a script or `bun run lab` is in its launcher's job,
+           and a launcher that exits when we do closes that job and kills the
+           one process that was meant to outlive us — found by a lab whose
+           restart never came back. A job that forbids breaking away refuses
+           the flag outright, so the spawn is tried again without it. */
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+        cmd.spawn().or_else(|_| {
+            cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+            cmd.spawn()
+        })
+    };
+    #[cfg(not(windows))]
+    let spawned = cmd.spawn();
+    match spawned {
+        Ok(c) => {
+            log::info!("{what} started as {}", c.id());
+            true
+        }
+        Err(e) => {
+            log::warn!("{what} could not start: {e}");
+            false
+        }
     }
 }
 

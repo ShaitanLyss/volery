@@ -242,8 +242,24 @@ impl log::Log for Sink {
         BUSY.with(|b| b.set(false));
     }
 
-    fn flush(&self) {}
+    /// Push what is batched out now — to the file as well as the wall —
+    /// rather than at the sluice's next beat. A process about to exit on
+    /// purpose calls this (`log::logger().flush()`), or its last words are the
+    /// ones lost: found when a restart's own account of itself never reached
+    /// the file.
+    fn flush(&self) {
+        if let Some(outlet) = OUTLET.get() {
+            outlet.flush();
+        }
+    }
 }
+
+/// The directory the log is written to, once `install` has run.
+pub fn dir() -> Option<std::path::PathBuf> {
+    DIR.get().cloned()
+}
+
+static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// Install the sink. Called once, from `setup`, as early as it can be.
 ///
@@ -266,6 +282,9 @@ pub fn install(app: AppHandle) {
         .unwrap_or(log::LevelFilter::Info);
 
     let dir = app.path().app_data_dir().ok().map(|d| d.join("logs"));
+    if let Some(d) = &dir {
+        let _ = DIR.set(d.clone());
+    }
     let mut file = dir.map(Journal::new);
     let _ = OUTLET.set(crate::sluice::Sluice::open(
         crate::sluice::Spec {

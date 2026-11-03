@@ -389,8 +389,12 @@ microseconds and a stalled one pays nothing. It exists because of 2026-10-19, be
 WebView2 as a script and handing it over is instant, so on 2026-11-03 that loop stayed quiet
 for eleven hours while the page fell four hours behind (Modern Standby with the screen off,
 the wake request covering `skein.exe` and not the WebView2 processes). Its second half pulses
-the page itself through the same queue the events ride, and says so in the log, the chronicle
-and a remote spawn's refusal. **Chromium backgrounding the page is not the cause** — measured
+the page itself through the same queue the events ride, says so in the log, the chronicle
+and a remote spawn's refusal — and **does something about it**, because a dead window that
+waits for a person is the bug (Lyss: *"I want this to never happen again"*): the page is
+reloaded after 60s silent, and if the reloaded page is silent another 60s Volery restarts
+itself, as it does after two minutes of a frozen main thread. One restart per 30 minutes;
+`SKEIN_NO_REVIVE=1` for a page paused in DevTools. **Chromium backgrounding the page is not the cause** — measured
 in standby, the page still reads `visible`, animates and runs at normal priority with no
 EcoQoS, and minimizing does not hide a WebView2 page either — so browser flags against it
 would buy nothing.
