@@ -43,6 +43,8 @@ freely sized, belonging to no project, never in the auto-layout — so `widgets.
 `ImageNode.svelte` minus rotation (a photo pinned at an angle is a photo; a clock at an angle
 is a clock you cannot read).
 
+**What a widget draws is `WidgetFace.svelte`**, cut out of `WidgetNode`'s switch so a reading can be held somewhere that is not the wall — the action palette's sheet (`ReadingSheet.svelte`, `chatview.md`). A new kind is still one arm, now in `WidgetFace`; `WidgetNode` is the widget *on the wall*: its place, its frame, its grip. A spec's `sheet` letter is what makes it a `space b` reading.
+
 `widgets.ts` is pure and is the *whole* vocabulary: the catalogue, each kind's parameters,
 its default size and its floor. A new knob is one line, a new variant is one entry in a
 `choice`, a new kind is one spec plus one arm in `WidgetNode`'s switch — and Rust never hears

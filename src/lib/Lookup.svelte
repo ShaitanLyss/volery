@@ -1,7 +1,11 @@
 <script lang="ts">
-  /* Ctrl+K: search and everything (`docs/chat-mode.md` §10.1). Conversations and
-     projects, every leader chord with its keys beside it, Volery's own slash
-     commands, the settings and the sink — one list, ranked by `search.ts`.
+  /* Ctrl+K and the space bar: search and everything (`docs/chat-mode.md` §10.1,
+     `chatview.md`). Conversations and projects, every leader chord with its keys
+     beside it, Volery's own slash commands (those a chord stands for only under
+     a `/`), the settings and the sink — one list, ranked by `search.ts` with
+     the opener's lead: Ctrl+K's conversations first, the space bar's
+     somewhere to go and something to do. A row about the conversation in front
+     of you names it, and refuses in its handle's words.
 
      It runs nothing itself: a pick is handed to its owner, which knows what a
      conversation, a chord or a setting is. Focus lands in the query when it
@@ -10,20 +14,34 @@
      on the same press. */
   import { onMount } from "svelte";
   import type { ChatRow } from "./chatview";
-  import { entriesOf, rank, type Entry } from "./search";
+  import { entriesOf, entryKey, familyOf, glyphOf, rank, standingOf, type Entry, type Lead, type Target } from "./search";
+  import type { Verb as ChordVerb } from "./leader";
+  import Icon from "./Icon.svelte";
 
   let {
     rows,
     projects,
     chords,
     commands,
+    lead = "search",
+    recent = [],
+    target = null,
     onpick,
     onclose,
   }: {
     rows: ChatRow[];
     projects: string[];
-    chords: readonly { keys: string; label: string }[];
-    commands: readonly { name: string; summary: string }[];
+    chords: readonly { keys: string; label: string; verb?: ChordVerb }[];
+    commands: readonly { name: string; summary: string; chord?: string }[];
+    /** Which half leads (`search.ts::Lead`): Ctrl+K's conversations, or the
+     *  space bar's somewhere to go and something to do. */
+    lead?: Lead;
+    /** What was taken lately, newest first — a tie-breaker, and the head of
+     *  an empty action list. */
+    recent?: readonly string[];
+    /** The conversation in front of you, for the rows that would act on it:
+     *  they say which, and refuse in its handle's words. */
+    target?: Target | null;
     onpick: (e: Entry) => void;
     onclose: () => void;
   } = $props();
@@ -34,7 +52,7 @@
   let list: HTMLUListElement | undefined = $state();
 
   const all = $derived(entriesOf({ rows, projects, chords, commands }));
-  const shown = $derived(rank(all, rows, query));
+  const shown = $derived(rank(all, rows, query, 60, { lead, recent }));
 
   /* A new query starts at the top. */
   $effect(() => {
@@ -49,17 +67,27 @@
 
   onMount(() => input?.focus());
 
-  const KIND: Record<Entry["kind"], string> = {
+  /** The right-hand word: what taking the row gives you. */
+  const SAID: Record<ReturnType<typeof familyOf>, string> = {
+    reading: "reading",
+    panel: "panel",
+    card: "conversation",
+    window: "window",
+    machine: "machine",
+    toy: "toy",
+    find: "find",
     conversation: "conversation",
     project: "project",
-    chord: "command",
     command: "slash command",
-    setting: "setting",
-    sink: "the sink",
   };
 
+  /* A row the conversation in front of you would refuse is drawn with the
+     reason and is not taken: Enter on it does nothing, which the reason
+     beside it already explains. */
   function take(e: Entry | undefined) {
-    if (e) onpick(e);
+    if (!e) return;
+    if (standingOf(e, target)?.refused) return;
+    onpick(e);
   }
 
   function onkey(e: KeyboardEvent) {
@@ -93,7 +121,7 @@
       bind:this={input}
       bind:value={query}
       onkeydown={onkey}
-      placeholder="search conversations, projects, commands, settings…"
+      placeholder={lead === "actions" ? "go to, open, do…" : "search conversations, projects, commands, settings…"}
       aria-label="search"
       aria-controls="palette-list"
       aria-activedescendant={shown.length ? `palette-${lit}` : undefined}
@@ -101,21 +129,30 @@
     />
     {#if shown.length}
       <ul id="palette-list" role="listbox" bind:this={list}>
-        {#each shown as e, i (e.kind + ":" + ("id" in e ? e.id : "keys" in e ? e.keys : "name" in e ? e.name : e.label))}
+        {#each shown as e, i (entryKey(e))}
+          {@const standing = standingOf(e, target)}
           <li
             id="palette-{i}"
             role="option"
             aria-selected={i === lit}
             data-i={i}
             data-kind={e.kind}
+            data-family={familyOf(e)}
             class:lit={i === lit}
+            class:refused={!!standing?.refused}
+            aria-disabled={standing?.refused ? "true" : undefined}
             onpointermove={() => (lit = i)}
             onclick={() => take(e)}
             onkeydown={() => {}}
           >
-            <span class="l">{e.label}</span>
+            <span class="thumb" aria-hidden="true"><Icon name={glyphOf(e)} small /></span>
+            <span class="l"
+              >{e.label}{#if standing}<span class="on"
+                  >{standing.refused ? ` — ${standing.refused}` : ` — ${standing.on}`}</span
+                >{/if}</span
+            >
             {#if e.kind === "chord"}<kbd>{e.note}</kbd>{:else}<span class="n">{e.note}</span>{/if}
-            <span class="k">{KIND[e.kind]}</span>
+            <span class="k">{SAID[familyOf(e)]}</span>
           </li>
         {/each}
       </ul>
@@ -185,7 +222,7 @@
   }
   li {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     align-items: center;
     column-gap: 12px;
     padding: 7px 10px;
@@ -193,6 +230,28 @@
     font-size: 13px;
     color: var(--paper-dim);
     cursor: pointer;
+  }
+  .thumb {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    color: var(--paper-dim);
+    background: color-mix(in oklab, var(--paper) 6%, transparent);
+  }
+  li.lit .thumb {
+    color: var(--paper);
+  }
+  .on {
+    color: var(--cv-note, var(--paper-mute));
+  }
+  li.refused {
+    color: var(--paper-mute);
+    cursor: default;
+  }
+  li.refused .thumb {
+    opacity: 0.55;
   }
   li.lit {
     background: color-mix(in oklab, var(--paper) 7%, transparent);

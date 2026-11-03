@@ -50,6 +50,21 @@ const RAW = {
   "menu": `<path d="M2.8 4.5h10.4M2.8 8h10.4M2.8 11.5h10.4"/>`,
   "wave": `<path d="M2.5 8h1M5 5.5v5M7.5 3.5v9M10 5.5v5M12.5 7v2"/>`,
   "brain": `<path d="M8 3.2v9.6M5.6 3.4A2.2 2.2 0 0 0 3.5 6a2.3 2.3 0 0 0 .2 4.3A2.3 2.3 0 0 0 8 12.6M10.4 3.4A2.2 2.2 0 0 1 12.5 6a2.3 2.3 0 0 1-.2 4.3A2.3 2.3 0 0 1 8 12.6"/>`,
+  /* The action palette's (`search.ts::glyphOf`): a glyph for each reading and
+     panel, drawn to the set's own grid and stroke. */
+  "pipe": `<circle cx="3.6" cy="8" r="1.6"/><circle cx="12.4" cy="4.4" r="1.6"/><circle cx="12.4" cy="11.6" r="1.6"/><path d="M5.2 8h2.3c1.3 0 1.6-3.6 3.3-3.6M7.5 8c1.3 0 1.6 3.6 3.3 3.6"/>`,
+  "board": `<rect x="2.3" y="3" width="11.4" height="10" rx="2"/><path d="M6.1 3v10M9.9 3v10M3.6 5.6h1.2M7.4 5.6h1.2M7.4 7.8h1.2M11.2 5.6h1.2"/>`,
+  "pulse": `<path d="M1.8 8.6h2.8l1.6-3.8 2.6 6.6 1.7-3.9h3.7"/>`,
+  "gauge": `<path d="M2.8 11.6a5.4 5.4 0 1 1 10.4 0"/><path d="M8 10.4 10.6 6"/><circle cx="8" cy="10.6" r=".9"/>`,
+  "gate": `<path d="M3 13.4V5.2a5 5 0 0 1 10 0v8.2M3 13.4h10M6 13.4V8.6h4v4.8"/>`,
+  "flame": `<path d="M8 13.6c-2.6 0-4.2-1.8-4.2-4 0-2.7 2.5-3.9 2.9-6.6 1.9 1.2 2.3 3 2.1 4.4.7-.4 1.2-1.1 1.4-2 1.3 1.1 2 2.5 2 4.2 0 2.2-1.6 4-4.2 4z"/>`,
+  "sink": `<path d="M2.4 7.2h11.2l-1 4.1c-.2.9-1 1.5-1.9 1.5H5.3c-.9 0-1.7-.6-1.9-1.5z"/><path d="M8 7.2V3.6h2.6M6 9.9h4"/>`,
+  "key": `<circle cx="5.2" cy="10.8" r="2.6"/><path d="m7.1 9 5.6-5.6M10.8 5.3l1.6 1.6M9.2 6.9l1.2 1.2"/>`,
+  "sun": `<circle cx="8" cy="8" r="2.6"/><path d="M8 2v1.4M8 12.6V14M14 8h-1.4M3.4 8H2M12.2 3.8l-1 1M4.8 11.2l-1 1M12.2 12.2l-1-1M4.8 4.8l-1-1"/>`,
+  /* The action palette's own mark: one bird of the flock, the studio's name.
+     Not a sparkle — that is every assistant's badge, and this is a room. */
+  "bird": `<path d="M1.6 8.1c1.9-1.7 4.1-1.8 6.4.8 2.3-2.6 4.5-2.5 6.4-.8"/><path d="M8 8.9v.6"/>`,
+  "moon": `<path d="M12.8 9.9A5.2 5.2 0 0 1 6.1 3.2a5.2 5.2 0 1 0 6.7 6.7z"/>`,
 } as const;
 
 export type IconName = keyof typeof RAW;

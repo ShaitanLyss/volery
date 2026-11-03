@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { CHORDS, LAPSE_MS, LEADER, actsOnWall, chord, mayLead, offers } from "../src/lib/leader";
+import { CHORDS, LAPSE_MS, LEADER, READINGS, actsOnWall, chord, mayLead, offers } from "../src/lib/leader";
+import { WIDGETS } from "../src/lib/widgets";
 
 describe("where the leader may start", () => {
   test("outside any field, as it always could", () => {
@@ -204,10 +205,46 @@ describe("away mode has two spellings of one verb", () => {
   });
 });
 
+describe("the readings", () => {
+  /* `b` is not written in the table: each row is a widget's `sheet` letter,
+     so a reading that can stand in a sheet is a chord by being declared one. */
+  test("every widget with a sheet letter is a b chord that opens it, and nothing else is", () => {
+    const sheeted = WIDGETS.filter((w) => w.sheet);
+    expect(sheeted.length).toBeGreaterThan(0);
+    for (const w of sheeted) {
+      expect(chord("b", w.sheet!)).toMatchObject({ kind: "fire", verb: { kind: "reading", widget: w.kind } });
+    }
+    expect(CHORDS.filter((c) => c.keys.startsWith("b")).length).toBe(sheeted.length);
+    expect([...READINGS].sort()).toEqual(sheeted.map((w) => w.kind).sort());
+  });
+
+  test("pipelines is space b p, and it opens in either view", () => {
+    const hit = chord("b", "p");
+    expect(hit).toMatchObject({ kind: "fire", verb: { kind: "reading", widget: "pipelines" } });
+    if (hit.kind === "fire") expect(actsOnWall(hit.verb)).toBe(false);
+  });
+
+  test("no view of a card, plan or screen can be put in a sheet", () => {
+    for (const w of WIDGETS) if (w.tether || w.plan || w.kind === "screen" || w.kind === "browser") expect(w.sheet).toBeUndefined();
+  });
+});
+
 describe("the which-key hint", () => {
   test("the leader alone offers every chord, by its whole letters", () => {
     expect(offers("")).toEqual([
       { keys: "a", label: "the accounts panel" },
+      { keys: "ba", label: "asana board" },
+      { keys: "bb", label: "burn rate" },
+      { keys: "bc", label: "register" },
+      { keys: "bg", label: "gates" },
+      { keys: "bh", label: "asana health" },
+      { keys: "bm", label: "performance" },
+      { keys: "bn", label: "billboard" },
+      { keys: "bp", label: "pipelines" },
+      { keys: "br", label: "reviews" },
+      { keys: "bs", label: "claude status" },
+      { keys: "bt", label: "asana tasks" },
+      { keys: "bu", label: "usage" },
       { keys: "ca", label: "set it aside / pick it back up" },
       { keys: "cb", label: "ignore the account caps / respect them" },
       { keys: "cc", label: "close this card" },

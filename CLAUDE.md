@@ -76,7 +76,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # shell, finding, leader, synth, voice, steward, office, styles, consts, zoom,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
-                         # chattokens, starting, allowance, search, projectview, gist, filed,
+                         # chattokens, starting, allowance, search, sheets, projectview, gist, filed,
                          # sources, marks, whois, credits, boostmusic, boostfield,
                          # browsercdp, browserstall, browserframes, browserroots, freshen,
                          # cast
@@ -446,7 +446,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `plates.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
 `glance.ts`, `tether.ts`, `brightness.ts`, `peeking.ts`,
-`starting.ts`, `allowance.ts`, `cast.ts`, `search.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`, `renewing.ts`) are pure
+`starting.ts`, `allowance.ts`, `cast.ts`, `search.ts`, `sheets.ts`, `projectview.ts`, `gist.ts`, `sources.ts`, `marks.ts`, `whois.ts`, `credits.ts`, `boostmusic.ts`, `boost.ts`, `boostfield.ts`, `freshen.ts`, `renewing.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

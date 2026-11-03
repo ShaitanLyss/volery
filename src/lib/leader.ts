@@ -18,6 +18,7 @@
 import type { FindMode } from "./finding";
 import type { ToyId } from "./synth";
 import type { ToyId as PuzzleId } from "./gate";
+import { WIDGETS, type WidgetKind } from "./widgets";
 
 /** The leader key, and it is the space bar because that is where these hands
  *  learned it (nvchad). It is free on this wall for one reason worth stating:
@@ -109,7 +110,8 @@ export type Verb =
   | { kind: "dock"; act: DockChord }
   | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" | "freshen" }
   | { kind: "bright"; act: "up" | "down" | "reset" }
-  | { kind: "screen"; act: "hang" | "immersive" | "all" | "float" };
+  | { kind: "screen"; act: "hang" | "immersive" | "all" | "float" }
+  | { kind: "reading"; widget: WidgetKind };
 
 /** One sequence the leader opens onto.
  *
@@ -390,7 +392,33 @@ export const CHORDS: readonly Chord[] = [
   { keys: "rv", label: "float this screen over the conversation / stop", verb: { kind: "screen", act: "float" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
+  ...readings(),
 ];
+
+/** `b` is the readings: the widgets you look at and close — pipelines,
+ *  reviews, what is on you in asana, whether claude is up — opened in a sheet
+ *  over whichever view is in front (`ReadingSheet.svelte`) rather than hung on
+ *  the wall. Lyss, 2026-11-03: *"I want to see my pipelines, I press spacebar,
+ *  type 'pipe' … and boom I see my pipelines in a modal."* Chat view has no
+ *  wall to hang one on, so until this the only route to a pipeline from there
+ *  was switching rooms.
+ *
+ *  `b` for *board*, the thing you read off; nothing else began with it. The
+ *  rows are not written here: each comes from its widget's `sheet` letter
+ *  (`widgets.ts`), so a reading that can stand in a sheet says so where it is
+ *  declared, and its chord, its palette row and its which-key line follow.
+ *  `bb` is the burn rate, the one doubled letter, because the burn's `b` was
+ *  the only letter that word could have. */
+function readings(): Chord[] {
+  return WIDGETS.filter((w) => w.sheet).map((w) => ({
+    keys: `b${w.sheet}`,
+    label: w.label,
+    verb: { kind: "reading", widget: w.kind },
+  }));
+}
+
+/** The widget kinds a sheet can hold — the ones with a `b` chord. */
+export const READINGS: readonly WidgetKind[] = CHORDS.flatMap((c) => (c.verb.kind === "reading" ? [c.verb.widget] : []));
 
 /** What a keypress did to the leader sequence.
  *

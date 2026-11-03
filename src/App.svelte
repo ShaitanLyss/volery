@@ -123,6 +123,7 @@
   import { Creds } from "./lib/creds.svelte";
   import { Asana } from "./lib/asana.svelte";
   import RunPanel from "./lib/Run.svelte";
+  import ReadingSheet from "./lib/ReadingSheet.svelte";
   import Guidance from "./lib/Guidance.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
   import { foldChrome, type Fold, type Measured } from "./lib/chrome";
@@ -142,8 +143,8 @@
   import BoostIgnition from "./lib/BoostIgnition.svelte";
   import { boostScore } from "./lib/boostscore.svelte";
   import { paletteExtras, stirsCard } from "./lib/commands";
-  import { planFile, planRoot } from "./lib/gears";
   import { wallValues } from "./lib/verbslash";
+  import { planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
   import { rowVerb, type Verb } from "./lib/handle";
   import { Cards, type CardHandle } from "./lib/cards.svelte";
@@ -767,6 +768,7 @@
       const why = dock?.chord(verb.act);
       if (why) skein.fault = why;
     }
+    else if (verb.kind === "reading") openReading(verb.widget);
     else if (verb.toy === "synth") synth.show();
     /* The rest of the shelf is the away gate's puzzles, opened on purpose
        rather than met on the way back to work. Same surface, `mode="play"` —
@@ -1770,6 +1772,76 @@
      handed would be asking the network for something already in hand. The
      connection holds the stages; this holds which run they are of. */
   let openRun = $state<import("./lib/azdo").Run | null>(null);
+
+  /* A reading held in a sheet over either view — `space b …`, and the action
+     palette's rows for them (`ReadingSheet.svelte`). One at a time: opening
+     a second replaces the first, as a second run replaces the first above.
+     `sheetFrom` is where the keyboard was, given back on the way out. */
+  let sheetOf = $state<WidgetKind | null>(null);
+  let sheetFrom: HTMLElement | null = null;
+
+  function openReading(kind: WidgetKind) {
+    /* The billboard has a page of chat view's own (`PilePage.svelte`), in
+       chat view's look, as the sink's `ss` does — the sheet is the wall's
+       way to read it. */
+    if (kind === "billboard" && chat && chatview) {
+      chatview.openPile("board");
+      return;
+    }
+    /* The same reading asked for again is the way out of it. */
+    if (sheetOf === kind) {
+      closeReading();
+      return;
+    }
+    if (!sheetOf) sheetFrom = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    sheetOf = kind;
+  }
+
+  /** The window's keys while a reading's sheet is up: true when answered.
+   *
+   *  Escape closes what the sheet opened over itself first — a run's
+   *  insides, the token panel — and then the sheet, wherever the focus is
+   *  (a poll can re-render a focused row away and leave it on the body).
+   *  Any other key with no modifier is swallowed, so nothing reaches the view
+   *  behind the scrim: a letter into the composer, Delete onto the wall's
+   *  selection, Tab across the cards, Home through a hidden thread. Tab still
+   *  does what Tab does inside the sheet, since nothing is prevented. Chords
+   *  with a modifier go on (found in review). */
+  function sheetKey(e: KeyboardEvent): boolean {
+    if (!sheetOf) return false;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (openRun) openRun = null;
+      else if (showKeyring) showKeyring = false;
+      else closeReading();
+      return true;
+    }
+    if (e.ctrlKey || e.altKey || e.metaKey) return false;
+    return true;
+  }
+
+  function closeReading() {
+    sheetOf = null;
+    const back = sheetFrom;
+    sheetFrom = null;
+    if (back?.isConnected) back.focus();
+  }
+
+  /** The sheet's *on the wall*: the same reading, with the knobs it had in the
+   *  sheet, hung at the middle of the wall — switching to the wall first, since
+   *  that is where you asked to see it. */
+  async function hangReading(kind: WidgetKind, config: Record<string, string | number | boolean>) {
+    closeReading();
+    if (view.current === "chat") await switchView("wall");
+    await tick();
+    const spec = specFor(kind);
+    const at = canvas?.center() ?? { x: 0, y: 0 };
+    const w = await widgets.add(kind, at.x - (spec?.box.w ?? 0) / 2, at.y - (spec?.box.h ?? 0) / 2);
+    if (w) {
+      widgets.update(w.id, { config: { ...w.config, ...config } });
+      canvas?.revealWidget(w.id);
+    }
+  }
 
   /* Standing instructions — what you tell every card once instead of every
      turn. `null` while shut; open it *at* a scope, since the same panel is
@@ -3312,6 +3384,19 @@
     );
   });
 
+  /* What the card's right-click offers as lists — its project's other
+     groupings, the walls it could move to, the presets its plan can go to —
+     as the values of the verbs' slash commands, so `/regroup` and the menu's
+     `move it to ▸` cannot come to offer different things
+     (`verbslash.ts::wallValues`). The card in the ring, here or elsewhere. */
+  $effect(() => {
+    /* Written only when it changed: `menu()` reads the roster, the usage poll
+       and the placements, and a fresh object on every such tick would reset
+       the lit row under the hand choosing from `/move `'s values. */
+    const next = wallValues(card?.menu());
+    if (JSON.stringify(next) !== JSON.stringify(untrack(() => field.wall))) field.wall = next;
+  });
+
   /** The accounts `/account` offers, which are the wall's rather than a card's.
    *
    *  `usable` and not the registry, for the reason `#settleAccount` spawns
@@ -3356,19 +3441,6 @@
    *  card for its own reasons, and one derived is the only way two readings of
    *  "the card the dock is pointed at" cannot drift apart. */
   const bangCard = $derived(dockCard);
-  /* What the card's right-click offers as lists — its project's other
-     groupings, the walls it could move to, the presets its plan can go to —
-     as the values of the verbs' slash commands, so `/regroup` and the menu's
-     `move it to ▸` cannot come to offer different things
-     (`verbslash.ts::wallValues`). The card in the ring, here or elsewhere. */
-  $effect(() => {
-    /* Written only when it changed: `menu()` reads the roster, the usage poll
-       and the placements, and a fresh object on every such tick would reset
-       the lit row under the hand choosing from `/move `'s values. */
-    const next = wallValues(card?.menu());
-    if (JSON.stringify(next) !== JSON.stringify(untrack(() => field.wall))) field.wall = next;
-  });
-
 
   /* An offering standing over a draft that is no longer a shell line would be a
      popup completing paths into a sentence. */
@@ -3511,6 +3583,32 @@
     }
   }
 
+  /** Whether anything stands over the view that answers its own keys — the
+   *  panels, the menu, a sheet. The space bar leaves the palette shut while
+   *  one is up. */
+  function overlayUp(): boolean {
+    return !!(
+      menu ||
+      showImport ||
+      showThemes ||
+      showAccounts ||
+      showKeyring ||
+      showFlyway ||
+      showSink ||
+      refSheet ||
+      showDrop ||
+      showAnnals ||
+      unfinished ||
+      openRun ||
+      guiding ||
+      sheetOf ||
+      showCarry ||
+      procsFor ||
+      synth.on ||
+      finder.open
+    );
+  }
+
   /** Chat view's own keys, and the wall's keys made inert while it is up
    *  (§7.5, §10.1). True when the key was answered here. */
   function chatKey(e: KeyboardEvent): boolean {
@@ -3526,6 +3624,9 @@
     }
     if (mod && !e.shiftKey && !e.altKey && (e.key === "k" || e.key === "K")) {
       e.preventDefault();
+      /* Over a sheet the palette would open underneath it, its field taking
+         the keyboard for rows nobody can see. */
+      if (sheetOf) closeReading();
       chatview?.search();
       return true;
     }
@@ -3570,7 +3671,7 @@
     if (e.key === "Escape") {
       /* Stops a turn, and goes no further: it never deselects, which would
          empty the view (§5.6). Anything open over the view answers its own. */
-      if (menu || showImport || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding)
+      if (menu || showImport || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding || sheetOf)
         return true;
       if (card && card.can("stop") === "yes") void card.do("stop");
       return true;
@@ -3966,6 +4067,34 @@
      * the way `<space>q` in nvim leaves you with a `q`. Not called at all with
      * a modifier down or with a menu up, so ctrl+Z is still undo and the
      * sequence is not advanced by a gesture aimed somewhere else. */
+    if (sheetKey(e)) return;
+
+    /* Under chat view the space bar is the action palette, not the leader —
+       Lyss, 2026-11-03: *"In chat view, I want … the space bar when nothing
+       selected or an empty input to open some kind of action search menu."*
+       Asked exactly where the leader would be (`mayLead`: no field, or an
+       empty one), and only with nothing else over the view, since a space
+       on an open panel's focused button is that button's. Every chord is
+       still one row away — its keys typed as keys come first (`vv`, then
+       Enter) — and a chord already begun is the leader's to finish. */
+    if (
+      view.current === "chat" &&
+      e.key === " " &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      leader.pending === null &&
+      chatview &&
+      !chatview.palette() &&
+      !overlayUp() &&
+      mayLead(fieldText(e.target), e.isComposing || e.keyCode === 229)
+    ) {
+      e.preventDefault();
+      chatview.act();
+      return;
+    }
+
     if (
       !e.ctrlKey &&
       !e.metaKey &&
@@ -4098,7 +4227,8 @@
         showAnnals ||
         unfinished ||
         openRun ||
-        guiding
+        guiding ||
+        sheetOf
       )
         return;
       if (isTyping(e.target)) {
@@ -5490,6 +5620,51 @@
     <Themes onclose={() => (showThemes = false)} />
   {/if}
 
+  {#if sheetOf}
+    {#key sheetOf}
+      <ReadingSheet
+        kind={sheetOf}
+        faces={{
+          scale: 1,
+          meter,
+          ledger,
+          pomodoro,
+          devops,
+          asana,
+          billboard: skein.board,
+          sink: skein.sink,
+          gates: skein.gates,
+          pane,
+          beacon,
+          servers: serverReadings(),
+          onserverstart: (groupId) => {
+            const g = skein.groups.find((g) => g.group.id === groupId);
+            if (g) void skein.startGroup(g);
+          },
+          builds: actions.builds(),
+          onbuildrun: (root, action) => void actions.run(root, action),
+          editors: actions.editors(),
+          oneditoropen: (root) => void actions.run(root, "editor"),
+          names: cardNames,
+          naming: nameFor,
+          onreveal: (role, ref) => {
+            /* Only a row that is a conversation leads anywhere; closing the
+               sheet for any other would be closing it for nothing. */
+            if (role !== "conversation" || !cards.find(ref)) return;
+            closeReading();
+            revealRow(role, ref);
+          },
+          cardOf: (id) => cards.find(id),
+          onopen: (url) => void skein.openLink(url),
+          onkeyring: () => (showKeyring = true),
+          onforgerun: (run) => (openRun = run),
+          timelines: skein.timelines,
+        }}
+        onclose={closeReading}
+        onhang={(config) => void hangReading(sheetOf!, config)}
+      />
+    {/key}
+  {/if}
   {#if openRun}
     <!-- Keyed on the run's id, so opening a second run from behind the panel
          tears the old one down and builds a new one. Without the key Svelte

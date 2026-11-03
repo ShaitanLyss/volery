@@ -281,7 +281,7 @@ reuses, and says so plainly where something is **new work** rather than reuse.
 | The browser pane | **wall only** as a pane; agents still drive the shared browser | `browser.rs` |
 | Music (Spotify) | **wall only** as a widget. Playback lives in Rust and the deck module and survives the view changing | — |
 | Toys (the synth) | **one step away**: Ctrl+K and the leader chords | `leader.ts` |
-| Leader chords | **shown**: Space starts one outside a text field *and* from an empty one, the message box included (Lyss, 2026-10-18; sink `3cd4359c`); every chord is also in Ctrl+K with its keys beside it | `leader.ts::CHORDS` |
+| Leader chords | **shown**: in chat view Space opens the action palette — the same Ctrl+K list, leading with readings, panels and chords — outside a text field *and* from an empty one, the message box included (Lyss, 2026-11-03; it was the leader from 2026-10-18, sink `3cd4359c`); every chord is a row with its keys beside it, and its keys typed as keys come first | `leader.ts::CHORDS`, `search.ts` |
 | Carrying a layout off the machine | **one step away**: settings | `Portage` |
 | Keep-awake, reopening after a restart | unchanged: they belong to the machine | `machine.rs` |
 
@@ -360,7 +360,8 @@ they carry one; a click or Enter on the thumbnail opens it full size in the exis
 ← → between questions, Alt+D to answer later, Alt+R for what it said before asking. This is
 `Ask.svelte` mounted inline, not a new component (§7.4) — but the number keys and ← → are **new**
 in it: today it answers only Alt+D, Alt+R and Enter in its own field. They are added to
-`Ask.svelte` itself, so the dock gains them too. Space is not used: it is the leader's.
+`Ask.svelte` itself, so the dock gains them too. Space is not used: outside a field it is the
+action palette's (2026-11-03; it was the leader's).
 
 While chat view is up the dock is not mounted (§7.5), so there is exactly one `Ask` for a
 question — two would drift apart in their per-instance state, and `data-ask` and the control

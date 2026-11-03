@@ -22,39 +22,11 @@
   import type { Beacon } from "./beacon.svelte";
   import type { Gates } from "./gates.svelte";
   import type { Pane } from "./pane.svelte";
-  /* Aliased, because `Run` in this file is already a timer's two numbers off
-     `./timing` one line below. Two different `Run`s in one component is the
-     kind of collision that reads fine until somebody widens one of them. */
+  /* Aliased as `WidgetFace` aliases it, where `Run` is a timer's two numbers
+     off `./timing`; the one name for one type across the two files. */
   import type { Run as ForgeRun } from "./azdo";
-  import { duoPatch, frameOf, runPatch, specFor, type Widget } from "./widgets";
-  import type { Duo, Run } from "./timing";
-  import Clock from "./Clock.svelte";
-  import Perf from "./Perf.svelte";
-  import Cores from "./Cores.svelte";
-  import Timer from "./Timer.svelte";
-  import Pomodoro from "./Pomodoro.svelte";
-  import Usage from "./Usage.svelte";
-  import Speedo from "./Speedo.svelte";
-  import Status from "./Status.svelte";
-  import Spotify from "./Spotify.svelte";
-  import Pipelines from "./Pipelines.svelte";
-  import Reviews from "./Reviews.svelte";
-  import Kanban from "./Kanban.svelte";
-  import Tasks from "./Tasks.svelte";
-  import Health from "./Health.svelte";
-  import Billboard from "./Billboard.svelte";
-  import Basin from "./Basin.svelte";
-  import Register from "./Register.svelte";
-  import Gatehouse from "./Gatehouse.svelte";
-  import ServerLog from "./ServerLog.svelte";
-  import AppLog from "./AppLog.svelte";
-  import Browser from "./Browser.svelte";
-  import Screen from "./Screen.svelte";
-  import BuildLog from "./BuildLog.svelte";
-  import UnrealLog from "./UnrealLog.svelte";
-  import Saying from "./Saying.svelte";
-  import Plate from "./Plate.svelte";
-  import { tetherOf } from "./tether";
+  import { frameOf, specFor, type Widget } from "./widgets";
+  import WidgetFace from "./WidgetFace.svelte";
   import { planOf } from "./plates";
   import { variantOf } from "./widgets";
   import { Z_TOP } from "./layout";
@@ -239,13 +211,6 @@
    *  one opaque column. The key names come from `widgets.ts` rather than being
    *  written out here, so a key spelled wrong is one place to fix rather than
    *  three. */
-  function setRun(run: Run) {
-    onupdate({ config: { ...widget.config, ...runPatch(run) } });
-  }
-
-  function setDuo(duo: Duo) {
-    onupdate({ config: { ...widget.config, ...duoPatch(duo) } });
-  }
 
   const spec = $derived(specFor(widget.kind));
   const hs = $derived(11 / scale);
@@ -336,126 +301,39 @@
   role="presentation"
   {@attach measured}
 >
+  <!-- What it draws is `WidgetFace`'s, which a reading's sheet draws too:
+       this file is the widget *on the wall* — its place, its frame, its grip. -->
   <div class="face">
-    {#if widget.kind === "clock"}
-      <Clock {widget} />
-    {:else if widget.kind === "performance"}
-      <Perf {widget} {meter} {naming} {onreveal} />
-    {:else if widget.kind === "cores"}
-      <!-- Same holder as the meter above, which is the whole of the argument
-           for it: one sampler however many readers. -->
-      <Cores {widget} {meter} />
-    {:else if widget.kind === "timer"}
-      <Timer {widget} onrun={setRun} onduo={setDuo} />
-    {:else if widget.kind === "pomodoro"}
-      <Pomodoro {widget} {pomodoro} />
-    {:else if widget.kind === "usage"}
-      <Usage {widget} {ledger} />
-    {:else if widget.kind === "burn"}
-      <Speedo {widget} {ledger} />
-    {:else if widget.kind === "status"}
-      <Status {widget} {beacon} onopen={(url) => onopen?.(url)} />
-    {:else if widget.kind === "spotify"}
-      <!-- The one arm here that takes no holder: the face reaches `deck` — a
-           module-level singleton with refcounted attach/detach — directly,
-           rather than having one threaded down through `Canvas` and `App` for
-           the single instrument on this wall that nothing else reads. -->
-      <Spotify {widget} />
-    {:else if widget.kind === "pipelines"}
-      <Pipelines
-        {widget}
-        {devops}
-        onopen={(url) => onopen?.(url)}
-        onrun={onforgerun ? (run) => onforgerun?.(run) : undefined}
-        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
-      />
-    {:else if widget.kind === "reviews"}
-      <Reviews {widget} {devops} onopen={(url) => onopen?.(url)} />
-    {:else if widget.kind === "asana"}
-      <!-- `onconfig` is this file's own `setRun`/`setDuo` one service over: a
-           widget's chosen project rides in its config, so setting it is an
-           ordinary widget update and costs no command — the whole reason
-           `config_json` is one opaque column. -->
-      <Kanban
-        {widget}
-        {asana}
-        onopen={(url) => onopen?.(url)}
-        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
-        onconfig={(key, value) =>
-          onupdate({ config: { ...widget.config, [key]: value } })}
-      />
-    {:else if widget.kind === "asanatasks"}
-      <Tasks
-        {widget}
-        {asana}
-        onopen={(url) => onopen?.(url)}
-        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
-      />
-    {:else if widget.kind === "asanahealth"}
-      <Health
-        {widget}
-        {asana}
-        onopen={(url) => onopen?.(url)}
-        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
-      />
-    {:else if widget.kind === "billboard"}
-      <Billboard
-        {widget}
-        board={billboard}
-        {names}
-        onreveal={(id) => onreveal?.("conversation", id)}
-      />
-    {:else if widget.kind === "sink"}
-      <Basin
-        {widget}
-        {sink}
-        {names}
-        onreveal={(id) => onreveal?.("conversation", id)}
-      />
-    {:else if widget.kind === "chronicle"}
-      <!-- No holder threaded in: `chronicle` is a module singleton, for
-           `journal`'s reason — the register and the header are the only things
-           that want it, and threading it through here would put it in a file
-           that is somebody else's. -->
-      <Register {widget} onreveal={(id) => onreveal?.("conversation", id)} />
-    {:else if widget.kind === "gates"}
-      <Gatehouse {widget} {gates} {names} />
-    {:else if widget.kind === "serverlog"}
-      <ServerLog {widget} groups={servers} onstart={onserverstart} />
-    {:else if widget.kind === "buildlog"}
-      <BuildLog {widget} {builds} onrun={onbuildrun} />
-    {:else if widget.kind === "unreallog"}
-      <UnrealLog {widget} {editors} onopen={oneditoropen} />
-    {:else if widget.kind === "applog"}
-      <!-- No props: the subject is the process, and there is only one. -->
-      <AppLog {widget} />
-    {:else if widget.kind === "browser"}
-      <Browser {widget} {pane} />
-    {:else if widget.kind === "screen"}
-      <!-- No holder threaded in: `casts` is a module singleton, because the
-           focused overlay and chat view reach the same sessions from subtrees
-           this file is not in (`cast.svelte.ts`). The zoom is handed down so
-           the host is asked for the tile's size in device pixels. -->
-      <Screen
-        sid={widget.id}
-        screen={typeof widget.config.monitor === "string" ? widget.config.monitor : "here/primary"}
-        interactive={widget.config.interactive !== false}
-        calm={widget.config.variant === "calm"}
-        {scale}
-      />
-    {:else if widget.kind === "said"}
-      <!-- The card, asked for by the id the widget carries. Null while it is
-           not on the wall yet — a launch, or a wall not heard from — and the
-           face says which; never for a card that closed, which took this
-           widget down with it. -->
-      <Saying
-        {widget}
-        card={cardOf(tetherOf(widget) ?? "")}
-        onreveal={(id) => onreveal?.("conversation", id)}
-      />
-    {:else if widget.kind === "timeline" && timelines}
-      <Plate {widget} {timelines} onreading={(open) => (reading = open)} />
-    {/if}
+    <WidgetFace
+      {widget}
+      {scale}
+      {meter}
+      {ledger}
+      {pomodoro}
+      {devops}
+      {asana}
+      {billboard}
+      {sink}
+      {gates}
+      {pane}
+      {beacon}
+      {servers}
+      {onserverstart}
+      {builds}
+      {onbuildrun}
+      {editors}
+      {oneditoropen}
+      {names}
+      {naming}
+      {onupdate}
+      {onreveal}
+      {cardOf}
+      {onopen}
+      {onkeyring}
+      {onforgerun}
+      {timelines}
+      onreading={(open) => (reading = open)}
+    />
   </div>
 
   {#if selected}

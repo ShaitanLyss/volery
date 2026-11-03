@@ -38,6 +38,8 @@ paths:
   - "src/lib/PlanDoc.svelte"
   - "src/lib/others.svelte.ts"
   - "src/lib/Welcome.svelte"
+  - "src/lib/ReadingSheet.svelte"
+  - "src/lib/sheets.ts"
 ---
 
 # Chat view: one conversation's column, read in two rooms
@@ -557,3 +559,56 @@ the right-hand side were read off the group it was **drawn** in. So under a pare
 you* a working child got the owed-rest wording, and under a working parent a resting child
 read `waiting on undefined it started`. `groups` now asks `tone`, `subtitleOf` and the age of
 the row's **own** group (`groupOf`); the group a row sits in decides only where it is listed.
+
+### The space bar is the action palette, and the palette is the one registry (2026-11-03)
+
+Lyss: *"I want to see my pipelines, I press spacebar, type 'pipe', the first item in the action
+menu is pipeline so I press enter and boom I see my pipelines in a modal."* No list was written
+for it. The palette is Ctrl+K's `Lookup.svelte` over `search.ts`, and what it offers is what
+the wall already had: every leader chord (`CHORDS`, each with its keys, so the palette teaches
+them), the settings, the sink, Volery's slash commands, the conversations and the projects. A
+chord added tomorrow is a row tomorrow.
+
+- **Two leads, one list** (`search.ts::Lead`). Ctrl+K is `search` and leads with
+  conversations, as it always did. The space bar and the bar's button are `actions`: readings,
+  panels and chords come ahead of a conversation that merely mentions the word, and an empty
+  query lists what was taken lately (`skein.palette.recent.v1`, a tie-breaker and never an
+  answer), then the readings and panels. Only the bias moves; `entriesOf` is the same.
+- **Space opens it exactly where the leader would lead** (`leader.ts::mayLead`: no field, or an
+  empty one), never over a panel or a sheet (`App.overlayUp`), never mid-chord. In chat view the
+  leader is therefore one row away rather than one key: a chord's keys typed as keys come first
+  (`bp`, Enter). On the wall the leader stays (Lyss's call); the palette has no key there yet,
+  and the bar's button is chat view's alone.
+- **A label is scored as words, not a path.** The finder's scorer pays thirty for landing after
+  the last `/`, so `pip` answered with *set it aside / pick it back up*. `said()` swaps a slash
+  one-for-one for a mark the scorer does not know, which keeps the spans honest.
+- **A row about the focused conversation says which one, and refuses in the handle's words**
+  (`standingOf`, `cardVerbOf` over `handle.ts::Verb`). Enter on a refused row does nothing; the
+  reason is already beside it. A command that a chord stands for (`Command.chord`, from
+  `verbslash.ts`) is the chord's row and not a second one.
+- **Focus goes back where it was before the pick runs** (`ChatView.shut`), so a sheet the pick
+  opens records that place and not the palette's field, which is gone by the time the sheet
+  closes.
+
+**The readings are a `b` family derived from the catalogue.** A widget you look at and close —
+pipelines, reviews, asana's three, claude status, usage, the burn rate, performance, gates, the
+register, the billboard — carries a `sheet` letter in `widgets.ts`, and `leader.ts::readings()`
+turns each into `space b <letter>` with the widget's own label. A reading opens in
+`ReadingSheet.svelte` over either view, mounted by App beside the accounts panel; the billboard
+in chat view opens its own page instead (`PilePage`), as `ss` does for the sink.
+
+**The sheet is a second holder of the widget, not a second drawing.** `WidgetFace.svelte` is the
+face switch cut out of `WidgetNode.svelte`, so the wall and the sheet hand the same faces the
+same holders and a knob the pipelines gain is in both the same day. `sheets.ts` makes the
+widget a sheet holds: `normalizeWidget` over the kept config (`skein.sheets.v1`), at the size
+the body measures (the faces fit their rows to `widget.h`), with the widget's own choices and
+toggles as the sheet's knobs, less the frame and anything whose options come from elsewhere.
+*on the wall* hangs the same reading with those knobs, switching to the wall first.
+
+**The look is not decided.** The palette and the sheet wear chat view's tokens as a baseline.
+Lyss sent back two rounds of mockups — glass and hue read as "corpo … cold and inhuman", and
+the slow motion "like a grandma slowly getting out of bed" — and has the two-pane
+list-and-live-preview structure (Spotlight) and three warm skins of it (sketchbook, dusk, lamp)
+in front of her as a working prototype. Whatever she picks becomes the visual system for every
+menu in step 3. What is settled: motion is fast (an entrance of ~140ms, the highlight sliding in
+~90ms, nothing animating at rest), and the palette's mark is a bird, never a sparkle.

@@ -245,6 +245,19 @@ export type WidgetSpec = {
    *  plan — and takes it down when the plan leaves the glass. Never offered
    *  from a menu, never carried in a layout. See `plates.ts`. */
   plan?: true;
+  /** The letter of its `space b` chord, which opens this reading in a sheet
+   *  over either view rather than hanging it on the wall (`ReadingSheet.svelte`).
+   *
+   *  A reading you look at and close — what is building, what is on me, is it
+   *  up — wants to be one keystroke away in chat view, where there is no wall
+   *  to hang it on, and a glance away on the wall, where hanging one up for a
+   *  look is a widget left behind. The letter lives here rather than in
+   *  `leader.ts` so that a reading which can be held in a sheet *says so where
+   *  it is declared*, and the chord, the palette's row and the which-key hint
+   *  follow from that one field (`leader.ts::READINGS`). Absent for what only
+   *  means something on the wall — a clock, a log of one subject, a view of a
+   *  card. */
+  sheet?: string;
 };
 
 export type WidgetConfig = Record<string, string | number | boolean>;
@@ -401,6 +414,7 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "performance",
     label: "performance",
+    sheet: "m",
     family: "machine",
     short: "what it is costing",
     offer: "hang up the performance meter",
@@ -608,6 +622,7 @@ export const WIDGETS: WidgetSpec[] = [
        same numerals. See `usage.ts`. */
     kind: "usage",
     label: "usage",
+    sheet: "u",
     family: "claude",
     short: "what is left",
     note: "how much of the allowance is gone, and when it comes back",
@@ -702,6 +717,7 @@ export const WIDGETS: WidgetSpec[] = [
        for the standard one would have had to meet. */
     kind: "burn",
     label: "burn rate",
+    sheet: "b",
     family: "claude",
     short: "the burn rate",
     note: "how fast this wall is burning tokens",
@@ -784,6 +800,7 @@ export const WIDGETS: WidgetSpec[] = [
      * any status colour would be the widget inventing news. */
     kind: "status",
     label: "claude status",
+    sheet: "s",
     family: "claude",
     short: "is it up",
     offer: "hang up claude's status",
@@ -859,6 +876,7 @@ export const WIDGETS: WidgetSpec[] = [
        be dropped without the row ceasing to say where it is from. */
     kind: "pipelines",
     label: "pipelines",
+    sheet: "p",
     family: "forge",
     short: "pipelines",
     note: "what is building, across every project at once",
@@ -895,6 +913,7 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "reviews",
     label: "reviews",
+    sheet: "r",
     family: "forge",
     short: "reviews",
     note: "open pull requests, and which of them want you",
@@ -930,6 +949,7 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "asana",
     label: "asana board",
+    sheet: "a",
     family: "asana",
     short: "the board",
     note: "one project's board, and its cards where you put them",
@@ -999,6 +1019,7 @@ export const WIDGETS: WidgetSpec[] = [
        for a wall is that a thing you check twenty times a day belongs on it. */
     kind: "asanatasks",
     label: "asana tasks",
+    sheet: "t",
     family: "asana",
     short: "what is on me",
     note: "what is assigned to you, across every project",
@@ -1035,6 +1056,7 @@ export const WIDGETS: WidgetSpec[] = [
        makes, one service over. */
     kind: "asanahealth",
     label: "asana health",
+    sheet: "h",
     family: "asana",
     short: "project health",
     note: "how every project is going, worst first",
@@ -1071,6 +1093,7 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "billboard",
     label: "billboard",
+    sheet: "n",
     family: "notes",
     short: "the billboard",
     offer: "hang up the billboard",
@@ -1167,6 +1190,7 @@ export const WIDGETS: WidgetSpec[] = [
        is that a long absence is readable in one glance rather than a scroll. */
     kind: "chronicle",
     label: "register",
+    sheet: "c",
     family: "notes",
     short: "the register",
     offer: "hang up the register",
@@ -1239,6 +1263,7 @@ export const WIDGETS: WidgetSpec[] = [
        compiler's eighty columns. */
     kind: "gates",
     label: "gates",
+    sheet: "g",
     family: "notes",
     short: "the gatehouse",
     offer: "hang up the gatehouse",

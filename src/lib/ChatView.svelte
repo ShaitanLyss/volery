@@ -44,7 +44,11 @@
   import type { Starter } from "./starting.svelte";
   import type { Actions } from "./actions.svelte";
   import type { Ledger } from "./ledger.svelte";
-  import type { Entry } from "./search";
+  import { entryKey, remember, RECENT_KEEP, type Entry, type Lead } from "./search";
+  import type { Verb as CardVerb } from "./handle";
+
+  /** What the palette remembers was taken lately (`search.ts::remember`). */
+  const RECENT_STORE = "skein.palette.recent.v1";
   import { CHORDS } from "./leader";
   import { COMMANDS } from "./commands";
   import { footOf } from "./allowance";
@@ -437,8 +441,24 @@
     });
   });
 
-  let looking = $state(false);
-  /** Ctrl+K and the sidebar's *search*. */
+  /** Whether the palette is up, and which half of it leads: `search` for
+   *  Ctrl+K and the sidebar's *search*, `actions` for the space bar and the
+   *  bar's button (`search.ts::Lead`). One list either way. */
+  let looking = $state<Lead | null>(null);
+  /* What was taken from it lately, newest first — a tie-breaker, and what an
+     empty action palette offers first. Per machine, like the view. */
+  let recent = $state<string[]>(readRecent());
+  function readRecent(): string[] {
+    try {
+      const v = JSON.parse(localStorage.getItem(RECENT_STORE) ?? "[]");
+      return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string").slice(0, RECENT_KEEP) : [];
+    } catch {
+      return [];
+    }
+  }
+  /** The conversation a card verb in the palette would reach, with its own
+   *  `can` — so a row refuses exactly as the handle would. */
+  const target = $derived(card ? { title: card.face.title, can: (v: CardVerb) => card.can(v) } : null);
   /** Build a finished plan in the conversation that wrote it: out of plan
    *  first — which takes the plan card down (`Conversation.planDoc`) — and
    *  told to go. The same two moves a hand makes on the wall. */
@@ -507,12 +527,46 @@
     view.save();
   }
 
+  /* Where the keyboard was when the palette opened, given back when it
+     shuts — and given back *before* a pick runs, so a sheet the pick opens
+     records that place rather than the palette's own field, which is gone by
+     the time the sheet closes. */
+  let paletteFrom: HTMLElement | null = null;
+  function opening(lead: Lead) {
+    if (!looking) paletteFrom = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    looking = lead;
+  }
+  function shut() {
+    looking = null;
+    const back = paletteFrom;
+    paletteFrom = null;
+    if (back?.isConnected) back.focus();
+  }
+
   export function search() {
-    looking = true;
+    opening("search");
+  }
+
+  /** The space bar and the bar's button: the same palette, leading with
+   *  somewhere to go or something to do. */
+  export function act() {
+    opening("actions");
+  }
+
+  /** Whether the palette is up, so the window's space bar does not open it
+   *  twice — its field holds the keyboard while it is. */
+  export function palette(): boolean {
+    return looking !== null;
   }
 
   function picked(e: Entry) {
-    looking = false;
+    shut();
+    recent = remember(recent, entryKey(e));
+    try {
+      localStorage.setItem(RECENT_STORE, JSON.stringify(recent));
+    } catch {
+      /* Remembering is a nicety; a refused store forgets and nothing else. */
+    }
     if (e.kind === "conversation") choose(e.id);
     else if (e.kind === "project") openProject(e.name);
     else onpalette(e);
@@ -756,6 +810,15 @@
         <CtxRing ctx={card.gist.ctx} dormant={card.face.dormant} size={18} />{ctx}%
       </span>
     {/if}
+    <button
+      class="iconbtn act"
+      type="button"
+      title="go anywhere, do anything — the readings, the panels, every chord (space, with nothing typed; ctrl+K searches)"
+      aria-label="actions"
+      aria-haspopup="dialog"
+      aria-expanded={looking === "actions"}
+      onclick={act}><Icon name="bird" /></button
+    >
     {@render extras?.()}
     {#if card}
       <button
@@ -1045,8 +1108,11 @@
       projects={folders.map((f) => f.name)}
       chords={CHORDS}
       commands={COMMANDS.filter((c) => c.by === "skein")}
+      lead={looking}
+      {recent}
+      {target}
       onpick={picked}
-      onclose={() => (looking = false)}
+      onclose={shut}
     />
   {/if}
 </div>
