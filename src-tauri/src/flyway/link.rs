@@ -647,8 +647,13 @@ impl Link {
                 &card,
                 &format!(
                     "the wall did not report the card open within {} minutes — check that wall; if a \
-                     card did appear there, it is the one",
-                    OPEN_WITHIN_MS / 60_000
+                     card did appear there, it is the one.{}",
+                    OPEN_WITHIN_MS / 60_000,
+                    /* Said on the wall that was asked, the one place that can
+                       tell slow from a page that is not running: a spawn is
+                       opened by the front end, and Rust answering reads while
+                       the page sleeps is exactly how this read "heard lately". */
+                    crate::watchdog::page_quiet_words()
                 ),
             );
         }

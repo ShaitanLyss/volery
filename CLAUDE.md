@@ -385,6 +385,15 @@ thread is the one thing that *cannot* announce itself, because every event this 
 delivered by that thread — the absence of events is the symptom. It posts one no-op closure a
 second and never stacks a second behind an unanswered first, so a healthy wall pays a few
 microseconds and a stalled one pays nothing. It exists because of 2026-10-19, below.
+**And a main thread that answers is not a page that is drawing**: an emit is handed to
+WebView2 as a script and handing it over is instant, so on 2026-11-03 that loop stayed quiet
+for eleven hours while the page fell four hours behind (Modern Standby with the screen off,
+the wake request covering `skein.exe` and not the WebView2 processes). Its second half pulses
+the page itself through the same queue the events ride, and says so in the log, the chronicle
+and a remote spawn's refusal. **Chromium backgrounding the page is not the cause** — measured
+in standby, the page still reads `visible`, animates and runs at normal priority with no
+EcoQoS, and minimizing does not hide a WebView2 page either — so browser flags against it
+would buy nothing.
 
 Your own prompt is the one exception, and it is drawn the moment you send it
 (`Conversation.echo`). It was once the other way round: only `--replay-user-messages`

@@ -48,9 +48,158 @@ const STALL: Duration = Duration::from_secs(2);
 const NOTEWORTHY: Duration = Duration::from_secs(10);
 
 pub fn start(app: AppHandle) {
+    let page = app.clone();
     let _ = std::thread::Builder::new()
         .name("watchdog".into())
         .spawn(move || watch(&app));
+    let _ = std::thread::Builder::new()
+        .name("watchdog-page".into())
+        .spawn(move || watch_page(&page));
+}
+
+/* ── the page ─────────────────────────────────────────────────────────────── */
+
+/* A main thread that answers is not a wall that is drawing. Every event this
+   app emits is handed to WebView2 as a script to run, and handing it over is
+   instant — so on 2026-11-03 the loop above stayed quiet for eleven hours while
+   the page behind it fell four hours behind the events it had been handed.
+   The laptop was in Modern Standby with the screen off; the wake request kept
+   `skein.exe` and its cards running, and covers no other process. From another
+   wall it read "heard lately" and every spawn timed out at two minutes (sink
+   67c3980c), and nothing on this machine said anything at all.
+
+   What starved the page is not settled. It was not Chromium backgrounding it:
+   measured in standby the next night, the page still read `visible`, was still
+   animating the backdrop (a fifth of a core, and as much again in the GPU
+   process) and ran at normal priority with no EcoQoS. This is the instrument
+   that says when it happens, how long it lasted, and — in a remote spawn's
+   refusal — why the wall did not answer.
+
+   Same shape as the main-thread half: one pulse out, never a second behind an
+   unanswered first, so a stalled page costs nothing more than it already is.
+   The pulse rides the same queue as every card's events, so how long it takes
+   to come back *is* how far behind the wall is. */
+
+/// How often the page is asked.
+const PULSE: Duration = Duration::from_secs(5);
+
+/// How long the page may take before it is called behind. Generous for the
+/// main-thread half's reason, and then some: a long transcript laid out on
+/// first open, or a cold GC, holds a page for a second or two legitimately.
+const PAGE_STALL: Duration = Duration::from_secs(30);
+
+/// How long a stall must last to earn a row in the chronicle.
+const PAGE_NOTEWORTHY: Duration = Duration::from_secs(60);
+
+struct Pulse {
+    seq: u64,
+    /// The pulse not yet answered, and when it went.
+    out: Option<(u64, Instant)>,
+    warned: bool,
+}
+
+static PULSE_STATE: std::sync::Mutex<Pulse> =
+    std::sync::Mutex::new(Pulse { seq: 0, out: None, warned: false });
+
+/// How long the page has owed an answer, or `None` when it owes none. For a
+/// caller explaining why something the page should have done did not happen —
+/// a remote spawn that was never reported open is the case that needed it.
+pub fn page_quiet() -> Option<Duration> {
+    let p = PULSE_STATE.lock().ok()?;
+    p.out.map(|(_, sent)| sent.elapsed()).filter(|d| *d >= PAGE_STALL)
+}
+
+/// `page_quiet` in words, for the end of a sentence that already says what
+/// did not happen. Empty when the page is keeping up.
+pub fn page_quiet_words() -> String {
+    match page_quiet() {
+        Some(d) => format!(
+            " This wall's window has not answered for {} — it is asleep or stalled, so \
+             nothing it is handed is being done.",
+            spoken(d)
+        ),
+        None => String::new(),
+    }
+}
+
+fn spoken(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 120 {
+        format!("{s}s")
+    } else if s < 7200 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h{:02}m", s / 3600, (s / 60) % 60)
+    }
+}
+
+fn watch_page(app: &AppHandle) {
+    use tauri::Emitter;
+    std::thread::sleep(SETTLE);
+    loop {
+        std::thread::sleep(PULSE);
+        let send = {
+            let Ok(mut p) = PULSE_STATE.lock() else { return };
+            match p.out {
+                Some((_, sent)) => {
+                    let late = sent.elapsed();
+                    if late >= PAGE_STALL && !p.warned {
+                        p.warned = true;
+                        log::warn!(
+                            "the window has not answered for {}s — the main thread is answering, so \
+                             the page itself is behind: every card's events are queued and none is \
+                             being drawn or acted on.",
+                            late.as_secs()
+                        );
+                    }
+                    None
+                }
+                None => {
+                    p.seq += 1;
+                    p.out = Some((p.seq, Instant::now()));
+                    Some(p.seq)
+                }
+            }
+        };
+        if let Some(seq) = send {
+            if app.emit_to("main", "volery:pulse", seq).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// The page answering a pulse. A stale or repeated answer is ignored, so a
+/// page catching up on a backlog settles the books once.
+#[tauri::command]
+pub fn pulse_back(app: AppHandle, seq: u64) {
+    let (lasted, warned) = {
+        let Ok(mut p) = PULSE_STATE.lock() else { return };
+        let Some((out, sent)) = p.out else { return };
+        if out != seq {
+            return;
+        }
+        let warned = p.warned;
+        p.out = None;
+        p.warned = false;
+        (sent.elapsed(), warned)
+    };
+    if !warned {
+        return;
+    }
+    log::warn!("the window answered again after {}.", spoken(lasted));
+    if lasted >= PAGE_NOTEWORTHY {
+        crate::chronicle::note(
+            &app,
+            None,
+            "volery",
+            "bad",
+            &format!("the window fell {} behind", spoken(lasted)),
+            "Volery itself kept running and its cards kept working; the page that draws them \
+             and acts on what they send was not keeping up, so nothing reached the wall or \
+             another wall in that time.",
+        );
+    }
 }
 
 /// How long after launch before the first look. Making the windows is the
@@ -131,4 +280,17 @@ fn busiest_words() -> String {
         .map(|(name, emits, items)| format!("{name} {items} items in {emits} emits"))
         .collect();
     format!("Busiest streams: {}.", parts.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stall_is_said_in_the_unit_a_person_reads_it_in() {
+        assert_eq!(spoken(Duration::from_secs(45)), "45s");
+        assert_eq!(spoken(Duration::from_secs(119)), "119s");
+        assert_eq!(spoken(Duration::from_secs(150)), "2m");
+        assert_eq!(spoken(Duration::from_secs(4 * 3600 + 5 * 60)), "4h05m");
+    }
 }

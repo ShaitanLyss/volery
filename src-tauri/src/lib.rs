@@ -938,6 +938,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            watchdog::pulse_back,
             window::span_screens,
             cast::cast_monitors,
             cast::cast_open,

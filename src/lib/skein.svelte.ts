@@ -903,6 +903,11 @@ export class Skein {
        somebody pressed something here; so it re-reads, and the panel with it. */
     keep(listen("accounts:changed", () => void waterfall.refresh().then(() => this.#noteAllowance())));
 
+    /* Rust asking whether this page is keeping up (`watchdog.rs`). It rides
+       the queue every card's events ride, so answering at once is the whole of
+       the measurement — nothing here may wait on anything before it answers. */
+    keep(listen<number>("volery:pulse", (e) => void invoke("pulse_back", { seq: e.payload }).catch(() => {})));
+
     keep(
       /* A batch, in stream order, at most twenty a second per card — the
          supervisor's outlet, which is lossless — folded one event at a time
