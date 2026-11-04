@@ -182,6 +182,57 @@ export function watching(stage: Stage): boolean {
   return stage === "quiet" || stage === "offered" || stage === "failed";
 }
 
+/** Everything on this wall that would be hurt by a restart.
+ *
+ *  Deliberately a count of *work*, not of cards: a dormant card costs nothing
+ *  to close, and a held prompt is persisted and released after the restart.
+ *  A parked question is the one thing that is not — its process is holding the
+ *  `tools/call`, so a restart loses the question rather than moving it. */
+export type Running = {
+  working: number;
+  jobs: number;
+  questions: number;
+  servers: number;
+  workflows: number;
+};
+
+/** Nothing is running that a restart would interrupt. */
+export function quietForUpdate(r: Running): boolean {
+  return (
+    r.working === 0 &&
+    r.jobs === 0 &&
+    r.questions === 0 &&
+    r.servers === 0 &&
+    r.workflows === 0
+  );
+}
+
+/** What an away wall should do about an update, if anything.
+ *
+ *  `fetch` is the download, and it is safe while work runs. `close` is the
+ *  restart, and it is only offered when the wall is quiet. The active wall
+ *  never gets either: `away` is the whole condition. */
+export type AutoStep = "fetch" | "close" | null;
+
+export function autoUpdateStep(
+  away: boolean,
+  auto: boolean,
+  stage: Stage,
+  quiet: boolean,
+): AutoStep {
+  if (!away || !auto) return null;
+  if (stage === "offered") return "fetch";
+  if (stage === "armed" && quiet) return "close";
+  return null;
+}
+
+/** How long an armed, quiet away wall waits before it restarts.
+ *
+ *  Long enough that a card starting a turn, a job landing, or you coming back
+ *  cancels it; short enough that a wall left overnight is not still waiting at
+ *  dawn. There is nothing to ask, because there is nobody there. */
+export const AUTO_UPDATE_GRACE_MS = 60_000;
+
 /** Is `peek` worth the expensive question?
  *
  *  Only when the tag is newer than what is running **and** newer than what is

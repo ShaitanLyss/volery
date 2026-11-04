@@ -157,20 +157,27 @@ export class Releases {
    *  is a separate budget. See `RESOLVE_FLOOR`. */
   #resolvedAt = 0;
 
-  /** Tell this whether the window is in front. Everything follows from that.
+  /** Tell this whether the window is in front, and whether the wall is away.
    *
-   *  Called from an `$effect` in `App.svelte` reading `attention.focused`, which
-   *  means it runs once at mount and once per focus change — so there is no
-   *  separate "start" and the class holds no idea of whether it has begun. That
-   *  also makes it safe under a hot edit that mounts `App.svelte` twice: the
-   *  second effect clears the first's timer before setting its own, where a
-   *  `#started` guard would have had to be reset by hand.
+   *  Focus is the ordinary condition. **Away is the one exception**, and it is
+   *  deliberate: an away wall is exactly the wall nobody is looking at, so it
+   *  must still learn that a release exists or it would sit on an old build
+   *  until somebody came back. `presence.away` is an event of its own, so this
+   *  still is not a clock — the backstop below is bounded by it, and it runs only
+   *  while away (or in front).
    *
-   *  Idempotent for the same focus value, because the pending ask is cleared and
+   *  Called from an `$effect` in `App.svelte`, which means it runs once at mount
+   *  and once per focus/away change — so there is no separate "start" and the
+   *  class holds no idea of whether it has begun. That also makes it safe under
+   *  a hot edit that mounts `App.svelte` twice: the second effect clears the
+   *  first's timer before setting its own, where a `#started` guard would have
+   *  had to be reset by hand.
+   *
+   *  Idempotent for the same values, because the pending ask is cleared and
    *  rescheduled rather than added to. */
-  watch(focused: boolean) {
+  watch(focused: boolean, away = false) {
     this.#stop();
-    if (!focused || !watching(this.stage)) return;
+    if (!(focused || away) || !watching(this.stage)) return;
     /* Whatever is left of the floor, or nothing if it has already passed. A
        first call at launch therefore asks on this tick. */
     const wait = Math.max(0, FLOOR - (Date.now() - this.#askedAt));

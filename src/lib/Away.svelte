@@ -52,6 +52,7 @@
     presence,
     sketchbook,
     onback,
+    update = null,
   }: {
     presence: Presence;
     /** Edited here, drawn from by the gate. The one knob on this screen that is
@@ -60,6 +61,8 @@
     sketchbook: Sketchbook;
     /** The way back. Not called by anything the pointer does to a piece. */
     onback: () => void;
+    /** What the wall is doing about an update while nobody is here. */
+    update?: string | null;
   } = $props();
 
   const screen = $derived(presence.screen);
@@ -464,6 +467,7 @@
   <div class="corner">
     <span class="head">{line.head}</span>
     {#if line.under}<span class="under">{line.under}</span>{/if}
+    {#if update}<span class="update">{update}</span>{/if}
     <div class="row">
       <button class="back" onclick={onback}>i'm back</button>
       {#if presence.animate}
@@ -508,6 +512,13 @@
             title="A short puzzle between you and the wall when you come back, if you have been away more than twenty minutes — a word, a derivative, a shape to turn, something to draw"
             onclick={() => presence.setToys(!presence.toys)}
             >{presence.toys ? "puzzle after a long away" : "no puzzle"}</button
+          >
+          <button
+            class="chip"
+            class:on={presence.autoUpdate}
+            title="An away wall may download and install a newer Volery by itself — only when no turn, job, parked question, dev server or workflow would be interrupted"
+            onclick={() => presence.setAutoUpdate(!presence.autoUpdate)}
+            >{presence.autoUpdate ? "updates while away" : "no updates while away"}</button
           >
           {#if presence.toys}
             <button class="chip" class:on={drawing} onclick={() => (drawing = !drawing)}
@@ -650,6 +661,13 @@
     font-size: 0.68rem;
     letter-spacing: 0.1em;
     color: var(--paper-mute);
+  }
+  .update {
+    font-family: var(--util);
+    font-size: 0.64rem;
+    letter-spacing: 0.04em;
+    color: var(--paper-faint, var(--paper-mute));
+    opacity: 0.8;
   }
   .hint {
     font-family: var(--util);

@@ -34,6 +34,7 @@ import {
 const ANIMATE_KEY = "skein.away.animate";
 const SCREEN_KEY = "skein.away.screen";
 const TOYS_KEY = "skein.away.toys";
+const UPDATE_KEY = "skein.away.update";
 
 type DeferredRow = {
   id: string;
@@ -98,6 +99,14 @@ export class Presence {
   screen = $state<AwayScreen>("takeover");
   /** Whether a small puzzle stands between you and the wall on the way back. */
   toys = $state(stored(TOYS_KEY, true));
+  /** Whether an **away** wall may download and install an update by itself.
+   *
+   *  On by default, because the state it is scoped to is the one where nobody
+   *  is looking: the wall you are using never does this. `quietForUpdate` is the
+   *  other half — no working card, job, parked question, dev server or workflow
+   *  may be interrupted — so a long job simply holds the restart back. A held
+   *  prompt is persisted, not running, and does not block it. */
+  autoUpdate = $state(stored(UPDATE_KEY, true));
 
   /** The pile is open. Set when away ends with something waiting, and by
    *  `openPile`; cleared when the last question is answered or you shut it.
@@ -362,5 +371,10 @@ export class Presence {
   setToys(on: boolean) {
     this.toys = on;
     write(TOYS_KEY, on ? "1" : "0");
+  }
+
+  setAutoUpdate(on: boolean) {
+    this.autoUpdate = on;
+    write(UPDATE_KEY, on ? "1" : "0");
   }
 }

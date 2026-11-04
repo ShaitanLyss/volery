@@ -401,3 +401,38 @@ list (`flyway.ts::buildLine` — an older build says so with its version, a newe
 only states it, nothing coloured), and the transcript footer of a card on an older wall
 (`olderTag`, in the `elsewhere` the shadow answers). Constant for a process, so it never makes a
 statement look different from the last one.
+
+### The away wall updates itself, and the one you are using does not
+
+Lyss, 2026-11-04: *"only the Volery in i'm away mode, not the one i'm using."* That is the
+scope, and it is the safe half of the idea: the wall with nobody in front of it is the wall a
+restart costs nothing on, and `presence.away` is an event the wall already folds.
+
+Three conditions, and all three are required:
+
+1. **Away.** The active wall never auto-updates, however quiet it is; it keeps the ordinary
+   offer button in the header.
+2. **The download is not the restart.** When away and offered, `release.svelte.ts` downloads
+   at once — that is safe beside work. The close waits.
+3. **Nothing a restart would interrupt.** `quietForUpdate` counts working turns, background
+   jobs, parked questions, dev servers and running workflows. A **held prompt is deliberately
+   not counted**: it is persisted and released after the restart. A **parked question is**:
+   its process is holding the `tools/call`, so a restart loses the question rather than moving
+   it. That is the one that would otherwise bite an away wall, since away mode is exactly when
+   questions pile up.
+
+When all three hold, `App.svelte` waits `AUTO_UPDATE_GRACE_MS` (a minute) and closes through
+the ordinary `CloseRequested` path, which runs the armed installer from the exit handler. Any
+work starting, or the person coming back, cancels the timer; the installer stays armed and the
+header grows a **ready — close to install** button so returning to an armed wall is not a dead
+end. The away screen says which of those states it is in.
+
+The switch is `presence.autoUpdate` (`skein.away.update`), on by default, in the away screen's
+ellipsis. Off means the wall will still *notice* the release while away, and offer it when you
+come back; it just will not take it.
+
+**The focus rule gained one exception, and only one.** The watcher used to run only while the
+window was in front, which would have made an away wall on a second monitor permanently blind
+to releases. `release.svelte.ts::watch(focused, away)` now treats away as attended: the check
+happens on going away and the existing bounded backstop continues while away. It is still not a
+clock — it is a second event (`presence.away`) beside focus, and it stops when you come back.

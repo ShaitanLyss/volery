@@ -12,10 +12,10 @@
      opens; ↑↓ (or ctrl+n / ctrl+p) move, Enter takes, Escape closes and goes no
      further — the window's Escape would otherwise stop the conversation's turn
      on the same press. */
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import type { ChatRow } from "./chatview";
   import { entriesOf, entryKey, familyOf, glyphOf, rank, standingOf, type Entry, type Lead, type Target } from "./search";
-  import { LAPSE_MS, shortcut, type Verb as ChordVerb } from "./leader";
+  import { LAPSE_MS, SETTLE_MS, shortcut, type Verb as ChordVerb } from "./leader";
   import Icon from "./Icon.svelte";
 
   let {
@@ -55,6 +55,13 @@
    *  fast `i a` is the chord, a slow one is a search for something beginning
    *  with those letters. */
   let lastKeyAt = Date.now();
+  /** A one-key chord's settle timer. See `SETTLE_MS`. */
+  let settle: ReturnType<typeof setTimeout> | null = null;
+  function dropSettle() {
+    if (settle !== null) clearTimeout(settle);
+    settle = null;
+  }
+  onDestroy(dropSettle);
 
   const all = $derived(entriesOf({ rows, projects, chords, commands }));
   const shown = $derived(rank(all, rows, query, 60, { lead, recent }));
@@ -96,6 +103,7 @@
   }
 
   function onkey(e: KeyboardEvent) {
+    dropSettle();
     const n = shown.length;
     if (e.key === "Escape") {
       e.preventDefault();
@@ -118,7 +126,14 @@
          starts with it. The rule is the wall's own `shortcut` (over
          `leader.ts::chord` and `LAPSE_MS`), so `<space>ia` here fires in the
          same instant it does on the wall; type slower and the same letters are
-         a query, with Enter taking the row as before. */
+         a query, with Enter taking the row as before.
+      
+         **A one-key chord settles first** (`SETTLE_MS`). `p` is both the pile
+         and the first letter of "pipelines": firing it on the keypress made the
+         palette impossible to type a search into. The key goes into the query,
+         and any next key cancels the timer; a hand that stops after `p` still
+         gets the shortcut, a beat later. */
+      dropSettle();
       if (lead === "actions" && e.key !== " " && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const now = Date.now();
         const since = now - lastKeyAt;
@@ -129,10 +144,17 @@
             (x): x is Extract<Entry, { kind: "chord" }> => x.kind === "chord" && x.keys === next,
           );
           if (hit && !standingOf(hit, target)?.refused) {
-            e.preventDefault();
-            e.stopPropagation();
-            take(hit);
-            return;
+            if (next.length === 1) {
+              settle = setTimeout(() => {
+                settle = null;
+                if (lead === "actions" && query === next) take(hit);
+              }, SETTLE_MS);
+            } else {
+              e.preventDefault();
+              e.stopPropagation();
+              take(hit);
+              return;
+            }
           }
         }
       }

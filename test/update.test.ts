@@ -1,9 +1,12 @@
 import { expect, test, describe } from "bun:test";
 import {
+  AUTO_UPDATE_GRACE_MS,
+  autoUpdateStep,
   isNewer,
   offerFrom,
   parseVersion,
   pickInstaller,
+  quietForUpdate,
   READY_LINE,
   sayOffer,
   sayProgress,
@@ -237,5 +240,42 @@ describe("the version table both languages read", () => {
     for (const c of table.newer) {
       expect([c.tag, c.running, isNewer(c.tag, c.running)]).toEqual([c.tag, c.running, c.newer]);
     }
+  });
+});
+
+/* An away wall may take an update by itself, but only when there is nothing on
+   it a restart would interrupt. The active wall never qualifies. */
+describe("an away wall's own update", () => {
+  const quiet = { working: 0, jobs: 0, questions: 0, servers: 0, workflows: 0 };
+
+  test("the active wall never auto-updates", () => {
+    expect(autoUpdateStep(false, true, "offered", true)).toBeNull();
+    expect(autoUpdateStep(false, true, "armed", true)).toBeNull();
+  });
+
+  test("away, wanted, and offered downloads without waiting for quiet", () => {
+    expect(autoUpdateStep(true, true, "offered", false)).toBe("fetch");
+  });
+
+  test("away and armed restarts only when quiet", () => {
+    expect(autoUpdateStep(true, true, "armed", false)).toBeNull();
+    expect(autoUpdateStep(true, true, "armed", true)).toBe("close");
+  });
+
+  test("the switch is obeyed", () => {
+    expect(autoUpdateStep(true, false, "offered", true)).toBeNull();
+    expect(autoUpdateStep(true, false, "armed", true)).toBeNull();
+  });
+
+  test("every kind of work holds the restart back", () => {
+    expect(quietForUpdate(quiet)).toBe(true);
+    for (const key of ["working", "jobs", "questions", "servers", "workflows"] as const) {
+      expect(quietForUpdate({ ...quiet, [key]: 1 })).toBe(false);
+    }
+  });
+
+  test("the grace is a settle, not a second clock", () => {
+    expect(AUTO_UPDATE_GRACE_MS).toBeGreaterThan(10_000);
+    expect(AUTO_UPDATE_GRACE_MS).toBeLessThanOrEqual(120_000);
   });
 });

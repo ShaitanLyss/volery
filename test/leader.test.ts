@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
-import { CHORDS, LAPSE_MS, LEADER, READINGS, actsOnWall, chord, mayLead, offers, shortcut } from "../src/lib/leader";
+import { CHORDS, LAPSE_MS, LEADER, READINGS, SETTLE_MS, actsOnWall, chord, mayLead, offers, shortcut } from "../src/lib/leader";
 import { WIDGETS } from "../src/lib/widgets";
 
 describe("where the leader may start", () => {
@@ -45,6 +46,17 @@ describe("a palette's fast letters are a chord, not a search", () => {
 
   test("past the lapse the same letters are a query", () => {
     expect(shortcut("i", "a", LAPSE_MS + 1)).toBeNull();
+  });
+
+  test("a one-key chord settles, so 'pipelines' can be typed", () => {
+    /* `p` is both the pile and the first letter of a search. Firing it on the
+       keypress made the palette untypable; it now waits `SETTLE_MS` and any
+       next key cancels it. Two-key chords keep the instant path. */
+    expect(SETTLE_MS).toBeLessThan(LAPSE_MS);
+    const src = readFileSync("src/lib/Lookup.svelte", "utf8");
+    expect(src).toContain("next.length === 1");
+    expect(src).toContain("SETTLE_MS");
+    expect(src).toContain("query === next");
   });
 });
 

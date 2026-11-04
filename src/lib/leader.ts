@@ -33,6 +33,17 @@ export const LEADER = " ";
  *  hour later part of a sequence you had forgotten opening. */
 export const LAPSE_MS = 1000;
 
+/** How long a **one-key** chord waits before the chat palette fires it.
+ *
+ *  A two-key chord is unambiguous — `ia`, `bp` — and fires the instant the
+ *  second key lands. A one-key chord is not: `p` is both "the pile" and the
+ *  first letter of "pipelines", so firing it on the keypress makes the palette
+ *  impossible to type a search into. The key goes into the query, the chord
+ *  waits this long, and any next key cancels it; a hand that stops after `p`
+ *  still gets the shortcut, just a beat later. Well inside `LAPSE_MS`, so it is
+ *  a settle, not a second timing rule. */
+export const SETTLE_MS = 260;
+
 /** Whether a keydown may be offered to the leader at all, given where the
  *  keyboard is.
  *

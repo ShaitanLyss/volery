@@ -52,7 +52,7 @@
   import { casts } from "./lib/cast.svelte";
   import { screenOptions } from "./lib/cast";
   import { caption } from "./lib/browser";
-  import { READY_LINE, sayOffer } from "./lib/update";
+  import { AUTO_UPDATE_GRACE_MS, READY_LINE, autoUpdateStep, quietForUpdate, sayOffer } from "./lib/update";
   import { Ledger } from "./lib/ledger.svelte";
   import { DevOps } from "./lib/devops.svelte";
   import { Cycle } from "./lib/cycle.svelte";
@@ -1078,7 +1078,7 @@
      something to say. `release.svelte.ts` holds the three bounds and why each
      one is there; every failure of it is silence in the header. */
   $effect(() => {
-    releases.watch(attention.focused);
+    releases.watch(attention.focused, presence.away);
   });
 
   /* Claude Code and its plugins: Rust runs the updates on its own clock and
@@ -3305,6 +3305,56 @@
     if (await releases.fetch()) void getCurrentWindow().close();
   }
 
+  /** Nothing a restart would interrupt: no turn, no job, no parked question,
+   *  no dev server, no workflow. A held prompt is persisted and does not count. */
+  const updateQuiet = $derived(
+    quietForUpdate({
+      working: skein.live,
+      jobs: busyCards.length,
+      questions:
+        presence.waiting + skein.convs.filter((c) => c.pendingAsk || c.asks.length > 0).length,
+      servers: skein.groups.some((g) => g.running) ? 1 : 0,
+      workflows: Object.keys(crowds.watching).length,
+    }),
+  );
+
+  /** The away wall's own updater.
+   *
+   *  Only while **away**, and only the inactive half of it: the wall you are
+   *  using keeps the ordinary offer and never restarts itself. The download is
+   *  safe beside work; the restart waits for `updateQuiet` and a grace minute,
+   *  and any work — or coming back — cancels it. */
+  let autoUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const step = autoUpdateStep(presence.away, presence.autoUpdate, releases.stage, updateQuiet);
+    if (step === "fetch") {
+      void releases.fetch();
+      return;
+    }
+    if (step !== "close") return;
+    autoUpdateTimer = setTimeout(() => {
+      autoUpdateTimer = null;
+      if (autoUpdateStep(presence.away, presence.autoUpdate, releases.stage, updateQuiet) === "close")
+        void getCurrentWindow().close();
+    }, AUTO_UPDATE_GRACE_MS);
+    return () => {
+      if (autoUpdateTimer !== null) clearTimeout(autoUpdateTimer);
+      autoUpdateTimer = null;
+    };
+  });
+
+  /** What the away screen says about the update, if anything. The active wall
+   *  says it in the header instead; this is only ever read while away. */
+  const awayUpdateNote = $derived.by(() => {
+    if (!presence.away || !presence.autoUpdate) return null;
+    if (releases.stage === "fetching") return "downloading an update";
+    if (releases.stage === "armed")
+      return updateQuiet ? "restarting to update" : "update ready — waits for the work to finish";
+    if (releases.stage === "offered") return "update available";
+    if (releases.stage === "failed") return "update failed — it will wait for you";
+    return null;
+  });
+
   let quitting = $state<BusyCard[] | null>(null);
   $effect(() => {
     const un = listen("app:quit-blocked", () => {
@@ -5461,7 +5511,12 @@
         {:else if releases.stage === "fetching"}
           <span class="upnote">{releases.note ?? "downloading"}</span>
         {:else if releases.stage === "armed"}
-          <span class="upnote">{READY_LINE}</span>
+          <button
+            class="ghost up"
+            onclick={() => void getCurrentWindow().close()}
+            title="The installer is here. Volery closes and comes back on {releases.offer.version}.">
+            {READY_LINE}
+          </button>
         {:else if releases.stage === "failed"}
           <button
             class="ghost up bad"
@@ -5769,7 +5824,7 @@
        indistinguishable from a crashed one, and saying the wall is away is the
        screen's first job. `animate` decides only whether anything moves. -->
   {#if presence.away}
-    <Away {presence} {sketchbook} onback={() => void togglePresence()} />
+    <Away {presence} {sketchbook} update={awayUpdateNote} onback={() => void togglePresence()} />
   {/if}
   <!-- Over the away screen, and the only thing that is. Away mode is still on
        underneath: the gate's way through is what ends it. -->
