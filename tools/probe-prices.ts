@@ -123,6 +123,13 @@ for (const [id, r] of Object.entries(RATES)) {
 const EXPECTED_ABSENT: Record<string, string> = {
   "1_5_": "haiku 4.5 — no `tier_1_5` exists in the binary at all; see the header",
   "0.8_4_": "haiku 3.5 — retired except on Bedrock and Google Cloud, so the CLI carries no tier",
+  /* Another provider's rates, and the CLI is Claude's. They are in `RATES` so a
+     DeepSeek card's spend is priced at all; they are absent here because no
+     Claude binary has any business carrying them. Read 2026-11-04 off
+     DeepSeek's pricing page — the peak figures, which is what `rateFor` means
+     without a clock. */
+  "0.3_1.2_0.02": "deepseek-flash — deepseek's rate, not a Claude tier",
+  "1.32_3.96_0.033333": "deepseek-v4-pro — deepseek's rate, not a Claude tier",
 };
 
 const orphans: string[] = [];

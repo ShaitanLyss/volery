@@ -296,6 +296,57 @@ const MAX_TITLE: usize = 80;
 /// that says they are a scale.
 pub const SPAWN_MODELS: [&str; 3] = ["haiku", "sonnet", "opus"];
 
+/// The provider names a caller may ask for, as `spawn`'s `provider` argument
+/// takes them.
+///
+/// `claude` is the default and names the subscription every card used before
+/// this existed; `deepseek` is a card spending that service's balance. The
+/// words are the *provider's* (`providers.ts`), not an account label — a card's
+/// account label is the `@` sentinel the wall writes, and an agent has no
+/// business naming one.
+pub const SPAWN_PROVIDERS: [&str; 2] = ["claude", "deepseek"];
+
+/// A provider's own model names, in the order the schema offers them. Kept
+/// beside `SPAWN_MODELS` rather than folded into it: `opus` means nothing on
+/// DeepSeek, and the two lists are validated against different providers.
+pub const PROVIDER_MODELS: [&str; 2] = ["flash", "pro"];
+
+/// Every model name the tool accepts, for the error message and for the case
+/// where a caller names `flash` without naming a provider — the word is not
+/// Claude's, so it can only mean one thing.
+const ALL_MODELS: [&str; 5] = ["haiku", "sonnet", "opus", "flash", "pro"];
+
+/// Which provider the caller asked for, or why nothing was opened.
+///
+/// Refusing rather than falling back is [`asked_model`]'s rule: a misspelled
+/// provider quietly becoming Claude is a card spending the wrong balance, and
+/// the receipt would agree with the mistake.
+pub(crate) fn asked_provider(args: &Value) -> Result<Option<String>, String> {
+    let raw = match args.get("provider") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => s,
+        Some(other) => {
+            return Err(format!(
+                "`provider` has to be a word, and {other} is not one — no card was opened. It \
+                 takes {}. Leave it out for the usual one.",
+                SPAWN_PROVIDERS.join(", ")
+            ))
+        }
+    };
+    let name = raw.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if SPAWN_PROVIDERS.contains(&name.as_str()) {
+        return Ok(Some(name));
+    }
+    Err(format!(
+        "{raw:?} is not a provider this wall can open a card on, so none was opened. It takes \
+         {}. Leave `provider` out for the usual one.",
+        SPAWN_PROVIDERS.join(", ")
+    ))
+}
+
 /// Which model the caller asked for, or why nothing was opened.
 ///
 /// Pure, and refusing rather than falling back is the whole of the decision
@@ -308,7 +359,7 @@ pub const SPAWN_MODELS: [&str; 3] = ["haiku", "sonnet", "opus"];
 ///
 /// Folded for case and trimmed, because `"Sonnet"` is the same intention and
 /// refusing it would teach nothing.
-pub(crate) fn asked_model(args: &Value) -> Result<Option<String>, String> {
+pub(crate) fn asked_model(args: &Value, provider: Option<&str>) -> Result<Option<String>, String> {
     let Some(raw) = args.get("model").and_then(Value::as_str) else {
         return Ok(None);
     };
@@ -316,15 +367,28 @@ pub(crate) fn asked_model(args: &Value) -> Result<Option<String>, String> {
     if name.is_empty() {
         return Ok(None);
     }
-    if SPAWN_MODELS.contains(&name.as_str()) {
+    /* The allowed words are the provider's, not one list with two halves. A
+       `deepseek` card takes `flash` and `pro`; a Claude card takes its three
+       families; a caller who named neither may use any of the five, and a
+       provider model name then infers the provider in `do_spawn`. */
+    let allowed: &[&str] = match provider {
+        Some("deepseek") => &PROVIDER_MODELS,
+        Some(_) => &SPAWN_MODELS,
+        None => &ALL_MODELS,
+    };
+    if allowed.contains(&name.as_str()) {
         return Ok(Some(name));
     }
+    let what = match provider {
+        Some("deepseek") => "a deepseek card",
+        Some(_) => "a claude card",
+        None => "a card here",
+    };
     Err(format!(
-        "{raw:?} is not a model this wall can open a card on, so none was opened. It \
-         takes {}, and nothing else — an alias, a full id or a tier suffix is not one of \
-         them. Leave `model` out to open the card on whatever Claude Code is set up for \
-         here.",
-        SPAWN_MODELS.join(", ")
+        "{raw:?} is not a model {what} can open on, so none was opened. It takes {}, and \
+         nothing else — an alias, a full id or a tier suffix is not one of them. Leave `model` \
+         out to open the card on whatever is configured for it.",
+        allowed.join(", ")
     ))
 }
 
@@ -818,6 +882,11 @@ struct SpawnAsked {
     prompt: String,
     /// What to call it until it has named itself, or null.
     title: Option<String>,
+    /// Which provider it is opened on — one of [`SPAWN_PROVIDERS`], or null for
+    /// the usual one. A word rather than an account label: the wall writes the
+    /// `@` sentinel itself, and an agent naming one would be reaching into the
+    /// credential machinery. See [`asked_provider`].
+    provider: Option<String>,
     /// Which model family it is opened on — one of [`SPAWN_MODELS`], or null
     /// for none named. Validated here so the wall is handed a word it knows;
     /// what that word costs in effort and window is `presets.ts`'s table, and
@@ -968,29 +1037,53 @@ pub fn spawn_schema() -> Value {
                          words, so the user can tell your cards apart at a glance on the \
                          wall."
                 },
+                "provider": {
+                    "type": "string",
+                    "enum": SPAWN_PROVIDERS,
+                    "description":
+                        "Optional. Which service the card spends: `claude` (the subscription \
+                         this wall already manages, the default when omitted) or `deepseek` \
+                         (that service's own balance, billed per token).\n\n\
+                         **Name it when the work is cheap enough that the usual subscription \
+                         is the wrong money** — a fan-out of mechanical lanes, a long read, a \
+                         second opinion. The models are the provider's own: with `deepseek`, \
+                         `model` takes `flash` (everyday, cheapest) or `pro` (the hard end), \
+                         and the Claude family names are refused rather than mapped. Omitting \
+                         `provider` and naming `flash` or `pro` infers deepseek; naming \
+                         `haiku`, `sonnet` or `opus` infers claude.\n\n\
+                         A deepseek card cannot take an `account` — its money is not a Claude \
+                         subscription — and cannot be opened on another wall, whose key it \
+                         could not borrow. Its model cannot be changed afterwards, like any \
+                         other card's: the provider is fixed at birth."
+                },
                 "model": {
                     "type": "string",
-                    "enum": SPAWN_MODELS,
+                    "enum": ALL_MODELS,
                     "description":
                         "Optional. Which model the card runs on — and **this is the one \
                          knob on this tool that costs or saves real money**, so spend a \
                          moment on it rather than leaving it off out of habit. You are \
                          the thing that divided the job up, so you know which pieces are \
                          small.\n\n\
+                         On Claude (the default provider):\n\n\
                          - `haiku` — a lookup, a rename, a file to summarise, a mechanical \
                            edit you have already specified completely.\n\
                          - `sonnet` — ordinary work: a small feature, a fix with its test, \
                            a change across a few files. Where most cards belong.\n\
                          - `opus` — design, a migration, a bug that has already resisted \
                            one attempt, anything where being wrong is expensive.\n\n\
+                         On DeepSeek, name `provider: deepseek` and one of:\n\n\
+                         - `flash` — the everyday model: cheap, fast, 1M context. The \
+                           default when the provider is named and the model is not.\n\
+                         - `pro` — the hard end: dearer per token, for work where being \
+                           wrong costs more than the tokens.\n\n\
                          Each name brings a context window and a **default** thinking \
-                         effort chosen to go with it — `sonnet` at medium, `opus` at high \
-                         — so the name alone is a whole setup rather than a bare model. \
-                         Use `effort` to move the level off that default. Omit `model` and \
-                         the card opens on whatever Claude Code is configured for on this \
-                         machine, which is one setting doing duty for a one-line question \
-                         and a day-long refactor alike — it is never *wrong*, but it is a \
-                         guess where you have knowledge.\n\n\
+                         effort chosen to go with it — `sonnet` at medium, `opus` at high, \
+                         `pro` at high — so the name alone is a whole setup rather than a \
+                         bare model. Use `effort` to move the level off that default. Omit \
+                         `model` and the card opens on whatever is configured for the \
+                         provider you named, which is never *wrong* but is a guess where \
+                         you have knowledge.\n\n\
                          It cannot be changed cheaply afterwards: `/model` on a card that \
                          has already spent a context on its opening prompt is a new card \
                          in all but name, so the decision is now or not at all."
@@ -1971,10 +2064,34 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        reason a misnamed project is resolved early: an agent correcting a word is
        not an agent fanning out, and nothing should be written down about a card
        that was never opened. */
-    let model = match asked_model(args) {
+    let provider = match asked_provider(args) {
+        Ok(p) => p,
+        Err(why) => return why,
+    };
+    let model = match asked_model(args, provider.as_deref()) {
         Ok(m) => m,
         Err(why) => return why,
     };
+    /* A provider model name infers the provider: `flash` and `pro` exist on
+       DeepSeek and nowhere else, so a caller naming one without the other has
+       said one thing, not left a gap. */
+    let provider = provider.or_else(|| {
+        model
+            .as_deref()
+            .filter(|m| PROVIDER_MODELS.contains(m))
+            .map(|_| "deepseek".to_string())
+    });
+    /* A provider card has no Claude account, and an account named beside one is
+       a contradiction rather than a preference — the label would be stored and
+       then either ignored at spawn or (worse) routed through `usable_store`.
+       Refused before the store, as the model is. */
+    if provider.as_deref() == Some("deepseek")
+        && args.get("account").and_then(Value::as_str).is_some_and(|a| !a.trim().is_empty())
+    {
+        return "a deepseek card spends DeepSeek's balance, not a Claude account, so \
+                `account` cannot go with `provider: deepseek` — leave `account` out."
+            .into();
+    }
     /* Behind the model and for the same reason: an effort is a level *on* a
        family, so it cannot be judged until the family is known, and both are
        judged before anything is written down. */
@@ -2193,7 +2310,16 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        is asked at release (`admit_now`), where the caller is very likely still
        mid-turn *waiting on this card*. Weighed on the account it was asked
        onto, where it lands while that has room. */
-    let queued = crate::admit::queued(app, Some(&id), account.as_deref());
+    /* A provider card is not weighed against the wall's Claude windows — its
+       money is a balance, and `admit.rs` would otherwise queue it behind a
+       spent subscription. The row does not exist yet at this point (the wall
+       writes it when it opens the card), so the provider cannot be read back
+       off the store; the argument is the only honest source. */
+    let queued = if provider.as_deref() == Some("deepseek") {
+        None
+    } else {
+        crate::admit::queued(app, Some(&id), account.as_deref())
+    };
 
     let _ = app.emit(
         "spawn:asked",
@@ -2204,6 +2330,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
             worktree: worktree.clone(),
             prompt,
             title: title.clone(),
+            provider: provider.clone(),
             model: model.clone(),
             effort: effort.clone(),
             account: account.clone(),
@@ -2230,11 +2357,30 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        parent being told the knob exists in the one place it is about to matter.
        Sink `564bd55d`, where five cards ran a level nobody chose. */
     let on = match (&model, &effort) {
-        (Some(m), Some(e)) => format!(" It runs on {m}, at {e} effort as you asked."),
-        (Some(m), None) => format!(
-            " It runs on {m}, at whatever effort goes with that name — say `effort` to \
-             move it, which is worth doing for a lane you have specified completely."
+        (Some(m), Some(e)) => format!(
+            " It runs on {m}{}, at {e} effort as you asked.",
+            if provider.as_deref() == Some("deepseek") {
+                " on deepseek's balance"
+            } else {
+                ""
+            }
         ),
+        (Some(m), None) => format!(
+            " It runs on {m}{}, at whatever effort goes with that name — say `effort` to \
+             move it, which is worth doing for a lane you have specified completely.",
+            if provider.as_deref() == Some("deepseek") {
+                " on deepseek's balance"
+            } else {
+                ""
+            }
+        ),
+        /* A provider with no model named still has a model: `presetForSpawn`
+           opens it on the provider's default, so the receipt says which rather
+           than claiming the machine's setting. */
+        (None, _) if provider.as_deref() == Some("deepseek") => {
+            " You named no model, so it opens on the provider's default, billed per token."
+                .into()
+        }
         (None, _) => " You named no model, so it opens on whatever Claude Code is set up for \
                       on this machine."
             .into(),
@@ -2453,10 +2599,27 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         .and_then(Value::as_str)
         .map(|t| clip(t.trim(), MAX_TITLE))
         .filter(|t| !t.is_empty());
-    let model = match asked_model(args) {
+    let provider = match asked_provider(args) {
+        Ok(p) => p,
+        Err(why) => return Elsewhere::Now(why),
+    };
+    let model = match asked_model(args, provider.as_deref()) {
         Ok(m) => m,
         Err(why) => return Elsewhere::Now(why),
     };
+    /* A provider is a credential on *this* machine, and credentials never
+       travel (`creds.rs`). A card asked for on another wall would run there
+       against a key it may not have, so the choice is refused here rather than
+       discovered there at its first turn. */
+    if provider.as_deref() == Some("deepseek")
+        || model.as_deref().is_some_and(|m| PROVIDER_MODELS.contains(&m))
+    {
+        return Elsewhere::Now(format!(
+            "a provider card cannot be opened on another wall, so none was asked for — \
+             {host} would run it against a DeepSeek key this machine cannot lend it. Leave \
+             `provider` and its model names out, or open the card here."
+        ));
+    }
     let effort = match asked_effort(args, model.as_deref()) {
         Ok(e) => e,
         Err(why) => return Elsewhere::Now(why),
@@ -3419,21 +3582,56 @@ mod tests {
     }
 
     #[test]
-    fn the_three_names_are_the_ones_the_wall_resolves() {
+    fn the_names_are_the_ones_the_wall_resolves() {
         let e = spawn_schema()["inputSchema"]["properties"]["model"]["enum"].clone();
-        assert_eq!(e, json!(SPAWN_MODELS), "the schema offers what {SPAWN_MODELS:?} takes");
-        /* Cheapest first, because the order is the only thing in a list of
-           three that says they are a scale — `PRESETS`' own argument. */
+        assert_eq!(e, json!(ALL_MODELS), "the schema offers what {ALL_MODELS:?} takes");
+        /* Cheapest first within each provider, because the order is the only
+           thing in a list that says they are a scale — `PRESETS`' own
+           argument. */
         assert_eq!(SPAWN_MODELS, ["haiku", "sonnet", "opus"]);
+        assert_eq!(PROVIDER_MODELS, ["flash", "pro"]);
         for name in SPAWN_MODELS {
-            assert_eq!(asked_model(&json!({ "model": name })), Ok(Some(name.into())));
+            assert_eq!(asked_model(&json!({ "model": name }), None), Ok(Some(name.into())));
+            assert_eq!(
+                asked_model(&json!({ "model": name }), Some("claude")),
+                Ok(Some(name.into()))
+            );
+        }
+        for name in PROVIDER_MODELS {
+            assert_eq!(
+                asked_model(&json!({ "model": name }), Some("deepseek")),
+                Ok(Some(name.into()))
+            );
         }
         /* The same intention, spelled by a model that has just read a heading. */
-        assert_eq!(asked_model(&json!({ "model": " Sonnet " })), Ok(Some("sonnet".into())));
+        assert_eq!(asked_model(&json!({ "model": " Sonnet " }), None), Ok(Some("sonnet".into())));
         /* Absent and empty are both "nobody said", which is a real answer and
            not a failure — it is what every spawn did before this existed. */
-        assert_eq!(asked_model(&json!({})), Ok(None));
-        assert_eq!(asked_model(&json!({ "model": "  " })), Ok(None));
+        assert_eq!(asked_model(&json!({}), None), Ok(None));
+        assert_eq!(asked_model(&json!({ "model": "  " }), None), Ok(None));
+    }
+
+    /// A provider's model list is its own: `opus` on deepseek and `flash` on
+    /// claude are both refused, rather than mapped silently onto something the
+    /// caller did not ask for.
+    #[test]
+    fn a_model_is_only_offered_by_the_provider_that_has_it() {
+        let why = asked_model(&json!({ "model": "opus" }), Some("deepseek")).unwrap_err();
+        assert!(why.contains("flash"), "{why}");
+        assert!(why.contains("pro"), "{why}");
+        let why = asked_model(&json!({ "model": "flash" }), Some("claude")).unwrap_err();
+        assert!(why.contains("haiku"), "{why}");
+        /* And a provider name this wall does not know refuses with the list. */
+        let why = asked_provider(&json!({ "provider": "openai" })).unwrap_err();
+        assert!(why.contains("claude"), "{why}");
+        assert!(why.contains("deepseek"), "{why}");
+    }
+
+    #[test]
+    fn a_provider_is_known_by_its_own_two_words() {
+        assert_eq!(asked_provider(&json!({ "provider": " DeepSeek " })), Ok(Some("deepseek".into())));
+        assert_eq!(asked_provider(&json!({ "provider": "claude" })), Ok(Some("claude".into())));
+        assert_eq!(asked_provider(&json!({})), Ok(None));
     }
 
     /// An unknown model refuses rather than falling back, and says what would
@@ -3447,7 +3645,7 @@ mod tests {
     /// lesson, since an agent told only "no" tries a different phrasing.
     #[test]
     fn a_model_this_wall_cannot_open_is_refused_with_the_list() {
-        let why = asked_model(&json!({ "model": "opus[1m]" })).unwrap_err();
+        let why = asked_model(&json!({ "model": "opus[1m]" }), None).unwrap_err();
         /* The three, so the retry is the right one rather than another guess. */
         for name in SPAWN_MODELS {
             assert!(why.contains(name), "{why}");

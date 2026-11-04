@@ -40,7 +40,7 @@
 /** The services, as an id the wire uses. A union rather than a string so a
  *  typo in a component is a build error rather than a command that answers
  *  "no such integration" at runtime. */
-export type ServiceId = "azdo" | "asana" | "anthropic";
+export type ServiceId = "azdo" | "asana" | "anthropic" | "deepseek";
 
 export type Integration = {
   id: ServiceId;
@@ -132,6 +132,19 @@ export const INTEGRATIONS: Integration[] = [
     scope: null,
     sole: true,
     probe: "GET /v1/models",
+  },
+  {
+    id: "deepseek",
+    label: "deepseek",
+    target: "dev.skein.studio/deepseek-key",
+    credential: "api key",
+    why: "runs a card on deepseek's own balance — the model menu offers flash and pro",
+    /* The same shape as the Anthropic key: a key belongs to the account whose
+       balance it spends, and replacing one must never replace the other. */
+    mint: "platform.deepseek.com → api keys → create new api key",
+    scope: null,
+    sole: true,
+    probe: "GET /models",
   },
 ];
 

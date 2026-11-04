@@ -57,6 +57,10 @@ pub fn is_credits(label: Option<&str>) -> bool {
 /// parent's entrypoint, and the entrypoint is what decides which bucket the
 /// spend lands in.
 pub fn apply(app: &AppHandle, cmd: &mut Command) -> Result<(), String> {
+    /* A credits card must not inherit a provider's endpoint either — the same
+       inheritance hazard `withhold` closes below, and it would outrank the API
+       key the card is about to be given. */
+    crate::provider::withhold(cmd);
     let key = crate::creds::token(SERVICE)
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
@@ -81,6 +85,10 @@ pub fn apply(app: &AppHandle, cmd: &mut Command) -> Result<(), String> {
 /// store (above), so inheriting it is not harmless.
 pub fn withhold(cmd: &mut Command) {
     cmd.env_remove("ANTHROPIC_API_KEY");
+    /* And every variable a provider sets. A wall launched from a DeepSeek
+       card's shell is the case: its ordinary cards would otherwise spend the
+       provider's balance while being drawn on a subscription. */
+    crate::provider::withhold(cmd);
 }
 
 fn empty_store(app: &AppHandle) -> Result<PathBuf, String> {

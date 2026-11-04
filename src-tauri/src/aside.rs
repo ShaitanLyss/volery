@@ -282,10 +282,14 @@ fn ask(
         "--strict-mcp-config",
     ]);
 
-    /* The card's own subscription, and the same hard failure `spawn_now` gives
-       rather than a silent fall-through to whoever is signed in — an aside must
-       not quietly spend the account being held in reserve. */
-    if crate::credits::is_credits(account.as_deref()) {
+    /* The card's own funding, and the same hard failure `spawn_now` gives
+       rather than a silent fall-through to whoever is signed in — an aside
+       must not quietly spend the account being held in reserve. A provider
+       card asks beside itself on its provider: the aside is a fork of its
+       session, and the endpoint that session talks to is the card's own. */
+    if let Some(provider) = crate::provider::of(account.as_deref()) {
+        crate::provider::apply(app, &mut cmd, provider)?;
+    } else if crate::credits::is_credits(account.as_deref()) {
         /* A card on credits asks beside itself on credits too — the aside is a
            fork of its session, and its own account is the one it has. */
         crate::credits::apply(app, &mut cmd)?;

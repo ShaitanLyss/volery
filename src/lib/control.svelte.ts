@@ -28,6 +28,7 @@ import { pictureHeld } from "./InlinePicture.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { clock, type Conversation } from "./conversation.svelte";
+import { presetById, type Preset } from "./presets";
 import { waitLine } from "./waiting";
 import { SKIPPED, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
 import { noticeLine } from "./notice";
@@ -217,8 +218,13 @@ export type ControlHost = {
   waiting: () => Conversation[];
   clashing: () => string[];
   /** Resolves to the card it opened, which this only ever awaits — the op finds
-   *  the new conversation by diffing ids, so it needs nothing from the value. */
-  openIn: (dir: string, worktree?: string) => Promise<unknown>;
+   *  the new conversation by diffing ids, so it needs nothing from the value.
+   *
+   *  `preset` is a preset id, so a driven wall can open the card a menu row
+   *  would — including a provider's row (`ds-flash`, `ds-pro`). It is the same
+   *  three states `Skein.open` takes: omitted is the wall's default, `""` is
+   *  *as claude code is set up*, an id is that preset. */
+  openIn: (dir: string, worktree?: string, preset?: Preset | null) => Promise<unknown>;
   /** The same, for a card with no project. Separate rather than a flag on
    *  `openIn`, because it takes no directory: where a chat card stands is
    *  Skein's business and nothing a caller gets to choose. */
@@ -1741,11 +1747,27 @@ export class Control {
       open: async (op) => {
         const dir = String(op.dir ?? op.cwd ?? "");
         if (!dir) throw new Error("open needs a dir");
+        /* `preset` is how a driven wall picks a model, and therefore a provider:
+           `ds-flash` and `ds-pro` are rows this menu already has. An unknown id
+           throws rather than opening on the default, the same refusal
+           `#openIn` gives a provider it does not know. */
+        let preset: Preset | null | undefined;
+        if (op.preset !== undefined) {
+          /* `null` is a driver's JSON spelling of *as claude code is set up*,
+             the same answer as `""`; `String(null)` would be `"null"` and throw
+             a refusal for a preset nobody named. */
+          const id = op.preset === null ? "" : String(op.preset);
+          if (id === "") preset = null;
+          else {
+            preset = presetById(id);
+            if (!preset) throw new Error(`no preset called ${JSON.stringify(id)}`);
+          }
+        }
         const before = new Set(h.skein.convs.map((c) => c.id));
-        await h.openIn(dir, op.worktree ? String(op.worktree) : undefined);
+        await h.openIn(dir, op.worktree ? String(op.worktree) : undefined, preset);
         await settle();
         const fresh = h.skein.convs.find((c) => !before.has(c.id));
-        return { id: fresh?.id ?? null, fault: h.skein.fault };
+        return { id: fresh?.id ?? null, provider: fresh?.accountLabel ?? null, fault: h.skein.fault };
       },
 
       /** Open a card with no project — the ground menu's own arm.

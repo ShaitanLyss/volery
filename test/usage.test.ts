@@ -9,9 +9,12 @@ import {
   costStep,
   count,
   dayStart,
+  deepseekPeak,
   leaders,
   left,
   money,
+  priceOf,
+  rateAt,
   rateFor,
   readings,
   share,
@@ -107,6 +110,38 @@ describe("what a token costs", () => {
   test("a model matching no tier at all is refused rather than guessed", () => {
     expect(rateFor("gpt-4")).toBeNull();
     expect(rateFor("")).toBeNull();
+  });
+
+  test("a provider's rate is the peak one, and the clock halves it", () => {
+    /* Read 2026-11-04 off DeepSeek's pricing page: two models, each with a peak
+       and an off-peak rate, and peak is 01:00-04:00 and 06:00-10:00 UTC on
+       weekdays. `rateFor` has no clock to go on, so it answers the peak one —
+       the conservative direction for a figure that must never understate. */
+    const peak = rateFor("deepseek-v4-pro")!;
+    expect(peak.input).toBe(1.32);
+    expect(peak.output).toBe(3.96);
+    /* Wednesday 02:00 UTC is peak; the same hour on Saturday is not. */
+    const wedPeak = Date.UTC(2026, 10, 4, 2, 0, 0);
+    const satPeak = Date.UTC(2026, 10, 7, 2, 0, 0);
+    expect(deepseekPeak(wedPeak)).toBe(true);
+    expect(deepseekPeak(satPeak)).toBe(false);
+    expect(rateAt("deepseek-v4-pro", wedPeak)!.input).toBe(1.32);
+    expect(rateAt("deepseek-v4-pro", satPeak)!.input).toBe(0.66);
+    /* A Claude model is the same figure whenever it is asked. */
+    expect(rateAt("claude-opus-5", wedPeak)).toEqual(rateFor("claude-opus-5"));
+  });
+
+  test("a provider turn can be priced without a slice", () => {
+    /* What `Conversation` uses when the CLI reports `total_cost_usd: 0` for a
+       model it has no row for — a DeepSeek card must not read `$0.00`. */
+    const at = Date.UTC(2026, 10, 4, 2, 0, 0); // Wednesday, peak
+    const usd = priceOf(
+      "deepseek-flash",
+      { in: 1_000_000, out: 1_000_000, cacheRead: 0, cacheWrite: 0 },
+      at,
+    )!;
+    expect(usd).toBeCloseTo(1.5, 10); // 0.30 + 1.20
+    expect(priceOf("gpt-4", { in: 1, out: 1, cacheRead: 0, cacheWrite: 0 }, at)).toBeNull();
   });
 });
 

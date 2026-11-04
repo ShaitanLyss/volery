@@ -15,7 +15,7 @@
   import { onMount } from "svelte";
   import type { ChatRow } from "./chatview";
   import { entriesOf, entryKey, familyOf, glyphOf, rank, standingOf, type Entry, type Lead, type Target } from "./search";
-  import type { Verb as ChordVerb } from "./leader";
+  import { LAPSE_MS, shortcut, type Verb as ChordVerb } from "./leader";
   import Icon from "./Icon.svelte";
 
   let {
@@ -50,6 +50,11 @@
   let lit = $state(0);
   let input: HTMLInputElement | undefined = $state();
   let list: HTMLUListElement | undefined = $state();
+  /** When the last key that could extend a chord landed. The palette's own
+   *  clock, measured against the same `LAPSE_MS` the wall's leader uses — a
+   *  fast `i a` is the chord, a slow one is a search for something beginning
+   *  with those letters. */
+  let lastKeyAt = Date.now();
 
   const all = $derived(entriesOf({ rows, projects, chords, commands }));
   const shown = $derived(rank(all, rows, query, 60, { lead, recent }));
@@ -109,6 +114,28 @@
       e.stopPropagation();
       take(shown[lit]);
     } else if (e.key === " " || e.key.length === 1) {
+      /* A chord typed fast is the chord, not a search for a tool whose name
+         starts with it. The rule is the wall's own `shortcut` (over
+         `leader.ts::chord` and `LAPSE_MS`), so `<space>ia` here fires in the
+         same instant it does on the wall; type slower and the same letters are
+         a query, with Enter taking the row as before. */
+      if (lead === "actions" && e.key !== " " && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const now = Date.now();
+        const since = now - lastKeyAt;
+        lastKeyAt = now;
+        if (since <= LAPSE_MS && shortcut(query, e.key, since) !== null) {
+          const next = query + e.key.toLowerCase();
+          const hit = all.find(
+            (x): x is Extract<Entry, { kind: "chord" }> => x.kind === "chord" && x.keys === next,
+          );
+          if (hit && !standingOf(hit, target)?.refused) {
+            e.preventDefault();
+            e.stopPropagation();
+            take(hit);
+            return;
+          }
+        }
+      }
       /* A query is typed, never the leader or the window's keys. */
       e.stopPropagation();
     }

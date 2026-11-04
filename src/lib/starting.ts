@@ -7,6 +7,7 @@
  */
 
 import { PRESETS, presetById, type Preset } from "./presets";
+import { PROVIDER_PRESETS, PROVIDERS, providerCliModel } from "./providers";
 import { effortForModel } from "./commands";
 import { wallRefusal, type Opener } from "./shadow";
 
@@ -239,6 +240,11 @@ export function placeAtHome(current: Place, stored: StoredPlace | null, local: r
 export function modelSaid(model: string | null | undefined): string {
   if (!model) return "";
   const bare = model.replace(/\[[^\]]*\]$/, "").toLowerCase();
+  /* A provider's own ids are words people already use, so they get their own
+     short names rather than falling through to the bare id — a chip reading
+     `deepseek-v4-pro` is wider than the row it sits on and says less. */
+  if (bare.startsWith("deepseek-v4-pro")) return "deepseek pro";
+  if (bare.startsWith("deepseek-flash")) return "deepseek flash";
   const m = bare.match(/^(?:claude-)?(opus|sonnet|haiku|fable|opusplan)(?:-(\d+(?:-\d{1,2})?))?(?:-\d{8})?$/);
   if (!m) return bare;
   return m[2] ? `${m[1]} ${m[2].replace("-", ".")}` : m[1]!;
@@ -264,11 +270,24 @@ export function presetOf(choice: PresetChoice, wallDefault: Preset | undefined):
   return presetById(choice) ?? wallDefault;
 }
 
-/** The menu's rows: the five presets cheapest first, then *as claude code is
- *  set up* — the same six the wall's `+` offers, so the two never disagree. */
-export function presetRows(): { id: string; label: string; chip: string }[] {
+/** The menu's rows: the five presets cheapest first, a provider's models where
+ *  one is configured, then *as claude code is set up* — the same list the
+ *  wall's `+` offers, so the two never disagree.
+ *
+ *  A provider's rows are **how a provider is chosen**: there is no second
+ *  switch, because a provider and a model are one decision — `deepseek pro`
+ *  names both, and a separate provider chip would let you choose a provider and
+ *  no model, which is the one combination with no meaning. The first provider
+ *  row carries a separator so the two families read as two groups. */
+export function presetRows(): { id: string; label: string; chip: string; sep?: boolean }[] {
   return [
     ...PRESETS.map((p) => ({ id: p.id, label: p.label, chip: chipSaid(p.model, p.effort) })),
+    ...PROVIDER_PRESETS.map((p, i) => ({
+      id: p.id,
+      label: p.label,
+      chip: chipSaid(p.model, p.effort),
+      sep: i === 0,
+    })),
     { id: "", label: "as claude code is set up", chip: "claude code's own" },
   ];
 }
@@ -279,8 +298,12 @@ export function presetRows(): { id: string; label: string; chip: string }[] {
  *  `/model` alone — sending it again drew the same line and its answer twice —
  *  and one whose level differs sends its own after, so it lands last rather
  *  than under the automatic one. Haiku has no effort to send. */
-export function switchLines(p: Pick<Preset, "model" | "effort">): string[] {
-  const model = `/model ${p.model}`;
+export function switchLines(p: Pick<Preset, "model" | "effort" | "provider">): string[] {
+  /* A provider card is told a Claude alias, not the provider's model name:
+     the CLI validates `/model` locally and DeepSeek maps the alias server-side.
+     The card keeps drawing the provider's name through `#adoptModel`. */
+  const provider = p.provider ? PROVIDERS.find((x) => x.id === p.provider) : undefined;
+  const model = `/model ${provider ? providerCliModel(provider, p.model) : p.model}`;
   if (!p.effort || effortForModel(model) === p.effort) return [model];
   return [model, `/effort ${p.effort}`];
 }

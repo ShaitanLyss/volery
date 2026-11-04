@@ -150,6 +150,8 @@ export function verbOf(cmd: Command, arg: string): { verb: Verb; args: Record<st
   switch (verb) {
     case "account":
       return { verb, args: { account: value } };
+    case "provider":
+      return { verb, args: { provider: value } };
     case "regroup":
       return { verb, args: { territory: value } };
     case "hand":

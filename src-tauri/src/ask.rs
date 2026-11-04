@@ -2213,6 +2213,11 @@ pub(crate) fn roster() -> Vec<Value> {
              work held because every account is off",
         ),
         found_by(
+            crate::provider::set_provider_schema(),
+            "move this conversation to deepseek, go back to claude code, change provider, \
+             switch service, outgrown the balance, spend the other account",
+        ),
+        found_by(
             reads_only(crate::limits::accounts_schema()),
             "which claude accounts or subscriptions are on this wall, list account \
              labels, which account am I on, which one has room, pick an account \
@@ -3838,6 +3843,12 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                    reaches every wall (`accounts.rs`). */
                                 .or_else(|| {
                                     crate::accounts::writes(&app, &conversation_id, &tool, &args)
+                                })
+                                /* `set_provider`: the wall is told, and moves this
+                                   conversation after the turn's result — the
+                                   process cannot be ended under its own tool call. */
+                                .or_else(|| {
+                                    crate::provider::writes(&app, &conversation_id, &tool, &args)
                                 })
                         {
                             match writing {

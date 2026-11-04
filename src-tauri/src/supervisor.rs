@@ -1227,6 +1227,10 @@ fn spawn_now(
        `store::setup_of`. */
     let (model, effort) =
         crate::store::setup_of(&app.state::<crate::store::Store>(), &id);
+    /* Which provider this card spends, read from the label the same way the
+       environment below reads it. Kept in one local so the argv mapping and the
+       env block cannot disagree about it. */
+    let provider = crate::provider::of(account_label.as_deref());
 
     /* And so is the tree it works in, for the third time and the same reason.
        This one used to be a parameter, and it is the one that proves the rule:
@@ -1563,18 +1567,32 @@ fn spawn_now(
        silent fall-through to the signed-in account: falling through would spend
        the wrong subscription — quietly, and precisely the one being held in
        reserve. */
-    /* Credits first: `@credits` is not an account and names no store, so it is
-       told apart before anything treats it as one. Every other card loses any
-       API key it would inherit, since a key outranks the store it is put on —
-       see `credits.rs`. */
-    if crate::credits::is_credits(account_label.as_deref()) {
+    /* A provider first, then credits, then an account. All three are answers to
+       "whose money does this card spend", and the order is the one that cannot
+       collide: `@credits` and `@deepseek` both name no store, and
+       `accounts::is_label` refuses `@`, so a provider label reaching the
+       account arm below would be refused as an account that is not signed in —
+       true, and not the question.
+
+       `credits.rs`'s argument for telling `@credits` apart arrives one rung
+       out: a provider does not merely set a key, it sets a different endpoint
+       and the model names that belong to it. See `provider.rs`. */
+    if let Some(provider) = provider {
+        crate::provider::apply(&app, &mut cmd, provider)?;
+    } else if crate::credits::is_credits(account_label.as_deref()) {
         crate::credits::apply(&app, &mut cmd)?;
     } else {
+        /* Every ordinary card loses any API key it would inherit: a key
+           outranks the store it is put on — see `credits.rs`. */
         crate::credits::withhold(&mut cmd);
     }
     if let Some(label) = account_label
         .as_deref()
-        .filter(|s| !s.is_empty() && !crate::credits::is_credits(Some(s)))
+        .filter(|s| {
+            !s.is_empty()
+                && !crate::credits::is_credits(Some(s))
+                && !crate::provider::is_provider(Some(s))
+        })
     {
         /* Not signed in, or holding a sign-in retired as a copy of another
            machine's — whose use would log that machine out (`accounts.rs`,
@@ -1607,7 +1625,15 @@ fn spawn_now(
         cmd.args(["--session-id", session]);
     }
     if let Some(m) = model.as_deref().filter(|m| !m.trim().is_empty()) {
-        cmd.args(["--model", m]);
+        /* A provider card stores and draws the provider's own model name, but
+           the child is given a Claude alias: the CLI refuses a model id it does
+           not recognise before any request is made, and DeepSeek maps the
+           alias to the real model server-side. See `provider::cli_model`. */
+        let wire = match provider {
+            Some(p) => crate::provider::cli_model(p, Some(m)),
+            None => m.to_string(),
+        };
+        cmd.args(["--model", &wire]);
     }
     /* `--effort <level>`, the five the CLI names. Passed on every spawn rather
        than only the first: `/effort` says "this session only", so a resumed
@@ -2318,9 +2344,17 @@ pub fn turn_open(app: &AppHandle, id: &str) -> Option<bool> {
 pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<(), String> {
     /* A card renewing itself takes nothing into the session it is leaving:
        whatever arrives is written to its inbox, behind the note its new session
-       opens on, and drained when that session spawns (`renew.rs`). */
+       opens on, and drained when that session spawns (`renew.rs`). Ahead of the
+       spending cap because a held prompt is not a sent one — the cap is asked
+       again when the inbox is drained. */
     if crate::renew::holds(app, id) {
         return crate::renew::hold(app, id, content);
+    }
+    /* The spending cap, on the one door every prompt goes through — typed,
+       spawned, woken by a subscription or written by a relay. A cap enforced in
+       the composer would be a cap a wake walks around. See `provider.rs`. */
+    if let Some(why) = crate::provider::budget_refusal(app, id) {
+        return Err(why);
     }
     {
         let sup = app.state::<Supervisor>();

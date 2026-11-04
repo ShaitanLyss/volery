@@ -20,6 +20,7 @@
  */
 
 import { isEffort, type Effort } from "./commands";
+import { PROVIDER_PRESETS, type ProviderId } from "./providers";
 
 export type Preset = {
   /** What a menu item and a stored row call it. Stable; the label is not. */
@@ -50,6 +51,17 @@ export type Preset = {
    *  whose whole job is to show what you are buying. So the haiku preset
    *  claims no level rather than a level that does nothing. */
   effort?: Effort;
+  /** Whether this model has no effort level at all, as against one whose level
+   *  nobody has said. Haiku is the only one: the parameter is dropped silently
+   *  there, which is worse than a refusal for a menu whose job is showing what
+   *  you are buying. A provider's models all take one. */
+  effortless?: boolean;
+  /** Which provider this row opens a card on. Absent is Claude Code's own
+   *  subscription, which is every row above it; a provider row names the
+   *  service whose balance it spends. The provider is a fact about the preset
+   *  rather than a second menu, so choosing `deepseek pro` chooses both at
+   *  once. */
+  provider?: ProviderId;
 };
 
 /** The five, cheapest first.
@@ -72,6 +84,7 @@ export const PRESETS: Preset[] = [
     label: "a quick question",
     note: "haiku",
     model: "haiku",
+    effortless: true,
     /* A name, a flag, what a file does. The cheapest card the wall can open,
        and the one the default setting overpays for most often. No effort: the
        parameter does nothing on this model — see the note on `effort`. */
@@ -153,7 +166,7 @@ export const PRESETS: Preset[] = [
 ];
 
 export function presetById(id: string | undefined): Preset | undefined {
-  return PRESETS.find((p) => p.id === id);
+  return PRESETS.find((p) => p.id === id) ?? PROVIDER_PRESETS.find((p) => p.id === id);
 }
 
 /** What the plain `+` opens a card as when nobody has ever said.
@@ -206,7 +219,7 @@ export function defaultPresetFor(stored: string | null | undefined): Preset | un
  *  Built here rather than in `menu.ts` for the reason the widget catalogue is:
  *  that file's business is what a right-click offers, not what a preset *is*. */
 export function presetPicks(): { id: string; label: string; note: string }[] {
-  return PRESETS.map((p) => ({ id: p.id, label: p.label, note: p.note }));
+  return [...PRESETS, ...PROVIDER_PRESETS].map((p) => ({ id: p.id, label: p.label, note: p.note }));
 }
 
 /* ── the three names an agent may spawn a card on ───────────────────────────
@@ -323,21 +336,50 @@ const SPAWN_PRESET: Record<SpawnModel, string> = {
 export function presetForSpawn(
   asked: string | null | undefined,
   effort?: string | null,
+  /** Which provider the caller named, if any. A provider's model names are its
+   *  own (`flash`, `pro`), so they are mapped here rather than through
+   *  `SPAWN_PRESET`, which is Claude's three families. Naming `flash` or `pro`
+   *  without a provider infers DeepSeek: the words mean nothing on Claude and
+   *  the alternative is refusing a request whose meaning is plain. */
+  provider?: string | null,
 ): Preset | undefined {
   const name = asked?.trim().toLowerCase();
+  const named = provider?.trim().toLowerCase() || null;
+  const providerish = named ?? (name === "flash" || name === "pro" || name?.startsWith("deepseek-") ? "deepseek" : null);
+  if (providerish === "deepseek") {
+    const base = presetById(name ? PROVIDER_SPAWN[name] : "ds-flash");
+    if (!base) return undefined;
+    return withEffort(base, effort);
+  }
   if (!name) return undefined;
   const id = SPAWN_PRESET[name as SpawnModel];
   const base = id ? presetById(id) : undefined;
   if (!base) return undefined;
+  return withEffort(base, effort);
+}
+
+/** The pair, with the caller's level over the row's where the model takes one.
+ *
+ *  `undefined` effort, the row's own level, or a model with no effort at all
+ *  gives the row back unchanged. Haiku's is the case that matters: the CLI drops
+ *  `--effort` silently there, so a synthesized row would *claim* a level that
+ *  did nothing. `do_spawn` refuses that pairing before it gets here; this is the
+ *  second half of one answer. */
+function withEffort(base: Preset, effort?: string | null): Preset {
   const level = effort?.trim().toLowerCase();
-  /* Nothing named, the row's own level, or a level on a model that has none:
-     the row, unchanged. The third of those is the one that matters — haiku
-     takes no `--effort` (see `Preset.effort`), `do_spawn` refuses the pairing
-     before it gets here, and a build where that gate went missing must still
-     not produce a card *claiming* a level the CLI silently dropped. */
-  if (!level || !isEffort(level) || level === base.effort || !base.effort) return base;
+  if (!level || !isEffort(level) || level === base.effort || base.effortless) return base;
   return { ...base, id: `${base.id}·${level}`, note: `${base.model} · ${level}`, effort: level };
 }
+
+/** A provider's model name as the preset that opens it. Its own table because
+ *  the names are the provider's (`flash`, `pro`), not Claude's families, and
+ *  mixing the two would let `opus` open a DeepSeek card by accident. */
+const PROVIDER_SPAWN: Record<string, string> = {
+  flash: "ds-flash",
+  pro: "ds-pro",
+  "deepseek-flash": "ds-flash",
+  "deepseek-v4-pro": "ds-pro",
+};
 
 /** What a preset row becomes on the wire to another wall: one of `spawn`'s
  *  three family names and a level, or nulls for *as claude code is set up*.
@@ -353,10 +395,22 @@ export function presetForSpawn(
  *  wall would refuse the pair otherwise, and a card on the right model at its
  *  own level beats no card. */
 export function spawnPairOf(
-  preset: Pick<Preset, "model" | "effort"> | null | undefined,
-): { model: string | null; effort: string | null } {
+  preset: Pick<Preset, "model" | "effort" | "provider"> | null | undefined,
+): { model: string | null; effort: string | null; provider: ProviderId | null } {
+  /* A provider's key lives on the wall that runs the card and credentials never
+     travel, so a provider preset is not degradable to a pair — it is a refusal
+     the caller has to say out loud. Returning the provider is what lets
+     `openThere` do that instead of opening an ordinary Claude card on the far
+     wall (which is what a `null` pair would have meant). */
+  if (preset?.provider) return { model: null, effort: null, provider: preset.provider };
   const family = preset?.model.replace(/\[.*\]$/, "").trim().toLowerCase();
-  if (!family || !(SPAWN_MODELS as readonly string[]).includes(family)) return { model: null, effort: null };
+  if (!family || !(SPAWN_MODELS as readonly string[]).includes(family)) {
+    return { model: null, effort: null, provider: null };
+  }
   const base = presetById(SPAWN_PRESET[family as SpawnModel]);
-  return { model: family, effort: base?.effort && preset?.effort ? preset.effort : null };
+  return {
+    model: family,
+    effort: base?.effort && preset?.effort ? preset.effort : null,
+    provider: null,
+  };
 }

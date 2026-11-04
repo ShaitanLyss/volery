@@ -78,7 +78,8 @@ pub fn person_request(
         return Err(Refusal::NotAccepting.reason(host));
     }
     let setup = json!({ "model": model, "effort": effort });
-    let model = crate::spawn::asked_model(&setup)?;
+    /* Claude only — a provider's key lives on the wall that runs the card. */
+    let model = crate::spawn::asked_model(&setup, Some("claude"))?;
     let effort = crate::spawn::asked_effort(&setup, model.as_deref())?;
     let territory = territory_named(&facts.territories, project).ok_or_else(|| {
         let has = if facts.territories.is_empty() {

@@ -328,6 +328,16 @@ pub fn queued(app: &AppHandle, card: Option<&str>, prefer: Option<&str>) -> Opti
 /// `queued`, with the landing handed over rather than looked up (`verdict`'s
 /// `given`).
 fn queued_on(app: &AppHandle, card: Option<&str>, given: Option<Facet>, prefer: Option<&str>) -> Option<Queued> {
+    /* A provider card is never queued. The `held` this file weighs is the
+       wall's Claude windows — every account spent for the next hour — and a
+       card spending a per-token balance is not waiting behind any of them. Left
+       in, a DeepSeek card would refuse to start on a wall whose Claude accounts
+       are all spent, which is the one moment somebody might deliberately reach
+       for the other provider. `prefer` is read as well as the row because a
+       spawn can ask before its row exists. See `provider.rs`. */
+    if prefer.is_some_and(|p| crate::provider::is_provider(Some(p))) || provider_card(app, card) {
+        return None;
+    }
     let (_, _, n) = heard(app)?;
     let n = n?;
     let mid = app
@@ -355,6 +365,19 @@ fn queued_on(app: &AppHandle, card: Option<&str>, given: Option<Facet>, prefer: 
         |label| labels.iter().filter(|l| l.as_str() == label).count(),
         crate::store::now(),
     )
+}
+
+/// Whether this card's row says it spends a provider's balance rather than a
+/// Claude one. `false` for a card with no row yet, which is a spawn that has
+/// not been written and therefore cannot be a provider card in this build.
+fn provider_card(app: &AppHandle, card: Option<&str>) -> bool {
+    let Some(card) = card else { return false };
+    app.try_state::<crate::store::Store>()
+        .and_then(|store| {
+            let conn = store.0.lock().ok()?;
+            crate::store::account_of(&conn, card)
+        })
+        .is_some_and(|label| crate::provider::is_provider(Some(&label)))
 }
 
 /// Whether a card is set to ignore your caps (`conversation.bypass_caps`).
@@ -403,6 +426,12 @@ pub fn held_at(ever: bool, born: i64, noted: Option<&Noted>, bypass: bool, now: 
 /// Whether the wall would hold a turn written into `card` now — its bypass
 /// asked of the store. For `serve_due` and `sweep`, which hold per card.
 pub fn held_for(app: &AppHandle, card: &str) -> Option<Option<i64>> {
+    /* The same exemption as `queued_on`: a provider card's wake is not waiting
+       on a Claude window it does not spend. Without this a card on DeepSeek
+       would sleep until the next five-hour reset along with everything else. */
+    if provider_card(app, Some(card)) {
+        return None;
+    }
     let (ever, born, n) = heard(app)?;
     let bypass = app
         .try_state::<crate::store::Store>()

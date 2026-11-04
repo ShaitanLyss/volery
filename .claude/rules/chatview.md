@@ -214,10 +214,18 @@ the sidebar is the other half of the same news.
 the last message on screen for two seconds. It went on 2026-10-21; see *A rest waits on you
 until you say so* at the end of this file.
 
-**A queued message says so.** A prompt sent mid-turn is `awaited` until the CLI takes it up
-(CLAUDE.md, *Settling a line is not claiming it*), so the bubble reads *queued — it goes when
-this turn finishes*, with *send now* as `do("stop")` and nothing else: the CLI does not lose a
-queued prompt on an interrupt, and stopping then sending would deliver it twice.
+**A queued message says so, and is this wall's to change.** A prompt sent
+mid-turn never reaches the CLI's stdin: it joins the card's held queue with
+`waiting: "turn"` (`holding.ts`), the same queue an allowance hold uses, so the
+bubble reads *queued — it goes when this turn finishes* with *send now*,
+*edit* and *delete*. **Send now is an interrupt and nothing else**
+(`do("stop", { keepQueue: true })`): the words never left this wall, so the
+aborted `result` is followed by the queue draining instead of a prompt lost
+with it. Editing rewrites the queue and the store (`Skein.editQueued`);
+deleting closes the line and drops it (`cancelQueued`). Only the message at the
+head of the queue offers *send now* — the queue never reorders what you wrote.
+The CLI's own queue is still used by a prompt a composing path wrote straight
+to stdin, and for that line the old stop-only receipt remains.
 
 **A line keeps when it happened.** `Line.at` and `ToolResult.at` are stamped live and read off
 each session record's `timestamp` in `history.ts`. `transcript.ts::runSummary` folds a run by

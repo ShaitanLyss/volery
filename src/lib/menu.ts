@@ -57,6 +57,11 @@ export type MenuTarget = {
    *  from somewhere else: with one account there is nothing to choose, and a
    *  row that opens a list of one is a gesture that leads nowhere. */
   accountPicks?: Pick[];
+  /** The services this conversation could run on, one marked as the one it is
+   *  on: claude code and any provider whose key this wall holds. Offered as a
+   *  submenu for the account list's reason — the names are a family, and the
+   *  row that means "where its money comes from" is one question. */
+  providerPicks?: Pick[];
   /* card / image / widget / region: already stuck to the glass, so the item is
      the way back onto the wall rather than the way off it. One item with two
      labels, the shape `pinned` and `aside` already have — it is one state with
@@ -480,6 +485,16 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            (current)" is a sentence where a tick is a glance — and the mark is
            what makes the list a *choice* rather than a list of four things it
            is not clear you are already doing one of. */
+        /* The service above the subscription: a provider is not an account, and
+           the two questions read in that order — which balance, then which
+           subscription on it. A submenu for the account list's reason. */
+        has("provider") && (t.providerPicks?.length ?? 0) > 1
+          ? more(
+              "provider",
+              "run it on…",
+              t.providerPicks!.map((p) => chosen(`provider:${p.id}`, p.label, p.on)),
+            )
+          : null,
         has("account") && (t.accountPicks?.length ?? 0) > 1
           ? more(
               "account",

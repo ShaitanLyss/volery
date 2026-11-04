@@ -77,6 +77,7 @@
   import { casts } from "./cast.svelte";
   import ScreenSheet from "./ScreenSheet.svelte";
   import { onCredits } from "./credits";
+  import { providerName } from "./providers";
 
   let {
     skein,
@@ -745,9 +746,15 @@
     }
     return ledger.limits?.windows ?? null;
   });
-  const account = $derived(
-    footOf(label, windows, label ? null : (ledger.limits?.plan ?? null), starter.ready === "signed-out"),
-  );
+  const account = $derived.by(() => {
+    const provider = providerName(card?.face.accountLabel ?? null);
+    if (provider) return { name: provider, line: "billed per token" };
+    return footOf(label, windows, label ? null : (ledger.limits?.plan ?? null), starter.ready === "signed-out");
+  });
+  /* A provider has no allowance windows, so the foot's popover would open on
+     "no reading of the allowance yet" and a *manage accounts* button that
+     cannot help it. The line itself already says what it spends. */
+  const providerCard = $derived(providerName(card?.face.accountLabel ?? null) !== null);
   /* This machine's own reading is the ledger's, asked for only while chat view
      is up and no account is managed — the waterfall polls its own, and Rust
      floors both (`limits.rs`). */
@@ -871,7 +878,7 @@
         {piles}
         pileOn={pile?.kind ?? null}
         onpile={(k) => openPile(k)}
-        onaccount={() => (pop = !pop)}
+        onaccount={providerCard ? undefined : () => (pop = !pop)}
       />
     </div>
   {:else if sidebar && !narrow}
@@ -891,7 +898,7 @@
         {piles}
         pileOn={pile?.kind ?? null}
         onpile={(k) => openPile(k)}
-      onaccount={() => (pop = !pop)}
+        onaccount={providerCard ? undefined : () => (pop = !pop)}
     />
   {/if}
 
@@ -1070,7 +1077,7 @@
              bursts from (`boostview.svelte.ts`), since there is no card. -->
         <div class="foot" data-boost-anchor={card.id}>
           <div class="above"><PlanStrip {timeline} /></div>
-          <Budget {card} {windows} onaccounts={() => onaccount?.()} onusage={() => (pop = true)} />
+          <Budget {card} {windows} onaccounts={() => onaccount?.()} onusage={() => { if (!providerCard) pop = true; }} />
           <MessageBox {field} {bang} {composer} {card} {starter} />
         </div>
       {/if}
@@ -1090,7 +1097,7 @@
     {/if}
   </main>
 
-  {#if pop}
+  {#if pop && !providerCard}
     <AccountPop
       name={account.name}
       {windows}

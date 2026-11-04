@@ -95,6 +95,7 @@ import { type Attachment, type Block, type Carried, type Reach, type Turn } from
 import { attachedIn, forgetAttachments, turnFrom } from "./attach.svelte";
 import {
   NO_ACCOUNT_HELD,
+  QUEUED_BEHIND,
   QUEUED_LINE,
   admit,
   isQueuedSpawn,
@@ -118,6 +119,7 @@ import { Timelines } from "./timelines.svelte";
 import { cliCommand, effortForModel, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
+import { onProvider, providerName, providerOf, providerModel, PROVIDERS } from "./providers";
 import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
 import { RENEW_AFTER_MS, RENEW_ASK, renewBlocker, renewDeclined } from "./renewing";
 import { handleOf } from "./relay";
@@ -891,6 +893,28 @@ export class Skein {
     this.#nudge(c);
     this.#drain(c, event?.type === "result");
     this.#settleRepair(c);
+    /* A provider move an agent asked for waits for the turn to finish — the
+       process cannot be ended under its own tool call. */
+    if (event?.type === "result") {
+      const wanted = this.#providerMoves.get(c.id);
+      if (wanted) {
+        this.#providerMoves.delete(c.id);
+        void this.setProvider(c, wanted);
+      }
+    }
+  }
+
+  /** A card's `set_provider` call, held until its turn ends. */
+  #providerMoves = new Map<string, string>();
+
+  #moveAsked(id: string, provider: string) {
+    const c = this.#byId.get(id);
+    if (!c) return;
+    if (c.working) {
+      this.#providerMoves.set(id, provider);
+      return;
+    }
+    void this.setProvider(c, provider);
   }
 
   #wire() {
@@ -902,6 +926,14 @@ export class Skein {
        would go on choosing an account switched off on the other laptop until
        somebody pressed something here; so it re-reads, and the panel with it. */
     keep(listen("accounts:changed", () => void waterfall.refresh().then(() => this.#noteAllowance())));
+
+    /* A card's `set_provider` tool has asked for the move; this is the wall
+       that can make it (`provider::writes`). */
+    keep(
+      listen<{ id: string; provider: string }>("provider:move", (e) =>
+        this.#moveAsked(e.payload.id, e.payload.provider),
+      ),
+    );
 
     /* Rust asking whether this page is keeping up (`watchdog.rs`). It rides
        the queue every card's events ride, so answering at once is the whole of
@@ -1159,6 +1191,9 @@ export class Skein {
         worktree: string | null;
         prompt: string;
         title: string | null;
+        /** `claude`, `deepseek`, or null for the usual one — `asked_provider`'s
+         *  two words, validated in `do_spawn` before a card is minted. */
+        provider: string | null;
         /** One of `haiku`, `sonnet`, `opus`, or null for none named — see
          *  `presetForSpawn`. Validated in `do_spawn`, which refuses anything
          *  else before a card is minted, so this arrives as one of the three or
@@ -1180,7 +1215,7 @@ export class Skein {
       }>(
         "spawn:asked",
         (e) => {
-          const { id, parent_id, cwd, worktree, prompt, title, model, effort, account, queued } =
+          const { id, parent_id, cwd, worktree, prompt, title, provider, model, effort, account, queued } =
             e.payload;
           /* The root is recorded before the card is opened, and `born` is
              stamped here rather than read back off the row: this is the moment
@@ -1189,7 +1224,7 @@ export class Skein {
              the row (`record_spawn`), so nothing is being claimed early — this
              is the same fact, in the frame that draws it. */
           this.kin = [...this.kin, { child: id, parent: parent_id, born: Date.now() }];
-          void this.openSpawned(id, cwd, worktree, prompt, title, model, effort, account, queued ?? null);
+          void this.openSpawned(id, cwd, worktree, prompt, title, provider, model, effort, account, queued ?? null);
         },
       ),
     );
@@ -1231,7 +1266,7 @@ export class Skein {
         const { id, cwd, prompt, title, model, effort, queued, worktree } = e.payload;
         const before = this.fault;
         void (async () => {
-          await this.openSpawned(id, cwd, worktree ?? null, prompt, title, model, effort, null, queued ?? null);
+          await this.openSpawned(id, cwd, worktree ?? null, prompt, title, null, model, effort, null, queued ?? null);
           if (this.#byId.has(id)) {
             await invoke("flyway_opened", { id }).catch(() => {});
           } else {
@@ -1939,6 +1974,11 @@ export class Skein {
     worktree: string | null,
     prompt: string,
     title: string | null,
+    /* Which service the parent named — `claude`, `deepseek`, or null for the
+       usual one. Required rather than defaulted for `model`'s reason: a
+       provider that quietly failed to arrive spends the wrong balance, and the
+       receipt would agree with the mistake. */
+    provider: string | null,
     /* Required rather than defaulted, with one caller and on purpose: a model
        that quietly failed to arrive is the expensive failure on this path (see
        the receipt in `do_spawn`), and a default here is the one place it could
@@ -1962,7 +2002,7 @@ export class Skein {
       worktree,
       "project",
       id,
-      presetForSpawn(model, effort),
+      presetForSpawn(model, effort, provider),
       account,
     );
     if (!conv) return;
@@ -2103,7 +2143,7 @@ export class Skein {
      *  be. */
     given: string | null = null,
     /** What the card is set up as, where something chose. See `presets.ts`. */
-    preset?: Pick<Preset, "model" | "effort">,
+    preset?: Pick<Preset, "model" | "effort" | "provider">,
     /** The account to start on if it has room, where something chose — only
      *  `spawn.rs` does. Handed to the waterfall as `stickTo`, so it is exactly
      *  the preference every send already expresses for the account a card is
@@ -2116,7 +2156,18 @@ export class Skein {
      *  before it moved has a session that is not its id. */
     session: string | null = null,
   ): Promise<Conversation | null> {
+    /* The provider is a fact about the preset — `deepseek pro` names both the
+       service and the model. A `Pick` that lacks it is a caller building a pair
+       by hand, and gets the ordinary one. */
+    const provider = preset?.provider ? (PROVIDERS.find((p) => p.id === preset.provider) ?? null) : null;
+    if (preset?.provider && provider === null) {
+      this.fault = `there is no provider called '${preset.provider}'`;
+      return null;
+    }
+    const id = given ?? crypto.randomUUID();
     try {
+      /* A new attempt is not the old one's failure. */
+      this.fault = null;
       const { project, territories } = await invoke<Ensured>("ensure_project", { rootPath: cwd });
       this.learnTerritories(territories);
       /* The card lives at the root as the store resolved it, not as it was
@@ -2140,7 +2191,6 @@ export class Skein {
          Deduplicated, so a second card in the same tree costs nothing. */
       this.learnSlash(cwd);
 
-      const id = given ?? crypto.randomUUID();
       /* The row goes in *before* the spawn, which is the other way round from
          how this read for most of the app's life. `spawn_conversation` asks the
          store what kind of card this is rather than being told (see
@@ -2178,8 +2228,15 @@ export class Skein {
       /* Asked on a fresh reading where the one in hand cannot vouch for the
          account it lands on (`#asked`) — a new card is the one move that starts
          blind every time. */
+      /* **A provider card does not enter the account ladder at all.** Its
+         funding is a balance on another service, not a Claude window, and
+         routing it would either move it onto a subscription it is not asking
+         for or hold it because every Claude account is spent — the exact moment
+         somebody might reach for the other provider. The sentinel is the whole
+         label; the account machinery's other half is guarded at every site that
+         reads one (`#settleAccount`, `#releaseCard`, `#spend`, `admit.rs`). */
       const opening =
-        waterfall.list.length > 0
+        provider === null && waterfall.list.length > 0
           ? await this.#asked(
               () =>
                 route({
@@ -2192,7 +2249,7 @@ export class Skein {
               null,
             )
           : null;
-      const account = opening?.kind === "use" ? opening.label : null;
+      const account = provider?.account ?? (opening?.kind === "use" ? opening.label : null);
       /* No `worktree` here: `spawn_conversation` reads it back off the row for
          the reason it reads `kind` and the preset off the row. It was the one
          thing still travelling as an argument, `wake` was the call site that
@@ -2207,9 +2264,14 @@ export class Skein {
            (`opus[1m]` → `claude-opus-5[1m]`, probed 2026-08-20) and
            `#adoptModel` replaces it, tier and all. `contextWindowFor` already
            reads the `[1m]` in an alias, so the ring is the right size in the
-           meantime. */
-        conv.model = preset.model;
-        conv.contextWindow = contextWindowFor(preset.model);
+           meantime.
+
+           A provider card translates the alias before it is drawn, for the same
+           reason `#adoptModel` does: `opus[1m]` on DeepSeek is not a Claude
+           model, and a chip that named one would be a small, confident lie. */
+        const shown = provider ? (providerModel(provider, preset.model) ?? preset.model) : preset.model;
+        conv.model = shown;
+        conv.contextWindow = contextWindowFor(shown);
         conv.effort = preset.effort;
       }
       /* What it was actually spawned with, so the next send sticks to it rather
@@ -2236,6 +2298,12 @@ export class Skein {
       return conv;
     } catch (err) {
       this.fault = String(err);
+      /* The row is written before the spawn (the spawn reads the kind, preset
+         and provider back off it), so a spawn that refuses — no DeepSeek key,
+         an account not signed in — would otherwise come back at the next launch
+         as an untitled card for a process that never started. Close it where
+         the failure is known. */
+      void invoke("close_conversation", { id }).catch(() => {});
       return null;
     }
   }
@@ -3186,7 +3254,7 @@ export class Skein {
   #observe(conv: Conversation, ev: any) {
     if (ev?.type !== "rate_limit_event") return;
     const label = conv.accountLabel;
-    if (!label || onCredits(label)) return;
+    if (!label || onCredits(label) || onProvider(label)) return;
     waterfall.observe(label, ev.rate_limit_info);
     /* The stream is the first to know an account crossed a line, so Rust
        hears it then rather than at the sweep's next minute. Written only when
@@ -3217,7 +3285,9 @@ export class Skein {
           purse.served();
           /* A turn finished on credits: the fanfare, rationed in `boost`. */
           boost.mark({ kind: "victory", card: conv.id, at: Date.now() });
-        } else waterfall.markServed(conv.accountLabel);
+        } else if (!onProvider(conv.accountLabel)) {
+          waterfall.markServed(conv.accountLabel);
+        }
       }
       return;
     }
@@ -3226,6 +3296,10 @@ export class Skein {
     conv.pendingSpent = null;
     conv.pendingSpentUntil = null;
     conv.pendingSpentKind = null;
+    /* A provider's refusal is a balance or a key, not an account's window, and
+       marking it in the waterfall would invent a phantom account called
+       `@deepseek`. The error line already carries what happened. */
+    if (onProvider(label)) return;
     if (onCredits(label)) {
       /* Credits are not an account, and their memory is the purse's: an empty
          balance waits hours and a rate limit a minute, which is a distinction
@@ -3353,9 +3427,11 @@ export class Skein {
         : heal.kind === "limited"
           ? onCredits(conv.accountLabel)
             ? "credits refused — moving off them…"
-            : heal.carry
-              ? "out of allowance — carrying on…"
-              : "out of allowance — moving account…"
+            : onProvider(conv.accountLabel)
+              ? "rate-limited — waiting…"
+              : heal.carry
+                ? "out of allowance — carrying on…"
+                : "out of allowance — moving account…"
           : "trying again…";
     /* Rolled once, here, rather than inside the delay: the note the card writes
        has to name the same wait the timer is actually set to, or a card that
@@ -3619,7 +3695,10 @@ export class Skein {
          no account is managed, since then there is no allowance to know about
          and a card with no waterfall behind it must nudge exactly as it did. */
       if (conv.held) return;
-      if (this.#managing) {
+      /* A provider card's funding has no Claude window, so asking the ladder
+         about it would suppress a real nudge with "no allowance left — waiting
+         for the reset" for a reset that does not exist. */
+      if (this.#managing && !onProvider(conv.accountLabel)) {
         const choice = waterfall.next({
           bypass: conv.bypassCaps,
           stickTo: conv.accountLabel,
@@ -3757,6 +3836,12 @@ export class Skein {
     own = false,
   ): Promise<boolean> {
     if (!this.#managing) return true;
+    /* A provider card is never held and never moved. Its funding is a balance
+       on another service, so the ladder has nothing to say about it — and the
+       arm below would either move it onto a Claude subscription it did not ask
+       for or park the prompt because every Claude window is spent. Skipping the
+       whole question is the same shape as a wall with no accounts at all. */
+    if (onProvider(conv.accountLabel)) return true;
 
     const choice = await this.#asked(() => this.#decide(conv), conv.accountLabel);
 
@@ -3885,7 +3970,13 @@ export class Skein {
     await this.#moveTo(conv, d.label, from);
   }
 
-  async #moveTo(conv: Conversation, to: string, from: string | null, home: string | null = null) {
+  async #moveTo(
+    conv: Conversation,
+    to: string | null,
+    from: string | null,
+    home: string | null = null,
+    model: string | null | undefined = undefined,
+  ) {
     try {
       /* **Unconditionally, and that is the whole of the bug this once had.**
          This used to be `if (!conv.dormant)`, which asks the *front end's
@@ -3928,12 +4019,24 @@ export class Skein {
       /* The home goes with the label in one write, and every other move clears
          it — `store::set_conversation_account` holds the same rule. */
       conv.creditsHome = onCredits(to) ? home : null;
-      void invoke("set_conversation_account", {
-        id: conv.id,
-        accountLabel: to,
-        creditsHome: conv.creditsHome,
-      });
-      if (from) conv.note(swapNote(from, to, this.#whyLeft(conv, from)));
+      if (model === undefined) {
+        void invoke("set_conversation_account", {
+          id: conv.id,
+          accountLabel: to,
+          creditsHome: conv.creditsHome,
+        });
+      } else {
+        /* A provider move changes the model with the label, and clearing it is
+           part of the move — `COALESCE` cannot say "no model". */
+        await invoke("set_conversation_mode", {
+          id: conv.id,
+          accountLabel: to,
+          model,
+        }).catch((err) => {
+          this.fault = String(err);
+        });
+      }
+      if (from) conv.note(swapNote(from, to ?? "claude", this.#whyLeft(conv, from)));
     } catch (err) {
       conv.retiring = false;
       this.fault = String(err);
@@ -3973,6 +4076,16 @@ export class Skein {
    *  spawns with `--dangerously-skip-permissions`, and the move ends the card's
    *  process. Nothing that ends a process may be silent about it. */
   async putOnAccount(conv: Conversation, to: string) {
+    /* A provider is fixed at birth, like the endpoint of a running process: the
+       card's whole session has been talking to another service, and resuming it
+       on a Claude account would replay a transcript whose model that account
+       cannot reach. Saying so is better than a respawn that fails mid-turn. */
+    if (onProvider(conv.accountLabel)) {
+      conv.note(
+        `this card runs on ${providerName(conv.accountLabel)} — use /provider claude to bring it back`,
+      );
+      return;
+    }
     const acct = waterfall.list.find((a) => a.label === to);
     if (!acct) {
       this.fault = `there is no account called ${to} on this wall`;
@@ -4005,6 +4118,82 @@ export class Skein {
     if (standing.state === "blocked") {
       conv.note(putOnBlockedNote(to, sayBlocked(standing.blockers)));
     }
+  }
+
+  /** A move is not a retry: what this card was about to do on its own is for
+   *  the service it is leaving. A heal would re-ask a refusal that belonged to
+   *  that endpoint; a nudge would spend a turn on the other side of the move. */
+  #dropBeforeMove(conv: Conversation) {
+    if (conv.pendingHeal || this.#heals.has(conv.id)) this.#dropHeal(conv);
+    if (conv.pendingNudge || this.#nudges.has(conv.id)) this.#dropNudge(conv);
+  }
+
+  /** Move this conversation onto another service, or back to Claude Code.
+   *
+   *  **The session is the thing that moves, not the card.** A provider is an
+   *  environment, and `provider::apply` picks the credential store only —
+   *  `CLAUDE_CONFIG_DIR` is untouched — so both services write the same
+   *  transcript and the `--resume` this uses finds the same conversation on the
+   *  other side. Everything the agent has read, every tool call, every file it
+   *  touched stays; only the endpoint (and, for DeepSeek, the model) changes.
+   *
+   *  Thinking is the one thing that does not transfer in place: DeepSeek's
+   *  endpoint refuses Claude's signed blocks and its own blocks do not
+   *  round-trip through a tool-use history. `provider::apply` turns thinking
+   *  off for the provider card, and **Claude's blocks stay in the session
+   *  file** — nothing here deletes them — so the move back finds them exactly
+   *  where they were. See `docs/PROVIDERS.md`.
+   *
+   *  Back to Claude, the card lands on the CLI's own sign-in rather than a
+   *  guessed subscription: the waterfall picks one on the next send, which is
+   *  the one decision this gesture should not make for you. */
+  async setProvider(conv: Conversation, target: string) {
+    const wanted = target.trim().toLowerCase();
+    const current = providerOf(conv.accountLabel);
+
+    if (wanted === "claude" || wanted === "") {
+      if (!current) {
+        conv.note("this card is already on claude code");
+        return;
+      }
+      this.#dropBeforeMove(conv);
+      await this.#moveTo(conv, null, null, null, null);
+      conv.model = undefined;
+      conv.contextWindow = contextWindowFor("");
+      conv.note(
+        "back on claude code — the same session resumes, and claude's thinking is still in the transcript",
+      );
+      return;
+    }
+
+    const p = PROVIDERS.find(
+      (x) => x.id === wanted || x.label === wanted || x.account === target.trim(),
+    );
+    if (!p) {
+      this.fault = `there is no provider called ${target}`;
+      return;
+    }
+    if (current?.id === p.id) {
+      conv.note(`this card is already on ${p.label}`);
+      return;
+    }
+    /* Asked before anything ends: a move with no key would otherwise leave the
+       card dormant and only fail at the next wake. */
+    try {
+      await invoke<string>("provider_ready", { name: p.id });
+    } catch (err) {
+      this.fault = String(err);
+      conv.note(String(err));
+      return;
+    }
+    const model = p.models.fallback;
+    this.#dropBeforeMove(conv);
+    await this.#moveTo(conv, p.account, null, null, model);
+    conv.model = model;
+    conv.contextWindow = contextWindowFor(model);
+    conv.note(
+      `moved to ${p.label} — the same session resumes. thinking is off there until its endpoint can round-trip the blocks; claude's own thinking stays in this transcript.`,
+    );
   }
 
   /** What a hold says it is waiting for, in this card's own account's words.
@@ -4084,26 +4273,87 @@ export class Skein {
     return item;
   }
 
-  /** A message typed into a card that is already holding — or has a round of
-   *  held messages on its way out — goes behind them, whatever the accounts
-   *  say. Asking the waterfall would be asking the wrong question: an account
-   *  may well be free, and sending now would put these words in front of ones
-   *  you wrote before them. */
-  #append(conv: Conversation, text: string, turn: Turn | undefined, own: boolean) {
+  /** A message typed into a card that is already holding — or that is working,
+   *  or has a round of held messages on its way out — goes behind them,
+   *  whatever the accounts say. Asking the waterfall would be asking the wrong
+   *  question: an account may well be free, and sending now would put these
+   *  words in front of ones you wrote before them. */
+  #append(
+    conv: Conversation,
+    text: string,
+    turn: Turn | undefined,
+    own: boolean,
+    behindTurn = false,
+  ) {
     const item = this.#heldItem(conv, text, turn, own);
-    const held: Held = conv.held ?? { queue: [], why: QUEUED_LINE, until: null, waiting: "turn" };
+    /* A card that was held for an allowance and is *working* now got a turn
+       from somewhere else — a relay wake Rust wrote straight to stdin. The
+       allowance is therefore not what this message is behind any more: the
+       turn is. Re-aimed at the turn so the `result` drains it; if the account
+       is still spent by then, `#releaseCard` re-holds it with a fresh reason. */
+    const switched = behindTurn && conv.held?.waiting === "allowance";
+    const held: Held = switched
+      ? { ...conv.held!, why: QUEUED_BEHIND, until: null, waiting: "turn" }
+      : (conv.held ?? { queue: [], why: QUEUED_BEHIND, until: null, waiting: "turn" });
     conv.held = { ...held, queue: admit(held.queue, item) };
+    if (switched) this.#aimHold(conv, null);
     this.#writeHold(conv, item);
     /* The turn `echo` opened is given back only on a card held for the
-       allowance. Behind a round that is out, the card is in a real turn —
-       waking, or answering — and giving it back would let the next round be
-       written into it before its `result`, where the CLI would merge the two
-       (found in review). */
+       allowance. Behind a round that is out, or behind a running turn, the
+       card is in a real turn — waking, or answering — and giving it back would
+       let the next round be written into it before its `result`, where the CLI
+       would merge the two (found in review). `behindTurn` is what tells the
+       two apart: a card already working had no turn for `echo` to open. */
     conv.echoHeld(
       item,
       conv.held.why,
-      conv.held.waiting === "allowance" && !this.#releasing.has(conv.id),
+      !behindTurn && conv.held.waiting === "allowance" && !this.#releasing.has(conv.id),
     );
+  }
+
+  /** Rewrite a message this card is keeping, before it goes.
+   *
+   *  Only what is still in the queue: once a round is out (`#inFlight`) its
+   *  words are on their way and its line is pending, not queued. The store is
+   *  rewritten the way every other edge of a hold is, so a restart sees the
+   *  edited words rather than the ones they replaced. Its pictures stay
+   *  attached — the shots strip under the line still shows them, and taking
+   *  one away is a different gesture than retyping a sentence. */
+  editQueued(conv: Conversation, key: string, text: string) {
+    const held = conv.held;
+    const next = text.trim();
+    if (!held || !next) return;
+    if (this.#inFlight.get(conv.id)?.some((h) => h.key === key)) return;
+    const at = held.queue.findIndex((h) => h.key === key);
+    if (at < 0 || held.queue[at]!.text === next) return;
+    conv.held = {
+      ...held,
+      queue: held.queue.map((h) => (h.key === key ? { ...h, text: next } : h)),
+    };
+    conv.editHeld(key, next);
+    this.#writeHold(conv);
+  }
+
+  /** Drop one message this card is keeping, because you deleted it.
+   *
+   *  Not `#dropHold`: that is Escape, a clear or a close, and it hands every
+   *  queued message back to the draft. This takes the one and closes its line
+   *  where it stands — you said delete, and the rest of the queue is untouched.
+   *  Its pictures go with it in the same store write, since `#writeHold`
+   *  clears `held_picture` rows for keys no longer queued. */
+  cancelQueued(conv: Conversation, key: string) {
+    const held = conv.held;
+    if (!held) return;
+    if (this.#inFlight.get(conv.id)?.some((h) => h.key === key)) return;
+    const left = held.queue.filter((h) => h.key !== key);
+    if (left.length === held.queue.length) return;
+    conv.held = left.length ? { ...held, queue: left } : null;
+    conv.cancelHeld(key, "deleted — it never left this wall");
+    this.#heldPictures.delete(key);
+    /* A card that was waiting only for this message to go has nothing left to
+       wait for. A working one goes on saying what it is doing. */
+    if (!conv.held && !conv.working) conv.activity = "left it";
+    this.#writeHold(conv);
   }
 
   /** One held message, and its pictures put somewhere they will be found. */
@@ -4342,6 +4592,10 @@ export class Skein {
   async #releaseCard(conv: Conversation) {
     if (!conv.held || this.#releasing.has(conv.id)) return;
     if (conv.working || conv.pendingHeal || this.#heals.has(conv.id)) return;
+    /* Which of the two waits this round is coming out of — read before the
+       admission arm rewrites `waiting`, and used for the sentence the card
+       says and for the header of a combined round. */
+    const behindTurn = conv.held.waiting === "turn";
     if (conv.held.waiting === "admission") {
       /* Rust's question, not the waterfall's: the account still has room by
          every reading here, which is exactly why the waterfall would let it go.
@@ -4411,8 +4665,16 @@ export class Skein {
         const have = new Set(pictures.map((p) => p.name));
         parts.push({ item, pictures, missing: item.pictures.filter((n) => !have.has(n)) });
       }
-      const whole = parts.filter((p) => p.missing.length === 0);
-      const broken = parts.filter((p) => p.missing.length > 0);
+      /* Re-read each message off the queue it is going out of. An edit or a
+         delete can land in any of the awaits above, and the round was read from
+         the queue *before* them: sending the old words would undo an edit, and
+         sending a deleted one would be the one thing a delete must not do. The
+         deleted message is in neither list; its line already says so. */
+      const present = new Map((conv.held?.queue ?? []).map((h) => [h.key, h]));
+      const whole = parts
+        .filter((p) => p.missing.length === 0 && present.has(p.item.key))
+        .map((p) => ({ ...p, item: present.get(p.item.key)! }));
+      const broken = parts.filter((p) => p.missing.length > 0 && present.has(p.item.key));
 
       /* Out of the queue, and onto the books as in flight: still written to the
          store ahead of what is left (`#writeHold`) until the send is done, so
@@ -4460,13 +4722,19 @@ export class Skein {
         return;
       }
 
-      conv.note(
-        whole.length === 1
-          ? "an account freed up — sending what was held"
-          : `an account freed up — sending the ${whole.length} held messages together, as one turn`,
-      );
+      /* Only for the allowance's own release: a queue that was merely waiting
+         for the turn to finish says nothing when it does, because the person
+         watched it finish. */
+      if (!behindTurn) {
+        conv.note(
+          whole.length === 1
+            ? "an account freed up — sending what was held"
+            : `an account freed up — sending the ${whole.length} held messages together, as one turn`,
+        );
+      }
       const { content, echo } = composeRound(
         whole.map((p) => ({ text: p.item.text, pictures: p.pictures })),
+        behindTurn ? "queued" : "held",
       );
       this.#releasedRounds += 1;
       /* The turn `echoHeld` gave back is taken again here rather than at the
@@ -4759,39 +5027,58 @@ export class Skein {
     turn?: Turn,
     opts: { yours?: boolean; own?: boolean } = {},
   ): Promise<boolean> {
+    /* Read *before* `echo`, which opens the turn for a card that was idle.
+       Asking after would answer "yes, working" for the very prompt being sent
+       — and then queue it behind a turn that has not started, where nothing
+       would ever drain it. A dormant card is not behind anything: this send is
+       what wakes it. */
+    const behindTurn = conv.working && !conv.dormant;
     conv.echo(text, turn && { echo: turn.echo, shots: turn.shots });
-    const sent = await this.#route(conv, text, turn, opts);
+    const sent = await this.#route(conv, text, turn, { ...opts, behindTurn });
     /* A model switch carries its usual effort with it — see `effortForModel`.
        Sent as a second prompt of its own because `/effort` is the CLI's and the
        wire has no other way to set it (`set_effort` is refused); the transcript
        then says what happened rather than the level changing silently. Held
-       behind the `/model` when that is held — a queue keeps both, in order,
-       where the one slot used to mean skipping it. */
+       behind the `/model` when the card was already working, a queue keeps
+       both, in order, where the one slot used to mean skipping it. */
     const effort = effortForModel(text);
     if (effort) {
       const line = `/effort ${effort}`;
       conv.echo(line);
-      await this.#route(conv, line, undefined, {});
+      await this.#route(conv, line, undefined, { behindTurn });
     }
     return sent;
   }
 
   /** Where a prompt already drawn goes: behind whatever the card is holding,
-   *  or out. Shared by `send` and `broadcast`, so a broadcast cannot put words
-   *  ahead of ones a card is holding — the first cut had it call `#deliver`
-   *  directly, and it did (found in review). */
+   *  behind its running turn, or out. Shared by `send` and `broadcast`, so a
+   *  broadcast cannot put words ahead of ones a card is holding — the first cut
+   *  had it call `#deliver` directly, and it did (found in review).
+   *
+   *  **A prompt typed while the card is working joins the queue here rather
+   *  than going to the CLI.** The CLI would hold it behind the running turn
+   *  anyway, but on its own terms: it cannot be read, edited or taken back,
+   *  and an interrupt's effect on it is the CLI's business rather than this
+   *  wall's (`holding.ts`, `stop`). Written into the same queue as a hold, it
+   *  drains when the turn's `result` lands (`#drain`) and the person can see
+   *  and change what is waiting. `behindTurn` is read by `send` *before*
+   *  `echo` opens a turn, so an idle card — or a dormant one this send is
+   *  waking — still goes straight out. */
   async #route(
     conv: Conversation,
     text: string,
     turn: Turn | undefined,
-    opts: { yours?: boolean; own?: boolean },
+    opts: { yours?: boolean; own?: boolean; behindTurn?: boolean },
   ): Promise<boolean> {
-    /* Behind whatever is already held, without asking the accounts — see
-       `#append`. A heal's own re-send is the exception: it re-asks the turn
-       that broke, which came before anything queued, so it goes the ordinary
-       way and, if it is held, to the front (`holding.ts::admit`). */
-    if ((conv.held || this.#releasing.has(conv.id)) && this.#composing.get(conv.id) !== text) {
-      this.#append(conv, text, turn, opts.own ?? false);
+    /* Behind whatever is already held or running, without asking the accounts.
+       A heal's own re-send is the exception: it re-asks the turn that broke,
+       which came before anything queued, so it goes the ordinary way and, if
+       it is held, to the front (`holding.ts::admit`). */
+    if (
+      (conv.held || this.#releasing.has(conv.id) || opts.behindTurn) &&
+      this.#composing.get(conv.id) !== text
+    ) {
+      this.#append(conv, text, turn, opts.own ?? false, opts.behindTurn ?? false);
       return true;
     }
     return this.#deliver(conv, text, turn, {
@@ -4931,7 +5218,7 @@ export class Skein {
    *  Only ever aimed at a card that is working. A dormant one has no process to
    *  write to and a resting one has no turn to end, and in both cases the
    *  gesture belongs to whatever else Escape does. */
-  async stop(conv: Conversation) {
+  async stop(conv: Conversation, opts: { keepQueue?: boolean } = {}) {
     /* Ahead of the working guard, and it has to be: a card waiting to try again
        is not working — that is the whole state — so without this Escape did
        nothing to the one card on the wall visibly about to act on its own. It
@@ -4946,13 +5233,21 @@ export class Skein {
        not working — that is the whole state — and it is visibly about to act on
        its own the moment an allowance frees up. Escape aimed at one means
        don't, and it takes the held prompt with it: a hold you cancelled that
-       fired anyway two hours later would be the worst of both. */
+       fired anyway two hours later would be the worst of both.
+
+       `keepQueue` is the one caller saying *go* rather than *don't*: the
+       transcript's *send now*, which interrupts the turn so the message
+       waiting behind it goes next. The words have not left this wall — that is
+       the point of the queue — so the interrupt cannot lose them. */
     if (conv.held) {
-      void this.#dropHold(conv, "left it");
+      /* Read before the drop: cancelling a queue must not be what decides
+         whether there is a turn to interrupt. */
+      const live = conv.working && !conv.dormant;
+      if (!opts.keepQueue) void this.#dropHold(conv, "left it");
       /* A queue waiting behind a round that is out: the round's turn is
          running, and Escape means that too. */
-      if (!conv.working || conv.dormant) {
-        conv.activity = "left it";
+      if (!live) {
+        if (!opts.keepQueue) conv.activity = "left it";
         return;
       }
     }
@@ -5782,13 +6077,19 @@ export class Skein {
        base64, so nothing is encoded twice for nothing. Every echo is drawn
        before the first send, as it always was. */
     const turnFor = (c: Conversation) => (typeof turn === "function" ? turn(c) : turn);
+    /* Read before the echoes, for `send`'s reason: only a card that was already
+       working queues what is written below. */
+    const behind = new Map(convs.map((c) => [c.id, c.working && !c.dormant]));
     for (const c of convs) {
       const t = turnFor(c);
       c.echo(t?.text ?? text, t && { echo: t.echo, shots: t.shots });
     }
     for (const c of convs) {
       const t = turnFor(c);
-      await this.#route(c, t?.text ?? text, t, { yours: true });
+      await this.#route(c, t?.text ?? text, t, {
+        yours: true,
+        behindTurn: behind.get(c.id) ?? false,
+      });
     }
   }
 

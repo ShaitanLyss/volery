@@ -1451,6 +1451,22 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
         return crate::credits::allowance_answer(app, &day, &others);
     }
 
+    /* A provider has no subscription either, and unlike credits it has no
+       ledger of its own in this store: the balance lives on the provider's
+       account. Saying that is the honest answer; the arm below would say
+       "expected for an account billed per token" and then hedge about a
+       sign-in that was never meant to exist. */
+    if let Some(provider) = crate::provider::of(label.as_deref()) {
+        return format!(
+            "{day}\n\nThis card runs on {}, billed per token. {} There are no five-hour or \
+             weekly windows to wait for: what this card can afford is the balance above, and \
+             the wall's own cap on that provider stops a prompt once it is reached. The figure \
+             at the top is what every card here has spent, not this one's own.",
+            provider.name,
+            crate::provider::balance_said(provider)
+        );
+    }
+
     /* **The asking card's account, not the wall's.** This passed `""` — the
        CLI's own sign-in — for every caller, so a card spawned on a registered
        account was told about a subscription it was not spending. Where the

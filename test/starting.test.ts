@@ -16,6 +16,7 @@ import {
   type Place,
 } from "../src/lib/starting";
 import { PRESETS, presetById } from "../src/lib/presets";
+import { PROVIDER_PRESETS } from "../src/lib/providers";
 
 const projects = [
   { name: "portfolio", dir: "C:/sites/portfolio" },
@@ -97,17 +98,28 @@ describe("the model chip", () => {
     expect(modelSaid("opus[1m]")).toBe("opus");
     expect(modelSaid("claude-haiku-4-5-20251001")).toBe("haiku 4.5");
     expect(modelSaid("claude-sonnet-5-5")).toBe("sonnet 5.5");
+    /* A provider's ids are its own words, and a chip has one line. */
+    expect(modelSaid("deepseek-flash")).toBe("deepseek flash");
+    expect(modelSaid("deepseek-v4-pro")).toBe("deepseek pro");
     expect(modelSaid(undefined)).toBe("");
   });
 
   test("the chip is the model and its effort, and haiku claims none", () => {
     expect(chipSaid("sonnet[1m]", "medium")).toBe("sonnet · medium");
     expect(chipSaid("haiku", undefined)).toBe("haiku");
+    expect(chipSaid("deepseek-v4-pro", "high")).toBe("deepseek pro · high");
     expect(chipSaid(null, null)).toBe("claude code's own");
   });
 
-  test("the menu is the wall's five presets cheapest first, then claude code's own", () => {
-    expect(presetRows().map((r) => r.id)).toEqual([...PRESETS.map((p) => p.id), ""]);
+  test("the menu is the wall's presets cheapest first, then claude code's own", () => {
+    /* A provider's rows sit between the two: there is no separate provider
+       switch, because choosing `deepseek pro` chooses both. */
+    expect(presetRows().map((r) => r.id)).toEqual([
+      ...PRESETS.map((p) => p.id),
+      ...PROVIDER_PRESETS.map((p) => p.id),
+      "",
+    ]);
+    expect(presetRows().find((r) => r.id === "ds-flash")?.sep).toBe(true);
   });
 
   test("a choice resolves in Skein.open's three states", () => {

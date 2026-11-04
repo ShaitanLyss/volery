@@ -40,6 +40,7 @@ import type { Timeline } from "./timeline";
 import { actFor, canDo, carriesTo, dockHints, verbsFor, whyNot, type Can, type Remote, type Said, type Verb } from "./handle";
 import { closeWarnings } from "./closing";
 import { presetById } from "./presets";
+import { onProvider, providerOf, PROVIDERS } from "./providers";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { view } from "./view.svelte";
@@ -88,6 +89,16 @@ export interface CardHandle {
   carries(turn: Turn): Can;
   /** Say something to it. */
   say(text: string, turn: Turn): Promise<void>;
+  /** Rewrite a message it is keeping before it goes. Only a card here: another
+   *  wall's queue is its own, and this wall holds no handle on it. */
+  editQueued(key: string, text: string): void;
+  /** Drop one of those, because you deleted it. Only a card here, as above. */
+  cancelQueued(key: string): void;
+  /** One message it is keeping, by the key its line carries — the shape a
+   *  thread draws and the two verbs above act on. Null where it is not keeping
+   *  that one, and always null for a card elsewhere: its queue is drawn from
+   *  its own gist, but the words are on its own wall. */
+  queued(key: string): QueuedMessage | null;
   /** A keystroke turning towards it: a dormant card here starts its process
    *  as you type. Nothing for a card elsewhere — no touch travels. */
   stir(): void;
@@ -134,6 +145,13 @@ export interface CardHandle {
  *  `until`, when a hold expects an account back, on this wall's clock;
  *  `reset`, the refusal's own words for when it resets. Either may be null. */
 export type Allowance = { until: number | null; reset: string | null };
+
+/** One message a card is keeping before it goes, as a thread draws it. `head`
+ *  is whether it is the one that goes next — the only one *send now* stands
+ *  under, since the queue never reorders what you wrote. `mine` is false for
+ *  Skein's own words and a heal's composed re-ask, which are not yours to
+ *  rewrite or delete here. */
+export type QueuedMessage = { key: string; text: string; head: boolean; mine: boolean };
 
 /** The allowance stop among a card's standing notices, as a row says it. */
 function stoppedFor(notices: readonly Notice[]): Allowance | null {
@@ -218,10 +236,27 @@ export class LocalCard implements CardHandle {
       spoken: c.everSpoke || c.working,
       aside: c.aside,
       bypassing: c.bypassCaps,
-      accounts: waterfall.list.length > 0,
+      /* A provider card has no account to be moved onto — its label names a
+         service and a balance, not a Claude store, so the submenu would offer
+         rows that `putOnAccount` refuses. `accountPicks` is what draws that
+         submenu; `accounts` is the separate row for the caps bypass. */
+      accounts: waterfall.list.length > 0 && !onProvider(c.accountLabel),
       /* The same list `/account` offers and for the same reasons; `menu.ts`
          drops the submenu below two, so a wall with one account grows no row. */
-      accountPicks: usable(waterfall.list).map((a) => ({ id: a.label, label: a.label, on: a.label === c.accountLabel })),
+      accountPicks: onProvider(c.accountLabel)
+        ? []
+        : usable(waterfall.list).map((a) => ({ id: a.label, label: a.label, on: a.label === c.accountLabel })),
+      /* The service it spends, above the subscription it spends on it. A
+         provider with no key still has a row: the move refuses with the reason,
+         and a row that is absent says nothing about why. */
+      providerPicks: [
+        { id: "claude", label: "claude code", on: !onProvider(c.accountLabel) },
+        ...PROVIDERS.map((p) => ({
+          id: p.id,
+          label: p.label,
+          on: providerOf(c.accountLabel)?.id === p.id,
+        })),
+      ],
       /* Only where there is a plan to hand on — see menu.ts. */
       plan: !!c.planDoc,
       ...this.#hands.furniture(c),
@@ -266,7 +301,10 @@ export class LocalCard implements CardHandle {
         break;
       }
       case "stop":
-        await s.stop(c);
+        /* `keepQueue` is the thread's *send now* on a message waiting behind
+           the turn: interrupt, and let the queue go on the aborted result.
+           Escape passes nothing, so it still means don't (`Skein.stop`). */
+        await s.stop(c, { keepQueue: args.keepQueue === true });
         break;
       case "wake":
         await s.wake(c);
@@ -279,6 +317,9 @@ export class LocalCard implements CardHandle {
         break;
       case "account":
         await s.putOnAccount(c, String(args.account ?? ""));
+        break;
+      case "provider":
+        await s.setProvider(c, String(args.provider ?? ""));
         break;
       case "clear":
         await s.clear(c);
@@ -332,6 +373,19 @@ export class LocalCard implements CardHandle {
   }
   stir() {
     this.#skein.stir(this.conv);
+  }
+  editQueued(key: string, text: string) {
+    this.#skein.editQueued(this.conv, key, text);
+  }
+  cancelQueued(key: string) {
+    this.#skein.cancelQueued(this.conv, key);
+  }
+  queued(key: string): QueuedMessage | null {
+    const queue = this.conv.held?.queue ?? [];
+    const at = queue.findIndex((h) => h.key === key);
+    if (at < 0) return null;
+    const h = queue[at]!;
+    return { key, text: h.text, head: at === 0, mine: !h.own && !h.composed };
   }
   history() {
     void this.#skein.loadHistory(this.conv);
@@ -443,10 +497,13 @@ export class RemoteCard implements CardHandle {
       spoken: s.everSpoke || s.working,
       aside: s.aside,
       bypassing: s.bypassCaps,
-      accounts: s.accounts.length > 0,
+      accounts: s.accounts.length > 0 && !onProvider(s.accountLabel),
       /* That wall's subscriptions, since an account is spent where the card
-         runs. An older wall sends none, which offers no choice. */
-      accountPicks: s.accounts.map((a) => ({ id: a, label: a, on: a === s.accountLabel })),
+         runs. An older wall sends none, which offers no choice. A provider card
+         there has no account to be moved onto, same as a local one. */
+      accountPicks: onProvider(s.accountLabel)
+        ? []
+        : s.accounts.map((a) => ({ id: a, label: a, on: a === s.accountLabel })),
     };
   }
   can(verb: Verb): Can {
@@ -499,6 +556,17 @@ export class RemoteCard implements CardHandle {
     await this.#walls.send(this.shadow, text, turn);
   }
   stir() {}
+  /* Its queue is kept on its own wall — the words are in that wall's store,
+     not this one — so there is nothing here to rewrite or drop. The thread
+     does not offer either on a card elsewhere. */
+  editQueued() {}
+  cancelQueued() {}
+  /* The queue is drawn remotely from its gist, but its words are not here to
+     hand back. Null says exactly that, and the thread then offers no edit or
+     delete — a card elsewhere is still stopped, which is what *send now* needs. */
+  queued(): QueuedMessage | null {
+    return null;
+  }
   history() {
     void this.shadow.readTail();
   }

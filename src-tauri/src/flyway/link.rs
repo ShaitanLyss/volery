@@ -1381,7 +1381,11 @@ impl Link {
            wall's front end cannot resolve would open on the machine's own
            setting with every surface agreeing it had not. */
         let setup = serde_json::json!({ "model": s.model, "effort": s.effort });
-        let model = match crate::spawn::asked_model(&setup) {
+        /* Claude only: a provider is a credential on the wall that runs the
+           card, and credentials never cross (`.claude/rules/providers.md`).
+           Asking as `claude` is what refuses a provider model name arriving
+           from a wall whose own build is newer. */
+        let model = match crate::spawn::asked_model(&setup, Some("claude")) {
             Ok(m) => m,
             Err(why) => return refuse(why),
         };

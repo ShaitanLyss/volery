@@ -372,6 +372,14 @@ The same queue holds the other thing you can put in it, and for a long while the
 nothing at all about that one. A prompt written to a card that is already working is *queued*
 behind the running turn, and until it is taken up the agent has never seen it.
 
+**That queue is this wall's own now.** A prompt typed into a working card is not written to
+the CLI at all: it joins the card's held queue with `waiting: "turn"` (`holding.ts`,
+`chatview.md`, `docs/chat-mode.md` §5.6), drains on the `result`, and can be edited or
+deleted while it waits. Its line is `held` rather than a line the wire owes an echo, and
+`Skein.stop` keeps the queue when the transcript's *send now* interrupts the turn. Everything
+below is the history of the CLI's queue, and still governs the lines that do reach stdin — a
+composing bypass, an older wall, a race.
+
 `tools/probe-queue.ts` says the ordinary path is fine — spawning with Skein's exact argv, a
 prompt sent mid-turn came back ~3s after the running turn's `result`, and an interrupt in
 between did not lose it:

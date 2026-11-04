@@ -519,6 +519,23 @@ export function offers(open: string): { keys: string; label: string }[] {
     .sort((a, b) => (a.keys < b.keys ? -1 : a.keys > b.keys ? 1 : 0));
 }
 
+/** A palette query becoming a chord, through the same machine the wall uses.
+ *
+ *  Chat view's space bar opens the action palette rather than starting the
+ *  leader on the wall; the palette then has to tell *a shortcut typed fast* from
+ *  *a tool being searched for*, and it must not grow a second timing rule to do
+ *  it. This is the one function that answers: the query is the open sequence,
+ *  the key is the next one, and `sinceMs` is the gap `Leader.press` would have
+ *  measured. `fire` means run it now; anything else means keep typing.
+ *
+ *  `null` also covers a query that has already gone past a chord — searching
+ *  "pipelines" after a slow start is a search, not a chord, and the palette's
+ *  Enter still takes the row. */
+export function shortcut(open: string, key: string, sinceMs: number): Verb | null {
+  const step = chord(open.toLowerCase(), key, sinceMs);
+  return step.kind === "fire" ? step.verb : null;
+}
+
 /** Whether a chord acts on the wall itself — its windows, its groupings, a
  *  plan's plate, the glass, another wall's section, the dock's own queue.
  *

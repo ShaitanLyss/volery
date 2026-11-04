@@ -330,6 +330,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, the one binary that undoes it, and the one thing on that binary a *card* invokes rather than Volery | `hooks.rs`, `main.rs` |
 | `remove.md` | deleting a path from a card behind the user's own click: why a permission can refuse and only a tool can ask, the deny everybody reasoned from that governs nothing a card can call, why the delete is permanent rather than recoverable, and the two denials whose reasons name the tool | `remove.rs`, `hooks.rs`, `tools/probe-rm.ts` |
 | `accounts.md` | more than one subscription: an account as a credential store and why Skein holds none of it, signing one in without a terminal, the waterfall and its stickiness, your caps against the server's, the per-card bypass, being held, and finding Claude Code before installing it | `accounts.ts`, `accounts.rs`, `signin.ts`, `signin.rs`, `claude.rs`, `Accounts.svelte` |
+| `providers.md` | a card spending a service other than the subscription — DeepSeek first: why it is a sentinel in `account_label` and needs no migration, why it rides the same `claude` child, the env and the empty store, provider+model as one menu choice, the spawn tool's `provider`, the admission exemption, and why Codex/Gemini would need an adapter rather than this table | `provider.rs`, `providers.ts`, `presets.ts`, `spawn.rs`, `supervisor.rs`, `admit.rs`, `usage.ts`, `classify.ts` |
 | `freshen.md` | keeping Claude Code and its plugins current: the CLI's own three commands in order, the plan read off `installed_plugins.json` and never written, a project scope run in its project, why the background never asks a question and nothing passes `-y`, which cards an update left on the old copy (read off their own `system/init`), and restarting them through the reaper's stand-down so nothing mid-turn is touched | `freshen.rs`, `freshen.ts`, `freshening.svelte.ts`, `Freshen.svelte` |
 | `update.md` | getting onto the newer one: why the installer does the work rather than a plugin, offering nothing when in doubt, and why the exit handler launches it | `update.rs`, `update.ts`, `release.svelte.ts`, `release.yml` |
 | `portage.md` | carrying a wall off and setting one up again: what a layout is and what it deliberately leaves behind, why no id travels and an import only adds, furniture identified by what-and-where, and a territory that arrives pointing nowhere | `portage.ts`, `portage.svelte.ts`, `portage.rs`, `Carry.svelte` |
@@ -416,15 +417,21 @@ does it by showing nothing. A `user` event with no line waiting for it is a prom
 this window did not send — a terminal appending to the same session — and is pushed as
 before.
 
-**Settling a line is not claiming it**, and conflating the two drew prompts twice. Send into a
-card that is already working and the CLI *queues* the prompt behind the running turn — which
-goes on speaking, and every message of it settled the line waiting below, so when the queued
-prompt was finally taken up its replay found nothing pending to claim and pushed a second copy
-of what you had typed. Being answered proves a prompt arrived; it does not say *which*. So the
-two questions are two fields: `state` is what is drawn and `awaited` is whether the wire still
-owes this line its echo. Speech clears the doubt and leaves the claim standing
-(`#settleEchoes`); only the echo itself, a failed send, or the stream closing
-(`#forgetEchoes`) closes the books.
+**Settling a line is not claiming it**, and conflating the two drew prompts twice. That
+bug came from a prompt written into a card that was already working, where the CLI queued
+it behind the running turn — which went on speaking, and every message of it settled the
+line waiting below, so when the queued prompt was finally taken up its replay found
+nothing pending to claim and pushed a second copy of what you had typed. Being answered
+proves a prompt arrived; it does not say *which*. So the two questions are two fields:
+`state` is what is drawn and `awaited` is whether the wire still owes this line its echo.
+Speech clears the doubt and leaves the claim standing (`#settleEchoes`); only the echo
+itself, a failed send, or the stream closing (`#forgetEchoes`) closes the books.
+
+A prompt typed into a working card no longer goes to the CLI's queue at all: it joins the
+card's held queue with `waiting: "turn"` and drains on the `result` (`holding.ts`), which
+is what makes it editable, deletable, and safe to interrupt. The paragraph above is still
+why the two fields exist, and still governs the lines that do reach the CLI — a composing
+bypass, an older wall, a race.
 
 `src/lib/skein.svelte.ts` is the only place that talks to Rust. `src/lib/conversation.svelte.ts`
 owns per-card state and is the only place that reads the raw event shapes.
@@ -470,6 +477,14 @@ file that grows an interface. The one exception is `usage.ts`'s price table, whi
 the arithmetic that reads it rather than in `classify.ts` — a rate is knowledge about a
 *bill*, not about a stream, and nothing in the event pipeline has ever needed one.
 
+That interface has now been exercised once, and the answer is worth carrying: **DeepSeek
+needed no new event pipeline.** It publishes an Anthropic-compatible endpoint, so a DeepSeek
+card is the same `claude --print` child with three variables pointed elsewhere; what grew was a
+provider table (`provider.rs` / `providers.ts`) and a row in `classify.ts`'s window table, not
+a second stream reader. A provider that speaks a *different* protocol — Codex, Gemini — really
+would be the `classify.ts` interface, and `docs/PROVIDERS.md` says so rather than pretending
+the table already covers it.
+
 `azdo.ts` is the same arrangement one service over: the build status and vote vocabularies,
 what a merge status means, how rows are ordered and what any of it is called. That is where a
 second forge — GitHub checks, GitLab pipelines — would grow its interface, and it is
@@ -501,6 +516,14 @@ deliberately not in `classify.ts`, which is about an agent rather than about a r
   disk, now applied live, and it only ever widens: a card drawn at 25% that is really at 100%
   loses you a warning, and a card drawn at 100% that is really at 25% is an instrument nobody
   can use.
+- **A context window is a fact about the model, not a suffix on an alias.** The wire stores
+  bare ids — `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` — and `contextWindowFor`
+  read every one of them as 200k because no `[1m]` was attached, so a wall full of 1M cards drew
+  every ring at 100% and wrote `last_ctx_frac = 1`. Claude 4.6 and later include the full 1M
+  window at standard pricing; the suffix is how the CLI *asks* for the beta on models that gate
+  it, not the only place a window lives. `classify.ts::WINDOWS` now names the windows (the 200k
+  families explicitly, so a real fallback still narrows) and **an id it has never heard of is
+  1M**, the direction that loses a warning rather than inventing one.
 - **`thinking_delta` outnumbers `text_delta` ~8:1** on reasoning models, so a turn must be
   marked working on thinking deltas too or cards look frozen.
 - **A freshly spawned conversation is not dormant** even though `system/init` has not

@@ -173,7 +173,13 @@
 
   <div class="me">
     <span class="avatar" aria-hidden="true">{initial}</span>
-    <button class="who" type="button" onclick={() => onaccount?.()} title="accounts and allowance">
+    <button
+      class="who"
+      type="button"
+      onclick={() => onaccount?.()}
+      disabled={!onaccount}
+      title={onaccount ? "accounts and allowance" : "billed per token — there is no account to manage"}
+    >
       <b>{account?.name ?? "not signed in"}</b>
       {#if account?.line}<span>{account.line}</span>{/if}
     </button>

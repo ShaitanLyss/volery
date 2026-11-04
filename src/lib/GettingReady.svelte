@@ -18,7 +18,7 @@
   import { codeFrom } from "./signin";
   import { INSTALL_LINE } from "./starting";
 
-  let { starter }: { starter: Starter } = $props();
+  let { starter, provider = false }: { starter: Starter; provider?: boolean } = $props();
 
   let copied = $state(false);
   let code = $state("");
@@ -55,7 +55,7 @@
       <button type="button" class="btn" onclick={() => void starter.lookAgain()}>look again</button>
     </div>
   </section>
-{:else if starter.ready === "signed-out"}
+{:else if starter.ready === "signed-out" && !provider}
   <section class="ready" aria-label="getting ready">
     <h2>sign in to Claude</h2>
     {#if starter.signing?.running}

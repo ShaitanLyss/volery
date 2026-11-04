@@ -4398,7 +4398,10 @@
         host,
         moved: !!elsewhere.sections[id],
         openWhy: openRefusal(row, host, project),
-        presets: presetPicks(),
+        /* A provider's key does not travel, so those rows are not offered for a
+           card that will run on another wall — the same refusal `spawn::elsewhere`
+           gives, made at the menu rather than after a click. */
+        presets: presetPicks().filter((p) => !presetById(p.id)?.provider),
         presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
       },
       act: (which) => {
@@ -4421,7 +4424,12 @@
        before the card arrives means they have moved on (`landingNow`). */
     const focusWas = focusedId;
     const at = Date.now();
-    const o = await elsewhere.openThere(host, project, spawnPairOf(preset));
+    const pair = spawnPairOf(preset);
+    if (pair.provider) {
+      skein.fault = `no card was opened on ${host}: a ${pair.provider} card cannot run there — its key lives on this wall`;
+      return;
+    }
+    const o = await elsewhere.openThere(host, project, pair);
     if ("why" in o) {
       skein.fault = `no card was opened on ${host}: ${o.why}`;
       return;
@@ -4435,7 +4443,12 @@
    *  Null with the reason a fault when the wall refused or the card is slower
    *  than `LAND_WITHIN_MS` (it is then in its section, and left alone). */
   async function openThereAndFocus(host: string, project: string, preset: Preset | null): Promise<CardHandle | null> {
-    const o = await elsewhere.openThere(host, project, spawnPairOf(preset));
+    const pair = spawnPairOf(preset);
+    if (pair.provider) {
+      skein.fault = `no conversation was opened on ${host}: a ${pair.provider} card cannot run there — its key lives on this wall`;
+      return null;
+    }
+    const o = await elsewhere.openThere(host, project, pair);
     if ("why" in o) {
       skein.fault = `no conversation was opened on ${host}: ${o.why}`;
       return null;

@@ -65,6 +65,11 @@ export type Rate = {
   /** Cache reads as a multiple of `input`, where the model does not use the
    *  standard rate. Absent means [`CACHE_READ`], which is almost everything. */
   cacheRead?: number;
+  /** The other half of a rate that changes with the clock. DeepSeek bills two
+   *  models at half price outside its peak hours, and a figure that ignored
+   *  that would overstate every night's work by 100%. `rateAt` picks between
+   *  the two; `rateFor` — which has no time to go on — answers the peak one. */
+  offPeak?: { input: number; output: number; cacheRead?: number };
 };
 
 const CACHE_READ = 0.1;
@@ -114,6 +119,27 @@ export const RATES: Record<string, Rate> = {
   "claude-sonnet-4": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
   "claude-haiku-3-5": { input: 0.8, output: 4 },
+  /* DeepSeek, read 2026-11-04. Two models, both 1M, and **two prices each**:
+     DeepSeek's off-peak rates are half its peak ones, and peak is 01:00-04:00
+     and 06:00-10:00 UTC on weekdays. The figures here are the peak ones, which
+     is what `rateFor` means when it is asked without a clock; `rateAt` halves
+     them outside those hours. Cache *hits* are a separate published rate rather
+     than a fraction of input, and the two ratios work out at 0.02x (flash) and
+     0.0333x (pro), which is why they are spelled rather than left to
+     `CACHE_READ`'s 0.1x — the same mistake worth 5x on every cached flash
+     token that `claude-haiku`'s row has no way to show. */
+  "deepseek-flash": {
+    input: 0.3,
+    output: 1.2,
+    cacheRead: 0.02,
+    offPeak: { input: 0.15, output: 0.6, cacheRead: 0.02 },
+  },
+  "deepseek-v4-pro": {
+    input: 1.32,
+    output: 3.96,
+    cacheRead: 0.033333,
+    offPeak: { input: 0.66, output: 1.98, cacheRead: 0.033333 },
+  },
 };
 
 /** The newest member of each family, which is what an unknown one is guessed as.
@@ -130,6 +156,7 @@ const NEWEST: Record<string, string> = {
   opus: "claude-opus-5-5",
   sonnet: "claude-sonnet-5-5",
   haiku: "claude-haiku-4-5",
+  deepseek: "deepseek-flash",
 };
 
 /** What one model costs, or null when nothing here can say.
@@ -176,6 +203,54 @@ export function rateFor(model: string): Rate | null {
 
 /* ── totals ────────────────────────────────────────────────────────────────*/
 
+/** Whether a moment falls in DeepSeek's peak window: 01:00-04:00 and
+ *  06:00-10:00 UTC, Monday to Friday.
+ *
+ *  Its published rule also excludes Chinese public holidays, which this machine
+ *  has no calendar for. A holiday is priced at the peak rate here — the
+ *  conservative direction, and the one that makes a figure never *understate*
+ *  what a turn cost. */
+export function deepseekPeak(at: number): boolean {
+  const d = new Date(at);
+  const day = d.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const h = d.getUTCHours();
+  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+/** What a model costs at a moment, which is `rateFor` everywhere except a
+ *  provider whose rate changes with the clock. */
+export function rateAt(model: string, at: number): Rate | null {
+  const rate = rateFor(model);
+  if (!rate?.offPeak) return rate;
+  return deepseekPeak(at) ? rate : { ...rate, ...rate.offPeak };
+}
+
+/** What one turn cost, for a caller that has the tokens but no slice.
+ *
+ *  `Conversation` records a turn's cost from the CLI's own `total_cost_usd`,
+ *  which is the honest number for Anthropic. A provider's CLI has no price row
+ *  for a model it did not make, so that figure is zero — and a wall reading
+ *  `$0.00` while a DeepSeek card works is worse than one pricing it from the
+ *  same table the usage widget uses. This is that table's arithmetic, exported
+ *  so the two figures cannot disagree. */
+export function priceOf(
+  model: string | null | undefined,
+  t: { in: number; out: number; cacheRead: number; cacheWrite: number },
+  at: number = Date.now(),
+): number | null {
+  if (!model) return null;
+  const rate = rateAt(model, at);
+  if (!rate) return null;
+  return (
+    (t.in * rate.input +
+      t.out * rate.output +
+      t.cacheRead * rate.input * (rate.cacheRead ?? CACHE_READ) +
+      t.cacheWrite * rate.input * WRITE_5M) /
+    1e6
+  );
+}
+
 export type Totals = {
   input: number;
   output: number;
@@ -210,7 +285,7 @@ function absorb(t: Totals, s: Slice) {
   t.write1h += s.write1h;
   const n = s.input + s.output + s.cacheRead + s.write5m + s.write1h;
   t.tokens += n;
-  const rate = rateFor(s.model);
+  const rate = rateAt(s.model, s.at);
   if (!rate) {
     t.unpriced += n;
     return;

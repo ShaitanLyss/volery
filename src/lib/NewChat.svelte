@@ -108,7 +108,13 @@
 
   const needs = $derived(groups.find((g) => g.key === "needs")?.rows.length ?? 0);
   const working = $derived(groups.find((g) => g.key === "working")?.rows.length ?? 0);
-  const blocked = $derived(starter.ready === "missing" || starter.ready === "signed-out");
+  /* A provider card carries its own credential and never touches the Claude
+     sign-in, so "signed out" is not a reason to block one. "Missing" still is:
+     the card rides the same `claude` binary. */
+  const providerChosen = $derived(!!starter.resolved?.provider);
+  const blocked = $derived(
+    starter.ready === "missing" || (starter.ready === "signed-out" && !providerChosen),
+  );
   const empty = $derived(!field.text.trim());
 
   /* A machine that went quiet while chosen is this machine again. */
@@ -174,7 +180,7 @@
   </svg>
   <h1>what are we working on?</h1>
 
-  <GettingReady {starter} />
+  <GettingReady {starter} provider={providerChosen} />
 
   <form
     class="box"
@@ -253,7 +259,11 @@
         class="send"
         class:idle={empty || blocked}
         disabled={empty || blocked || starter.starting}
-        title={blocked ? "claude code has to be ready first" : "start it (enter)"}
+        title={blocked
+          ? starter.ready === "missing"
+            ? "claude code has to be installed first — a provider card rides the same binary"
+            : "sign in to claude, or pick a deepseek card"
+          : "start it (enter)"}
         aria-label="start the conversation"
       >
         <Icon name="up" />

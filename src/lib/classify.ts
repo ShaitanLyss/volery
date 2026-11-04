@@ -228,6 +228,10 @@ export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
  *  `accounts.rs::writes`. Parks on a confirmation, so the line says what is
  *  asked rather than that it happened. */
 export const SKEIN_SET_ACCOUNT_TOOL = "mcp__skein__set_account";
+/** A card moving its own conversation to another service — `provider.rs`. The
+ *  move happens on the wall's clock, after the turn's result, so the line says
+ *  what was asked rather than that it has happened yet. */
+export const SKEIN_SET_PROVIDER_TOOL = "mcp__skein__set_provider";
 /** Whether Claude itself is up — the agent's half of the status widget.
  *
  *  Beside `allowance` because they are the same shape of question: both ask
@@ -823,6 +827,10 @@ export function describeTool(name: string, input: any, nameOf: (address: string)
       const who = arg(input?.account);
       const what = input?.enabled === true ? "switch on" : input?.enabled === false ? "switch off" : "change the caps of";
       return who ? `asks to ${what} ${clip(who, 24)}` : "asks to change an account";
+    }
+    case SKEIN_SET_PROVIDER_TOOL: {
+      const to = arg(input?.provider);
+      return to ? `moving to ${clip(to, 16)}` : "moving to another provider";
     }
     /* Deliberately says what was *asked*, not what came back. Every other line
        here names the gesture, and this one has a stronger reason than symmetry:
@@ -1861,12 +1869,93 @@ export function taskNumberOf(resultText: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Windows this build knows without a tier suffix.
+ *
+ *  **The table exists because the tier suffix is not where a window lives.**
+ *  The wall stored `claude-opus-5-5`, `claude-sonnet-5-5` and
+ *  `claude-haiku-5-5` — the bare ids the wire actually serves — and every one of
+ *  them was read as 200k, so a card with 400k tokens drew a full ring and
+ *  `last_ctx_frac` was written as 1. Claude 4.6 and later include the full 1M
+ *  window at standard pricing (read 2026-09-30 off the pricing docs), so those
+ *  ids are 1M whatever the suffix says; the suffix is the CLI's way of *asking*
+ *  for the beta on the models that gate it.
+ *
+ *  **A model this build has never heard of is 1M**, not 200k. That is the
+ *  direction the error has to point: a card drawn at 25% that is really at 100%
+ *  loses you a warning, and a card drawn at 100% that is really at 25% is an
+ *  instrument nobody can use. The two 200k families are named here so the old
+ *  models stay honest.
+ *
+ *  Keyed on the bare id (`baseModel` strips the tier), so `opus[1m]` and
+ *  `claude-opus-5-5` both land on a row. Longest prefix wins, cut only at a `-`,
+ *  so `claude-opus-4-6` beats `claude-opus-4` and a dated revision beats
+ *  nothing. */
+const WINDOWS: Record<string, number> = {
+  /* The CLI's aliases, before `system/init` has resolved one. `haiku` resolves
+     to the newest haiku (`claude-haiku-5-5` on this machine's transcripts),
+     which is 1M; the explicit 4.5 id below is the one that is not. */
+  opus: 1_000_000,
+  sonnet: 1_000_000,
+  haiku: 1_000_000,
+  fable: 1_000_000,
+  mythos: 1_000_000,
+  opusplan: 1_000_000,
+  /* Claude 4.6 and later: 1M at standard pricing. */
+  "claude-opus-4-6": 1_000_000,
+  "claude-opus-4-7": 1_000_000,
+  "claude-opus-4-8": 1_000_000,
+  "claude-opus-5": 1_000_000,
+  "claude-sonnet-4-6": 1_000_000,
+  "claude-sonnet-5": 1_000_000,
+  "claude-haiku-5": 1_000_000,
+  "claude-fable-5": 1_000_000,
+  "claude-mythos-5": 1_000_000,
+  /* The models that really are 200k. */
+  "claude-opus-4": 200_000,
+  "claude-sonnet-4": 200_000,
+  "claude-haiku-4": 200_000,
+  "claude-haiku-3": 200_000,
+  /* DeepSeek, read 2026-11-04: both 1M. */
+  "deepseek-flash": 1_000_000,
+  "deepseek-v4-pro": 1_000_000,
+};
+
+/** What an id this table has never heard of is assumed to have.
+ *
+ *  One constant rather than a literal in two places: the default is a claim
+ *  about the fleet, not a fallback for a missing number, and it changed on
+ *  2026-11-04 when a wall full of 1M cards drew every ring at 100% of 200k. */
+export const DEFAULT_WINDOW = 1_000_000;
+
 /** A model id tells us how much room the conversation actually has.
  *
- * Only the id from `system/init` carries the window tier — see `sameModel`. */
+ * Only the id from `system/init` carries the window tier — see `sameModel`.
+ * The table answers first for an id it knows, and the suffix may only widen
+ * what it said: a model that is 1M natively has no reason to also spell the
+ * tier. */
 export function contextWindowFor(model: string | undefined): number {
-  if (!model) return 200_000;
-  return /\[1m\]|-1m\b/.test(model) ? 1_000_000 : 200_000;
+  if (!model) return DEFAULT_WINDOW;
+  const known = knownWindow(model) ?? DEFAULT_WINDOW;
+  return /\[1m\]|-1m\b/.test(model) ? Math.max(known, 1_000_000) : known;
+}
+
+/** The window this build knows for a model, or null for an id it has never
+ *  heard of. Null rather than 200k so a caller can tell "narrow" from
+ *  "unknown" — the distinction `#adoptModel` needs to refuse to narrow a card
+ *  on a model nobody has a row for. */
+export function knownWindow(model: string | undefined): number | null {
+  const bare = baseModel(model);
+  if (!bare) return null;
+  const exact = WINDOWS[bare];
+  if (exact) return exact;
+  /* The same longest-prefix rung `usage.ts::rateFor` uses, cut only at a `-`, so
+     a dated revision of a model in the table lands on its row rather than on
+     nothing. */
+  let best: string | null = null;
+  for (const key of Object.keys(WINDOWS)) {
+    if (bare.startsWith(`${key}-`) && (!best || key.length > best.length)) best = key;
+  }
+  return best ? WINDOWS[best] : null;
 }
 
 /** How close a conversation is to the edge of its window, as the ring warms:
@@ -1916,7 +2005,15 @@ export function windowForObserved(
  * by `Math.min(1, …)`. Two hundred and fifty-three thousand tokens is by itself
  * proof that 200,000 was the wrong number. */
 export function widenedWindow(window: number, tokens: number): number {
-  return tokens > window ? 1_000_000 : window;
+  if (tokens <= window) return window;
+  /* The next known step, rather than the literal 1M. With only Claude's two
+     windows this is the same answer as before; with a provider whose window is
+     neither, it is the difference between "the smallest window that could have
+     carried this" and a made-up number. */
+  const steps = Object.values(WINDOWS)
+    .filter((w) => w > window)
+    .sort((a, b) => a - b);
+  return steps.find((w) => w >= tokens) ?? tokens;
 }
 
 /** A model id with its window tier stripped.

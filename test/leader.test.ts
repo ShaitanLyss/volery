@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { CHORDS, LAPSE_MS, LEADER, READINGS, actsOnWall, chord, mayLead, offers } from "../src/lib/leader";
+import { CHORDS, LAPSE_MS, LEADER, READINGS, actsOnWall, chord, mayLead, offers, shortcut } from "../src/lib/leader";
 import { WIDGETS } from "../src/lib/widgets";
 
 describe("where the leader may start", () => {
@@ -22,8 +22,7 @@ describe("where the leader may start", () => {
     expect(mayLead(null, true)).toBe(false);
   });
 
-  test("the whole chord meets an empty field, and a miss falls through as a letter", () => {
-    /* The space is swallowed, so the field is still empty for the next key;
+  test("the whole chord meets an empty field, and a miss falls through as a letter", () => {    /* The space is swallowed, so the field is still empty for the next key;
        `<space>q` completes nothing and the `q` is the field's. */
     const lead = chord(null, LEADER);
     expect(lead.swallow).toBe(true);
@@ -31,6 +30,21 @@ describe("where the leader may start", () => {
     const miss = chord(lead.open, "q");
     expect(miss.kind).toBe("lapse");
     expect(miss.swallow).toBe(false);
+  });
+});
+
+/* Chat view's space bar opens the action palette rather than starting the
+   leader on the wall, and the palette has to tell a fast chord from a slow
+   search. It asks the same machine, with the same lapse. */
+
+describe("a palette's fast letters are a chord, not a search", () => {
+  test("the same instant as the wall", () => {
+    expect(shortcut("i", "a", 10)).toEqual({ kind: "presence", act: "toggle" });
+    expect(shortcut("p", "i", 10)).toBeNull();
+  });
+
+  test("past the lapse the same letters are a query", () => {
+    expect(shortcut("i", "a", LAPSE_MS + 1)).toBeNull();
   });
 });
 

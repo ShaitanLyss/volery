@@ -116,25 +116,45 @@ Note "toolchain $GnuChain"
 
 # Resolve the real windres *before* .build-tools goes on PATH, or we find the shim
 # and it delegates to itself.
-$realWindres = (Get-Command windres.exe -ErrorAction SilentlyContinue)
+#
+# Two arrangements build this target, and the difference is the windres shim:
+# Cygwin's cross toolchain needs it (its windres eats backslashes), while a native
+# mingw-w64 — winlibs, MSYS2's mingw64, or the one `rustup`'s gnu host pairs with —
+# has a Windows `windres` that reads a Windows path and no shim at all. So the
+# detection is by what `gcc` targets, not by which directory it came from.
+$nativeGcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+$isNative  = $false
+if ($nativeGcc) {
+  $triple = (& $nativeGcc.Source -dumpmachine 2>$null) | Select-Object -First 1
+  $isNative = $triple -match 'mingw'
+}
+$realWindres = Get-Command windres.exe -ErrorAction SilentlyContinue
 if (-not $realWindres) {
   throw @"
-Cygwin's windres is not on PATH. Skein needs Cygwin's mingw-w64 cross toolchain,
-which installs per-user via setup-x86_64.exe; the packages are:
+No windres.exe on PATH. Either arrangement works, both per-user:
 
-    mingw64-x86_64-gcc-core  mingw64-x86_64-gcc-g++  binutils
+  native mingw-w64 (no shim needed) — winlibs or MSYS2's mingw64, with its bin
+  directory on PATH; or Cygwin's cross toolchain, which installs per-user via
+  setup-x86_64.exe with:
 
-Then put C:\cygwin\bin on PATH.
+      mingw64-x86_64-gcc-core  mingw64-x86_64-gcc-g++  binutils
+
+  Then put C:\cygwin\bin on PATH.
 "@
 }
 $realWindres = $realWindres.Source
-Note "windres    $realWindres"
-
-$mingwGcc = Get-Command x86_64-w64-mingw32-gcc.exe -ErrorAction SilentlyContinue
-if (-not $mingwGcc) {
-  throw 'x86_64-w64-mingw32-gcc is not on PATH (Cygwin package: mingw64-x86_64-gcc-core).'
+if ($isNative) {
+  $mingwGcc = $nativeGcc
+  Note "gcc        $($mingwGcc.Source) (native mingw: $triple)"
+  Note "windres    $realWindres (native — no shim)"
+} else {
+  $mingwGcc = Get-Command x86_64-w64-mingw32-gcc.exe -ErrorAction SilentlyContinue
+  if (-not $mingwGcc) {
+    throw 'x86_64-w64-mingw32-gcc is not on PATH (Cygwin package: mingw64-x86_64-gcc-core).'
+  }
+  Note "gcc        $($mingwGcc.Source) (cross)"
+  Note "windres    $realWindres (Cygwin — shim required)"
 }
-Note "gcc        $($mingwGcc.Source)"
 
 New-Item -ItemType Directory -Force -Path $buildTools | Out-Null
 
@@ -144,18 +164,22 @@ New-Item -ItemType Directory -Force -Path $buildTools | Out-Null
 # ---------------------------------------------------------------------------
 Step 'the windres shim'
 
-$shimSrc = Join-Path $PSScriptRoot 'windres-shim.c'
-$shimExe = Join-Path $buildTools 'windres.exe'
-if (-not (Test-Path $shimSrc)) { throw "missing $shimSrc" }
-
-$stale = -not (Test-Path $shimExe) -or
-         (Get-Item $shimSrc).LastWriteTimeUtc -gt (Get-Item $shimExe).LastWriteTimeUtc
-if ($stale) {
-  & $mingwGcc.Source -O2 -o $shimExe $shimSrc
-  if ($LASTEXITCODE -ne 0) { throw 'failed to compile the windres shim' }
-  Note 'compiled'
+if ($isNative) {
+  Note 'native mingw windres reads Windows paths — no shim needed'
 } else {
-  Note 'up to date'
+  $shimSrc = Join-Path $PSScriptRoot 'windres-shim.c'
+  $shimExe = Join-Path $buildTools 'windres.exe'
+  if (-not (Test-Path $shimSrc)) { throw "missing $shimSrc" }
+
+  $stale = -not (Test-Path $shimExe) -or
+           (Get-Item $shimSrc).LastWriteTimeUtc -gt (Get-Item $shimExe).LastWriteTimeUtc
+  if ($stale) {
+    & $mingwGcc.Source -O2 -o $shimExe $shimSrc
+    if ($LASTEXITCODE -ne 0) { throw 'failed to compile the windres shim' }
+    Note 'compiled'
+  } else {
+    Note 'up to date'
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -203,7 +227,10 @@ foreach ($k in 'PATH', 'RUSTUP_TOOLCHAIN', 'SKEIN_REAL_WINDRES',
   $saved[$k] = [Environment]::GetEnvironmentVariable($k)
 }
 try {
-  $env:PATH               = "$buildTools;$env:PATH"
+  # Only the Cygwin path needs the shim in front of PATH; a native winlibs tree
+  # already has the genuine windres, and an old shim left in `.build-tools` from
+  # a previous Cygwin run would shadow it.
+  if (-not $isNative) { $env:PATH = "$buildTools;$env:PATH" }
   $env:RUSTUP_TOOLCHAIN   = $GnuChain
   $env:SKEIN_REAL_WINDRES = $realWindres
 
@@ -233,12 +260,19 @@ try {
 
   # sherpa-onnx's shared runtime, for voice.rs. The crate downloads this itself at build
   # time and that fails on this network with `UnknownIssuer` — it bundles its own TLS
-  # roots and the Netskope CA is only in the Windows store. tools/fetch-sherpa.sh is
-  # idempotent and prints the directory, so this both ensures and locates it.
-  $sherpaLib = (& bash "$root/tools/fetch-sherpa.sh") | Select-Object -Last 1
-  if ($LASTEXITCODE -ne 0 -or -not $sherpaLib) { throw 'could not fetch the sherpa-onnx runtime' }
-  $env:SHERPA_ONNX_LIB_DIR = $sherpaLib
-  Note "sherpa runtime: $sherpaLib"
+  # roots and the Netskope CA is only in the Windows store. The vendored copy is what
+  # `tauri.conf.json`'s `bundle.resources` already names, and it is what
+  # `tools/fetch-sherpa.sh` installs; only fetch when it is not there.
+  $vendored = Join-Path $root 'src-tauri\sherpa'
+  if (Test-Path (Join-Path $vendored 'onnxruntime.dll')) {
+    $env:SHERPA_ONNX_LIB_DIR = $vendored
+    Note "sherpa runtime: vendored"
+  } else {
+    $sherpaLib = (& bash "$root/tools/fetch-sherpa.sh") | Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0 -or -not $sherpaLib) { throw 'could not fetch the sherpa-onnx runtime' }
+    $env:SHERPA_ONNX_LIB_DIR = $sherpaLib
+    Note "sherpa runtime: $sherpaLib"
+  }
 
   Push-Location $root
   try {

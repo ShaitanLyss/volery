@@ -49,6 +49,65 @@
   import { INTEGRATIONS, checkFailed, checkReading, type ServiceId } from "./integrations";
   import { Sources } from "./sources.svelte";
   import { DEFAULT_GROUP, checkLine, groupOf, nameFault, sourceReading, step, whereLine } from "./sources";
+  import { invoke } from "@tauri-apps/api/core";
+
+  /** What `provider_reading` answers: the account's own balance, the wall's
+   *  spend since the cap started, and the cap. Balance and fault are exclusive —
+   *  the network may fail without hiding the local spend. */
+  type Balance = {
+    available: boolean;
+    currency: string;
+    total: number;
+    granted: number;
+    topped_up: number;
+  };
+  type Reading = {
+    provider: string;
+    spent: number;
+    limit: number;
+    from: number;
+    balance: Balance | null;
+    fault: string | null;
+  };
+
+  let reading = $state<Reading | null>(null);
+  /* Svelte binds a `type="number"` field as a *number*, so this cannot be
+     assumed to be a string and `.trim()` on it is a runtime throw — found by
+     driving the panel, not by the type checker, because `$state("")` infers
+     `string` and the binding is what changes it at runtime. */
+  let cap = $state<string | number>("");
+  let capBusy = $state(false);
+  let capNote = $state("");
+
+  async function readProvider() {
+    try {
+      const r = await invoke<Reading>("provider_reading", { provider: "deepseek" });
+      reading = r;
+      if (String(cap) === "" && r.limit > 0) cap = String(r.limit);
+    } catch (e) {
+      reading = null;
+      capNote = String(e);
+    }
+  }
+
+  async function setCap() {
+    const raw = String(cap).trim();
+    const usd = Number(raw === "" ? "0" : raw);
+    if (!Number.isFinite(usd) || usd < 0) {
+      capNote = "a limit is a number of dollars, zero or more";
+      return;
+    }
+    capBusy = true;
+    try {
+      await invoke("set_provider_limit", { provider: "deepseek", usd });
+      capNote = usd === 0 ? "no limit" : `capped at $${usd.toFixed(2)}`;
+      await readProvider();
+    } catch (e) {
+      capNote = String(e);
+    } finally {
+      capBusy = false;
+    }
+  }
 
   let {
     keyring,
@@ -66,6 +125,11 @@
      answer can be stale in the one direction that matters. */
   $effect(() => {
     void keyring.askAll();
+    /* The provider reading is asked once on open, like the vault's held state:
+       a balance is a network answer and there is no event to fold, so it is
+       fetched when somebody is looking and never on a clock (`CLAUDE.md`'s rule
+       for the four polls). */
+    void readProvider();
   });
 
   /** Which row takes the caret. The first one with nothing in it, since that is
@@ -79,7 +143,16 @@
     const token = typed[id] ?? "";
     if (!token.trim()) return;
     typed[id] = "";
-    void keyring.store(id, token);
+    void keyring.store(id, token).then(() => {
+      /* A new key is a new balance; asking here is the moment it is cheapest
+         to act on, the same reason a store runs the probe. */
+      if (id === "deepseek") void readProvider();
+    });
+  }
+
+  async function forget(id: ServiceId) {
+    await keyring.forget(id);
+    if (id === "deepseek") void readProvider();
   }
 
   /* ── event sources ──────────────────────────────────────────────────── */
@@ -247,7 +320,7 @@
                 check it
               </button>
             {/if}
-            <button class="act" disabled={busy} onclick={() => void keyring.forget(row.id)}>
+            <button class="act" disabled={busy} onclick={() => void forget(row.id)}>
               forget it
             </button>
           {/if}
@@ -268,6 +341,58 @@
           <button class="oops" onclick={() => (keyring.fault[row.id] = "")}>
             {keyring.fault[row.id]}
           </button>
+        {/if}
+
+        <!-- A provider's balance and cap. It sits in this panel because it is
+             the same row's key, and because there is no event for a balance:
+             DeepSeek tells nobody when it moves, so it is read when somebody
+             opens the panel and never on a clock. The cap is the wall's own —
+             DeepSeek publishes no spend-limit API — and is enforced on the one
+             door every prompt goes through. -->
+        {#if row.id === "deepseek"}
+          <div class="provider">
+            {#if reading?.balance}
+              <p class="said">
+                {reading.balance.currency} {reading.balance.total.toFixed(2)} left{#if reading.balance.granted > 0}
+                  · {reading.balance.granted.toFixed(2)} granted{/if}{#if !reading.balance.available}
+                  — deepseek will not take calls{/if}
+              </p>
+            {:else if reading?.fault}
+              <p class="said bad">{reading.fault}</p>
+            {:else}
+              <p class="aside">balance: not read yet</p>
+            {/if}
+            {#if reading}
+              <p class="aside">
+                This wall has spent ${reading.spent.toFixed(2)} on deepseek cards{#if reading.limit > 0}
+                  of the ${reading.limit.toFixed(2)} you allowed{:else}, with no limit set{/if}.
+              </p>
+            {/if}
+            <div class="pair">
+              <button class="act" disabled={capBusy} onclick={() => void readProvider()}>
+                check balance
+              </button>
+              <input
+                class="pat cap"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="no limit"
+                bind:value={cap}
+                disabled={capBusy}
+                aria-label="deepseek spending limit in dollars"
+              />
+              <button class="act go" disabled={capBusy} onclick={() => void setCap()}>
+                {capBusy ? "setting…" : "set limit"}
+              </button>
+              {#if capNote}<span class="note">{capNote}</span>{/if}
+            </div>
+            <p class="aside">
+              A limit is Volery's own, not DeepSeek's — there is no server-side cap to set — so the
+              wall refuses the next prompt once this much has been spent on deepseek cards since
+              you set it. Zero clears it.
+            </p>
+          </div>
         {/if}
 
         <!-- The one service-specific thing in this panel, and it is specific for
@@ -613,6 +738,11 @@
   }
   .pat:disabled {
     color: var(--paper-faint);
+  }
+  /* The cap field is a number, not a token: one figure, not a wrapped blob. */
+  .pat.cap {
+    width: 7rem;
+    flex: none;
   }
 
   .pair {

@@ -12,6 +12,7 @@ import {
 import { readFileSync } from "node:fs";
 import { EFFORT_LEVELS, isEffort } from "../src/lib/commands";
 import { contextWindowFor } from "../src/lib/classify";
+import { PROVIDER_PRESETS } from "../src/lib/providers";
 import { menuFor, type MenuItem } from "../src/lib/menu";
 
 const items = (m: MenuItem[]) =>
@@ -63,29 +64,25 @@ describe("what the + offers before a card is opened", () => {
     }
   });
 
-  test("the wide window is asked for wherever the model has one", () => {
-    /* `contextWindowFor` reads the tier out of the alias, which is what sizes
-       the ring before `system/init` has said anything — and the tier is free.
+  test("every preset now opens on a 1M window", () => {
+    /* `contextWindowFor` sizes the ring before `system/init` has said anything.
        Read 2026-09-30 off the pricing docs' long-context section: "Claude 4.6
        and later models … include the full 1M token context window at standard
-       pricing. (A 900k-token request is billed at the same per-token rate as a
-       9k-token request.)" So a `[1m]` nobody asked for costs nothing, and the
-       only row without one is the only row whose *model* has none — haiku 4.5.
+       pricing." The newest haiku is one of them, so even the cheap preset is
+       wide; the 200k families (opus/sonnet 4.5, haiku 4.5) are named in
+       `classify.ts`'s table rather than assumed from the absence of a suffix.
        This used to hold the opposite direction, that the cheap end kept the
        small window so a cheap card could not quietly grow into a large one.
-       That argument was about a card growing past what you meant to buy, and
-       with the rate flat there is nothing left to buy: what the small window
+       With the rate flat there is nothing left to buy: what the small window
        bought was a compaction in the middle of the work. */
     const wide = PRESETS.filter((p) => contextWindowFor(p.model) === 1_000_000);
-    expect(wide.map((p) => p.id)).toEqual(["read", "work", "bug", "deep"]);
-    /* The one that is not wide is haiku's, and it is not an exception to the
-       rule — it is the rule, since that model has no 1M tier to ask for. */
-    const narrow = PRESETS.filter((p) => contextWindowFor(p.model) !== 1_000_000);
-    expect(narrow.map((p) => p.model)).toEqual(["haiku"]);
+    expect(wide.map((p) => p.id)).toEqual(["ask", "read", "work", "bug", "deep"]);
+    expect(PRESETS.filter((p) => contextWindowFor(p.model) !== 1_000_000)).toEqual([]);
+    /* The note is the *pair*, not the window: `haiku` is 1M natively and does
+       not spell a tier it never has to ask for. */
     for (const p of PRESETS) {
-      if (contextWindowFor(p.model) === 1_000_000) {
-        expect(p.note).toContain("[1m]");
-      }
+      expect(p.note).toContain(p.model);
+      if (p.effort) expect(p.note).toContain(p.effort);
     }
   });
 
@@ -115,16 +112,17 @@ describe("the menu the + puts up", () => {
     const m = items(menuFor({ kind: "spawn", presets: presetPicks() }));
     expect(m.map((i) => i.id)).toEqual([
       ...PRESETS.map((p) => `preset:${p.id}`),
+      ...PROVIDER_PRESETS.map((p) => `preset:${p.id}`),
       "new",
     ]);
     /* The one that needs no reading is the one you get by not right-clicking,
-       so it sits under the five that are worth looking at. */
+       so it sits under the rows that are worth looking at. */
     expect(m[m.length - 1].label).toBe("as claude code is set up");
   });
 
   test("the notes ride the items, and nothing else in the app has one", () => {
     const m = items(menuFor({ kind: "spawn", presets: presetPicks() }));
-    expect(m.filter((i) => i.note).length).toBe(PRESETS.length);
+    expect(m.filter((i) => i.note).length).toBe(PRESETS.length + PROVIDER_PRESETS.length);
     expect(items(menuFor({ kind: "card" })).some((i) => i.note)).toBe(false);
   });
 
@@ -383,13 +381,31 @@ describe("a preset sent to another wall", () => {
   });
 
   test("as claude code is set up is no model and no effort", () => {
-    expect(spawnPairOf(null)).toEqual({ model: null, effort: null });
-    expect(spawnPairOf(undefined)).toEqual({ model: null, effort: null });
+    expect(spawnPairOf(null)).toEqual({ model: null, effort: null, provider: null });
+    expect(spawnPairOf(undefined)).toEqual({ model: null, effort: null, provider: null });
   });
 
   test("haiku carries no level, and a model outside the three carries nothing", () => {
-    expect(spawnPairOf({ model: "haiku", effort: "high" })).toEqual({ model: "haiku", effort: null });
-    expect(spawnPairOf({ model: "fable", effort: "high" })).toEqual({ model: null, effort: null });
+    expect(spawnPairOf({ model: "haiku", effort: "high" })).toEqual({
+      model: "haiku",
+      effort: null,
+      provider: null,
+    });
+    expect(spawnPairOf({ model: "fable", effort: "high" })).toEqual({
+      model: null,
+      effort: null,
+      provider: null,
+    });
+  });
+
+  test("a provider preset is a refusal, not a pair the far wall could open", () => {
+    /* Its key lives here and credentials never travel, so degrading it to
+       `null` would open an ordinary Claude card over there while the person
+       believed they had chosen DeepSeek. `openThere` turns the provider into
+       words. */
+    for (const p of PROVIDER_PRESETS) {
+      expect(spawnPairOf(p)).toEqual({ model: null, effort: null, provider: "deepseek" });
+    }
   });
 
   test("the family is what crosses, never the tier", () => {

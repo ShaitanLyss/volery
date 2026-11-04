@@ -6,6 +6,7 @@ import { textOf } from "../src/lib/classify";
 import {
   HELD_MARK,
   NO_ACCOUNT_HELD,
+  QUEUED_BEHIND,
   QUEUED_LINE,
   admit,
   composeRound,
@@ -14,6 +15,7 @@ import {
   heldDivider,
   heldHeader,
   nextRound,
+  queuedHeader,
   withoutMissing,
   type HeldItem,
 } from "../src/lib/holding";
@@ -173,6 +175,45 @@ describe("pictures ride with the message that names them", () => {
   test("a picture that could not be found again comes out of the words handed back", () => {
     expect(withoutMissing("see [shot 1] and [photo.png]", ["shot 1"])).toBe("see and [photo.png]");
     expect(withoutMissing("nothing missing", [])).toBe("nothing missing");
+  });
+});
+
+describe("a message waiting for the turn to finish", () => {
+  test("is the same queue, and says which wait it is in", () => {
+    /* One queue for both reasons a message stays here: no allowance, and a
+       turn still running. The reason changes what the card says and what the
+       header tells the agent, never whether the message is kept. */
+    expect(QUEUED_BEHIND).toContain("this turn finishes");
+    expect(QUEUED_BEHIND).not.toContain("allowance");
+    const held = composeRound([
+      { text: "one", pictures: [] },
+      { text: "two", pictures: [] },
+    ]);
+    const queued = composeRound(
+      [
+        { text: "one", pictures: [] },
+        { text: "two", pictures: [] },
+      ],
+      "queued",
+    );
+    expect(held.echo.startsWith(heldHeader(2))).toBe(true);
+    expect(queued.echo.startsWith(queuedHeader(2))).toBe(true);
+    expect(queued.echo).toContain("while this card was working");
+    expect(queued.echo).not.toContain("allowance");
+    /* The rule is the same in both: every message verbatim under its divider,
+       and the echo the fold every line is claimed on. */
+    expect(queued.echo).toContain(heldDivider(1, 2));
+    expect(queued.echo).toContain(heldDivider(2, 2));
+    expect(replayOf(queued)).toBe(queued.echo.trim());
+  });
+
+  test("the thread offers edit and delete, and send now keeps the queue", () => {
+    const src = readFileSync("src/lib/Thread.svelte", "utf8");
+    expect(src).toContain('card.do("stop", { keepQueue: true })');
+    expect(src).toContain("card.editQueued");
+    expect(src).toContain("card.cancelQueued");
+    /* And the allowance caption is not drawn over a turn's own receipt. */
+    expect(src).toContain(".line.you.held.queued::after");
   });
 });
 

@@ -34,6 +34,7 @@ import {
   WAKE_GRACE_S,
   compactStat,
   contextWindowFor,
+  knownWindow,
   describeTool,
   endingFor,
   endsOnQuestion,
@@ -500,10 +501,50 @@ describe("describeTool degrades before arguments arrive", () => {
 });
 
 describe("contextWindowFor", () => {
-  test("recognises the 1M variant", () => {
-    expect(contextWindowFor("claude-opus-5[1m]")).toBe(1_000_000);
-    expect(contextWindowFor("claude-opus-5")).toBe(200_000);
-    expect(contextWindowFor(undefined)).toBe(200_000);
+  test("the current families are 1M, suffix or no suffix", () => {
+    /* The ids actually stored on this wall: `claude-opus-5-5`,
+       `claude-sonnet-5-5`, `claude-haiku-5-5`. All three were read as 200k,
+       which clamped their rings at 100%. Claude 4.6+ includes the full 1M
+       window at standard pricing; the `[1m]` suffix is the CLI's way of asking
+       for the beta on models that gate it, not the only place a window lives. */
+    for (const id of [
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-fable-5",
+      "opus[1m]",
+      "sonnet[1m]",
+      "haiku",
+      "opus",
+      "sonnet",
+    ]) {
+      expect(contextWindowFor(id)).toBe(1_000_000);
+    }
+    /* The models that really are 200k are named, so they stay honest. */
+    for (const id of ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"]) {
+      expect(contextWindowFor(id)).toBe(200_000);
+    }
+    /* And a model nobody has heard of is 1M, not 200k — the direction that
+       loses a warning rather than inventing one. */
+    expect(contextWindowFor(undefined)).toBe(1_000_000);
+    expect(contextWindowFor("claude-something-new")).toBe(1_000_000);
+    expect(knownWindow("claude-opus-4-5")).toBe(200_000);
+    expect(knownWindow("claude-opus-5-5")).toBe(1_000_000);
+    expect(knownWindow("claude-something-new")).toBeNull();
+  });
+
+  test("a provider's own ids carry their window without a suffix", () => {
+    /* Read 2026-11-04: both DeepSeek models are 1M. */
+    expect(contextWindowFor("deepseek-flash")).toBe(1_000_000);
+    expect(contextWindowFor("deepseek-v4-pro")).toBe(1_000_000);
+    /* The suffix is still an override that may only widen. */
+    expect(contextWindowFor("deepseek-flash[1m]")).toBe(1_000_000);
+    expect(knownWindow("deepseek-flash")).toBe(1_000_000);
+    expect(knownWindow("deepseek-v9")).toBeNull();
   });
 });
 
@@ -517,9 +558,9 @@ describe("a session read off disk has no declared tier", () => {
   });
 
   test("occupancy that fits is not evidence of anything", () => {
-    expect(windowForObserved("claude-opus-5", 78_000)).toBe(200_000);
-    expect(windowForObserved("claude-opus-5", 200_000)).toBe(200_000);
-    expect(windowForObserved(undefined, 0)).toBe(200_000);
+    expect(windowForObserved("claude-opus-5", 78_000)).toBe(1_000_000);
+    expect(windowForObserved("claude-opus-5", 200_000)).toBe(1_000_000);
+    expect(windowForObserved(undefined, 0)).toBe(1_000_000);
   });
 
   test("a declared tier is not narrowed by a smaller reading", () => {
@@ -588,7 +629,9 @@ describe("the window tier only exists on the init id", () => {
 
   test("and the window still follows from the declared id", () => {
     expect(contextWindowFor("claude-opus-5[1m]")).toBe(1_000_000);
-    expect(contextWindowFor(baseModel("claude-opus-5[1m]"))).toBe(200_000);
+    /* The *old* bare id is the case the 200k default was written for; it is
+       named in the table now, so the answer does not depend on the suffix. */
+    expect(contextWindowFor(baseModel("claude-opus-4-5[1m]"))).toBe(200_000);
   });
 });
 

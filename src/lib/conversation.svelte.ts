@@ -13,6 +13,7 @@ import {
   compactNote,
   compactStat,
   contextWindowFor,
+  knownWindow,
   widenedWindow,
   HOLD_LINE,
   picturesOf,
@@ -94,7 +95,8 @@ import {
   recordCompaction,
   type Compaction,
 } from "./compaction";
-import { costStep } from "./usage";
+import { costStep, priceOf } from "./usage";
+import { providerOf, providerModel } from "./providers";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
 import { isQueuedSpawn, type Held, type HeldItem } from "./holding";
@@ -266,6 +268,11 @@ export type Line = {
    *  Separate from `state` because the two stopped being the same question —
    *  see `#settleEchoes`. */
   awaited?: true;
+  /** On a `held` line, the `HeldItem.key` it stands for — the handle the
+   *  queue's own edits and cancellations go through, and what lets the
+   *  transcript ask whether this is the message that goes next. Unset
+   *  everywhere else, including once it has been sent. */
+  heldKey?: string;
   /** What the wire will replay for this line, when that is not `text`.
    *
    *  A prompt carrying images is drawn with the tokens where the pictures sit —
@@ -2018,13 +2025,22 @@ export class Conversation {
    *  and must not narrow the window: taking it at face value is what made a 1M
    *  session read 46% when it was really at 9%. A per-message id naming a
    *  *different* model is a real change (a fallback model took the request) and
-   *  is adopted whole. */
+   *  is adopted whole.
+   *
+   *  **A provider card translates the id before adopting it.** The alias Volery
+   *  sent (`opus[1m]`) resolves to one of DeepSeek's models, and the wire may
+   *  report either the alias or the id the server served. `providerModel` maps
+   *  both onto the provider's own name, which is what makes the ring, the chip
+   *  and the price agree — and what stops `sameModel` comparing a Claude id to
+   *  a DeepSeek one forever. */
   #adoptModel(model: string, declared: boolean) {
+    const provider = providerOf(this.accountLabel);
+    const id = (provider ? providerModel(provider, model) : model) ?? model;
     if (declared) {
-      this.model = model;
-      this.contextWindow = contextWindowFor(model);
+      this.model = id;
+      this.contextWindow = contextWindowFor(id);
       this.#declaredWindow = this.contextWindow;
-      this.#declaredModel = model;
+      this.#declaredModel = id;
       return;
     }
     /* Asked against the *declared* id rather than the current one, which is the
@@ -2034,13 +2050,28 @@ export class Conversation {
        can never be recovered. Coming back to the configured model restores the
        tier-bearing id with it, so the footer stops reading as though the card
        had been moved. */
-    if (this.#declaredWindow !== null && sameModel(model, this.#declaredModel)) {
+    if (this.#declaredWindow !== null && sameModel(id, this.#declaredModel)) {
       this.model = this.#declaredModel;
       this.contextWindow = this.#declaredWindow;
       return;
     }
-    this.model = model;
-    this.contextWindow = contextWindowFor(model);
+    this.model = id;
+    /* **Never narrow on an id this build has no window for.** A renamed or
+       proxy-served id used to be read as a 200k model and shrink a 1M session's
+       window on its first message — sink `eb733977`'s failure arriving through
+       a different door. A known id adopts its own window, so a genuine fallback
+       to a real 200k model (haiku 4.5) still narrows; an id from nowhere is a
+       rename, not a window, and the declared one stands. Since the table now
+       names the 200k families explicitly, "unknown" can only mean "not a model
+       this build can size", never "an old model we forgot". */
+    const known = knownWindow(id);
+    this.contextWindow = known ?? this.#declaredWindow ?? contextWindowFor(id);
+  }
+
+  /** Which provider this card spends, read off the same label every other
+   *  guard reads. Null for an ordinary Claude card. */
+  get provider() {
+    return providerOf(this.accountLabel);
   }
 
   /** Take the skills an init declared, and mark them for the row if they moved.
@@ -2382,6 +2413,7 @@ export class Conversation {
           (l.text.trim() === want || l.echo?.trim() === want)
         ) {
           l.state = "held";
+          l.heldKey = held.key;
           this.#heldLines.set(held.key, l);
           break;
         }
@@ -2403,8 +2435,40 @@ export class Conversation {
   drawHeld(key: string, text: string) {
     const line = this.#push("you", text, "held");
     line.awaited = true;
+    line.heldKey = key;
     this.awaiting += 1;
     this.#heldLines.set(key, line);
+  }
+
+  /** Rewrite a kept message before it goes.
+   *
+   *  The queue is the truth and this line is its shadow, so only the drawing
+   *  changes here; `Skein.editQueued` writes the queue and the store. The
+   *  replay's echo is recomputed from the blocks when the round finally goes
+   *  (`echoResumed`), so a stale one must not be left where a claim could
+   *  match it. */
+  editHeld(key: string, text: string) {
+    const line = this.#heldLines.get(key);
+    if (!line) return;
+    line.text = text;
+    line.echo = undefined;
+  }
+
+  /** Drop a kept message that will never go, because you deleted it.
+   *
+   *  Closes its line and takes it out of `awaiting`, the debt every abandoned
+   *  prompt owes (`turns.md`). Deliberately not `failHeld`: that also gives
+   *  back the turn, and this lands in the middle of a live turn — the one the
+   *  message was queued behind — which is not the turn a deletion ends. */
+  cancelHeld(key: string, why: string) {
+    const line = this.#heldLines.get(key);
+    this.#heldLines.delete(key);
+    if (!line) return;
+    line.state = "failed";
+    line.receipt = why;
+    line.heldKey = undefined;
+    if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
+    line.awaited = undefined;
   }
 
   /** The hold released — the lines drawn a while ago are going down the wire
@@ -2429,6 +2493,7 @@ export class Conversation {
       this.#heldLines.delete(key);
       if (!line) continue;
       line.state = "pending";
+      line.heldKey = undefined;
       if (echo.trim() !== line.text.trim()) line.echo = echo;
       lines.push(line);
     }
@@ -2460,6 +2525,7 @@ export class Conversation {
         if (l.state === undefined && !l.awaited) continue;
         l.state = "failed";
       } else l.state = undefined;
+      l.heldKey = undefined;
       if (l.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
       l.awaited = undefined;
     }
@@ -2476,10 +2542,17 @@ export class Conversation {
       this.#heldLines.delete(key);
       if (!line) continue;
       line.state = "failed";
+      line.heldKey = undefined;
       if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
       line.awaited = undefined;
     }
-    if (!this.streaming && this.#turnText.length === 0) {
+    /* A live turn is not something a cancellation ends. The usual caller is a
+       hold on a card that is at rest, where this is the same write as ever; a
+       message queued behind a running turn is the other case, and there the
+       turn is still the process's, waiting to be interrupted (`Skein.stop`).
+       Guarding on `working` rather than on `streaming` is the honest test: a
+       turn that has not spoken yet is still a turn. */
+    if (!this.working && !this.streaming && this.#turnText.length === 0) {
       this.working = false;
       this.restingSince ??= Date.now();
     }
@@ -2508,6 +2581,7 @@ export class Conversation {
       this.#heldLines.delete(h.key);
       if (line) {
         line.state = "failed";
+        line.heldKey = undefined;
         if (line.awaited) this.awaiting = Math.max(0, this.awaiting - 1);
         line.awaited = undefined;
       }
@@ -3173,6 +3247,29 @@ export class Conversation {
           this.costUsd = ev.total_cost_usd;
           this.#costAtLastTurn = ev.total_cost_usd;
         }
+        /* **A provider's CLI cannot price a model it did not make.** Its
+           `total_cost_usd` is computed from a table of Claude models, so a
+           DeepSeek turn arrives at zero — and a title bar reading `$0.00` while
+           a card works is worse than one priced from the same table the usage
+           widget already reads. Only the zero case is replaced: a provider that
+           one day reports its own bill wins. */
+        if (providerOf(this.accountLabel) && this.lastTurn.usd === 0 && this.lastTurn.in + this.lastTurn.out > 0) {
+          const priced = priceOf(this.model, {
+            in: this.lastTurn.in,
+            out: this.lastTurn.out,
+            cacheRead: this.lastTurn.cacheRead,
+            cacheWrite: this.lastTurn.cacheWrite,
+          });
+          if (priced !== null) {
+            this.lastTurn.usd = priced;
+            /* The card's own session total is the CLI's running figure, and for
+               a provider that figure never moves. Advancing it by the same
+               priced step keeps the transcript's cost line and a shadow's
+               published `costUsd` from reading zero on a card that is
+               spending. */
+            this.costUsd += priced;
+          }
+        }
 
         /* The closing message, and the ending read off it rather than off the
            whole turn: a question asked before the last tool call was answered
@@ -3232,7 +3329,7 @@ export class Conversation {
           /* Before any decision about re-sending, and outside every branch
              below — see `pendingSpent`. The server refusing this account is
              news whatever is then done about the prompt. */
-          if (kind === "limited" && this.accountLabel) {
+          if (kind === "limited" && this.accountLabel && !providerOf(this.accountLabel)) {
             this.pendingSpent = this.accountLabel;
             this.pendingSpentKind = credit;
             this.pendingSpentUntil =
@@ -3261,7 +3358,12 @@ export class Conversation {
             ours &&
             !mayHeal(kind, this.#producedOutput)
           ) {
-            if (kind === "limited" && this.accountLabel && this.carryAttempts < CARRY_BUDGET) {
+            if (
+              kind === "limited" &&
+              this.accountLabel &&
+              providerOf(this.accountLabel) === null &&
+              this.carryAttempts < CARRY_BUDGET
+            ) {
               /* The exception to the exception. Not the prompt again — that is
                  what `mayHeal` forbids — but a different request, asking the
                  agent to continue from wherever the session says it got to. The

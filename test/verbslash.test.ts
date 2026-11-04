@@ -130,6 +130,14 @@ describe("the fixed rows and the rows off the wall", () => {
     expect(verbOf(acc.cmd, acc.arg)).toEqual({ verb: "account", args: { account: "tx-team" } });
   });
 
+  test("/provider carries claude and deepseek, and the menu row asks the same verb", () => {
+    const cmd = VERB_COMMANDS.find((c) => c.name === "provider")!;
+    expect(cmd.choices?.map((c) => c.value)).toEqual(["claude", "deepseek"]);
+    const moved = resolveCommand("/provider deepseek")!;
+    expect(verbOf(moved.cmd, moved.arg)).toEqual({ verb: "provider", args: { provider: "deepseek" } });
+    expect(rowVerb("provider:claude")).toEqual({ verb: "provider", args: { provider: "claude" } });
+  });
+
   test("the keep is a pair, and keeps the palette up past the space", () => {
     expect(matchChoices("/keep ").map((c) => c.value)).toEqual(["wall", "glass"]);
     expect(typingChoice("/keep g")?.cmd.verb).toBe("keep");

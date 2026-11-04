@@ -89,6 +89,43 @@
      drawn there and nowhere else (`others.svelte.ts`). */
   const reach = others();
 
+  /** Whether a wait is for the running turn rather than for an allowance. The
+   *  same `Held` shape answers both, and `gist` is the shape every surface
+   *  reads, so a card here and one elsewhere draw the same receipt. The queue's
+   *  own words are asked of the handle (`card.queued`), never read off `conv`:
+   *  a drawn fact goes through the gist, and a card elsewhere has no `conv`. */
+  const queuedBehindTurn = $derived(card.gist.held?.waiting === "turn");
+  /** The message being rewritten in place, by `HeldItem.key`, and its words. */
+  let editing = $state<string | null>(null);
+  let draft = $state("");
+
+  function startEdit(line: Line) {
+    if (!line.heldKey) return;
+    editing = line.heldKey;
+    draft = line.text;
+  }
+  function cancelEdit() {
+    editing = null;
+    draft = "";
+  }
+  function saveEdit() {
+    const key = editing;
+    const text = draft.trim();
+    if (!key || !text) return;
+    card.editQueued(key, text);
+    cancelEdit();
+  }
+  function dropQueued(line: Line) {
+    if (!line.heldKey) return;
+    if (editing === line.heldKey) cancelEdit();
+    card.cancelQueued(line.heldKey);
+  }
+  /** A freshly drawn editor takes the focus, so *edit* is one gesture rather
+   *  than a click and then another click in the box. */
+  function focus(node: HTMLTextAreaElement) {
+    node.focus();
+  }
+
   /** A message longer than this is cut to a few lines until opened. */
   const LETTER_LONG = 520;
   /** A card as a letter names it. */
@@ -417,6 +454,7 @@
       class="line {line.kind}"
       class:pending={line.state === "pending"}
       class:held={line.state === "held"}
+      class:queued={line.state === "held" && queuedBehindTurn && !!line.heldKey}
       class:failed={line.state === "failed"}
       data-nav={line.kind === "you" ? "you" : null}
     >{line.text}</div>
@@ -429,14 +467,11 @@
     {#if line.receipt}
       <div class="receipt" class:late={line.state === "failed"}>{line.receipt}</div>
     {/if}
-    <!-- Sent while the agent was working: the CLI queues it behind the running
-         turn (`turns.md`), and `awaited` is the honest flag for as long as that
-         holds — `pending` is taken off by the running turn's next message,
-         whose answer is not about this prompt (CLAUDE.md, *Settling a line is
-         not claiming it*). So it says when it goes, rather than looking sent.
-         *Send now* is a stop and nothing else: an interrupt does not lose a
-         queued prompt, the CLI takes it up next, and stopping then sending
-         would deliver it twice (`docs/chat-mode.md` §5.6). -->
+    <!-- The fallback for a prompt that really did reach the CLI's own queue —
+         the composing bypass and a race or two can still put one there. The
+         ordinary path now keeps the words here instead (below), where they can
+         be read and changed; this branch is the CLI's business, and *send now*
+         is its stop. -->
     {#if line.kind === "you" && line.awaited && conv.working && line.state !== "held" && line.state !== "failed"}
       <div class="receipt queued" aria-live="polite">
         queued — it goes when this turn finishes
@@ -449,6 +484,68 @@
           >
         {/if}
       </div>
+    {/if}
+    <!-- Waiting behind the running turn, and held by this wall rather than the
+         CLI. That is the whole difference: the words have not left, so they can
+         be rewritten or dropped before they go, and *send now* is an interrupt
+         and nothing else — the queue drains on the aborted `result` instead of
+         being lost with it. Only the message that goes next offers *send now*:
+         the queue never reorders what you wrote. -->
+    {#if line.kind === "you" && line.state === "held" && queuedBehindTurn && line.heldKey}
+      {@const item = card.queued(line.heldKey)}
+      {#if item}
+        <div class="receipt queued" aria-live="polite">
+          queued — it goes when this turn finishes
+          {#if item.head && card.can("stop") === "yes"}
+            <button
+              type="button"
+              class="now"
+              onclick={() => void card.do("stop", { keepQueue: true })}
+              title="interrupt this turn — this message goes next">send now</button
+            >
+          {/if}
+          {#if item.mine}
+            <button
+              type="button"
+              class="now"
+              onclick={() => startEdit(line)}
+              title="rewrite this message before it goes">edit</button
+            >
+            <button
+              type="button"
+              class="now"
+              onclick={() => dropQueued(line)}
+              title="delete it — it has not been sent">delete</button
+            >
+          {/if}
+        </div>
+        {#if editing === line.heldKey}
+          <div class="queuedit">
+            <textarea
+              use:focus
+              bind:value={draft}
+              rows="2"
+              aria-label="edit the queued message"
+              onkeydown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  cancelEdit();
+                } else if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  saveEdit();
+                }
+              }}
+            ></textarea>
+            <div class="acts">
+              <button type="button" class="now" onclick={saveEdit} disabled={!draft.trim()}
+                >save</button
+              >
+              <button type="button" class="now" onclick={cancelEdit}>cancel</button>
+            </div>
+          </div>
+        {/if}
+      {/if}
     {/if}
     <!-- The pictures that went with the prompt, under the words that refer to
          them by name. Thumbnails rather than the bytes that were sent — a card
@@ -1091,6 +1188,13 @@
     font-size: calc(0.7rem * var(--read, 1));
     color: var(--paper-faint);
   }
+  /* A message waiting for the turn to finish is the same `held` line with a
+     different wait. It says so in the receipt below — where the buttons are —
+     rather than in this caption, which would be telling you about an
+     allowance that is not the reason. */
+  .line.you.held.queued::after {
+    content: none;
+  }
   /* It never left. Rust, which is what failure is everywhere else here, and it
      says which failure rather than leaving a colour to be interpreted. The words
      stay exactly where they were written, to be copied back out of. */
@@ -1124,7 +1228,8 @@
     align-items: baseline;
     align-self: var(--you-align, auto);
   }
-  .receipt .now {
+  .receipt .now,
+  .queuedit .now {
     font: inherit;
     color: var(--paper-mute);
     background: none;
@@ -1135,8 +1240,42 @@
     text-decoration-color: var(--paper-faint);
     text-underline-offset: 3px;
   }
-  .receipt .now:hover {
+  .receipt .now:hover,
+  .queuedit .now:hover {
     color: var(--paper);
+  }
+  .queuedit .now:disabled {
+    cursor: default;
+    opacity: 0.45;
+    text-decoration: none;
+  }
+  /* Rewriting a queued message in place. It is your words, so it is set in the
+     reading's own face rather than the utility face of the receipt, and the
+     well is the composer's ground: this is a small message box, not a form. */
+  .queuedit {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    margin: 0.25em 0 0.1em 0.75em;
+    max-width: min(42rem, 100%);
+    align-self: var(--you-align, auto);
+  }
+  .queuedit textarea {
+    font: inherit;
+    font-size: calc(0.92rem * var(--read, 1));
+    line-height: 1.45;
+    color: var(--paper);
+    background: var(--well);
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    padding: 0.35em 0.5em;
+    resize: vertical;
+    min-height: 3em;
+    width: 100%;
+  }
+  .queuedit .acts {
+    display: flex;
+    gap: 0.6em;
   }
   .receipt.late {
     color: var(--st-fail);

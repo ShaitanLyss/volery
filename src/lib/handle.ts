@@ -24,6 +24,7 @@ export type Verb =
   | "aside"
   | "bypass"
   | "account"
+  | "provider"
   | "clear"
   | "renew"
   | "copy-resume"
@@ -76,6 +77,10 @@ export const COST: Record<Verb, Cost> = {
   renew: "work",
   // An account is spent where the card runs: the owner's money, the owner's caps.
   account: "work",
+  /* A provider ends the child and resumes the same session on the other
+     endpoint. The key is on the machine the card runs on and never travels, so
+     the move is a card-here gesture; `/provider`'s row says why. */
+  provider: "local",
   bypass: "work",
   aside: "cosmetic",
   "copy-resume": "read",
@@ -123,6 +128,8 @@ export const VERB_STAYS: Readonly<Partial<Record<Verb, string>>> = {
   regroup:
     "a grouping is a territory on this wall; a card elsewhere stands in its own wall's project section, which is that wall's to arrange",
   hand: "handing a plan on opens a fresh card from the plan document, and both the document and the card would be on the machine the card runs on — not built as an act (sink dbfd0857)",
+  provider:
+    "a provider's key is in the vault on the machine the card runs on and never travels — the move ends that card's child and resumes it there, which only its own wall can do",
   move: "moving a card between walls is its own exchange (`flyway/moving.rs`), started from the wall the card runs on",
   processes:
     "what a card is holding is a job object on the machine it runs on; listing it from here is not built as a read (sink dbfd0857)",
@@ -201,6 +208,18 @@ export const VERB_SLASH: { readonly [K in Verb]-?: VerbSlash } = {
       "the waterfall picks for you and this overrides it — the card's process ends and comes back against the same session, so it keeps everything it has read and re-reads it uncached. the wall still moves it off an account that has no room",
     takes: { wall: true },
   },
+  provider: {
+    slash: "provider",
+    summary: "run this conversation on claude code or deepseek",
+    detail:
+      "the card's process ends and resumes the same session on the other service — transcript, tools and files stay, and claude's thinking is still in the session file when it comes back. deepseek thinks with thinking off until its endpoint can round-trip the blocks",
+    takes: {
+      fixed: [
+        { value: "claude", summary: "back on the subscription" },
+        { value: "deepseek", summary: "on deepseek's own balance" },
+      ],
+    },
+  },
   clear: {
     slash: "clear",
     summary: "start this card fresh",
@@ -274,6 +293,18 @@ export const HANDLE_CROSSING: { readonly [K in keyof CardHandle]-?: Crossing } =
   do: "crosses",
   carries: "crosses",
   say: "crosses",
+  editQueued: {
+    stays:
+      "the queue a mid-turn prompt waits in is in the card's own wall's store, so the words are not here to rewrite — a card elsewhere can be sent to, but its waiting messages are changed where they wait",
+  },
+  cancelQueued: {
+    stays:
+      "same queue, same wall: deleting a message a card is keeping is done where it is kept, and a card elsewhere offers no delete here",
+  },
+  queued: {
+    stays:
+      "the words of a message waiting on another wall are in that wall's store; its gist says one is waiting, which is enough to draw the receipt and not enough to hand the words back to this one",
+  },
   stir: {
     stays:
       "a keystroke wakes a dormant card here before you send it anything; no touch travels between walls, so a card elsewhere wakes when the words arrive, and the dock says so",
@@ -546,6 +577,7 @@ export function rowVerb(id: string): { verb: Verb; args: Record<string, unknown>
   if (id.startsWith("regroup:")) return { verb: "regroup", args: { territory: after("regroup:") } };
   if (id.startsWith("move:")) return { verb: "move", args: { host: after("move:") } };
   if (id.startsWith("account:")) return { verb: "account", args: { account: after("account:") } };
+  if (id.startsWith("provider:")) return { verb: "provider", args: { provider: after("provider:") } };
   if (id.startsWith("keep:")) return { verb: "keep", args: { glass: after("keep:") === "glass" } };
   if (id === "unpin") return { verb: "pin", args: { on: false } };
   return (VERBS as readonly string[]).includes(id) ? { verb: id as Verb, args: {} } : null;

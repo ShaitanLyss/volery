@@ -10,9 +10,9 @@ import { describe, expect, test } from "bun:test";
  *
  * So the assertion is about every text field in the app, not a list of the
  * agent-bound ones: **a `<textarea>` or an `<input>` anywhere is a failure
- * unless the file is named below with the reason its text reaches no agent.**
- * A new input fails here until somebody decides which it is, which is the
- * whole point — the default is the one that cannot quietly lose pictures. */
+ * until it either is the box or is named below with what it is instead.** A
+ * new input fails here until somebody decides which it is, which is the whole
+ * point — the default is the one that cannot quietly lose pictures. */
 
 const SRC = join(import.meta.dir, "../src");
 
@@ -26,7 +26,10 @@ function components(dir: string): string[] {
   return out;
 }
 
-/** Text fields whose words go to no agent, and where they go instead. */
+/** Text fields that are not a prompt being composed, and what they are
+ *  instead. A field whose words are a *new* prompt to an agent must be the box,
+ *  so it can be handed a picture; a field editing words already attached is
+ *  the one kind that legitimately is not. */
 const NOT_AGENT_BOUND: Record<string, string> = {
   "lib/PromptBox.svelte": "the primitive itself",
   "lib/Accounts.svelte": "account names and settings",
@@ -54,6 +57,7 @@ const NOT_AGENT_BOUND: Record<string, string> = {
   "lib/Spotify.svelte": "a search for music",
   "lib/Spyglass.svelte": "the finder's query",
   "lib/Themes.svelte": "a theme's name and values",
+  "lib/Thread.svelte": "rewriting a queued prompt in place — its pictures are already attached and drawn under it, and this box cannot add more",
 };
 
 /** The inputs that do speak to an agent, each of which must mount the box. */
@@ -62,7 +66,7 @@ const AGENT_BOUND = ["lib/Dock.svelte", "lib/Ask.svelte", "lib/Notice.svelte"];
 const rel = (p: string) => relative(SRC, p).replace(/\\/g, "/");
 
 describe("every input that speaks to an agent can be handed a file", () => {
-  test("a text field anywhere is a PromptBox, or says why its words reach no agent", () => {
+  test("a text field anywhere is a PromptBox, or says what it is instead", () => {
     const offenders: string[] = [];
     for (const f of components(SRC)) {
       const src = readFileSync(f, "utf8");

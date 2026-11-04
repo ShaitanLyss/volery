@@ -453,25 +453,36 @@ inside the tool run that started them, each with its label and state.
 
 ### 5.6 Typing while an agent works
 
-**Enter sends, and the CLI queues it behind the running turn** — the behaviour every card has
-today (`turns.md`). The bubble is drawn at once and marked *queued — it goes when this turn
-finishes* for as long as `Line.awaited` holds, which is the honest flag: `state = "pending"` is
-taken off by the running turn's next message, whose answer is not about the queued prompt (*Settling
-a line is not claiming it*, `CLAUDE.md`). `tools/probe-queue.ts` measured the queued prompt being
-taken up about three seconds after the running turn's `result` — so the bubble says *when this turn
-finishes*, not *when this step ends*.
+**Enter sends, and a working card keeps it for you.** The bubble is drawn at
+once and reads *queued — it goes when this turn finishes*; it has not been
+written to the CLI at all. The message joins the card's held queue with
+`waiting: "turn"` (`holding.ts`), the queue that already keeps words while no
+account will take them, so it survives a restart and is not the CLI's to
+reinterpret. When the running turn's `result` lands, the queue drains: one
+round per turn, oldest first, and whatever is cut waits for the turn that round
+opens.
 
-One meaning for Enter, written on the bubble: the research found that products disagree on whether
-Enter queues or steers, and that the cure is to say which on the pending message.
+**Send now is an interrupt, not a cancellation.** `do("stop", { keepQueue:
+true })` ends the running turn; the aborted `result` is the event the queue
+drains on, so the message goes next and the conversation carries on. The words
+never left this wall, which is why this is safe where the old stop-only
+version was only as good as the CLI's own queue.
 
-**Send now is stop.** The same probe showed an interrupt does not lose a queued prompt — the CLI
-takes it up next. So *send now* on a queued bubble is `do("stop")` and nothing else; stopping and
-then sending would deliver it twice.
+**A queued message can be changed or dropped before it goes.** *edit* rewrites
+it in place (Enter saves, Escape cancels, Shift+Enter is a newline) and
+*delete* closes the line as *deleted — it never left this wall*. Both rewrite
+the store, so a restart agrees with the thread. Pictures stay attached to the
+message; the shots strip under the line still shows them.
 
-A queued prompt cannot be taken back once written to the card's stdin, and the bubble does not
-pretend it can. **Held** messages — no account will take them — are different: they have not
-left, so the hold offers *take back*, which hands the whole hold back to the message box (there is
-no per-message take-back; `#dropHold` returns them together).
+One meaning for Enter, written on the bubble: the research found that products
+disagree on whether Enter queues or steers, and that the cure is to say which
+on the pending message.
+
+**Held** messages — no account will take them — are the same queue with the
+other reason, and *take back* still hands the whole hold to the message box
+(`#dropHold`). A queued message behind a turn is *not* a hold for allowance,
+and the two are drawn apart: the allowance caption is suppressed where the
+turn's own receipt stands.
 
 Escape stops the agent while a turn is open. When none is, Escape does nothing in the message box:
 it never deselects the conversation (which empties chat view) and never blurs the box toward the

@@ -66,6 +66,9 @@ mod names;
 mod notice;
 mod presence;
 mod project;
+/// A card running on an agent service other than Claude Code's own
+/// subscription — DeepSeek first. See `.claude/rules/providers.md`.
+mod provider;
 mod reap;
 mod quit;
 mod relay;
@@ -990,6 +993,7 @@ pub fn run() {
             flyway::link::accounting::flyway_signin_begin,
             flyway::link::accounting::flyway_signin_code,
             store::set_conversation_account,
+            store::set_conversation_mode,
             store::set_conversation_bypass,
             store::set_conversation_hold,
             store::held_pictures,
@@ -1038,6 +1042,9 @@ pub fn run() {
             store::ensure_project,
             store::set_wall_guidance,
             store::set_default_preset,
+            provider::provider_reading,
+            provider::provider_ready,
+            provider::set_provider_limit,
             store::set_project_guidance,
             store::set_project_read_only,
             store::reroot_project,

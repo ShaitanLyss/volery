@@ -14,6 +14,7 @@
  * The first is `look` / `unseen`, the second is `coalesce`. */
 
 import type { HealKind } from "./classify";
+import { onProvider } from "./providers";
 
 export type PeekKind = "blocked" | "notice" | "overdue" | "failed" | "rang";
 
@@ -61,6 +62,12 @@ export function peekKey(i: Pick<PeekItem, "kind" | "key" | "id">): string {
 
 /** The cause a card's failure carries onto the ladder, or none. */
 export function causeOf(fault: HealKind | null, account: string | null): PeekCause | undefined {
+  /* A provider has no allowance to fold and no account to name: `@deepseek`
+     would arrive on the ladder as a phantom account titled with the sentinel,
+     saying every account is spent when the truth is a rate limit on a
+     balance. The card still shows its own failure; the ladder's "one account
+     ran out" row is the Claude one's. */
+  if (onProvider(account)) return undefined;
   return fault === "limited" ? { kind: "limited", account } : undefined;
 }
 

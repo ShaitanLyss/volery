@@ -66,6 +66,7 @@
 <script lang="ts">
   import { waterfall } from "./waterfall.svelte";
   import { onCredits } from "./credits";
+  import { providerName } from "./providers";
   import CtxRing from "./CtxRing.svelte";
   import { ctxSaid } from "./chatview";
   import { renewMarkTitle, renewWorth } from "./renewing";
@@ -233,12 +234,17 @@
    *  exactly that, and the transcript note scrolls away. No colour: colour on
    *  this wall is status, and which account a card is on is not a status. */
   const acct = $derived(
-    onCredits(conv.accountLabel) ? "credits" : waterfall.several ? conv.accountLabel : null,
+    onCredits(conv.accountLabel)
+      ? "credits"
+      : (providerName(conv.accountLabel) ?? (waterfall.several ? conv.accountLabel : null)),
   );
   /* Credits are said whatever the count of accounts: `several`'s argument is
      that a word that never varies is never read, and a card spending money per
      token is the one funding that is never the usual one. */
   const onCreditsNow = $derived(onCredits(conv.accountLabel));
+  /** A provider's word is a balance, not an account. The tooltip said "the
+   *  deepseek account" — the one place on the card that contradicted the chip. */
+  const providerNow = $derived(providerName(conv.accountLabel));
 
   /* Boost's look on a card (`boostfield.ts`): a card spending credits wears the
      look's light as a turning edge, and a card that has just gone onto them
@@ -288,13 +294,15 @@
             class="acct"
             class:loose={conv.bypassCaps && !onCreditsNow}
             class:credits={onCreditsNow}
-            title={onCreditsNow
-              ? conv.creditsHome
-                ? `spending the organisation's api credits while ${conv.creditsHome} has no room — billed per token`
-                : "spending the organisation's api credits — billed per token"
-              : conv.bypassCaps
-                ? `spending the ${acct} account, ignoring the caps you set`
-                : `spending the ${acct} account`}>{acct}{conv.bypassCaps && !onCreditsNow ? " uncapped" : ""}</span
+            title={providerNow
+              ? `spending ${providerNow}'s own balance — billed per token`
+              : onCreditsNow
+                ? conv.creditsHome
+                  ? `spending the organisation's api credits while ${conv.creditsHome} has no room — billed per token`
+                  : "spending the organisation's api credits — billed per token"
+                : conv.bypassCaps
+                  ? `spending the ${acct} account, ignoring the caps you set`
+                  : `spending the ${acct} account`}>{acct}{conv.bypassCaps && !onCreditsNow && !providerNow ? " uncapped" : ""}</span
           >
         {/if}
         <!-- Where the card is, when that is not here, and who asked for it

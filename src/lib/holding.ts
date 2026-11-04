@@ -1,7 +1,10 @@
 import { MAX_ATTACHED, compose, dropToken, echoOf, type Block, type Carried } from "./attach";
 
 /** What a card holds while no account will take its words, and how they go out
- *  again.
+ *  again — and, since 2026-11, the same queue for a message typed while a turn
+ *  is running. The reason differs (`waiting: "turn"` rather than the
+ *  allowance's), the keeping does not: one queue, persisted, drained when the
+ *  thing it is waiting for happens, never lost.
  *
  *  It was one slot. A first prompt held for an account was kept, persisted and
  *  sent when one freed up; a *second* typed into the same card was refused,
@@ -85,6 +88,19 @@ export function isQueuedSpawn(why: string | null | undefined): boolean {
  *  `· not sent`: nothing has gone wrong, and the card is keeping them. */
 export const HELD_MARK = " · held — will send when allowance returns";
 
+/** What the face says while a message waits for the turn that is running.
+ *
+ *  The same queue, a different reason: the card is working rather than out of
+ *  allowance, and nothing has been written to the CLI. That difference is the
+ *  whole of why *send now* is safe — an interrupt cannot lose words this wall
+ *  still holds (`Skein.stop`).
+ *
+ *  Deliberately not begun with `queued — `: that prefix is how a *spawn* held
+ *  by Rust is recognised when it is read back off the store (`QUEUED_SPAWN`,
+ *  `isQueuedSpawn`), and a prompt wearing it would be asked at `admit_now` as
+ *  though it were a card waiting for room. */
+export const QUEUED_BEHIND = "goes when this turn finishes";
+
 /** What the face says while what is left of a queue waits behind the round
  *  that went out ahead of it. */
 export const QUEUED_LINE = "held — sending the rest after this turn";
@@ -145,6 +161,13 @@ export function heldHeader(n: number): string {
   return `skein held these ${n} messages while this card's allowance was spent, and sends them now as one turn, in the order they were written. Each is exactly as it was typed, and a later one may change or take back an earlier one.`;
 }
 
+/** The same header for the other reason words wait — the card was working, not
+ *  out of allowance. It says which, because the agent reading it may otherwise
+ *  take "held" to mean something about the account. */
+export function queuedHeader(n: number): string {
+  return `skein queued these ${n} messages while this card was working, and sends them now as one turn, in the order they were written. Each is exactly as it was typed, and a later one may change or take back an earlier one.`;
+}
+
 /** The divider before message `k` of `n` in a combined round. */
 export function heldDivider(k: number, n: number): string {
   return `── message ${k} of ${n} ──`;
@@ -159,8 +182,16 @@ export function heldDivider(k: number, n: number): string {
  *  verbatim, with its pictures where its sentence put them. Adjacent text is
  *  run together into one block so the wire carries what a person would have
  *  typed, and the echo is `echoOf` the result — the same fold every pictured
- *  prompt is matched by, so the two cannot drift. */
-export function composeRound(round: readonly { text: string; pictures: readonly Carried[] }[]): {
+ *  prompt is matched by, so the two cannot drift.
+ *
+ *  `waited` is which of the two reasons the round is going now: a spent
+ *  allowance (`held`, the original) or a turn that has just finished
+ *  (`queued`). It only changes the header's first sentence; the dividers and
+ *  the verbatim rule are the same promise in both. */
+export function composeRound(
+  round: readonly { text: string; pictures: readonly Carried[] }[],
+  waited: "held" | "queued" = "held",
+): {
   content: Block[];
   echo: string;
 } {
@@ -169,7 +200,7 @@ export function composeRound(round: readonly { text: string; pictures: readonly 
     return { content, echo: echoOf(content) };
   }
   const out: Block[] = [];
-  let words = heldHeader(round.length);
+  let words = waited === "queued" ? queuedHeader(round.length) : heldHeader(round.length);
   const flush = () => {
     if (words.trim()) out.push({ type: "text", text: words });
     words = "";

@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 59;
+const SCHEMA_VERSION: i64 = 60;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -439,6 +439,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (57, migrate_v57),
     (58, migrate_v58),
     (59, migrate_v59),
+    (60, migrate_v60),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3213,6 +3214,35 @@ fn migrate_v59(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: one new
+/// table and nothing existing changes.
+///
+/// A provider's spending limit, and the moment its accounting started. **The
+/// limit is the wall's, not the service's**: DeepSeek publishes no spend-limit
+/// API, so a cap that means anything has to be enforced where the spending
+/// happens — `provider::budget_refusal`, on the one door every prompt goes
+/// through (`deliver_blocks`).
+///
+/// `usd = 0` is "no limit", which is why the column defaults to it: every wall
+/// before this rung had none, and a zero that meant "spent nothing" would block
+/// the first card. `from_at` is when the current limit was set, so a card's
+/// earlier spending does not count against a budget somebody chose today;
+/// changing a limit that is already positive keeps the epoch, and going from no
+/// limit to one starts it.
+fn migrate_v60(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS provider_budget (
+            provider   TEXT PRIMARY KEY,
+            usd        REAL NOT NULL DEFAULT 0,
+            from_at    INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v60: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -3348,12 +3378,39 @@ pub(crate) fn save_window_frame(
     Ok(())
 }
 
-/// Remember which account a card is on.
+/// Remember which service and model a card is on.
 ///
 /// Written the moment a card is spawned or swapped rather than at the next
 /// settling turn, for the reason `set_aside` gives: a card that swaps and is
 /// never spoken to again would otherwise come back attached to the account it
 /// left, and the first thing it did would be to move itself back.
+///
+/// The account and the model in one write, for a move that changes both — a
+/// provider switch. **`model: None` clears it**, unlike `update_conversation`'s
+/// COALESCE: a Claude card coming back from DeepSeek must not resume with a
+/// `deepseek-*` id the CLI's own endpoint would refuse.
+#[tauri::command]
+pub fn set_conversation_mode(
+    store: tauri::State<'_, Store>,
+    id: String,
+    account_label: Option<String>,
+    model: Option<String>,
+) -> Result<(), String> {
+    store
+        .0
+        .lock()
+        .map_err(|_| "the store is wedged".to_string())?
+        .execute(
+            "UPDATE conversation SET account_label = ?1, model = ?2, credits_home = NULL WHERE id = ?3",
+            params![account_label, model, id],
+        )
+        .map_err(|e| format!("set mode: {e}"))?;
+    Ok(())
+}
+
+/// Remember which Claude account a card is on — the credits move's writer,
+/// which also keeps the account it came from. A provider move changes the
+/// model as well and goes through `set_conversation_mode`.
 #[tauri::command]
 pub fn set_conversation_account(
     store: tauri::State<'_, Store>,
@@ -6430,6 +6487,77 @@ pub fn set_default_preset(store: tauri::State<'_, Store>, preset_id: String) -> 
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// A provider's spending cap and the moment its accounting started.
+///
+/// `limit == 0` is *no limit*, not *nothing may be spent* — every wall before
+/// `migrate_v60` had none, and a zero that blocked the first card would be the
+/// migration breaking the feature it was adding. See `provider_budget`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Budget {
+    pub limit: f64,
+    pub from_at: i64,
+}
+
+/// What the wall has been told a provider may spend, or the default (no limit)
+/// where it has never been told.
+///
+/// Read by the prompt door (`provider::budget_refusal`) and by the reading the
+/// keyring draws, so the number a person sets and the number that stops a turn
+/// are the same row.
+pub fn provider_budget(conn: &Connection, provider: &str) -> Budget {
+    conn.query_row(
+        "SELECT usd, from_at FROM provider_budget WHERE provider = ?1",
+        [provider],
+        |r| Ok(Budget { limit: r.get(0)?, from_at: r.get(1)? }),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_default()
+}
+
+/// What the provider's cards have spent since `since`, from the turn rows.
+///
+/// `label` is the card's `account_label` — the `@` sentinel — because the turn
+/// row records the *funding* and that is the only thing that survives a
+/// conversation being deleted, moved or re-providered. A provider's own id is
+/// not what a turn row holds.
+pub fn provider_spent(conn: &Connection, label: &str, since: i64) -> f64 {
+    conn.query_row(
+        "SELECT COALESCE(SUM(usd), 0) FROM turn WHERE account_label = ?1 AND ended_at >= ?2",
+        params![label, since],
+        |r| r.get::<_, f64>(0),
+    )
+    .unwrap_or(0.0)
+}
+
+/// Set the cap, and start its clock only when there was none.
+///
+/// Changing a limit that is already positive keeps the epoch: raising a budget
+/// from $10 to $20 after $11 of work must not read as $0 spent, or the wall
+/// would allow another $20 against a cap that only grew by $10. Going from no
+/// limit to one starts now, which is the only honest reading of "cap this from
+/// today".
+pub fn set_provider_budget(
+    conn: &Connection,
+    provider: &str,
+    usd: f64,
+    now: i64,
+) -> Result<Budget, String> {
+    if !usd.is_finite() || usd < 0.0 {
+        return Err("a spending limit has to be a number of dollars, zero or more".into());
+    }
+    let before = provider_budget(conn, provider);
+    let from_at = if before.limit > 0.0 { before.from_at } else { now };
+    conn.execute(
+        "INSERT INTO provider_budget (provider, usd, from_at, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(provider) DO UPDATE SET usd = ?2, from_at = ?3, updated_at = ?4",
+        params![provider, usd, from_at, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Budget { limit: usd, from_at })
 }
 
 /* ── reference images ─────────────────────────────────────────────────── */
@@ -9670,6 +9798,31 @@ mod tests {
     }
 
     use super::*;
+
+    /// A cap's clock starts when the cap does, and survives being raised.
+    ///
+    /// The failure this prevents: raising $10 to $20 after $11 of work resetting
+    /// the spend to zero, so the wall allowed another $20 against a cap that had
+    /// only grown by $10. Clearing and setting a new cap *does* start over,
+    /// which is the one case where the reading is meant to.
+    #[test]
+    fn a_provider_budget_keeps_its_clock_when_the_cap_changes() {
+        let conn = db();
+        assert_eq!(provider_budget(&conn, "deepseek"), Budget::default());
+        assert_eq!(provider_budget(&conn, "deepseek").limit, 0.0);
+
+        let first = set_provider_budget(&conn, "deepseek", 10.0, 1_000).unwrap();
+        assert_eq!(first, Budget { limit: 10.0, from_at: 1_000 });
+        let raised = set_provider_budget(&conn, "deepseek", 20.0, 2_000).unwrap();
+        assert_eq!(raised, Budget { limit: 20.0, from_at: 1_000 });
+
+        /* Zero is no limit, and clears the epoch with it. */
+        set_provider_budget(&conn, "deepseek", 0.0, 3_000).unwrap();
+        let again = set_provider_budget(&conn, "deepseek", 5.0, 4_000).unwrap();
+        assert_eq!(again, Budget { limit: 5.0, from_at: 4_000 });
+
+        assert!(set_provider_budget(&conn, "deepseek", -1.0, 5_000).is_err());
+    }
 
     /// The trail a card has left, off the thread now: most-handled first, one
     /// file however it was spelled, and a write wins over a read.
