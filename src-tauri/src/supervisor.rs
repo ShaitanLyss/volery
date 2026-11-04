@@ -4173,6 +4173,7 @@ mod tests {
         ("pin.rs", include_str!("pin.rs")),
         ("show.rs", include_str!("show.rs")),
         ("presence.rs", include_str!("presence.rs")),
+        ("provider.rs", include_str!("provider.rs")),
         ("relay.rs", include_str!("relay.rs")),
         ("remove.rs", include_str!("remove.rs")),
         ("selector.rs", include_str!("selector.rs")),
