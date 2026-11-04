@@ -39,6 +39,7 @@ ANTHROPIC_MODEL=sonnet
 CLAUDE_CODE_SUBAGENT_MODEL=sonnet
 CLAUDE_CODE_AUTO_COMPACT_WINDOW=786432
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+CLAUDE_CODE_INLINE_TOOLS=0
 CLAUDE_SECURESTORAGE_CONFIG_DIR=<an empty folder>
 ```
 
@@ -61,6 +62,16 @@ alias to a provider id locally is exactly what the CLI then refuses.
 **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is deliberate.** A provider card must not talk to
 Anthropic at all. The CLI's own update checks, telemetry and model-list fetches are not this
 card's business, and with a DeepSeek token they would fail somewhere two hops from the cause.
+
+**`CLAUDE_CODE_INLINE_TOOLS=0` is DeepSeek's `tool_definition` 422.** From Claude Code 2.1.286,
+with inline tools on, the CLI can put a deferred MCP tool's whole schema into a system message
+as a `tool_definition` block under the `inline-tools-2026-09-15` beta. DeepSeek's Anthropic
+endpoint accepts `tool_reference` and not `tool_definition`, and its error
+(`unknown variant 'tool_definition', expected 'tool_reference'`) does not match the CLI's own
+fallback text (`Input tag 'tool_definition'`), so the card sticks instead of downgrading. The
+override keeps tool search on and makes the CLI send references, which DeepSeek does understand.
+Probed on this machine's 2.1.318: with `1` the request carries `inline-tools-2026-09-15`, with
+`0` it does not; see [DeepSeek-V3 #1701](https://github.com/deepseek-ai/DeepSeek-V3/issues/1701).
 
 **The env names are Claude Code's, and a typo is silent.** They were read out of the installed
 binary (2.1.317), not guessed, and `test/providers.test.ts` holds the Rust and TypeScript sides

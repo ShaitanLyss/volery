@@ -159,6 +159,18 @@ pub fn apply(app: &AppHandle, cmd: &mut Command, p: &'static Provider) -> Result
        to Claude keeps the thinking already in the shared session file — nothing
        here touches the transcript. */
     cmd.env("MAX_THINKING_TOKENS", "0");
+    /* **Claude Code 2.1.286+ can inline a deferred tool's whole schema in a
+       system message**, as a `tool_definition` content block, under the
+       `inline-tools-2026-09-15` beta. DeepSeek's Anthropic endpoint understands
+       `tool_reference` and not `tool_definition`, and its 422 does not match the
+       CLI's own fallback (which looks for `Input tag 'tool_definition'`), so the
+       card is stuck rather than downgrading. This is the documented override
+       (`CLAUDE_CODE_INLINE_TOOLS`, 2.1.280+); `0` makes the CLI keep tool search
+       on and send references, which DeepSeek does understand. Probed against
+       this machine's 2.1.318: with `1` the request carries
+       `inline-tools-2026-09-15`, with `0` it does not. See
+       https://github.com/deepseek-ai/DeepSeek-V3/issues/1701. */
+    cmd.env("CLAUDE_CODE_INLINE_TOOLS", "0");
     /* A provider card must not talk to Anthropic at all. The CLI's own update
        checks, telemetry and model-list fetches are not this card's business,
        and with a DeepSeek token they would fail somewhere two hops from the
@@ -303,6 +315,10 @@ pub fn withhold(cmd: &mut Command) {
         "CLAUDE_CODE_SUBAGENT_MODEL",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        /* The inline-tools override `apply` uses to keep DeepSeek's endpoint
+           from seeing `tool_definition`. Inherited by a Claude card it would
+           turn a Claude feature off for the rest of the wall. */
+        "CLAUDE_CODE_INLINE_TOOLS",
         /* Thinking is off for a provider card (`apply`); an ordinary card
            inheriting the switch would quietly stop thinking for good. */
         "MAX_THINKING_TOKENS",

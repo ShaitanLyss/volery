@@ -51,6 +51,14 @@ CLI keeps the signed blocks in the JSONL and strips them from the request, with 
 or off. They are preserved as a record, not a context the model resumes; the move needs no
 sidecar. See `docs/PROVIDERS.md`.
 
+**Inline tools are off for a provider card** (`CLAUDE_CODE_INLINE_TOOLS=0`, 2.1.280+, removed
+again by `withhold`). From 2.1.286 the CLI can put a deferred MCP tool's whole schema in a
+system message as a `tool_definition` block; DeepSeek's endpoint only knows `tool_reference`, and
+its 422 does not match the CLI's fallback string, so the card sticks at the first tool search.
+`0` keeps tool search on and sends references instead. Probed on 2.1.318: `1` adds the
+`inline-tools-2026-09-15` beta header, `0` does not. This is a CLI/DeepSeek interop bug, not
+Volery's; see [DeepSeek-V3 #1701](https://github.com/deepseek-ai/DeepSeek-V3/issues/1701).
+
 **The env names are Claude Code's, not ours.** They were read out of the installed binary
 (2.1.317) and `test/providers.test.ts` holds this file and `providers.ts` to the same strings.
 A typo here is a variable the CLI ignores, which reads exactly like the provider having no
