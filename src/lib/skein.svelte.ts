@@ -4128,6 +4128,32 @@ export class Skein {
     if (conv.pendingNudge || this.#nudges.has(conv.id)) this.#dropNudge(conv);
   }
 
+  /** A hold that outlived the move.
+   *
+   *  **The bug this closes is the one the wall showed**: a card held for a spent
+   *  Claude allowance was moved to DeepSeek, and the hold — its queued prompts,
+   *  the banner and the countdown — came with it. The account's window is not
+   *  the balance the card now spends, so nothing would ever release it:
+   *  `#releaseCard` was still asking the Claude waterfall, which said spent, and
+   *  re-held it for a provider card that does not spend Claude at all.
+   *
+   *  So a move to a provider turns an allowance hold into the queue it really
+   *  is, and releases it at once; a move to Claude leaves it, because there the
+   *  allowance question is the right one again. Either way the messages are
+   *  yours and go in the order they were written. */
+  #afterMove(conv: Conversation, toProvider: boolean) {
+    if (!conv.held) return;
+    if (toProvider && conv.held.waiting === "allowance") {
+      conv.held = { ...conv.held, why: QUEUED_BEHIND, until: null, waiting: "turn" };
+      conv.activity = QUEUED_BEHIND;
+      this.#aimHold(conv, null);
+      this.#writeHold(conv);
+    }
+    /* Directly, not through the sweep: the card is dormant now and the person
+       who pressed the move is looking at it. */
+    void this.#releaseCard(conv);
+  }
+
   /** Move this conversation onto another service, or back to Claude Code.
    *
    *  **The session is the thing that moves, not the card.** A provider is an
@@ -4160,6 +4186,7 @@ export class Skein {
       await this.#moveTo(conv, null, null, null, null);
       conv.model = undefined;
       conv.contextWindow = contextWindowFor("");
+      this.#afterMove(conv, false);
       conv.note(
         "back on claude code — the same session resumes, and claude's thinking is still in the transcript",
       );
@@ -4191,6 +4218,7 @@ export class Skein {
     await this.#moveTo(conv, p.account, null, null, model);
     conv.model = model;
     conv.contextWindow = contextWindowFor(model);
+    this.#afterMove(conv, true);
     conv.note(
       `moved to ${p.label} — the same session resumes. thinking is off there until its endpoint can round-trip the blocks; claude's own thinking stays in this transcript.`,
     );
@@ -4625,7 +4653,7 @@ export class Skein {
          where it runs. */
       conv.held = { ...conv.held, waiting: "allowance" };
     }
-    if (this.#managing) {
+    if (this.#managing && !onProvider(conv.accountLabel)) {
       /* The same decision the send will make, so a hold boost can take onto
          credits is released rather than re-held. */
       const choice = this.#decide(conv);
