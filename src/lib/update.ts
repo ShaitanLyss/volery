@@ -191,6 +191,10 @@ export function watching(stage: Stage): boolean {
 export type Running = {
   working: number;
   jobs: number;
+  /** A **parked** question: a live `tools/call` waiting on an answer. Deferred
+   *  asks in the away pile are rows, not processes — they survive the restart
+   *  and must not hold an update back, or an away wall with a pile would never
+   *  update at all. */
   questions: number;
   servers: number;
   workflows: number;

@@ -3305,14 +3305,16 @@
     if (await releases.fetch()) void getCurrentWindow().close();
   }
 
-  /** Nothing a restart would interrupt: no turn, no job, no parked question,
-   *  no dev server, no workflow. A held prompt is persisted and does not count. */
+  /** Nothing a restart would interrupt: no turn, no job, no **parked** question,
+   *  no dev server, no workflow. Deferred questions in the away pile are rows and
+   *  survive the restart, so they do not hold it back — a wall left away with a
+   *  pile is the common case, not a reason never to update. A held prompt is
+   *  persisted too and does not count. */
   const updateQuiet = $derived(
     quietForUpdate({
       working: skein.live,
       jobs: busyCards.length,
-      questions:
-        presence.waiting + skein.convs.filter((c) => c.pendingAsk || c.asks.length > 0).length,
+      questions: skein.convs.filter((c) => c.pendingAsk || c.asks.length > 0).length,
       servers: skein.groups.some((g) => g.running) ? 1 : 0,
       workflows: Object.keys(crowds.watching).length,
     }),
