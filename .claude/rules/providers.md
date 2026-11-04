@@ -138,8 +138,11 @@ Switching provider mid-life is built for `/provider`, the card's right-click and
 The tool asks from inside a turn and the front end makes the move on the `result` — a child
 cannot be ended under its own tool call. `CLAUDE_SECURESTORAGE_CONFIG_DIR` moves only the
 credential store, so the transcript is shared. A move back to Claude clears the model and
-lands on the CLI's sign-in; the waterfall chooses an account on the next send. No provider
-on another wall. No allowance stack (no OAuth, no `/api/oauth/usage`). No `account` interface
+lands on the CLI's sign-in; the waterfall chooses an account on the next send. A provider
+**move** crosses as a `work` act — the owner checks its own key and does the stop/resume, so
+a card blocked on a spent subscription can be moved from another wall — while a remote
+**spawn** on a provider is still refused: the key does not travel. No allowance stack (no
+OAuth, no `/api/oauth/usage`). No `account` interface
 for the key: it is an integration in `creds.rs`, stored under
 `dev.skein.studio/deepseek-key`, read at spawn, never a lendable credential.
 

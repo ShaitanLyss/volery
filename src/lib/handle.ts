@@ -12,6 +12,7 @@
  * so every row of the table is tested without a window. */
 
 import { CARRY_MOST, carriedCost, looksLike, type Turn } from "./attach";
+import { PROVIDERS } from "./providers";
 import type { CardHandle } from "./cards.svelte";
 import type { Readable } from "./transcript";
 
@@ -78,9 +79,9 @@ export const COST: Record<Verb, Cost> = {
   // An account is spent where the card runs: the owner's money, the owner's caps.
   account: "work",
   /* A provider ends the child and resumes the same session on the other
-     endpoint. The key is on the machine the card runs on and never travels, so
-     the move is a card-here gesture; `/provider`'s row says why. */
-  provider: "local",
+     endpoint. The key stays on the machine the card runs on; another wall asks
+     that wall to make the move, as it asks for an account move. */
+  provider: "work",
   bypass: "work",
   aside: "cosmetic",
   "copy-resume": "read",
@@ -128,8 +129,6 @@ export const VERB_STAYS: Readonly<Partial<Record<Verb, string>>> = {
   regroup:
     "a grouping is a territory on this wall; a card elsewhere stands in its own wall's project section, which is that wall's to arrange",
   hand: "handing a plan on opens a fresh card from the plan document, and both the document and the card would be on the machine the card runs on — not built as an act (sink dbfd0857)",
-  provider:
-    "a provider's key is in the vault on the machine the card runs on and never travels — the move ends that card's child and resumes it there, which only its own wall can do",
   move: "moving a card between walls is its own exchange (`flyway/moving.rs`), started from the wall the card runs on",
   processes:
     "what a card is holding is a job object on the machine it runs on; listing it from here is not built as a read (sink dbfd0857)",
@@ -608,6 +607,10 @@ export function actFor(
        it carries what the face said too. */
     case "account":
       return { verb, args: { account: String(args.account ?? ""), sawWorking: face.working } };
+    case "provider":
+      /* The owner checks its own key and does the stop/resume; the key never
+         travels. `sawWorking` is the same guard the account move carries. */
+      return { verb, args: { provider: String(args.provider ?? ""), sawWorking: face.working } };
     case "clear":
       return { verb, args: { sawWorking: face.working } };
     case "wake":
@@ -635,11 +638,16 @@ export function actRefusal(
   if (!(ACTS as readonly string[]).includes(verb)) return `${me} does not know how to ${verb} a card from another wall`;
   /* Both end the card's process: a turn it has started since the asker chose
      this is a turn the asker never saw, and is not theirs to kill. */
-  if ((verb === "clear" || verb === "account") && card.working && args.sawWorking !== true)
+  if ((verb === "clear" || verb === "account" || verb === "provider") && card.working && args.sawWorking !== true)
     return `it has started a turn on ${me} since you chose that — look at it before asking again`;
   if (verb === "account") {
     const label = typeof args.account === "string" ? args.account : "";
     if (!accounts.includes(label)) return `there is no account called ${label || "that"} on ${me} that can take work`;
+  }
+  if (verb === "provider") {
+    const p = typeof args.provider === "string" ? args.provider : "";
+    if (p !== "claude" && !PROVIDERS.some((x) => x.id === p || x.label === p))
+      return `there is no service called ${p || "that"} to move it to`;
   }
   return null;
 }

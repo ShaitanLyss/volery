@@ -129,8 +129,27 @@ jobs:
       # store.rs, ask.rs, control.rs, supervisor.rs, servers.rs, sessions.rs, project.rs.
       # First place these have ever run — expect to iterate on anything that assumed a
       # desktop session or a `claude` binary on PATH.
+      #
+      # `tee` and the step after it exist because a failing test is otherwise
+      # invisible: the job log needs admin rights to download, and a red run that
+      # says only "exit code 1" is a run nobody can repair from outside. The tail
+      # goes in the step summary, which is on the run page.
       - name: rust suites
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml 2>&1 | tee rust-tests.log
+
+      - name: rust suites failed
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## rust suites'
+            echo '```'
+            tail -n 200 rust-tests.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: build
         run: bun run tauri build

@@ -504,6 +504,17 @@ export class RemoteCard implements CardHandle {
       accountPicks: onProvider(s.accountLabel)
         ? []
         : s.accounts.map((a) => ({ id: a, label: a, on: a === s.accountLabel })),
+      /* The service, asked of the wall that holds the key. Its `verbs` decide
+         whether the row is offered at all: a wall one release behind has no
+         `provider` act to accept. */
+      providerPicks: [
+        { id: "claude", label: "claude code", on: !onProvider(s.accountLabel) },
+        ...PROVIDERS.map((p) => ({
+          id: p.id,
+          label: p.label,
+          on: providerOf(s.accountLabel)?.id === p.id,
+        })),
+      ],
     };
   }
   can(verb: Verb): Can {

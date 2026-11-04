@@ -1446,8 +1446,8 @@ directory **on <host>**, wherever its wall announced the verb.
   also knows — `act::offered`) and `closes` (`close_by_person`); `Shadow.remote` reads both. Not
   in `fleet::CAN`, for `tail::WORD`'s reason: those are what an *agent* may ask.
 - **Gated by cost, on the owner, on its switch read fresh** (`act::gate`). `work` — wake, clear,
-  account, bypass — needs "take work from other walls", exactly as a prompt does; `cosmetic`
-  (aside) and `read` (the copies) do not. The asker refuses at once a wall that is unknown, quiet
+  account, provider, bypass — needs "take work from other walls", exactly as a prompt does;
+  `cosmetic` (aside) and `read` (the copies) do not. The asker refuses at once a wall that is unknown, quiet
   (`QUIET_AFTER_MS`), too old for the verb (`act_reachable` → `reachable`), or — for a work verb —
   last announced as not taking work; nothing is queued, since a gesture is one exchange and an
   exchange that does not land is the gesture refused.

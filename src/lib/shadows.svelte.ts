@@ -37,6 +37,7 @@ import type { Conversation, Job, Line, PendingAsk } from "./conversation.svelte"
 import { blankAnswers, composeAnswer, normalizeAsk, type AskQuestion } from "./asking";
 import type { Skein } from "./skein.svelte";
 import { spanOf, type Tier } from "./classify";
+import { providerOf } from "./providers";
 import { Listeners } from "./listeners";
 import { hereAt, readWaiting, type Waiting } from "./waiting";
 import {
@@ -2119,6 +2120,21 @@ export class Elsewhere {
           return conv.accountLabel === to
             ? answer("taken")
             : answer("refused", `${me} could not put it on ${to} — ${this.#skein.fault || "it refused"}`);
+        }
+        case "provider": {
+          /* The key is this wall's, so the move is too. `setProvider` says a
+             refusal as a note/fault rather than throwing; whether it went is
+             read off the card's label. */
+          const to = String(args.provider);
+          conv.note(`asked from ${p.host}`);
+          await this.#skein.setProvider(conv, to);
+          const moved =
+            to === "claude"
+              ? conv.accountLabel === null
+              : providerOf(conv.accountLabel)?.id === to;
+          return moved
+            ? answer("taken")
+            : answer("refused", `${me} could not move it to ${to} — ${this.#skein.fault || "it refused"}`);
         }
         /* A turn ended, as Escape ends one here. Not working any more is
            what was asked, so a card that finished first is taken. */

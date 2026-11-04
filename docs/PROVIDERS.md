@@ -265,10 +265,10 @@ question about the conversation.
 
 ## What this deliberately does not do
 
-- **No provider on a remote wall.** The key does not travel. A remote spawn on DeepSeek is
-  refused with words rather than opened against a key the far machine may not have. A
-  provider *move* is local-only for the same reason: `/provider`, the right-click and
-  `set_provider` are this wall's gestures, and another wall's card says which.
+- **No remote spawn on a provider.** A remote `spawn` on DeepSeek is refused with words
+  rather than opened against a key the far machine may not have. A **move** is different: it
+  crosses as a work act, the owner checks its own key and does the stop/resume, and the key
+  never travels. That is the remote-unblock case (`flyway/act.rs`, `Elsewhere.#perform`).
 - **No account interface for the key.** The key is an integration (`creds.rs`), not an
   account: it is stored in the Windows vault under `dev.skein.studio/deepseek-key`, read at
   spawn, and never handed to a card as a lendable credential.

@@ -73,10 +73,11 @@ pub enum Cost {
 }
 
 /// Every verb this build will do for a person on another wall.
-pub const VERBS: [(&str, Cost); 9] = [
+pub const VERBS: [(&str, Cost); 10] = [
     ("stop", Cost::Person),
     ("wake", Cost::Work),
     ("clear", Cost::Work),
+    ("provider", Cost::Work),
     /* Asks the card to renew itself (`renew.rs`): a prompt into it, so the
        owner's switch gates it exactly as a prompt is gated. */
     ("renew", Cost::Work),
@@ -195,6 +196,18 @@ pub fn read_args(verb: &str, args: &Value) -> Result<Value, String> {
             }
             out.insert("account".into(), Value::String(label));
             /* A move to another account ends the process, as a clear does. */
+            out.insert("sawWorking".into(), Value::Bool(matches!(get("sawWorking"), Some(Value::Bool(true)))));
+        }
+        "provider" => {
+            let p = get("provider").and_then(Value::as_str).map(|s| fit_text(s, 32)).unwrap_or_default();
+            if p.is_empty() {
+                return Err("no service was named".into());
+            }
+            if p != "claude" && crate::provider::named(&p).is_none() {
+                return Err(format!("there is no service called {p}"));
+            }
+            out.insert("provider".into(), Value::String(p));
+            /* A provider move also ends the child. */
             out.insert("sawWorking".into(), Value::Bool(matches!(get("sawWorking"), Some(Value::Bool(true)))));
         }
         "clear" => {
