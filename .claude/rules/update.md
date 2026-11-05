@@ -415,11 +415,12 @@ Three conditions, and all three are required:
 2. **The download is not the restart.** When away and offered, `release.svelte.ts` downloads
    at once — that is safe beside work. The close waits.
 3. **Nothing a restart would interrupt.** `quietForUpdate` counts working turns, background
-   jobs, parked questions, dev servers and running workflows. A **held prompt is deliberately
-   not counted**: it is persisted and released after the restart. A **parked question is**:
-   its process is holding the `tools/call`, so a restart loses the question rather than moving
-   it. That is the one that would otherwise bite an away wall, since away mode is exactly when
-   questions pile up.
+   jobs, dev servers and running workflows. A **held prompt is deliberately not counted**: it
+   is persisted and released after the restart. A **parked question is deferred first** — the
+   same `defer_ask` command the *defer* button calls, which writes the away-pile row and tells
+   the card, so the `tools/call` closes and nothing is lost. Only a question that refuses that
+   (a confirmation with no request behind it) holds the restart; the away screen says it is
+   waiting on a question rather than on work.
 
 When all three hold, `App.svelte` waits `AUTO_UPDATE_GRACE_MS` (a minute) and closes through
 the ordinary `CloseRequested` path, which runs the armed installer from the exit handler. Any

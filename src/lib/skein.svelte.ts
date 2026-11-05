@@ -5674,6 +5674,16 @@ export class Skein {
     }
   }
 
+  /** File every question still parked on this wall, so an away restart has
+   *  nothing held. The same command the *defer* button calls: the card is told,
+   *  the row is written, and the `tools/call` closes. A question that refuses —
+   *  a confirmation with no request behind it — stays where it is, and the
+   *  update waits rather than making a decision for somebody. */
+  async deferParked() {
+    const cards = this.convs.filter((c) => c.asks.length > 0);
+    await Promise.all(cards.map((c) => this.deferAsk(c)));
+  }
+
   async answerAsk(conv: Conversation, answer?: string) {
     const ask = conv.pendingAsk;
     if (!ask) return;

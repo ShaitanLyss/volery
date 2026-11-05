@@ -103,9 +103,10 @@ export class Presence {
    *
    *  On by default, because the state it is scoped to is the one where nobody
    *  is looking: the wall you are using never does this. `quietForUpdate` is the
-   *  other half — no working card, job, parked question, dev server or workflow
-   *  may be interrupted — so a long job simply holds the restart back. A held
-   *  prompt is persisted, not running, and does not block it. */
+   *  other half — no working card, job, dev server or workflow may be
+   *  interrupted. A **parked question is deferred first**, into the same row the
+   *  *defer* button writes, and only one that refuses that holds the restart. A
+   *  held prompt is persisted, not running, and does not block it. */
   autoUpdate = $state(stored(UPDATE_KEY, true));
 
   /** The pile is open. Set when away ends with something waiting, and by

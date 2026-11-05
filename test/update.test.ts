@@ -246,7 +246,7 @@ describe("the version table both languages read", () => {
 /* An away wall may take an update by itself, but only when there is nothing on
    it a restart would interrupt. The active wall never qualifies. */
 describe("an away wall's own update", () => {
-  const quiet = { working: 0, jobs: 0, questions: 0, servers: 0, workflows: 0 };
+  const quiet = { working: 0, jobs: 0, servers: 0, workflows: 0 };
 
   test("the active wall never auto-updates", () => {
     expect(autoUpdateStep(false, true, "offered", true)).toBeNull();
@@ -269,7 +269,7 @@ describe("an away wall's own update", () => {
 
   test("every kind of work holds the restart back", () => {
     expect(quietForUpdate(quiet)).toBe(true);
-    for (const key of ["working", "jobs", "questions", "servers", "workflows"] as const) {
+    for (const key of ["working", "jobs", "servers", "workflows"] as const) {
       expect(quietForUpdate({ ...quiet, [key]: 1 })).toBe(false);
     }
   });

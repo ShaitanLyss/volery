@@ -3305,38 +3305,63 @@
     if (await releases.fetch()) void getCurrentWindow().close();
   }
 
-  /** Nothing a restart would interrupt: no turn, no job, no **parked** question,
-   *  no dev server, no workflow. Deferred questions in the away pile are rows and
-   *  survive the restart, so they do not hold it back — a wall left away with a
-   *  pile is the common case, not a reason never to update. A held prompt is
-   *  persisted too and does not count. */
+  /** Nothing a restart would interrupt: no turn, no job, no dev server, no
+   *  workflow. **A parked question is not a permanent blocker**: `deferParked`
+   *  files it as the same row pressing *defer* would, frees the `tools/call`,
+   *  and then the restart can proceed. A question that refuses that — a
+   *  confirmation with no request behind it — is the one that still waits. A
+   *  held prompt is persisted and does not count. */
   const updateQuiet = $derived(
     quietForUpdate({
       working: skein.live,
       jobs: busyCards.length,
-      questions: skein.convs.filter((c) => c.pendingAsk || c.asks.length > 0).length,
       servers: skein.groups.some((g) => g.running) ? 1 : 0,
       workflows: Object.keys(crowds.watching).length,
     }),
   );
+  /** Questions still holding a `tools/call` open, across the wall. */
+  const parkedAsks = $derived(skein.convs.reduce((n, c) => n + c.asks.length, 0));
+  let updateDeferTried = $state(false);
+  let updateDeferring = $state(false);
 
   /** The away wall's own updater.
    *
    *  Only while **away**, and only the inactive half of it: the wall you are
    *  using keeps the ordinary offer and never restarts itself. The download is
    *  safe beside work; the restart waits for `updateQuiet` and a grace minute,
-   *  and any work — or coming back — cancels it. */
+   *  and any work — or coming back — cancels it.
+   *
+   *  A parked question is deferred first, through the very command the *defer*
+   *  button calls, so it becomes an away-pile row and its card is told; only then
+   *  is there nothing held and the restart timer can start. If the deferral is
+   *  refused, the question stands and the update waits — which is the right
+   *  answer for a confirmation that writes to another service. */
   let autoUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const step = autoUpdateStep(presence.away, presence.autoUpdate, releases.stage, updateQuiet);
     if (step === "fetch") {
+      updateDeferTried = false;
       void releases.fetch();
       return;
     }
-    if (step !== "close") return;
+    if (step !== "close") {
+      updateDeferTried = false;
+      return;
+    }
+    if (parkedAsks > 0) {
+      if (!updateDeferTried) {
+        updateDeferTried = true;
+        updateDeferring = true;
+        void skein.deferParked().finally(() => (updateDeferring = false));
+      }
+      return;
+    }
     autoUpdateTimer = setTimeout(() => {
       autoUpdateTimer = null;
-      if (autoUpdateStep(presence.away, presence.autoUpdate, releases.stage, updateQuiet) === "close")
+      if (
+        parkedAsks === 0 &&
+        autoUpdateStep(presence.away, presence.autoUpdate, releases.stage, updateQuiet) === "close"
+      )
         void getCurrentWindow().close();
     }, AUTO_UPDATE_GRACE_MS);
     return () => {
@@ -3350,8 +3375,12 @@
   const awayUpdateNote = $derived.by(() => {
     if (!presence.away || !presence.autoUpdate) return null;
     if (releases.stage === "fetching") return "downloading an update";
-    if (releases.stage === "armed")
-      return updateQuiet ? "restarting to update" : "update ready — waits for the work to finish";
+    if (releases.stage === "armed") {
+      if (!updateQuiet) return "update ready — waits for the work to finish";
+      if (parkedAsks > 0)
+        return updateDeferring ? "deferring questions" : "update ready — waits for a question";
+      return "restarting to update";
+    }
     if (releases.stage === "offered") return "update available";
     if (releases.stage === "failed") return "update failed — it will wait for you";
     return null;

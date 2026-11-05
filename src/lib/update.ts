@@ -191,24 +191,13 @@ export function watching(stage: Stage): boolean {
 export type Running = {
   working: number;
   jobs: number;
-  /** A **parked** question: a live `tools/call` waiting on an answer. Deferred
-   *  asks in the away pile are rows, not processes — they survive the restart
-   *  and must not hold an update back, or an away wall with a pile would never
-   *  update at all. */
-  questions: number;
   servers: number;
   workflows: number;
 };
 
 /** Nothing is running that a restart would interrupt. */
 export function quietForUpdate(r: Running): boolean {
-  return (
-    r.working === 0 &&
-    r.jobs === 0 &&
-    r.questions === 0 &&
-    r.servers === 0 &&
-    r.workflows === 0
-  );
+  return r.working === 0 && r.jobs === 0 && r.servers === 0 && r.workflows === 0;
 }
 
 /** What an away wall should do about an update, if anything.
