@@ -95,7 +95,9 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'commit-split-'));
 const env = { ...process.env, GIT_INDEX_FILE: path.join(tmp, 'index') };
 try {
   git(['read-tree', base], { env });
-  for (const p of paths) git(['add', '--', p], { env });
+  // -f: a path named here is meant, even under an ignored folder (a tracked
+  // `.claude/` kit in a repo that ignores `.claude`). A directory is refused above.
+  for (const p of paths) git(['add', '-f', '--', p], { env });
   for (const [p, keep] of hunks) {
     const diff = git(['diff', '--', p]);
     if (!diff) throw new Error(`${p} has no unstaged changes to take hunks from`);
@@ -112,8 +114,15 @@ try {
   } catch (e) {
     throw new Error(`HEAD moved while this ran (another commit landed), so nothing was committed. Run it again. (${e.message})`);
   }
-  const committed = git(['diff-tree', '--no-commit-id', '--name-only', '-r', commit]).split('\n').filter(Boolean);
-  if (committed.length) git(['restore', '--staged', '--source=HEAD', '--', ...committed]);
+  // Bring the shared index into line with the new HEAD for exactly these paths. A path
+  // the commit deleted is not in HEAD, so `restore --source=HEAD` would refuse it: it
+  // leaves the index instead.
+  const changes = git(['diff-tree', '--no-commit-id', '--name-status', '-r', commit]).split('\n').filter(Boolean)
+    .map((l) => { const [st, ...rest] = l.split('\t'); return { deleted: st === 'D', p: rest[rest.length - 1] }; });
+  const kept = changes.filter((c) => !c.deleted).map((c) => c.p);
+  const gone = changes.filter((c) => c.deleted).map((c) => c.p);
+  if (kept.length) git(['restore', '--staged', '--source=HEAD', '--', ...kept]);
+  if (gone.length) git(['rm', '--cached', '--quiet', '--ignore-unmatch', '--', ...gone]);
   process.stdout.write(git(['log', '--oneline', '-1']));
 } finally {
   rmSync(tmp, { recursive: true, force: true });
