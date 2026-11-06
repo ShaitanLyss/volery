@@ -255,14 +255,106 @@ export function sentOf(call: { name: string; input: unknown; result?: { text: st
   message: string;
   delivered: boolean | null;
   why: string;
+  /** What `send_files` carried, read off its receipt; null for a `send`. */
+  parcel: Parcel | null;
 } | null {
-  if (!call || call.name !== SEND_TOOL) return null;
+  if (!call || (call.name !== SEND_TOOL && call.name !== SEND_FILES_TOOL)) return null;
   const input = (call.input ?? {}) as { to?: unknown; message?: unknown };
+  const files = call.name === SEND_FILES_TOOL;
   const to = (Array.isArray(input.to) ? input.to : [input.to])
     .filter((t): t is string => typeof t === "string" && t.trim() !== "")
     .map((t) => t.trim());
-  const message = typeof input.message === "string" ? input.message : "";
-  const delivered = call.result ? !call.result.failed : null;
-  const why = call.result?.failed ? (call.result.text.split("\n").find((l) => l.trim()) ?? "").trim() : "";
-  return { to, message, delivered, why };
+  const message = typeof input.message === "string" && input.message.trim() ? input.message : files ? "Files for you." : "";
+  /* A refusal of a send_files arrives as an ordinary result — the call itself
+     succeeded — so a parcel that did not go is one whose receipt carries no
+     block. */
+  const parcel = files && call.result && !call.result.failed ? parcelOf(call.result.text).parcel : null;
+  /* Another wall that has not answered yet is not a refusal (`reach.rs::unanswered`). */
+  const unknown = files && !!call.result && !call.result.failed && / has not said whether /.test(call.result.text);
+  const refused = files && !!call.result && !call.result.failed && !parcel && !unknown;
+  const delivered = call.result && !unknown ? !call.result.failed && !refused : null;
+  const why = call.result && (call.result.failed || refused) ? (call.result.text.split("\n").find((l) => l.trim()) ?? "").trim() : "";
+  return { to, message, delivered, why, parcel };
+}
+
+/* ── a parcel: files that came with a message ─────────────────────────────
+ *
+ * `send_files` (`parcel.rs`) appends a block to the message it sends: a header
+ * line opening with `PARCEL_MARK`, one line per top-level thing sent (`+`) and
+ * per thing left out (`-`), fields split on ` · `, then a blank line and a note
+ * addressed to the model. The block is for the agent; the plate drawn under the
+ * message (`Parcel.svelte`) is the same lines read back, so a person sees what
+ * the agent was told it has. Read off the text, as everything about a relay is,
+ * because the live fold and a transcript read back share nothing but the text.
+ */
+
+/** `parcel.rs::PARCEL_MARK`. Held equal by `test/relay.test.ts`. */
+export const PARCEL_MARK = "[skein parcel]";
+
+export const SEND_FILES_TOOL = "mcp__skein__send_files";
+
+export type ParcelSent = { name: string; dir: boolean; detail: string; secret: boolean };
+export type ParcelLeft = { path: string; why: string };
+export type Parcel = {
+  files: string;
+  size: string;
+  landed: string;
+  sent: ParcelSent[];
+  left: ParcelLeft[];
+  /** Past what the block spells out: `+ … · N more` and `- … · N more left out`. */
+  sentMore: number;
+  leftMore: number;
+};
+
+const SECRET_SAID = "secret-shaped, sent because it was named";
+
+/** The message with its parcel block taken out, and the block read — or the
+ *  text unchanged and `null` when nothing was sent with it. Degrades rather
+ *  than refuses: a line this build cannot read is left out of the plate, never
+ *  a reason to draw no plate at all. */
+export function parcelOf(text: string): { body: string; parcel: Parcel | null } {
+  if (!text.includes(PARCEL_MARK)) return { body: text, parcel: null };
+  const lines = text.split("\n");
+  /* The last block, since the one Volery appends is at the end of the body;
+     a quoted one is unmarked by the sending wall (`parcel::unmark`), and this
+     is the second half of that guard for a transcript from before it. */
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0 && at === -1; i--) if (lines[i].startsWith(PARCEL_MARK)) at = i;
+  if (at === -1) return { body: text, parcel: null };
+  const head = lines[at].slice(PARCEL_MARK.length).trim().split(" · ");
+  const landedAt = head.findIndex((f) => f.startsWith("in "));
+  const parcel: Parcel = {
+    files: head[0] ?? "",
+    size: landedAt > 1 ? head[1] : "",
+    landed: landedAt === -1 ? "" : head.slice(landedAt).join(" · ").slice(3),
+    sent: [],
+    left: [],
+    sentMore: 0,
+    leftMore: 0,
+  };
+  let end = at + 1;
+  for (; end < lines.length; end++) {
+    const l = lines[end];
+    if (l.trim() === "") break;
+    const fields = l.slice(2).split(" · ");
+    const more = fields[0] === "…" ? Number.parseInt(fields[1] ?? "", 10) : NaN;
+    if (Number.isFinite(more)) {
+      if (l.startsWith("+ ")) parcel.sentMore = more;
+      else if (l.startsWith("- ")) parcel.leftMore = more;
+      continue;
+    }
+    if (l.startsWith("+ ")) {
+      const rest = fields.slice(1);
+      const secret = rest.includes(SECRET_SAID);
+      parcel.sent.push({
+        name: fields[0],
+        dir: fields[0].endsWith("/"),
+        detail: rest.filter((f) => f !== SECRET_SAID).join(" · "),
+        secret,
+      });
+    } else if (l.startsWith("- ")) {
+      parcel.left.push({ path: fields[0], why: fields.slice(1).join(" · ") });
+    }
+  }
+  return { body: lines.slice(0, at).join("\n").trim(), parcel };
 }

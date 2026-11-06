@@ -13,8 +13,12 @@ import {
   relayFrom,
   sentOf,
   SEND_TOOL,
+  SEND_FILES_TOOL,
+  PARCEL_MARK,
+  parcelOf,
 } from "../src/lib/relay";
-import { SKEIN_SEND_TOOL } from "../src/lib/classify";
+import { SKEIN_SEND_TOOL, SKEIN_SEND_FILES_TOOL, describeTool } from "../src/lib/classify";
+import { readFileSync } from "node:fs";
 import { isResumePrompt } from "../src/lib/rousing";
 
 /* Written by hand rather than imported, because the other end of this is in
@@ -284,6 +288,7 @@ describe("a message this card sent, as a letter draws it", () => {
       message: "taking the build",
       delivered: true,
       why: "",
+      parcel: null,
     });
     expect(sentOf(call({ to: ["a", " b "], message: "x" }))?.to).toEqual(["a", "b"]);
   });
@@ -320,5 +325,92 @@ describe("a renewed card's note", () => {
 
   test("draws the note itself as its body", () => {
     expect(relayBody(note).startsWith("Round 4 done")).toBe(true);
+  });
+});
+
+/* What `parcel.rs::manifest` writes, byte for byte — its test asserts the
+   same lines from the other side. */
+const MANIFEST = [
+  "[skein parcel] 3 files · 3.2 KB · in C:\\w\\attachments\\c1\\from-ccec3736-1",
+  "+ memory/ · 2 files · 40 B",
+  "+ .env · 220 B · secret-shaped, sent because it was named",
+  "+ CLAUDE.md · 3.0 KB",
+  "- memory/.env.local · secret-shaped — name it directly to send it",
+  "- memory/nm/ · a link to C:\\x · y, never followed",
+  "",
+  "(These are copies, in this card's own folder: they are gone when this card closes.)",
+].join("\n");
+
+describe("a parcel that came with a message", () => {
+  test("the mark and the tool name are the rust's", () => {
+    const rust = readFileSync("src-tauri/src/parcel.rs", "utf8");
+    expect(rust).toContain(`pub const PARCEL_MARK: &str = "${PARCEL_MARK}";`);
+    expect(rust).toContain(`pub const SEND_FILES_TOOL: &str = "${SEND_FILES_TOOL.replace("mcp__skein__", "")}";`);
+    expect(SEND_FILES_TOOL).toBe(SKEIN_SEND_FILES_TOOL);
+  });
+  test("is read off the message, and the message is what is left", () => {
+    const { body, parcel } = parcelOf("the memory folder and the env, as asked\n\n" + MANIFEST);
+    expect(body).toBe("the memory folder and the env, as asked");
+    expect(parcel?.files).toBe("3 files");
+    expect(parcel?.size).toBe("3.2 KB");
+    expect(parcel?.landed).toBe("C:\\w\\attachments\\c1\\from-ccec3736-1");
+    expect(parcel?.sent).toEqual([
+      { name: "memory/", dir: true, detail: "2 files · 40 B", secret: false },
+      { name: ".env", dir: false, detail: "220 B", secret: true },
+      { name: "CLAUDE.md", dir: false, detail: "3.0 KB", secret: false },
+    ]);
+    expect(parcel?.left).toEqual([
+      { path: "memory/.env.local", why: "secret-shaped — name it directly to send it" },
+      { path: "memory/nm/", why: "a link to C:\\x · y, never followed" },
+    ]);
+    expect([parcel?.sentMore, parcel?.leftMore]).toEqual([0, 0]);
+  });
+  test("a cut list says how many it did not spell out", () => {
+    const cut = MANIFEST.replace("+ CLAUDE.md · 3.0 KB", "+ CLAUDE.md · 3.0 KB\n+ … · 7 more").replace(
+      "- memory/nm/",
+      "- … · 3960 more left out\n- memory/nm/",
+    );
+    const p = parcelOf(cut).parcel;
+    expect(p?.sent.length).toBe(3);
+    expect([p?.sentMore, p?.leftMore]).toEqual([7, 3960]);
+  });
+  test("a quoted block before the real one does not win", () => {
+    const quoted = "you sent me this earlier:\n" + MANIFEST.split("\n").slice(0, 2).join("\n") + "\n\nand now:\n\n" + MANIFEST;
+    const p = parcelOf(quoted);
+    expect(p.parcel?.sent.length).toBe(3);
+    expect(p.body.startsWith("you sent me this earlier:")).toBe(true);
+  });
+  test("a message with none is unchanged", () => {
+    expect(parcelOf("just words")).toEqual({ body: "just words", parcel: null });
+    /* The mark quoted mid-line is prose, not a parcel. */
+    expect(parcelOf(`about the ${PARCEL_MARK} block`).parcel).toBeNull();
+  });
+  test("relayBody keeps the block, so the letter can lift it out", () => {
+    const text = `[skein relay] from "a" (abcd1234) in skein —\n\nhere\n\n${MANIFEST}\n\n(This came from another agent on the Skein wall, not from the user.)`;
+    const { body, parcel } = parcelOf(relayBody(text));
+    expect(body).toBe("here");
+    expect(parcel?.sent.length).toBe(3);
+  });
+  test("a send_files call is a letter that says what went, or why not", () => {
+    const call = (result?: { text: string; failed?: true }) => ({
+      name: SEND_FILES_TOOL,
+      input: { to: "abcd1234", paths: ["memory", ".env"] },
+      result,
+    });
+    expect(sentOf(call())?.delivered).toBeNull();
+    const sent = sentOf(call({ text: "3 files (3.2 KB) copied into C:\\w\n\n" + MANIFEST + "\ndelivered to \"a\" (abcd1234)" }));
+    expect(sent?.delivered).toBe(true);
+    expect(sent?.message).toBe("Files for you.");
+    expect(sent?.parcel?.sent.length).toBe(3);
+    const later = sentOf(call({ text: "lab-pb has not said whether 617519d7 has your message. It may still arrive." }));
+    expect(later?.delivered).toBeNull();
+    const refused = sentOf(call({ text: "nope.md does not exist (looked for C:\\nope.md)" }));
+    expect(refused?.delivered).toBe(false);
+    expect(refused?.why).toContain("does not exist");
+  });
+  test("the card's line names who got them", () => {
+    expect(describeTool(SEND_FILES_TOOL, { to: "abcd1234", paths: ["a"] })).toBe("sent files to abcd1234");
+    expect(describeTool(SEND_FILES_TOOL, { to: "abcd1234", paths: ["a", "b"] })).toBe("sent 2 things to abcd1234");
+    expect(describeTool(SEND_FILES_TOOL, {})).toBe("sent files to another card");
   });
 });

@@ -321,8 +321,12 @@ struct Waiter {
     gave_up: bool,
     asked_at: i64,
     /// For a spawn: a credential the card needs that the far wall could not
-    /// vouch for, said in the receipt (`fleet::unconfirmed`).
+    /// vouch for, said in the receipt (`fleet::unconfirmed`). For a parcel:
+    /// what it carried, said under "delivered" (`parcel::afar_line`).
     note: Option<String>,
+    /// How long after `asked_at` it is still waited for: `ANSWER_KEPT_MS`,
+    /// and longer for a parcel the far wall pulls in full before it answers.
+    keep_ms: i64,
 }
 
 struct Opening {
@@ -701,7 +705,7 @@ impl Link {
         }
         self.waiting
             .lock()
-            .map(|mut w| w.retain(|_, v| now - v.asked_at <= fleet::ANSWER_KEPT_MS))
+            .map(|mut w| w.retain(|_, v| now - v.asked_at <= v.keep_ms))
             .ok();
         self.sweep_moves();
         self.prompts_out
@@ -1007,7 +1011,7 @@ impl Link {
                    from other walls", for `tail_here`'s reason: it starts
                    nothing, and the answer to the question already passes. */
                 Frame::Look(LookMsg::Look { id, card, ask, want }) if who.current => {
-                    out.push(Frame::Look(self.look_here(&id, &card, &ask, &want)));
+                    out.push(Frame::Look(self.look_here(&id, &card, &ask, &want, from.as_deref())));
                 }
                 Frame::Board(m @ BoardMsg::Board { .. }) if who.current => self.on_board(m),
                 Frame::Accounts(m) if who.current => self.on_accounts(m, from.as_deref()),
@@ -1147,6 +1151,7 @@ impl Link {
                     gave_up: false,
                     asked_at: now,
                     note,
+                    keep_ms: fleet::ANSWER_KEPT_MS,
                 },
             );
         }
@@ -1192,6 +1197,7 @@ impl Link {
                     gave_up: false,
                     asked_at: now,
                     note: None,
+                    keep_ms: fleet::ANSWER_KEPT_MS,
                 },
             );
         }
@@ -1205,7 +1211,8 @@ impl Link {
     /// understand the request — and nothing is queued for later, for
     /// a2a4468e's reason: a lid that lifts eight hours on is not when anybody
     /// wanted this to happen.
-    pub fn reach_card(self: &Arc<Self>, act: Act, r: PromptRequest) -> Result<mpsc::Receiver<String>, String> {
+    pub fn reach_card(self: &Arc<Self>, act: Act, r: PromptRequest, note: Option<String>) -> Result<mpsc::Receiver<String>, String> {
+        let keep_ms = fleet::ANSWER_KEPT_MS.max(fleet::patience_for(r.parcel.as_ref()));
         let now = self.now();
         let msg = self
             .fleet
@@ -1227,7 +1234,8 @@ impl Link {
                     title: None,
                     gave_up: false,
                     asked_at: now,
-                    note: None,
+                    note,
+                    keep_ms,
                 },
             );
         }
@@ -1354,6 +1362,7 @@ impl Link {
                 gave_up: true,
                 asked_at: w.asked_at,
                 note: w.note.clone(),
+                keep_ms: w.keep_ms,
             }
         };
         let text = format!(
@@ -1874,9 +1883,63 @@ impl Link {
                a dormant card wakes to read it and the card is marked as acting
                on a message. Never through the front end's `Skein.send`, which
                would echo it as a line the person here typed. */
+            /* An agent's `send_files`: the files are pulled from the asking
+               wall and landed in the card's own folder *before* it is handed
+               the message, so the turn it takes can open them — and the
+               answer waits for that, as the sender's call does. On a task,
+               since a parcel is megabytes and this is the serving task. */
+            Act::Prompt if d.asked_by.card.is_some() && d.parcel.is_some() => {
+                let l = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    let from = d.asked_by.card.clone().unwrap_or_default();
+                    let parcel = d.parcel.clone().unwrap_or_else(|| unreachable!());
+                    let landed = l.land_parcel(&host, &d.card, &from, &row, &parcel).await;
+                    /* Handing it over is store and stdin work, so it goes where
+                       blocking work goes. A delivery refused after landing takes
+                       the folder back: the sender is told it was refused, and
+                       files nobody was told about must not stay. The secrets row
+                       is written only once the card has them. */
+                    let w = l.clone();
+                    let m = crate::off_main(move || {
+                        let now = w.now();
+                        match landed {
+                            Ok((block, into)) => {
+                                let body = format!("{}\n\n{block}", crate::parcel::unmark(&d.text));
+                                let text = crate::relay::afar_envelope(&host, &from, d.from_title.as_deref(), d.from_project.as_deref(), &body);
+                                match crate::relay::deliver_from_afar(&w.app, &row.id, &text) {
+                                    Ok(_) => {
+                                        let secrets: Vec<String> = parcel.parcel().secrets().iter().map(|s| s.to_string()).collect();
+                                        if !secrets.is_empty() {
+                                            crate::chronicle::note_card(
+                                                &w.app,
+                                                &row.id,
+                                                "note",
+                                                &format!("received {} secret-shaped file(s) from {host}", secrets.len()),
+                                                &secrets.join(", "),
+                                            );
+                                        }
+                                        w.fleet.lock().ok().and_then(|mut f| f.taken(&host, &request, &row.id, now))
+                                    }
+                                    Err(why) => {
+                                        let _ = std::fs::remove_dir_all(&into);
+                                        w.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now))
+                                    }
+                                }
+                            }
+                            Err(why) => w.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now)),
+                        }
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(m) = m {
+                        l.route(&[m], None);
+                    }
+                });
+            }
             Act::Prompt if d.asked_by.card.is_some() => {
                 let from = d.asked_by.card.as_deref().unwrap_or_default();
-                let text = crate::relay::afar_envelope(&host, from, d.from_title.as_deref(), d.from_project.as_deref(), &d.text);
+                let text = crate::relay::afar_envelope(&host, from, d.from_title.as_deref(), d.from_project.as_deref(), &crate::parcel::unmark(&d.text));
                 let m = match crate::relay::deliver_from_afar(&self.app, &row.id, &text) {
                     Ok(_) => self.fleet.lock().ok().and_then(|mut f| f.taken(&host, &request, &row.id, now)),
                     Err(why) => self.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now)),
@@ -2221,12 +2284,12 @@ impl Link {
     /// them, and its files' bytes off this disk. Synchronous, like a move's
     /// part — an answer reads at most `look::BUDGET` of file, which is a disk
     /// read rather than a wait on anything.
-    fn look_here(&self, id: &str, card: &str, ask: &str, want: &[look::Want]) -> LookMsg {
+    fn look_here(&self, id: &str, card: &str, ask: &str, want: &[look::Want], from: Option<&str>) -> LookMsg {
         /* A stage is a prompt's files this wall is holding for the card's own
            wall to pull (`attachments::stage_outbound`), served exactly as a
            question's files are. */
         let args = if ask.trim().starts_with("stage-") {
-            crate::attachments::outbound_args(card.trim(), ask.trim())
+            crate::attachments::outbound_args(card.trim(), ask.trim(), from)
         } else {
             crate::ask::args_for_afar(&self.app, card.trim(), ask.trim())
         };
@@ -2234,6 +2297,87 @@ impl Link {
             Ok(args) => look::answer(id, &self.me, &args, want, &mut Disk),
             Err(why) => LookMsg::Looked { id: id.to_string(), args: None, files: vec![], parts: vec![], why: Some(why) },
         }
+    }
+
+    /// Pull a parcel `host` staged for `address` and land it in `row`'s own
+    /// folder (`parcel.rs`), whole or not at all: a file that did not arrive
+    /// removes the folder, since half a parcel reads as a whole one to the agent
+    /// handed it. Answers the manifest the card's message carries.
+    async fn land_parcel(
+        self: &Arc<Self>,
+        host: &str,
+        address: &str,
+        from: &str,
+        row: &crate::store::RosterRow,
+        parcel: &crate::parcel::Carried,
+    ) -> Result<(String, std::path::PathBuf), String> {
+        if row.kind == "chat" {
+            return Err(format!("{} is a chat card: it has no tools that can open a file", row.title));
+        }
+        parcel.check()?;
+        let wall = self.app.state::<crate::store::Store>().1.clone();
+        let (card, sender, me) = (row.id.clone(), from.to_string(), self.me.clone());
+        let into = crate::off_main(move || {
+            crate::parcel::landing(&crate::attachments::card_dir(&wall, &card), &sender)
+                .map_err(|e| format!("{me} could not make a folder for the files: {e}"))
+        })
+        .await
+        .and_then(|r| r)?;
+        let drop_it = |into: std::path::PathBuf| async move {
+            let _ = crate::off_main(move || std::fs::remove_dir_all(&into)).await;
+        };
+        for stage in &parcel.stages {
+            let pulled = match self.read_look(host, address, &stage.id).await {
+                Ok(g) => g,
+                Err(why) => {
+                    drop_it(into).await;
+                    return Err(format!("the files did not arrive: {why}"));
+                }
+            };
+            let (dir, files, host) = (into.clone(), stage.files.clone(), host.to_string());
+            let wrote = crate::off_main(move || -> Result<(), String> {
+                let args = pulled
+                    .settle(&host, &mut |n, _name, bytes| {
+                        let (rel, _) = files.get(n).ok_or("a file the parcel did not list")?;
+                        /* Bounded again here; the size the sender listed may have
+                           moved since (a log being written), and the look transport
+                           has already checked the file arrived whole as served. */
+                        if bytes.len() as u64 > crate::parcel::AFAR.file.unwrap_or(u64::MAX) {
+                            return Err(format!("{rel} arrived larger than a file may be"));
+                        }
+                        let to = crate::parcel::safe_join(&dir, rel).ok_or("not a name a file may land under")?;
+                        if let Some(parent) = to.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                        }
+                        std::fs::write(&to, bytes).map_err(|e| e.to_string())?;
+                        Ok((dir.to_string_lossy().into_owned(), rel.clone()))
+                    })
+                    .ok_or_else(|| format!("{host} sent none of the files"))?;
+                let mut walked = args;
+                let (mut landed, mut fault) = (0usize, None);
+                let _ = crate::ask::each_site::<()>(&mut walked, &mut |site: &mut Value| {
+                    if let Some(f) = site.get("file").filter(|f| !f.is_null()) {
+                        match f.get("fault").and_then(Value::as_str) {
+                            Some(why) => fault = fault.take().or(Some(why.to_string())),
+                            None => landed += 1,
+                        }
+                    }
+                    Ok(())
+                });
+                match fault {
+                    Some(why) => Err(why),
+                    None if landed != files.len() => Err(format!("{landed} of {} files arrived", files.len())),
+                    None => Ok(()),
+                }
+            })
+            .await
+            .and_then(|r| r);
+            if let Err(why) = wrote {
+                drop_it(into).await;
+                return Err(format!("the files did not all arrive, so none were kept: {why}"));
+            }
+        }
+        Ok((crate::parcel::manifest(&parcel.parcel(), &into.display().to_string()), into))
     }
 
     /// Pull one parked question from `host`, every file whole — or as far as
@@ -2545,12 +2689,18 @@ fn reached(a: &Answer, w: &Waiter) -> String {
              which one you closed, on which machine, and what it finished.",
             crate::relay::handle_of(card)
         ),
-        (Outcome::Opened { card, .. }, _) => format!(
-            "delivered to {} on {by} — that card has it, or, if it was asleep, is being woken and \
-             will read this first. Neither is it having answered: a reply comes back as a message \
-             from it, if one is needed.",
-            crate::relay::handle_of(card)
-        ),
+        (Outcome::Opened { card, .. }, _) => {
+            let said = format!(
+                "delivered to {} on {by} — that card has it, or, if it was asleep, is being woken and \
+                 will read this first. Neither is it having answered: a reply comes back as a message \
+                 from it, if one is needed.",
+                crate::relay::handle_of(card)
+            );
+            match &w.note {
+                Some(n) => format!("{said}\n{n}"),
+                None => said,
+            }
+        }
     }
 }
 
@@ -3084,6 +3234,7 @@ pub async fn flyway_prompt(
             title: None,
             project: None,
             pictures,
+            parcel: None,
         })
     })
     .await?
@@ -3112,6 +3263,7 @@ pub async fn flyway_close(app: AppHandle, id: String, to: String, card: String) 
                 title: None,
                 project: None,
                 pictures: Vec::new(),
+                parcel: None,
             },
         )
     })

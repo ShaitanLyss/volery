@@ -155,6 +155,8 @@ export const SKEIN_ASK_TOOL = "mcp__skein__ask_user";
  *  `.claude/rules/relay.md`. */
 export const SKEIN_LIST_TOOL = "mcp__skein__list";
 export const SKEIN_SEND_TOOL = "mcp__skein__send";
+/** `send_files` (`parcel.rs`): files and folders copied into another card's own folder. */
+export const SKEIN_SEND_FILES_TOOL = "mcp__skein__send_files";
 
 /** And the billboard's three. Same argument again: none of them stops a turn.
  *  See `.claude/rules/relay.md`. */
@@ -506,6 +508,7 @@ function pullNumber(v: unknown): number | null {
  *  the fold ran before the wall could say what a closed card was called. */
 export const NAMES_A_CARD: ReadonlySet<string> = new Set([
   SKEIN_SEND_TOOL,
+  SKEIN_SEND_FILES_TOOL,
   SKEIN_RECALL_TOOL,
   SKEIN_CLOSE_TOOL,
   SKEIN_TIMELINE_TOOL,
@@ -647,6 +650,12 @@ export function describeTool(name: string, input: any, nameOf: (address: string)
           : `messaged ${to.length} cards`;
       }
       return "messaged another card";
+    }
+    case SKEIN_SEND_FILES_TOOL: {
+      const to = input?.to;
+      const paths = Array.isArray(input?.paths) ? input.paths.length : typeof input?.paths === "string" ? 1 : 0;
+      const what = paths > 1 ? `${paths} things` : "files";
+      return typeof to === "string" && to.trim() ? `sent ${what} to ${clip(nameOf(to), 24)}` : `sent ${what} to another card`;
     }
     case SKEIN_BOARD_TOOL:
       return "read the billboard";

@@ -79,13 +79,13 @@ fn elsewhere(args: &Value) -> Option<String> {
 /// than guessed, for `relay::resolve`'s reason about titles.
 pub fn afar(app: &AppHandle, caller: &str, tool: &str, args: &Value) -> Option<Afar> {
     let act = match tool {
-        crate::relay::SEND_TOOL => Act::Prompt,
+        crate::relay::SEND_TOOL | crate::parcel::SEND_FILES_TOOL => Act::Prompt,
         crate::relay::RECALL_TOOL => Act::Recall,
         crate::spawn::CLOSE_TOOL => Act::Close,
         _ => return None,
     };
     if let Some(host) = elsewhere(args) {
-        return Some(reach(app, caller, act, &host, args));
+        return Some(reach(app, caller, act, tool == crate::parcel::SEND_FILES_TOOL, &host, args));
     }
     /* `host` naming this wall is a decision, and the answer is this wall. */
     if args.get("host").and_then(Value::as_str).is_some_and(|h| !h.trim().is_empty()) {
@@ -126,7 +126,7 @@ pub fn afar(app: &AppHandle, caller: &str, tool: &str, args: &Value) -> Option<A
         Place::There { host, card } => {
             let mut args = args.clone();
             args[key] = Value::String(card);
-            Some(reach(app, caller, act, &host, &args))
+            Some(reach(app, caller, act, tool == crate::parcel::SEND_FILES_TOOL, &host, &args))
         }
         Place::Several(walls) => Some(Afar::Now(format!(
             "{want:?} names a card on more than one wall ({}), so nothing was done — add `host` \
@@ -208,7 +208,7 @@ pub fn place(want: &str, here: &[String], seen: &[(String, String)], recorded: &
     }
 }
 
-fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> Afar {
+fn reach(app: &AppHandle, caller: &str, act: Act, files: bool, host: &str, args: &Value) -> Afar {
     let me = {
         let Some(store) = app.try_state::<Store>() else {
             return Afar::Now("the store is unavailable".into());
@@ -256,7 +256,8 @@ fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> A
                      the card on {host} by its handle (the `mcp__skein__walls` tool lists them)"
                 ));
             }
-            let Some(body) = args.get("message").and_then(Value::as_str).filter(|b| !b.trim().is_empty()) else {
+            let body = args.get("message").and_then(Value::as_str).filter(|b| !b.trim().is_empty());
+            let Some(body) = body.or(files.then_some(crate::parcel::BARE)) else {
                 return Afar::Now("the message was empty, so nothing was sent".into());
             };
             if let Err(why) = crate::relay::count_send(app, caller) {
@@ -278,6 +279,37 @@ fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> A
         return Afar::Now("no card was named, so nothing was sent".into());
     }
 
+    /* `send_files`: walked and checked here against the caps a parcel between
+       walls has, and staged for the far wall to pull under the address it was
+       sent to — the far wall asks for it by the same words (`link.rs`). Done
+       before the request exists, so a refusal costs the far wall nothing. */
+    let parcel = if files {
+        let paths = crate::parcel::paths_of(args);
+        if paths.is_empty() {
+            return Afar::Now("no `paths` were named, so nothing was sent".into());
+        }
+        let base = std::path::PathBuf::from(crate::worktree::run_dir(&me.cwd, me.worktree.as_deref()));
+        let Some(store) = app.try_state::<Store>() else {
+            return Afar::Now("the store is unavailable".into());
+        };
+        let gathered = crate::parcel::gather(&paths, &base, &crate::parcel::AFAR)
+            .and_then(|p| crate::parcel::stage(&store.1, host, &card, &p));
+        match gathered {
+            Ok(c) => Some(c),
+            Err(why) => return Afar::Now(why),
+        }
+    } else {
+        None
+    };
+    let window = match &parcel {
+        Some(p) => Duration::from_millis(super::fleet::patience_for(Some(p)) as u64),
+        None => WAIT,
+    };
+    let receipt = parcel.as_ref().map(|p| {
+        let block = crate::parcel::manifest(&p.parcel(), &format!("that card's own folder on {host}"));
+        format!("{}\n\n{block}", crate::parcel::afar_line(p, host))
+    });
+
     let request = PromptRequest {
         id: crate::store::uuid_v4(),
         from_card: Some(caller.to_string()),
@@ -289,8 +321,11 @@ fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> A
         project: Some(me.project.clone()).filter(|p| !p.trim().is_empty()),
         /* An agent's message is words; a picture is a person's to attach. */
         pictures: Vec::new(),
+        parcel,
     };
-    match link.reach_card(act, request) {
+    /* A parcel that landed says what landed under "delivered", as one on this
+       wall does (`link.rs::reached`); a refusal says only why. */
+    match link.reach_card(act, request, receipt) {
         Ok(rx) => Afar::Wait {
             rx,
             waiting: match act {
@@ -299,7 +334,7 @@ fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> A
                 Act::Close => format!("waiting for {host} to close {card}"),
             },
             timeout: unanswered(act, host, &card),
-            window: WAIT,
+            window,
         },
         Err(why) => Afar::Now(match act {
             Act::Prompt => format!("nothing was sent: {why}"),

@@ -62,7 +62,9 @@
   import { RELEASE } from "./follow.svelte";
   import { others } from "./others.svelte";
   import { spawnedHandle } from "./chatview";
-  import { isRenewPrompt, isWakePrompt, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
+  import { isRenewPrompt, isWakePrompt, parcelOf, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
+  import type { Parcel } from "./relay";
+  import ParcelPlate from "./Parcel.svelte";
   import { ageOf } from "./chatview";
   import { cardName } from "./naming";
 
@@ -623,6 +625,7 @@
   sub: string,
   body: string,
   live: boolean,
+  parcel: Parcel | null,
 )}
   {@const long = body.length > LETTER_LONG}
   {@const one = who.length === 1 ? who[0].card : null}
@@ -655,6 +658,7 @@
         >{open[key] ? "show less" : "show all"}</button
       >
     {/if}
+    {#if parcel}<ParcelPlate {parcel} {dir} />{/if}
   </div>
 {/snippet}
 
@@ -696,6 +700,7 @@
            out everywhere. -->
       {@const from = relayFrom(b.line.text)}
       {@const sender = from?.handle && reach ? reach.find(from.handle) : null}
+      {@const pc = parcelOf(relayBody(b.line.text))}
       {@render letter(
         b.key,
         "in",
@@ -703,8 +708,9 @@
         from?.name === WAKE_NAME
           ? wakeTimes(from, b.line.at ? clock.t - b.line.at : null, ageOf)
           : ["sent this conversation a message", when(b.line.at)].filter(Boolean).join(" · "),
-        relayBody(b.line.text),
+        pc.body,
         arrived(b.line.at),
+        pc.parcel,
       )}
     {:else if b.kind === "sent"}
       <!-- A message this conversation sent, out of the run it was sent in —
@@ -729,6 +735,7 @@
             .join(" · "),
           m.message,
           arrived(b.line.at),
+          m.parcel,
         )}
       {/if}
     {:else if b.kind === "long"}
@@ -777,6 +784,12 @@
           {/if}
           <span class="what">{senderCap(b.line) ?? fold.cap}</span>
         </button>
+        {#if b.line.kind === "relay"}
+          <!-- Files that came with the message are drawn under its fold, never
+               inside it: the plate is the thing to look at, as a figure is. -->
+          {@const pc = parcelOf(relayBody(b.line.text)).parcel}
+          {#if pc}<div class="pplate"><ParcelPlate parcel={pc} /></div>{/if}
+        {/if}
         {#if open[b.key]}
           <!-- No `data-nav`: the rails list places in the conversation, and a
                summary's own two dozen headings — or a skill's — would bury every
@@ -1430,6 +1443,10 @@
     background: var(--st-fail);
   }
   /* A message between conversations: a letter, in the spawn link's family. */
+  /* A parcel's plate under the wall's fold of the message it came with. */
+  .pplate {
+    padding: 0 0 2px 18px;
+  }
   .letter {
     padding: 12px 16px 14px;
     border-radius: var(--cv-r-m, 12px);

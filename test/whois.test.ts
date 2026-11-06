@@ -8,6 +8,7 @@ import {
   SKEIN_CLOSE_TOOL,
   SKEIN_RECALL_TOOL,
   SKEIN_SEND_TOOL,
+  SKEIN_SEND_FILES_TOOL,
   SKEIN_TIMELINE_TOOL,
 } from "../src/lib/classify";
 
@@ -63,7 +64,7 @@ describe("what a card named by its handle is called", () => {
      card the store knows, which is what the lab showed before it existed. */
   test("the tools re-described at draw time are the ones whose line names a card", () => {
     expect([...NAMES_A_CARD].sort()).toEqual(
-      [SKEIN_SEND_TOOL, SKEIN_RECALL_TOOL, SKEIN_CLOSE_TOOL, SKEIN_TIMELINE_TOOL].sort(),
+      [SKEIN_SEND_TOOL, SKEIN_SEND_FILES_TOOL, SKEIN_RECALL_TOOL, SKEIN_CLOSE_TOOL, SKEIN_TIMELINE_TOOL].sort(),
     );
     const marker = () => "NAMED";
     for (const name of NAMES_A_CARD) {

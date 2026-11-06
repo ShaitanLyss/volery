@@ -60,6 +60,7 @@ pub mod cast;
 mod mcphost;
 mod open;
 mod perf;
+mod parcel;
 mod pin;
 mod pool;
 mod portage;

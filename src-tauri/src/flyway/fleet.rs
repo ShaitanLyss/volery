@@ -640,6 +640,12 @@ pub struct Ask {
     /// the prompt is answered (`unburden`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pictures: Vec<Picture>,
+    /// On an agent's message only: the files `send_files` staged on the
+    /// asking wall (`parcel.rs`), which the far wall pulls and lands before it
+    /// hands the card the words. A plain field, gated by `CAN_PARCEL` as
+    /// `worktree` is by `CAN_WORKTREE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parcel: Option<crate::parcel::Carried>,
     /// What a request carrying a `card` asks of it. **Never on the wire as a
     /// field** — the tag says it (`FleetMsg::Prompt`, `Recall`, `Close`), for
     /// `card`'s reason: a field a wall from before it has never heard of reads
@@ -699,9 +705,14 @@ pub const CAN_PICTURES: &str = "pictures";
 /// which is exactly what the key was asked to prevent.
 pub const CAN_WORKTREE: &str = "worktree";
 
+/// The word that says a wall lands the files an agent sends with `send_files`
+/// (`Ask::parcel`). Asked before sending: a wall from before it would read the
+/// parcel as absent and hand its card a message about files that never came.
+pub const CAN_PARCEL: &str = "parcel";
+
 /// Everything this wall announces in `Facts::can`.
 pub fn can_now() -> Vec<String> {
-    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES, CAN_WORKTREE]).map(str::to_string).collect()
+    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES, CAN_WORKTREE, CAN_PARCEL]).map(str::to_string).collect()
 }
 
 /// One picture riding a person's prompt — what `attach.ts::Carried` is, field
@@ -1089,6 +1100,9 @@ pub struct Deliver {
     pub from_project: Option<String>,
     /// What a person's prompt carries besides its words (`Ask::pictures`).
     pub pictures: Vec<Picture>,
+    /// The files an agent sent with it (`Ask::parcel`), to be pulled and
+    /// landed before the card is handed the message.
+    pub parcel: Option<crate::parcel::Carried>,
 }
 
 /// Everything one message caused.
@@ -1233,6 +1247,9 @@ pub struct PromptRequest {
     /// The pictures a person's prompt carries (`Ask::pictures`). Empty for
     /// everything else.
     pub pictures: Vec<Picture>,
+    /// The files an agent's `send_files` carries (`parcel.rs`), staged here
+    /// for the far wall to pull. `None` for everything else.
+    pub parcel: Option<crate::parcel::Carried>,
 }
 
 /// An ask or answer's identity: the asking host and the request id. The id
@@ -1266,6 +1283,9 @@ struct Held<T> {
 struct Waiting {
     asked_at: i64,
     given_up: bool,
+    /// How long before this ask is given up on: `GIVE_UP_MS`, and more for a
+    /// parcel, which the far wall pulls in full before it answers.
+    patience_ms: i64,
 }
 
 /// What this wall knows about the others, and the asks in flight between them.
@@ -1445,7 +1465,7 @@ impl Fleet {
     pub fn pictured_for(&self, now: i64, peer: &str) -> Vec<(String, FleetMsg)> {
         self.asks
             .iter()
-            .filter(|(k, h)| k.0 == self.me && h.it.to == peer && !h.it.pictures.is_empty())
+            .filter(|(k, h)| k.0 == self.me && h.it.to == peer && burdened(&h.it))
             .filter(|(k, _)| !self.answers.contains_key(*k))
             .filter(|(_, h)| age(now, h.origin_at) <= ASK_TTL_MS as u64)
             .map(|(k, h)| (k.1.clone(), tagged(h.it.clone(), age(now, h.origin_at))))
@@ -1511,13 +1531,14 @@ impl Fleet {
             card: None,
             answers: None,
             pictures: Vec::new(),
+            parcel: None,
             act: Act::Prompt,
         };
         self.asks.insert(
             key,
             Held { it: ask.clone(), origin_at: now, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
         );
-        self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false });
+        self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false, patience_ms: GIVE_UP_MS });
         Ok(FleetMsg::Ask { ask, age_ms: 0 })
     }
 
@@ -1573,6 +1594,16 @@ impl Fleet {
         /* A person's prompt only: an agent's message, a recall and a close
            never carry one, whatever the request says. */
         let pictures = if act == Act::Prompt && r.from_card.is_none() { r.pictures } else { Vec::new() };
+        /* An agent's message only, and only to a wall that lands one: a wall
+           from before parcels would read the field as absent and hand the card
+           the words about files it never got. */
+        let parcel = if act == Act::Prompt && r.from_card.is_some() { r.parcel } else { None };
+        if parcel.is_some() && !there.facts.can.iter().any(|c| c == CAN_PARCEL) {
+            return Err(Unsendable::Older { host: r.to, what: CAN_PARCEL });
+        }
+        /* The far wall pulls a parcel in full before it answers, so the ask is
+           given that long on top of the ordinary wait. */
+        let patience_ms = patience_for(parcel.as_ref());
         let ask = Ask {
             id: r.id.clone(),
             from: Origin { host: self.me.clone(), card: r.from_card },
@@ -1591,13 +1622,14 @@ impl Fleet {
             card: Some(r.card),
             answers: r.answers,
             pictures,
+            parcel,
             act,
         };
         self.asks.insert(
             key,
             Held { it: ask.clone(), origin_at: now, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
         );
-        self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false });
+        self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false, patience_ms });
         Ok(tagged(ask, 0))
     }
 
@@ -1681,6 +1713,7 @@ impl Fleet {
             if !h.it.pictures.is_empty() {
                 h.it.pictures = Vec::new();
             }
+            h.it.parcel = None;
         }
     }
 
@@ -1695,12 +1728,12 @@ impl Fleet {
         self.answers.retain(|_, h| now <= h.keep_until);
         let mut gave_up = Vec::new();
         for (id, w) in self.waiting.iter_mut() {
-            if !w.given_up && age(now, w.asked_at) > GIVE_UP_MS as u64 {
+            if !w.given_up && age(now, w.asked_at) > w.patience_ms as u64 {
                 w.given_up = true;
                 gave_up.push(id.clone());
             }
         }
-        self.waiting.retain(|_, w| age(now, w.asked_at) <= ANSWER_KEPT_MS as u64);
+        self.waiting.retain(|_, w| age(now, w.asked_at) <= ANSWER_KEPT_MS.max(w.patience_ms) as u64);
         gave_up
     }
 
@@ -1748,7 +1781,7 @@ impl Fleet {
 
             FleetMsg::Ask { ask, age_ms } => {
                 /* Never a prompt under this tag — see `Ask::card`. */
-                let ask = Ask { card: None, answers: None, pictures: Vec::new(), act: Act::Prompt, ..clean_ask(ask) };
+                let ask = Ask { card: None, answers: None, pictures: Vec::new(), parcel: None, act: Act::Prompt, ..clean_ask(ask) };
                 self.hear_ask(ask, age_ms, now, here, &mut reply);
             }
 
@@ -1765,6 +1798,7 @@ impl Fleet {
                 }
                 if !pictured {
                     ask.pictures = Vec::new();
+                    ask.parcel = None;
                 }
                 /* A request for no card is nothing anybody could deliver, and
                    it is dropped rather than refused: there is no card on any
@@ -1857,7 +1891,7 @@ impl Fleet {
             }
             /* Never relayed — see `gossip`. Nothing of ours sends one to a wall
                it is not for, so this is a frame that should not exist. */
-            if !ask.pictures.is_empty() {
+            if burdened(&ask) {
                 return;
             }
             self.asks.insert(
@@ -1897,6 +1931,7 @@ impl Fleet {
                     from_title: ask.title.as_deref().and_then(named),
                     from_project: named(&ask.territory.name),
                     pictures: ask.pictures.clone(),
+                    parcel: ask.parcel.clone(),
                 });
             })
         } else {
@@ -2075,7 +2110,7 @@ impl Fleet {
             .asks
             .iter()
             .filter(|(_, h)| h.it.to != self.me)
-            .filter(|(_, h)| h.it.pictures.is_empty())
+            .filter(|(_, h)| !burdened(&h.it))
             .filter(|(k, _)| !self.answers.contains_key(*k))
             .filter(|(_, h)| age(now, h.origin_at) <= ASK_TTL_MS as u64)
             .filter(|(_, h)| stamp_age(now, h.it.asked_at) <= ASK_TTL_MS + CLOCK_SLACK_MS)
@@ -2111,11 +2146,29 @@ pub(crate) fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
     None
 }
 
+/// How long an asker waits for an answer before giving up: `GIVE_UP_MS`, and
+/// for a parcel twice what carrying it should take on top — the far wall pulls
+/// it in full before it answers. One number for the fleet's `Waiting` and the
+/// wiring's `Waiter`, which must not give up at different moments.
+pub fn patience_for(parcel: Option<&crate::parcel::Carried>) -> i64 {
+    GIVE_UP_MS + parcel.map(|p| super::wire::carrying_within(p.bytes() as usize).as_millis() as i64 * 2).unwrap_or(0)
+}
+
+/// Whether an ask carries something only its addressee may have: a person's
+/// pictures, or an agent's parcel (`Ask::parcel`). Such an ask rides
+/// `FleetMsg::Pictured`, is said only to the wall it is for (`pictured_for`),
+/// never gossiped and never relayed — a parcel names stage ids, and a stage id is
+/// what pulls the files (`link.rs::look_here`), so a wall that heard one in
+/// passing could otherwise take them.
+fn burdened(ask: &Ask) -> bool {
+    !ask.pictures.is_empty() || ask.parcel.is_some()
+}
+
 /// An ask under the tag that says what it is — see `Ask::card`.
 fn tagged(ask: Ask, age_ms: u64) -> FleetMsg {
     match (ask.card.is_some(), ask.act) {
         (false, _) => FleetMsg::Ask { ask, age_ms },
-        (true, Act::Prompt) if !ask.pictures.is_empty() => FleetMsg::Pictured { ask, age_ms },
+        (true, Act::Prompt) if burdened(&ask) => FleetMsg::Pictured { ask, age_ms },
         (true, Act::Prompt) => FleetMsg::Prompt { ask, age_ms },
         (true, Act::Recall) => FleetMsg::Recall { ask, age_ms },
         (true, Act::Close) => FleetMsg::Close { ask, age_ms },
@@ -2223,6 +2276,7 @@ fn clean_ask(a: Ask) -> Ask {
            used (`attach::carried_fit`), never mended on the way: a relay that
            dropped a bad one would deliver the sentence without it. */
         pictures: a.pictures,
+        parcel: a.parcel,
         act: a.act,
     }
 }
@@ -2423,6 +2477,7 @@ mod tests {
             card: None,
             answers: None,
             pictures: Vec::new(),
+            parcel: None,
             act: Act::Prompt,
         }
     }
@@ -3182,6 +3237,7 @@ mod tests {
             title: None,
             project: None,
             pictures: Vec::new(),
+            parcel: None,
         }
     }
 
@@ -3505,6 +3561,40 @@ mod tests {
         let m = lap.prompt(prompt_req("q", "desk", "card-9"), 10).unwrap();
         let r = Fleet::new("desk", 0).on(m, 10, &open_facts());
         assert_eq!((r.deliver[0].from_title.as_deref(), r.deliver[0].from_project.as_deref()), (None, None));
+    }
+
+    /// A parcel goes with an agent's message, only to a wall that lands one,
+    /// and waits longer than a message does for the far wall to pull it.
+    #[test]
+    fn a_parcel_reaches_only_a_wall_that_lands_one() {
+        let carried = crate::parcel::Carried {
+            stages: vec![crate::parcel::Staged { id: "stage-x".into(), files: vec![("a.txt".into(), 50 * 1024 * 1024)] }],
+            tops: vec![],
+            left: vec![],
+            left_more: 0,
+        };
+        let req = |id: &str| PromptRequest {
+            from_card: Some("k".into()),
+            parcel: Some(carried.clone()),
+            ..prompt_req(id, "desk", "card-9")
+        };
+        let older: Vec<String> = can_now().into_iter().filter(|c| c != CAN_PARCEL).collect();
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: older, ..open_facts() }, None, 0), 0, &open_facts());
+        assert!(matches!(lap.reach(Act::Prompt, req("p1"), 10), Err(Unsendable::Older { what: CAN_PARCEL, .. })));
+
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: can_now(), ..open_facts() }, None, 0), 0, &open_facts());
+        let m = lap.reach(Act::Prompt, req("p2"), 10).unwrap();
+        let r = Fleet::new("desk", 0).on(m, 10, &open_facts());
+        assert_eq!(r.deliver[0].parcel.as_ref(), Some(&carried));
+        /* Past a message's patience, and still waited for. */
+        assert!(lap.prune(10 + GIVE_UP_MS + 1_000).is_empty());
+
+        /* A person's prompt never carries one, whatever the request says. */
+        let person = PromptRequest { parcel: Some(carried.clone()), ..prompt_req("p3", "desk", "card-9") };
+        let m = lap.reach(Act::Prompt, person, 10).unwrap();
+        assert_eq!(Fleet::new("desk", 0).on(m, 10, &open_facts()).deliver[0].parcel, None);
     }
 
     /// A recall's answer is for one card: it reaches the asker with no more in

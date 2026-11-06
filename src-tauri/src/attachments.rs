@@ -429,6 +429,10 @@ const OUTBOUND_KEEP: std::time::Duration = std::time::Duration::from_secs(60 * 6
 
 struct Outbound {
     card: String,
+    /// The one wall that may pull it, once `bind_stage` has said so — a
+    /// parcel is bound to the wall it was sent to (`parcel.rs`). `None` is a
+    /// person's files, served to whoever asks with the card and the stage.
+    host: Option<String>,
     files: Vec<(String, String)>,
     dir: Option<PathBuf>,
     at: std::time::Instant,
@@ -518,22 +522,34 @@ pub fn stage_out(wall: &Path, card: &str, files: Vec<(String, Option<String>, Op
     });
     out.insert(
         stage.clone(),
-        Outbound { card: card.to_string(), files: held, dir: wrote.then_some(dir), at: std::time::Instant::now() },
+        Outbound { card: card.to_string(), host: None, files: held, dir: wrote.then_some(dir), at: std::time::Instant::now() },
     );
     Ok(stage)
 }
 
 /// A stage as a question's arguments, so `look::answer` serves it exactly as
 /// it serves a question's files: one site per file, in order.
-pub fn outbound_args(card: &str, stage: &str) -> Result<serde_json::Value, String> {
+pub fn outbound_args(card: &str, stage: &str, from: Option<&str>) -> Result<serde_json::Value, String> {
     let out = OUTBOUND.lock().map_err(|_| "the outbound files are wedged".to_string())?;
     match out.get(stage) {
         None => Err("those files are no longer held here — they were sent more than an hour ago".into()),
         Some(o) if o.card != card => Err("those files were sent to another card".into()),
+        Some(o) if o.host.as_deref().is_some_and(|h| !from.is_some_and(|f| f.eq_ignore_ascii_case(h))) => {
+            Err("those files were sent to another wall".into())
+        }
         Some(o) => Ok(serde_json::json!({
             "questions": o.files.iter().map(|(r, n)| serde_json::json!({ "file": { "root": r, "path": n } })).collect::<Vec<_>>()
         })),
     }
+}
+
+/// Say which wall alone may pull `stage` — a parcel's, which names files the
+/// sending card chose for one card on one wall (`parcel.rs`).
+pub fn bind_stage(stage: &str, host: &str) -> Result<(), String> {
+    let mut out = OUTBOUND.lock().map_err(|_| "the outbound files are wedged".to_string())?;
+    let o = out.get_mut(stage).ok_or("that stage is no longer held")?;
+    o.host = Some(host.to_string());
+    Ok(())
 }
 
 /* ── a held message handed back from a card being closed ───────────────────
@@ -805,12 +821,12 @@ mod tests {
             ],
         )
         .unwrap();
-        let args = outbound_args("far-card", &stage).unwrap();
+        let args = outbound_args("far-card", &stage, None).unwrap();
         let files = crate::flyway::look::files_in(&args);
         assert_eq!(files[0], (wall.to_string_lossy().into_owned(), "report.pdf".to_string()));
         assert_eq!(std::fs::read(Path::new(&files[1].0).join(&files[1].1)).unwrap(), b"png");
-        assert!(outbound_args("another-card", &stage).is_err());
-        assert!(outbound_args("far-card", "stage-nope").is_err());
+        assert!(outbound_args("another-card", &stage, None).is_err());
+        assert!(outbound_args("far-card", "stage-nope", None).is_err());
         let _ = std::fs::remove_dir_all(wall);
     }
 

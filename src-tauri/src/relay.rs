@@ -416,7 +416,7 @@ pub fn send_schema() -> Value {
              either. It also takes the word `project` to reach every other card in \
              your project, or `skein` to reach every card on the wall — those two are \
              for announcements, and are refused when you are yourself acting on a \
-             message somebody sent you.",
+             message somebody sent you. Files and folders go with `send_files`.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -613,6 +613,19 @@ fn targets(rows: &[RosterRow], caller: &str, to: &Value) -> Result<(Vec<String>,
 
 /// Answer `send`, and do it.
 fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
+    send_with(app, caller, args, None)
+}
+
+/// What a parcel adds to a send (`send_files`), asked once the recipient is
+/// known and every guard a message has has passed: the block appended to the
+/// message, and a line for the sender's receipt. An `Err` refuses the whole send
+/// with nothing delivered.
+pub(crate) type Pack<'a> = &'a dyn Fn(&RosterRow) -> Result<(String, String), String>;
+
+/// `send`, with an optional parcel riding on it. One path for both, so a parcel
+/// is held to every guard a message is — the chat card, the throttle, the
+/// broadcast rule, the wake — rather than to a copy of them.
+pub(crate) fn send_with(app: &AppHandle, caller: &str, args: &Value, pack: Option<Pack>) -> String {
     let Some(body) = args.get("message").and_then(Value::as_str) else {
         return "no `message` was given, so nothing was sent".into();
     };
@@ -622,6 +635,10 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(to) = args.get("to") else {
         return "no `to` was given, so nothing was sent".into();
     };
+    /* A line that would read as a parcel's block is the sender quoting one;
+       only the block `send_files` appends below is drawn as a parcel. */
+    let unmarked = crate::parcel::unmark(body);
+    let body = unmarked.as_str();
 
     let relays = app.state::<Relays>();
     let store = app.state::<Store>();
@@ -698,8 +715,44 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             .into();
     }
 
+    /* A parcel goes to one card, named: a folder copied into every card on the
+       wall is not coordination, and a chat card has no tool that could open
+       what landed. Asked here, after the throttle and the broadcast rule, so a
+       refusal for either costs no copy. */
+    let mut parcel_line = None;
+    let packed;
+    let body = match pack {
+        None => body,
+        Some(pack) => {
+            if broadcast || ids.len() != 1 {
+                return "files go to one card at a time: name it by handle, not `project` \
+                        or `skein`. Nothing was sent."
+                    .into();
+            }
+            let Some(to) = rows.iter().find(|r| r.id == ids[0]) else {
+                return "that card is not on the wall any more, so nothing was sent".into();
+            };
+            if to.kind == "chat" {
+                return "that is a chat card: it has no tools that can open a file, so \
+                        nothing was sent. Tell the user what you wanted it to have."
+                    .into();
+            }
+            match pack(to) {
+                Ok((block, line)) => {
+                    packed = format!("{body}\n\n{block}");
+                    parcel_line = Some(line);
+                    packed.as_str()
+                }
+                Err(why) => return why,
+            }
+        }
+    };
+
     let text = envelope(&me, body);
     let mut receipts = Vec::new();
+    if let Some(line) = parcel_line {
+        receipts.push(line);
+    }
     /* A child writing to the card that opened it has reported. Noted before the
        delivery rather than after it: the turn that ends this call may close the
        instant the receipt is read, and the stop it closes on has to find the
@@ -996,6 +1049,9 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
     match tool {
         LIST_TOOL => Some(do_list(app, conversation_id, args)),
         SEND_TOOL => Some(do_send(app, conversation_id, args)),
+        crate::parcel::SEND_FILES_TOOL => {
+            Some(crate::parcel::do_send_files(app, conversation_id, args))
+        }
         TOUCHED_TOOL => Some(do_touched(app, conversation_id, args)),
         RECALL_TOOL => Some(do_recall(app, conversation_id, args)),
         _ => None,

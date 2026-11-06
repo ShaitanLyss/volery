@@ -4180,6 +4180,7 @@ mod tests {
         ("lend.rs", include_str!("lend.rs")),
         ("limits.rs", include_str!("limits.rs")),
         ("load.rs", include_str!("load.rs")),
+        ("parcel.rs", include_str!("parcel.rs")),
         ("pin.rs", include_str!("pin.rs")),
         ("show.rs", include_str!("show.rs")),
         ("presence.rs", include_str!("presence.rs")),

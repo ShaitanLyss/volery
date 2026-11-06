@@ -2120,6 +2120,12 @@ pub(crate) fn roster() -> Vec<Value> {
             "what did another card do or say, read its words, catch up on a \
              conversation, what happened there, without costing it a turn",
         ),
+        found_by(
+            crate::parcel::send_files_schema(),
+            "send a file to another card, share a folder, copy files to another \
+             machine, migrate memory or config, hand over a build output, transfer \
+             env files between cards or walls",
+        ),
         /* Deferred although `wake_me` is loaded, and the reflex it answers is
            the same one — forgetting. What reaches that reflex is not this
            schema but `wake_me`'s own description and its receipt, which names

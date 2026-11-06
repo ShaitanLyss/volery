@@ -2,6 +2,8 @@
 paths:
   - "src-tauri/src/relay.rs"
   - "src-tauri/src/later.rs"
+  - "src-tauri/src/parcel.rs"
+  - "src/lib/Parcel.svelte"
   - "src/lib/relay.ts"
   - "src/lib/relay.svelte.ts"
   - "src/lib/flow.ts"
@@ -210,7 +212,7 @@ read.
 
 ## Across machines
 
-`send`, `recall` and `close` reach a card on another wall **by its handle, with nothing
+`send`, `send_files`, `recall` and `close` reach a card on another wall **by its handle, with nothing
 added** (`flyway/reach.rs`): an id-shaped address that is not on this wall is looked for in
 the other walls' snapshots and this wall's records of the cards it opened elsewhere and the
 one that opened it, and a handle on two walls is refused naming both — `host` is only that
@@ -229,7 +231,8 @@ opened it; a recall is the origin's always and anyone else's through the switch.
   a message from another machine either.
 - **The rate limit counts a send to another wall** (`count_send`) in the same minute as one
   here. One card per call, no broadcast words: a fan-out across machines is deliberate calls.
-- **The call parks, briefly, where a local send does not.** Delivery here cannot be refused
+- **The call parks, briefly, where a local send does not** — and a `send_files` parks for as long as
+  its parcel takes to pull (below). Delivery here cannot be refused
   by anything but the caller; there, a switch, a roster and a clock all get a say, and a
   refusal that arrived after the call returned would be a report the agent believes it made.
   A late refusal reaches the card as a wall message; a late "delivered" does not, since a
@@ -635,3 +638,77 @@ holding undelivered; `snapshot.cards[].inbox` carries the last of those per card
 beside `dormant` for the reason `aside` is reported beside `tier` — a sleeping card with post
 and one without are the same card from out here, and the difference is what happens the moment
 it wakes.
+
+## Files and folders: `send_files` (2026-11-06, sink 560a0bbf)
+
+A card hands another card files and folders (`parcel.rs`). Lyss's case: moving a memory folder
+and a `CLAUDE.md` from one laptop to another. Before this, the only way was to paste contents
+into `send`, which loses the files and fills the receiver's context. Her decisions, made over
+`ask_user`, are the design:
+
+- **It lands in the receiver's own folder** (`attachments::card_dir`), under
+  `from-<sender handle>-<n>`. That is outside every repository, nothing is overwritten, and it
+  goes when the card closes (`clear_for`). The receiving agent moves what it keeps. The
+  manifest says so.
+- **No click; secrets are flagged, not gated.** A click would mostly catch accidents, and the
+  folder rule already catches those. A walk leaves out secret-shaped files (`secret_shaped`)
+  and lists them. A secret-shaped file named directly is sent, because naming it was the
+  decision, and it is flagged in three places: the plate (inverted ink, its own line), the
+  sender's receipt, and a chronicle row. On this wall the row is on the sender's card; across
+  walls it is on the receiving card, where the files now are. Nothing ever prints the
+  contents.
+- **Git decides what a folder in a repository holds**: `ls-files -co --exclude-standard`, with
+  ignored folders listed as left out. Outside a repository it is a plain walk. A folder git
+  ignores whole and that was named directly is walked by hand, because naming it was the
+  decision. `.git` never goes.
+- **Links are never followed.** A link or junction inside a folder is left out with its target
+  named; under git, each listed file's ancestors are checked, once per folder. One named
+  directly is refused, and the refusal names its target so the agent can name that instead.
+  Junctions are read off the reparse attribute, because `is_symlink` does not report them on
+  every toolchain.
+- **Anywhere on the machine except a share**: `show::is_remote`, asked of the path as written
+  and again of the canonical path.
+- **Past a cap the whole send is refused, never trimmed**, with the count or size said. The
+  caps are `parcel::HERE` (5,000 files, 500 MB) and `AFAR` (200 MB, 24 MB a file — `look.rs`'s
+  per-file ceiling). An empty parcel is refused too, so no turn is spent on a list of what
+  was left out.
+- **One card per call, by handle or title.** A chat card neither sends nor receives.
+
+**It is `send` with a parcel on it, not a second send.** `do_send` is `send_with(…, None)`, and
+`send_files` passes a `Pack` closure that is asked once the throttle, the broadcast rule and
+the target have all passed. So a parcel is held to every guard a message is, and a refusal by
+any of them costs no copy. The manifest is appended to the message body, so a dormant
+receiver's inbox row carries it and `drain_inbox` hands it over whole.
+
+**The block is the contract between two languages.** Its first line opens with `PARCEL_MARK`;
+then one line per top-level thing sent (`+`) and per thing left out (`-`), fields split on
+` · `; then a blank line and a note to the model. `relay.ts::parcelOf` reads it back for
+`Parcel.svelte`, which draws under the wall's fold of the message and under chat view's
+letter, sent or received. `sentOf` reads the sender's receipt the same way.
+`test/relay.test.ts` holds the mark against the Rust source.
+
+**Across walls the files are pulled, not pushed.** The sending wall gathers against `AFAR`,
+stages the files (`attachments::stage_out`, under the address the agent wrote, which the far
+wall asks with again, and **bound to that wall** by `bind_stage`, so `outbound_args` serves a stage
+only to the host it was sent to), and sends `Carried` in `Ask.parcel`.
+
+**A parcel is never gossiped.** A stage id is what pulls the files, so an ask carrying one rides
+`FleetMsg::Pictured` like a person's pictures (`fleet::burdened`): it is said only to its
+addressee (`pictured_for` on reconnect), never in `gossip` and never relayed. The red-team review
+found the first cut gossiping it to every wall on the flyway, any of which could then have pulled
+a `.env` named directly. That is the stage ids, each file's
+landing name and size, and the manifest's lines. It is gated by `fleet::CAN_PARCEL`: a wall
+from before parcels would hand its card the words without the files.
+
+There are several stages because one `read_look` is bounded by `look::ASK_MOST`. The receiving
+wall checks `Carried` again (`check`: caps, names through `safe_join`, no duplicates, stage
+ids), pulls each stage, writes each file under its landing name, and only then hands the card
+its message. It does this on a task (`land_parcel`). Any file that fails to arrive removes the
+whole folder, because half a parcel reads as a whole one.
+
+The sender's call waits for that landing. `fleet::patience_for` is the one figure for the fleet's
+`Waiting`, the wiring's `Waiter.keep_ms` and the parked call's window, so none of the three gives
+up before the others; the receipt rides `Waiter.note` and is said under "delivered" by `reached`,
+so a late answer takes the ordinary late path. A delivery refused after landing removes the
+folder, and the receiving wall's secrets row is written only once the card has the files. There is no resume: a broken pull is refused,
+and the agent sends again.
