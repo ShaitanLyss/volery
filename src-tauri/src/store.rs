@@ -9568,7 +9568,9 @@ pub fn live_children_of(conn: &Connection, parent_id: &str) -> i64 {
 
 /// How many spawns this card has asked for since a moment, drawn or not.
 ///
-/// **No caller at the moment** — `spawn::MAX_PER_HOUR` is off — and kept rather
+/// `spawn::do_spawn` asks it from zero to learn whether a card is opening its
+/// first child, which is when its receipt points at the coordinator's skill.
+/// The rate it was written for, `spawn::MAX_PER_HOUR`, is off, and kept rather
 /// than deleted, because the rate is parked rather than abandoned and the rows it
 /// counts are still written. Asks rather than cards is the whole point of it: a
 /// spawn that silently never drew is exactly the loop a rate limit is for, and it

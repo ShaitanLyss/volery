@@ -128,7 +128,7 @@ answer is the same: bound it, make it visible, and say what it cost.
     guards are written as bounds that may not exist rather than as comparisons a sentinel
     slips through — a `0` in either would refuse every spawn on the wall, which is the failure
     a sentinel invites and an `Option` cannot express. `record_spawn` still writes every spawn
-    down and `spawns_since` is kept with no caller, so a cap restored tomorrow is correct
+    down and `spawns_since` is kept (its one caller asks only whether a card is opening its first child, for the receipt's pointer at `volery:coordinate`, `kit.md`), so a cap restored tomorrow is correct
     about today. The counting queries sit behind the `if`, so a wall with no caps does none.
   - **What bounds a fan-out now is the wall.** A fan-out you can see is a fan-out you can stop
     — the argument the bullet below makes about subagents, now doing the whole job rather than

@@ -1700,6 +1700,16 @@ fn spawn_now(
         cmd.args(["--agents", &defs]);
     }
 
+    /* The card kit (`kit.rs`): the coordinator's method as a skill, and the
+       two reviewers as agents, loaded for this session only. Not on a chat
+       card, for the reason `agents` gives. A kit that could not be laid out is
+       a card without it, never a card that fails to start. */
+    if !chat {
+        if let Some(dir) = crate::kit::dir(app) {
+            cmd.arg("--plugin-dir").arg(dir);
+        }
+    }
+
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

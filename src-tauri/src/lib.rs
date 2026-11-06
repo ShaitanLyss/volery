@@ -47,6 +47,7 @@ pub mod find;
 mod guidance;
 pub mod hooks;
 mod joblog;
+mod kit;
 mod lab;
 mod later;
 mod lend;

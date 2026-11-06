@@ -24,3 +24,8 @@
 # tree several cards share. If a future file's endings matter, give it a line
 # here rather than reaching for the global switch.
 *.sh text eol=lf
+
+# The card kit (`src-tauri/src/kit.rs`) is compiled in byte for byte and laid out
+# for every card, so its bytes must not depend on which machine checked it out.
+# `kit::tests::the_kit_ships_with_lf_endings` holds it.
+src-tauri/kit/** text eol=lf
