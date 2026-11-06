@@ -383,10 +383,15 @@ pub fn drop_schema() -> Value {
         "name": DROP_TOOL,
         "description":
             "Put something in the sink, so it outlives this conversation. For the thing \
-             you noticed and must not stop for: a bug you walked past while doing \
-             something else, a Skein tool that should exist or misbehaved on you, a file \
-             that needs an afternoon, a decision somebody should make. It persists across \
-             sessions and survives this card being closed.\n\n\
+             you noticed and cannot deal with where you stand: a bug in somebody else's \
+             work that you could not hand to whoever owns it, a Skein tool that should \
+             exist or misbehaved on you, a file that needs an afternoon, a decision \
+             somebody should make. It persists across sessions and survives this card \
+             being closed.\n\n\
+             **A bug you can fix, fix.** One in what you are working on, with an obvious \
+             fix, belongs in this turn's work and not in the sink; if a card opened you, \
+             one outside your files goes to that card, which routes it. The sink is where \
+             a bug waits only when nobody can take it now.\n\n\
              **This is not a to-do list for the turn you are in.** Do not drop what you \
              are about to do anyway, and do not drop what the repository already records \
              — a bug with a failing test, something already in the git log, anything a \
@@ -2440,6 +2445,18 @@ mod tests {
         let d = drop_schema()["description"].as_str().unwrap().to_string();
         assert!(d.contains("not a to-do list"));
         assert!(d.contains("already records"));
+    }
+
+    /// The sink used to open on "a bug you walked past", and cards read that
+    /// as leave to park a bug they could have fixed (Lyss, 2026-11-06: "if you
+    /// find bugs along the way, fix them too"). The description now says a
+    /// fixable bug is this turn's work, and that a coordinated card hands one
+    /// outside its files to whoever opened it.
+    #[test]
+    fn drop_says_a_fixable_bug_is_fixed_not_parked() {
+        let d = drop_schema()["description"].as_str().unwrap().to_string();
+        assert!(d.contains("A bug you can fix, fix."), "{d}");
+        assert!(!d.contains("walked past"), "{d}");
     }
 
     /// **A convention an agent has to infer from a listing is one that gets

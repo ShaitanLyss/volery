@@ -29,6 +29,12 @@ You are a worker card, opened by the coordinator named in your opening prompt. V
 - Commit on your branch in small, coherent commits with explicit paths. Never push and never merge: the coordinator rebases, gates and pushes. Cards sharing your key share your tree.
 - The wall's dev servers serve the shared tree, not yours. Prove the work with scoped tests and scripts. If it has UI, say so: the live pass happens after it lands.
 
+**A bug you find along the way is work, not a footnote.** Something broken that nobody filed (a key that does nothing, focus dropped, a wrong label, an error in the console) gets fixed, not noted and left:
+- In your own files, with one obvious fix: fix it in this batch, with its own test and live check, and list it in your report as found and fixed.
+- In another card's files, or needing a design call: report it to the coordinator straight away with what you saw and where; the coordinator routes it to a card or to the captain. Don't park it.
+- Either way it gets an item in the review tool, so it is tracked like any other: file it (<how an agent files an item>), then mark it built with its how and a screenshot once fixed.
+- The sink is for what is not a bug in the product: a tooling gap, an idea, a chore.
+
 **Checks are scoped, never the full suite.** Sibling cards are mid-edit, so a repo-wide run is red for reasons that are not yours, and every card running one burns the machine's CPU for nothing. Run the tests for what you changed (<scoped test command>) and typecheck what you touched (<typecheck command>). The coordinator runs the full gate once per batch.
 
 **Before reporting a non-trivial change done:**

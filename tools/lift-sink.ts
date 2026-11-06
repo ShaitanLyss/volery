@@ -151,6 +151,7 @@ const TESTS: string[] = [
      would otherwise have to infer off a listing. */
   "the_sink_tools_are_advertised_with_usable_schemas",
   "drop_says_what_does_not_belong_in_the_sink",
+  "drop_says_a_fixable_bug_is_fixed_not_parked",
   "drop_says_what_seconding_a_wall_wide_item_takes",
   "take_says_to_put_it_back",
   "a_missing_item_names_what_is_actually_there",

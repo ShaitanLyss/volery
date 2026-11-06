@@ -187,4 +187,5 @@ Writing back to a tracker: put each answer beside its ask (after it in a multi-a
 - Respect documented, deliberate behaviour. An item complaining about it is a DECLINE with the explanation.
 - Never state a guess as a fact. Check it, or say it is unchecked.
 - Say plainly in the write-back when a card failed, a check was skipped or an item ran out of time.
+- **Bugs found along the way get fixed, not parked.** A worker fixes one in its own files in the same batch; one elsewhere comes to you and you route it to the card that owns that territory, or open one. Each gets an item in the review tool so it is tracked like a filed one. A product bug never goes to the sink to wait; the sink is for tooling gaps and ideas.
 - When a tool on the wall costs you a workaround, `mcp__skein__drop` it in the sink with what you were doing.
