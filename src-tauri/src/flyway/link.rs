@@ -233,6 +233,10 @@ pub struct Link {
     /// Walls that said goodbye and have not been heard from since — not dialled
     /// on the strength of a stale `heard` entry or the invite's seed.
     left: StdMutex<BTreeSet<String>>,
+    /// Every wall this one has flown with, as kept in the store
+    /// (`here::KNOWN_WALLS`): read at arrival and dialled every tick beside the
+    /// seed, so a restart does not leave this wall with nobody to call.
+    known: StdMutex<BTreeSet<String>>,
     /// Screens: the connections this wall holds open to watch other walls'
     /// monitors, and its own monitors as last read (`link/cast.rs`).
     media: cast::Media,
@@ -346,7 +350,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         return Ok(true);
     }
 
-    let (fleet_v, cards_v, board_v) = {
+    let (fleet_v, cards_v, board_v, known) = {
         /* `try_state`, because this is reached from a command as well as from
            setup, and a missing store must be an error here rather than a
            panic on a runtime thread, which takes the process with it. */
@@ -356,6 +360,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
             here::version(&conn, here::FLEET_VERSION),
             here::version(&conn, here::CARDS_VERSION),
             here::version(&conn, here::BOARD_VERSION),
+            here::known_walls(&conn),
         )
     };
     /* What questions from other walls left here last time: no sheet survives a
@@ -394,6 +399,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         accounts_due: AtomicBool::new(false),
         tenure: Tenure::new(),
         left: StdMutex::new(BTreeSet::new()),
+        known: StdMutex::new(known),
         media: cast::Media::default(),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
@@ -620,16 +626,29 @@ impl Link {
     fn housekeep(self: &Arc<Self>) {
         let now = self.now();
         let facts = self.facts();
-        let (version, gave_up) = {
+        let (version, gave_up, names) = {
             let Ok(mut f) = self.fleet.lock() else { return };
             f.announce(facts, now);
-            (f.version(), f.prune(now))
+            let names: Vec<String> = f.roster().map(|e| e.host.clone()).collect();
+            (f.version(), f.prune(now), names)
         };
+        /* Every wall the roster or a dial-in has taught this one, kept — so the
+           next launch has somebody to dial (`here::KNOWN_WALLS`). Written only
+           when a name is new, which is a handful of times in a flyway's life. */
+        let heard = self.heard.lock().map(|h| h.clone()).unwrap_or_default();
+        let learned = self.known.lock().ok().and_then(|mut k| {
+            let more = here::learn_walls(&k, &self.me, names.iter().chain(heard.iter()).map(String::as_str))?;
+            *k = more.clone();
+            Some(more)
+        });
         /* Kept after every announcement, not at exit: a crash is the restart
            this exists for. See `Fleet::announce`. */
         if let Some(store) = self.store() {
             if let Ok(conn) = store.0.lock() {
                 let _ = here::set_setting(&conn, here::FLEET_VERSION, &version.to_string());
+                if let Some(known) = &learned {
+                    let _ = here::set_known_walls(&conn, known);
+                }
             }
         }
         for id in gave_up {
@@ -684,7 +703,8 @@ impl Link {
             self.fleet.lock().map(|f| f.roster().map(|e| e.host.clone()).collect()).unwrap_or_default();
         let heard = self.heard.lock().map(|h| h.clone()).unwrap_or_default();
         let left = self.left.lock().map(|l| l.clone()).unwrap_or_default();
-        let hosts = tick_hosts(&self.me, &roster, &heard, key::joined_peer().as_deref(), &left);
+        let known = self.known.lock().map(|k| k.clone()).unwrap_or_default();
+        let hosts = tick_hosts(&self.me, &roster, &heard, &known, key::joined_peer().as_deref(), &left);
         let failing = self.failing.lock().map(|f| f.clone()).unwrap_or_default();
         hosts.into_iter().filter(|h| failing.get(h).is_none_or(|(_, next)| now >= *next)).collect()
     }

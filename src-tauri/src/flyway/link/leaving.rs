@@ -50,6 +50,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::super::fleet::{self, FleetMsg};
 use super::super::frame::Frame;
+use super::super::here;
 use super::super::key;
 use super::super::wire::Dialler;
 use super::{current, Flyway, Link, RosterRow};
@@ -137,20 +138,28 @@ pub(super) fn farewell_to(
     hosts.into_iter().collect()
 }
 
-/// Which hosts a tick dials: the roster's, plus the ones that only dialled in
-/// and the invite's seed — minus a wall that said goodbye, which is neither
-/// until it is heard from again. The roster is never filtered: a wall that
-/// announces after leaving is back on it, and that is what makes it dialled.
+/// Which hosts a tick dials: the roster's, plus the ones that only dialled in,
+/// every wall this one has kept from before a restart (`here::KNOWN_WALLS`)
+/// and the invite's seed — minus a wall that said goodbye, which is none of
+/// those until it is heard from again. The roster is never filtered: a wall
+/// that announces after leaving is back on it, and that is what makes it
+/// dialled. A kept name that is the same wall as one already listed, in
+/// another case, is not dialled twice (`node_secret` lowercases).
 pub(super) fn tick_hosts(
     me: &str,
     roster: &[String],
     heard: &BTreeSet<String>,
+    known: &BTreeSet<String>,
     seed: Option<&str>,
     left: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let mut hosts: BTreeSet<String> = roster.iter().cloned().collect();
     hosts.extend(heard.iter().filter(|h| !left.contains(*h)).cloned());
-    hosts.extend(seed.filter(|h| !left.contains(*h)).map(str::to_string));
+    for k in known.iter().map(String::as_str).chain(seed) {
+        if !left.iter().any(|l| l.eq_ignore_ascii_case(k)) && !hosts.iter().any(|h| h.eq_ignore_ascii_case(k)) {
+            hosts.insert(k.to_string());
+        }
+    }
     hosts.retain(|h| !h.eq_ignore_ascii_case(me));
     hosts
 }
@@ -253,6 +262,18 @@ impl Link {
         if let Ok(mut o) = self.older.lock() {
             o.remove(host);
         }
+        /* And no longer dialled after a restart: a goodbye or a person's
+           forgetting is the only way a name leaves (`here::KNOWN_WALLS`). */
+        let unlearned = self.known.lock().ok().and_then(|mut k| {
+            let less = here::unlearn_wall(&k, host)?;
+            *k = less.clone();
+            Some(less)
+        });
+        if let (Some(known), Some(store)) = (unlearned, self.store()) {
+            if let Ok(conn) = store.0.lock() {
+                let _ = here::set_known_walls(&conn, &known);
+            }
+        }
         crate::board::heard_from_afar(&self.app);
         let _ = self.app.emit("flyway:left", Left { host: Some(host.to_string()) });
         self.emit_roster();
@@ -307,6 +328,13 @@ pub(super) async fn leave(app: AppHandle) -> Result<(), String> {
     let _one = state.arriving.lock().await;
     let tell = current(&app).map(|l| l.farewell_hosts()).unwrap_or_default();
     crate::off_main(key::leave).await??;
+    /* The names were this flyway's. A wall that joins another one later would
+       otherwise dial them under the new key, as walls that are not there. */
+    if let Some(store) = app.try_state::<crate::store::Store>() {
+        if let Ok(conn) = store.0.lock() {
+            let _ = here::clear_setting(&conn, here::KNOWN_WALLS);
+        }
+    }
     let link = state.link.lock().map_err(|_| "the flyway is wedged".to_string())?.take();
     if let Some(l) = link {
         l.tenure.close();
@@ -434,10 +462,37 @@ mod tests {
         let left = set(&["gone"]);
         let heard = set(&["gone", "other"]);
         let none: Vec<String> = Vec::new();
-        assert_eq!(tick_hosts("me", &none, &heard, Some("gone"), &left), set(&["other"]));
+        let kept = set(&["gone"]);
+        assert_eq!(tick_hosts("me", &none, &heard, &kept, Some("gone"), &left), set(&["other"]));
         /* It announced again — on the roster, so dialled, left or not. */
-        assert_eq!(tick_hosts("me", &["gone".to_string()], &heard, None, &left), set(&["gone", "other"]));
+        assert_eq!(tick_hosts("me", &["gone".to_string()], &heard, &kept, None, &left), set(&["gone", "other"]));
         /* And never this wall. */
-        assert_eq!(tick_hosts("me", &["me".to_string()], &BTreeSet::new(), Some("ME"), &BTreeSet::new()), BTreeSet::new());
+        let empty = BTreeSet::new();
+        assert_eq!(tick_hosts("me", &["me".to_string()], &empty, &set(&["Me"]), Some("ME"), &empty), BTreeSet::new());
+    }
+
+    /// **The 2026-11-06 stranding.** After a restart the roster and `heard` are
+    /// empty, and a wall that started its flyway has its own name as the seed —
+    /// so before the kept names it dialled nobody, and waited for walls whose
+    /// seeds did not name it either. The kept names are what it dials then, and
+    /// a name kept in another case than the seed's is one wall, dialled once.
+    #[test]
+    fn a_restarted_wall_dials_every_wall_it_kept_even_with_no_seed() {
+        let empty = BTreeSet::new();
+        let none: Vec<String> = Vec::new();
+        let kept = set(&["AU-LT-285", "AU-LT-288"]);
+        assert_eq!(
+            tick_hosts("QUEERISFREEDOM", &none, &empty, &kept, Some("QUEERISFREEDOM"), &empty),
+            set(&["AU-LT-285", "AU-LT-288"])
+        );
+        assert_eq!(
+            tick_hosts("AU-LT-285", &none, &empty, &set(&["queerisfreedom"]), Some("QUEERISFREEDOM"), &empty),
+            set(&["queerisfreedom"])
+        );
+        /* Already on the roster under its own spelling: not added again. */
+        assert_eq!(
+            tick_hosts("me", &["AU-LT-288".to_string()], &empty, &set(&["au-lt-288"]), None, &empty),
+            set(&["AU-LT-288"])
+        );
     }
 }

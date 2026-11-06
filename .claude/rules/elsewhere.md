@@ -1650,6 +1650,26 @@ the heard-time and `#reconcile` takes the shadows down.
 `flyway_forget` shares `Link::drop_wall` now, which fixed a neighbour: forgetting a quiet wall
 used to leave its cards in the link and its shadows on the wall.
 
+### A wall remembers who it flew with
+
+Reported 2026-11-06, from QUEERISFREEDOM at home: *"my laptops at work … don't show up anymore
+since a few days."* All three walls were online and on the same relay, and none dialed any other.
+**The key lets a wall work out any wall's address, but only once it knows that wall's name**
+(`WallKey::node_secret` is the key plus the name), and names lived in memory: the roster and
+`heard`. Only the invite's seed survived a restart. QUEERISFREEDOM had *started* the flyway, so
+its seed was its own name, and it dials nobody. Neither laptop's seed named it. Both sides
+restarted while apart (an update there, sleep here), so each had forgotten the other, and nothing
+could ever bring them back together. The fix on the day was rewriting the seed in the vault by hand.
+
+So every name the roster or a verified dial-in teaches a wall is kept in `flyway_setting`
+(`here::KNOWN_WALLS`, a setting rather than a table, so the installed build carries it with no
+migration), and `tick_hosts` dials those names beside the seed after any restart. **A name leaves
+only by a goodbye, a person's forget, or this wall leaving.** Never by age (Lyss's call): a machine
+in a drawer for a month is still one you want back, and a dial nobody answers costs one attempt
+per `BACKOFF_MAX_MS`. Bounded at `KNOWN_MOST` names so gossip cannot turn into endless dialing;
+one name in two cases is one wall. Newcomers were never the gap: since `1b823b9` an invite names the
+wall handing it out, which is up by construction, and every wall that hears of the newcomer keeps it.
+
 Demonstrated 2026-10-19 between two frozen labs (`a`, `b --peer a`), driven through the Flyway
 panel (`<space> k`, "leave the flyway") and read off the snapshot's new `elsewhere.roster`:
 with a card open on `a` and drawn as a shadow on `b`, **leave on `a`** left `a` with no roster

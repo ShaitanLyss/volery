@@ -67,6 +67,104 @@ pub fn version(conn: &Connection, key: &str) -> u64 {
     setting(conn, key).and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
+/* ── the walls this one has flown with ─────────────────────────────────────── */
+
+/// Every wall this one has flown with, by name, one to a line.
+///
+/// **A wall has to know a name to dial it**, and the key does not say which
+/// names exist: an identity is the key *and* a machine's name
+/// (`WallKey::node_secret`), so holding the key means being able to work out
+/// any wall's address once you know what it is called, and nothing more. The
+/// roster and `heard` are where names come from, and both are memory. So the
+/// only name that survived a restart was the invite's seed, and a wall that
+/// *started* its flyway has its own name there, which it never dials.
+///
+/// That stranded the flyway on 2026-11-06: QUEERISFREEDOM had started it, both
+/// work laptops had restarted for an update and QUEERISFREEDOM had restarted
+/// while asleep, and neither laptop's seed named it. All three were online, on
+/// the same relay, holding the same key, and none dialled any other. It sat
+/// that way for two days, and the fix that day was rewriting the seed by hand.
+///
+/// So the names are kept here: whatever the roster or a dial-in taught this
+/// wall, added as it is learned and dialled after every restart beside the
+/// seed. Two walls that ever met find each other again however many times
+/// either restarts apart. A name leaves only when its wall says goodbye, when a
+/// person forgets it from the panel, or when this wall leaves the flyway. Never
+/// by age (Lyss's call): a machine in a drawer for a month is still a machine
+/// you will want back, and a dial nobody answers costs one try per
+/// `BACKOFF_MAX_MS`.
+///
+/// A setting rather than a table, so the installed build can carry it with no
+/// migration: a list of names that only this wall reads is exactly what
+/// `flyway_setting` already holds the versions for.
+pub const KNOWN_WALLS: &str = "known_walls";
+
+/// At most this many names. A real flyway is a handful of machines; the bound
+/// is so a peer that gossiped a thousand made-up names cannot have this wall
+/// dialling a thousand addresses every tick for ever.
+pub const KNOWN_MOST: usize = 64;
+
+/// The longest name kept, as `flyway_forget` caps one.
+const NAME_MOST: usize = 40;
+
+pub fn known_walls(conn: &Connection) -> std::collections::BTreeSet<String> {
+    setting(conn, KNOWN_WALLS)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn set_known_walls(conn: &Connection, names: &std::collections::BTreeSet<String>) -> Result<(), String> {
+    if names.is_empty() {
+        return clear_setting(conn, KNOWN_WALLS);
+    }
+    set_setting(conn, KNOWN_WALLS, &names.iter().cloned().collect::<Vec<_>>().join("\n"))
+}
+
+/// `known` with `names` added, or `None` when nothing new was learned, so the
+/// caller writes only when there is something to write. Never this wall's own
+/// name. A name that differs only in case from one already kept is the same
+/// wall (`node_secret` lowercases), so it is not kept twice. Names come off the
+/// wire, so each goes through `clip::keep`, and one carrying a line break,
+/// which would read back as two, is not kept at all.
+pub fn learn_walls<'a>(
+    known: &std::collections::BTreeSet<String>,
+    me: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Option<std::collections::BTreeSet<String>> {
+    let mut out = known.clone();
+    for raw in names {
+        if out.len() >= KNOWN_MOST {
+            break;
+        }
+        if raw.contains(['\n', '\r']) {
+            continue;
+        }
+        let name = crate::clip::keep(raw.trim(), NAME_MOST).kept;
+        if name.is_empty()
+            || name.eq_ignore_ascii_case(me)
+            || out.iter().any(|k| k.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        out.insert(name);
+    }
+    (out.len() != known.len()).then_some(out)
+}
+
+/// `known` without `name`, in any case, or `None` when it was not there.
+pub fn unlearn_wall(
+    known: &std::collections::BTreeSet<String>,
+    name: &str,
+) -> Option<std::collections::BTreeSet<String>> {
+    let out: std::collections::BTreeSet<String> =
+        known.iter().filter(|k| !k.eq_ignore_ascii_case(name.trim())).cloned().collect();
+    (out.len() != known.len()).then_some(out)
+}
+
 /// Whether this wall takes work from other walls. **No unless a person said
 /// yes**, and a value that does not read as yes is no — a machine joining a
 /// flyway must not thereby become somewhere anybody can open a card.
@@ -519,6 +617,46 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::store::migrate(&conn).unwrap();
         conn
+    }
+
+    fn names(n: &[&str]) -> std::collections::BTreeSet<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The names a wall learns survive the store, and nothing else about them
+    /// does: a restart reads back exactly what was kept.
+    #[test]
+    fn kept_walls_read_back_after_a_restart_and_clear_when_emptied() {
+        let conn = db();
+        assert!(known_walls(&conn).is_empty(), "a wall that never flew knows nobody");
+        let k = learn_walls(&Default::default(), "QUEERISFREEDOM", ["AU-LT-288", "AU-LT-285"]).unwrap();
+        set_known_walls(&conn, &k).unwrap();
+        assert_eq!(known_walls(&conn), names(&["AU-LT-285", "AU-LT-288"]));
+        let less = unlearn_wall(&k, "au-lt-288").unwrap();
+        set_known_walls(&conn, &less).unwrap();
+        assert_eq!(known_walls(&conn), names(&["AU-LT-285"]));
+        set_known_walls(&conn, &unlearn_wall(&less, "AU-LT-285").unwrap()).unwrap();
+        assert_eq!(setting(&conn, KNOWN_WALLS), None, "an empty list is no setting at all");
+    }
+
+    /// Learning writes only when something is new, never keeps this wall or a
+    /// second spelling of one it has, and refuses what would read back as two.
+    #[test]
+    fn learning_a_wall_is_news_only_once() {
+        let k = names(&["AU-LT-288"]);
+        assert_eq!(learn_walls(&k, "me", ["AU-LT-288", "au-lt-288", " ", "ME", "me"]), None);
+        assert_eq!(learn_walls(&k, "me", ["two\nwalls"]), None);
+        assert_eq!(learn_walls(&k, "me", ["  AU-LT-285 "]), Some(names(&["AU-LT-285", "AU-LT-288"])));
+        assert_eq!(unlearn_wall(&k, "nobody"), None);
+    }
+
+    /// A peer gossiping made-up names cannot make this wall dial without end.
+    #[test]
+    fn the_kept_list_is_bounded() {
+        let many: Vec<String> = (0..KNOWN_MOST * 2).map(|i| format!("wall-{i}")).collect();
+        let k = learn_walls(&Default::default(), "me", many.iter().map(String::as_str)).unwrap();
+        assert_eq!(k.len(), KNOWN_MOST);
+        assert_eq!(learn_walls(&k, "me", ["one-more"]), None);
     }
 
     fn project(conn: &Connection, id: &str, name: &str, root: &str) {
