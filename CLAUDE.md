@@ -102,7 +102,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # chronicle.rs, accountsync.rs,
                               # aside.rs,
                               # remove.rs,
-                              # later.rs, pin.rs, presence.rs, sketch.rs, spawn.rs,
+                              # later.rs, pin.rs, presence.rs, sketch.rs, spawn.rs, kit.rs,
                               # bang.rs, update.rs, guidance.rs, browser.rs,
                               # quit.rs,
                               # voice.rs, steward.rs,
@@ -170,6 +170,9 @@ node --experimental-strip-types tools/probe-cdp-stall.ts   # what makes playwrig
                                    # in initializeServer — a dialog, a hung page — and that
                                    # the hook's check names it. No API turn; Chrome on 19222
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
+bun tools/probe-kit.ts             # whether the card kit's skill and agents reach a card through
+                                   # --plugin-dir, untouched ~/.claude included; `invoke` loads
+                                   # the skill, `cost` is two Haiku turns measuring what it adds
 bun tools/probe-image.ts           # whether an image on stdin reaches the model, interleaved
                                    # with text and in order. Generates its own two pictures,
                                    # so a right answer cannot be a guess. One real turn
@@ -339,6 +342,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `browser.md` | a browser the wall owns and a page two things drive at once: why hosting it in a webview saves ~0, the profile collision two cards would have hit, the fixed port an MCP argument forces, the two Chrome flags that fail after everything looks fine, and why the input half needs no window focus | `browser.rs`, `browser.ts`, `pane.svelte.ts`, `Browser.svelte`, `tools/probe-browser.ts` |
 | `build.md` | building without MSVC — the four traps, and what a no-MSVC machine can check | `Cargo.toml`, `tools/*.ps1` |
 | `cast.md` | screens on the wall, the webview half: a decoder that is a worker's so neither main thread touches a frame, newest-frame-or-nothing, the one holder and the one tile over every surface, the effect loop the first lab found, the first click that only focuses, Escape held as the way out, immersive as a borrowed surface, chat view's sheet, grid and vignettes, and the fake host that let it be built before the capture existed (`docs/SCREENS.md` is the contract) | `cast.ts`, `cast.worker.ts`, `cast.svelte.ts`, `Screen*.svelte`, `tools/castlab.ts` |
+| `kit.md` | the plugin every project card is spawned with: the `volery:coordinate` skill and the `red-team` and `verifier` agents, why `--plugin-dir` rather than the system prompt, what the skill leaves out because the wall already says it, and the one receipt that points at it | `kit.rs`, `src-tauri/kit/**` |
 | `load.md` | ten cards on one laptop: one `@playwright/mcp` for the wall, a project's stdio server shared across its cards, the reaper that stopped killing Git Bash work, telling a card the machine is saturated, and the 403 the CLI remembers by server name machine-wide | `load.rs`, `mcphost.rs`, `pool.rs` |
 
 ## Architecture

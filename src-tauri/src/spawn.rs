@@ -195,8 +195,9 @@ const MAX_LIVE: Option<i64> = None;
 /// decomposition into seven pieces, and it answered both with the same refusal.
 ///
 /// So the loop it was for is now something you *see* — seven cards arriving at
-/// once on a wall is a thing on a wall — and `store::spawns_since` is kept, with
-/// no caller, for the hour this comes back.
+/// once on a wall is a thing on a wall — and `store::spawns_since` is kept for
+/// the hour this comes back. Its one caller today asks a different question:
+/// whether a card is opening its first child (`coordinate_pointer`).
 const MAX_PER_HOUR: Option<i64> = None;
 const HOUR_MS: i64 = 60 * 60 * 1_000;
 
@@ -2296,6 +2297,9 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        from the moment it exists rather than from whenever the wall gets round to
        drawing it. `set_mid_turn`'s shape again: bookkeeping about what something
        *is* must not wait for the thing to finish arriving. */
+    /* Asked before the row below is written, so it reads "this caller has
+       never opened a card" rather than counting the one being opened now. */
+    let first = crate::store::spawns_since(&conn, caller, 0) == 0;
     if let Err(e) = crate::store::record_spawn(&conn, &id, caller) {
         return format!("could not open a card: {e}");
     }
@@ -2439,13 +2443,14 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         ),
         None => String::new(),
     };
+    let method = coordinate_pointer(first);
     match elsewhere {
         None => format!(
             "opening a card in {cwd} — its handle is {handle}. It has the brief you wrote and \
              nothing else of yours. Tell the user you have opened it and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, which takes a \
-             moment.{called}{on}{starts}{sharing}{ate}{waits}"
+             moment.{called}{on}{starts}{sharing}{ate}{waits}{method}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:
@@ -2461,9 +2466,31 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              be in the brief. Tell the user you have opened it, where, and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, and then only under \
-             `scope: \"skein\"`, since it is not in your project.{called}{on}{starts}{ate}{waits}"
+             `scope: \"skein\"`, since it is not in your project.{called}{on}{starts}{ate}{waits}{method}"
         ),
     }
+}
+
+/// The one place the coordinator's method is mentioned to a card that did not
+/// go looking for it: the receipt for the first card it ever opens.
+///
+/// **Why here.** Most cards never coordinate, so the method is a skill
+/// (`kit.rs`) and every card pays only its one-line description. But a card
+/// that has just opened its first child is the one card on the wall for which
+/// the method is suddenly relevant, and a receipt is read by exactly the card
+/// that made the call. Said once rather than on every spawn: a parent opening
+/// its fourth card has either read it or decided not to, and a sentence
+/// repeated into every receipt is one nobody reads by the third.
+fn coordinate_pointer(first: bool) -> String {
+    if !first {
+        return String::new();
+    }
+    format!(
+        " If you are working a list of items through several cards, the `{}` skill has the \
+         method: rulings, where each card works, pacing, the one gate where work is committed, \
+         and an answer for every item. It is loaded only if you invoke it.",
+        crate::kit::COORDINATE
+    )
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -3427,6 +3454,15 @@ fn list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first receipt names the skill by the name the CLI gives it, and no
+    /// later receipt names it at all.
+    #[test]
+    fn only_the_first_receipt_points_at_the_method() {
+        let first = coordinate_pointer(true);
+        assert!(first.contains("`volery:coordinate`"), "{first}");
+        assert!(coordinate_pointer(false).is_empty());
+    }
 
     /// The three things an agent has to understand before calling this, all of
     /// which are in the description because there is nowhere else to put them.
