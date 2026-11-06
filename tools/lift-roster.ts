@@ -159,6 +159,14 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     items: ["const WAKE_TOOL", "const CANCEL_TOOL", "fn wake_schema", "fn cancel_schema"],
   },
   {
+    file: "src-tauri/src/provider.rs",
+    items: ["const SET_PROVIDER_TOOL", "fn set_provider_schema"],
+  },
+  {
+    file: "src-tauri/src/parcel.rs",
+    items: ["const SEND_FILES_TOOL", "fn send_files_schema"],
+  },
+  {
     file: "src-tauri/src/presence.rs",
     /* `AWAY_TOOL` and the schema, plus the two prose functions the schema's
        own assertions read. `DEFERRED_OPENING` comes with them because both
@@ -202,6 +210,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "const SPAWN_TOOL",
       "const SPAWN_MODELS",
       "const SPAWN_EFFORTS",
+      /* `9199aeb` (deepseek cards) gave `spawn_schema` a provider `enum` and a
+         model list that spans providers; this list did not hear of either. */
+      "const SPAWN_PROVIDERS",
+      "const ALL_MODELS",
       "const CLOSE_TOOL",
       "fn spawn_schema",
       "fn close_schema",
@@ -541,7 +553,9 @@ const MODULES = [
   "limits",
   "load",
   "presence",
+  "parcel",
   "pin",
+  "provider",
   "show",
   "relay",
   "remove",
