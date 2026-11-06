@@ -289,7 +289,7 @@ const MAX_TITLE: usize = 80;
 /// **Nothing here reaches `--model`.** The word is carried on `spawn:asked` and
 /// resolved on the other side, because the table that says what `sonnet` costs
 /// in effort is the front end's and always has been. That keeps one table rather
-/// than two that agree today; `the_three_names_are_the_ones_the_wall_resolves`
+/// than two that agree today; `the_names_are_the_ones_the_wall_resolves`
 /// is what stops them drifting apart.
 ///
 /// The order is the order the schema offers them in, and it is cheapest first
@@ -3733,7 +3733,7 @@ mod tests {
     /// The five levels, and the seam they cross.
     ///
     /// Same arrangement and same failure mode as
-    /// `the_three_names_are_the_ones_the_wall_resolves`: the word is validated
+    /// `the_names_are_the_ones_the_wall_resolves`: the word is validated
     /// here and spent on the other side, so a level accepted here that
     /// `presets.ts` cannot read is a card running at the family's default with
     /// the receipt claiming otherwise. `test/presets.test.ts` holds that end by

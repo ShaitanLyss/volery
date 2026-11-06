@@ -2151,7 +2151,7 @@ pub(crate) fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
 /// it in full before it answers. One number for the fleet's `Waiting` and the
 /// wiring's `Waiter`, which must not give up at different moments.
 pub fn patience_for(parcel: Option<&crate::parcel::Carried>) -> i64 {
-    GIVE_UP_MS + parcel.map(|p| super::wire::carrying_within(p.bytes() as usize).as_millis() as i64 * 2).unwrap_or(0)
+    GIVE_UP_MS + parcel.map(|p| crate::flyway::wire::carrying_within(p.bytes() as usize).as_millis() as i64 * 2).unwrap_or(0)
 }
 
 /// Whether an ask carries something only its addressee may have: a person's

@@ -69,6 +69,11 @@ const ITEMS = [
   /* Read by `spawn_schema`'s `enum`. Added 2026-09-18, the same omission as in
      `lift-roster.ts`: `6fec05d` introduced it and updated neither list. */
   "const SPAWN_MODELS",
+  /* And the provider half `9199aeb` added beside it: the models a provider
+     takes, every model the gate knows, and which providers there are. */
+  "const SPAWN_PROVIDERS",
+  "const PROVIDER_MODELS",
+  "const ALL_MODELS",
   /* The model gate and the effort gate. Both pure — a `&Value` in, a `String`
      out — and both refuse rather than fall back, which is the arm worth running
      rather than merely typechecking: a refusal that stops saying *what would
@@ -111,7 +116,7 @@ const TESTS = [
      crossing an `emit` into a language this crate cannot see, so the half that
      can be run here is the half that says the schema offers exactly what the
      validator takes — and the refusals, which are the expensive arms. */
-  "the_three_names_are_the_ones_the_wall_resolves",
+  "the_names_are_the_ones_the_wall_resolves",
   "a_model_this_wall_cannot_open_is_refused_with_the_list",
   "the_model_field_says_what_it_costs_and_what_leaving_it_off_means",
   "the_five_levels_are_the_ones_a_card_understands",

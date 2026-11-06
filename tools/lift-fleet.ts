@@ -34,6 +34,8 @@ import { depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
 const FLEET = "src-tauri/src/flyway/fleet.rs";
 const CLEAN = "src-tauri/src/clean.rs";
 const CAST = "src-tauri/src/cast/mod.rs";
+const PARCEL = "src-tauri/src/parcel.rs";
+const WIRE = "src-tauri/src/flyway/wire.rs";
 const DEPS = depsDir();
 const HOST = "src-tauri/target/debug/deps";
 
@@ -59,6 +61,26 @@ const monitor = [
   item(read(CAST), "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct Monitor {", CAST),
 ].join("\n");
 
+/* `Ask::parcel` carries a `crate::parcel::Carried` (`send_files`, sink 560a0bbf).
+   The four types are lifted verbatim; `bytes` is the one method `patience_for`
+   calls, restated because `Parcel` has a method of the same name above it. */
+const derive = "#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\n";
+const parcelSrc = read(PARCEL);
+const parcel = [
+  item(parcelSrc, derive + "pub struct Top {", PARCEL),
+  item(parcelSrc, derive + "pub struct Left {", PARCEL),
+  item(parcelSrc, derive + "pub struct Staged {", PARCEL),
+  item(parcelSrc, derive + "pub struct Carried {", PARCEL),
+  "impl Carried { pub fn bytes(&self) -> u64 { self.stages.iter().flat_map(|s| &s.files).map(|f| f.1).sum() } }",
+].join("\n");
+
+/* `patience_for` scales a parcel's wait by `wire::carrying_within`, lifted verbatim. */
+const wireSrc = read(WIRE);
+const wire = [
+  "use std::time::Duration;",
+  item(wireSrc, "const EXCHANGE_WITHIN: Duration", WIRE),
+].join("\n");
+
 const lift = [
   read(FLEET),
   "",
@@ -69,6 +91,12 @@ const lift = [
   "mod cast {",
   monitor,
   "}",
+  "mod parcel {",
+  parcel,
+  "}",
+  "mod flyway { pub mod wire {",
+  wire,
+  "} }",
 ].join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "lift-fleet-"));
