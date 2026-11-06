@@ -35,6 +35,10 @@
 //!   which shape each message rides, a key per connection and a counter for a
 //!   nonce, consent, and what a relayed path is held to. Pure;
 //!   `link/cast.rs` is the wiring.
+//! - `directory` — the flyway's shared record of which walls are on it,
+//!   signed by a key every member derives and sealed so the relay holding it
+//!   reads no name: how a wall finds walls it has never met. Pure;
+//!   `link/listing.rs` is the wiring and `wire.rs` the HTTP.
 //! - `frame` — how those vocabularies share one frame.
 //! - `wire` — iroh: QUIC, dial by public key, relay fallback. The only file
 //!   that knows about the transport, so the transport stays replaceable.
@@ -58,6 +62,7 @@ pub mod act;
 pub mod boards;
 pub mod cast;
 pub mod cards;
+pub mod directory;
 pub mod fleet;
 pub mod frame;
 pub mod here;

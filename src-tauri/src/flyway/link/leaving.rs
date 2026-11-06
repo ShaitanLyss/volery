@@ -340,6 +340,10 @@ pub(super) async fn leave(app: AppHandle) -> Result<(), String> {
         l.tenure.close();
         let wanted = tell.len();
         let told = l.farewell(tell).await;
+        /* Before the endpoint closes, since the record is reached with its TLS
+           configuration, and after the goodbye, which the others act on now
+           rather than at their next read of the directory. */
+        l.withdraw_from_directory().await;
         l.shutdown().await;
         log::info!("flyway: left — said goodbye to {told} of {wanted} wall(s)");
     }

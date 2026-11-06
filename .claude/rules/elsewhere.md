@@ -1670,6 +1670,29 @@ per `BACKOFF_MAX_MS`. Bounded at `KNOWN_MOST` names so gossip cannot turn into e
 one name in two cases is one wall. Newcomers were never the gap: since `1b823b9` an invite names the
 wall handing it out, which is up by construction, and every wall that hears of the newcomer keeps it.
 
+### And a directory, so a wall needs nobody's name
+
+Lyss asked the follow-up the same day: *"is there a fix like a shared name where machines wouldn't
+need to know their names anymore?"* Kept names still need the walls to have met. A wall that has
+never been up at the same time as anyone now online has nobody to call.
+
+`flyway/directory.rs` is one more pkarr record on the relay every wall already publishes its own
+address to (`dns.iroh.link`), signed by a key every member derives from the flyway key (so only
+members can write it) and holding the list of names **sealed** with the flyway key (so the relay
+reads ciphertext, never a name). Each wall reads it on a loop of its own (`link/listing.rs`, five
+minutes, first read at arrival), dials everyone on it beside the kept names, and writes only to add
+**itself**, or to renew a record an hour old. Nobody writes another wall's name, so a write race
+loses a name for one round at most and a name taken out stays out: leaving takes this wall's own
+name out, and forgetting a wall in the panel takes that one out. **A list that could not be read is
+never written over.** Only the relay's 404 lets a wall start one, since writing a list of one over
+a record it failed to fetch or open would erase everybody else. About thirty names fit the relay's
+1000-byte packet. Past that the writer keeps its own name, and the kept names cover the rest.
+
+Driven on two frozen labs that had **never met**: kb held ka's key with an invite naming only
+itself, no `--peer`, no kept names. ka listed itself on arrival. kb read the directory on its
+arrival and added itself, and the two were on each other's rosters within the minute. kb leaving
+took itself out of the record and then said goodbye.
+
 Demonstrated 2026-10-19 between two frozen labs (`a`, `b --peer a`), driven through the Flyway
 panel (`<space> k`, "leave the flyway") and read off the snapshot's new `elsewhere.roster`:
 with a card open on `a` and drawn as a shadow on `b`, **leave on `a`** left `a` with no roster

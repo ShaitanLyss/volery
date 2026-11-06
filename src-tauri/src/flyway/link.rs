@@ -115,6 +115,7 @@ pub(crate) mod accounting;
 mod billboard;
 pub mod cast;
 mod leaving;
+mod listing;
 mod moves;
 pub(crate) mod seen;
 
@@ -237,6 +238,9 @@ pub struct Link {
     /// (`here::KNOWN_WALLS`): read at arrival and dialled every tick beside the
     /// seed, so a restart does not leave this wall with nobody to call.
     known: StdMutex<BTreeSet<String>>,
+    /// The names the flyway's directory last listed (`link/listing.rs`),
+    /// dialled every tick beside the kept ones.
+    directory: StdMutex<BTreeSet<String>>,
     /// Screens: the connections this wall holds open to watch other walls'
     /// monitors, and its own monitors as last read (`link/cast.rs`).
     media: cast::Media,
@@ -400,6 +404,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         tenure: Tenure::new(),
         left: StdMutex::new(BTreeSet::new()),
         known: StdMutex::new(known),
+        directory: StdMutex::new(BTreeSet::new()),
         media: cast::Media::default(),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
@@ -454,6 +459,16 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
        half a minute. `arrive` is called when a key is entered as well as at
        launch, so the ask-first order is also what makes pasting an invite
        produce an answer on the spot. */
+    /* The directory on a loop of its own (`link/listing.rs`), read first and
+       then every few minutes, so a wall that has met nobody finds everybody. */
+    let listing = link.clone();
+    tauri::async_runtime::spawn(async move {
+        tick_until_closed(&listing.tenure, super::directory::EVERY, || {
+            let l = listing.clone();
+            async move { l.consult_directory().await }
+        })
+        .await;
+    });
     let asking = link.clone();
     tauri::async_runtime::spawn(async move {
         /* Until the link is closed, and on *this* link rather than whichever is
@@ -703,7 +718,8 @@ impl Link {
             self.fleet.lock().map(|f| f.roster().map(|e| e.host.clone()).collect()).unwrap_or_default();
         let heard = self.heard.lock().map(|h| h.clone()).unwrap_or_default();
         let left = self.left.lock().map(|l| l.clone()).unwrap_or_default();
-        let known = self.known.lock().map(|k| k.clone()).unwrap_or_default();
+        let mut known = self.known.lock().map(|k| k.clone()).unwrap_or_default();
+        known.extend(self.directory.lock().map(|d| d.clone()).unwrap_or_default());
         let hosts = tick_hosts(&self.me, &roster, &heard, &known, key::joined_peer().as_deref(), &left);
         let failing = self.failing.lock().map(|f| f.clone()).unwrap_or_default();
         hosts.into_iter().filter(|h| failing.get(h).is_none_or(|(_, next)| now >= *next)).collect()
@@ -2883,6 +2899,12 @@ pub async fn flyway_forget(app: AppHandle, host: String) -> Result<(), String> {
        to take them down — and so do its cards, which this used to leave in the
        link and on the wall as shadows of a wall that was no longer there. */
     link.drop_wall(&host, false);
+    /* And out of the flyway's directory, or every wall would go on dialling a
+       machine a person has said is gone. Nobody re-adds another wall's name,
+       so this sticks unless that machine comes back and adds itself. */
+    if let Err(e) = link.unlist(&host).await {
+        log::info!("flyway: {host} is off the roster but could not be taken out of the directory: {e}");
+    }
     crate::chronicle::note(
         &app,
         None,

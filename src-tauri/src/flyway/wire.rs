@@ -65,11 +65,14 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use iroh::address_lookup::N0_DNS_PKARR_RELAY_PROD;
 use iroh::endpoint::{presets, ConnectOptions, Connection, Incoming, QuicTransportConfig, ServerConfig, VarInt};
 use iroh::tls::CaTlsConfig;
 use iroh::{Endpoint, EndpointId, SecretKey};
+use iroh_dns::pkarr::SignedPacket;
 
 use super::cast;
+use super::directory;
 use super::frame::{self, Frame};
 use super::seal::WallKey;
 
@@ -146,7 +149,13 @@ pub struct Wire {
     room: String,
     /// What a screen's connection is accepted under (`cast_transport`).
     cast_server: Arc<ServerConfig>,
+    /// The directory's HTTP client, made the first time it is wanted.
+    http: std::sync::OnceLock<reqwest::Client>,
 }
+
+/// How long one read or write of the directory may take. Fifteen seconds is
+/// far past a healthy relay and short enough that a leave is not held long.
+const DIRECTORY_WITHIN: Duration = Duration::from_secs(15);
 
 /// A connection that finished its handshake, told apart by its language.
 pub enum Arrival {
@@ -220,7 +229,7 @@ impl Wire {
                 .build(),
         );
 
-        Ok(Self { endpoint, key: Arc::new(key), room, cast_server })
+        Ok(Self { endpoint, key: Arc::new(key), room, cast_server, http: std::sync::OnceLock::new() })
     }
 
     /// Let go of the endpoint: every connection ends and `next_dial` answers
@@ -248,6 +257,78 @@ impl Wire {
     /// without an address, a node id or a server.
     pub fn peer(&self, host: &str) -> Result<EndpointId, String> {
         Ok(SecretKey::from_bytes(&self.key.node_secret(host)?).public())
+    }
+
+    /// The flyway's directory record (`directory.rs`), read off the same pkarr
+    /// relay this endpoint publishes its own address to. Only a relay saying
+    /// 404 reads as `Absent`; a record that does not verify, does not open or
+    /// cannot be fetched is `Unreadable`, which writes nothing.
+    pub async fn directory_read(&self) -> directory::Read {
+        let Ok(secret) = directory::secret(&self.key) else { return directory::Read::Unreadable };
+        let public = SecretKey::from_bytes(&secret).public();
+        let Ok(client) = self.http() else { return directory::Read::Unreadable };
+        let url = format!("{N0_DNS_PKARR_RELAY_PROD}/{}", public.to_z32());
+        let answer = match client.get(&url).send().await {
+            Ok(a) => a,
+            Err(e) => {
+                log::debug!("flyway: could not read the directory: {e}");
+                return directory::Read::Unreadable;
+            }
+        };
+        if answer.status() == reqwest::StatusCode::NOT_FOUND {
+            return directory::Read::Absent;
+        }
+        if !answer.status().is_success() {
+            log::debug!("flyway: the directory answered {}", answer.status());
+            return directory::Read::Unreadable;
+        }
+        let Ok(body) = answer.bytes().await else { return directory::Read::Unreadable };
+        let Ok(packet) = SignedPacket::from_relay_payload(&public, &body) else {
+            log::warn!("flyway: the directory record did not verify — left alone");
+            return directory::Read::Unreadable;
+        };
+        match directory::decode(&self.key, &packet.txt_records(directory::RECORD)) {
+            Some(walls) => directory::Read::Found { walls, at_micros: packet.timestamp().as_micros() },
+            None => {
+                log::warn!("flyway: the directory record did not open under this key — left alone");
+                directory::Read::Unreadable
+            }
+        }
+    }
+
+    /// Write the directory record: `values` are `directory::encode`'s strings.
+    pub async fn directory_write(&self, values: &[String]) -> Result<(), String> {
+        let secret = SecretKey::from_bytes(&directory::secret(&self.key)?);
+        let packet = SignedPacket::from_txt_strings(&secret, directory::RECORD, values, directory::TTL)
+            .map_err(|e| format!("could not build the directory record: {e}"))?;
+        let url = format!("{N0_DNS_PKARR_RELAY_PROD}/{}", secret.public().to_z32());
+        let answer = self
+            .http()?
+            .put(&url)
+            .body(packet.to_relay_payload())
+            .send()
+            .await
+            .map_err(|e| format!("could not write the directory: {e}"))?;
+        if answer.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("the directory refused the record: {}", answer.status()))
+        }
+    }
+
+    /// The HTTP client the directory is reached with: the endpoint's own TLS
+    /// configuration, so it trusts exactly what the endpoint trusts
+    /// (`CaTlsConfig::system()` above, the office's gateway included).
+    fn http(&self) -> Result<&reqwest::Client, String> {
+        if let Some(c) = self.http.get() {
+            return Ok(c);
+        }
+        let c = reqwest::Client::builder()
+            .tls_backend_preconfigured(self.endpoint.tls_config().clone())
+            .timeout(DIRECTORY_WITHIN)
+            .build()
+            .map_err(|e| format!("could not build the directory's client: {e}"))?;
+        Ok(self.http.get_or_init(|| c))
     }
 
     /// Say something to another wall and hear what it says back.
