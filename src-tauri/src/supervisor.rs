@@ -581,7 +581,7 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
            which an agent has to go looking for. `drop` is in the loaded tier,
            so its description is in front of every agent on every turn whether it
            looked or not, and it opens on the same trigger ("For the thing you
-           noticed and must not stop for") and carries the imperative this
+           noticed and cannot deal with where you stand") and carries the imperative this
            paragraph claimed a schema could not ("**This is not a to-do list for
            the turn you are in.**"). The premise the argument stands on is false
            here, so the sentence went (sink `4dabbb75`).
