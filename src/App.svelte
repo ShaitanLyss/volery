@@ -71,7 +71,16 @@
     type WidgetKind,
   } from "./lib/widgets";
   import { pinOfGone, strayed, wentFrom } from "./lib/tether";
-  import { archiveAfter, hangOf, keptOf, planOf, plateOfGone, type Hang } from "./lib/plates";
+  import {
+    PLANS_LABEL,
+    archiveAfter,
+    hangOf,
+    keptOf,
+    planOf,
+    plateOfGone,
+    plansSaid,
+    type Hang,
+  } from "./lib/plates";
   import {
     CADENCES,
     PERS,
@@ -633,7 +642,29 @@
    *  mean, the target the `g` family takes. Its live plan if it has one, or the
    *  newest of its plans still on the glass. Said rather than guessed when
    *  there is none, `groupingChord`'s rule. */
-  function planChord(act: "variant" | "glass" | "stack" | "archive") {
+  function planChord(act: "variant" | "glass" | "stack" | "archive" | "expand" | "auto") {
+    /* The stack's own two answers, which act on no plate and must therefore be
+       reachable with nothing selected — a wall with the plans switched off has
+       no plate to select. Said back, because with no plan on the wall at the
+       moment of the flip the change can be invisible (`reawakenSaid`'s shape). */
+    if (act === "auto") {
+      skein.timelines.togglePlans();
+      leader.say(plansSaid(skein.timelines.auto));
+      return;
+    }
+    if (act === "expand") {
+      if (!skein.timelines.auto) {
+        leader.say(plansSaid(false));
+        return;
+      }
+      skein.timelines.toggleStack();
+      leader.say(
+        skein.timelines.expanded
+          ? "every plan on the wall, one row each"
+          : "one plan at a time — the wheel turns to the next",
+      );
+      return;
+    }
     let plates = widgets.items.filter(
       (w) => planOf(w) !== null && studio.isPicked("widget", w.id),
     );
@@ -1484,6 +1515,34 @@
       if (gone.length) {
         const ids = new Set(gone);
         undo.dropWhere((e) => plateOfGone(e, ids));
+      }
+    });
+  });
+
+  /* A plan that moves comes to the front of the stack. The carousel shows one
+     plan at a time, and the one worth showing is the one that just wrote
+     something — a wall of four plans that look identical otherwise, with the
+     work happening on the page you are not on. Lyss, 2026-11-09: *"when a
+     timeline progresses, I want the timeline to auto change and show an
+     animated progress"* — the row's fill animates the part of that, and this is
+     the other half.
+
+     Keyed on `plan.rev`, which the tools bump on every write that moves
+     something and which restarts at 1 for every timeline — so a plan is only
+     ever compared with itself, and a timeline appearing is not a change. The
+     first pass only seeds the map: a launch is not news. `untrack`, because
+     `turnTo` reads the stack's order and writing the cursor from an effect that
+     also depended on it would run on its own answer. */
+  const sawRev = new Map<string, number>();
+  $effect(() => {
+    const shown = skein.timelines.shown;
+    untrack(() => {
+      const live = new Set(shown.map((t) => t.id));
+      for (const id of [...sawRev.keys()]) if (!live.has(id)) sawRev.delete(id);
+      for (const t of shown) {
+        const was = sawRev.get(t.id);
+        sawRev.set(t.id, t.plan.rev);
+        if (was !== undefined && t.plan.rev > was) skein.timelines.turnTo(t.id);
       }
     });
   });
@@ -2686,6 +2745,14 @@
           /* A plate stands in one of three places, so its menu offers moves
              rather than the glass toggle — see `menu.ts`. */
           hang: planOf(w) !== null ? hangOf(w) : undefined,
+          /* A plate is also where you are standing when a plan has just
+             appeared, so the switch that keeps plans off the wall is reachable
+             from it as well as from the ground — one boolean, two doors, on
+             Lyss's call (2026-11-09). */
+          plans:
+            planOf(w) !== null
+              ? { label: PLANS_LABEL, on: skein.timelines.auto }
+              : undefined,
           picks: variantsOf(w.kind).map((v) => ({
             id: v.value,
             label: v.label,
@@ -2727,7 +2794,10 @@
           } else if (which === "front") widgets.bringToFront(id);
           else if (which === "glass") canvas?.toggleGlass("widget", id);
           else if (which.startsWith("hang:")) canvas?.hangPlate(id, which.slice(5) as Hang);
-          else if (which === "remove") void widgets.remove(id);
+          else if (which === "plans") {
+            skein.timelines.togglePlans();
+            leader.say(plansSaid(skein.timelines.auto));
+          } else if (which === "remove") void widgets.remove(id);
         };
       }
     } else if (addEl?.dataset.add && !skein.isChatHome(addEl.dataset.add)) {
@@ -2800,6 +2870,13 @@
              opens — with nothing sent to it. A knob of its own under the rests,
              per `menu.ts`, since it answers yes or no where they pick a wait. */
           [{ id: "reawaken", label: REAWAKEN_LABEL, on: skein.reawaken }],
+          /* And whether the plans cards draw come up on the wall at all. The
+             stack is a carousel of one-line rows now rather than a plate a
+             plan, so this is a switch about whether it is there — not about how
+             much room it takes. It is also the only way back from a wall whose
+             plans were switched off, which is why it is a row here and one on
+             the plate itself (`plates.ts::PLANS_LABEL`). */
+          [{ id: "plans", label: PLANS_LABEL, on: skein.timelines.auto, note: "space then l p" }],
           /* And what the wall asks of the machine under it. Each line says
              what is true now — including a closed lid or a policy that defeats
              it — rather than naming the knob; see `machine.ts`. */
@@ -2848,6 +2925,10 @@
         else if (id.startsWith("motion:")) motion.set(id.slice(7));
         else if (id.startsWith("rest:")) skein.setResting(id.slice(5));
         else if (id === "reawaken") skein.setReawaken(!skein.reawaken);
+        else if (id === "plans") {
+          skein.timelines.togglePlans();
+          leader.say(plansSaid(skein.timelines.auto));
+        }
         else if (id.startsWith("glass-scale:")) arrangements.setScale(glassScaleFor(id.slice(12)));
         else if (id === "machine:awake" || id === "machine:reopen" || id === "machine:idle")
           void machine

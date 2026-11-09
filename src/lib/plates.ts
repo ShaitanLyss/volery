@@ -206,6 +206,59 @@ export function plateOfGone(e: { at: string; id: string }, gone: ReadonlySet<str
 export const STACK_TOP = 14;
 export const STACK_GAP = 12;
 
+/* ── the carousel ───────────────────────────────────────────────────────── */
+
+/** The stacked plan in front: the one the cursor names while it is still in
+ *  the stack, and the first otherwise. A cursor outliving its plan — archived,
+ *  left, its card closed — falls back rather than pointing at nothing, which
+ *  is also what a launch gets, since no cursor survives one. */
+export function frontOf(order: readonly string[], cursor: string | null): string | null {
+  if (cursor !== null && order.includes(cursor)) return cursor;
+  return order[0] ?? null;
+}
+
+/** Where a turn lands from the cursor: `step` places along the stack, wrapping
+ *  at either end, so a wheel down from the last plan arrives at the first. A
+ *  carousel with no cursor is showing `frontOf`'s answer, so a turn is counted
+ *  from there rather than from nothing. */
+export function turnOf(
+  order: readonly string[],
+  cursor: string | null,
+  step: number,
+): string | null {
+  if (!order.length) return null;
+  const at = cursor === null ? -1 : order.indexOf(cursor);
+  const from = at === -1 ? 0 : at;
+  return order[(((from + step) % order.length) + order.length) % order.length];
+}
+
+/** How many dots the row draws before the count is said in words instead: a
+ *  strip of twenty dots is a texture, not a number. */
+export const PAGER_DOTS = 8;
+
+/** How wide a row in the stack is drawn, whatever width the plate itself
+ *  carries. The row is three readings — which plan, which step it is on, and
+ *  how far — and at the 400 a compact plate is given the last two truncate to
+ *  four characters each. A constant rather than something measured: the box a
+ *  plate is drawn in must not be decided by the measurement of that box, which
+ *  is the trap `Canvas.drawnSize` records. */
+export const ROW_W = 520;
+
+/** What the switch is called wherever it is offered. Written as what it makes
+ *  true rather than as a noun with a partner word, `REAWAKEN_LABEL`'s
+ *  register: the menu dots it, so the label only has to describe the on. */
+export const PLANS_LABEL = "plans appear on the wall by themselves";
+
+/** What the flip says back (`<space> l p`), since with nothing on the wall at
+ *  the moment of the flip the change can be invisible — `reawakenSaid`'s
+ *  shape. The off arm names the gesture that still puts one up, because a
+ *  switch that hides something owes you the way back. */
+export function plansSaid(on: boolean): string {
+  return on
+    ? "plans appear on the wall by themselves, as cards draw them"
+    : "plans stay off the wall — put one up with space then l g on its card";
+}
+
 /** Where each plate in the stack is drawn: a column centred on the home
  *  screen, top first, in the order given. Laid out by hand rather than by a
  *  flex column so a stacked plate is drawn exactly as every other thing on the

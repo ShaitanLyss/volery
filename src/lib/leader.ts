@@ -114,7 +114,7 @@ export type Verb =
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
-  | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" }
+  | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" | "expand" | "auto" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
@@ -264,6 +264,13 @@ export const CHORDS: readonly Chord[] = [
   { keys: "lg", label: "plan on the glass / on the wall", verb: { kind: "plan", act: "glass" } },
   { keys: "ls", label: "plan back in the stack", verb: { kind: "plan", act: "stack" } },
   { keys: "la", label: "archive the plan", verb: { kind: "plan", act: "archive" } },
+  /* And the stack's own two answers, since 2026-11-09 the form it wears rather
+     than one plate per plan: `le` folds the column of rows open and shut, and
+     `lp` decides whether a plan a card draws arrives on the wall at all. Neither
+     acts on a plate — they are the stack's, so they answer with nothing
+     selected, which is what a wall with the plans switched off has. */
+  { keys: "le", label: "plans: the whole column / one at a time", verb: { kind: "plan", act: "expand" } },
+  { keys: "lp", label: "plans appear on the wall by themselves", verb: { kind: "plan", act: "auto" } },
   /* And the archive itself, beside the gesture that fills it: `h` for the
      history of finished plans. It was `<space> a` until the accounts panel
      took that letter (2026-10-24). */

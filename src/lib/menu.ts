@@ -148,6 +148,11 @@ export type MenuTarget = {
    *  toggling the glass, and taking it down archives its plan. Absent for every
    *  other widget. */
   hang?: "stack" | "glass" | "wall";
+  /** widget: the wall's switch for whether plans come up by themselves, handed
+   *  in only for a plate — the one place the question is asked from when a plan
+   *  has just appeared. A dot rather than a tick, like every other setting
+   *  here. The same boolean the ground menu carries, by another door. */
+  plans?: { label: string; on: boolean };
   /* ground / region: the kinds of instrument that can be hung up — a row each,
      or a family of them behind one row.
 
@@ -570,6 +575,9 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         ]),
         item("front", "bring to front"),
         ...(t.hang ? hangItems(t.hang) : [glassItem(t.glass)]),
+        /* Under the moves, and only on a plate: a setting about the wall's
+           plans, offered where a plan has just appeared. */
+        ...(t.plans ? [sep, chosen("plans", t.plans.label, t.plans.on)] : []),
         sep,
         /* A plate is taken down by archiving its plan, which is what it says. */
         item("remove", t.hang ? "archive it" : "take it down", true),

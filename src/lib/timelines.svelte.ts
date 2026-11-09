@@ -21,7 +21,32 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Tier } from "./classify";
 import { timelineOf, type Timeline } from "./timeline";
 import { isAfarTimeline } from "./gist";
-import { archiveDue, type Hang } from "./plates";
+import { archiveDue, frontOf, turnOf, type Hang } from "./plates";
+
+/** Where the stack's form is kept: whether plans appear by themselves, and
+ *  whether the column is open. Per-machine and disposable, `motion.svelte.ts`'s
+ *  bargain — how much of the wall you want covered is a fact about this screen
+ *  and this person, not about the wall's record. */
+const PLATES_KEY = "skein.plates.v1";
+
+/** What survives a launch out of the stack's form. The cursor deliberately
+ *  does not: coming back to a wall should show what is happening now, and a
+ *  plan left in front on Tuesday is not an answer to that. */
+function stored(): { auto: boolean; expanded: boolean } {
+  try {
+    const raw = localStorage.getItem(PLATES_KEY);
+    if (raw) {
+      const o = JSON.parse(raw) as { auto?: unknown; expanded?: unknown };
+      return {
+        auto: typeof o?.auto === "boolean" ? o.auto : true,
+        expanded: typeof o?.expanded === "boolean" ? o.expanded : false,
+      };
+    }
+  } catch {
+    /* a browser refusing storage is not a reason to open with plans hidden */
+  }
+  return { auto: true, expanded: false };
+}
 
 /** `Array.prototype.with`, which ES2022 does not have. */
 function swap<T>(list: T[], at: number, value: T): T[] {
@@ -65,6 +90,104 @@ export class Timelines {
   readingOf(ownerId: string): { tier: Tier } | null {
     return this.ownerOf(ownerId) ?? this.#afarOwner(ownerId);
   }
+  /* ── the stack's form ───────────────────────────────────────────────────
+   *
+   * The stack used to draw every plan as a plate about a screen-and-a-half
+   * tall between them — the form a plan arrived in when there was one, and a
+   * column that covers a laptop by the fourth. It is a carousel now (Lyss,
+   * 2026-11-09): one row at the top of the home screen, as tall as its own
+   * line, and the wheel turns it to the next plan. So the stack is bounded
+   * whatever the wall is doing, and the frise is what a plate you *kept* is
+   * for — dragged out onto the glass or the wall, where it draws as it always
+   * has. Which plan is in front, whether the column is open instead, and
+   * whether plans arrive on the wall at all are one question — the stack's
+   * form — and they live here rather than split between the canvas and a menu.
+   */
+
+  /** Whether a plan a card draws puts a plate on the wall by itself. Off, the
+   *  wall is yours: plans still exist and still reach the archive, and one is
+   *  put up by hand (`<space> l g` on the card that drew it). The plate is
+   *  housed either way — this gates the drawing, not the record — so turning
+   *  it back on is a redraw rather than a reconcile. */
+  auto = $state(true);
+  /** The whole column rather than the carousel: every stacked plan as a row,
+   *  one under another. What the row's chevron folds open. */
+  expanded = $state(false);
+  /** The plan in front, by timeline id. A cursor rather than an index, so a
+   *  plan arriving above does not move you to a different plan's page. */
+  cursor = $state<string | null>(null);
+  /** The stacked plans in the order the stack reads — published by the canvas,
+   *  which is the only thing that knows what is housed (`publish`). */
+  order = $state<string[]>([]);
+  /** Which one the row draws. */
+  front = $derived(frontOf(this.order, this.cursor));
+  /** Which way the last turn went, so the row that arrives slides in from the
+   *  side you turned towards rather than simply appearing — `PlateRow.svelte`
+   *  reads it on mount, since the row is a different plate's and is freshly
+   *  drawn. */
+  lastStep = $state(1);
+
+  constructor() {
+    const { auto, expanded } = stored();
+    this.auto = auto;
+    this.expanded = expanded;
+  }
+
+  /** The canvas hands over what is standing in the stack. Written only when it
+   *  changed, because this is fed from an effect: an unconditional write would
+   *  be a new array every frame for every reader of it to redraw from. */
+  publish(order: readonly string[]) {
+    if (order.length === this.order.length && order.every((id, i) => id === this.order[i])) return;
+    this.order = [...order];
+  }
+
+  /** Turn to the plan `step` places along. */
+  turn(step: number) {
+    const to = turnOf(this.order, this.front, step);
+    if (to === null || to === this.front) return;
+    this.lastStep = step < 0 ? -1 : 1;
+    this.cursor = to;
+  }
+
+  /** Put a named plan in front — what a plan being written does to the stack,
+   *  so the row you are looking at is the one that just moved rather than one
+   *  of three that look identical.
+   *
+   *  Named whether or not the plate is housed yet: a plan's first write can
+   *  arrive in the same flush as the housing that puts its plate up, and a
+   *  cursor dropped for not being in `order` yet would leave the stack on
+   *  somebody else's plan. `frontOf` is what tells a cursor that still means
+   *  something from one whose plan has gone. */
+  turnTo(id: string) {
+    this.cursor = id;
+  }
+
+  /** Fold the column open, or back to one row. */
+  setExpanded(on: boolean) {
+    this.expanded = on;
+    this.save();
+  }
+  toggleStack() {
+    this.setExpanded(!this.expanded);
+  }
+
+  /** Do plans appear on the wall by themselves? */
+  setAuto(on: boolean) {
+    this.auto = on;
+    this.save();
+  }
+  togglePlans() {
+    this.setAuto(!this.auto);
+  }
+
+  private save() {
+    try {
+      localStorage.setItem(PLATES_KEY, JSON.stringify({ auto: this.auto, expanded: this.expanded }));
+    } catch {
+      /* the wall works the same; it just forgets between launches */
+    }
+  }
+
   /** The archive, newest first. Read once at load and then folded like the
    *  glass, so the header knows whether there is anything to offer. */
   archived = $state<Timeline[]>([]);

@@ -1143,6 +1143,20 @@ export class Control {
         glass: spotOf(w),
         selected: h.studio.isPicked("widget", w.id),
       })),
+      /* The stack's form, which until 2026-11-09 had no reading at all: one
+         plate a plan, which is what `widgets` above already showed. It is a
+         carousel now (`plates.svelte.ts`), so *which* plan is in front and
+         whether the column is open are state a test cannot infer from the
+         widget list — and a drawing nobody can read from outside is a drawing
+         no wall test can assert. `order` is the stack as the canvas sees it, in
+         the order it reads. */
+      plates: {
+        auto: h.skein.timelines.auto,
+        expanded: h.skein.timelines.expanded,
+        cursor: h.skein.timelines.cursor,
+        front: h.skein.timelines.front,
+        order: [...h.skein.timelines.order],
+      },
       /* What can be taken back, and what it is called. */
       undo: undoSnapshot(h),
       pomodoro: pomodoroSnapshot(h),
@@ -3483,13 +3497,28 @@ export class Control {
        *  Same op rather than a second one, because it is the same gesture at a
        *  different address — and it goes through the real listener rather than
        *  setting the size, so a `--read` that never reached the column would
-       *  still show up as a failure. */
+       *  still show up as a failure.
+       *
+       *  `selector` aims it at something standing on the wall instead, which is
+       *  the only way to reach a wheel a *widget* listens for — the stack's
+       *  carousel turns a page on one (`PlateRow.svelte`), and a wheel sent to
+       *  `.surface` is aimed at the wrong element and never reaches it. The
+       *  event still goes through the real listener, and the wall's own report
+       *  is what comes back, so a carousel that ate the zoom shows up as a
+       *  viewport that did not move. */
       wheel: async (op) => {
         const panel = op.target === "panel";
-        const el = document.querySelector<HTMLElement>(panel ? ".detail" : ".surface");
+        const el =
+          typeof op.selector === "string" && op.selector
+            ? document.querySelector<HTMLElement>(op.selector)
+            : document.querySelector<HTMLElement>(panel ? ".detail" : ".surface");
         if (!el) {
           throw new Error(
-            panel ? "no transcript panel to wheel over" : "no wall surface to scroll over",
+            op.selector
+              ? `nothing matches ${String(op.selector)} to wheel over`
+              : panel
+                ? "no transcript panel to wheel over"
+                : "no wall surface to scroll over",
           );
         }
         const r = el.getBoundingClientRect();

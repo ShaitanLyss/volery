@@ -5,6 +5,7 @@ import {
   overflowScrolls,
   scrolls,
   stride,
+  turnBy,
   wheelMeaning,
   type Box,
   type Turn,
@@ -187,5 +188,38 @@ describe("a strip carries a bare wheel sideways", () => {
   test("a strip with nothing beyond it is not a strip, and the wheel is the wall's", () => {
     expect(stride(turn({ deltaY: 100 }), FITS)).toBeNull();
     expect(stride(turn({ deltaY: 100 }), box())).toBeNull();
+  });
+});
+
+/* ── the carousel's page turn ──────────────────────────────────────────── */
+
+describe("a wheel over the stack's carousel turns a page, not a pixel", () => {
+  test("travel is carried until it has earned a plan", () => {
+    expect(turnBy(0, 12)).toEqual({ acc: 12, step: 0 });
+    const two = turnBy(12, 12);
+    expect(two.acc).toBe(24);
+    expect(two.step).toBe(0);
+    const spent = turnBy(24, 30);
+    expect(spent).toEqual({ acc: 0, step: 1 });
+  });
+
+  test("one mouse notch is one plan, whatever its size", () => {
+    expect(turnBy(0, 100).step).toBe(1);
+    expect(turnBy(0, -100).step).toBe(-1);
+  });
+
+  test("the travel is spent, not banked", () => {
+    /* A 300px flick is a page, not seven: the wall would otherwise race through
+       the stack and land somewhere nobody aimed at. */
+    expect(turnBy(0, 300)).toEqual({ acc: 0, step: 1 });
+  });
+
+  test("a turn that never reaches the threshold never turns", () => {
+    let acc = 0;
+    for (let i = 0; i < 5; i++) {
+      const r = turnBy(acc, 8);
+      acc = r.acc;
+      expect(r.step).toBe(0);
+    }
   });
 });

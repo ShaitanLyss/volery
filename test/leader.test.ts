@@ -301,9 +301,11 @@ describe("the which-key hint", () => {
       { keys: "ia", label: "I'm away / back" },
       { keys: "k", label: "flyway key" },
       { keys: "la", label: "archive the plan" },
+      { keys: "le", label: "plans: the whole column / one at a time" },
       { keys: "lg", label: "plan on the glass / on the wall" },
       { keys: "lh", label: "archived timelines" },
       { keys: "ll", label: "plan: the whole line / a window" },
+      { keys: "lp", label: "plans appear on the wall by themselves" },
       { keys: "ls", label: "plan back in the stack" },
       { keys: "ma", label: "cards left awake come back awake: on / off" },
       { keys: "mb", label: "boost — credits when an account runs out: on / off" },
@@ -339,12 +341,17 @@ describe("the which-key hint", () => {
     ]);
   });
 
-  test("the line family is a plan's four moves, and the archive they fill", () => {
+  /* The stack's own two answers (`e`, `p`) sit beside the four moves on a
+     plate: the stack is a carousel of one-line rows now, so how much of it is
+     open and whether it is there at all are questions about the same noun. */
+  test("the line family is a plan's four moves, the stack's two, and the archive they fill", () => {
     expect(offers("l")).toEqual([
       { keys: "a", label: "archive the plan" },
+      { keys: "e", label: "plans: the whole column / one at a time" },
       { keys: "g", label: "plan on the glass / on the wall" },
       { keys: "h", label: "archived timelines" },
       { keys: "l", label: "plan: the whole line / a window" },
+      { keys: "p", label: "plans appear on the wall by themselves" },
       { keys: "s", label: "plan back in the stack" },
     ]);
     expect(chord("l", "h")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "timelines" } });

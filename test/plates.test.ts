@@ -9,7 +9,9 @@ import {
   archiveAfter,
   archiveDue,
   evicted,
+  frontOf,
   planOf,
+  plansSaid,
   plateOfGone,
   seedOf,
   stackAt,
@@ -19,6 +21,7 @@ import {
   toGlass,
   toStack,
   toWall,
+  turnOf,
   unhoused,
 } from "../src/lib/plates";
 import {
@@ -246,6 +249,44 @@ describe("the stack hangs at the top of the home screen", () => {
 
   test("an empty stack places nothing", () => {
     expect(stackAt({ x: 0, y: 0, w: 800 }, [])).toEqual({});
+  });
+});
+
+/* ── the carousel ──────────────────────────────────────────────────────── */
+
+describe("the stack shows one plan at a time, and the wheel turns it", () => {
+  const order = ["a", "b", "c", "d"];
+
+  test("the cursor's plan is in front while it is still in the stack", () => {
+    expect(frontOf(order, "c")).toBe("c");
+    expect(frontOf(order, null)).toBe("a");
+  });
+
+  /* A plan archived, left, or its card closed takes the cursor with it: the row
+     falls back rather than pointing at nothing. */
+  test("a cursor outliving its plan falls back to the first", () => {
+    expect(frontOf(order, "gone")).toBe("a");
+    expect(frontOf([], "a")).toBeNull();
+  });
+
+  test("a turn wraps at either end", () => {
+    expect(turnOf(order, "a", 1)).toBe("b");
+    expect(turnOf(order, "d", 1)).toBe("a");
+    expect(turnOf(order, "a", -1)).toBe("d");
+    /* No cursor is the first plan in front, so a turn is counted from it. */
+    expect(turnOf(order, null, 1)).toBe("b");
+    expect(turnOf(order, null, -1)).toBe("d");
+  });
+
+  test("a stack of one never leaves its plan, and an empty one has none", () => {
+    expect(turnOf(["a"], "a", 1)).toBe("a");
+    expect(turnOf([], "a", 1)).toBeNull();
+  });
+
+  /* The switch is offered from two doors and says the same thing at both. */
+  test("the switch's words say what is true now", () => {
+    expect(plansSaid(true)).toContain("appear");
+    expect(plansSaid(false)).toContain("space");
   });
 });
 

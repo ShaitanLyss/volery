@@ -8,7 +8,8 @@
    * widget's. Not named for the registry (`timelines.svelte.ts`), which on this
    * filesystem would be the same file as a `Timelines.svelte`. */
   import Frise from "./Frise.svelte";
-  import { planOf } from "./plates";
+  import PlateRow from "./PlateRow.svelte";
+  import { hangOf, planOf } from "./plates";
   import { variantOf, type Widget } from "./widgets";
   import type { Timelines } from "./timelines.svelte";
   import { isAfarTimeline } from "./gist";
@@ -33,18 +34,32 @@
   /* A step's write is found in the transcript this wall holds, which for a
      card elsewhere is only its tail — so the jump is a card here's. */
   const jumps = $derived(!!owner && !!t && !isAfarTimeline(t.id));
+  /* In the stack a plan is one line, and the frise is what it becomes once you
+     keep it — dragged out onto the glass or the wall (`PlateRow.svelte`, and
+     `plates.svelte.ts` for why the stack is bounded now). */
+  const stacked = $derived(hangOf(widget) === "stack");
 </script>
 
 {#if t}
-  <Frise
-    {t}
-    tier={owner?.tier ?? "rest"}
-    canJump={jumps}
-    compact={variantOf(widget) !== "wide"}
-    onjump={(rev) => timelines.jumpTo(t.ownerId, t.id, rev)}
-    onarchive={() => void timelines.archive(t.id)}
-    onpick={owner ? () => timelines.pick(t.ownerId) : undefined}
-    {onreading}
-    onhover={(on) => timelines.hover(t.id, on)}
-  />
+  {#if stacked}
+    <PlateRow
+      {t}
+      tier={owner?.tier ?? "rest"}
+      {timelines}
+      onpick={owner ? () => timelines.pick(t.ownerId) : undefined}
+      onhover={(on) => timelines.hover(t.id, on)}
+    />
+  {:else}
+    <Frise
+      {t}
+      tier={owner?.tier ?? "rest"}
+      canJump={jumps}
+      compact={variantOf(widget) !== "wide"}
+      onjump={(rev) => timelines.jumpTo(t.ownerId, t.id, rev)}
+      onarchive={() => void timelines.archive(t.id)}
+      onpick={owner ? () => timelines.pick(t.ownerId) : undefined}
+      {onreading}
+      onhover={(on) => timelines.hover(t.id, on)}
+    />
+  {/if}
 {/if}

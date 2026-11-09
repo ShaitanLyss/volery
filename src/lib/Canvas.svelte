@@ -86,7 +86,7 @@
   import ImageNode from "./ImageNode.svelte";
   import WidgetNode from "./WidgetNode.svelte";
   import type { Timelines } from "./timelines.svelte";
-  import { WALL, hangOf, planOf, stackAt, type Hang } from "./plates";
+  import { ROW_W, WALL, hangOf, planOf, stackAt, type Hang } from "./plates";
   import { railWidth } from "./timeline";
   import { handleOf as cardHandle } from "./relay";
 
@@ -740,6 +740,11 @@
   function drawnSize(w: Widget): Widget {
     if (planOf(w) === null) return w;
     const b = plateBox[w.id];
+    /* In the stack a plate is one line, and the line is wider than the frise's
+       box: a plan's name, the step it is on and how far do not fit in the 400 a
+       compact plate is given (`plates.ts::ROW_W`). Its stored width is left
+       alone, so putting it back on the glass gives the frise the box it had. */
+    if (isStacked(w)) return { ...w, w: ROW_W, ...(b ? { h: b.h } : {}) };
     /* A compact plate's width is its row's, and must stay so: this object is
        what `WidgetNode` draws, so a measured width handed back here would be
        the measurement deciding the box it measures — a plate switched back
@@ -761,7 +766,7 @@
   function isStacked(w: Widget): boolean {
     return planOf(w) !== null && hangOf(w) === "stack";
   }
-  /** The plates hanging in the stack, in the order their plans were drawn. */
+  /** The plates standing in the stack, in the order their plans were drawn. */
   const stacked = $derived.by(() => {
     const order = new Map(timelines.shown.map((t, i) => [t.id, i]));
     const rank = (w: Widget) => order.get(planOf(w) ?? "") ?? Number.MAX_SAFE_INTEGER;
@@ -770,9 +775,28 @@
       .sort((a, b) => rank(a) - rank(b))
       .map(drawnSize);
   });
+  /** The plans in that order, published to `Timelines` because only this file
+   *  knows what is housed — and the row is the thing that says how many there
+   *  are and which one it is. */
+  const stackOrder = $derived(
+    stacked.map((w) => planOf(w)).filter((id): id is string => !!id),
+  );
+  $effect(() => timelines.publish(stackOrder));
+
+  /** What the stack draws: one row at a time — the carousel, at the plan
+   *  `Timelines.front` names — the whole column when it is folded open, and
+   *  nothing while plans are off the wall. A plate not drawn here is still a
+   *  widget with its row, so the plan, the archive and the neglect clock are
+   *  untouched by any of it; this is a drawing, not a reconcile. */
+  const stackDrawn = $derived.by(() => {
+    if (!timelines.auto) return [];
+    if (timelines.expanded) return stacked;
+    return stacked.filter((w) => planOf(w) === timelines.front);
+  });
+
   /** Where each of them is drawn: a column at the top of the *home* screen —
    *  centred across every screen it would hang on the seam between two. */
-  const stackSpots = $derived(stackAt(homeBox, stacked));
+  const stackSpots = $derived(stackAt(homeBox, stackDrawn));
 
   const wallWidgets = $derived(
     widgets.items.filter((w) => !spotOf(w) && !isStacked(w) && drawn(w)).map(drawnSize),
@@ -1005,7 +1029,7 @@
      node loses its strip's scroll position with no event to say so. */
   const glassWidgets = $derived(
     widgets.items
-      .filter((w) => (spotOf(w) || isStacked(w)) && drawn(w))
+      .filter((w) => (spotOf(w) || !!stackSpots[w.id]) && drawn(w))
       .map(drawnSize)
       .map((w) =>
         spotOf(w)
@@ -1166,9 +1190,16 @@
       widgets.hangAt(id, "wall", { x: w.x, y: w.y });
       return;
     }
-    const drawn = glassWidgets.find((g) => g.id === id);
-    if (!drawn) return;
-    widgets.hangAt(id, "wall", unstickFrom({ x: drawn.x, y: drawn.y, ...box }, view));
+    const onGlass = glassWidgets.find((g) => g.id === id);
+    /* A plate in a *closed* stack is drawn nowhere (`Timelines.auto`), so there
+       is no glass spot to unstick from. Its own row's place is the honest
+       answer — a plate a card drew has one, and hanging it on the wall is
+       exactly what "show me this plan" means while the stack is shut. */
+    widgets.hangAt(
+      id,
+      "wall",
+      onGlass ? unstickFrom({ x: onGlass.x, y: onGlass.y, ...box }, view) : { x: w.x, y: w.y },
+    );
   }
 
   /** Who is wandering about, for the footprints effect: the cards on the wall,

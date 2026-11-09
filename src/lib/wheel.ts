@@ -173,3 +173,22 @@ export function stride(turn: Turn, box: Box): number | null {
   if (!scrolls(box.x) || scrolls(box.y)) return null;
   return turn.deltaY;
 }
+
+/** How far a bare wheel has to travel over the stack's carousel before it
+ *  turns to the next plan.
+ *
+ *  A wheel is not a notch: a mouse reports a hundred pixels at a time and a
+ *  trackpad a stream of twos and threes, so turning on every event would fly
+ *  through the stack under one flick and never move under another. The travel
+ *  is carried in an accumulator and spent one plan at a time, which makes the
+ *  same gesture cost the same on both. Deliberately not `stride`'s shape: that
+ *  one is a box moving under the wheel, and this is a page turn. */
+export const TURN_PX = 42;
+
+/** Carry the wheel's travel and answer whether it has earned a plan.
+ *  `step` is the direction to turn, or 0 for a turn that is not there yet. */
+export function turnBy(acc: number, deltaY: number): { acc: number; step: number } {
+  const next = acc + deltaY;
+  if (Math.abs(next) < TURN_PX) return { acc: next, step: 0 };
+  return { acc: 0, step: next > 0 ? 1 : -1 };
+}
