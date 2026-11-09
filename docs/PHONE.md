@@ -140,11 +140,13 @@ wake-word sensitivity.
   → `rustls-platform-verifier: Expect rustls-platform-verifier to be initialized`. The app must
   initialize the verifier with its Context before `Node::start`; that is the one genuinely-new
   thing the phone does that the desktop never did, and it is M2b's to do.
-- **The cross-network dial does not reach the desktop through the VPN yet.** On the Pixel
-  (cellular, carrier NAT) the node binds and the dial starts, then times out: the desktop is
-  behind NordVPN/Tailscale and iroh's relay fallback did not carry it. The same code dials the
-  lab from the desktop itself. This is the one open question for the walking use case — probe
-  the relay, split-tunnel, or defer — and it is with Lyss.
+- **The cross-network dial fails on the phone's cellular leg, not the desktop.** Probed: the
+  desktop has no VPN route (default route is the home router), its pkarr record is fresh and
+  points at the iroh relay (`usw1-1.relay.n0.iroh.link`), and a relay-only dial between two
+  desktop nodes works in ~2s — so `wire.rs`/`directory.rs` are exonerated. The failure is the
+  phone completing the relayed QUIC handshake from cellular (TCP/443 to the relay), an
+  Android-side relay/TLS issue or a carrier path. Needs the phone (`adb logcat` during a dial,
+  plus a TCP:443 check to the relay) to close.
 - **Background life.** Android throttles background network (Doze). A foreground service, and
   the fact that walking means the screen is on or music is playing, is the mitigant; it still
   wants a battery measurement in M4.
