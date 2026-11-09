@@ -24,6 +24,7 @@
   import type { Bang } from "./bang.svelte";
   import type { Front } from "./front.svelte";
   import type { Composer } from "./composer.svelte";
+  import { askHeadline, firstLine } from "./asking";
   import { replies } from "./replies.svelte";
   import { glance } from "./glancing.svelte";
   import type { Orphan, Reply } from "./replies";
@@ -136,6 +137,24 @@
   const waitingOnYou = $derived(front.waitingOnYou);
   /** The card in the ring, here or on another wall. */
   const ring = $derived(card?.id ?? null);
+
+  /* ── what a shut dock says ─────────────────────────────────────────────
+   *
+   * One line, and it is the whole of what the wall owes a question you have
+   * not opened: how many, whose, and the first line of what was asked. The
+   * panel is `front.shut` away — see `front.svelte.ts` for why nothing opens
+   * it. `askHeadline` is the peek's line and the headers are short by
+   * construction; a notice is named by its own first line, since what a card
+   * said when it stopped is the news. */
+  const headline = $derived.by(() => {
+    const t = shown;
+    if (!t) return "";
+    return firstLine(t.kind === "ask" ? askHeadline(t.ask.questions) : t.notice.text);
+  });
+  const who = $derived(shown ? front.whoOf(shown) : "");
+  /* The ask id the bar stands for, so `space d r` can anchor its glance to
+     the bar while the panel it would have anchored to is folded away. */
+  const barAsk = $derived(shown?.kind === "ask" ? shown.ask.askId : undefined);
 
   /* The dock draws whichever card is waiting, which need not be the card in
      the ring — `elsewhere` is that case and it is drawn on the panel. So a
@@ -334,14 +353,35 @@
     onkeydowncapture={front.guardEnter}
     onpointerdowncapture={() => (front.swapped = null)}
   >
-    <!-- A question or a notice from a card here or on another wall, in the
-         one panel each has. What differs is the card's, read off its handle:
-         its project line names the wall it is on, and answering goes back down
-         the prompt wire to the wall it came from. A
-         question that shows something is drawn from the call's own arguments
-         either way (`flyway-core/src/look.rs`), scripts gated as here by the card's
-         kind. -->
-    {#if shown?.kind === "ask"}
+    <!-- Folded, the queue is one bar: the whole line is the door, because a
+         bar with a button on it would be a bar whose target is one word wide.
+         It says what the panel's own head would — how many, whose, and the
+         first line — in the amber the panel wears, so a shut dock still
+         carries the one colour that means *wants you* without covering the
+         wall. Nothing opens it but you: not an arrival, not the ring moving
+         (`front.svelte.ts`). -->
+    {#if shown && front.shut}
+      <button
+        class="queued"
+        data-ask={barAsk}
+        onclick={() => front.openIt()}
+        title="Open what is waiting on you — it stays queued either way (space then d s)"
+      >
+        <span class="qdot"></span>
+        <span class="qty">{waitingOnYou} waiting</span>
+        <span class="qwho">{who}</span>
+        {#if headline}<span class="qline">{headline}</span>{/if}
+        <span class="grow"></span>
+        <span class="qopen">open ▾</span>
+      </button>
+    {:else if shown?.kind === "ask"}
+      <!-- A question or a notice from a card here or on another wall, in the
+           one panel each has. What differs is the card's, read off its handle:
+           its project line names the wall it is on, and answering goes back
+           down the prompt wire to the wall it came from. A question that shows
+           something is drawn from the call's own arguments either way
+           (`flyway-core/src/look.rs`), scripts gated as here by the card's
+           kind. -->
       {@const target = shown.of}
       {@const sheet = shown.ask}
       <Ask
@@ -371,14 +411,29 @@
       />
     {/if}
   </div>
-  {#if shown && next}
-    <button class="more" onclick={() => front.more()} title="Step to the next thing waiting (space then d n)">
-      {waitingOnYou - 1} more waiting on you
-    </button>
-  {:else if shown && waitingOnYou > 1}
-    <!-- Questions queued behind this card's own, which nothing reaches but
-         answering it: a count, not a button that would do nothing. -->
-    <span class="behind">{waitingOnYou - 1} more queued behind this one</span>
+  <!-- Under an open panel: the step to the next, and the way back to the
+       wall. One row rather than two siblings, so the fold is offered even
+       when there is only one thing waiting — which is exactly the case where
+       a panel with no button is a panel you are stuck in. -->
+  {#if shown && !front.shut}
+    <div class="under">
+      {#if next}
+        <button class="more" onclick={() => front.more()} title="Step to the next thing waiting (space then d n)">
+          {waitingOnYou - 1} more waiting on you
+        </button>
+      {:else if waitingOnYou > 1}
+        <!-- Questions queued behind this card's own, which nothing reaches but
+             answering it: a count, not a button that would do nothing. -->
+        <span class="behind">{waitingOnYou - 1} more queued behind this one</span>
+      {/if}
+      <span class="grow"></span>
+      <button
+        class="fold"
+        onclick={() => front.shutIt()}
+        title="Fold it away and see the wall — nothing is answered or lost (space then d s)"
+        >shut ▴</button
+      >
+    </div>
   {/if}
 
   <div class="targets">
@@ -681,8 +736,104 @@
     border-radius: 1px;
   }
 
+  /* ── the queue, folded ──────────────────────────────────────────────────
+     A question parks an agent and wants a panel while you are answering it; it
+     does not want one while you are looking at the wall. The bar is the whole
+     of what a shut dock says about it, in the colour that already means *wants
+     you* — colour is status, and this is the status. */
+  .queued {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+    text-align: left;
+    font-family: var(--util);
+    font-size: 0.7rem;
+    border: 1px solid color-mix(in srgb, var(--st-ask) 55%, var(--edge));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--st-ask) 7%, var(--well));
+    padding: 0.42rem 0.7rem;
+    cursor: pointer;
+  }
+  .queued:hover,
+  .queued:focus-visible {
+    background: color-mix(in srgb, var(--st-ask) 13%, var(--well));
+  }
+  .queued:focus-visible {
+    outline: 1px solid color-mix(in srgb, var(--st-ask) 65%, var(--edge));
+    outline-offset: 1px;
+  }
+  /* The dot is the card's own reading, a size down: amber means a question,
+     and this one is not being answered yet. */
+  .qdot {
+    flex: 0 0 auto;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: var(--st-ask);
+  }
+  .qty {
+    flex: 0 0 auto;
+    font-size: 0.61rem;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--st-ask);
+    white-space: nowrap;
+  }
+  .qwho {
+    flex: 0 1 auto;
+    min-width: 0;
+    color: var(--paper-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 28ch;
+  }
+  .qline {
+    flex: 0 1 auto;
+    min-width: 0;
+    color: var(--paper-dim);
+    font-family: var(--body);
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .qopen {
+    flex: 0 0 auto;
+    color: var(--st-ask);
+    font-size: 0.66rem;
+    white-space: nowrap;
+  }
+
+  /* The row under an open panel. It exists whenever the panel is drawn — the
+     fold has to be offered on a queue of one as much as on a queue of five. */
+  .under {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .fold {
+    flex: 0 0 auto;
+    font-family: var(--util);
+    font-size: 0.66rem;
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--paper-mute);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .fold:hover,
+  .fold:focus-visible {
+    color: var(--paper);
+  }
+
   .more {
-    align-self: flex-start;
     font-family: var(--util);
     font-size: 0.68rem;
     background: none;
@@ -702,7 +853,6 @@
     display: contents;
   }
   .behind {
-    align-self: flex-start;
     font-family: var(--util);
     font-size: 0.68rem;
     color: var(--paper-faint);

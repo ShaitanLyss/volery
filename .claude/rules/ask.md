@@ -1026,6 +1026,44 @@ otherwise be found by somebody losing an answer:
   fields exist: a card parked on three questions and a card parked on one look identical here
   otherwise.
 
+#### The queue is shut until you open it (2026-11-09)
+
+Lyss, from her own wall: *"I wanted a way to collapse the user prompts in wall mode … when I'm
+back to volery I want to see the wall, not have to answer every prompt to see the wall"* (sink
+`e0eca596`). The dock's held item is a panel up to `min(52cqh, 30rem)` tall that stands above the
+draft field, and with ten cards one question covering half the wall is not an interruption you
+asked for — it is the wall gone.
+
+So `Front.shut` is a third thing about the queue, beside the item and the hold, and **it is
+`true` at launch and only a gesture clears it**: a click on the bar, or `space d s`
+(`DockChord`'s `shut`, answered in `App.svelte` rather than by the dock because chat view draws
+the same queue and has no dock mounted). **Nothing else opens it** — not an arrival, not the
+ring moving onto the card that asked, not a second question queueing behind the first. That is
+the whole feature: the old behaviour *was* an automatic open, and a rule that re-opened it for
+"the card you are on" would have reproduced the complaint in the one case it is most annoying
+(the card you clicked to read, which happens to be waiting on you).
+
+- **What a shut dock says** is one bar in the panel's own amber: how many, whose
+  (`Front.whoOf`), and `firstLine(askHeadline(…))` — the headers are short by construction,
+  which is what `askHeadline` was written for. A notice is named by its first line, since what
+  the card said when it stopped is the news. The whole bar is the button: a bar with a button on
+  it has a target one word wide.
+- **The bar is drawn inside `.held`**, the node `Front.heldEl` already points at, which is what
+  keeps `space d r`'s glance anchored to the bar while the panel it would have anchored to is
+  folded away (`data-ask` rides the bar too).
+- **The fold is offered under an open panel as well** — the `.under` row carries the *shut*
+  button beside the *more waiting on you* step, and exists whenever the panel is drawn rather
+  than only when there is a second item. A panel on a queue of one with no way back to the wall
+  is the same one-door bug the pile had (`away.md`).
+- **Shut is not answered or lost.** The item stays queued exactly as it was, its card stays
+  parked, and `settleHold` never looks at the flag. The bar's count is the signal; the panel is
+  a reading you choose.
+- **Coming back from a long away shuts it too.** That is the same complaint one layer out, and
+  `away.md` (the morning pile) owns the reasoning.
+- **Chat view is untouched.** The question is already at the foot of the thread there, which
+  covers nothing away from it; the chat view's own queued-questions container is sink `6f7db693`
+  and a separate piece of work.
+
 #### Designs that are looked at rather than described
 
 Claude Code in a terminal can only ever *describe* a layout, so an agent with three of them

@@ -898,6 +898,24 @@ export function askHeadline(questions: AskQuestion[]): string {
   return `${questions.length} decisions: ${questions.map((q) => q.header).join(" · ")}`;
 }
 
+/** The first line with anything on it, as words: the marks markdown writes
+ *  around them (`**`, `_`, backticks, a heading's `#`, a list's `-`) are taken
+ *  off, since this is read in passing and a line reading `**What it does.**`
+ *  is a line showing its working.
+ *
+ *  Two readers, and both are one line by construction: chat view's row
+ *  subtitle (`chatview.ts`), and the dock's shut bar, which says what is
+ *  waiting on you without opening the panel it is about (`Dock.svelte`). */
+export function firstLine(text: string): string {
+  const line = (text.split("\n").find((l) => l.trim()) ?? "").trim();
+  return line
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^([-*+]|\d+[.)])\s+/, "")
+    /* Only at a word's edges, so `snake_case` and `2 * 3` keep theirs. */
+    .replace(/(^|[\s(])(\*\*|__|\*|_|`)(\S(?:.*?\S)?)\2(?=$|[\s.,;:!?)])/g, "$1$3")
+    .trim();
+}
+
 /* Which question the dock draws is not decided here any more, and that is the
    fix rather than a move: it was `askShown`, with `notice.ts::noticeShown`
    beside it holding the same rule for notices, and a question outranked every

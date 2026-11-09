@@ -13,6 +13,7 @@ import {
   answeredCount,
   askHeadline,
   blankAnswers,
+  firstLine,
   composeAnswer,
   galleryHint,
   heldAnswer,
@@ -1051,5 +1052,25 @@ describe("arrows while looking closer", () => {
   test("nothing to go to, or not an arrow, is nothing", () => {
     expect(at("ArrowRight", { of: 1 })).toBeNull();
     expect(at("ArrowUp")).toBeNull();
+  });
+});
+
+/* The shut dock's one line (`Dock.svelte`), and the chat row's subtitle
+   (`chatview.ts`) — one reading, two surfaces, since 2026-11-09. It is words,
+   not markdown: a bar reading `**What it does.**` is a bar showing its
+   working. */
+describe("a first line is words, not markdown", () => {
+  test("the first line with anything on it", () => {
+    expect(firstLine("\n\n  Hello there  \nSecond.")).toBe("Hello there");
+  });
+  test("a heading, a list and emphasis lose their marks", () => {
+    expect(firstLine("## Round 2: what I'll check")).toBe("Round 2: what I'll check");
+    expect(firstLine("- first item")).toBe("first item");
+    expect(firstLine("**What it does.** A drop under a `title`, _once_.")).toBe(
+      "What it does. A drop under a title, once.",
+    );
+  });
+  test("and a word's own marks are left alone", () => {
+    expect(firstLine("2 * 3 = 6 and snake_case_name")).toBe("2 * 3 = 6 and snake_case_name");
   });
 });

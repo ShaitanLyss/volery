@@ -104,8 +104,11 @@ export type CardChord =
   | "keep-glass";
 
 /** What a `d` chord does in the dock's queue: step to the next thing waiting,
- *  or deal with a reply whose item went before it was sent (`Dock.svelte`). */
-export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance" | "ack";
+ *  or deal with a reply whose item went before it was sent (`Dock.svelte`).
+ *  `shut` is the queue's own fold and is answered by `App.svelte` — chat view
+ *  draws the same queue and the dock is not mounted there — and `ack` is
+ *  answered there for the same reason. */
+export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance" | "ack" | "shut";
 
 export type Verb =
   | { kind: "find"; mode: FindMode }
@@ -217,6 +220,10 @@ export const CHORDS: readonly Chord[] = [
      item went before it was sent. `dp` is "into its prompt", `dx` is drop —
      `x` for the same reason `cx` clears: it lets go of something. */
   { keys: "dn", label: "next thing waiting on you", verb: { kind: "dock", act: "next" } },
+  /* `ds`: fold the waiting panel away, or open it. `s` for shut, beside `dn`'s
+     step — both are about the queue in front of you, and the wall wants a
+     door that does not require answering anything (see `front.svelte.ts`). */
+  { keys: "ds", label: "waiting panel: shut / open", verb: { kind: "dock", act: "shut" } },
   { keys: "dp", label: "unsent reply: into its card's prompt", verb: { kind: "dock", act: "reclaim" } },
   { keys: "dc", label: "unsent reply: copy it", verb: { kind: "dock", act: "copy" } },
   { keys: "dx", label: "unsent reply: drop it", verb: { kind: "dock", act: "drop" } },

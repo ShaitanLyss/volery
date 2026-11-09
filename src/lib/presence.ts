@@ -262,6 +262,22 @@ export function gateOnReturn(toys: boolean, awayMs: number): boolean {
   return toys && awayMs >= GATE_AFTER_MS;
 }
 
+/** Whether coming back should open the pile by itself.
+ *
+ *  The pile is how you read what happened while you were out, so a break —
+ *  lunch, a walk — is worth opening it on. **A long absence is not**: a
+ *  night's questions are a pile of work and words to be greeted by, and the
+ *  wall is the thing you came back to. It keeps its own door (the bar's count
+ *  and `space p`), so nothing is lost by not opening it; `away.md` has the
+ *  reasoning.
+ *
+ *  The same `GATE_AFTER_MS` line as the gate, deliberately: the app should
+ *  have one answer to *was that a break or an absence*, and two constants
+ *  that mean it would drift apart the first time either was tuned. */
+export function opensPileOnReturn(waiting: boolean, awayMs: number): boolean {
+  return waiting && awayMs < GATE_AFTER_MS;
+}
+
 /** What the away screen does while nobody is watching.
  *
  *  Three readings, and the setting exists because this is genuinely a taste

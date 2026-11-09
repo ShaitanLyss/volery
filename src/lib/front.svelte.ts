@@ -48,6 +48,43 @@ export class Front {
    *  it, and the reason the next Enter is held once — see `guardSwap`. */
   swapped = $state<string | null>(null);
 
+  /** Whether the dock's panel is folded to its one-line bar.
+   *
+   *  **Shut is the default, and only you open it.** A question parks an agent
+   *  and is worth a panel while you are answering it — but the wall is the
+   *  thing you came back to, and with ten cards a single question was a panel
+   *  over half of it before you had read a word of anything. Lyss, 2026-11-09:
+   *  *"when i'm back to volery I want to see the wall, not have to answer
+   *  every prompt to see the wall"* (sink `e0eca596`).
+   *
+   *  So nothing opens it: not an arrival, not the ring moving onto the card
+   *  that asked, not a pile of them. The bar says what is waiting, in the
+   *  card's own words and in amber, and that is the whole of the signal until
+   *  you choose to read it (`space d s`, or a click). The one writing that is
+   *  not yours is `App.svelte`'s on coming back from a **long** away, where a
+   *  wall that greets you with last night's questions is the same complaint
+   *  one layer out (`away.md`).
+   *
+   *  It lives here rather than in `Dock.svelte` because chat view unmounts the
+   *  dock, and the chord is answered by whichever view is up. */
+  shut = $state(true);
+
+  shutIt() {
+    this.shut = true;
+    this.swapped = null;
+  }
+
+  openIt() {
+    this.shut = false;
+  }
+
+  /** Flip it, answering what it now is. */
+  toggleShut(): boolean {
+    if (this.shut) this.openIt();
+    else this.shutIt();
+    return this.shut;
+  }
+
   /** The panel the held item is drawn in, bound by whichever drawing holds
    *  it, so a swap can tell whether the caret was in it. */
   heldEl = $state<HTMLElement | undefined>(undefined);

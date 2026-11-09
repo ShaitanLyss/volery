@@ -332,7 +332,19 @@ launch anyway, so only its row in the peek's list is affected.
 
 ### The morning pile
 
-`Vigil.svelte`, opened by `Presence.comeBack` when there is anything in it.
+`Vigil.svelte`, opened by `Presence.comeBack` when there is anything in it — and **only when
+the absence was a break**. Lyss, 2026-11-09: *"when I go back from a long away, not a short
+one, the user prompts and asks should be auto collapsed so the user comes back to a welcoming
+wall, not a pile of work and words."* `presence.ts::opensPileOnReturn` is that rule:
+anything waiting **and** away under `GATE_AFTER_MS`. It reuses the gate's line deliberately —
+the app should have one answer to *was that a break or an absence*, and two constants that
+mean it would drift the first time either was tuned. Nothing is lost by not opening it: the
+bar's count and `space p` are the pile's own door (`The pile had no door of its own`), and
+for a night the count is the better greeting. `App.svelte` shuts the dock's waiting panel on
+the same line (`togglePresence`, and the gate's way through), so the wall is the wall and not
+last night's questions.
+
+The pile itself, once opened:
 
 - **Grouped by card, not listed by time.** The unit of attention is a card: three questions
   from one agent about one piece of work are one context to load, and interleaving them with

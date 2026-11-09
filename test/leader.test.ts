@@ -290,6 +290,7 @@ describe("the which-key hint", () => {
       { keys: "dn", label: "next thing waiting on you" },
       { keys: "dp", label: "unsent reply: into its card's prompt" },
       { keys: "dr", label: "what the asking card last said" },
+      { keys: "ds", label: "waiting panel: shut / open" },
       { keys: "dx", label: "unsent reply: drop it" },
       { keys: "ee", label: "a card on another wall" },
       { keys: "en", label: "a new card in this section, there" },
@@ -471,7 +472,7 @@ describe("which chords want the wall", () => {
   const verbOf = (keys: string) => CHORDS.find((c) => c.keys === keys)!.verb;
 
   test("the chords that arrange the wall switch to it under chat view", () => {
-    for (const keys of ["ws", "wp", "wd", "wa", "wg", "gg", "gn", "gr", "ll", "lg", "ls", "la", "cg", "ck", "cl", "ee", "en", "dp", "dr"]) {
+    for (const keys of ["ws", "wp", "wd", "wa", "wg", "gg", "gn", "gr", "ll", "lg", "ls", "la", "cg", "ck", "cl", "ee", "en", "dp", "dr", "ds"]) {
       expect([keys, actsOnWall(verbOf(keys))]).toEqual([keys, true]);
     }
   });

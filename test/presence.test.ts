@@ -7,6 +7,7 @@ import {
   GATE_AFTER_MS,
   isAwayScreen,
   lasted,
+  opensPileOnReturn,
   pileOf,
   pileOpens,
   stood,
@@ -256,6 +257,23 @@ describe("away mode is not a night mode", () => {
 
   test("the setting still wins over the clock", () => {
     expect(gateOnReturn(false, 9 * 3600 * 1000)).toBe(false);
+  });
+
+  /* The same line decides what greets you: a break opens the pile because the
+     pile *is* what happened while you were out, and a night does not, because
+     a pile of last night's questions is a wall of work and words at 8am rather
+     than the wall. Nothing is lost — the bar's count and `space p` are the
+     door (sink `e0eca596`, and Lyss on the way back from an away). */
+  test("a break is greeted with the pile; a long absence is greeted with the wall", () => {
+    expect(opensPileOnReturn(true, 0)).toBe(true);
+    expect(opensPileOnReturn(true, 5 * 60 * 1000)).toBe(true);
+    expect(opensPileOnReturn(true, GATE_AFTER_MS - 1)).toBe(true);
+    expect(opensPileOnReturn(true, GATE_AFTER_MS)).toBe(false);
+    expect(opensPileOnReturn(true, 9 * 3600 * 1000)).toBe(false);
+  });
+
+  test("an empty pile opens nothing, however short the away", () => {
+    expect(opensPileOnReturn(false, 0)).toBe(false);
   });
 
   test("the line is a break rather than a night", () => {

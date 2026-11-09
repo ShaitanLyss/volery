@@ -23,6 +23,7 @@ import type { Notice } from "./notice";
 import {
   gateOnReturn,
   isAwayScreen,
+  opensPileOnReturn,
   pileOf,
   pileOpens,
   waitingCount,
@@ -303,6 +304,9 @@ export class Presence {
   /** Come back. Returns whether there is a pile to read, which is what decides
    *  the gesture after the unlock gate. */
   async comeBack(): Promise<boolean> {
+    /* Read before the switch is written: `awaySince` is what the answer is
+       about, and the invoke below clears it. */
+    const stood = this.elapsed(Date.now());
     try {
       await invoke("set_presence", { away: false, note: null });
       this.awaySince = null;
@@ -313,7 +317,7 @@ export class Presence {
     }
     await this.refresh();
     const anything = this.waiting > 0;
-    this.showing = anything;
+    this.showing = opensPileOnReturn(anything, stood);
     return anything;
   }
 

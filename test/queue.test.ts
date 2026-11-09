@@ -293,3 +293,44 @@ describe("the question panel's per-question effects key on a derived id", () => 
     expect(script).not.toMatch(/^\s*(void\s+)?ask\.askId;?\s*$/m);
   });
 });
+
+/* The queue is folded by default, and nothing but you opens it.
+ *
+ * Lyss, 2026-11-09: *"when i'm back to volery I want to see the wall, not
+ * have to answer every prompt to see the wall"* (sink `e0eca596`). So the
+ * held item's panel is drawn only while `Front.shut` is false — and the flag
+ * is written in exactly the two methods a gesture reaches. An arrival that
+ * opened it would be the bug the feature exists to undo, and it would arrive
+ * as a line in this file rather than as an error. No DOM runs here, so this
+ * is asserted on the source, the same way the branch count above is. */
+describe("the waiting panel is shut until you open it", () => {
+  const dockSource = readFileSync(join(import.meta.dir, "../src/lib/Dock.svelte"), "utf8");
+  const frontSource = readFileSync(join(import.meta.dir, "../src/lib/front.svelte.ts"), "utf8");
+
+  test("shut is the default", () => {
+    expect(frontSource).toMatch(/shut = \$state\(true\)/);
+  });
+
+  test("only the two gestures write it", () => {
+    /* `true` in `shutIt`, `false` in `openIt` — and `toggleShut` goes through
+       them rather than writing the field. One of each is the whole of it. */
+    const writes = [...frontSource.matchAll(/this\.shut = (true|false)/g)].map((m) => m[0]).sort();
+    expect(writes).toEqual(["this.shut = false", "this.shut = true"]);
+  });
+
+  test("the dock draws the bar in the panel's place, under the one branch per kind", () => {
+    const markup = dockSource.slice(dockSource.indexOf("</script>"));
+    expect(markup).toMatch(/\{#if shown && front\.shut\}/);
+    expect(markup).toContain('class="queued"');
+    /* The branch count above still holds: the bar is a fold, not a second
+       drawing of the question. */
+    expect(markup.split('shown?.kind === "ask"').length - 1).toBe(1);
+  });
+
+  test("a shut dock still says what is waiting", () => {
+    /* How many, whose, and the first line — the bar is the whole signal
+       while the panel is away. */
+    expect(dockSource).toMatch(/const headline = \$derived\.by/);
+    expect(dockSource).toMatch(/const who = \$derived\(shown \? front\.whoOf\(shown\)/);
+  });
+});

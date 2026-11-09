@@ -12,7 +12,7 @@
   import { Attention } from "./lib/attention.svelte";
   import { causeOf } from "./lib/peeking";
   import { Presence } from "./lib/presence.svelte";
-  import { lasted } from "./lib/presence";
+  import { GATE_AFTER_MS, lasted } from "./lib/presence";
   import { cardByHandle } from "./lib/chatview";
   import { provideCardLinks } from "./lib/cardlinks.svelte";
   import { provideRefLinks } from "./lib/reflinks.svelte";
@@ -796,6 +796,24 @@
         if (!chatview?.nextNeeding()) skein.fault = "nothing is waiting on you";
         return;
       }
+      /* `space d s`: fold what is waiting on you away, or open it. Answered
+         here rather than by the dock because the queue is `Front`'s, and chat
+         view — which draws the same queue and has no dock mounted — switches
+         to the wall first (`actsOnWall`) and then runs this arm. Nothing about
+         it is the panel's, which is the point: *shut* is the state you come
+         back to, not a button you have to find on the thing you want gone. */
+      if (verb.act === "shut") {
+        if (!front.shown) {
+          skein.fault = "nothing is waiting on you";
+          return;
+        }
+        leader.say(
+          front.toggleShut()
+            ? "the waiting panel is shut — the wall is clear"
+            : "the waiting panel is open",
+        );
+        return;
+      }
       const why = dock?.chord(verb.act);
       if (why) skein.fault = why;
     }
@@ -839,6 +857,12 @@
       if (presence.toys) void sketchbook.topUp();
       return;
     }
+    /* Read before `comeBack` clears it — how long you were gone is what all
+       three of the coming-back surfaces turn on. A **long** absence comes back
+       to the wall rather than to a pile of last night's questions: the pile's
+       own rule is `presence.ts::opensPileOnReturn`, and the dock's panel is
+       shut here for the same reason. A break changes neither. */
+    const stood = presence.elapsed(clock.t);
     /* Only past `GATE_AFTER_MS`. Away mode is not a night mode — it is worth
        throwing for a cup of tea — and a puzzle on the way back from one is the
        thing `gate.ts` says would end the feature. */
@@ -847,6 +871,7 @@
       return;
     }
     await presence.comeBack();
+    if (stood >= GATE_AFTER_MS) front.shutIt();
   }
 
   /** The puzzle is up. Only ever on the way back, and only with the setting on
@@ -5947,6 +5972,10 @@
       onthrough={() => {
         gating = false;
         void presence.comeBack();
+        /* The gate only stands past `GATE_AFTER_MS`, so this is a long
+           absence by construction: the wall is what you walk into, not a
+           panel of questions (`togglePresence`'s rule, one road over). */
+        front.shutIt();
       }}
     />
   {:else if playing}
