@@ -2150,7 +2150,7 @@ export class Skein {
      *  on: taken if ready, the ladder otherwise. */
     prefer: string | null = null,
     /** The session it resumes, where it already has one — a card that moved
-     *  here from another wall (`flyway/moving.rs`), whose row Rust has already
+     *  here from another wall (`flyway-core/src/moving.rs`), whose row Rust has already
      *  written with it. Absent, the session is the id, as for every card born
      *  here; passed to the spawn rather than left to it, because a card cleared
      *  before it moved has a session that is not its id. */

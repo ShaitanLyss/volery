@@ -200,7 +200,7 @@ export type DigestParent = { host: string | null; card: string };
  *  options — a snapshot is re-sent on every change, so a mockup or a
  *  screenshot in it would be sent dozens of times an hour. `shows` says a
  *  design or a file is on the question, and a wall that reads it pulls the
- *  whole call once (`flyway/look.rs`) and draws it as a local question is
+ *  whole call once (`flyway-core/src/look.rs`) and draws it as a local question is
  *  drawn. Until then, and if the pull fails, the words say what is missing. */
 export type DigestAsk = {
   askId: string;
@@ -421,7 +421,7 @@ function travelling(askId: string, since: number, questions: readonly AskQuestio
 
 /** A card's pile as it travels, inside `FILED_BUDGET`: whole while it fits, and
  *  past that each question's words cut short, its details left behind and
- *  `shows` set — so the far wall pulls the call whole (`flyway/look.rs`, which
+ *  `shows` set — so the far wall pulls the call whole (`flyway-core/src/look.rs`, which
  *  `presence::filed_args` answers for a filed one) and draws it through the
  *  same `normalizeAsk` it would have. The labels stay: they are what an answer
  *  reads as until the pull lands. */
@@ -732,7 +732,7 @@ function readAsks(raw: unknown, cap = ASKS_CAP): DigestAsk[] {
 /** A travelled question as the ask panel draws one **from its words alone** —
  *  which is how every question arrives, and for one that shows nothing, how it
  *  stays. One that does show something is pulled whole the moment it arrives
- *  (`shows`, `flyway/look.rs`) and redrawn from the call's own arguments by
+ *  (`shows`, `flyway-core/src/look.rs`) and redrawn from the call's own arguments by
  *  `normalizeAsk`, the function a question asked here goes through; this is
  *  what stands until it lands, and what stands if it cannot.
  *

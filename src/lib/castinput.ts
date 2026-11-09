@@ -1,5 +1,5 @@
 /* The viewer's half of driving a screen: DOM events in, the input bytes
- * `src-tauri/src/cast/wire.rs` reads out. Pure, so every mapping here is a
+ * `src-tauri/flyway-core/src/screen/wire.rs` reads out. Pure, so every mapping here is a
  * test rather than a thing somebody notices on a far machine.
  *
  * The tile owns the listeners (`Screen.svelte`); this owns what an event

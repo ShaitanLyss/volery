@@ -2,7 +2,7 @@
  * tile asks the host for, and the arithmetic every face of one shares.
  *
  * Pure, and tested directly in `test/cast.test.ts`. The byte layouts are
- * `src-tauri/src/cast/wire.rs`'s and that file's test fixtures are copied into
+ * `src-tauri/flyway-core/src/screen/wire.rs`'s and that file's test fixtures are copied into
  * the test byte for byte — which is what stops the two halves drifting, since
  * nothing else would notice: a header read one byte off decodes a frame of the
  * wrong size, the decoder rejects it, and the tile reads as a slow network.

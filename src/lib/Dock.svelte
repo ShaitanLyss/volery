@@ -143,7 +143,7 @@
      the focused one: the same file name in two projects would have opened the
      wrong one, silently. See `scopeFiles`. A card on another wall answers with
      its own root, so a path in its question is asked of that wall
-     (`across.ts`); its attachments arrive resolved (`flyway/look.rs`). This
+     (`across.ts`); its attachments arrive resolved (`flyway-core/src/look.rs`). This
      call went missing with the hold rule (f96136e), which left every path in a
      question pointing at nothing. */
   scopeFiles(() => shown?.of.readable.root ?? null);
@@ -339,7 +339,7 @@
          its project line names the wall it is on, and answering goes back down
          the prompt wire to the wall it came from. A
          question that shows something is drawn from the call's own arguments
-         either way (`flyway/look.rs`), scripts gated as here by the card's
+         either way (`flyway-core/src/look.rs`), scripts gated as here by the card's
          kind. -->
     {#if shown?.kind === "ask"}
       {@const target = shown.of}

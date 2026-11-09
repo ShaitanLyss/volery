@@ -1,6 +1,6 @@
 /* Moving every card of a grouping to another machine, as words.
  *
- * The move itself is the card menu's (`Skein.moveCard`, `flyway/moving.rs`)
+ * The move itself is the card menu's (`Skein.moveCard`, `flyway-core/src/moving.rs`)
  * and is not touched: each card is quiesced, its conversation shipped and
  * checked there with one real turn, and only then let go here — or kept, with
  * the reason. Lyss: *"moving all the cards of a project to another machine is

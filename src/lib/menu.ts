@@ -442,7 +442,7 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            reason, and absent where there is nowhere to go. The code moves by
            git and the move refuses a dirty tree, so this is not a row that can
            lose work; the card is not let go here until it has answered with
-           its history there (`flyway/moving.rs`). */
+           its history there (`flyway-core/src/moving.rs`). */
         has("move") && (t.walls ?? []).length
           ? more(
               "move",

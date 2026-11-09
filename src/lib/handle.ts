@@ -62,7 +62,7 @@ export const COST: Record<Verb, Cost> = {
   pin: "local",
   regroup: "local",
   hand: "local",
-  // Its own exchange (`flyway/moving.rs`), not an `act`.
+  // Its own exchange (`flyway-core/src/moving.rs`), not an `act`.
   move: "local",
   processes: "local",
   close: "person",
@@ -129,7 +129,7 @@ export const VERB_STAYS: Readonly<Partial<Record<Verb, string>>> = {
   regroup:
     "a grouping is a territory on this wall; a card elsewhere stands in its own wall's project section, which is that wall's to arrange",
   hand: "handing a plan on opens a fresh card from the plan document, and both the document and the card would be on the machine the card runs on — not built as an act (sink dbfd0857)",
-  move: "moving a card between walls is its own exchange (`flyway/moving.rs`), started from the wall the card runs on",
+  move: "moving a card between walls is its own exchange (`flyway-core/src/moving.rs`), started from the wall the card runs on",
   processes:
     "what a card is holding is a job object on the machine it runs on; listing it from here is not built as a read (sink dbfd0857)",
 };

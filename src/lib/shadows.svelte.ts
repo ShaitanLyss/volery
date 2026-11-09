@@ -452,7 +452,7 @@ export class Shadow {
 
   /** Read the conversation off the wall it runs on (`flyway_tail`). Pulled
    *  when a panel is open on it and never gossiped: a transcript is large and
-   *  wanted one card at a time (`flyway/tail.rs`).
+   *  wanted one card at a time (`flyway-core/src/tail.rs`).
    *
    *  One read in flight; asked again meanwhile, it reads once more after,
    *  since the second ask means the card has moved on since the first. Only a
@@ -1280,7 +1280,7 @@ export class Elsewhere {
   /** Pull what a question shows from the wall it was asked on, and redraw its
    *  sheet from the call's own arguments — through `normalizeAsk`, the one
    *  reading a question asked here gets, so the dock, the gallery and the
-   *  viewer draw it as they draw a local card's (`flyway/look.rs`). A pull that
+   *  viewer draw it as they draw a local card's (`flyway-core/src/look.rs`). A pull that
    *  fails says why in the question, where the words already said something
    *  was coming — and is asked again on the next snapshot from that wall, up
    *  to `LOOK_TRIES`, since a wall that is talking again is the one moment a

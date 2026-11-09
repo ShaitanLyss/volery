@@ -69,7 +69,7 @@ export type AskFile = {
    *  attachment has no label at all. */
   path: string;
   /** Why the file is not here to read, drawn on the panel it would have
-   *  filled. Only `flyway/look.rs` writes it — a question asked on another
+   *  filled. Only `flyway-core/src/look.rs` writes it — a question asked on another
    *  wall whose file could not be carried over — and with it `root` is empty,
    *  so nothing is read. */
   fault?: string;
