@@ -1,7 +1,7 @@
 [package]
 name = "phone-node"
 version = "0.1.0"
-description = "A receive-only node on the flyway: dial a wall, read its roster and cards digest — no Tauri, no store, no claude"
+description = "A receive-only node on the flyway: dial a wall, read its roster, cards digest, and a card's pictures and files — no Tauri, no store, no claude"
 authors = ["moonlyss"]
 edition = "2021"
 publish = false

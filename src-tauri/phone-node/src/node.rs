@@ -32,20 +32,22 @@
 //! no sink events. That it means the wall will send its own sink events back is
 //! harmless here and is what narration will later read.
 //!
-//! So the node's whole job is bind, dial, say the greeting, read the answer. It
-//! keeps no store, emits nothing, spawns nothing, and — for M2a — accepts no
-//! dials. The surface is two calls, both async and returning through the handle,
-//! which is the shape M2b's uniffi/JNI bridge drives.
+//! So the node's whole job is bind, dial, say the greeting, read the answer —
+//! and, for a picture or file a card produced, read that too. It keeps no
+//! store, emits nothing, spawns nothing, and accepts no dials. The surface is
+//! three calls — `start`, `sight`, `fetch` — all async and returning through
+//! the handle, which is the shape M2b's JNI bridge drives.
 
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flyway_core::cards::CardsMsg;
 use flyway_core::fleet::{Announcement, Facts, FleetMsg, Heard};
 use flyway_core::frame::Frame;
 use flyway_core::seal::WallKey;
+use flyway_core::seeing::{self, SeeMsg, Sight};
 use flyway_core::session::Msg;
-use flyway_core::wire::Wire;
+use flyway_core::wire::{carrying_within, Wire};
 
 /// A bound phone node: on the flyway, but with no cards, no store and no wall.
 ///
@@ -80,6 +82,40 @@ pub struct Digest {
     pub snapshot: serde_json::Value,
 }
 
+/// What the phone asks to view: the media a card on the wall produced, in the
+/// two forms the flyway already carries (`seeing.rs`) — a picture by the copy
+/// `show` kept or by path, and a file by path. A sent file is the second kind:
+/// once a parcel has landed on the owning wall it is a file at a path, and
+/// `seeing` reads it like any other.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Media {
+    Picture {
+        kept: Option<String>,
+        path: Option<String>,
+    },
+    File {
+        path: String,
+    },
+}
+
+/// What one `fetch` came back with, flattened from the wire's own shapes
+/// (`seeing::Pictured` for a picture, `seeing::Gathering` for a file) so the
+/// phone reads fields and never the enums.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fetched {
+    pub name: String,
+    /// Base64 — a picture's pixels, or a file's bytes.
+    pub data: String,
+    pub bytes: u64,
+    /// A picture's size in pixels; `None` for a file.
+    pub size: Option<(u32, u32)>,
+    /// A picture too large to draw, whose `data` is then empty.
+    pub too_large: bool,
+    /// Where a file is on the owning wall, in that wall's spelling. A picture
+    /// carries none: a path from another machine is not one to open here.
+    pub full: String,
+}
+
 impl Node {
     /// Take a place on the flyway: bind this node's endpoint, derived from the
     /// key and the node's name exactly as a wall derives its own.
@@ -102,12 +138,81 @@ impl Node {
     /// shape every wall's own pull is (`wire.rs`).
     pub async fn sight(&self, host: &str) -> Result<Sighting, String> {
         let peer = self.wire.peer(host)?;
-        let out = vec![
+        let back = self.wire.exchange(peer, self.greeting(), true).await.map_err(|f| f.to_string())?;
+        Ok(Sighting::read(back))
+    }
+
+    /// Fetch a picture or file a card on the wall produced. `host` is the
+    /// wall's name; `card` the card's id there, which the phone read out of the
+    /// digest and passes back — a relative path counts from where that card
+    /// runs, and the read is gated by that wall's take-work-from-other-walls
+    /// switch exactly as an agent's `recall` is (`seeing.rs`, "Who may").
+    ///
+    /// `seeing.rs` is the whole of the wire: a `see`/`seen` exchange, never
+    /// gossiped, answered on the same stream. A picture crosses whole in one
+    /// frame; a file arrives in parts, so it is pulled in as many exchanges as
+    /// it takes, held to its first part's word (`seeing::Gathering`).
+    pub async fn fetch(&self, host: &str, card: &str, want: Media) -> Result<Fetched, String> {
+        match want {
+            Media::Picture { kept, path } => {
+                let ask = Sight::Picture { call: None, n: 0, kept, path, measure: false, have: None };
+                let within = carrying_within(PICTURE_MOST);
+                match self.read_see(host, card, ask, within).await? {
+                    SeeMsg::Seen { picture: Some(p), .. } => Ok(picture_into(p)),
+                    _ => Err(format!("{host} sent no picture")),
+                }
+            }
+            Media::File { path } => {
+                let mut g = seeing::Gathering::default();
+                let mut from = 0u64;
+                let within = carrying_within(seeing::BUDGET);
+                for _ in 0..seeing::ROUNDS_MOST {
+                    let ask = Sight::File { path: path.clone(), from };
+                    let part = match self.read_see(host, card, ask, within).await? {
+                        SeeMsg::Seen { part: Some(p), .. } => p,
+                        _ => return Err(format!("{host} sent none of that file")),
+                    };
+                    if g.take(part, host)? {
+                        return Ok(file_into(&g));
+                    }
+                    from = g.got.len() as u64;
+                }
+                Err(format!("{host} took more exchanges than any file should"))
+            }
+        }
+    }
+
+    /// One `see`, answered on the same stream — the desktop's `read_see`, with
+    /// the request id made here rather than by the store the phone has not got,
+    /// and the greeting sent ahead of it so a wall that has never met the node
+    /// can still say who asked (`link.rs::who_is` reads the `Hello`).
+    async fn read_see(&self, host: &str, card: &str, ask: Sight, within: Duration) -> Result<SeeMsg, String> {
+        let peer = self.wire.peer(host)?;
+        let id = fresh_id();
+        let m = SeeMsg::See { id: id.clone(), card: card.to_string(), ask };
+        let mut out = self.greeting();
+        out.push(Frame::See(m));
+        let back = self
+            .wire
+            .exchange_within(peer, out, true, within)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        let sees = back.into_iter().filter_map(|f| match f {
+            Frame::See(m) => Some(m),
+            _ => None,
+        });
+        seeing::answer_in(sees, &id, host)
+    }
+
+    /// The greeting the node opens an exchange with — the same shape a wall
+    /// opens with, so a wall answers in kind and, on first contact, folds the
+    /// node into its roster. `sight` sends it alone; `fetch` sends it before
+    /// the `see`, so a wall that has never met the node can still say who asked.
+    fn greeting(&self) -> Vec<Frame> {
+        vec![
             Frame::Sink(Msg::Hello { host: self.name.clone(), watermark: BTreeMap::new() }),
             Frame::Fleet(FleetMsg::Roster { walls: vec![self.announcement()], greeting: true }),
-        ];
-        let back = self.wire.exchange(peer, out, true).await.map_err(|f| f.to_string())?;
-        Ok(Sighting::read(back))
+        ]
     }
 
     /// This node's statement about itself, in the wire's own shape. The facts
@@ -160,6 +265,42 @@ impl Sighting {
     }
 }
 
+/// A picture crosses whole in one frame, and the desktop caps one at 3 MB
+/// (`show::MAX_PICTURE`, an app-crate constant the phone cannot link) — 4 MB as
+/// base64. The number is restated here rather than read from `show`; it sets
+/// the exchange's timeout, not a cap.
+const PICTURE_MOST: usize = 4 * 1024 * 1024;
+
+fn picture_into(p: seeing::Pictured) -> Fetched {
+    Fetched {
+        name: p.name,
+        data: p.data,
+        bytes: p.bytes,
+        size: p.size,
+        too_large: p.too_large,
+        full: String::new(),
+    }
+}
+
+fn file_into(g: &seeing::Gathering) -> Fetched {
+    Fetched {
+        name: g.name.clone(),
+        data: flyway_core::base64(&g.got),
+        bytes: g.size,
+        size: None,
+        too_large: false,
+        full: g.full.clone(),
+    }
+}
+
+/// A request id, unique enough that one `see` cannot answer another. The
+/// desktop takes one from the store (`store::uuid_v4`); the phone has no
+/// store, and the id only ever ties an answer to the exchange it was asked in.
+fn fresh_id() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("p{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -200,5 +341,50 @@ mod tests {
         let s = Sighting::read(vec![Frame::Sink(Msg::Hello { host: "desk".into(), watermark: BTreeMap::new() })]);
         assert!(s.cards.is_none());
         assert!(s.roster.is_empty());
+    }
+
+    /// A picture flattens to what the phone draws: the base64 the wall sent, its
+    /// size, and no `full` — a path on another machine is not one to open here.
+    #[test]
+    fn a_picture_fetches_as_its_own_shape() {
+        let p = seeing::Pictured {
+            name: "shot.png".into(),
+            data: "iVBOR".into(),
+            bytes: 6,
+            size: Some((2, 3)),
+            too_large: false,
+            ..seeing::Pictured::default()
+        };
+        let f = picture_into(p);
+        assert_eq!(f.name, "shot.png");
+        assert_eq!(f.data, "iVBOR");
+        assert_eq!(f.bytes, 6);
+        assert_eq!(f.size, Some((2, 3)));
+        assert!(!f.too_large);
+        assert!(f.full.is_empty());
+    }
+
+    /// A file folds out of the gathering: its bytes re-encoded, its size as the
+    /// wall declared, no picture size, and its owning path kept in the wall's
+    /// spelling for the phone to say where it is.
+    #[test]
+    fn a_file_fetches_as_bytes() {
+        let mut g = seeing::Gathering::default();
+        let part = seeing::Part {
+            name: "note.md".into(),
+            full: "C:/p/note.md".into(),
+            size: 4,
+            stamp: Some("4-1".into()),
+            from: 0,
+            data: flyway_core::base64(b"note"),
+        };
+        assert!(g.take(part, "lap").unwrap());
+        let f = file_into(&g);
+        assert_eq!(f.name, "note.md");
+        assert_eq!(flyway_core::unbase64(&f.data).as_deref(), Some(b"note".as_slice()));
+        assert_eq!(f.bytes, 4);
+        assert_eq!(f.size, None);
+        assert!(!f.too_large);
+        assert_eq!(f.full, "C:/p/note.md");
     }
 }

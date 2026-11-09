@@ -9,4 +9,4 @@
 
 pub mod node;
 
-pub use node::{Digest, Node, Sighting};
+pub use node::{Digest, Fetched, Media, Node, Sighting};
