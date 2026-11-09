@@ -21,7 +21,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # suites as well as the app's; without it a workspace whose root is a package
 # tests that package alone, and the flyway's tests would silently stop running.
 [workspace]
-members = [".", "flyway-core", "phone-node"]
+members = [".", "flyway-core", "phone-node", "phone-ffi"]
 default-members = [".", "flyway-core", "phone-node"]
 
 [build-dependencies]

@@ -5,12 +5,12 @@ dials the flyway from the device. A foreground service holds the node alive
 while you walk; a home screen shows the roster and the cards digest the dial
 came back with.
 
-Two halves, in one directory:
+Two halves:
 
-| | what | language |
-|---|---|---|
-| `ffi/` | the JNI bridge over `phone-node` (a cdylib) | Rust |
-| `android/` | the app: foreground service + home + stub settings | Kotlin + Gradle |
+| | what | language | where |
+|---|---|---|---|
+| the bridge | the JNI cdylib over `phone-node` | Rust | `src-tauri/phone-ffi/` — a member of `src-tauri`'s workspace, so it shares one Cargo.lock |
+| the app | foreground service + home + stub settings | Kotlin + Gradle | `phone-app/android/` |
 
 ## The FFI is JNI, not uniffi
 
@@ -34,20 +34,21 @@ Two steps — the native `.so`, then the APK. Both need the Android toolchain
 ### 1. Cross-compile the bridge
 
 ```bash
-cd phone-app/ffi
+cd src-tauri/phone-ffi
 export NDK="/c/Users/flori/AppData/Local/Android/android-ndk-r26d"
 export BIN="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android24-clang.cmd"
 export CC_aarch64_linux_android="$BIN/aarch64-linux-android24-clang.cmd"
 export CXX_aarch64_linux_android="$BIN/aarch64-linux-android24-clang++.cmd"
 export AR_aarch64_linux_android="$BIN/llvm-ar.exe"
-# CARGO_TARGET_DIR reuses the desktop's aarch64 cache (iroh etc. already built).
-CARGO_TARGET_DIR="C:/atelier/skein/src-tauri/target" cargo build --target aarch64-linux-android
+# A member of src-tauri's workspace, so target/ is the shared one — no
+# CARGO_TARGET_DIR override needed, and the .so lands in ../target.
+cargo build --target aarch64-linux-android
 
-mkdir -p ../android/app/src/main/jniLibs/arm64-v8a
+mkdir -p ../../phone-app/android/app/src/main/jniLibs/arm64-v8a
 "$BIN/llvm-strip.exe" --strip-debug \
-  -o ../android/app/src/main/jniLibs/arm64-v8a/libphone_ffi.so \
-  ../../src-tauri/target/aarch64-linux-android/debug/libphone_ffi.so
+  -o ../../phone-app/android/app/src/main/jniLibs/arm64-v8a/libphone_ffi.so \
+  ../target/aarch64-linux-android/debug/libphone_ffi.so
 ```
 
 ### 2. Build the APK
