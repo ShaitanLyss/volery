@@ -21,8 +21,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # suites as well as the app's; without it a workspace whose root is a package
 # tests that package alone, and the flyway's tests would silently stop running.
 [workspace]
-members = [".", "flyway-core"]
-default-members = [".", "flyway-core"]
+members = [".", "flyway-core", "phone-node"]
+default-members = [".", "flyway-core", "phone-node"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

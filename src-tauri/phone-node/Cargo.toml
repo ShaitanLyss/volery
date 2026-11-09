@@ -1,0 +1,22 @@
+[package]
+name = "phone-node"
+version = "0.1.0"
+description = "A receive-only node on the flyway: dial a wall, read its roster and cards digest — no Tauri, no store, no claude"
+authors = ["moonlyss"]
+edition = "2021"
+publish = false
+
+# The wiring half of the phone companion (`docs/PHONE.md`, M2a). `flyway-core`
+# is the pure vocabularies and the transport; this is the thing that dials and
+# reads, which is why it is a crate of its own rather than a module in the core
+# — the core is what the desktop re-exports unchanged, and a phone links both.
+#
+# No new third-party code: `flyway-core` already carries iroh, and `tokio` /
+# `serde_json` are in its graph at these versions. The tokio features are the
+# ones the app's own manifest already enables minus what only the app needs, so
+# the union across a build never grows beyond what `src-tauri` already links.
+
+[dependencies]
+flyway-core = { path = "../flyway-core" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
