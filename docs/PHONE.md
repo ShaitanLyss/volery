@@ -4,8 +4,9 @@ Design work 2026-11-09, from the request: *control Volery and the full flyway fr
 while walking, earbuds-only, with audio narration.* Voice in, voice out, mesh connectivity —
 a phone app that is itself a node on the flyway.
 
-**Status: design agreed, nothing built.** M0 (the spike) is the first card. This file is the
-plan; it will grow a `.claude/rules/` file when there is code to govern.
+**Status: M0 answered 2026-11-09 — iroh 1.3.0 cross-compiles, links, and runs on the Pixel 7a
+(see below).** M1 (flyway-core extraction) is in flight on card `589737f7`; M2 (the app + node)
+is next. This file will grow a `.claude/rules/` file when there is code to govern.
 
 ## What this is
 
@@ -106,7 +107,7 @@ wake-word sensitivity.
 
 | | what | gates on | proof |
 |---|---|---|---|
-| **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | a green `aarch64-linux-android` cross-compile, or a named blocker |
+| **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | **done** — cross-compiles, links, and ran on the Pixel 7a, printing a node id |
 | **M1** | extract `flyway-core`; desktop consumes it unchanged | M0 | `cargo test --lib` and the flyway lifts green with no behaviour change |
 | **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | the phone appears on the wall's roster and reads a digest |
 | **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | a digest change becomes a spoken line, at the chosen chatty level |
@@ -116,9 +117,11 @@ wake-word sensitivity.
 
 ## Risks and unknowns
 
-- **iroh 1.3.0 on Android is unproven in this repo.** The likely fight is a C dependency
-  (`ring` / `aws-lc-*`) under the NDK. M0 exists to answer it; a negative answer is a real
-  finding and changes the plan, so it is worth one card's full attention before anything else.
+- **iroh 1.3.0 on Android — proven 2026-11-09, not assumed.** The whole tree (ring, rustls,
+  the Android platform-verifier, quinn) cross-compiled and linked clean under NDK r26d, and the
+  resulting `aarch64` binary ran on the Pixel 7a and printed a node id. The one genuinely open
+  question left is the on-device *dial* (reach the desktop flyway from the phone's network),
+  which is M2's job.
 - **Background life.** Android throttles background network (Doze). A foreground service, and
   the fact that walking means the screen is on or music is playing, is the mitigant; it still
   wants a battery measurement in M4.
