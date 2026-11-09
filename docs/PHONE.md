@@ -134,6 +134,12 @@ wake-word sensitivity.
   resulting `aarch64` binary ran on the Pixel 7a and printed a node id. The one genuinely open
   question left is the on-device *dial* (reach the desktop flyway from the phone's network),
   which is M2's job.
+- **On Android, `CaTlsConfig::system()` needs the app's Context.** The platform verifier's
+  Android half reads the system trust store through `ndk-context`, so a process with no JNI
+  Context panics — measured on the Pixel 7a: `ndk-context: android context was not initialized`
+  → `rustls-platform-verifier: Expect rustls-platform-verifier to be initialized`. The app must
+  initialize the verifier with its Context before `Node::start`; that is the one genuinely-new
+  thing the phone does that the desktop never did, and it is M2b's to do.
 - **Background life.** Android throttles background network (Doze). A foreground service, and
   the fact that walking means the screen is on or music is playing, is the mitigant; it still
   wants a battery measurement in M4.
