@@ -1,5 +1,7 @@
 ---
 paths:
+  - "src-tauri/flyway-core/src/clip.rs"
+  - "src-tauri/flyway-core/src/clean.rs"
   - "src-tauri/src/clip.rs"
   - "src-tauri/src/clean.rs"
   - "src-tauri/src/ask.rs"

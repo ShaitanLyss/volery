@@ -4,7 +4,7 @@ paths:
   - "src/lib/board.ts"
   - "src/lib/board.svelte.ts"
   - "src/lib/Billboard.svelte"
-  - "src-tauri/src/flyway/boards.rs"
+  - "src-tauri/flyway-core/src/boards.rs"
   - "src-tauri/src/flyway/link/billboard.rs"
 ---
 

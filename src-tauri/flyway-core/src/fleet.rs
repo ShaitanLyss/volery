@@ -305,7 +305,7 @@ pub struct Facts {
     /// advertise one. Empty from a wall that cannot show screens, or one from
     /// before it could. Read every announcement, so a monitor plugged in
     /// appears within a tick.
-    pub screens: Vec<crate::cast::Monitor>,
+    pub screens: Vec<crate::screen::Monitor>,
 }
 
 /// The first release whose walls say their `Facts::build`. A wall that sent
@@ -313,13 +313,11 @@ pub struct Facts {
 /// `flyway.ts`'s `BUILD_ANNOUNCED_FROM` by `test/flyway.test.ts`.
 pub const BUILD_ANNOUNCED_FROM: &str = "0.75.0";
 
-/// What this wall says of itself for `Facts::build` and `Facts::dev`.
-pub fn this_build() -> (String, bool) {
-    /* `option_env!`, not `env!`: `tools/lift-fleet.ts` compiles this file
-       outside cargo, where there is no package version — and an empty build
-       is what a wall that cannot say reads as anyway. */
-    (option_env!("CARGO_PKG_VERSION").unwrap_or("").to_string(), cfg!(debug_assertions))
-}
+/* What this wall says of itself for `Facts::build` and `Facts::dev` is not
+   here: it is a fact about the binary that links this crate, and a package
+   version read here would be this crate's own (`0.1.0` — found by the
+   `reach` test that compares it with the app's). `src-tauri`'s
+   `flyway::this_build` says the app's. */
 
 /// Whether the person is at some other wall right now, by the roster: one
 /// heard within `QUIET_AFTER_MS` that says `present`.
@@ -2130,7 +2128,7 @@ impl Fleet {
 /// The bound refusal a wall would make with this many asks already agreed to.
 /// One function for `decide` and `Entry::standing`, so the reason drawn beside
 /// a full wall is word for word the one an ask to it would get.
-pub(crate) fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
+pub fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
     if let Some(limit) = f.bound.live {
         let live = f.remote_live.saturating_add(in_flight);
         if live >= limit {
@@ -2151,7 +2149,7 @@ pub(crate) fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
 /// it in full before it answers. One number for the fleet's `Waiting` and the
 /// wiring's `Waiter`, which must not give up at different moments.
 pub fn patience_for(parcel: Option<&crate::parcel::Carried>) -> i64 {
-    GIVE_UP_MS + parcel.map(|p| crate::flyway::wire::carrying_within(p.bytes() as usize).as_millis() as i64 * 2).unwrap_or(0)
+    GIVE_UP_MS + parcel.map(|p| crate::wire::carrying_within(p.bytes() as usize).as_millis() as i64 * 2).unwrap_or(0)
 }
 
 /// Whether an ask carries something only its addressee may have: a person's
@@ -2364,8 +2362,7 @@ mod tests {
     /// agent's context from a different build.
     #[test]
     fn a_wall_says_its_build_and_an_older_one_says_nothing() {
-        let (build, dev) = this_build();
-        assert_eq!(build, option_env!("CARGO_PKG_VERSION").unwrap_or(""));
+        let (build, dev) = ("1.2.3".to_string(), true);
         let f = Facts { build: build.clone(), dev, ..Facts::default() };
         let back: Facts = serde_json::from_value(serde_json::to_value(&f).unwrap()).unwrap();
         assert_eq!((back.build.as_str(), back.dev), (build.as_str(), dev));

@@ -109,6 +109,7 @@ use super::look::{self, LookMsg};
 use super::session::Msg;
 use super::tail::{self, TailMsg};
 use super::wire::{Arrival, Dialler, Fault, Wire};
+use crate::parcel::CarriedHere;
 use crate::store::Store;
 
 pub(crate) mod accounting;
@@ -610,7 +611,7 @@ impl Link {
         /* Outside the store lock: two vault reads, and the wall's cards do not
            wait on the credential manager. Names only — `creds::holdings`. */
         (f.holds, f.lacks) = crate::creds::holdings();
-        (f.build, f.dev) = fleet::this_build();
+        (f.build, f.dev) = super::this_build();
         f.screens = super::cast::announced_screens(f.accepting, self.media.screens());
         f
     }

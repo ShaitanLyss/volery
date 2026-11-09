@@ -106,26 +106,10 @@ pub fn credential_path(app: &AppHandle, label: &str) -> Result<PathBuf, String> 
     Ok(store_dir(app, label)?.join(".credentials.json"))
 }
 
-/// Letters, digits, dot, dash, underscore — and **never a name made only of
-/// dots**.
-///
-/// A label is a path component joined to a directory, so this is the check that
-/// stops one from being `..\..\something` rather than a matter of taste. The
-/// dots clause is not decoration and the stakes for it changed with this
-/// module: when an account was a *file* (`<label>.tok`), a label of `..` merely
-/// named a file called `...tok` and did nothing. Now the label names a
-/// **directory** that `sign_out` removes recursively, so `..` would resolve to
-/// `~/.claude` and `.` to the store root holding every account. Both pass a
-/// bare character-class check, since `.` is a legal character in a real label
-/// like `work.2`. So the character set is not sufficient on its own and the
-/// component is rejected outright when nothing but dots is left of it.
-pub fn is_label(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
-        && s.chars().any(|c| c != '.')
-}
+/* The one rule a label is held to lives in the flyway's core
+   (`flyway_core::accounts::is_label`), because labels arrive over the wire
+   too and must be held to the same rule there; its reasoning went with it. */
+pub use flyway_core::accounts::is_label;
 
 /// Whether this account has been signed in — i.e. whether its store holds a
 /// credential. Says nothing about whether that credential is still *fresh*:

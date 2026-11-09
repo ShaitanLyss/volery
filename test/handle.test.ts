@@ -122,11 +122,11 @@ describe("the menu a shadow gets is the card's, filtered", () => {
 });
 
 describe("the verbs that cross as an act", () => {
-  /* `flyway/act.rs` is the wall's own list of what it will do; the two are held
+  /* `flyway-core/src/act.rs` is the wall's own list of what it will do; the two are held
      equal here, cost and all, so a verb added on one side cannot be offered by
      a build whose other half has never heard of it. */
   test("the table here and act.rs's VERBS are the same verbs at the same costs", () => {
-    const src = readFileSync(join(import.meta.dir, "../src-tauri/src/flyway/act.rs"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "../src-tauri/flyway-core/src/act.rs"), "utf8");
     const block = src.slice(src.indexOf("pub const VERBS"), src.indexOf("];", src.indexOf("pub const VERBS")));
     const rust = [...block.matchAll(/\("([a-z-]+)", Cost::(\w+)\)/g)].map((m) => [m[1], m[2]!.toLowerCase()]);
     expect(rust.length).toBeGreaterThan(0);

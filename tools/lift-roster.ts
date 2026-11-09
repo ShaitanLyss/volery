@@ -353,18 +353,23 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "fn mcp_config",
       "enum Dispatch",
       "fn dispatch",
-      /* `dispatch` scrubs its arguments (`.claude/rules/clipping.md`'s third
-         guard), so the lift does not compile without this — and the one below
-         it, since `scrub_json` is where `crate::clean` enters this file. */
-      "fn scrub_json",
     ],
+  },
+  {
+    /* `dispatch` scrubs its arguments (`.claude/rules/clipping.md`'s third
+       guard), so the lift does not compile without this — and the one below
+       it, since `scrub_json` is where `crate::clean` enters. Both moved into the
+       flyway's core crate on 2026-11-09 (`docs/PHONE.md`, M1), which `ask.rs`
+       and `clean.rs` re-export. */
+    file: "src-tauri/flyway-core/src/ask.rs",
+    items: ["fn scrub_json"],
   },
   /* Not a tool either, and here for the same reason `browser::mcp_server` is:
      something the roster's own code reaches. `clean.rs` costs nothing to lift
      whole — it depends on nothing above itself, which is the property
      `tools/lift-clip.ts` is built on. */
   {
-    file: "src-tauri/src/clean.rs",
+    file: "src-tauri/flyway-core/src/clean.rs",
     items: ["fn impossible", "fn scrub"],
   },
   {
@@ -594,7 +599,7 @@ const body: string[] = [
  *  borrows `serde` as well as `serde_json`. */
 const NESTED: Array<{ path: string[]; file: string; items: string[] }> = [
   { path: ["notice"], file: "src-tauri/src/notice.rs", items: ["const NOTICE_TOOL", "fn schema"] },
-  { path: ["flyway", "fleet"], file: "src-tauri/src/flyway/fleet.rs", items: ["const NEEDS"] },
+  { path: ["flyway", "fleet"], file: "src-tauri/flyway-core/src/fleet.rs", items: ["const NEEDS"] },
   { path: ["flyway", "reach"], file: "src-tauri/src/flyway/reach.rs", items: ["const WALLS_TOOL", "fn walls_schema"] },
   { path: ["flyway", "here"], file: "src-tauri/src/flyway/here.rs", items: ["struct Birth"] },
   /* `cancel_schema` and `list_schema` are `later`'s and `relay`'s names too. */

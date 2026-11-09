@@ -61,6 +61,32 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Letters, digits, dot, dash, underscore — and **never a name made only of
+/// dots**.
+///
+/// A label is a path component joined to a directory, so this is the check that
+/// stops one from being `..\..\something` rather than a matter of taste. The
+/// dots clause is not decoration and the stakes for it changed with this
+/// module: when an account was a *file* (`<label>.tok`), a label of `..` merely
+/// named a file called `...tok` and did nothing. Now the label names a
+/// **directory** that `sign_out` removes recursively, so `..` would resolve to
+/// `~/.claude` and `.` to the store root holding every account. Both pass a
+/// bare character-class check, since `.` is a legal character in a real label
+/// like `work.2`. So the character set is not sufficient on its own and the
+/// component is rejected outright when nothing but dots is left of it.
+///
+/// ("This module" above is the app's `src-tauri/src/accounts.rs`, where this
+/// was written and which re-exports it. It lives here because a label read off
+/// the wire below is held to the same rule as one typed on the wall, and one
+/// rule kept in two places is a rule that drifts.)
+pub fn is_label(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        && s.chars().any(|c| c != '.')
+}
+
 /// What a wall announces in `Facts::can` when it says its accounts. A frame is
 /// sent only to a wall announcing it, so an older wall never meets one and
 /// keeps its own settings, untouched.

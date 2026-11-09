@@ -15,6 +15,15 @@ edition = "2021"
 name = "skein_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# One workspace rooted here, so `target/` and `Cargo.lock` stay where every
+# script, lift and CI step already looks. `default-members` names both, so a
+# bare `cargo test` (CI's) and `cargo test --lib` (the habit) run the core's
+# suites as well as the app's; without it a workspace whose root is a package
+# tests that package alone, and the flyway's tests would silently stop running.
+[workspace]
+members = [".", "flyway-core"]
+default-members = [".", "flyway-core"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 # Not used by our own `build.rs` — this is here to *constrain* somebody else's.
@@ -40,6 +49,10 @@ tauri-build = { version = "2", features = [] }
 vergen = "=9.0.6"
 
 [dependencies]
+# The flyway's pure core — the key, the frames, the vocabularies and the iroh
+# transport, with nothing of the app in it — which a phone links too
+# (`docs/PHONE.md`, M1). `src/flyway/mod.rs` re-exports it module for module.
+flyway-core = { path = "flyway-core" }
 tauri = { version = "2", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

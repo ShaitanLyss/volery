@@ -3,6 +3,7 @@ paths:
   - "src-tauri/src/relay.rs"
   - "src-tauri/src/later.rs"
   - "src-tauri/src/parcel.rs"
+  - "src-tauri/flyway-core/src/parcel.rs"
   - "src/lib/Parcel.svelte"
   - "src/lib/relay.ts"
   - "src/lib/relay.svelte.ts"

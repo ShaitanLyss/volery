@@ -68,7 +68,7 @@ const DEPS = depsDir();
 const HOOKS = "src-tauri/src/hooks.rs";
 const ASK = "src-tauri/src/ask.rs";
 const BROWSER = "src-tauri/src/browser.rs";
-const CLEAN = "src-tauri/src/clean.rs";
+const CLEAN = "src-tauri/flyway-core/src/clean.rs";
 
 /** What the wake decisions are built out of, in declaration order. */
 const HOOKS_ITEMS = [

@@ -55,7 +55,9 @@ import { rustEnv } from "./lift-scan.ts";
 const MODULES = ["clean", "clip"];
 
 const sources = MODULES.map((name) => {
-  const path = `src-tauri/src/${name}.rs`;
+  /* Both moved into the flyway's core crate on 2026-11-09 (`docs/PHONE.md`, M1);
+     `src-tauri/src/clean.rs` and `clip.rs` are one-line re-exports of these. */
+  const path = `src-tauri/flyway-core/src/${name}.rs`;
   return { name, path, src: readFileSync(path, "utf8") };
 });
 

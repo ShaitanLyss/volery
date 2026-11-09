@@ -212,7 +212,7 @@ describe("the build a wall runs", () => {
   /* Two homes for one number would drift; the Rust one names the first release
      that announces, and the panel quotes it. */
   test("the first release named here is the one fleet.rs names", () => {
-    const rust = readFileSync("src-tauri/src/flyway/fleet.rs", "utf8");
+    const rust = readFileSync("src-tauri/flyway-core/src/fleet.rs", "utf8");
     const m = /pub const BUILD_ANNOUNCED_FROM: &str = "([^"]+)"/.exec(rust);
     expect(m?.[1]).toBe(BUILD_ANNOUNCED_FROM);
   });

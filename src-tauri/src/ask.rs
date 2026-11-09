@@ -27,6 +27,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
+/* The walk, the bound and the scrub two walls must agree on live in the
+   flyway's core (`flyway_core::ask`), which a phone links too; they are
+   re-exported under the names every caller here already uses. */
+pub(crate) use flyway_core::ask::{each_site, scrub_json, MAX_FILES};
+
 /// **A question has no clock.** It waits until it is answered, deferred, taken
 /// into the pile because nobody is there to ask, dismissed by its card closing,
 /// or abandoned by the client hanging up — and by nothing else.
@@ -1020,15 +1025,6 @@ fn tool_schema() -> Value {
 /// thing the blocking park could never see.
 const FEED_EVERY: Duration = Duration::from_secs(25);
 
-/// How many files one call may attach.
-///
-/// The question count is deliberately unbounded — twelve decisions after a
-/// round of worker reports is the shape this tool encourages, and every one of
-/// them could name a file. Each attachment is a read the panel makes through
-/// `find::read_file_doc`, which carries up to 24 MB base64 apiece. Twenty-four
-/// is past anything a person reads in a sitting and well under anything that
-/// matters.
-pub(crate) const MAX_FILES: usize = 24;
 
 /// Resolve every file a call attached and rewrite it as the pair the viewer
 /// reads: a root and a path inside it.
@@ -1086,37 +1082,6 @@ fn attach_files(app: &AppHandle, caller: &str, mut args: Value) -> Result<Value,
     Ok(args)
 }
 
-/// Every place in a call's arguments that may carry a `file` or a `preview` —
-/// the call itself, each of its options, each question in `questions[]` and
-/// each of *its* options — in one fixed order.
-///
-/// **The one walk, and there are three callers that must agree on it.**
-/// `attach_files` resolves what an agent named; the flyway's `look` reads the
-/// resolved files off a parked question on the wall that owns it, and the wall
-/// that pulled them rewrites the same sites to where it put the bytes. A file
-/// is matched across the two machines by its position in this order, so a
-/// second spelling of the walk would be a screenshot drawn under the wrong
-/// option on the other laptop. `normalizeAsk` reads the same four sites, and
-/// those are the only places a question's attachment can be drawn from.
-pub(crate) fn each_site<E>(args: &mut Value, f: &mut dyn FnMut(&mut Value) -> Result<(), E>) -> Result<(), E> {
-    fn options<E>(slot: Option<&mut Value>, f: &mut dyn FnMut(&mut Value) -> Result<(), E>) -> Result<(), E> {
-        if let Some(list) = slot.and_then(Value::as_array_mut) {
-            for option in list {
-                f(option)?;
-            }
-        }
-        Ok(())
-    }
-    f(args)?;
-    options(args.get_mut("options"), f)?;
-    if let Some(questions) = args.get_mut("questions").and_then(Value::as_array_mut) {
-        for q in questions {
-            f(q)?;
-            options(q.get_mut("options"), f)?;
-        }
-    }
-    Ok(())
-}
 
 /// A parked `ask_user`'s arguments — files already resolved to the
 /// `(root, path)` pairs `attach_files` wrote — for the wall a person is at, so
@@ -2802,26 +2767,6 @@ pub(crate) fn undescribed_note(n: usize) -> String {
     )
 }
 
-/// Take the impossible characters out of every string in a JSON value, in
-/// place.
-///
-/// Object *keys* are left alone on purpose. On the way in, a key carrying a
-/// control character is a key that matches no field of any schema and is
-/// therefore already inert; on the way out every key in this file is a literal
-/// written here. Rebuilding the map to clean something that cannot be dirty
-/// would cost an allocation on every response for nothing.
-pub(crate) fn scrub_json(v: &mut Value) {
-    match v {
-        Value::String(s) => {
-            if let std::borrow::Cow::Owned(clean) = crate::clean::scrub(s) {
-                *s = clean;
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(scrub_json),
-        Value::Object(map) => map.values_mut().for_each(scrub_json),
-        _ => {}
-    }
-}
 
 /// The one place a body leaves this server, which is why the read-side guard is
 /// here rather than in each of the fifteen `handle` arms above.

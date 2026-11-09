@@ -98,7 +98,11 @@ bun run lab <name>       # a lab wall of your own, up to three at once: identifi
                          # of its folders; `bun run lab list` says what is up. The five
                          # traps it closes are in `.claude/rules/control.md`
 
-cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
+cd src-tauri && cargo test    # both workspace members (`default-members`): the app's suites and
+                              # flyway-core's — the flyway's pure core (seal, sync, session, fleet,
+                              # frame, wire, the vocabularies, clean, clip), a crate of its own so a
+                              # phone can link it; `src/flyway/mod.rs` re-exports it module for module.
+                              # The app's: unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
                               # chronicle.rs, accountsync.rs,
                               # aside.rs,
                               # remove.rs, parcel.rs,

@@ -53,7 +53,8 @@ describe("credits are not an account", () => {
   });
 
   test("no account can be called it — the label rule refuses the @", () => {
-    const rs = readFileSync("src-tauri/src/accounts.rs", "utf8");
+    /* `is_label` lives in the flyway's core crate, which the app re-exports. */
+    const rs = readFileSync("src-tauri/flyway-core/src/accounts.rs", "utf8");
     expect(rs).toContain("c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'");
     expect(CREDITS.startsWith("@")).toBe(true);
   });

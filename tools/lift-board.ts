@@ -43,8 +43,8 @@ import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 const DEPS = depsDir();
 const BOARD = "src-tauri/src/board.rs";
 const STORE = "src-tauri/src/store.rs";
-const CLIP = "src-tauri/src/clip.rs";
-const CLEAN = "src-tauri/src/clean.rs";
+const CLIP = "src-tauri/flyway-core/src/clip.rs";
+const CLEAN = "src-tauri/flyway-core/src/clean.rs";
 
 /** Which file each item is lifted out of, in the order they have to be declared. */
 const ITEMS: [string, string][] = [

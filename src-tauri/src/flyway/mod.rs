@@ -57,24 +57,40 @@
    non-test build does not call is `pub` and therefore not dead to a library
    crate in any case. */
 
-pub mod accounts;
+/* The pure half lives in the flyway's core (`src-tauri/flyway-core`), which a
+   phone links too (`docs/PHONE.md`, M1), and is re-exported here module for
+   module so every `crate::flyway::seal::…` reads as it always did. `act` and
+   `seeing` are the two drawn by dependency rather than by file: each re-exports
+   its core module whole and adds the half that reads this machine (the
+   provider table; the disk). Everything else below is the wiring — it reads
+   the store, emits to the front end, or spawns. */
+pub use flyway_core::{accounts, boards, cards, cast, directory, fleet, frame, look, moving, seal, session, sync, tail, wire};
+
 pub mod act;
-pub mod boards;
-pub mod cast;
-pub mod cards;
-pub mod directory;
-pub mod fleet;
-pub mod frame;
 pub mod here;
 pub mod key;
 pub mod link;
-pub mod look;
-pub mod moving;
 pub mod opening;
 pub mod reach;
-pub mod seal;
 pub mod seeing;
-pub mod session;
-pub mod sync;
-pub mod tail;
-pub mod wire;
+
+/// What this wall says of itself for `Facts::build` and `Facts::dev`: the
+/// app's own version and whether this is a debug build — every lab wall and
+/// `tauri dev`. Here rather than in `fleet`, where it was: since the fleet
+/// moved into the core crate, a package version read there is the core's.
+pub fn this_build() -> (String, bool) {
+    (env!("CARGO_PKG_VERSION").to_string(), cfg!(debug_assertions))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The build a wall announces is the app's, never the core crate's own
+    /// version — which is what it silently became the moment `fleet.rs` moved.
+    #[test]
+    fn a_wall_says_the_apps_build() {
+        let (build, dev) = super::this_build();
+        assert_eq!(build, env!("CARGO_PKG_VERSION"));
+        assert_ne!(build, "0.1.0", "that is flyway-core's version, not Volery's");
+        assert_eq!(dev, cfg!(debug_assertions));
+    }
+}

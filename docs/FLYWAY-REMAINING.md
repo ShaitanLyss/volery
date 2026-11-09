@@ -12,7 +12,9 @@ card.
 
 ## What is built and proven
 
-Everything under `src-tauri/src/flyway/`, bottom to top:
+Everything under `src-tauri/src/flyway/`, bottom to top. (Since 2026-11-09 the pure files —
+`seal`, `sync`, `session`, `fleet`, `frame`, `wire` and the other vocabularies — live in the
+workspace crate `src-tauri/flyway-core/` and are re-exported here under the same paths.)
 
 | file | what it is |
 |---|---|

@@ -5,8 +5,9 @@ while walking, earbuds-only, with audio narration.* Voice in, voice out, mesh co
 a phone app that is itself a node on the flyway.
 
 **Status: M0 answered 2026-11-09 — iroh 1.3.0 cross-compiles, links, and runs on the Pixel 7a
-(see below).** M1 (flyway-core extraction) is in flight on card `589737f7`; M2 (the app + node)
-is next. This file will grow a `.claude/rules/` file when there is code to govern.
+(see below).** M1 landed the same day: the flyway's pure core is the workspace crate
+`src-tauri/flyway-core`, which the desktop re-exports module for module (`src/flyway/mod.rs`)
+and a phone can link with no Tauri in its graph. M2 (the app + node) is next. This file will grow a `.claude/rules/` file when there is code to govern.
 
 ## What this is
 

@@ -8,7 +8,7 @@ paths:
   - "src-tauri/src/signin.rs"
   - "src/lib/signin.ts"
   - "src-tauri/src/accountsync.rs"
-  - "src-tauri/src/flyway/accounts.rs"
+  - "src-tauri/flyway-core/src/accounts.rs"
   - "src-tauri/src/flyway/link/accounting.rs"
   - "src/lib/credits.ts"
   - "src/lib/purse.svelte.ts"

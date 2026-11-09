@@ -1,0 +1,34 @@
+[package]
+name = "flyway-core"
+version = "0.1.0"
+description = "The flyway's pure core: the key, the frames, the vocabularies and the iroh transport, with nothing of the app in it"
+authors = ["moonlyss"]
+edition = "2021"
+publish = false
+
+# Everything here is what two walls say to each other and how it is sealed and
+# carried — and nothing about the wall that says it: no Tauri, no store, no
+# front end. `src-tauri` re-exports it module for module (`crate::flyway::seal`
+# and the rest still resolve), so the desktop is unchanged by its existence; a
+# phone links it to be a node on the flyway too (`docs/PHONE.md`, M1).
+#
+# **Every version and feature below is the one `src-tauri/Cargo.toml` already
+# names, on purpose.** Features unify across a build, so a desktop binary links
+# the union — and as long as this list is a subset of the app's, that union is
+# exactly what it linked before the crate existed. The reasons for each choice
+# (`platform-verifier` on iroh above all) are written once, in the app's
+# manifest, rather than restated here where they could drift.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = { version = "0.4", features = ["std"] }
+ring = { version = "0.17", default-features = false }
+tokio = { version = "1", features = ["time"] }
+iroh = { version = "1.3.0", default-features = false, features = [
+    "platform-verifier",
+    "tls-ring",
+    "portmapper",
+] }
+iroh-dns = { version = "1.3.0", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }

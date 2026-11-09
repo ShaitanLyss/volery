@@ -53,6 +53,12 @@ use super::seeing::SeeMsg;
 use super::session::Msg;
 use super::tail::TailMsg;
 
+/// The target this file logs under: the path it had in the app, so a
+/// `SKEIN_LOG=skein_lib::flyway::frame=debug` written before the core crate existed still
+/// reaches it, and the app log reads exactly as it did. `log!` takes
+/// `module_path!()` by default, which here would be `flyway_core::…`.
+const LOG: &str = "skein_lib::flyway::frame";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Frame {
@@ -116,8 +122,9 @@ pub fn read(plain: &[u8]) -> Result<Read, String> {
 pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
     match read(plain)? {
         Read::Frame(f) => into.push(*f),
-        Read::Unknown(tag) => log::debug!("flyway: passed over a `{tag}` frame this build has no word for"),
+        Read::Unknown(tag) => log::debug!(target: LOG, "flyway: passed over a `{tag}` frame this build has no word for"),
         Read::Malformed(why) => log::warn!(
+            target: LOG,
             "flyway: passed over a frame this build could not read ({why}) — the other wall is probably \
              a newer build; everything else in the exchange still arrived"
         ),
@@ -139,7 +146,7 @@ const KNOWN: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flyway::fleet::{Announcement, Facts, Heard};
+    use crate::fleet::{Announcement, Facts, Heard};
     use std::collections::BTreeMap;
 
     fn round(f: Frame) -> Frame {
@@ -249,7 +256,7 @@ mod tests {
         let see = Frame::See(SeeMsg::See {
             id: "r".into(),
             card: "c".into(),
-            ask: crate::flyway::seeing::Sight::Picture { call: None, n: 0, kept: None, path: Some("a.png".into()), measure: false, have: None },
+            ask: crate::seeing::Sight::Picture { call: None, n: 0, kept: None, path: Some("a.png".into()), measure: false, have: None },
         });
         assert_eq!(round(see.clone()), see);
         let bytes = serde_json::to_vec(&see).unwrap();
@@ -324,7 +331,7 @@ mod tests {
         written.push(
             serde_json::to_value(FleetMsg::Leaving { host: String::new() }).unwrap()["msg"].as_str().unwrap().to_string(),
         );
-        written.extend(crate::flyway::moving::TAGS.map(str::to_string));
+        written.extend(crate::moving::TAGS.map(str::to_string));
         for m in [
             LookMsg::Look { id: String::new(), card: String::new(), ask: String::new(), want: vec![] },
             LookMsg::Looked { id: String::new(), args: None, files: vec![], parts: vec![], why: None },
@@ -333,14 +340,14 @@ mod tests {
         }
         for m in [
             ActMsg::Act { id: String::new(), card: String::new(), verb: String::new(), args: Value::Null, from_card: None },
-            crate::flyway::act::acted("", Ok(None)),
+            crate::act::acted("", Ok(None)),
         ] {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
         }
-        written.extend(crate::flyway::boards::TAGS.map(str::to_string));
-        written.extend(crate::flyway::accounts::TAGS.map(str::to_string));
+        written.extend(crate::boards::TAGS.map(str::to_string));
+        written.extend(crate::accounts::TAGS.map(str::to_string));
         for m in [
-            SeeMsg::See { id: String::new(), card: String::new(), ask: crate::flyway::seeing::Sight::Stat { paths: vec![] } },
+            SeeMsg::See { id: String::new(), card: String::new(), ask: crate::seeing::Sight::Stat { paths: vec![] } },
             SeeMsg::Seen { id: String::new(), why: None, stats: None, names: None, picture: None, part: None },
         ] {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());

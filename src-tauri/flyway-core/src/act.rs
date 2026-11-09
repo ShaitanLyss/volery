@@ -178,7 +178,13 @@ pub fn fit_text(s: &str, most: usize) -> String {
 ///   turn since, while still letting a turn going wrong be abandoned, which is
 ///   what a local clear allows.
 /// - the rest take nothing.
-pub fn read_args(verb: &str, args: &Value) -> Result<Value, String> {
+///
+/// `is_service` says whether a name is a service this wall can run a card on
+/// (the app's provider table, `provider::named`). It is an argument because
+/// that table is the app's and knows credentials and endpoints this crate has
+/// no business with; `src-tauri`'s `flyway::act::read_args` passes it, and a
+/// phone, which never answers an act, need not have one.
+pub fn read_args_with(verb: &str, args: &Value, is_service: &dyn Fn(&str) -> bool) -> Result<Value, String> {
     let get = |k: &str| args.as_object().and_then(|m| m.get(k));
     let flag = |k: &str| match get(k) {
         Some(Value::Bool(b)) => Ok(*b),
@@ -203,7 +209,7 @@ pub fn read_args(verb: &str, args: &Value) -> Result<Value, String> {
             if p.is_empty() {
                 return Err("no service was named".into());
             }
-            if p != "claude" && crate::provider::named(&p).is_none() {
+            if p != "claude" && !is_service(&p) {
                 return Err(format!("there is no service called {p}"));
             }
             out.insert("provider".into(), Value::String(p));
@@ -274,6 +280,11 @@ pub fn answer_in<'a>(frames: impl IntoIterator<Item = &'a ActMsg>, id: &str, hos
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `src-tauri` calls, with a wall that runs no other service.
+    fn read_args(verb: &str, args: &Value) -> Result<Value, String> {
+        read_args_with(verb, args, &|_| false)
+    }
     use serde_json::json;
 
     /// The gate is per cost, never per verb: a work verb is held to the switch,

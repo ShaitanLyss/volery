@@ -21,7 +21,7 @@
  * one, and the two things in the crate the file reaches, each lifted verbatim
  * rather than restated: `crate::clean::scrub` out of `clean.rs`, so a change to
  * what counts as impossible is a change to what this runs, and
- * `crate::cast::Monitor` out of `cast/mod.rs`, which `Facts::screens` carries
+ * `crate::screen::Monitor` out of the core's `screen/mod.rs`, which `Facts::screens` carries
  * (a wall's monitors, announced while it takes work — `docs/SCREENS.md`).
  */
 
@@ -31,11 +31,14 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
 
-const FLEET = "src-tauri/src/flyway/fleet.rs";
-const CLEAN = "src-tauri/src/clean.rs";
-const CAST = "src-tauri/src/cast/mod.rs";
-const PARCEL = "src-tauri/src/parcel.rs";
-const WIRE = "src-tauri/src/flyway/wire.rs";
+/* Every one of these is the flyway's core crate's since 2026-11-09 (`docs/PHONE.md`,
+   M1), where `fleet.rs` reaches them as `crate::clean`, `crate::screen`,
+   `crate::parcel` and `crate::wire`; the app re-exports each under its old path. */
+const FLEET = "src-tauri/flyway-core/src/fleet.rs";
+const CLEAN = "src-tauri/flyway-core/src/clean.rs";
+const CAST = "src-tauri/flyway-core/src/screen/mod.rs";
+const PARCEL = "src-tauri/flyway-core/src/parcel.rs";
+const WIRE = "src-tauri/flyway-core/src/wire.rs";
 const DEPS = depsDir();
 const HOST = "src-tauri/target/debug/deps";
 
@@ -88,15 +91,15 @@ const lift = [
   "mod clean {",
   scrub,
   "}",
-  "mod cast {",
+  "mod screen {",
   monitor,
   "}",
   "mod parcel {",
   parcel,
   "}",
-  "mod flyway { pub mod wire {",
+  "mod wire {",
   wire,
-  "} }",
+  "}",
 ].join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "lift-fleet-"));

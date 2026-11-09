@@ -70,7 +70,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use serde::{Deserialize, Serialize};
 
-use crate::cast::{Input, Want};
+use crate::screen::{Input, Want};
 
 use super::seal::WallKey;
 
@@ -338,17 +338,17 @@ pub fn split(events: &[Input]) -> (Vec<u8>, Vec<u8>) {
     for e in events {
         match e {
             Input::MouseAbs { .. } => {
-                crate::cast::wire::put_input(&mut loose, e);
+                crate::screen::wire::put_input(&mut loose, e);
                 pending_move = Some(*e);
             }
-            Input::MouseRel { .. } | Input::Wheel { .. } => crate::cast::wire::put_input(&mut loose, e),
+            Input::MouseRel { .. } | Input::Wheel { .. } => crate::screen::wire::put_input(&mut loose, e),
             Input::Button { .. } => {
                 if let Some(m) = pending_move.take() {
-                    crate::cast::wire::put_input(&mut sure, &m);
+                    crate::screen::wire::put_input(&mut sure, &m);
                 }
-                crate::cast::wire::put_input(&mut sure, e);
+                crate::screen::wire::put_input(&mut sure, e);
             }
-            Input::Key { .. } | Input::ReleaseAll => crate::cast::wire::put_input(&mut sure, e),
+            Input::Key { .. } | Input::ReleaseAll => crate::screen::wire::put_input(&mut sure, e),
         }
     }
     (sure, loose)
@@ -374,7 +374,7 @@ pub fn may_show(takes_work: bool, me: &str) -> Result<(), String> {
 
 /// What `Facts::screens` says: the monitors, only while the wall takes work. A
 /// wall that would refuse a session does not advertise one.
-pub fn announced_screens(takes_work: bool, monitors: Vec<crate::cast::Monitor>) -> Vec<crate::cast::Monitor> {
+pub fn announced_screens(takes_work: bool, monitors: Vec<crate::screen::Monitor>) -> Vec<crate::screen::Monitor> {
     if takes_work {
         monitors
     } else {
@@ -717,7 +717,7 @@ impl<T> Order<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cast::Button;
+    use crate::screen::Button;
 
     const S: (u16, u16) = (1280, 720);
 
@@ -886,7 +886,7 @@ mod tests {
         ];
         let (sure, loose) = split(&events);
         assert_eq!(
-            crate::cast::wire::read_inputs(&sure),
+            crate::screen::wire::read_inputs(&sure),
             vec![
                 /* The move a press happens at travels with it. */
                 Input::MouseAbs { x: 2, y: 2 },
@@ -899,7 +899,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            crate::cast::wire::read_inputs(&loose),
+            crate::screen::wire::read_inputs(&loose),
             vec![
                 Input::MouseAbs { x: 1, y: 1 },
                 Input::MouseAbs { x: 2, y: 2 },
@@ -918,7 +918,7 @@ mod tests {
         assert!(may_show(true, "AU-LT-285").is_ok());
         let why = may_show(false, "AU-LT-285").unwrap_err();
         assert!(why.contains("AU-LT-285") && why.contains("take work from other walls"));
-        let m = crate::cast::Monitor {
+        let m = crate::screen::Monitor {
             id: "0:0".into(),
             name: "panel".into(),
             w: 2560,

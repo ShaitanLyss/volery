@@ -217,7 +217,7 @@ const body = [
      card may declare it needs, so the real constant comes in a module of that
      path: a copy would keep this lift green on the day the list the schema
      offers and the list the far wall is asked about had drifted apart. */
-  `pub mod flyway {\n    pub mod fleet {\n${lineOf("src-tauri/src/flyway/fleet.rs", /^\s*pub const NEEDS\b/, "const NEEDS")}\n    }\n}`,
+  `pub mod flyway {\n    pub mod fleet {\n${lineOf("src-tauri/flyway-core/src/fleet.rs", /^\s*pub const NEEDS\b/, "const NEEDS")}\n    }\n}`,
   ...ITEMS.map(find),
   "#[cfg(test)]",
   "mod tests {",

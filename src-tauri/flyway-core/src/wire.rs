@@ -76,6 +76,12 @@ use super::directory;
 use super::frame::{self, Frame};
 use super::seal::WallKey;
 
+/// The target this file logs under: the path it had in the app, so a
+/// `SKEIN_LOG=skein_lib::flyway::wire=debug` written before the core crate existed still
+/// reaches it, and the app log reads exactly as it did. `log!` takes
+/// `module_path!()` by default, which here would be `flyway_core::…`.
+const LOG: &str = "skein_lib::flyway::wire";
+
 /// What this protocol is called on the wire. Versioned, so a wall running an
 /// older build is refused at the handshake with something legible rather than
 /// connecting and failing to parse a frame later.
@@ -93,7 +99,7 @@ pub const ALPN_V1: &[u8] = b"volery/flyway/1";
 /// rather than allocated for — the only thing on the other end *should* be
 /// another Volery, and a bound is what makes that "should" cost nothing to be
 /// wrong about.
-pub(crate) const MAX_FRAME: usize = 8 * 1024 * 1024;
+pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 
 /// How long one exchange may take, dial included.
 ///
@@ -271,7 +277,7 @@ impl Wire {
         let answer = match client.get(&url).send().await {
             Ok(a) => a,
             Err(e) => {
-                log::debug!("flyway: could not read the directory: {e}");
+                log::debug!(target: LOG, "flyway: could not read the directory: {e}");
                 return directory::Read::Unreadable;
             }
         };
@@ -279,18 +285,18 @@ impl Wire {
             return directory::Read::Absent;
         }
         if !answer.status().is_success() {
-            log::debug!("flyway: the directory answered {}", answer.status());
+            log::debug!(target: LOG, "flyway: the directory answered {}", answer.status());
             return directory::Read::Unreadable;
         }
         let Ok(body) = answer.bytes().await else { return directory::Read::Unreadable };
         let Ok(packet) = SignedPacket::from_relay_payload(&public, &body) else {
-            log::warn!("flyway: the directory record did not verify — left alone");
+            log::warn!(target: LOG, "flyway: the directory record did not verify — left alone");
             return directory::Read::Unreadable;
         };
         match directory::decode(&self.key, &packet.txt_records(directory::RECORD)) {
             Some(walls) => directory::Read::Found { walls, at_micros: packet.timestamp().as_micros() },
             None => {
-                log::warn!("flyway: the directory record did not open under this key — left alone");
+                log::warn!(target: LOG, "flyway: the directory record did not open under this key — left alone");
                 directory::Read::Unreadable
             }
         }

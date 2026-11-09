@@ -57,6 +57,11 @@ const MB: u64 = 1024 * 1024;
 const LIST_MOST: usize = 40;
 
 /// One file in the parcel.
+/* What crosses between walls in a request — the types a far wall reads —
+   lives in the flyway's core, which a phone links too. Re-exported so every
+   `crate::parcel::Carried` reads as before. */
+pub use flyway_core::parcel::{Carried, Left, Staged, Top};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     /// The file on disk, absolute.
@@ -67,25 +72,7 @@ pub struct Item {
     pub bytes: u64,
 }
 
-/// A top-level entry: one path the sender named.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Top {
-    pub name: String,
-    pub dir: bool,
-    pub files: usize,
-    pub bytes: u64,
-    /// A secret-shaped file named directly, so sent and flagged.
-    pub secret: bool,
-}
 
-/// Something under a named folder that was not sent, and why.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Left {
-    /// Relative to the landing folder, `/`-separated, with a trailing `/` for a
-    /// folder.
-    pub path: String,
-    pub why: String,
-}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Parcel {
@@ -890,35 +877,23 @@ pub(crate) fn flag(app: &AppHandle, caller: &str, to: &str, names: &[String]) {
 const STAGE_BYTES: u64 = 80 * MB;
 const STAGE_FILES: usize = 1_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Staged {
-    /// The id the far wall pulls (`stage-…`).
-    pub id: String,
-    /// Each file's landing name and size, in the order the stage serves them.
-    pub files: Vec<(String, u64)>,
+
+
+/* `Carried` is the flyway's (`flyway_core::parcel`), and the orphan rule
+   keeps an inherent `impl` with the crate that defines the type. These two
+   read this wall's own caps and name rules, so they are a trait here
+   rather than methods there; `crate::parcel::CarriedHere` in scope is all a
+   caller needs for `carried.check()` to read as it always did. */
+pub trait CarriedHere {
+    fn check(&self) -> Result<(), String>;
+    fn parcel(&self) -> Parcel;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Carried {
-    pub stages: Vec<Staged>,
-    pub tops: Vec<Top>,
-    pub left: Vec<Left>,
-    #[serde(default)]
-    pub left_more: usize,
-}
-
-impl Carried {
-    pub fn files(&self) -> usize {
-        self.stages.iter().map(|s| s.files.len()).sum()
-    }
-    pub fn bytes(&self) -> u64 {
-        self.stages.iter().flat_map(|s| &s.files).map(|f| f.1).sum()
-    }
-
+impl CarriedHere for Carried {
     /// Whether what arrived is a parcel this wall will land. The sending wall
     /// checked all of it, and that is a claim: the caps are asked again, and
     /// every name again, here where the files would be written.
-    pub fn check(&self) -> Result<(), String> {
+    fn check(&self) -> Result<(), String> {
         if self.stages.is_empty() || self.stages.len() > 16 {
             return Err("the parcel named no stage, or too many".into());
         }
@@ -946,7 +921,7 @@ impl Carried {
     }
 
     /// The parcel as its manifest reads it.
-    pub fn parcel(&self) -> Parcel {
+    fn parcel(&self) -> Parcel {
         Parcel {
             items: self
                 .stages

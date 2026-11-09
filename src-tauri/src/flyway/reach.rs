@@ -42,6 +42,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use super::fleet::{Act, PromptRequest};
+use crate::parcel::CarriedHere;
 use crate::store::Store;
 
 pub const WALLS_TOOL: &str = "walls";
@@ -534,7 +535,7 @@ pub fn walls_answer(
             row
         })
         .collect();
-    let (here, dev) = super::fleet::this_build();
+    let (here, dev) = super::this_build();
     json!({ "this_wall": me, "this_wall_version": version_said(&here, dev), "walls": walls })
 }
 
