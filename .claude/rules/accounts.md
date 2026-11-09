@@ -1435,7 +1435,7 @@ where neither she nor a card could switch it back on: the only way to write the
 row was the panel on its own machine, and the front end's `Waterfall` cached the
 registry until somebody pressed something.
 
-`flyway/accounts.rs` holds the argument for the merge, `accountsync.rs` is the
+`flyway-core/src/accounts.rs` holds the argument for the merge, `accountsync.rs` is the
 store's half, `flyway/link/accounting.rs` the wiring.
 
 ### Who an account is, learned and never guessed

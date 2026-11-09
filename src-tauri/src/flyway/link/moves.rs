@@ -1,4 +1,4 @@
-//! A move between walls, wired. `flyway/moving.rs` is the design and holds
+//! A move between walls, wired. `flyway-core/src/moving.rs` is the design and holds
 //! every decision that can be made without a socket, a store or a process;
 //! this file is the doing, on both walls, and it is a child of `link.rs` so it
 //! can use the link's own wire and fleet without either of them growing a

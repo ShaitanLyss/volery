@@ -277,7 +277,7 @@ pub async fn list_sessions(app: AppHandle) -> Result<Vec<Session>, String> {
         let wall = wall_facts(&app);
         /* A conversation this wall gave to another one is running over there,
            and a second card on it here would fork it the moment either was
-           spoken to (`flyway/moving.rs`). The file stays on disk — a move
+           spoken to (`flyway-core/src/moving.rs`). The file stays on disk — a move
            never deletes — and is simply not offered. */
         out.retain(|s| !wall.gone.contains(&s.id));
         settle_titles(&mut out, &wall.titles);

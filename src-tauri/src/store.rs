@@ -2854,7 +2854,7 @@ fn migrate_v48(conn: &Connection) -> Result<(), String> {
 }
 
 /// A card moving between walls, on both of them: `direction` is `out` on the
-/// wall it left and `in` on the wall it went to. `flyway/moving.rs` has the
+/// wall it left and `in` on the wall it went to. `flyway-core/src/moving.rs` has the
 /// design; what this table is for is that **a move's state outlives the
 /// process on both ends**, because the one outcome that must be impossible —
 /// a card on neither wall — is exactly what an in-memory move would leave
@@ -3059,7 +3059,7 @@ fn migrate_v55(conn: &Connection) -> Result<(), String> {
 }
 
 /// One account's settings, kept in step across the walls of a flyway
-/// (`accountsync.rs`, `flyway/accounts.rs`, `.claude/rules/accounts.md`).
+/// (`accountsync.rs`, `flyway-core/src/accounts.rs`, `.claude/rules/accounts.md`).
 ///
 /// **Who an account signs in as** is four columns on the row, learned from
 /// `/api/oauth/profile` with that store's own token and never guessed: `claude

@@ -1,7 +1,7 @@
 //! The store's half of one account, every wall: who each account signs in as,
 //! and the stamped registers its settings travel as.
 //!
-//! `flyway/accounts.rs` is the vocabulary and the merge, and holds the whole
+//! `flyway-core/src/accounts.rs` is the vocabulary and the merge, and holds the whole
 //! argument for it — a register per field, last write wins on a hybrid clock, a
 //! value nobody has changed under this build never sent. This file is that merge
 //! against SQLite, and the one way a setting is written: every write to

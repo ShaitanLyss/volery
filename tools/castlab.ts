@@ -7,7 +7,7 @@
  * The host half draws a moving scene (a clock, sweeping bars, a grid fine
  * enough to show scaling) into a canvas, encodes it with WebCodecs'
  * `VideoEncoder` as Annex-B H.264 — the format the Media Foundation encoder
- * hands the hub — and sends exactly the messages `src-tauri/src/cast/wire.rs`
+ * hands the hub — and sends exactly the messages `src-tauri/flyway-core/src/screen/wire.rs`
  * lays out: a `config` text before each new shape, `0x01` video with the 26-byte
  * header, a `0x02` cursor shape and `0x03` positions circling the screen. It
  * obeys the viewer's `want` (size, fps, pause) and `key`, as the hub will.

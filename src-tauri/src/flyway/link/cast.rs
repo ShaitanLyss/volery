@@ -1,5 +1,5 @@
 //! A screen across the flyway, running: the viewer's end and the host's end of
-//! the media connection. `flyway/cast.rs` is the vocabulary and has the design;
+//! the media connection. `flyway-core/src/cast.rs` is the vocabulary and has the design;
 //! `wire.rs` hands this file the connection.
 //!
 //! ### The viewer's end

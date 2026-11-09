@@ -125,7 +125,7 @@ describe("what a row says", () => {
   });
 });
 
-/* The board crosses the flyway (`flyway/boards.rs`): a notice from another
+/* The board crosses the flyway (`flyway-core/src/boards.rs`): a notice from another
    wall arrives in the same read, named by its machine. */
 describe("a notice from another wall", () => {
   const far = (over: Record<string, unknown> = {}) =>

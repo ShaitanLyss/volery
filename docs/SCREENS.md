@@ -88,10 +88,10 @@ laptop while a local self-view is open also sees it without Volery; that is acce
 
 | lane | owns | must not touch |
 |---|---|---|
-| **core** | `src-tauri/src/cast/{mod.rs,gpu.rs,capture.rs,encode.rs,hub.rs,local.rs,monitors.rs,exclude.rs}`, `examples/cast-probe.rs`, the `cast_*` commands in `lib.rs` | `cast/wire.rs` is shared — change it with a note here |
+| **core** | `src-tauri/src/cast/{mod.rs,gpu.rs,capture.rs,encode.rs,hub.rs,local.rs,monitors.rs,exclude.rs}`, `examples/cast-probe.rs`, the `cast_*` commands in `lib.rs` | `flyway-core/src/screen/wire.rs` is shared — change it with a note here |
 | **front** | `src/lib/cast.ts`, `src/lib/cast.worker.ts`, `src/lib/cast.svelte.ts`, `src/lib/Screen.svelte`, `src/lib/ScreenFocus.svelte`, the `screen` spec in `widgets.ts` + its arm in `WidgetNode.svelte`, chat view's screens tab, the leader chord, `test/cast.test.ts` | Rust |
 | **input** | `src-tauri/src/cast/{inject.rs,drive.rs}`, `src/lib/castinput.ts` (+ `test/castinput.test.ts`), `tools/probe-drive.ts` or an example | `Screen.svelte` (hand front a function to call) |
-| **flyway** | `src-tauri/src/flyway/cast.rs` (pure), `src-tauri/src/flyway/link/cast.rs` (wiring), the media connection in `flyway/wire.rs`, `Facts.screens` in `fleet.rs` | `cast/hub.rs` internals — use its API |
+| **flyway** | `src-tauri/flyway-core/src/cast.rs` (pure), `src-tauri/src/flyway/link/cast.rs` (wiring), the media connection in `flyway-core/src/wire.rs`, `Facts.screens` in `fleet.rs` | `cast/hub.rs` internals — use its API |
 
 `src-tauri/Cargo.toml` already carries every `windows` feature the core lane needs (added with
 this file), so no two lanes edit it at once. A lane needing another feature adds it alone and
@@ -149,7 +149,7 @@ to draw as `refused`. Afterwards the `viewer` gets the host hub's `Out`s untouch
 token is per session and the socket refuses anything without it (any local process can dial a
 loopback port). The session lives exactly as long as the socket.
 
-**All binary messages are little-endian.** Byte layouts are `cast/wire.rs`, with its tests; the
+**All binary messages are little-endian.** Byte layouts are `flyway-core/src/screen/wire.rs`, with its tests; the
 front's `cast.ts` must decode the same bytes and `test/cast.test.ts` holds fixtures copied from
 `wire.rs`'s tests.
 
@@ -200,7 +200,7 @@ Viewer → host, **binary**: one or more input events, concatenated:
 ## The flyway media channel (flyway lane)
 
 The flyway today opens a fresh QUIC connection per exchange and carries sealed JSON
-(`flyway/wire.rs`); a held-open connection was deferred until something would pay for it
+(`flyway-core/src/wire.rs`); a held-open connection was deferred until something would pay for it
 (`link.rs:47-52`). A screen does. So: **one long-lived connection per (viewer wall, host wall)
 pair while any screen between them is open**, on its own ALPN `volery/cast/1` (the `answer`
 branch at `wire.rs:249` must learn it), following the link's tenure so leaving closes it.
@@ -221,7 +221,7 @@ branch at `wire.rs:249` must learn it), following the link's tenure so leaving c
   that would refuse a session does not advertise one.
 - the host refuses `subscribe` unless it takes work, read fresh, and shows the mark.
 
-**As built** (`flyway/cast.rs` is the design, `flyway/link/cast.rs` the wiring):
+**As built** (`flyway-core/src/cast.rs` is the design, `flyway/link/cast.rs` the wiring):
 
 - **Sealing**: per connection and per direction, `HKDF(wall key, salt = the connection's TLS
   exporter, info = direction)`, ChaCha20-Poly1305 with a 64-bit counter nonce carried in front of

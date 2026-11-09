@@ -196,7 +196,7 @@ cpal = "0.16"
 # public key rather than by address, with hole-punching and a relay fallback
 # that `iroh` operates. Chosen over writing a relay because there is then
 # nothing to deploy — and because a node's identity *is* a keypair, which is
-# already the flyway's model (`flyway/seal.rs`).
+# already the flyway's model (`flyway-core/src/seal.rs`).
 #
 # **`platform-verifier` is the load-bearing feature and is not a default.**
 # Without it `iroh-relay` verifies with `webpki-roots` — a compiled-in copy of
@@ -225,7 +225,7 @@ iroh = { version = "1.3.0", default-features = false, features = [
 # What a QUIC datagram is handed as (`flyway/link/cast.rs`, a screen's
 # pointer and cursor); already in the tree under iroh.
 bytes = "1"
-# The flyway's directory record (`flyway/directory.rs`): `SignedPacket` builds
+# The flyway's directory record (`flyway-core/src/directory.rs`): `SignedPacket` builds
 # and verifies a pkarr record, and reqwest is the client iroh itself publishes
 # with, handed iroh's own TLS config so it trusts what the endpoint trusts —
 # an office's intercepting gateway included. Both already in the tree under

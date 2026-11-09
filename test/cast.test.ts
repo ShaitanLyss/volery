@@ -41,7 +41,7 @@ import {
   type Seen,
 } from "../src/lib/cast";
 
-/* These byte strings are `src-tauri/src/cast/wire.rs`'s test fixtures, copied
+/* These byte strings are `src-tauri/flyway-core/src/screen/wire.rs`'s test fixtures, copied
    byte for byte. Change one there and this copy changes with it, in the same
    commit — that is the whole of what keeps the two halves of the wire from
    drifting. */

@@ -83,7 +83,7 @@ agents must remember to consult and one that reaches the agent who needed it.
   billboard". It draws a strand from the poster's card when there still is one — it is the same
   event on the wall, something leaving one card and arriving at another.
 
-### Across the flyway (`flyway/boards.rs`, `link/billboard.rs`)
+### Across the flyway (`flyway-core/src/boards.rs`, `link/billboard.rs`)
 
 For its first life the board was one wall's, on an argument `sink.md` made at length: a notice
 is about *now*, in one working tree, held by live processes, and two walls do not share a tree

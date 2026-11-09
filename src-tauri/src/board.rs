@@ -40,7 +40,7 @@
 //! card that touches a file it covers, once — see `on_touch`, which is the only
 //! part of this that does not wait to be asked.
 //!
-//! **And the board crosses the flyway** (`flyway/boards.rs` has the argument).
+//! **And the board crosses the flyway** (`flyway-core/src/boards.rs` has the argument).
 //! Every wall says its whole board to the walls it flies with, and each reads
 //! the others' notices beside its own, named by their machine. The wall a notice
 //! lives on stays the authority: every clearing above runs there and reaches the
@@ -361,7 +361,7 @@ fn seen_of(seen: &HashMap<String, i64>, n: &Notice) -> Option<i64> {
 
 /* ── notices from other walls ──────────────────────────────────────────────
  *
- * Held by the link as its home wall last said them (`flyway/boards.rs`), with
+ * Held by the link as its home wall last said them (`flyway-core/src/boards.rs`), with
  * their ages advanced on this wall's clock. Nothing here writes one: every
  * clearing runs on the wall the notice lives on, and what is decided here is
  * only whether a copy is still worth showing and how it reads.

@@ -74,7 +74,7 @@ why `on_touch` still serves only on its own wall. It never held for a notice tha
 workers on another, so the exclusion was overturned on 2026-10-14 (`board.md`, *Across the
 flyway*). What survives of the argument is the *shape*: a notice has exactly one writer and
 nothing to converge, so it crosses as a picture its home wall replaces whole; an item is written
-by many walls and must converge, so it crosses as events (`flyway/sync.rs`).
+by many walls and must converge, so it crosses as events (`flyway-core/src/sync.rs`).
 
 **`from_id` is provenance and nothing more.** No foreign key, no cascade, no sweep. The card
 that found a thing going away says nothing at all about whether the thing is still true, and

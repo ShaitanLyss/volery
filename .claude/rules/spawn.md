@@ -501,7 +501,7 @@ So `spawn.rs` checks the guards, mints the id, records the parentage and emits; 
 gained one optional argument and `Skein.openSpawned` is the door.
 
 **A card that moves here from another wall is born the same way, and is not an exception to
-it** (`flyway/moving.rs`, `elsewhere.md`). Rust decides and writes down — the row through
+it** (`flyway-core/src/moving.rs`, `elsewhere.md`). Rust decides and writes down — the row through
 `store::arrive_row` (an upsert, since a card coming back has a closed row here that `record_row`'s
 `OR IGNORE` would leave closed), the transcript planted where this machine's CLI looks, the
 lineage — and emits `flyway:move-in`; `Skein.openMoved` opens it through `#openIn` and hands it

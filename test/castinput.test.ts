@@ -16,7 +16,7 @@ import {
 const bytes = (u: Uint8Array | null) => (u ? [...u] : null);
 const fit = { x: 100, y: 50, w: 800, h: 450 };
 
-/* Copied from `src-tauri/src/cast/wire.rs`'s
+/* Copied from `src-tauri/flyway-core/src/screen/wire.rs`'s
    `input_events_round_trip_concatenated`. Change one there and this changes
    with it, in the same commit. */
 describe("the bytes are wire.rs's", () => {

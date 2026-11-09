@@ -4,7 +4,7 @@
  *   bun tools/cast-relay.ts [port]        # default 14399
  *
  * Two kinds of client: `/host` — `tools/castlab.ts`'s encoder, which produces
- * the same wire messages `src-tauri/src/cast/wire.rs` does — and `/view`, the
+ * the same wire messages `src-tauri/flyway-core/src/screen/wire.rs` does — and `/view`, the
  * real `cast.worker.ts`. Everything one says is forwarded to the other,
  * untouched, binary and text alike, so the worker meets exactly the bytes the
  * contract promises and the encoder hears exactly the wants and key requests

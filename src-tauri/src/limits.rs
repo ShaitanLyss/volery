@@ -767,7 +767,7 @@ pub async fn read_allowances(
 /* ── a reading another wall took ───────────────────────────────────────────
  *
  * An account's allowance is the account's, whichever machine asked, so a wall
- * flying with others is told their readings (`flyway/accounts.rs`, by identity,
+ * flying with others is told their readings (`flyway-core/src/accounts.rs`, by identity,
  * with an age rather than a clock time) and uses one wherever it is fresher than
  * its own — or wherever it has none, which is the case worth the feature: a wall
  * that has not polled an account, or whose sign-in for it has expired, still
@@ -985,7 +985,7 @@ fn report_with(app: &AppHandle, state: &Limits, label: &str) -> Result<Report, S
 /* ── who an account signs in as ────────────────────────────────────────────
  *
  * The one fact the flyway matches an account on across machines
- * (`flyway/accounts.rs`). Labels are local — what *this* machine calls a
+ * (`flyway-core/src/accounts.rs`). Labels are local — what *this* machine calls a
  * subscription — so two walls can only agree that `lyss` here is `work` there by
  * asking the account itself.
  *

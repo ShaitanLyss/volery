@@ -728,7 +728,7 @@ describe("files", () => {
   });
 
   test("a file that did not cross from another wall is kept, with why and no root", () => {
-    /* `flyway/look.rs` writes `{ path, fault }` into a slot whose file could
+    /* `flyway-core/src/look.rs` writes `{ path, fault }` into a slot whose file could
        not be carried; dropped, the picture would vanish without a word. The
        gallery draws the fault on the panel it would have filled. */
     const out = normalizeAsk({

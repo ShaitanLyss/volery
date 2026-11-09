@@ -1,4 +1,4 @@
-//! The link's half of the flyway's directory (`flyway/directory.rs`): reading
+//! The link's half of the flyway's directory (`flyway-core/src/directory.rs`): reading
 //! it on a clock of its own, adding this wall, and taking a name out when this
 //! wall leaves or a person forgets one.
 //!

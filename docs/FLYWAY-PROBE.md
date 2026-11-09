@@ -80,7 +80,7 @@ The decision it unblocks:
 ## The one thing that does not change either way
 
 Whatever the transport turns out to be, **the frames are sealed before they
-reach it** — `src-tauri/src/flyway/seal.rs`, and everything above it assumes
+reach it** — `src-tauri/flyway-core/src/seal.rs`, and everything above it assumes
 the pipe is hostile. So this probe decides performance and deployment, not
 security, and a wrong guess here costs a rewrite of one module rather than a
 rethink.

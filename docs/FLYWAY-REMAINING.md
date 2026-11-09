@@ -279,7 +279,7 @@ wall answers v1 only, so against one, all that crosses is the sink.
 ### 4. Moving a card between hosts — built (card 6fa1e4b6, 2026-10-09)
 
 The card menu's **move it to another machine ▸**, and the control surface's
-`move`. `flyway/moving.rs` is the design and the pure half, `flyway/link/moves.rs`
+`move`. `flyway-core/src/moving.rs` is the design and the pure half, `flyway/link/moves.rs`
 the wiring; `.claude/rules/elsewhere.md`, *A card moving to another wall*, has the
 reasoning. In one paragraph: quiesce on A (the card is frozen from the moment
 the move is written down) → offer the rows, then ship the transcript in parts

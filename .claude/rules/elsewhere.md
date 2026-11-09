@@ -558,7 +558,7 @@ So nothing crosses as a *rendering*. **The call crosses** — `ask.rs` still hol
 `ask_user`'s arguments, every file already resolved to the `(root, path)` pair the viewer reads —
 and the far wall draws it through **the same `normalizeAsk`, `Ask.svelte`, `Gallery.svelte` and
 `Leaf.svelte`** a local question goes through. What is remote-specific is the transport
-(`flyway/look.rs`, two arms in `link.rs`) and twenty lines in `Elsewhere.#look`; nothing in the
+(`flyway-core/src/look.rs`, two arms in `link.rs`) and twenty lines in `Elsewhere.#look`; nothing in the
 drawing knows the question came from elsewhere, so there is no second path for a shadow-only bug
 to live on.
 
@@ -655,7 +655,7 @@ only a card elsewhere says (where it runs, in the footer beside its model; the n
 column; when to read again) is three optional fields of `Readable` (`elsewhere`, `notes`,
 `historyMark`) the shadow answers and a card here does not.
 
-- **One exchange, answered on the same stream** (`flyway/tail.rs`). Every other request
+- **One exchange, answered on the same stream** (`flyway-core/src/tail.rs`). Every other request
   between walls is answered by the far wall dialling *back* with a fleet `answer`, which is
   kept and re-said every tick (`Fleet::open`) — right for an act, ruinous for a reading: a
   400k tail re-said to every peer every thirty seconds is the transcript gossiped after all.
@@ -879,7 +879,7 @@ Two things on this wall are called notices and only one of them is *Notices trav
 that is the queue a card's finished turn or question raises for a person. The **billboard** —
 `board`, `post`, `unpost`, standing coordination between cards — crosses as well since
 2026-10-14, by a different shape and for a different reader: each wall says its whole board on
-every exchange (`flyway/boards.rs`, a `board` frame beside the cards snapshot, in Rust because the
+every exchange (`flyway-core/src/boards.rs`, a `board` frame beside the cards snapshot, in Rust because the
 board is Rust's), every other wall reads it beside its own named by machine, and a notice is
 taken down from another wall by asking the wall it lives on. `board.md`, *Across the flyway*, is
 the design: why the home wall stays the authority, why a notice that names files is read on
@@ -1172,7 +1172,7 @@ not the drawing, and it is the same thing a local root does passing under a neig
 The other direction of the flyway: not opening work over there, but a card that is already
 running here — with hours of conversation behind it — picking up on another machine. The card
 menu's `move it to another machine ▸`, offered only for a wall heard from lately, taking work,
-and holding this card's territory. `flyway/moving.rs` is the design and the pure half;
+and holding this card's territory. `flyway-core/src/moving.rs` is the design and the pure half;
 `flyway/link/moves.rs` is the wiring, a child of `link.rs` so it can use the wire and the
 fleet without either growing a public face for one subsystem.
 
@@ -1678,7 +1678,7 @@ Lyss asked the follow-up the same day: *"is there a fix like a shared name where
 need to know their names anymore?"* Kept names still need the walls to have met. A wall that has
 never been up at the same time as anyone now online has nobody to call.
 
-`flyway/directory.rs` is one more pkarr record on the relay every wall already publishes its own
+`flyway-core/src/directory.rs` is one more pkarr record on the relay every wall already publishes its own
 address to (`dns.iroh.link`), signed by a key every member derives from the flyway key (so only
 members can write it) and holding the list of names **sealed** with the flyway key (so the relay
 reads ciphertext, never a name). Each wall reads it on a loop of its own (`link/listing.rs`, five
@@ -1718,7 +1718,7 @@ sent, matched across walls by who the account signs in as rather than by its lab
 (`accounts`) rides every exchange and a push a second after a change, only to a wall announcing
 `accounts` in `Facts::can`, and carries the readings each wall took itself, by age, so a wall
 that has not polled an account still knows it is at 90%. `accounts.md`, *One account, every
-wall*, is the design; `flyway/accounts.rs`, `accountsync.rs` and `link/accounting.rs` are the
+wall*, is the design; `flyway-core/src/accounts.rs`, `accountsync.rs` and `link/accounting.rs` are the
 code.
 
 **What a token never does is cross.** The one credential-derived thing in the frame is a salted,

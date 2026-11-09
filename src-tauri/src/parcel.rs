@@ -56,12 +56,12 @@ const MB: u64 = 1024 * 1024;
 /// rest of its session, and a listing of four thousand ignored files is noise.
 const LIST_MOST: usize = 40;
 
-/// One file in the parcel.
 /* What crosses between walls in a request — the types a far wall reads —
    lives in the flyway's core, which a phone links too. Re-exported so every
    `crate::parcel::Carried` reads as before. */
 pub use flyway_core::parcel::{Carried, Left, Staged, Top};
 
+/// One file in the parcel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     /// The file on disk, absolute.
@@ -71,8 +71,6 @@ pub struct Item {
     pub rel: String,
     pub bytes: u64,
 }
-
-
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Parcel {
@@ -863,7 +861,7 @@ pub(crate) fn flag(app: &AppHandle, caller: &str, to: &str, names: &[String]) {
  * A parcel for a card on another wall is not copied there by this wall: it is
  * *staged* here (`attachments::stage_out`, the hold a person's prompt files
  * already use) and the receiving wall pulls each stage through the parts
- * transfer a question's files take (`flyway/look.rs`), then lands it, then hands
+ * transfer a question's files take (`flyway-core/src/look.rs`), then lands it, then hands
  * its card the turn. The sender's call waits for that landing.
  *
  * Stages rather than one, because one pull is bounded by `look::ASK_MOST` and a
@@ -876,8 +874,6 @@ pub(crate) fn flag(app: &AppHandle, caller: &str, to: &str, names: &[String]) {
 /// One stage's worth: a pull of its own on the far wall.
 const STAGE_BYTES: u64 = 80 * MB;
 const STAGE_FILES: usize = 1_000;
-
-
 
 /* `Carried` is the flyway's (`flyway_core::parcel`), and the orphan rule
    keeps an inherent `impl` with the crate that defines the type. These two

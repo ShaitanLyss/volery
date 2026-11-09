@@ -208,7 +208,7 @@ impl WallKey {
     /// key, `salt` naming the occasion and `info` the purpose.
     ///
     /// For a channel that seals too often to pay `seal`'s price per message —
-    /// a screen's frames (`flyway/cast.rs`), which want a key built once and a
+    /// a screen's frames (`flyway-core/src/cast.rs`), which want a key built once and a
     /// counter for a nonce. A counter is only safe under a key nothing else
     /// counts under, so the occasion must be unique (a connection's own TLS
     /// exporter) and each direction a purpose of its own.

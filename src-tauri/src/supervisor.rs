@@ -1201,7 +1201,7 @@ fn spawn_now(
        on the one it is arriving at until it has shown it has its history —
        asked here because every wake reaches this line, and a card the move
        forgot about is a second process on a session now living elsewhere
-       (`flyway/moving.rs`). */
+       (`flyway-core/src/moving.rs`). */
     if let Some(why) = crate::flyway::link::move_blocks(app, &id) {
         return Err(why);
     }
@@ -2190,7 +2190,7 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
         crate::spawn::settling(app, id, replied_to.as_deref());
         /* And a card that has just moved here answers its check in a turn
            like any other, so whether it held its history is read off the end
-           of that turn — `flyway/moving.rs`. */
+           of that turn — `flyway-core/src/moving.rs`. */
         crate::flyway::link::move_turn_closed(app, id);
         /* And what a card subscribed to and was held while it worked goes
            now, as one turn — `subscribe::engine` never interrupts one. */

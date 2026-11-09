@@ -160,7 +160,7 @@ pub fn afar(answers: Option<&str>) -> Option<&str> {
 /// A filed question's arguments, for the wall a person is at — the pile's
 /// half of `ask::args_for_afar`, so a question filed while she was away
 /// brings its design and its files to the other wall exactly as a parked one
-/// does (`flyway/look.rs`). The files were resolved to `(root, path)` pairs
+/// does (`flyway-core/src/look.rs`). The files were resolved to `(root, path)` pairs
 /// before the question was filed (`attach_files` runs ahead of the away
 /// branch), so what is stored is what the look reads.
 pub(crate) fn filed_args(app: &AppHandle, card: &str, id: &str) -> Option<Value> {

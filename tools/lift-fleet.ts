@@ -1,7 +1,7 @@
 /* Actually run the fleet's assertions on a machine with no MSVC.
  *
  * `cargo test` does not exist here — `.claude/rules/build.md` has the whole of
- * why. So `bash tools/check-gnu.sh --tests` *typechecks* `flyway/fleet.rs`'s
+ * why. So `bash tools/check-gnu.sh --tests` *typechecks* `flyway-core/src/fleet.rs`'s
  * assertions and cannot execute one of them.
  *
  *     bun tools/lift-fleet.ts

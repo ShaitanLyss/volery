@@ -226,7 +226,7 @@ pub struct Link {
     board_due: AtomicBool,
     /// Readings other walls took of the accounts, by identity, and whether a
     /// push of this wall's account picture is already due
-    /// (`flyway/accounts.rs`, `link/accounting.rs`).
+    /// (`flyway-core/src/accounts.rs`, `link/accounting.rs`).
     afar_accounts: StdMutex<accounting::Afar>,
     accounts_due: AtomicBool,
     /// Closed by `shutdown` when this wall leaves, and read by every task this

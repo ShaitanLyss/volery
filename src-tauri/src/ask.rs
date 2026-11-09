@@ -1086,7 +1086,7 @@ fn attach_files(app: &AppHandle, caller: &str, mut args: Value) -> Result<Value,
 /// A parked `ask_user`'s arguments — files already resolved to the
 /// `(root, path)` pairs `attach_files` wrote — for the wall a person is at, so
 /// it can draw the question through the same `normalizeAsk` a question asked
-/// here goes through (`flyway/look.rs`).
+/// here goes through (`flyway-core/src/look.rs`).
 ///
 /// Only an agent's question: Volery's own carry their evidence in a field of
 /// their own and are drawn from that alone (`afar.ts`), and the gate is the one
@@ -1610,7 +1610,7 @@ pub(crate) fn confirm_travels(question: &Value) -> bool {
 /// `unpost`'s question on its own wall while the billboard was one wall's — a
 /// notice answered from a wall whose own board could not show it would have
 /// been a decision about a thing the person could not see. The board crosses
-/// the flyway now (`flyway/boards.rs`), so that question is a `Settle::new` with
+/// the flyway now (`flyway-core/src/boards.rs`), so that question is a `Settle::new` with
 /// `board::retire_confirm`'s evidence, and there was nothing left to hold. The
 /// enum stays, empty, so the next exclusion has somewhere to write its argument.
 pub(crate) enum Stay {}

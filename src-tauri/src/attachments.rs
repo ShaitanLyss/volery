@@ -407,7 +407,7 @@ pub fn claim(wall: &Path, card: &str, paths: &[String]) -> Result<Vec<String>, S
  * The bytes cross and are written on the wall that owns the card, so the far
  * agent is handed a path on its own machine. Not in the prompt's frame — that
  * is `Pictured`, 7 MB for everything — but pulled by the owning wall in parts
- * (`flyway/look.rs`, proven to 24 MB a file for a question's files), from a
+ * (`flyway-core/src/look.rs`, proven to 24 MB a file for a question's files), from a
  * stage this wall holds: `stage_outbound` registers the files under an id the
  * prompt names (`attach.ts::manifestEntry`), the owning wall asks for that id
  * the way it would ask for a question (`Link::look_here`), and writes what it

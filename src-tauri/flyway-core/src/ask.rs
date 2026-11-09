@@ -57,9 +57,10 @@ pub fn each_site<E>(args: &mut Value, f: &mut dyn FnMut(&mut Value) -> Result<()
 ///
 /// Object *keys* are left alone on purpose. On the way in, a key carrying a
 /// control character is a key that matches no field of any schema and is
-/// therefore already inert; on the way out every key in this file is a literal
-/// written here. Rebuilding the map to clean something that cannot be dirty
-/// would cost an allocation on every response for nothing.
+/// therefore already inert; on the way out every key is a literal written in
+/// `src-tauri/src/ask.rs`, which builds the responses. Rebuilding the map to
+/// clean something that cannot be dirty would cost an allocation on every
+/// response for nothing.
 pub fn scrub_json(v: &mut Value) {
     match v {
         Value::String(s) => {

@@ -1,7 +1,7 @@
 //! The accounts' half of the link: saying this wall's account picture, taking
 //! another's, and holding the readings other walls took.
 //!
-//! `flyway/accounts.rs` is the vocabulary and the merge and holds the argument;
+//! `flyway-core/src/accounts.rs` is the vocabulary and the merge and holds the argument;
 //! `accountsync.rs` is the store's half. This is only the wiring, a child of
 //! `link.rs` for `billboard.rs`'s reason — it uses the wire and the fleet
 //! without either growing a public face for one subsystem. (Named `accounting`
