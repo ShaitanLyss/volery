@@ -54,7 +54,10 @@ android {
 }
 
 dependencies {
-    // Deliberately none: classic Views, one foreground service, `org.json`, and
-    // the Kotlin stdlib — no androidx, no coroutines, so the build downloads
-    // nothing beyond AGP, Kotlin and the SDK.
+    // The platform verifier's Android half — a Java certificate verifier the
+    // Rust side (`init_with_env`) calls through JNI to check the relay's TLS
+    // chain. The version must track the `rustls-platform-verifier-android`
+    // crate in `../ffi/Cargo.lock` (0.2.0 today); the crate README's "Gradle
+    // setup" shows the dynamic Cargo-synced variant if this ever drifts.
+    implementation("org.rustls:rustls-platform-verifier:0.2.0")
 }
