@@ -15,6 +15,7 @@
     LEAVE_MS,
     Z_CARD,
     Z_CHIP,
+    Z_TOP,
     clamp,
     colsOf,
     colsForWidth,
@@ -726,6 +727,11 @@
    * has no spot of its own. Both are answered here and nowhere else, so the
    * rest of the wall — the band, the carry, the clamp — meets a plate as an
    * ordinary widget at an ordinary position. */
+
+  /** The card whose step's card is open. Every card is drawn at `Z_CARD`, and
+   *  an overhanging box inside one is covered by the next one along — so the
+   *  node is lifted the way a plate's is (`WidgetNode`'s `reading`). */
+  let readingCard = $state<string | null>(null);
 
   /** What each plate measured itself at, by widget id. */
   let plateBox = $state<Record<string, { w: number; h: number }>>({});
@@ -2969,6 +2975,8 @@
     }}
     onclose={() => onclose(n.conv.id)}
     onplan={(path) => onplan(n.conv, path)}
+    {timelines}
+    onreading={(open) => (readingCard = open ? n.conv.id : null)}
   />
 {/snippet}
 
@@ -3090,7 +3098,7 @@
           data-conv={n.conv.id}
           style:left="{n.x}px"
           style:top="{n.y}px"
-          style:z-index={Z_CARD}
+          style:z-index={readingCard === n.conv.id ? Z_TOP : Z_CARD}
           onclickcapture={nodeClickCapture}
           role="presentation"
           animate:walk={{ scale: studio.scale, id: n.conv.id, cwd: n.conv.cwd }}
@@ -3218,7 +3226,7 @@
       data-conv={n.conv.id}
       style:left="{n.x}px"
       style:top="{n.y}px"
-      style:z-index={Z_CARD}
+      style:z-index={readingCard === n.conv.id ? Z_TOP : Z_CARD}
       onclickcapture={nodeClickCapture}
       role="presentation"
       animate:walk={{ scale: 1, id: n.conv.id, cwd: n.conv.cwd }}

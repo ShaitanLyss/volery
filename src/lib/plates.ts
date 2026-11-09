@@ -232,10 +232,6 @@ export function turnOf(
   return order[(((from + step) % order.length) + order.length) % order.length];
 }
 
-/** How many dots the row draws before the count is said in words instead: a
- *  strip of twenty dots is a texture, not a number. */
-export const PAGER_DOTS = 8;
-
 /** How wide a row in the stack is drawn, whatever width the plate itself
  *  carries. The row is three readings — which plan, which step it is on, and
  *  how far — and at the 400 a compact plate is given the last two truncate to
@@ -246,8 +242,13 @@ export const ROW_W = 520;
 
 /** What the switch is called wherever it is offered. Written as what it makes
  *  true rather than as a noun with a partner word, `REAWAKEN_LABEL`'s
- *  register: the menu dots it, so the label only has to describe the on. */
-export const PLANS_LABEL = "plans appear on the wall by themselves";
+ *  register: the menu dots it, so the label only has to describe the on.
+ *
+ *  Since 2026-11-09 a plan is drawn **on its card** — that is not this switch.
+ *  This is the opt-in of a second reading: a plan standing on the wall by
+ *  itself, one at a time, which is a thing you may want beside the cards and
+ *  never the thing that happens by default. */
+export const PLANS_LABEL = "plans also stand on the wall, one at a time";
 
 /** What the flip says back (`<space> l p`), since with nothing on the wall at
  *  the moment of the flip the change can be invisible — `reawakenSaid`'s
@@ -255,8 +256,8 @@ export const PLANS_LABEL = "plans appear on the wall by themselves";
  *  switch that hides something owes you the way back. */
 export function plansSaid(on: boolean): string {
   return on
-    ? "plans appear on the wall by themselves, as cards draw them"
-    : "plans stay off the wall — put one up with space then l g on its card";
+    ? "plans also stand on the wall — the wheel turns to the next"
+    : "plans stay on their cards, where a card draws the step it is on";
 }
 
 /** Where each plate in the stack is drawn: a column centred on the home

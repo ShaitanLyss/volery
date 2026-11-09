@@ -78,6 +78,9 @@
   import { glance } from "./glancing.svelte";
   import { hasSaid } from "./glance";
   import { fullTitle } from "./tipped.svelte";
+  import { current, roman } from "./timeline";
+  import StepCard from "./StepCard.svelte";
+  import type { Timelines } from "./timelines.svelte";
 
   import type { Lod } from "./studio.svelte";
 
@@ -93,6 +96,8 @@
     onfocus,
     onclose,
     onplan,
+    timelines,
+    onreading,
   }: {
     conv: CardFace;
     focused?: boolean;
@@ -117,6 +122,16 @@
     /** Open the plan this card has written. Absent where there is nowhere to
      *  open it — the peek window draws cards too and has no file viewer. */
     onplan?: (path: string) => void;
+    /** The plans cards have drawn. A plan lives *on its card* (Lyss,
+     *  2026-11-09): one quiet line under the activity, opening the step's card
+     *  on hover. Optional because the peek window draws cards with no wall
+     *  behind them, and a capability with no honest default defaults to off —
+     *  there the line is simply not drawn. */
+    timelines?: Timelines;
+    /** A step's card is open, so this card must ride over its neighbours —
+     *  every card is drawn at the same z, so an overhanging box inside one is
+     *  covered by the next one along. */
+    onreading?: (open: boolean) => void;
   } = $props();
 
   /** The quiet mark on a coordinator worth renewing, as its hover text. */
@@ -137,6 +152,50 @@
    *  Provisional either way, and drawn quieter for it: the wall stays legible
    *  at a glance as cards that have earned a name and cards that have not. */
   const name = $derived(cardName(conv.title, draft));
+
+  /* ── the plan a card is on ──────────────────────────────────────────────
+   *
+   * A card draws its plan as one line under its activity (Lyss, 2026-11-09): the
+   * plan lives *on the card* rather than as a plate standing on the wall, and
+   * the full frise is what a plan you keep is for. What the line carries is the
+   * step the work is on and which of how many — the click that finds a write is
+   * in the card it opens on hover, like the frise's.
+   */
+  const plan = $derived(timelines?.planFor(conv.id) ?? null);
+  const planAt = $derived(plan ? current(plan.plan) : -1);
+  const planWhich = $derived(
+    plan && planAt >= 0 ? `${roman(planAt + 1)} of ${roman(plan.plan.steps.length)}` : "",
+  );
+  const planNow = $derived(
+    !plan
+      ? ""
+      : plan.state === "left"
+        ? planAt === -1
+          ? "left with every step done"
+          : `left at ${roman(planAt + 1)}`
+        : plan.state === "complete"
+          ? "complete"
+          : planAt === -1
+            ? "every step done"
+            : plan.plan.steps[planAt].title,
+  );
+  /** The step's card is open under this one. */
+  let planOpen = $state(false);
+  let planBox = $state<HTMLElement | null>(null);
+
+  function openPlan() {
+    if (!plan) return;
+    planOpen = true;
+    onreading?.(true);
+  }
+  /** Leaving for the card itself is not leaving — the box hangs over the card's
+   *  own foot, and the pointer crosses it on the way. */
+  function closePlan(e: PointerEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (to && planBox?.contains(to)) return;
+    planOpen = false;
+    onreading?.(false);
+  }
 
   /** As much of a line as one clipped line of a card can possibly draw.
    *
@@ -341,7 +400,23 @@
       ><span class="dot"></span>{label}</span
     >
 
-    {#if lod === "open"}
+    {#if plan && lod !== "field"}
+      <!-- The plan, in the one place a card has left for it. At `open` it takes
+           the sayings' place rather than growing the card: the density's box is
+           105 of a 116 pitch, so a fourth line would run into the row below —
+           the bug `CARD_BOX` exists to have stopped. -->
+      <span
+        class="pline"
+        role="presentation"
+        onpointerenter={openPlan}
+        onpointerleave={closePlan}
+      >
+        <span class="ptag">plan</span>
+        <span class="pdot" class:live={plan.state === "live"}></span>
+        <span class="pnow">{planNow}</span>
+        {#if planWhich}<span class="pof">{planWhich}</span>{/if}
+      </span>
+    {:else if lod === "open"}
       <span class="said">
         {#if saying}
           <span class="say">{saying}</span>
@@ -353,6 +428,25 @@
       </span>
     {/if}
   </button>
+
+  {#if plan && planOpen && planAt >= 0}
+    {@const p = plan}
+    <div
+      class="hcbox"
+      data-grip
+      bind:this={planBox}
+      onpointerleave={closePlan}
+      role="presentation"
+    >
+      <StepCard
+        t={p}
+        index={planAt}
+        canJump={!conv.elsewhere}
+        onjump={(rev) => timelines?.jumpTo(conv.id, p.id, rev)}
+      />
+    </div>
+  {/if}
+
   {#if flaring}<span class="flare" aria-hidden="true">limit break</span>{/if}
 
   <!-- A fold in progress, across the wall: a line along the card's bottom edge.
@@ -1378,5 +1472,65 @@
     .card[data-st="ask"]::after {
       animation: none !important;
     }
+  }
+  /* ── the plan line ──────────────────────────────────────────────────────
+   *
+   * The same type as the activity above it, one step down in colour, under a
+   * hairline — so the card still reads as three lines and a rule rather than as
+   * an instrument with a chart in it. Achromatic but for the live dot: colour on
+   * this wall is status, and "the work is here" is one. */
+  .pline {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4em;
+    padding-top: 5px;
+    border-top: 1px solid var(--edge);
+    font-family: var(--util);
+    font-size: 0.68rem;
+    line-height: 1.2;
+    color: var(--paper-dim);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .ptag {
+    flex: none;
+    font-size: 0.55rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--paper-faint);
+  }
+  .pdot {
+    flex: none;
+    align-self: center;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--paper-faint);
+  }
+  .pdot.live {
+    background: var(--st-work);
+  }
+  .pnow {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--paper);
+  }
+  .pof {
+    flex: none;
+    margin-left: auto;
+    padding-left: 0.45em;
+    color: var(--paper-faint);
+  }
+  /* Where the step's card hangs — under the card's foot, over whatever is
+     beside it. The box itself is `StepCard.svelte`'s. */
+  .hcbox {
+    position: absolute;
+    z-index: 5;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 272px;
   }
 </style>

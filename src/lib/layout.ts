@@ -390,9 +390,14 @@ export function nextFrontZ(zs: number[]): number {
  * is relatively fatter the further out you go, which is why the widest drift is
  * at `field`, and why it is harmless: 42 units of card in a 116 pitch. Keep the
  * invariant's headroom in mind before trimming SLOT_H. */
+/** `wall` is 103 because a card that has a plan draws one more line than the
+ *  three it always did (`Card.svelte`'s plan line, 2026-11-09): 78 plus the
+ *  hairline, its gap and a line of type. A card without one still draws 78, and
+ *  this is the box the wall reasons with — a band, a reveal and a glass spot all
+ *  want the tallest thing a slot can hold, and 103 is still inside `SLOT_H`. */
 export const CARD_BOX: Record<Lod, { w: number; h: number }> = {
   field: { w: CARD_W, h: 40 },
-  wall: { w: CARD_W, h: 78 },
+  wall: { w: CARD_W, h: 103 },
   open: { w: CARD_W, h: 105 },
 };
 

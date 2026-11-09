@@ -30,21 +30,17 @@
   import { stride } from "./wheel";
   import {
     compactRail,
-    effective,
     frise,
     projectOf,
     railWidth,
-    roman,
     stepRev,
-    subRev,
-    subsOf,
     whereabouts,
     windowAt,
     workAt,
     type Mark,
-    type Step,
     type Timeline,
   } from "./timeline";
+  import StepCard from "./StepCard.svelte";
   import { whois } from "./whois.svelte";
   import { handleTip, shortHandle } from "./whois";
 
@@ -201,13 +197,6 @@
        onto it is leaving (found in review). */
     if (span && plateEl?.contains(span) && Number(span.dataset.span) === hovered) return;
     hovered = null;
-  }
-
-  function counts(step: Step): string {
-    const subs = subsOf(step);
-    if (!subs.length) return effective(step) === "done" ? "done" : effective(step);
-    const done = subs.filter((s) => s.state === "done").length;
-    return `${done} of ${subs.length} done`;
   }
 
   function jump(rev: number | null, e: MouseEvent) {
@@ -418,47 +407,25 @@
     {/if}
 
     {#if hovered !== null}
-      {@const s = fr.spans[hovered]}
-      {@const step = t.plan.steps[hovered]}
-      {#if s && step}
+      {@const at = hovered}
+      {@const s = fr.spans[at]}
+      {#if s}
         <!-- Drawn beside the strip rather than inside the step, because a box
              that scrolls sideways clips downwards too. Its presses are its own
              (`data-grip`): reading the card is not a press on the plate, so it
-             neither starts a drag nor lands on the card. -->
+             neither starts a drag nor lands on the card. What is in it is
+             `StepCard.svelte`, shared with the line a plan rides on its card. -->
         <div
-          class="hc"
+          class="hcbox"
           data-grip
           bind:this={hcEl}
           onpointerleave={leaveCard}
-          onclick={(e) => e.stopPropagation()}
-          ondblclick={(e) => e.stopPropagation()}
           role="presentation"
           style:top="{railH - 2}px"
           style:left="{cardLeft(s.x0)}px"
           style:width="{HC_W}px"
         >
-          <div class="hx">step {roman(s.index + 1)} · {counts(step)}</div>
-          <div class="hn">{step.title}</div>
-          {#if step.about}<p>{step.about}</p>{/if}
-          {#each step.strands as k, ki (ki)}
-            {#if k.name}
-              <div class="lane">{k.name}{k.background ? " · background" : ""}</div>
-            {/if}
-            <ul>
-              {#each k.subs as sub, si (si)}
-                <li class={sub.state}>
-                  <button class:jumps={canJump} onclick={(e) => jump(subRev(sub), e)}
-                    >{sub.title}</button
-                  >
-                </li>
-              {/each}
-            </ul>
-          {/each}
-          {#if canJump}
-            <div class="foot">
-              click to find where it was {effective(step) === "done" ? "finished" : "added"}
-            </div>
-          {/if}
+          <StepCard {t} index={at} {canJump} {onjump} />
         </div>
       {/if}
     {/if}
@@ -813,104 +780,11 @@
     color: var(--paper);
   }
 
-  .hc {
+  /* Where the card stands, and nothing about what is in it: the box itself is
+     `StepCard.svelte`'s, which the card's own line draws too. */
+  .hcbox {
     position: absolute;
     z-index: 5;
-    padding: 11px 14px 10px;
-    background: var(--raised);
-    border: 1px solid var(--rule);
-    border-radius: var(--ch-radius, 4px);
-    box-shadow: 0 18px 34px -12px color-mix(in srgb, var(--shade) 90%, transparent);
-    cursor: default;
-    animation: open 0.14s ease-out both;
   }
-  @keyframes open {
-    from {
-      opacity: 0;
-      transform: translateY(-3px);
-    }
-  }
-  .hx,
-  .lane {
-    font-family: var(--util);
-    font-size: 0.58rem;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--paper-faint);
-  }
-  .lane {
-    margin-top: 2px;
-    padding-top: 8px;
-    border-top: 1px solid var(--edge);
-  }
-  .hn {
-    margin-top: 3px;
-    font-family: var(--display);
-    font-size: 0.98rem;
-    color: var(--paper);
-  }
-  .hc p {
-    margin: 5px 0 8px;
-    font-size: 0.8rem;
-    line-height: 1.5;
-    color: var(--paper-dim);
-  }
-  .hc ul {
-    list-style: none;
-    margin: 0;
-    padding: 4px 0 6px;
-  }
-  .hc li {
-    position: relative;
-    padding: 2px 0 2px 16px;
-  }
-  .hc li::before {
-    content: "";
-    position: absolute;
-    left: 2px;
-    top: 50%;
-    width: 6px;
-    height: 6px;
-    margin-top: -3px;
-    border-radius: 50%;
-    border: 1px solid var(--paper-faint);
-  }
-  .hc li.done::before {
-    background: var(--paper-dim);
-    border-color: var(--paper-dim);
-  }
-  .hc li.active::before {
-    background: var(--st);
-    border-color: var(--st);
-  }
-  .hc li button {
-    padding: 0;
-    border: 0;
-    background: none;
-    text-align: left;
-    font-family: var(--util);
-    font-size: 0.74rem;
-    color: var(--paper-faint);
-    cursor: inherit;
-  }
-  .hc li.done button {
-    color: var(--paper-mute);
-  }
-  .hc li.active button {
-    color: var(--paper);
-  }
-  .hc li button.jumps {
-    cursor: pointer;
-  }
-  .hc li button.jumps:hover {
-    color: var(--paper);
-  }
-  .foot {
-    padding-top: 6px;
-    border-top: 1px solid var(--edge);
-    font-family: var(--util);
-    font-size: 0.66rem;
-    color: var(--paper-note, var(--paper-faint));
-  }
+
 </style>

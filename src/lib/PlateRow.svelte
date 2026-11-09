@@ -1,97 +1,96 @@
 <script lang="ts">
-  /* One plan, as a single line: the stack's own reading of a timeline.
+  /* One plan, standing on the wall: a card's anatomy, a card's type.
    *
-   * The stack used to draw every plan as a plate as tall as its frise, one
-   * under another — a form that arrived when a wall had one plan on it and that
-   * covers a laptop by the fourth. So a plate standing *in the stack* draws this
-   * instead (Lyss, 2026-11-09), and the frise is what a plate you kept is for:
-   * dragged out onto the glass or the wall it is `Frise.svelte`, unchanged.
+   * The stack used to draw every plan as a frise, and the condensed form it
+   * became was the frise's head with control chrome bolted on — a dot pager, a
+   * chevron, a progress bar along the foot. All three were vocabulary this wall
+   * does not otherwise have, which is what Lyss meant by *jarring* (2026-11-09).
+   * So a plan standing on the wall is drawn the way a card is (eyebrow, serif
+   * title, one reading) and says everything else in words: the count is in the
+   * eyebrow, turning is the wheel, the column folds on a word that appears under
+   * the pointer, and how far along it has got is a ring — the shape every card
+   * already wears for the same question.
    *
-   * It decides nothing about a plan — `timeline.ts` is the reading — and it
-   * holds no state of its own but the wheel's travel. The carousel it belongs to
-   * is `timelines.svelte.ts`: which plan is in front, whether the column is
-   * folded open, and whether plans are on the wall at all. */
+   * **It is not the default and it is not where a plan lives.** A card draws its
+   * plan's current step on itself (`Card.svelte`); this plaque is for seeing a
+   * plan *beside* the cards, which is a want and not a given (`Timelines.auto`,
+   * default off). A plan dragged out of the stack onto the glass is still
+   * `Frise.svelte` — the full line, by an explicit gesture.
+   *
+   * Hovering anywhere on it opens the current step's card (`StepCard.svelte`),
+   * the same one the frise draws, so the sentence and the sub-steps are never
+   * more than a pointer away. */
 
   import { current, fraction, projectOf, roman, type Timeline } from "./timeline";
+  import { turnBy } from "./wheel";
+  import StepCard from "./StepCard.svelte";
   import type { Tier } from "./classify";
   import type { Timelines } from "./timelines.svelte";
-  import { PAGER_DOTS } from "./plates";
-  import { turnBy } from "./wheel";
 
   let {
     t,
     tier = "rest",
     timelines,
+    canJump = false,
+    onjump,
     onpick,
     onhover,
+    onreading,
   }: {
     t: Timeline;
-    /** The owning card's status, which is the one colour the row is allowed —
-     *  on where the work is now, as on the frise. */
+    /** The owning card's status. The row keeps it for the state word only: the
+     *  ring is progress, which is not a status, so nothing here is tinted. */
     tier?: Tier;
     timelines: Timelines;
+    canJump?: boolean;
+    onjump?: (rev: number) => void;
     /** Land on the card that drew it, as a double-click does on a plate. */
     onpick?: () => void;
     /** The pointer is over it — attention, for the clock that takes a finished
      *  plan to the archive by itself (`timelines.svelte.ts::sweep`). */
     onhover?: (on: boolean) => void;
+    /** A step's card is open, so the box must ride over everything. */
+    onreading?: (open: boolean) => void;
   } = $props();
 
   const at = $derived(current(t.plan));
   const n = $derived(t.plan.steps.length);
-  const pct = $derived(Math.round(fraction(t.plan) * 100));
+  const fill = $derived(Math.max(0, Math.min(1, fraction(t.plan))));
 
-  /** The one thing the row says in words besides the plan's name: the step the
-   *  work is on, or how it ended. */
+  /** What the work is on, or how it ended — the card's own words. */
   const now = $derived(
     t.state === "left"
       ? at === -1
         ? "left with every step done"
-        : `left at step ${roman(at + 1)}`
+        : `left at ${roman(at + 1)}`
       : t.state === "complete"
         ? "complete"
         : at === -1
           ? "every step done"
           : t.plan.steps[at].title,
   );
-
-  /** How far along, and which step of how many — the frise's own numbering. */
-  const where = $derived(at === -1 ? `${pct}%` : `${roman(at + 1)} of ${roman(n)} · ${pct}%`);
+  const which = $derived(at === -1 ? "" : `${roman(at + 1)} of ${roman(n)}`);
 
   const count = $derived(timelines.order.length);
-  /** The wheel turns a page only while there is another to turn to: one plan,
-   *  or the whole column open, and the wheel is the wall's again. */
-  const turns = $derived(count > 1 && !timelines.expanded);
   const index = $derived(timelines.order.indexOf(t.id));
+  /** The wheel turns a page only while there is another to turn to. */
+  const turns = $derived(count > 1 && !timelines.expanded);
 
-  /* Travel, not events: a mouse reports a wheel notch and a trackpad a stream
-     of twos, and turning per event would fly through the stack under one and
-     never move under the other (`wheel.ts::turnBy`).
-
-     `acc` is state because the row is drawn from it: the travel you have spent
-     so far drags the plan sideways under your hand, and it lets go a moment
-     after you stop. That is the whole difference between a carousel and a
-     slideshow — the thing under the wheel moves *now*, and the page turns when
-     you have actually asked for it. */
+  /* Travel, not events: a mouse reports a notch and a trackpad a stream of
+     twos, so the travel is carried and spent one plan at a time
+     (`wheel.ts::turnBy`). The accumulator is state because the row is drawn
+     from it — the plan leans against the way you turned and lets go. */
   let acc = $state(0);
-  /** How far the row is dragged, held well short of leaving its frame: the
-   *  travel to a turn is `wheel.ts::TURN_PX`, and this is a fraction of it. */
-  const pull = $derived(Math.max(-12, Math.min(12, acc * 0.3)));
-  /** The nudge lets go if the wheel stops short of a page. */
+  const pull = $derived(Math.max(-10, Math.min(10, acc * 0.25)));
   let release: ReturnType<typeof setTimeout> | undefined;
-  /** Reduced motion only — an entrance and a nudge are not the endless kind
-   *  `motion.md` spends its four readings on, and the same file's rule is that
-   *  those answer to the system preference alone. */
   const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   /** The wheel, bound by hand and non-passive — `onwheel` as an attribute is
    *  attached passive, and this one has to be able to `preventDefault`, the
-   *  same reason `Frise.svelte`'s strip binds its own (`svelte` marks wheel
-   *  passive by default for scroll performance). */
+   *  same reason `Frise.svelte`'s strip binds its own. */
   function turning(el: HTMLElement) {
     const onturn = (e: WheelEvent) => {
       if (!turns) return;
-      /* The modifiers stay the wall's wherever the cursor is — ctrl zooms, shift
-         pans — the rule the strip and every scroller here already keeps. */
       if (e.ctrlKey || e.metaKey || e.shiftKey || !e.deltaY) return;
       e.preventDefault();
       e.stopPropagation();
@@ -103,9 +102,6 @@
       }
       if (!calm()) {
         acc = r.acc;
-        /* A wheel that stops short is a hand that changed its mind: let the
-           nudge settle rather than leaving the plan leaning against its frame
-           until the next gesture. */
         clearTimeout(release);
         release = setTimeout(() => (acc = 0), 160);
       }
@@ -116,65 +112,94 @@
       clearTimeout(release);
     };
   }
+
+  /* ── the step's card, on hover ────────────────────────────────────────── */
+
+  let hovered = $state(false);
+  let box: HTMLElement | null = $state(null);
+
+  function enter() {
+    hovered = true;
+    onhover?.(true);
+    onreading?.(true);
+  }
+  function leave(e: PointerEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (to && box?.contains(to)) return;
+    hovered = false;
+    onhover?.(false);
+    onreading?.(false);
+  }
+  function leaveBox(e: PointerEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (to && box?.contains(to)) return;
+    hovered = false;
+    onreading?.(false);
+  }
+
+  const CIRC = 2 * Math.PI * 11;
 </script>
 
 <div
   class="row"
   data-st={tier}
   role="group"
-  aria-label="plan: {t.title} — {where}"
-  style:--from="{timelines.lastStep * 18}px"
-  onpointerenter={() => onhover?.(true)}
-  onpointerleave={() => onhover?.(false)}
+  aria-label="plan: {t.title} — {now}{which ? `, ${which}` : ''}"
+  style:--from="{timelines.lastStep * 16}px"
+  onpointerenter={enter}
+  onpointerleave={leave}
   ondblclick={(e) => {
     if (e.detail === 2) onpick?.();
   }}
   {@attach turning}
 >
-  <!-- Everything that is the plan, in one group: the wheel drags this sideways
-       and the page that arrives slides in from the side you turned towards. -->
   <div class="slip" style:--pull="{pull}px">
-  {#if count > 1}
-    {#if timelines.expanded}
-      <!-- folding, so nothing says which is which; the column is the list -->
-    {:else if count <= PAGER_DOTS}
-      <span class="pager" aria-hidden="true">
-        {#each timelines.order as id (id)}<i class:on={id === t.id}></i>{/each}
-      </span>
-    {:else}
-      <span class="tally" aria-hidden="true">{index + 1}/{count}</span>
+    <svg class="ring" viewBox="0 0 26 26" aria-hidden="true">
+      <circle class="track" cx="13" cy="13" r="11" />
+      <circle
+        class="fill"
+        cx="13"
+        cy="13"
+        r="11"
+        style:stroke-dasharray={CIRC}
+        style:stroke-dashoffset={CIRC * (1 - fill)}
+      />
+    </svg>
+
+    <span class="eb">{projectOf(t)}{#if count > 1}<i>·</i>{index + 1} of {count}{/if}</span>
+    <span class="title">{t.title}</span>
+
+    <span class="now">{now}{#if which}<i>·</i>{which}{/if}</span>
+
+    {#if count > 1}
+      <!-- A word, not a chevron: the plate's own verbs are quiet uppercase words
+           that appear while it is being looked at, and this is one of those. -->
+      <button
+        class="fold"
+        onclick={(e) => {
+          e.stopPropagation();
+          timelines.toggleStack();
+        }}
+        title={timelines.expanded
+          ? "back to one plan at a time (space then l e)"
+          : "every plan on the wall, one row each (space then l e)"}
+        >{timelines.expanded ? "one" : "all"}</button
+      >
     {/if}
-  {/if}
-
-  <span class="proj">{projectOf(t)}</span>
-  <span class="title">{t.title}</span>
-  <span class="now"><span class="dot">·</span>{now}</span>
-  <span class="of">{where}</span>
-
-  {#if count > 1}
-    <button
-      class="fold"
-      onclick={(e) => {
-        e.stopPropagation();
-        timelines.toggleStack();
-      }}
-      title={timelines.expanded
-        ? "back to one plan at a time (space then l e)"
-        : "the whole column of plans (space then l e)"}
-      aria-label={timelines.expanded ? "fold the plans back to one row" : "show every plan as a row"}
-    >
-      <svg viewBox="0 0 12 12" aria-hidden="true">
-        <path d={timelines.expanded ? "M2.5 7.5 6 4l3.5 3.5" : "M2.5 4.5 6 8l3.5-3.5"} />
-      </svg>
-    </button>
-  {/if}
-
-  <!-- The progress, along the foot of the row. It grows rather than jumps when
-       a mark lands, and the colour at its head is where the work is now — the
-       same reading the frise's live marker gives, in the only place this line
-       has for it. -->
-  <span class="fill" style:width="{pct}%"></span>
   </div>
+
+  {#if hovered && at >= 0}
+    <div
+      class="hcbox"
+      data-grip
+      bind:this={box}
+      onpointerleave={leaveBox}
+      role="presentation"
+      style:top="{44}px"
+    >
+      <StepCard {t} index={at} {canJump} {onjump} />
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -194,35 +219,30 @@
     --st: var(--st-rest);
   }
 
+  /* A card's box at a card's type: the same padding, the same eyebrow, the same
+     serif title. The one addition is the ring, which is the card's own. */
   .row {
     position: relative;
-    height: 36px;
+    height: 44px;
     overflow: hidden;
     color: var(--paper);
     cursor: inherit;
-    /* The plan that arrives comes in from the side it was turned towards: the
-       row is a different plate's, freshly drawn, so a mount *is* the turn
-       (`Timelines.lastStep`). */
     animation: arrive 180ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
   }
   .slip {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 10px;
     height: 100%;
     padding: 0 12px;
-    /* The wheel's travel so far, under your hand — a transform, so the frame
-       stays put and only what is inside it moves. It also makes this the
-       containing block for the progress hairline, which belongs to the plan
-       and travels with it. */
     transform: translateX(var(--pull, 0px));
     transition: transform 140ms ease-out;
   }
   @keyframes arrive {
     from {
       opacity: 0;
-      transform: translateX(var(--from, 18px));
+      transform: translateX(var(--from, 16px));
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -235,33 +255,29 @@
     }
   }
 
-  .pager {
-    display: flex;
-    gap: 4px;
+  /* Progress, achromatic: how far a plan has got is not a status, and the card's
+     context ring — which does warm — is a different question. */
+  .ring {
     flex: none;
+    width: 26px;
+    height: 26px;
+    transform: rotate(-90deg);
   }
-  .pager i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--edge);
-    transition: background 0.2s ease;
+  .ring circle {
+    fill: none;
+    stroke-width: 2.5;
   }
-  .pager i.on {
-    background: var(--paper-dim);
+  .ring .track {
+    stroke: var(--edge);
   }
-  .tally {
-    flex: none;
-    font-family: var(--mono);
-    font-size: 0.6rem;
-    color: var(--paper-mute);
+  .ring .fill {
+    stroke: var(--paper-dim);
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.45s var(--ch-ease, ease);
   }
 
-  .proj {
+  .eb {
     flex: none;
-    max-width: 34%;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-family: var(--util);
     font-size: 0.6rem;
     font-weight: 600;
@@ -270,107 +286,68 @@
     color: var(--paper-faint);
     white-space: nowrap;
   }
+  .eb i,
+  .now i {
+    font-style: normal;
+    margin: 0 0.45em;
+    color: var(--paper-faint);
+  }
   .title {
     flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     font-family: var(--display);
-    font-size: 0.8rem;
+    font-size: 0.95rem;
+    line-height: 1.22;
+    letter-spacing: -0.004em;
     color: var(--paper);
     white-space: nowrap;
   }
   .now {
-    flex: 0 1 auto;
-    min-width: 0;
+    /* The reading keeps its room and the title gives its own up: which step a
+       plan is on is the news, and a long plan name is a name — a card truncates
+       its title for the same reason. */
+    flex: 0 0 auto;
+    max-width: 46%;
+    margin-left: auto;
     overflow: hidden;
     text-overflow: ellipsis;
     font-family: var(--util);
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     color: var(--paper-dim);
     white-space: nowrap;
   }
-  .dot {
-    margin: 0 0.4em;
-    color: var(--paper-faint);
-  }
-  .of {
-    flex: none;
-    margin-left: auto;
-    font-family: var(--mono);
-    font-size: 0.6rem;
-    font-variant-numeric: tabular-nums;
-    color: var(--paper-mute);
-    white-space: nowrap;
-  }
 
-  /* The fold: a chevron, quiet until the plate is looked at — the plate's own
-     verbs are words that stand on a finished plate and appear on a live one
-     under the pointer (`Frise.svelte`'s `.act`). */
   .fold {
     flex: none;
-    display: grid;
-    place-items: center;
-    width: 16px;
-    height: 16px;
     padding: 0;
     border: 0;
-    border-radius: 3px;
     background: none;
-    color: var(--paper-faint);
+    font-family: var(--util);
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--paper-mute);
     cursor: pointer;
-    /* Faint rather than invisible: it is the affordance that folds the column
-       open, and one that only exists under the pointer is one you find by
-       accident. The plate's own verbs hide until hovered because they act on
-       the plan; this only says how much of the stack is showing. */
-    opacity: 0.4;
+    opacity: 0;
     transition: opacity 0.15s ease, color 0.15s ease;
   }
   .row:hover .fold,
   .fold:focus-visible {
     opacity: 1;
   }
+  .fold:hover,
   .fold:focus-visible {
-    outline: 1px solid var(--rule);
-  }
-  .fold:hover {
     color: var(--paper);
   }
-  .fold svg {
-    width: 12px;
-    height: 12px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.4;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
 
-  /* No transition under reduced motion — the fill simply arrives where it now
-     is. It is the same 450ms the frise's own fill takes, and the frise states
-     no `still` arm for its reason: this answers to the motion preference, not
-     to how much the wall may animate while nobody is asking it anything. */
-  .fill {
+  /* Where the step's card hangs, under the row. The box is `StepCard`'s. */
+  .hcbox {
     position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 2px;
-    background: var(--paper-dim);
-    transition: width 0.45s var(--ch-ease, ease);
-  }
-  .fill::after {
-    content: "";
-    position: absolute;
-    right: -2px;
-    top: -1.5px;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--st);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .fill {
-      transition: none;
-    }
+    z-index: 5;
+    left: 12px;
+    width: 272px;
   }
 </style>

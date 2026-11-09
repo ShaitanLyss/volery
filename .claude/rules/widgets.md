@@ -928,10 +928,14 @@ long form.
   not clip, so its hover card can hang below), and the wide variant's width too. `WidgetNode`
   reports the drawn box (`onmeasure`) and `Canvas.drawnSize` is what the rest of the wall reasons
   with. Anything that ever sizes itself again should go through the same two.
-- **In the stack it is one line and not a frise** (`PlateRow.svelte`, since 2026-11-09). Its
-  height is the row's 36 and its width a constant, so the same machinery carries it with nothing
-  new — and a plate dragged out of the stack draws the frise again, which is what the variant
-  knob is about. `.claude/rules/timeline.md`, *The stack is a carousel*, has the reasoning.
+- **In the stack it is a plaque and not a frise** (`PlateRow.svelte`, since 2026-11-09): a card's
+  anatomy at a card's type, 44px, with the count in the eyebrow and the progress as a ring — no
+  dots, no chevron, no bar, because none of those are vocabulary this wall has. Its width is a
+  constant (`plates.ts::ROW_W`), so the same machinery carries it with nothing new — and a plate
+  dragged out of the stack draws the frise again, which is what the variant knob is about. The
+  stack itself is **opt-in** now (`Timelines.auto`, default off): by default a plan is one line on
+  the card that drew it, and nothing stands on the wall for it.
+  `.claude/rules/timeline.md`, *A plan rides its card*, has the reasoning.
 - **Three places, not two** — the stack is a third (`hangOf`, the `wall` state key), so its menu
   offers moves rather than the glass toggle (`menu.ts::hangItems`), and `<space>l…` reaches them.
 - **The frame knob reaches it** because the plate stopped painting its own surface: the raised

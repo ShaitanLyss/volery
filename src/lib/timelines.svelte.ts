@@ -27,25 +27,30 @@ import { archiveDue, frontOf, turnOf, type Hang } from "./plates";
  *  whether the column is open. Per-machine and disposable, `motion.svelte.ts`'s
  *  bargain — how much of the wall you want covered is a fact about this screen
  *  and this person, not about the wall's record. */
-const PLATES_KEY = "skein.plates.v1";
+const PLATES_KEY = "skein.plates.v2";
 
 /** What survives a launch out of the stack's form. The cursor deliberately
  *  does not: coming back to a wall should show what is happening now, and a
- *  plan left in front on Tuesday is not an answer to that. */
+ *  plan left in front on Tuesday is not an answer to that.
+ *
+ *  `v2` because the switch changed meaning on 2026-11-09: the stack used to be
+ *  what a plan *was*, and a wall that had it on had not chosen "a second
+ *  reading beside my cards" — it had never been offered the choice. So the key
+ *  is new and the default is **off**: a plan lives on its card now. */
 function stored(): { auto: boolean; expanded: boolean } {
   try {
     const raw = localStorage.getItem(PLATES_KEY);
     if (raw) {
       const o = JSON.parse(raw) as { auto?: unknown; expanded?: unknown };
       return {
-        auto: typeof o?.auto === "boolean" ? o.auto : true,
+        auto: typeof o?.auto === "boolean" ? o.auto : false,
         expanded: typeof o?.expanded === "boolean" ? o.expanded : false,
       };
     }
   } catch {
-    /* a browser refusing storage is not a reason to open with plans hidden */
+    /* a browser refusing storage is not a reason to open the wall differently */
   }
-  return { auto: true, expanded: false };
+  return { auto: false, expanded: false };
 }
 
 /** `Array.prototype.with`, which ES2022 does not have. */
@@ -104,12 +109,15 @@ export class Timelines {
    * form — and they live here rather than split between the canvas and a menu.
    */
 
-  /** Whether a plan a card draws puts a plate on the wall by itself. Off, the
-   *  wall is yours: plans still exist and still reach the archive, and one is
-   *  put up by hand (`<space> l g` on the card that drew it). The plate is
-   *  housed either way — this gates the drawing, not the record — so turning
-   *  it back on is a redraw rather than a reconcile. */
-  auto = $state(true);
+  /** Whether a plan also stands on the wall by itself, one at a time.
+   *
+   *  **Off by default, and that is the design** (Lyss, 2026-11-09): a plan is
+   *  drawn on its card, and a plate standing among the cards is a second reading
+   *  you ask for. On, the stack draws `PlateRow` — a card's anatomy, the wheel
+   *  turns it — and a plate dragged out of it onto the glass is the frise. The
+   *  plate is housed either way: this gates the drawing, not the record, so
+   *  turning it on is a redraw rather than a reconcile. */
+  auto = $state(false);
   /** The whole column rather than the carousel: every stacked plan as a row,
    *  one under another. What the row's chevron folds open. */
   expanded = $state(false);
@@ -280,6 +288,15 @@ export class Timelines {
   /** The card's live timeline, if it has one. */
   liveFor(convId: string): Timeline | null {
     return this.shown.find((t) => t.ownerId === convId && t.state === "live") ?? null;
+  }
+
+  /** The plan a card draws on itself: its live one, else the newest of its plans
+   *  still on the glass — `planChord`'s rule, so the card and the chords cannot
+   *  disagree about which plan a card is on (`Card.svelte`, since 2026-11-09 a
+   *  plan lives on its card rather than on a plate by default). */
+  planFor(convId: string): Timeline | null {
+    const mine = this.shown.filter((t) => t.ownerId === convId);
+    return mine.find((t) => t.state === "live") ?? mine[mine.length - 1] ?? null;
   }
 
   async archive(id: string) {

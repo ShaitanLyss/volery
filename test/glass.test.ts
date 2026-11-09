@@ -243,8 +243,11 @@ describe("a stuck territory carries its cards", () => {
 
 test("a card on the pane is drawn at wall density", () => {
   /* Not a behaviour so much as the constant the pane is sized against — the
-     glass is 1:1, and `wall` is the density 1:1 gives (`lodFor(1)`). */
-  expect(CARD_BOX.wall).toEqual({ w: 208, h: 78 });
+     glass is 1:1, and `wall` is the density 1:1 gives (`lodFor(1)`). The height
+     is the tallest a card draws at since 2026-11-09: 103 for one carrying a
+     plan line, 78 for one without, and the box the wall reasons with is the
+     former. */
+  expect(CARD_BOX.wall).toEqual({ w: 208, h: 103 });
 });
 
 describe("out from under the chrome", () => {

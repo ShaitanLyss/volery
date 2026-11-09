@@ -283,10 +283,12 @@ describe("the stack shows one plan at a time, and the wheel turns it", () => {
     expect(turnOf([], "a", 1)).toBeNull();
   });
 
-  /* The switch is offered from two doors and says the same thing at both. */
+  /* The switch is offered from two doors and says the same thing at both. Since
+     2026-11-09 it is about the *second* reading — a plan standing on the wall —
+     because a plan is drawn on its card either way. */
   test("the switch's words say what is true now", () => {
-    expect(plansSaid(true)).toContain("appear");
-    expect(plansSaid(false)).toContain("space");
+    expect(plansSaid(true)).toContain("wall");
+    expect(plansSaid(false)).toContain("cards");
   });
 });
 

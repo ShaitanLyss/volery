@@ -46,8 +46,11 @@
       {t}
       tier={owner?.tier ?? "rest"}
       {timelines}
+      canJump={jumps}
+      onjump={(rev) => timelines.jumpTo(t.ownerId, t.id, rev)}
       onpick={owner ? () => timelines.pick(t.ownerId) : undefined}
       onhover={(on) => timelines.hover(t.id, on)}
+      {onreading}
     />
   {:else}
     <Frise

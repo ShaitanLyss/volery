@@ -224,73 +224,82 @@ same in either, and the archive's column is a third width of the same drawing.
   `ls` back in the stack, `la` archive — on the selected plates, or else the focused card's plan.
   `le` and `lp` are the stack's own two (below), and they act on no plate.
 
-### The stack is a carousel, and a plan is one line in it
+### A plan rides its card, and the wall standing it up is opt-in
 
-Lyss, 2026-11-09: *"timelines take too much space on the screen … on a small screen, the timelines
-cover the screen and it's really annoying, I've been using the wall mode less because of it."*
-The stack drew every plan as a plate as tall as its frise, one under another — a form that
-arrives when a wall has one plan on it and that covers a laptop by the fourth, with no bound on
-how far it grows.
+Lyss, 2026-11-09, after the carousel had shipped: *"I was happy with my wall before I introduced
+timelines, but they added a lot of clutter and were jarring."* The first fix had been to shrink
+the plate — first to a 36px row of the frise's head, then to a bounded carousel — and that was
+the wrong instinct. **The frise itself is the jarring object.** It is the one thing on this wall
+whose content is geometry: a curved track, filled spans, outlined nodes, ticks between them,
+labels underneath. Everything else is type and hairlines, and the wall she liked had no plans on
+it at all.
 
-So a plate standing **in the stack** now draws `PlateRow.svelte`: one 36px line, whatever its
-frise would have been. The column is bounded no matter how many plans are alive — that is the
-whole point, not the 36 — and the frise is what a plate you *keep* is for: dragged out onto the
-glass or the wall it is `Frise.svelte` exactly as before (`Plate.svelte` chooses on
-`hangOf(widget)`).
+So the default is that **a plan is drawn on the card that drew it**, and nothing stands on the
+wall for it:
 
-- **One at a time, and the wheel turns it.** The stack draws the plan `Timelines.front` names —
-  the `cursor` if it is still in the stack, else the first — and nothing else. A wheel over the
-  row turns to the next or the previous, wrapping at either end (`plates.ts::turnOf`).
-  `wheel.ts::turnBy` carries the travel and spends it one plan at a time, because a mouse
-  reports a notch and a trackpad a stream of twos: turning per event would fly through the stack
-  under one and never move under the other. The listener is bound by hand and non-passive
-  (`{@attach turning}`), as `Frise.svelte`'s strip is — `onwheel` as an attribute is passive.
-- **Scrolling has to feel like something.** The travel spent so far drags the row under your
-  hand (a transform inside the frame, so the frame stays put and the plan moves), and lets go a
-  beat after the wheel stops; a page that turns arrives from the side it was turned towards
-  (`Timelines.lastStep`, read on mount — the row is a different plate's, freshly drawn). Both
-  answer to reduced motion and neither to `still`: they are a gesture's response and an
-  entrance, not the endless kind `motion.md` spends its four readings on.
-- **A plan that moves comes to the front.** `App.svelte` folds `plan.rev` — bumped by every
-  write that moves something — and turns the carousel to whichever plan just wrote. A wall of
-  four plans that look identical otherwise should not have the work happening on the page you
-  are not on. The first pass only seeds; a launch is not news.
-- **The column folds open, and back.** The chevron at the row's right (faint until hovered, since
-  it is the affordance that says there are more) draws every stacked plan as a row, one under
-  another — `expanded`. `space l e` does the same from the wall, and says what it did, because a
-  folded carousel with one plan in it is a fold that moved nothing.
-- **The row is wider than the frise's box** (`plates.ts::ROW_W`, 520). A plan's name, the step it
-  is on and how far do not fit in the 400 a compact plate is given — both truncated to four
-  characters. A constant rather than a measurement: the box a plate is drawn in must not be
-  decided by measuring that box, which is the trap `Canvas.drawnSize` records. The stored width
-  is untouched, so putting the plate back on the glass gives the frise the box it had.
+- **One line under the activity, under a hairline.** `Card.svelte` draws `plan` in a tiny
+  letterspaced cap, a dot in the owner's status colour while it is live, the step the work is on,
+  and `iii of vi` hard right. It is the same type and the same colour ramp as the line above it,
+  because it *is* a fourth line of the card rather than an instrument parked next to one.
+- **The card grows to 103, and that is inside its slot.** `CARD_BOX.wall.h` is 103 for it: 78 for
+  the three lines a card always had, plus a hairline, a gap and a line of type — so a card with a
+  plan stops 13 units short of the 116 pitch instead of 38. `layout.test.ts` holds it to the slot.
+- **At `open` the line takes the sayings' place rather than growing the card.** That density is
+  105 of 116 and a fourth line would run into the row below — the bug `CARD_BOX` exists to have
+  stopped. A card with a plan shows the plan instead of its last words, and a card without one
+  shows its words as before.
+- **Hovering the line opens the step's card** — `StepCard.svelte`, lifted out of `Frise.svelte` so
+  the frise, the card and the plaque are one drawing rather than three that will drift. The step's
+  sentence, its sub-steps, its strands, and the click that finds the write. `Card.svelte` asks the
+  wall to lift its node while that box is open (`onreading`, `Canvas.readingCard`), because every
+  card is drawn at `Z_CARD` and an overhanging box inside one is covered by the next card along —
+  the lift a plate already had.
+- **A plan is on its card whether or not it is live**: `Timelines.planFor` answers the card's live
+  plan, else the newest of its plans still on the glass — `planChord`'s rule, so the card and the
+  chords cannot disagree about which plan a card is on.
+- **The line is not a control.** It is a `span` inside the card's own button: hovering reads, and a
+  click is the click the card always took. Everything that writes or jumps lives in the step's
+  card, outside the button, where the buttons are legal.
+
+#### What is left of the carousel, and why it is opt-in
+
+The bounded one-at-a-time stack is still there, behind a switch that is **off by default**
+(`Timelines.auto`, `skein.plates.v2` — a new key, because the old one's meaning was "a plan is a
+plate" and a wall that had it on had never been offered this choice). On, the stack draws
+`PlateRow.svelte`, one plan at a time, and it is now built out of the wall's own parts rather
+than the frise's:
+
+- **A card's anatomy and a card's type.** A 26px ring on the left, the eyebrow
+  (`project · 2 of 4`), the serif title at 0.95rem, and the reading on the right
+  (`ticking world · iii of vi`) at the card's 0.75rem. 44px tall, fixed however many plans exist.
+- **Nothing invented.** The dot pager, the chevron and the progress bar along the foot are gone —
+  all three were vocabulary no other surface here has, and they are what made the row read as a
+  widget rather than as part of the wall. The count is in the eyebrow, the fold is a word (`all`,
+  then `one`) that appears under the pointer like a plate's own verbs, and how far along it has
+  got is a ring. The ring is **achromatic**: a card's context ring warms as it fills because that
+  is a warning, and a plan near its end is the opposite.
+- **The wheel turns it** — travel carried and spent a plan at a time (`wheel.ts::turnBy`), the
+  plan leaning against the way you turned and letting go, the next arriving from that side. Both
+  answer to reduced motion and neither to `still`; they are a gesture's response and an entrance,
+  not the endless kind `motion.md` prices.
+- **A plan that moves comes to the front.** `App.svelte` folds `plan.rev` and turns to whichever
+  plan just wrote. The first pass only seeds; a launch is not news.
+- **Hovering it opens the current step's card**, the same `StepCard` the frise and the card draw.
+- **The frise is still the frise.** Dragged out of the stack onto the glass or the wall, a plate
+  draws `Frise.svelte` as it always has — the full line, by an explicit gesture, which is the one
+  place it is still wanted. The archive draws it too.
 - **What survives a launch is the form, not the page.** `auto` and `expanded` are per-machine
-  (`skein.plates.v1`, `motion.svelte.ts`'s argument). The cursor is not: coming back to a wall
-  should show what is happening now, and a plan left in front on Tuesday is not an answer to
-  that.
+  (`skein.plates.v2`). The cursor is not.
 
-### Whether a card's plan comes up at all
-
-The other half of the same complaint, and the switch is one boolean with two doors (Lyss chose
-both): a row in the wall's right-click beside *rests* and *reawaken* (`plates.ts::PLANS_LABEL`,
-`space l p`), and a row in a plate's own menu — the place your hand already is when a plan has
-just appeared.
-
-- **Off gates the drawing, not the record.** The plate is still housed, so `space l g` on its
-  card still puts it up, the archive still fills, and the neglect clock still runs; a wall with
-  plans off is a wall with nothing drawn in the stack, not a wall that lost anything. Turning it
-  back on is a redraw rather than a reconcile.
-- **A plate that is not drawn has no glass spot to carry**, so `hangPlate`'s last branch falls
-  back to the widget's own place — the honest answer, and what makes "show me this plan" work
-  while the stack is shut.
-- **A `plans` row only where it means something**: the ground menu, and a plate's menu. Not a
-  territory's, not a card's — a card's plan is not the card.
+The switch keeps its two doors — the wall's right-click beside *rests* and *reawaken*, and a
+plate's own menu — and its chord, `space l p`, with `PLANS_LABEL` now saying what it makes true:
+*plans also stand on the wall, one at a time*. The plate is still housed while it is off, so
+`space l g` on a card still puts one up, the archive still fills and the neglect clock still runs;
+the switch gates the drawing, not the record.
 
 `snapshot.plates` reports `auto`, `expanded`, `cursor`, `front` and the order, because the
-drawing is now a choice made in the front end that the widget list cannot imply, and a form
-nobody can read from outside is a form no wall test can assert. The `wheel` op takes a
-`selector` for the same reason: a wheel sent to `.surface` never reaches a row on the glass,
-which is a sibling of it.
+drawing is a choice the widget list cannot imply — and the `wheel` op takes a `selector`, since a
+wheel sent to `.surface` never reaches a row on the glass.
 
 ### Finishing: a flourish, then the archive by itself
 
