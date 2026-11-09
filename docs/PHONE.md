@@ -27,6 +27,7 @@ never worked on this network (see `docs/VOICE.md`, sink `4caa13ed`).
 | input modes | push-to-talk, "hey volery" hands-off, seamless hands-off — all three, as settings |
 | narration density | a "chatty" setting: off / only-what-needs-you / murmur |
 | music | duck or pause, a setting |
+| chat mode | a later native screen, not in v1 — the node already carries prompt/recall/tail/answer, so it is a UI add, not a data-path add |
 | office TLS gate | not a design input — re-test the transport rather than assume. QUEERISFREEDOM is unrestricted and has admin; the work laptop's Netskope path is already handled by `forge::tls` |
 
 ## The architecture: the phone is an ear, a mouth, and a pair of hands. The wall stays the brain.
@@ -83,6 +84,13 @@ Three loops, all thin on the phone:
   existing digest/ask/notice deltas into spoken lines, gated by the chatty filter. Pure logic,
   testable without a phone (`narration.ts` on the desktop, or its own module).
 
+The node's primitives are `prompt`, `recall`, `tail`, `answer` and the digest — the same verbs
+the desktop flyway already exposes. The app is **multi-screen from the start** (home +
+settings, with a chat screen reserved) even though v1 ships only the walking modes: chat mode
+is a later native screen over the same node, not a new data path. The one difference to keep:
+transcripts are fetched lazily when a chat opens, where narration streams digest deltas
+continuously.
+
 ## The modes (all settings, no one is forced)
 
 1. **push-to-talk** — tap an earbud (or a volume key) to talk.
@@ -115,6 +123,7 @@ wake-word sensitivity.
 | **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
 | **M5** | control + questions: spoken confirm loop, act verbs, `ask_user` answers | M4 | speak "open a card for X", confirm aloud, it opens on the far wall |
 | **M6** | iOS (later) | M5 | — |
+| **M7** | chat view (later) — a native chat screen over the node's `prompt`/`tail` verbs | after the walking modes | type to a card, read its thread |
 
 ## Risks and unknowns
 
