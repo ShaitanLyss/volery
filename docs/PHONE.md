@@ -28,6 +28,7 @@ never worked on this network (see `docs/VOICE.md`, sink `4caa13ed`).
 | narration density | a "chatty" setting: off / only-what-needs-you / murmur |
 | music | duck or pause, a setting |
 | chat mode | a later native screen, not in v1 — the node already carries prompt/recall/tail/answer, so it is a UI add, not a data-path add |
+| viewing | pictures (shown/pinned), mockups (`ask_user` previews) and files (sent) are viewable on the phone, not just narrated — the flyway already carries them (`push_pictured`, `send_files`, `look`) |
 | office TLS gate | not a design input — re-test the transport rather than assume. QUEERISFREEDOM is unrestricted and has admin; the work laptop's Netskope path is already handled by `forge::tls` |
 
 ## The architecture: the phone is an ear, a mouth, and a pair of hands. The wall stays the brain.
@@ -119,6 +120,7 @@ wake-word sensitivity.
 | **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | **done** — cross-compiles, links, and ran on the Pixel 7a, printing a node id |
 | **M1** | extract `flyway-core`; desktop consumes it unchanged | M0 | `cargo test --lib` and the flyway lifts green with no behaviour change |
 | **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | the phone appears on the wall's roster and reads a digest |
+| **M2v** | viewing: extend the node to receive media (`look`/`send_files`) and add a viewer screen that draws pictures, mockups and files | M2 | a card's shown/pinned picture, an `ask_user` preview, and a sent file each open on the phone |
 | **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | a digest change becomes a spoken line, at the chosen chatty level |
 | **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
 | **M5** | control + questions: spoken confirm loop, act verbs, `ask_user` answers | M4 | speak "open a card for X", confirm aloud, it opens on the far wall |
