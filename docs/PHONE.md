@@ -119,7 +119,7 @@ wake-word sensitivity.
 |---|---|---|---|
 | **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | **done** — cross-compiles, links, and ran on the Pixel 7a, printing a node id |
 | **M1** | extract `flyway-core`; desktop consumes it unchanged | M0 | `cargo test --lib` and the flyway lifts green with no behaviour change |
-| **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | the phone appears on the wall's roster and reads a digest |
+| **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | **done** — APK builds, node binds on-device, verifier inits; cross-network dial still blocked by the VPN |
 | **M2v** | viewing: extend the node to receive media (`look`/`send_files`) and add a viewer screen that draws pictures, mockups and files | M2 | a card's shown/pinned picture, an `ask_user` preview, and a sent file each open on the phone |
 | **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | a digest change becomes a spoken line, at the chosen chatty level |
 | **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
@@ -140,6 +140,11 @@ wake-word sensitivity.
   → `rustls-platform-verifier: Expect rustls-platform-verifier to be initialized`. The app must
   initialize the verifier with its Context before `Node::start`; that is the one genuinely-new
   thing the phone does that the desktop never did, and it is M2b's to do.
+- **The cross-network dial does not reach the desktop through the VPN yet.** On the Pixel
+  (cellular, carrier NAT) the node binds and the dial starts, then times out: the desktop is
+  behind NordVPN/Tailscale and iroh's relay fallback did not carry it. The same code dials the
+  lab from the desktop itself. This is the one open question for the walking use case — probe
+  the relay, split-tunnel, or defer — and it is with Lyss.
 - **Background life.** Android throttles background network (Doze). A foreground service, and
   the fact that walking means the screen is on or music is playing, is the mitigant; it still
   wants a battery measurement in M4.
