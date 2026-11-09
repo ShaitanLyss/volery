@@ -1,0 +1,16 @@
+# The wall key phrase is a secret and must never be committed.
+local.properties
+
+# The cross-compiled .so is a build artifact — see ../README.md for how it is
+# produced (cargo build --target aarch64-linux-android, then strip + copy).
+app/src/main/jniLibs/
+
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Android Studio
+.idea/
+*.iml
+captures/

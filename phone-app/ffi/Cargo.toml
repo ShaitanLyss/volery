@@ -1,0 +1,47 @@
+[package]
+name = "phone-ffi"
+version = "0.1.0"
+description = "The JNI bridge between the Android phone app and the flyway node"
+authors = ["moonlyss"]
+edition = "2021"
+publish = false
+
+# A standalone workspace of its own so `src-tauri`'s workspace does not adopt
+# it: a workspace member must sit under its root, and this crate lives in
+# `phone-app/` on purpose (`docs/PHONE.md` — the phone's Rust is not the
+# desktop's). Path deps reach the two crates it bridges either way.
+
+[workspace]
+
+# `docs/PHONE.md` M2b. The node's whole surface is two async calls
+# (`Node::start`, `Node::sight`) in `phone-node`; this is the cdylib the Android
+# app links. It holds one node in a process-wide slot, drives the async calls on
+# a held tokio runtime, and crosses the JNI boundary as JSON envelopes.
+#
+# Why JNI rather than uniffi: see `src/lib.rs`. Briefly, uniffi cannot map the
+# flyway's `serde_json::Value` snapshot or `WallKey` without a hand-written
+# flattening layer anyway, so a JSON envelope over JNI is less machinery for a
+# surface this small — and `jni` is the only new crate, pure Rust.
+
+[lib]
+name = "phone_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+flyway-core = { path = "../../src-tauri/flyway-core" }
+phone-node = { path = "../../src-tauri/phone-node" }
+# 0.22, not 0.21: `rustls-platform-verifier` (below, iroh's Android verifier)
+# uses 0.22, and the two must be one copy for its `init_with_env` to take our
+# `Env`/`JObject` types.
+jni = "0.22"
+serde_json = "1"
+# The same feature set phone-node enables, so the held runtime can drive the
+# node's `Wire` (iroh needs net/time/io on it) and feature unification across
+# the build adds nothing new.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+
+# iroh's `platform-verifier` feature on Android reads the system trust store
+# through the Android `Context`; without `init_with_env` it panics at the first
+# dial. Only an Android build needs it (see the init function in `lib.rs`).
+[target.'cfg(target_os = "android")'.dependencies]
+rustls-platform-verifier = "0.7"
