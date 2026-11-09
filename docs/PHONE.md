@@ -119,7 +119,7 @@ wake-word sensitivity.
 |---|---|---|---|
 | **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | **done** — cross-compiles, links, and ran on the Pixel 7a, printing a node id |
 | **M1** | extract `flyway-core`; desktop consumes it unchanged | M0 | `cargo test --lib` and the flyway lifts green with no behaviour change |
-| **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | **done** — APK builds, node binds on-device, verifier inits; cross-network dial still blocked by the VPN |
+| **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | **done** — the phone dials the real wall (`queerisfreedom`) over the relay and reads its roster + cards digest |
 | **M2v** | viewing: extend the node to receive media (`look`/`send_files`) and add a viewer screen that draws pictures, mockups and files | M2 | a card's shown/pinned picture, an `ask_user` preview, and a sent file each open on the phone |
 | **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | a digest change becomes a spoken line, at the chosen chatty level |
 | **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
@@ -140,13 +140,12 @@ wake-word sensitivity.
   → `rustls-platform-verifier: Expect rustls-platform-verifier to be initialized`. The app must
   initialize the verifier with its Context before `Node::start`; that is the one genuinely-new
   thing the phone does that the desktop never did, and it is M2b's to do.
-- **The cross-network dial fails on the phone's cellular leg, not the desktop.** Probed: the
-  desktop has no VPN route (default route is the home router), its pkarr record is fresh and
-  points at the iroh relay (`usw1-1.relay.n0.iroh.link`), and a relay-only dial between two
-  desktop nodes works in ~2s — so `wire.rs`/`directory.rs` are exonerated. The failure is the
-  phone completing the relayed QUIC handshake from cellular (TCP/443 to the relay), an
-  Android-side relay/TLS issue or a carrier path. Needs the phone (`adb logcat` during a dial,
-  plus a TCP:443 check to the relay) to close.
+- **The cross-network dial is closed.** Both causes were phone-side, not the desktop: the
+  platform verifier's Android class was never bundled (the AAR wasn't a Gradle dependency, so
+  the first dial hit `ClassNotFoundException: org.rustls.platformverifier.CertificateVerifier`),
+  and the `.so` wasn't 16 KB-aligned. Both fixed; the phone now dials the real wall
+  (`queerisfreedom`, not the key's stale `AU-LT-285` label) over the relay and reads its roster
+  and cards digest.
 - **Background life.** Android throttles background network (Doze). A foreground service, and
   the fact that walking means the screen is on or music is playing, is the mitigant; it still
   wants a battery measurement in M4.
