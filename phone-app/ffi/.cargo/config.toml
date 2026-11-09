@@ -1,0 +1,10 @@
+# Android 15+ requires native libraries to have 16 KB-aligned ELF segments; a
+# 4 KB-aligned .so fails to load (or warns) on 16 KB-page devices. The default
+# linker page size for the NDK r26d clang wrappers is 4 KB, so the phone's
+# cdylib must be told explicitly. Without this the built libphone_ffi.so has
+# every LOAD segment at p_align 0x1000 and the phone refuses it.
+[target.aarch64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]
