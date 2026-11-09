@@ -1,0 +1,137 @@
+# The phone companion (Volery in your ear)
+
+Design work 2026-11-09, from the request: *control Volery and the full flyway from a phone
+while walking, earbuds-only, with audio narration.* Voice in, voice out, mesh connectivity —
+a phone app that is itself a node on the flyway.
+
+**Status: design agreed, nothing built.** M0 (the spike) is the first card. This file is the
+plan; it will grow a `.claude/rules/` file when there is code to govern.
+
+## What this is
+
+A phone companion, Android first (Pixel 7A), that joins the flyway the way a wall does — it
+dials walls by key, reads the roster, receives what is worth knowing, and sends acts back. It
+has native ears (on-device speech recognition) and a native mouth (speech synthesis), because
+the phone's recogniser is a different class from the desktop's, and the desktop voice has
+never worked on this network (see `docs/VOICE.md`, sink `4caa13ed`).
+
+## The decisions, as made with Lyss
+
+| question | answer |
+|---|---|
+| platform | Android first (Pixel 7A); iOS later, not now |
+| the phone's role | **a true flyway node** (mesh), not a remote for one laptop |
+| voice cost | free by default; a cheap premium tier (a few $/mo) as a setting |
+| input modes | push-to-talk, "hey volery" hands-off, seamless hands-off — all three, as settings |
+| narration density | a "chatty" setting: off / only-what-needs-you / murmur |
+| music | duck or pause, a setting |
+| office TLS gate | not a design input — re-test the transport rather than assume. QUEERISFREEDOM is unrestricted and has admin; the work laptop's Netskope path is already handled by `forge::tls` |
+
+## The architecture: the phone is an ear, a mouth, and a pair of hands. The wall stays the brain.
+
+One clarification that "true flyway node" must not blur: **the phone runs no `claude` child,
+and cannot.** The steward (a sentence → an ordered plan) is a `claude --print` child, so it
+runs on a wall, always. What the phone's node-ness buys is *reach and resilience*, not a
+brain of its own: it can dial any wall directly, so it never depends on one specific laptop.
+If the work laptop is down, it parses through QUEERISFREEDOM. If QUEERISFREEDOM is down, any
+other wall.
+
+Everything smart and dangerous stays on the wall — the steward parse, the confirm gate, the
+act verbs, the safety tables (`voice.md`, `spawn.md`). The phone only hears, speaks, and
+relays text. That is not a compromise; it is the property that makes a misheard command safe.
+
+```mermaid
+sequenceDiagram
+    participant P as Phone (flyway node)
+    participant W as Steward wall (any reachable)
+    participant F as Flyway (other walls)
+    Note over P: earbud tap / wake word / seamless
+    P->>P: native ASR
+    P->>W: transcript
+    W->>W: steward → plan → confirm gate
+    W->>P: "open a card for the orchard migration — yes?"
+    P->>P: TTS, music ducked
+    P->>W: "yes"
+    W->>F: act (spawn / prompt / close)
+    F-->>P: digest delta
+    P->>P: narration: "opened. working on it."
+```
+
+Three loops, all thin on the phone:
+
+| loop | what happens | reused from the flyway |
+|---|---|---|
+| **narration** | walls change, the phone folds the deltas into spoken lines | the digest, `ask_user` questions, notices — all of which already cross |
+| **command** | you speak → a wall parses → act | `steward.rs`, `act.rs`, the confirm gate |
+| **question** | a card's question is read aloud, you answer, it crosses back | `Ask::answers` already travels |
+
+## What the phone is, concretely
+
+- **A shared Rust core.** Extract the flyway's pure half — `seal`, `frame`, `session`, `wire`
+  (iroh), `sync`, and the protocol-pure parts of `fleet` — out of `src-tauri/src/flyway/` into
+  a workspace crate `flyway-core`, which the desktop consumes unchanged and the phone links.
+  This is the same move the repo already argues for (one registry, no restated drift), and it
+  de-risks the desktop flyway by making it testable without Tauri.
+- **An Android app (Kotlin).** A foreground service so it stays alive while walking, Bluetooth
+  audio, audio-focus ducking, and a settings screen. The Rust core is exposed through uniffi
+  (or JNI). Kotlin native over Flutter for now: the app is mostly headless service + a small
+  settings screen, not rich UI. iPhone-later may argue for Flutter retroactively; that is a
+  later decision, not a reason to carry a Flutter toolchain into M0.
+- **Narration, derived phone-side.** No new wire vocabulary for v1: the phone folds the
+  existing digest/ask/notice deltas into spoken lines, gated by the chatty filter. Pure logic,
+  testable without a phone (`narration.ts` on the desktop, or its own module).
+
+## The modes (all settings, no one is forced)
+
+1. **push-to-talk** — tap an earbud (or a volume key) to talk.
+2. **"hey volery" hands-off** — a local wake word; on hearing it, duck/pause music and listen.
+3. **seamless hands-off** — no wake word. When something needs you, duck/pause the music,
+   speak it, and listen for an answer for a short window. The desktop already has this exact
+   window (`SPOKEN_YES_MS` in `voice.md`); the phone inherits the semantics, not the engine.
+
+Settings, one screen: mode · chatty level · duck vs pause · voice quality · steward wall ·
+wake-word sensitivity.
+
+## Voice, at the cost asked
+
+- **In (recognition):** Google's recogniser on the Pixel — free, excellent, cloud-assisted with
+  an on-device fallback. The premium concern does not apply to input. Whisper on-device is a
+  later, optional privacy tier, not v1.
+- **Out (synthesis):** default **Google's natural voices** — free, genuinely good, on-device.
+  A "premium voice" setting accepts a user-supplied key (OpenAI `tts-1` ≈ two dollars a month
+  at walking usage, or ElevenLabs ≈ $5/mo) for a richer narration voice. Free first, upgrade
+  later, never required.
+
+## Milestones
+
+| | what | gates on | proof |
+|---|---|---|---|
+| **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | a green `aarch64-linux-android` cross-compile, or a named blocker |
+| **M1** | extract `flyway-core`; desktop consumes it unchanged | M0 | `cargo test --lib` and the flyway lifts green with no behaviour change |
+| **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | the phone appears on the wall's roster and reads a digest |
+| **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | a digest change becomes a spoken line, at the chosen chatty level |
+| **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
+| **M5** | control + questions: spoken confirm loop, act verbs, `ask_user` answers | M4 | speak "open a card for X", confirm aloud, it opens on the far wall |
+| **M6** | iOS (later) | M5 | — |
+
+## Risks and unknowns
+
+- **iroh 1.3.0 on Android is unproven in this repo.** The likely fight is a C dependency
+  (`ring` / `aws-lc-*`) under the NDK. M0 exists to answer it; a negative answer is a real
+  finding and changes the plan, so it is worth one card's full attention before anything else.
+- **Background life.** Android throttles background network (Doze). A foreground service, and
+  the fact that walking means the screen is on or music is playing, is the mitigant; it still
+  wants a battery measurement in M4.
+- **A wake word on a pocketed phone** only works through the earbuds' own mic, which is
+  Bluetooth and battery-costly to keep always-listening. Tested, not assumed, in M4.
+- **Disk is near-full on this box** (memory). NDK + a second cargo target is 2–3 GB. Check and
+  free space before the M0 toolchain install.
+- **The office TLS gate** stays an open errand (`docs/FLYWAY-PROBE.md`), re-run when the phone
+  dials the work laptop. It does not block QUEERISFREEDOM, and it does not decide this design.
+
+## What M0 needs from Lyss
+
+The cross-compile half of M0 needs nothing from you. The **on-device dial test** — the phone
+actually exchanging a sealed frame with the desktop flyway from the network — needs the
+Pixel 7A with USB debugging on and `adb`. The card will stop at that step and say exactly what
+to do; it will not try to drive your phone itself.
