@@ -1653,6 +1653,46 @@ export const UNQUEUED_AFTER_S = 60;
  *  are the same voice, shortened to fit a line. */
 export const NUDGE_TEXT = "skein here — a background job you started has reported in.";
 
+/** Is this line the job nudge? Asked of the words, for the reason every other
+ *  prompt Skein writes is recognised by its words: the live fold and the one
+ *  that reads a session back off disk share nothing but the text (`restore.md`).
+ *  It is what lets the nudge be folded like its siblings rather than drawn as a
+ *  bubble in your register.
+ *
+ *  **The resend mark is invisible here**, the way a suffix is to `isResumePrompt`
+ *  and `isJobsPrompt`. A nudge whose turn broke before reaching a model is sent
+ *  again with `withResendMark` appended, and that copy is the same act; matched
+ *  exactly it fell out of the fold and was drawn as your own bubble beside a
+ *  second fold for the mark, which is the defect this recogniser exists to
+ *  remove, arriving through the heal (found in review).
+ *
+ *  The cost of a words-based recogniser, stated rather than discovered: a prompt
+ *  of *yours* that is exactly this sentence is drawn as Skein's and folded. The
+ *  wire marks nothing and the session file records a nudge as an ordinary user
+ *  message, so no cheaper test can tell them apart — and the family accepts the
+ *  same bargain for its two long prompts. */
+export function isJobNudge(text: string): boolean {
+  return stripResendMark(text).trim() === NUDGE_TEXT;
+}
+
+/** What the folded job nudge says in the column.
+ *
+ *  **This cap is the whole of what you are shown, and that is the point.** The
+ *  nudge fired 43 times on this machine, against 433 job notifications — so it
+ *  is the fallback working, not noise, and 42 of the 43 got the agent to act on
+ *  a report it had otherwise ignored. What was wrong was the drawing: a meta
+ *  note (*nothing picked that up — asking the card to look (1 of 2)*) and then
+ *  the prompt itself, in your own right-aligned bubble, so the app explained
+ *  the same act twice and nagged in your voice (reported 2026-11-11). One quiet
+ *  line, openable, in Skein's own voice, is what the resume prompt and the jobs
+ *  prompt have always been (`transcript.ts::longFold`). */
+export const NUDGE_CAP = "skein asked it to look — a job reported in";
+
+/** And when that ask never left, `RESUME_FAILED_CAP` is not its sentence: a
+ *  nudge is not a resume, and a card told it was resumed when nothing happened
+ *  is the same class of wrong reading as the one that note exists to prevent. */
+export const NUDGE_FAILED_CAP = "skein could not ask it to look";
+
 /** What is waiting in the CLI's queue, unread. Two things reach the same
  *  state — *told, and not stirring* — from opposite ends, and they are worded
  *  apart everywhere because they mean different things about the wall. A `job`
@@ -1753,7 +1793,7 @@ export function ghostedByNudge<T extends { awaited?: true }>(
 
 /** Said when a nudge disproves its own premise, because a card must not
  *  silently stop waiting for words it told you it was holding — the same rule
- *  `nudgeNote` and `healNote` exist for.
+ *  `NUDGE_CAP`, `nudgeGaveUpNote` and `healNote` exist for.
  *
  *  Names the count rather than the words. What was in those lines is still
  *  drawn immediately above, and repeating a prompt back at you to say it went
@@ -1769,13 +1809,6 @@ export function unwokenNote(count: number): string {
   return count === 1
     ? "a job reported in and nothing picked it up"
     : `${count} jobs reported in and nothing picked them up`;
-}
-
-/** Said before Skein nudges, because a card must never send on its own in
- *  silence — the same rule `healNote` exists for. */
-export function nudgeNote(attempt: number, kind: NudgeKind = "job"): string {
-  const what = kind === "prompt" ? "nothing answered that" : "nothing picked that up";
-  return `${what} — asking the card to look (${attempt} of ${NUDGE_BUDGET})`;
 }
 
 /** Said when the budget is spent, and only then: a card that was picked up on

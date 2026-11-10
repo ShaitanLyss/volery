@@ -21,13 +21,13 @@ import {
   compactNote,
   NUDGE_BUDGET,
   HOLD_LINE,
+  NUDGE_CAP,
   NUDGE_PROMPT_TEXT,
   NUDGE_TEXT,
   nudgeGaveUpNote,
   isPromptNudge,
   ghostedByNudge,
   ghostNote,
-  nudgeNote,
   UNACKNOWLEDGED_LINE,
   unwokenNote,
   UNQUEUED_AFTER_S,
@@ -1890,10 +1890,13 @@ describe("a job that reported in and woke nobody", () => {
     expect(unwokenNote(1)).not.toBe(unwokenNote(2));
   });
 
-  test("a nudge names which attempt it is, out of how many", () => {
-    const note = nudgeNote(1);
-    expect(note).toContain(`1 of ${NUDGE_BUDGET}`);
-    expect(nudgeNote(2)).toContain(`2 of ${NUDGE_BUDGET}`);
+  /* The nudge used to raise a meta note before it sent, naming the attempt out
+     of the budget. Both are gone: the prompt is folded with this cap (below), so
+     the column says the act once instead of twice, and the attempt count was a
+     diagnostic rather than something a reader needs. */
+  test("the nudge's own line says whose it is, and what for", () => {
+    expect(NUDGE_CAP.startsWith("skein")).toBe(true);
+    expect(NUDGE_CAP).toContain("job");
   });
 
   test("giving up says what to do about it, not merely that it happened", () => {
@@ -1901,7 +1904,7 @@ describe("a job that reported in and woke nobody", () => {
   });
 
   test("all of it is lowercase, like the rest of the wall's prose", () => {
-    for (const s of [unwokenNote(1), unwokenNote(2), nudgeNote(1), nudgeGaveUpNote()]) {
+    for (const s of [unwokenNote(1), unwokenNote(2), NUDGE_CAP, nudgeGaveUpNote()]) {
       expect(s).toBe(s.toLowerCase());
     }
   });
@@ -1945,13 +1948,7 @@ describe("a prompt the card never picked up", () => {
 
   test("the two silences are worded apart", () => {
     expect(NUDGE_PROMPT_TEXT).not.toBe(NUDGE_TEXT);
-    expect(nudgeNote(1, "prompt")).not.toBe(nudgeNote(1, "job"));
     expect(nudgeGaveUpNote("prompt")).not.toBe(nudgeGaveUpNote("job"));
-  });
-
-  test("a prompt nudge still names which attempt it is, out of how many", () => {
-    expect(nudgeNote(1, "prompt")).toContain(`1 of ${NUDGE_BUDGET}`);
-    expect(nudgeNote(2, "prompt")).toContain(`2 of ${NUDGE_BUDGET}`);
   });
 
   test("giving up on a prompt says what to do about it", () => {
@@ -1976,12 +1973,7 @@ describe("a prompt the card never picked up", () => {
   });
 
   test("all of it is lowercase, like the rest of the wall's prose", () => {
-    for (const s of [
-      NUDGE_PROMPT_TEXT,
-      UNACKNOWLEDGED_LINE,
-      nudgeNote(1, "prompt"),
-      nudgeGaveUpNote("prompt"),
-    ]) {
+    for (const s of [NUDGE_PROMPT_TEXT, UNACKNOWLEDGED_LINE, nudgeGaveUpNote("prompt")]) {
       expect(s).toBe(s.toLowerCase());
     }
   });
@@ -2532,7 +2524,7 @@ describe("a nudge that disproves its own premise", () => {
 
   test("giving up is said out loud, and counts rather than quotes", () => {
     /* A card must not silently stop waiting for words it told you it was
-       holding — `nudgeNote`'s rule. And the words are drawn immediately above,
+       holding — `NUDGE_CAP`'s rule. And the words are drawn immediately above,
        so repeating them back reads as the wall having lost them. */
     expect(ghostNote(1)).toContain("never reached this card");
     expect(ghostNote(3)).toContain("3 prompts");
@@ -2895,8 +2887,8 @@ describe("nudgeNoAllowanceNote", () => {
   test("is not either of the other two things a nudge can say", () => {
     for (const k of ["prompt", "job"] as const) {
       expect(nudgeNoAllowanceNote(k)).not.toBe(nudgeGaveUpNote(k));
-      expect(nudgeNoAllowanceNote(k)).not.toBe(nudgeNote(1, k));
-      expect(nudgeNoAllowanceNote(k)).not.toBe(nudgeNote(2, k));
+      expect(nudgeNoAllowanceNote(k)).not.toBe(NUDGE_CAP);
+      expect(nudgeNoAllowanceNote(k)).not.toBe(NUDGE_TEXT);
     }
   });
 

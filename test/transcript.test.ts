@@ -11,7 +11,11 @@ import {
 import type { Line } from "../src/lib/conversation.svelte";
 import { RESUME_CAP, RESUME_FAILED_CAP, resumePrompt } from "../src/lib/rousing";
 import {
+  NUDGE_CAP,
+  NUDGE_FAILED_CAP,
+  NUDGE_TEXT,
   RESEND_CAP,
+  isJobNudge,
   isResendMark,
   resendMark,
   withResendMark,
@@ -44,7 +48,9 @@ const shape = (lines: Line[]) =>
                 : b.line.kind === "you"
                   ? isResendMark(b.line.text)
                     ? "mark"
-                    : "resume"
+                    : isJobNudge(b.line.text)
+                      ? "nudge"
+                      : "resume"
                   : "sum"
             }]`
           : b.kind === "shell"
@@ -375,6 +381,32 @@ describe("the prompt rousing sends folds too", () => {
   test("a send that never left says so on the cap", () => {
     // Folded, the line's own `failed` mark is not on screen to be read.
     expect(longFold(roused("failed")).cap).toBe(RESUME_FAILED_CAP);
+  });
+
+  /* The nudge a card gets when a background job reported in and nothing picked
+     it up. It is Skein's own prompt, addressed to the agent, and it was drawn as
+     a bubble in your register with a meta note above it explaining the same act
+     — twice, the second time in your voice. Folded, it is one quiet line. */
+  test("the job nudge folds to its own cap, not to the resume one", () => {
+    expect(isJobNudge(NUDGE_TEXT)).toBe(true);
+    expect(shape([you(NUDGE_TEXT), said("the reviewer reported in")])).toBe("[nudge] text");
+    expect(longFold(you(NUDGE_TEXT)).cap).toBe(NUDGE_CAP);
+    expect(NUDGE_CAP).not.toBe(RESUME_CAP);
+    /* A nudge that never left is not a resume, whichever branch is asked
+       first. */
+    expect(longFold({ kind: "you", text: NUDGE_TEXT, state: "failed" }).cap).toBe(
+      NUDGE_FAILED_CAP,
+    );
+    /* And a nudge sent again after a failure is the same act: the heal appends
+       its mark, and matched exactly the healed copy fell out of the fold and
+       was drawn as a bubble beside a second fold (found in review). */
+    const healed = withResendMark(NUDGE_TEXT, "overloaded", 2);
+    expect(isJobNudge(healed)).toBe(true);
+    expect(shape([you(healed)])).toBe("[nudge]");
+    expect(longFold(you(healed)).cap).toBe(NUDGE_CAP);
+    /* An agent quoting it back is prose, and prose is not folded. */
+    expect(shape([said(`it said "${NUDGE_TEXT}" and I looked`)])).toBe("text");
+    expect(isJobNudge(`${NUDGE_TEXT} And one more thing.`)).toBe(false);
   });
 
   test("an agent quoting the prompt back is speech, and speech does not fold", () => {

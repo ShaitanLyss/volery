@@ -139,11 +139,12 @@ export type { ToolCall } from "./toolcall";
 export type ConvKind = "project" | "chat";
 
 export type Line = {
-  /** `you` is a turn *you* opened — see the `user` case in `ingest`. Rousing's
-   *  resume prompt is the one exception and stays in this register anyway: it
-   *  is a prompt, it is echoed and claimed like one, and both folds push it as
-   *  one. What marks it as Skein's is that `blocksOf` recognises the words and
-   *  folds it away behind `RESUME_CAP` — see `rousing.ts::isResumePrompt`.
+  /** `you` is a turn *you* opened — see the `user` case in `ingest`. Skein's
+   *  own prompts (rousing's, the jobs one, the job nudge) are the exception and
+   *  stay in this register anyway: they are prompts, they are echoed and
+   *  claimed like one, and both folds push them as one. What marks them as
+   *  Skein's is that `blocksOf` recognises the words and folds them away behind
+   *  their caps — see `rousing.ts::isResumePrompt` and `classify.ts::isJobNudge`.
    *
    *  `answer` is the other thing you say into a conversation and the only one
    *  that opens no turn: the reply to a parked `ask_user`, kept under the call

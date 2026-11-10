@@ -16,9 +16,12 @@
  */
 
 import {
+  NUDGE_CAP,
+  NUDGE_FAILED_CAP,
   RESEND_CAP,
   SKEIN_SHOW_TOOL,
   clip,
+  isJobNudge,
   isResendMark,
   splitResendMark,
 } from "./classify";
@@ -125,8 +128,9 @@ export type Block =
   /** A run of tool calls, drawn as one line until it is opened. */
   | { kind: "tools"; key: string; lines: Line[] }
   /** One line that is too long to stand in the column — a compaction's
-   *  summary, the whole of a skill the agent invoked, or the prompt rousing
-   *  sends a card whose turn was cut off. Folded on its own.
+   *  summary, the whole of a skill the agent invoked, or one of the prompts
+   *  Skein writes for an agent (rousing's, the jobs one, the job nudge). Folded
+   *  on its own.
    *
    *  Its own block kind rather than a long `line`, for the reason `tools` is
    *  one: a fold needs a key, and only a block has one. It differs from `tools`
@@ -140,12 +144,13 @@ export type Block =
    *  arriving as a `user` message, at a size that buries the round you came to
    *  read. Only the cap differs, and `longFold` is where it does.
    *
-   *  The resume prompt is the odd one in that it keeps line kind `you` — it is
-   *  a prompt, it is echoed and claimed like one (`Conversation.echo`), and
-   *  both folds push it as one — so it is recognised here by its words rather
-   *  than by its kind. Changing the kind instead would have meant widening
-   *  every predicate the echo bookkeeping asks and `trimOverlap`'s anchor, to
-   *  change nothing but which branch of this function it takes. */
+   *  Skein's own prompts are the odd ones in that they keep line kind `you` —
+   *  they are prompts, they are echoed and claimed like one
+   *  (`Conversation.echo`), and both folds push them as one — so they are
+   *  recognised here by their words rather than by their kind. Changing the
+   *  kind instead would have meant widening every predicate the echo
+   *  bookkeeping asks and `trimOverlap`'s anchor, to change nothing but which
+   *  branch of this function they take. */
   | { kind: "long"; key: string; line: Line }
   /** A `!` run: the command, and what it printed. A fold of exactly one thing
    *  like `long`, and for the same reason — what a `cargo build` prints is not a
@@ -177,7 +182,8 @@ export const isShown = (line: Line): boolean =>
   line.kind === "tool" && line.call?.name === SKEIN_SHOW_TOOL;
 
 /** The line kinds that fold on their own — see the `long` block above. A `you`
- *  line joins them when it is rousing's prompt, which is asked separately. */
+ *  line joins them when it is one of Skein's own prompts, which is asked
+ *  separately. */
 /* Folded on their own, and a relay joins them for a third reason again. A
  * compaction and a skill fold because of their *size*; a relay is usually a
  * paragraph. It folds because of whose words they are: instructions written by
@@ -232,12 +238,14 @@ export function blocksOf(lines: Line[], tag = "l", base = 0, apart?: (line: Line
       out.push({ kind: "shell", key: `${tag}r${runs++}`, line });
       continue;
     }
-    /* Rousing's prompt: Skein's words, drawn in your register because that is
-       where a prompt goes, and folded because nobody reads instructions
-       addressed to an agent. Asked before `LONG` so the two counters stay
-       apart. */
+    /* Skein's own prompts: drawn in your register because that is where a
+       prompt goes, and folded because nobody reads instructions addressed to an
+       agent. Rousing's two, and the nudge a card gets when a background job
+       reported in and nothing picked it up. Asked before `LONG` so the counters
+       stay apart. */
     const roused =
-      line.kind === "you" && (isResumePrompt(line.text) || isJobsPrompt(line.text));
+      line.kind === "you" &&
+      (isResumePrompt(line.text) || isJobsPrompt(line.text) || isJobNudge(line.text));
     if (roused || LONG.includes(line.kind)) {
       /* Counted rather than keyed on its text, which is no help here — every
          compaction summary opens with the same fixed preamble, every skill
@@ -400,6 +408,21 @@ export function longFold(line: Line): { cap: string; hint: string } {
        for a half-written file that does not exist. The failed-send cap wins over
        both: a prompt that never left is the more urgent fact about the line, and
        folded, the line's own mark is not on screen to say so. */
+    /* The nudge, which used to be drawn as a bubble in your register with a meta
+       note above it explaining the same act. Asked *before* the generic failed
+       cap, because that one says "resumed by skein" and a nudge is not a
+       resume. See `NUDGE_CAP`. */
+    if (isJobNudge(line.text)) {
+      return {
+        cap: line.state === "failed" ? NUDGE_FAILED_CAP : NUDGE_CAP,
+        /* A line that never left has nothing to be read, and the resume fold
+           makes the same distinction for the same reason. */
+        hint:
+          line.state === "failed"
+            ? "what skein tried to say"
+            : "what skein said when a job reported in",
+      };
+    }
     if (line.state === "failed") return { cap: RESUME_FAILED_CAP, hint: "what skein tried to say" };
     if (isJobsPrompt(line.text)) {
       return { cap: JOBS_CAP, hint: "what skein said was left running" };

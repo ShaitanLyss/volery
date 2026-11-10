@@ -67,7 +67,6 @@ import {
   ghostNote,
   nudgeSkipFor,
   nudgeGaveUpNote,
-  nudgeNote,
   NUDGE_TEXT,
   UNQUEUED_AFTER_S,
   WAKE_GRACE_S,
@@ -3730,7 +3729,11 @@ export class Skein {
         }
       }
       conv.nudgeAttempts = nudge.attempt;
-      conv.note(nudgeNote(nudge.attempt, nudge.kind));
+      /* No note above it any more: the prompt itself is folded with its own cap
+         (`NUDGE_CAP`), which says in one quiet line what the note and the
+         bubble between them said twice — and said the second half in your
+         register. The line is still said, so the rule that this app never
+         prompts a card in silence holds; what went is the duplication. */
       await this.send(conv, NUDGE_TEXT, undefined, { own: true });
       /* The timer is the job grace, except on the prompt side, where the wait
          stopped costing anything the moment it stopped being a turn and could

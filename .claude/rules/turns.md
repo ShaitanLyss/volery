@@ -381,6 +381,14 @@ So this is a narrow fix for a narrow case, and the wall's own reading was the wr
 - **The nudge is a prompt because a prompt is what the case needs.** `NUDGE_TEXT` is nearly
   empty on purpose: the notification is already in the conversation, and what the agent wants
   is a turn in which to act on it, not Skein's paraphrase of a summary line.
+- **And it is drawn folded, like every other prompt Skein writes for an agent.** It is
+  `own: true`, so it goes through the ordinary send path and lands in the `you` register —
+  where, unfolded, it stood as *your* right-aligned bubble under a meta note explaining the
+  same act, so the wall nagged twice in your voice (reported 2026-11-11). `isJobNudge`
+  recognises the words and `transcript.ts` folds it to `NUDGE_CAP`; the note and `nudgeNote`
+  are gone. Measured before changing anything: **433 job notifications, 43 nudges, 42 of the
+  43 got the agent acting**, so this is the fallback working about one notification in ten,
+  not noise — which is why the fix is the drawing and not the mechanism.
 
 ### Sent, and not picked up
 
