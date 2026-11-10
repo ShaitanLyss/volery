@@ -408,6 +408,29 @@ in standby, the page still reads `visible`, animates and runs at normal priority
 EcoQoS, and minimizing does not hide a WebView2 page either — so browser flags against it
 would buy nothing.
 
+**A freeze is not the only way a wall goes quiet, and the other way writes nothing.**
+`crash.rs` is the opposite end: a wall that *dies* rather than closes. On 2026-11-10 at 12:58
+a wall up for three hours vanished while nobody was in front of it — Windows had it
+(`0xc0000409`, exception data `7`, a worker thread), `volery.log` had **not one line**, and
+nothing restarted it. That code is `__fastfail`, which the kernel hands straight to Windows
+Error Reporting; **no user-mode handler ever sees it**, and that was measured rather than
+assumed — a probe with both a vectored handler and an unhandled-exception filter installed is
+silent on `abort()` and loud on a null dereference. The dump said what it was: an allocation
+that could not be met (a `Vec` growth in `flyway/link.rs`, ~1 MiB, allocator returned null).
+
+So the record has to come from outside the process. `watch_for` starts a second copy of this
+binary (`--watch-wall <pid> <log dir>`) at launch, outside every job, which waits on the
+wall's handle and — when it exits with an exception code (`0xC0000000..`, where a close is 0,
+a `taskkill` is 1 and a logoff is `0x40010004`) — records the code and the dying **peak
+working set**, restarts the wall, and disappears, bounded by the watchdog's own `REVIVE_GAP`.
+`logs/died.json` is turned into a chronicle row by `crash::landed` at the next launch. The
+exception filter is kept for the faults it *can* see (it names module and offset, and must
+never assume it will run); stderr goes to `logs/stderr.log` with one generation kept, which is
+where Rust's `memory allocation of N bytes failed` had been going into an invalid handle;
+`VOLERY_CRASH_SELF=<ms>` aborts on purpose in a debug build so a lab can prove the path. And
+`crash::intercept` is answered in `main` **before** `hooks::intercept`, which refuses argv it
+does not recognise with exit 2 — the observer's first build died there, silently.
+
 Your own prompt is the one exception, and it is drawn the moment you send it
 (`Conversation.echo`). It was once the other way round: only `--replay-user-messages`
 echoing the prompt back put it in the transcript, on the argument that the UI should never

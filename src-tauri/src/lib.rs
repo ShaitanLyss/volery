@@ -27,6 +27,11 @@ mod chronicle;
 /// the form "what does this service actually do".
 pub mod azdo;
 mod control;
+/* What the process does when something is about to kill it. A panic leaves a
+   line in the log; a fast-fail abort left nothing at all until 2026-11-10 —
+   see the module's own note. Public because this binary is also the observer
+   that outlives a wall (`--watch-wall`), answered in `main`. */
+pub mod crash;
 mod creds;
 mod credits;
 mod docket;
@@ -500,6 +505,15 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        a way worth stopping for — see `applog::install`. */
     applog::install(app.handle().clone());
 
+    /* And this launch's stderr, which has nowhere to go in a `windows_subsystem`
+       binary — Rust's own dying words go there, and on 2026-11-10 the exact
+       allocation that could not be met was lost that way. Then the observer that
+       outlives this process, which is the only thing that can see a fast-fail
+       abort at all. Both need the directory the line above has just made. See
+       `crash.rs`. */
+    crash::redirect_stderr();
+    crash::watch_for();
+
     /* Before the store, before the browser's session file, and before anything
        can spawn: everything below this line assumes it is the only process
        holding this wall. Second, rather than first, only so that the refusal
@@ -645,6 +659,9 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
     /* Whether the update the last run started landed — a chronicle row, since
        the card that asked for it went down with the wall and cannot say. */
     update::landed(app.handle());
+    /* And whether the last run died rather than closed — a crash writes nothing
+       itself except the record read here. */
+    crash::landed(app.handle());
     /* Claude Code and its plugins kept current: the state is managed here
        because `freshen_state` reads it, and the automatic run waits out a
        minute after launch before its first look. See `freshen.rs`. */
@@ -670,6 +687,11 @@ pub fn run() {
        that says nothing — and here rather than in `main`, so the hook
        invocations `main` answers first never install it. */
     speak_for_panics();
+    /* And the other way this process can die without a word: not a panic but a
+       fail-fast abort, which unwinds nothing and writes nothing. On 2026-11-10
+       one took a wall that had been up for three hours, and `volery.log` had no
+       record of it at all — see `crash.rs`. */
+    crash::watch();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Supervisor::default())

@@ -180,7 +180,11 @@ fn now_ms() -> u64 {
 
 /// Whether a restart may be made now: on, and not within `REVIVE_GAP` of the
 /// last one this watchdog made, in this process or the one before it.
-fn may_restart() -> bool {
+///
+/// `pub(crate)` for `crash.rs`, which restarts the wall after a death rather
+/// than a stall and owes the same bound: the gap is what stops a wall that
+/// dies on launch from becoming a loop.
+pub(crate) fn may_restart() -> bool {
     if !reviving() {
         return false;
     }

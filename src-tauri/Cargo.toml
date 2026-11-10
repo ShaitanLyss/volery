@@ -285,6 +285,10 @@ windows = { version = "0.61", features = [
     # desktop first. See `browser::park_minimised`.
     "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
+    # `SetUnhandledExceptionFilter` and the exception records it is handed: the
+    # last chance to say what killed this process, for the deaths that are not
+    # panics and write nothing. See `crash.rs`.
+    "Win32_System_Diagnostics_Debug",
     # Showing a territory's folder in Explorer goes through the shell's own
     # SHOpenFolderAndSelectItems rather than `explorer.exe`, because that is the
     # only one of the three that reuses a window instead of stacking a new one
@@ -310,6 +314,14 @@ windows = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    # What a wall that died of an exception was holding when it went: the
+    # observer reads the peak working set off the process object, which outlives
+    # the process while its handle is open. See `crash.rs`.
+    "Win32_System_ProcessStatus",
+    # `SetStdHandle`, so this process's stderr has somewhere to land: there is
+    # no console, and Rust's own last words — the allocation size that could not
+    # be met, on 2026-11-10 — were being written into an invalid handle.
+    "Win32_System_Console",
     # Whether the session is locked, asked when a card's browser call ends: the
     # input desktop cannot be opened or switched to while the secure desktop
     # holds it. See `screen.rs`.
