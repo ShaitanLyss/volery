@@ -137,6 +137,34 @@ private fun numOrNull(o: JSONObject, key: String): Double? =
 private fun longOrNull(o: JSONObject, key: String): Long? =
     if (o.has(key) && !o.isNull(key)) o.optLong(key) else null
 
+/** One spoken line, as `phone-ffi`'s `narrate` flattens it: the brain's stable
+ *  kind word, the card id a later answer is addressed to, and the sentence. */
+data class NarrationLine(
+    val kind: String,
+    val card: String,
+    val text: String,
+)
+
+/** What `narrate` came back with: the lines to speak, and whether anything
+ *  needs Lyss right now (computed at every chatty level, for music ducking). */
+data class Narration(
+    val lines: List<NarrationLine>,
+    val needsYou: Boolean,
+)
+
+fun parseNarration(ok: JSONObject): Narration {
+    val linesArr = ok.optJSONArray("lines") ?: JSONArray()
+    val lines = (0 until linesArr.length()).mapNotNull { i ->
+        val l = linesArr.optJSONObject(i) ?: return@mapNotNull null
+        NarrationLine(
+            kind = l.optString("kind"),
+            card = l.optString("card"),
+            text = l.optString("text"),
+        )
+    }
+    return Narration(lines = lines, needsYou = ok.optBoolean("needsYou"))
+}
+
 fun parseFetched(ok: JSONObject): FetchedMedia {
     val size = ok.optJSONArray("size")
     return FetchedMedia(

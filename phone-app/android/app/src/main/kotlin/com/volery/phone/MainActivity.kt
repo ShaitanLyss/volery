@@ -1,10 +1,16 @@
 package com.volery.phone
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -44,9 +50,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,10 +69,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -81,6 +96,11 @@ class MainActivity : ComponentActivity() {
             VoleryTheme { HomeScreen() }
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Speaker.shutdown()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,6 +111,9 @@ private fun HomeScreen() {
     val sighting = NodeState.sighting
     val error = NodeState.error
 
+    val host = Config.host
+    val chatty = Config.chatty
+
     val dial = {
         NodeService.dial(context, Config.host, Config.key, Config.name)
     }
@@ -99,6 +122,46 @@ private fun HomeScreen() {
     // flyway the moment you open it; the re-dial button is for later.
     LaunchedEffect(Unit) {
         if (Config.key.isNotEmpty()) dial()
+    }
+
+    // The narration loop: while this screen is shown, re-sight the wall and
+    // speak what changed, gated by the chatty level.
+    NarrationLoop(context, host, chatty)
+
+    // The ears: a listen button that runs the recogniser and shows the words
+    // back as text — nothing more, until M5 wires a transcript to a wall.
+    var listening by remember { mutableStateOf(false) }
+    var heard by remember { mutableStateOf("") }
+    var listenError by remember { mutableStateOf<String?>(null) }
+    val listener = remember { Listener(context.applicationContext) }
+    DisposableEffect(listener) {
+        listener.onHeard = { heard = it }
+        listener.onFinal = { final -> heard = final; listening = false }
+        listener.onError = { message -> listenError = message; listening = false }
+        onDispose { listener.stop() }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            listenError = null
+            listening = true
+            heard = ""
+            listener.start()
+        } else {
+            listenError = "the ears need the microphone"
+        }
+    }
+    val toggleListen = {
+        if (listening) {
+            listener.stop()
+            listening = false
+        } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            listenError = null
+            listening = true
+            heard = ""
+            listener.start()
+        } else {
+            permission.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     // The column rises and settles once, so the first paint is a motion rather
@@ -132,6 +195,9 @@ private fun HomeScreen() {
                         }
                     },
                 )
+            },
+            bottomBar = {
+                ListenBar(listening = listening, heard = heard, error = listenError, onToggle = toggleListen)
             },
         ) { padding ->
             Box(
@@ -447,6 +513,75 @@ private fun ContextRing(ctx: Double?, dormant: Boolean) {
                 topLeft = topLeft,
                 size = arcSize,
             )
+        }
+    }
+}
+
+/* ── narration: the digest→speech loop ─────────────────────────────────── */
+
+/** Sight the wall and speak its changes, only while the home screen is shown.
+ *  `repeatOnLifecycle(RESUMED)` is the gate: the block runs once on every
+ *  return to the front (so a reopen narrates what changed while away, against
+ *  the persisted digest) and then on a modest cadence, and it is cancelled the
+ *  moment the screen stops being shown. `off` gates it entirely — no sighting,
+ *  no voice. */
+@Composable
+private fun NarrationLoop(context: Context, host: String, chatty: String) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(host, chatty) {
+        if (chatty == "off") return@LaunchedEffect
+        Speaker.init(context)
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            narrateOnce(context, host, chatty)
+            while (true) {
+                delay(NARRATION_CADENCE_MS)
+                narrateOnce(context, host, chatty)
+            }
+        }
+    }
+}
+
+/** One poll, folded against the persisted digest and spoken. The blocking JNI
+ *  calls and the store read/write run off the main thread; [Speaker.speak] is
+ *  back on it, where [android.speech.tts.TextToSpeech] is happiest. */
+private suspend fun narrateOnce(context: Context, host: String, chatty: String) {
+    val prev = withContext(Dispatchers.IO) { NarrationStore.load(context) }
+    val turn = sightAndNarrate(host, prev, chatty) ?: return
+    if (turn.lines.isNotEmpty()) {
+        Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ")}")
+    }
+    turn.lines.forEach { Speaker.speak(it) }
+    withContext(Dispatchers.IO) { NarrationStore.save(context, turn.curr) }
+}
+
+/* ── the ears: the listen button and its transcript ────────────────────── */
+
+@Composable
+private fun ListenBar(listening: Boolean, heard: String, error: String?, onToggle: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Surface)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when {
+            listening -> Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusMark("ask", working = true, dormant = false)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    heard.ifEmpty { "listening…" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = InkDim,
+                )
+            }
+            error != null -> Text(error, style = MaterialTheme.typography.bodyMedium, color = Rust)
+            heard.isNotEmpty() -> Text(heard, style = MaterialTheme.typography.bodyMedium, color = InkDim)
+            else -> Text("speak and your words appear here", style = MaterialTheme.typography.labelMedium, color = InkMute)
+        }
+        FilledTonalButton(onClick = onToggle, shape = RoundedCornerShape(12.dp)) {
+            Text(if (listening) "stop" else "listen")
         }
     }
 }

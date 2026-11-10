@@ -7,7 +7,9 @@ import org.json.JSONObject
  * The JNI surface of `phone-ffi`, the Rust cdylib. Every call returns a JSON
  * envelope — `{"ok": …}` or `{"err": "…"}` — which [parse] turns into an
  * [Envelope] the app can branch on. `start` and `sight` block (the node binds
- * and dials), so they run off the main thread, on the service's executor.
+ * and dials), so they run off the main thread, on the service's executor;
+ * `narrate` is a pure fold and returns at once, but is cheap enough that the
+ * narration loop runs it off the main thread too.
  */
 object NativeBridge {
     init {
@@ -18,6 +20,7 @@ object NativeBridge {
     external fun start(phrase: String, name: String): String
     external fun sight(host: String): String
     external fun fetch(host: String, card: String, kind: String, kept: String, path: String): String
+    external fun narrate(prev: String, curr: String, chatty: String): String
 
     sealed class Envelope {
         class Ok(val payload: JSONObject) : Envelope()

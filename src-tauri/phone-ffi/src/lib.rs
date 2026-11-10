@@ -1,12 +1,13 @@
 //! The JNI bridge between the phone app (Kotlin) and the phone node.
 //!
-//! `docs/PHONE.md` M2b. The node's whole surface is three async calls —
+//! `docs/PHONE.md` M2b, M3. The node's surface is three async calls —
 //! `Node::start(key, name)`, `Node::sight(host)` and
-//! `Node::fetch(host, card, want)` — and this crate is the cdylib the Android
-//! app links. It holds one node in a process-wide slot,
-//! drives the async calls on a held tokio runtime, and crosses the JNI
-//! boundary as a JSON envelope: `{"ok": …}` on success, `{"err": "…"}` on
-//! failure, which the Kotlin side parses with `org.json`.
+//! `Node::fetch(host, card, want)` — plus one pure fold, `narrate`, which runs
+//! `phone_node::diff` over two digests and needs no node and no network. This
+//! crate is the cdylib the Android app links. It holds one node in a
+//! process-wide slot, drives the async calls on a held tokio runtime, and
+//! crosses the JNI boundary as a JSON envelope: `{"ok": …}` on success,
+//! `{"err": "…"}` on failure, which the Kotlin side parses with `org.json`.
 //!
 //! ### Why JNI rather than uniffi
 //!
@@ -23,7 +24,7 @@
 //!
 //! A phone is one node, so a process-wide slot is the honest shape of the
 //! thing rather than a workaround — the same reason the node's surface was
-//! shaped as three calls, not a handle factory.
+//! shaped as a few calls, not a handle factory.
 //!
 //! ### The one thing Android needs that the desktop never did
 //!
@@ -40,7 +41,7 @@ use jni::errors::{LogErrorAndDefault, Result as JniResult};
 use jni::objects::{JObject, JString};
 use jni::sys::jstring;
 use jni::{Env, EnvUnowned};
-use phone_node::Node;
+use phone_node::{Digest, Node};
 use serde_json::{json, Value};
 
 #[cfg(target_os = "android")]
@@ -150,6 +151,33 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_fetch<'caller>(
         .resolve::<LogErrorAndDefault>()
 }
 
+/// `narrate(prev, curr, chatty)` → `{"ok": {"lines": [{"kind": …, "card": …,
+/// "text": …}], "needsYou": bool}}` or `{"err": …}`.
+///
+/// The pure fold (`phone_node::diff`) over two digests, so it needs no node and
+/// no network: `prev` and `curr` are the JSON of a digest — the `cards` object
+/// `sight` already returns — and `prev` may be `""` for a first sighting, which
+/// folds to silence (no baseline). `chatty` is `"off"`, `"needs"` or
+/// `"murmur"`. `needsYou` is computed from the change alone, at every level,
+/// so the app can duck music without also asking for a murmur.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_narrate<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    prev: JString<'caller>,
+    curr: JString<'caller>,
+    chatty: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let prev = read(env, &prev);
+            let curr = read(env, &curr);
+            let chatty = read(env, &chatty);
+            to_jstring(env, narrate(&prev, &curr, &chatty))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
 fn read(env: &Env<'_>, s: &JString<'_>) -> String {
     s.try_to_string(env).unwrap_or_default()
 }
@@ -224,6 +252,72 @@ fn sight_value(s: phone_node::Sighting) -> Value {
         })
     });
     json!({ "roster": roster, "cards": cards })
+}
+
+/// The pure fold behind `narrate`: parse the two digests and a chatty level,
+/// run the brain's `diff`, and flatten its `Narration` into the envelope. `prev`
+/// is empty for a first sighting, which the brain folds to silence.
+fn narrate(prev_json: &str, curr_json: &str, chatty: &str) -> Result<Value, String> {
+    let chatty = parse_chatty(chatty)?;
+    let prev = if prev_json.trim().is_empty() {
+        None
+    } else {
+        Some(parse_digest(prev_json)?)
+    };
+    let curr = parse_digest(curr_json)?;
+    let n = phone_node::diff(prev.as_ref(), &curr, chatty);
+    Ok(narration_value(n))
+}
+
+fn parse_chatty(s: &str) -> Result<phone_node::Chatty, String> {
+    match s {
+        "off" => Ok(phone_node::Chatty::Off),
+        "needs" => Ok(phone_node::Chatty::Needs),
+        "murmur" => Ok(phone_node::Chatty::Murmur),
+        other => Err(format!("chatty wants \"off\", \"needs\" or \"murmur\", not \"{other}\"")),
+    }
+}
+
+/// A digest out of the `cards` JSON `sight` returns. Lenient in the same way the
+/// brain's own snapshot reader is: a missing field reads as the value that
+/// claims least, and a missing snapshot is `null` (which the fold reads as no
+/// cards, not a crash).
+fn parse_digest(json: &str) -> Result<Digest, String> {
+    let v: Value = serde_json::from_str(json).map_err(|e| format!("unreadable digest: {e}"))?;
+    let host = v.get("host").and_then(Value::as_str).unwrap_or_default().to_string();
+    let version = v.get("version").and_then(Value::as_u64).unwrap_or(0);
+    let age_ms = v.get("age_ms").and_then(Value::as_u64).unwrap_or(0);
+    let snapshot = v.get("snapshot").cloned().unwrap_or(Value::Null);
+    Ok(Digest { host, version, age_ms, snapshot })
+}
+
+/// Flatten a `Narration` into the JSON the Kotlin side reads: each line keeps
+/// its `kind` (the brain's stable vocabulary, as a lowercase word), its `card`
+/// id, and the sentence, and `needsYou` rides alongside.
+fn narration_value(n: phone_node::Narration) -> Value {
+    json!({
+        "lines": n
+            .lines
+            .into_iter()
+            .map(|l| json!({
+                "kind": kind_name(l.kind),
+                "card": l.card,
+                "text": l.text,
+            }))
+            .collect::<Vec<_>>(),
+        "needsYou": n.needs_you,
+    })
+}
+
+fn kind_name(k: phone_node::Kind) -> &'static str {
+    match k {
+        phone_node::Kind::Opened => "opened",
+        phone_node::Kind::Ask => "ask",
+        phone_node::Kind::Finished => "finished",
+        phone_node::Kind::Started => "started",
+        phone_node::Kind::Dormant => "dormant",
+        phone_node::Kind::Notice => "notice",
+    }
 }
 
 fn to_jstring(env: &mut Env<'_>, result: Result<Value, String>) -> JniResult<jstring> {
@@ -310,5 +404,84 @@ mod tests {
         assert_eq!(file["bytes"], 4);
         assert!(file["size"].is_null());
         assert_eq!(file["full"], "C:/p/note.md");
+    }
+
+    /// A `cards` envelope for `narrate`, over the given snapshot cards.
+    fn cards(version: u64, snapshot_cards: Value) -> String {
+        json!({
+            "host": "desk",
+            "version": version,
+            "age_ms": 0,
+            "snapshot": json!({ "v": 1, "at": version, "cards": snapshot_cards }),
+        })
+        .to_string()
+    }
+
+    fn busy_card() -> Value {
+        json!({ "id": "a", "title": "auth work", "working": true, "dormant": false })
+    }
+
+    fn done_card() -> Value {
+        json!({ "id": "a", "title": "auth work", "working": false, "dormant": false, "ending": "ok" })
+    }
+
+    /// `narrate` folds a `working → idle` move into one `finished` line at
+    /// `murmur`, with the sentence, card id and the `needsYou` flag that a
+    /// plain finish does not raise.
+    #[test]
+    fn narrate_folds_a_finish_into_one_line_at_murmur() {
+        let v = narrate(&cards(1, json!([busy_card()])), &cards(2, json!([done_card()])), "murmur").unwrap();
+        let lines = v["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["kind"], "finished");
+        assert_eq!(lines[0]["text"], "auth work finished.");
+        assert_eq!(lines[0]["card"], "a");
+        assert_eq!(v["needsYou"], false);
+    }
+
+    /// The same finish at `needs` is not something that needs her, so the
+    /// envelope is empty and the flag is clear.
+    #[test]
+    fn needs_says_nothing_for_a_plain_finish() {
+        let v = narrate(&cards(1, json!([busy_card()])), &cards(2, json!([done_card()])), "needs").unwrap();
+        assert!(v["lines"].as_array().unwrap().is_empty());
+        assert_eq!(v["needsYou"], false);
+    }
+
+    /// A question is said at `needs` and raises the flag whatever the level.
+    #[test]
+    fn a_question_is_said_at_needs_and_raises_the_flag() {
+        let prev = cards(1, json!([json!({ "id": "a", "title": "caravan", "working": false, "dormant": false, "ending": "ok" })]));
+        let curr = cards(2, json!([json!({ "id": "a", "title": "caravan", "working": false, "dormant": false, "asks": [{}] })]));
+        let v = narrate(&prev, &curr, "needs").unwrap();
+        let lines = v["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["kind"], "ask");
+        assert_eq!(v["needsYou"], true);
+    }
+
+    /// An empty `prev` is a first sighting — silence, not a fanfare.
+    #[test]
+    fn no_previous_digest_is_silence() {
+        let v = narrate("", &cards(1, json!([busy_card()])), "murmur").unwrap();
+        assert!(v["lines"].as_array().unwrap().is_empty());
+        assert_eq!(v["needsYou"], false);
+    }
+
+    /// An unknown chatty level is refused by name, not silently treated as off.
+    #[test]
+    fn an_unknown_chatty_level_is_refused() {
+        let err = narrate("", &cards(1, json!([])), "loud").unwrap_err();
+        assert!(err.contains("chatty"), "the error names what was wrong: {err}");
+    }
+
+    /// A digest with no snapshot reads as `null`, not a crash — the same lenient
+    /// read the brain's own snapshot reader keeps.
+    #[test]
+    fn a_digest_with_no_snapshot_reads_as_null() {
+        let d = parse_digest(r#"{"host":"desk"}"#).unwrap();
+        assert_eq!(d.host, "desk");
+        assert_eq!(d.version, 0);
+        assert!(d.snapshot.is_null());
     }
 }

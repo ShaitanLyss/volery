@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -20,9 +21,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -60,6 +63,7 @@ private fun SettingsScreen(onSaved: () -> Unit) {
     var host by rememberSaveable { mutableStateOf(Config.host) }
     var key by rememberSaveable { mutableStateOf(Config.key) }
     var name by rememberSaveable { mutableStateOf(Config.name) }
+    var chatty by rememberSaveable { mutableStateOf(Config.chatty) }
 
     Box(Modifier.fillMaxSize().background(groundBrush())) {
         Scaffold(
@@ -106,11 +110,14 @@ private fun SettingsScreen(onSaved: () -> Unit) {
                     label = "this phone's name",
                 )
                 Spacer(Modifier.height(4.dp))
+                ChattyControl(selected = chatty, onSelect = { chatty = it })
+                Spacer(Modifier.height(4.dp))
                 Button(
                     onClick = {
                         Config.host = host
                         Config.key = key
                         Config.name = name
+                        Config.chatty = chatty
                         onSaved()
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -133,4 +140,35 @@ private fun SettingsField(value: String, onValueChange: (String) -> Unit, label:
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+/** The chatty level: three words that gate the narration loop, with the
+ *  selected one's meaning said in quiet prose beneath. */
+@Composable
+private fun ChattyControl(selected: String, onSelect: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("how much the phone says", style = MaterialTheme.typography.labelMedium, color = InkMute)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChattyOption("off", selected, onSelect)
+            ChattyOption("needs", selected, onSelect)
+            ChattyOption("murmur", selected, onSelect)
+        }
+        Text(chattyDetail(selected), style = MaterialTheme.typography.labelMedium, color = InkMute)
+    }
+}
+
+@Composable
+private fun ChattyOption(value: String, selected: String, onSelect: (String) -> Unit) {
+    if (selected == value) {
+        FilledTonalButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+    } else {
+        OutlinedButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+    }
+}
+
+private fun chattyDetail(value: String): String = when (value) {
+    "off" -> "nothing, even when a card is asking"
+    "needs" -> "only what needs you — a card opened, a question waiting"
+    "murmur" -> "everything notable — finishes, starts, notices too"
+    else -> ""
 }
