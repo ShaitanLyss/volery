@@ -55,6 +55,30 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::flyway::sync::{Event, Stamp, What};
 
+/// The most event JSON one exchange may carry, across every host.
+///
+/// **This had no bound at all until 2026-11-10**, and the shape it made was the
+/// one that killed a wall: `events_after` returned *every* row above the peer's
+/// watermark, which for a wall that has been away is the whole `flyway_event`
+/// table — and that table is never trimmed (it is the outbox and the memory
+/// both, see the module note, so it grows all day). Three copies of it then
+/// existed at once: the `Vec<Event>`, the `serde_json::to_vec` of the whole
+/// `Frame`, and the sealed buffer beside it.
+///
+/// It also could not work. The reader refuses any frame over `wire::MAX_FRAME`
+/// (8 MiB) while the writer checked nothing, so a peer far enough behind was
+/// sent a frame it dropped on arrival, the watermark never moved, and every
+/// tick rebuilt the entire table in memory to throw it away again. A wall that
+/// was merely behind by a lot was behind for ever.
+///
+/// A **prefix** is safe because the watermark is the peer's own `MAX(seq)`:
+/// what is carried advances it, and the next exchange asks from there. A
+/// backlog drains over a handful of ticks instead of in one allocation, and
+/// nothing is lost if a carry is cut short. `wire::MAX_FRAME` is the ceiling
+/// this must sit under with room to spare, since the frame is the JSON again
+/// plus a seal.
+pub const CARRY_MOST: usize = 4 * 1024 * 1024;
+
 /// Run `f` so that everything it writes lands together or not at all.
 ///
 /// A savepoint rather than a transaction, so it composes: callers that are
@@ -186,7 +210,8 @@ pub fn watermark(conn: &Connection) -> Result<BTreeMap<String, u64>, String> {
 }
 
 /// Everything this wall holds that a peer with `have` does not, oldest first
-/// within each host. A host the peer has never heard of is sent whole.
+/// within each host, up to `CARRY_MOST` bytes of it. A host the peer has never
+/// heard of is sent whole, or as much of it as one exchange may carry.
 pub fn events_after(
     conn: &Connection,
     have: &BTreeMap<String, u64>,
@@ -198,6 +223,12 @@ pub fn events_after(
         let rows = stmt.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?;
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
     };
+    /* A share each rather than one budget taken in host order, or the first
+       host in the list would be drained to the end before the last one was
+       told anything — and with more hosts than the budget allows, the last
+       would never be told anything at all. Every host moves a little every
+       exchange, which is all that is needed: the watermark makes it additive. */
+    let room_for = CARRY_MOST / hosts.len().max(1);
     let mut out = Vec::new();
     for host in hosts {
         let after = have.get(&host).copied().unwrap_or(0) as i64;
@@ -207,8 +238,19 @@ pub fn events_after(
         let rows = stmt
             .query_map(params![host, after], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
+        let mut room = room_for;
+        let mut carried = 0;
         for json in rows {
             let json = json.map_err(|e| e.to_string())?;
+            /* At least one, whatever it costs. A row larger than this host's
+               whole share would otherwise be carried never, and because the
+               watermark only advances over what was carried, one such row
+               would hold that host's tellings back for ever. */
+            if carried > 0 && room < json.len() {
+                break;
+            }
+            room = room.saturating_sub(json.len());
+            carried += 1;
             out.push(serde_json::from_str(&json).map_err(|e| format!("read flyway event: {e}"))?);
         }
     }
@@ -539,6 +581,148 @@ mod tests {
         /* The same card again is not a voice, and says nothing. */
         store::put_sink_item(&conn, "y", Some("p1"), "bug", "t", "b3", "", Some("c2")).unwrap();
         assert_eq!(events_after(&conn, &BTreeMap::new()).unwrap().len(), 2);
+    }
+
+    /// Plant one event straight into the outbox, as a wall that has been
+    /// elsewhere would find it on return — the table is never trimmed, so this
+    /// is what a long absence really looks like.
+    fn plant(conn: &Connection, host: &str, seq: u64, body: usize) {
+        let e = ev(
+            host,
+            seq,
+            What::Dropped {
+                id: format!("{host}-{seq}"),
+                scope: Some("skein".into()),
+                kind: "bug".into(),
+                title: "t".into(),
+                body: "x".repeat(body),
+                paths: String::new(),
+                from: None,
+                at: 0,
+                host: host.into(),
+            },
+        );
+        conn.execute(
+            "INSERT INTO flyway_event (host, seq, event, applied) VALUES (?1, ?2, ?3, 1)",
+            params![host, seq as i64, serde_json::to_string(&e).unwrap()],
+        )
+        .unwrap();
+    }
+
+    /// What the peer's watermark becomes once it has stored `got` — the whole
+    /// of why a short carry is safe rather than lossy.
+    fn watermark_of(got: &[Event]) -> BTreeMap<String, u64> {
+        let mut have: BTreeMap<String, u64> = BTreeMap::new();
+        for e in got {
+            let at = have.entry(e.stamp.host.clone()).or_insert(0);
+            *at = (*at).max(e.stamp.seq);
+        }
+        have
+    }
+
+    #[test]
+    fn a_backlog_is_carried_in_pieces_and_none_of_it_is_lost() {
+        let conn = db();
+        /* Enough JSON to be several times one exchange's worth. */
+        const N: u64 = 120;
+        const EACH: usize = 64 * 1024;
+        for seq in 1..=N {
+            plant(&conn, "elsewhere", seq, EACH);
+        }
+
+        let mut have = BTreeMap::new();
+        let mut carried: Vec<u64> = Vec::new();
+        let mut rounds = 0;
+        loop {
+            let got = events_after(&conn, &have).unwrap();
+            if got.is_empty() {
+                break;
+            }
+            rounds += 1;
+            assert!(rounds < 100, "the carry is not converging");
+            /* The bound is the whole point, and a prefix is only safe because
+               it is *ordered*: seq must climb, never jump back. */
+            let mut last = carried.last().copied().unwrap_or(0);
+            for e in &got {
+                assert!(e.stamp.seq > last, "carried out of order at {}", e.stamp.seq);
+                last = e.stamp.seq;
+                carried.push(e.stamp.seq);
+            }
+            let bytes: usize = got
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap().len())
+                .sum();
+            assert!(
+                bytes <= CARRY_MOST + EACH + 1024,
+                "one exchange carried {bytes} bytes, more than CARRY_MOST by more than a single row"
+            );
+            have = watermark_of(&got);
+        }
+
+        assert_eq!(carried, (1..=N).collect::<Vec<u64>>(), "every event, once, in order");
+        assert!(rounds > 1, "the backlog should have needed more than one exchange");
+    }
+
+    #[test]
+    fn every_host_is_carried_each_exchange_rather_than_the_first_one_taking_all() {
+        let conn = db();
+        /* Three hosts, each with more than a third of the budget, and named so
+           that the one that would starve under a shared budget sorts last. */
+        for host in ["aaa", "mmm", "zzz"] {
+            for seq in 1..=30u64 {
+                plant(&conn, host, seq, 64 * 1024);
+            }
+        }
+        let got = events_after(&conn, &BTreeMap::new()).unwrap();
+        let seen: std::collections::BTreeSet<&str> =
+            got.iter().map(|e| e.stamp.host.as_str()).collect();
+        assert_eq!(seen.len(), 3, "a host was starved by the ones before it: {seen:?}");
+        for host in ["aaa", "mmm", "zzz"] {
+            let theirs: Vec<&Event> = got.iter().filter(|e| e.stamp.host == host).collect();
+            /* Starts at the oldest, so nothing is skipped over on the way. */
+            assert_eq!(theirs.first().map(|e| e.stamp.seq), Some(1), "{host} did not start at its oldest");
+            /* And is *cut short* — a bounded carry is the entire subject. With
+               one shared budget taken in host order the last would carry
+               nothing and the first everything; with no bound at all every
+               host carries all thirty. Three hosts over a third of the budget
+               each is the one shape that tells those apart. */
+            assert!(
+                theirs.len() < 30,
+                "{host} carried all {} events, so no share was applied",
+                theirs.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_event_larger_than_a_share_is_still_carried_rather_than_blocking_for_ever() {
+        let conn = db();
+        /* Three hosts, so each share is a third of the budget, and one row
+           bigger than any share. If it were skipped it would never be carried,
+           the watermark would never move past it, and every later event from
+           that host would be held back with it. */
+        for host in ["aaa", "mmm", "zzz"] {
+            plant(&conn, host, 1, 8);
+        }
+        plant(&conn, "mmm", 2, CARRY_MOST);
+        plant(&conn, "mmm", 3, 8);
+
+        /* It is not carried *beside* anything — it cannot be, it is larger than
+           the whole share — but it must come through on the exchange that finds
+           it in front, or the host is held back for ever. */
+        let mut have = BTreeMap::new();
+        let mut mmm: Vec<u64> = Vec::new();
+        for _ in 0..10 {
+            let got = events_after(&conn, &have).unwrap();
+            if got.is_empty() {
+                break;
+            }
+            mmm.extend(
+                got.iter().filter(|e| e.stamp.host == "mmm").map(|e| e.stamp.seq),
+            );
+            have = watermark_of(&got);
+        }
+        assert_eq!(mmm, vec![1, 2, 3], "every one of them, in order, the oversized row included");
     }
 
     #[test]
