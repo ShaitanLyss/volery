@@ -43,9 +43,10 @@ import androidx.compose.ui.unit.dp
 
 /**
  * Settings: the three fields the node needs — the wall host, the key phrase
- * and this phone's name — readable and editable. These feed [Config], which
- * the home screen dials with. The walking modes (push-to-talk, "hey volery",
- * seamless), chatty level and duck-vs-pause land here in a later milestone.
+ * and this phone's name — readable and editable, then the walking knobs: how
+ * much the phone says, how you talk back, and what happens to your music while
+ * it speaks. These feed [Config], which the home screen dials and narrates
+ * with. The wake word is shown disabled — it is deferred, not forgotten.
  */
 class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,6 +65,8 @@ private fun SettingsScreen(onSaved: () -> Unit) {
     var key by rememberSaveable { mutableStateOf(Config.key) }
     var name by rememberSaveable { mutableStateOf(Config.name) }
     var chatty by rememberSaveable { mutableStateOf(Config.chatty) }
+    var mode by rememberSaveable { mutableStateOf(Config.mode) }
+    var music by rememberSaveable { mutableStateOf(Config.music) }
 
     Box(Modifier.fillMaxSize().background(groundBrush())) {
         Scaffold(
@@ -112,12 +115,18 @@ private fun SettingsScreen(onSaved: () -> Unit) {
                 Spacer(Modifier.height(4.dp))
                 ChattyControl(selected = chatty, onSelect = { chatty = it })
                 Spacer(Modifier.height(4.dp))
+                ModeControl(selected = mode, onSelect = { mode = it })
+                Spacer(Modifier.height(4.dp))
+                MusicControl(selected = music, onSelect = { music = it })
+                Spacer(Modifier.height(4.dp))
                 Button(
                     onClick = {
                         Config.host = host
                         Config.key = key
                         Config.name = name
                         Config.chatty = chatty
+                        Config.mode = mode
+                        Config.music = music
                         onSaved()
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -170,5 +179,69 @@ private fun chattyDetail(value: String): String = when (value) {
     "off" -> "nothing, even when a card is asking"
     "needs" -> "only what needs you — a card opened, a question waiting"
     "murmur" -> "everything notable — finishes, starts, notices too"
+    else -> ""
+}
+
+/** How she talks back: one of the walking modes. The wake word is present but
+ *  disabled — it would keep the microphone always on, which is battery-costly
+ *  on Android, so it is deferred rather than shipped half-done. */
+@Composable
+private fun ModeControl(selected: String, onSelect: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("how you talk to it", style = MaterialTheme.typography.labelMedium, color = InkMute)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ModeOption("push-to-talk", selected, onSelect)
+            ModeOption("seamless", selected, onSelect)
+            OutlinedButton(
+                onClick = {},
+                enabled = false,
+                shape = RoundedCornerShape(10.dp),
+            ) { Text("hey-volery") }
+        }
+        Text(modeDetail(selected), style = MaterialTheme.typography.labelMedium, color = InkMute)
+    }
+}
+
+@Composable
+private fun ModeOption(value: String, selected: String, onSelect: (String) -> Unit) {
+    if (selected == value) {
+        FilledTonalButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+    } else {
+        OutlinedButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+    }
+}
+
+private fun modeDetail(value: String): String = when (value) {
+    "push-to-talk" -> "tap to talk — nothing listens until you do"
+    "seamless" -> "after something needs you, it listens on its own for a moment"
+    else -> ""
+}
+
+/** What happens to her music while the phone speaks something that needs her:
+ *  duck lowers it, pause stops it — both resume when the line is done. */
+@Composable
+private fun MusicControl(selected: String, onSelect: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("when it needs you, your music", style = MaterialTheme.typography.labelMedium, color = InkMute)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MusicOption("duck", selected, onSelect)
+            MusicOption("pause", selected, onSelect)
+        }
+        Text(musicDetail(selected), style = MaterialTheme.typography.labelMedium, color = InkMute)
+    }
+}
+
+@Composable
+private fun MusicOption(value: String, selected: String, onSelect: (String) -> Unit) {
+    if (selected == value) {
+        FilledTonalButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+    } else {
+        OutlinedButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+    }
+}
+
+private fun musicDetail(value: String): String = when (value) {
+    "duck" -> "lowers for the line, then back up"
+    "pause" -> "stops for the line, then resumes"
     else -> ""
 }

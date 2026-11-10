@@ -3,7 +3,6 @@ package com.volery.phone
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -53,9 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -124,41 +121,30 @@ private fun HomeScreen() {
         if (Config.key.isNotEmpty()) dial()
     }
 
-    // The narration loop: while this screen is shown, re-sight the wall and
-    // speak what changed, gated by the chatty level.
-    NarrationLoop(context, host, chatty)
+    // The ears, as one controller the tap and the seamless window both drive.
+    val voice = remember { VoiceController(context.applicationContext) }
+    DisposableEffect(voice) { onDispose { voice.stop() } }
 
-    // The ears: a listen button that runs the recogniser and shows the words
-    // back as text — nothing more, until M5 wires a transcript to a wall.
-    var listening by remember { mutableStateOf(false) }
-    var heard by remember { mutableStateOf("") }
-    var listenError by remember { mutableStateOf<String?>(null) }
-    val listener = remember { Listener(context.applicationContext) }
-    DisposableEffect(listener) {
-        listener.onHeard = { heard = it }
-        listener.onFinal = { final -> heard = final; listening = false }
-        listener.onError = { message -> listenError = message; listening = false }
-        onDispose { listener.stop() }
-    }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) {
-            listenError = null
-            listening = true
-            heard = ""
-            listener.start()
-        } else {
-            listenError = "the ears need the microphone"
+    val mode = Config.mode
+
+    // The narration loop: while this screen is shown, re-sight the wall and
+    // speak what changed, gated by the chatty level. A line that needs her
+    // ducks her music (every mode) and, in seamless mode, opens the ears for a
+    // short yes-window once the words are out of the air.
+    NarrationLoop(context, host, chatty, mode, onNeedsYou = {
+        if (mode == "seamless") {
+            if (voice.hasMic()) voice.startSeamless() else voice.fail("the ears need the microphone")
         }
+    })
+
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) voice.toggle() else voice.fail("the ears need the microphone")
     }
     val toggleListen = {
-        if (listening) {
-            listener.stop()
-            listening = false
-        } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            listenError = null
-            listening = true
-            heard = ""
-            listener.start()
+        if (voice.listening) {
+            voice.stop()
+        } else if (voice.hasMic()) {
+            voice.toggle()
         } else {
             permission.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -197,7 +183,7 @@ private fun HomeScreen() {
                 )
             },
             bottomBar = {
-                ListenBar(listening = listening, heard = heard, error = listenError, onToggle = toggleListen)
+                ListenBar(listening = voice.listening, heard = voice.heard, error = voice.error, onToggle = toggleListen)
             },
         ) { padding ->
             Box(
@@ -526,16 +512,22 @@ private fun ContextRing(ctx: Double?, dormant: Boolean) {
  *  moment the screen stops being shown. `off` gates it entirely — no sighting,
  *  no voice. */
 @Composable
-private fun NarrationLoop(context: Context, host: String, chatty: String) {
+private fun NarrationLoop(context: Context, host: String, chatty: String, mode: String, onNeedsYou: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
-    LaunchedEffect(host, chatty) {
+    LaunchedEffect(host, chatty, mode) {
         if (chatty == "off") return@LaunchedEffect
         Speaker.init(context)
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            narrateOnce(context, host, chatty)
-            while (true) {
-                delay(NARRATION_CADENCE_MS)
-                narrateOnce(context, host, chatty)
+            try {
+                narrateOnce(context, host, chatty, onNeedsYou)
+                while (true) {
+                    delay(NARRATION_CADENCE_MS)
+                    narrateOnce(context, host, chatty, onNeedsYou)
+                }
+            } finally {
+                // Leaving the home screen cancels this block; a needs_you line
+                // still mid-speech must not open the ears on another screen.
+                Speaker.onQuiet = null
             }
         }
     }
@@ -543,15 +535,22 @@ private fun NarrationLoop(context: Context, host: String, chatty: String) {
 
 /** One poll, folded against the persisted digest and spoken. The blocking JNI
  *  calls and the store read/write run off the main thread; [Speaker.speak] is
- *  back on it, where [android.speech.tts.TextToSpeech] is happiest. */
-private suspend fun narrateOnce(context: Context, host: String, chatty: String) {
+ *  back on it, where [android.speech.tts.TextToSpeech] is happiest. A turn that
+ *  needs her ducks her music for the line, then hands the caller `onNeedsYou`
+ *  once the words are out of the air — seamless mode opens the ears on it. */
+private suspend fun narrateOnce(context: Context, host: String, chatty: String, onNeedsYou: () -> Unit) {
     val prev = withContext(Dispatchers.IO) { NarrationStore.load(context) }
     val turn = sightAndNarrate(host, prev, chatty) ?: return
     if (turn.lines.isNotEmpty()) {
         Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ")}")
     }
-    turn.lines.forEach { Speaker.speak(it) }
+    turn.lines.forEach { Speaker.speak(it, needsFocus = turn.needsYou) }
     withContext(Dispatchers.IO) { NarrationStore.save(context, turn.curr) }
+    if (turn.needsYou) {
+        // Listen only after the words are out of the air, so the ears do not
+        // hear the phone's own voice as an answer.
+        if (Speaker.isSpeaking()) Speaker.onQuiet = onNeedsYou else onNeedsYou()
+    }
 }
 
 /* ── the ears: the listen button and its transcript ────────────────────── */

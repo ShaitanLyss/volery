@@ -25,4 +25,15 @@ object Config {
     // a reopen must not re-speak everything, but a chatty choice is a
     // preference, not something to recover.
     var chatty by mutableStateOf("murmur")
+
+    // How she talks back: the walking mode. "push-to-talk" is the tap and does
+    // nothing until she does; "seamless" listens on its own after something
+    // needs her; "hey-volery" is the wake word, deferred (not built). Default
+    // push-to-talk, the one that does nothing without her.
+    var mode by mutableStateOf("push-to-talk")
+
+    // What happens to her music while the phone speaks something that needs
+    // her: "duck" lowers it, "pause" stops it. Both resume when the line is
+    // done — the transient focus is handed back, not held.
+    var music by mutableStateOf("duck")
 }
