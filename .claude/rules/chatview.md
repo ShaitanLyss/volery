@@ -216,16 +216,23 @@ until you say so* at the end of this file.
 
 **A queued message says so, and is this wall's to change.** A prompt sent
 mid-turn never reaches the CLI's stdin: it joins the card's held queue with
-`waiting: "turn"` (`holding.ts`), the same queue an allowance hold uses, so the
-bubble reads *queued — it goes when this turn finishes* with *send now*,
-*edit* and *delete*. **Send now is an interrupt and nothing else**
-(`do("stop", { keepQueue: true })`): the words never left this wall, so the
-aborted `result` is followed by the queue draining instead of a prompt lost
-with it. Editing rewrites the queue and the store (`Skein.editQueued`);
-deleting closes the line and drops it (`cancelQueued`). Only the message at the
-head of the queue offers *send now* — the queue never reorders what you wrote.
-The CLI's own queue is still used by a prompt a composing path wrote straight
-to stdin, and for that line the old stop-only receipt remains.
+`waiting: "turn"` (`holding.ts`), the same queue an allowance hold uses. It is
+no longer drawn where you typed it — the rest of the turn's answer would be
+appended below it, reading backwards. It stands in a **collapsed bar at the
+foot of the column** (`Thread.svelte`'s `.heldfold`, `heldLines`), out of the
+flowing column, so a prompt queued behind a long turn does not block the
+reading. Open the bar for the same receipts it wore in place: *queued — it goes
+when this turn finishes* with *send now*, *edit* and *delete*. **Send now is an
+interrupt and nothing else** (`do("stop", { keepQueue: true })`): the words
+never left this wall, so the aborted `result` is followed by the queue draining
+instead of a prompt lost with it. Editing rewrites the queue and the store
+(`Skein.editQueued`); deleting closes the line and drops it (`cancelQueued`).
+Only the message at the head of the queue offers *send now* — the queue never
+reorders what you wrote. When the queue drains, `Conversation.echoResumed`
+moves each line to the tail of `lines` and re-stamps `Line.at`, so it reads at
+the moment the model read it, immediately before its own answer (sink
+`d6712f90`). The CLI's own queue is still used by a prompt a composing path
+wrote straight to stdin, and for that line the old stop-only receipt remains.
 
 **A line keeps when it happened.** `Line.at` and `ToolResult.at` are stamped live and read off
 each session record's `timestamp` in `history.ts`. `transcript.ts::runSummary` folds a run by
@@ -439,10 +446,13 @@ tested, in the spec — was never reached, and a conversation holding a question
 sat wherever its turn left it. It reads `Presence.filed` now (this wall's pile and every other
 wall's, less answers held for a quiet wall), says *answer later: …*, and draws each question at
 the foot of the conversation's thread through `Ask.svelte` with *not worth answering* beside it
-(Lyss: *"the deferred questions could be shown in the chat"*). The answer and the drop are
-`putoff.svelte.ts`, lifted out of `Vigil.svelte` so the pile and the thread share one claim-then-
-send — a second copy is a second place to get that order backwards. `presence` and `elsewhere`
-are required props, so a mount cannot leave every put-off question out of *needs you* silently.
+(Lyss: *"the deferred questions could be shown in the chat"*). Each is a full-height panel, so
+they stand in a **collapsed bar** (`.putoff` in `ChatView.svelte`) — one row reading *N questions
+put off*, opened to answer or drop them — rather than stacking until they are all answered and
+covering the whole sheet (sink `6f7db693`). The answer and the drop are `putoff.svelte.ts`, lifted
+out of `Vigil.svelte` so the pile and the thread share one claim-then-send — a second copy is a
+second place to get that order backwards. `presence` and `elsewhere` are required props, so a
+mount cannot leave every put-off question out of *needs you* silently.
 
 Lab (`bun run lab sb --frozen`, synthetic events, one Haiku turn): a finished card stayed in
 *finished* before its notice rose and did not move when it did (the dot went hollow); a turn that

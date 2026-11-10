@@ -97,6 +97,16 @@
    *  own words are asked of the handle (`card.queued`), never read off `conv`:
    *  a drawn fact goes through the gist, and a card elsewhere has no `conv`. */
   const queuedBehindTurn = $derived(card.gist.held?.waiting === "turn");
+  /** Whether the queued messages are unfolded. Collapsed by default — the whole
+   *  point is that they stand as one bar at the foot of the column, not as
+   *  prompts in the middle of the turn still running (`6f7db693`). */
+  let heldOpen = $state(false);
+  /* A fresh hold starts folded: once the queue drains the flag clears, so the
+     next message queued behind a turn reads as one bar again rather than as
+     whatever the last one was left in. */
+  $effect(() => {
+    if (!queuedBehindTurn) heldOpen = false;
+  });
   /** The message being rewritten in place, by `HeldItem.key`, and its words. */
   let editing = $state<string | null>(null);
   let draft = $state("");
@@ -202,11 +212,29 @@
      letter, rather than inside the run of calls around it (`Block` "sent"). */
   const apart = $derived(chat ? (l: Line) => sentOf(l.call) !== null : undefined);
   const past = $derived(blocksOf(conv.history, "h", 0, apart));
+  /* Messages queued behind the running turn, drawn collapsed at the foot of the
+     column rather than where they were typed: the rest of the turn's answer is
+     appended *below* where the prompt was written, so a held line drawn in place
+     sits in the middle of a turn that has not finished, blocking the reading.
+     These are the same lines `echoResumed` moves to the tail when the queue
+     drains (`d6712f90`), so they meet their answer where the model read them. */
+  const heldLines = $derived(
+    queuedBehindTurn ? conv.lines.filter((l) => l.state === "held" && !!l.heldKey) : [],
+  );
   /* `conv.dropped` is what makes a live line's key its absolute position rather
      than its index in a window that slides — without it the whole column is
      rebuilt on every message past the cap, and the reading goes with it. See
-     `Conversation.dropped`. */
-  const live = $derived(blocksOf(conv.lines, "l", conv.dropped, apart));
+     `Conversation.dropped`. Filtering the held lines out keeps the keys of the
+     lines around them stable: a held line moved to the tail on release leaves
+     the lines after it at their old indices. */
+  const live = $derived(
+    blocksOf(
+      queuedBehindTurn ? conv.lines.filter((l) => !(l.state === "held" && !!l.heldKey)) : conv.lines,
+      "l",
+      conv.dropped,
+      apart,
+    ),
+  );
 
   /** Which folded groups are open, by key. Every group starts closed — the
    *  space they were taking is the whole point — and each is its own decision,
@@ -965,6 +993,36 @@
         <span class="fill" style:width="{conv.compactFrac * 100}%"></span>
       </div>
     {/if}
+  {/if}
+  <!-- Messages queued behind the running turn, collapsed by default: one bar at
+       the foot of the column, below the turn that is still going, so a prompt
+       you sent mid-turn does not sit in the middle of the answer and block the
+       reading. Open it to rewrite or drop one before it goes — the same
+       receipts the line wore when it was drawn in place. -->
+  {#if heldLines.length}
+    <div class="heldfold" class:shown={heldOpen}>
+      <button
+        type="button"
+        class="cap"
+        aria-expanded={heldOpen ? "true" : "false"}
+        onclick={() => (heldOpen = !heldOpen)}
+        title={heldOpen ? "fold the queued messages away" : "what is queued behind this turn"}
+      >
+        <span class="mark" aria-hidden="true">{heldOpen ? "▾" : "▸"}</span>
+        <span class="what"
+          >{heldLines.length === 1 ? "1 message queued" : `${heldLines.length} messages queued`} — {heldLines.length === 1
+            ? "it goes"
+            : "they go"} when this turn finishes</span
+        >
+      </button>
+      {#if heldOpen}
+        <div class="inside">
+          {#each heldLines as line (line.heldKey!)}
+            {@render one(line, lineKey(line, line.heldKey!))}
+          {/each}
+        </div>
+      {/if}
+    </div>
   {/if}
   <!-- An empty card should read as a beginning, not as a missing component.
        The theme is ink on paper down to its token names, so a card with
@@ -1729,6 +1787,28 @@
     border-left: 1px solid var(--edge);
     padding-left: 0.6rem;
     margin-left: 0.3rem;
+  }
+
+  /* The queued messages, folded at the foot of the column. Dashed like
+     everything here that is not settled: the words have not left this wall yet,
+     so the bar reads as a wait, not as a thing that happened. */
+  .heldfold {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+  }
+  .heldfold > .cap {
+    font-family: var(--util);
+    font-size: calc(0.72rem * var(--read, 1));
+    padding-bottom: 0.25rem;
+    border-bottom: 1px dashed var(--edge);
+  }
+  .heldfold.shown > .cap {
+    color: var(--paper-dim);
+  }
+  .heldfold.shown > .inside {
+    border-left-style: dashed;
   }
 
   /* The live edge. Celadon because it is a status and that is what celadon

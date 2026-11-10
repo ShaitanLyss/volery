@@ -324,6 +324,16 @@
   );
   let sending = $state<string | null>(null);
   let putOffFault = $state<{ id: string; why: string } | null>(null);
+  /** Which conversation's put-off questions are unfolded. Keyed by card, so a
+   *  switch to another conversation starts folded again, and collapsed by
+   *  default: each question is a full-height panel, and several stacked at the
+   *  foot took the whole sheet until they were all answered (`6f7db693`). */
+  let openPutOff = $state<string | null>(null);
+  /* Once a conversation's questions are all answered or dropped, forget that
+     it was open, so a question put off later starts folded again. */
+  $effect(() => {
+    if (putOff.length === 0) openPutOff = null;
+  });
 
   async function answerHere(d: Deferred) {
     if (sending) return;
@@ -1004,42 +1014,64 @@
                   />
                 </div>
               {/if}
-              {#each putOff as d (d.id)}
-                {#if d.held}
-                  <p class="ended">
-                    answered — waiting for {d.host} to be heard from, then it goes to the card
-                    <button type="button" onclick={() => unholdHere(d)}>take it back</button>
-                  </p>
-                {:else}
-                  <!-- A question put off is the same payload a live one is, so
-                       it is the same panel — `Vigil.svelte`'s argument — and
-                       answered by the same path (`putoff.svelte.ts`). -->
-                  <div class="inline" class:sending={sending === d.id}>
-                    <Ask
-                      ask={{ askId: d.id, questions: d.questions, answers: d.answers, ours: false, since: d.askedAt }}
-                      card={card.id}
-                      project={card.where}
-                      title={card.face.title}
-                      scripts={card.scripts}
-                      parked={false}
-                      onanswer={() => void answerHere(d)}
-                    />
-                  </div>
-                  <p class="ended">
-                    you put this off{#if d.host && card.face.elsewhere?.unheard}
-                      — {d.host} has not been heard from, so an answer waits here until it is{/if}
-                    <button
-                      type="button"
-                      onclick={() => void dropHere(d)}
-                      title="take it off without answering — the agent was told nothing was decided"
-                      >not worth answering</button
+              {#if putOff.length}
+                <!-- Questions put off, collapsed by default: each one is a
+                     full-height panel, and several stacked at the foot took the
+                     whole sheet until they were all answered. One bar, opened to
+                     answer or drop them (`6f7db693`). -->
+                <div class="putoff" class:shown={openPutOff === card.id}>
+                  <button
+                    type="button"
+                    class="cap"
+                    aria-expanded={openPutOff === card.id ? "true" : "false"}
+                    onclick={() => (openPutOff = openPutOff === card.id ? null : card.id)}
+                    title={openPutOff === card.id ? "fold the questions away" : "answer them later"}
+                  >
+                    <span class="mark" aria-hidden="true">{openPutOff === card.id ? "▾" : "▸"}</span>
+                    <span class="what"
+                      >{putOff.length === 1 ? "1 question put off" : `${putOff.length} questions put off`}</span
                     >
-                  </p>
-                  {#if putOffFault && putOffFault.id === d.id}
-                    <p class="ended fault">{putOffFault.why}</p>
+                  </button>
+                  {#if openPutOff === card.id}
+                    {#each putOff as d (d.id)}
+                      {#if d.held}
+                        <p class="ended">
+                          answered — waiting for {d.host} to be heard from, then it goes to the card
+                          <button type="button" onclick={() => unholdHere(d)}>take it back</button>
+                        </p>
+                      {:else}
+                        <!-- A question put off is the same payload a live one is,
+                             so it is the same panel — `Vigil.svelte`'s argument —
+                             and answered by the same path (`putoff.svelte.ts`). -->
+                        <div class="inline" class:sending={sending === d.id}>
+                          <Ask
+                            ask={{ askId: d.id, questions: d.questions, answers: d.answers, ours: false, since: d.askedAt }}
+                            card={card.id}
+                            project={card.where}
+                            title={card.face.title}
+                            scripts={card.scripts}
+                            parked={false}
+                            onanswer={() => void answerHere(d)}
+                          />
+                        </div>
+                        <p class="ended">
+                          you put this off{#if d.host && card.face.elsewhere?.unheard}
+                            — {d.host} has not been heard from, so an answer waits here until it is{/if}
+                          <button
+                            type="button"
+                            onclick={() => void dropHere(d)}
+                            title="take it off without answering — the agent was told nothing was decided"
+                            >not worth answering</button
+                          >
+                        </p>
+                        {#if putOffFault && putOffFault.id === d.id}
+                          <p class="ended fault">{putOffFault.why}</p>
+                        {/if}
+                      {/if}
+                    {/each}
                   {/if}
-                {/if}
-              {/each}
+                </div>
+              {/if}
               {#if owed}
                 <p class="ended">
                   {endedOnQuestion || owed.gist.ending === "question" ? "it ended on a question" : "it ended its turn"} —
@@ -1658,6 +1690,41 @@
     text-decoration: underline;
     text-decoration-color: var(--paper-faint);
     text-underline-offset: 3px;
+  }
+  /* The questions put off, folded into one bar. Dashed under it, like everything
+     here that is still waiting rather than settled, and amber for the same
+     reason the `.ended` line is: it is the agent waiting on you. */
+  .putoff {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .putoff > .cap {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: 0;
+    padding: 0 0 7px;
+    border-bottom: 1px dashed var(--paper-faint);
+    font-family: var(--cv-ui, var(--util));
+    font-size: 12.5px;
+    color: color-mix(in oklab, var(--st-ask) 55%, var(--paper-dim));
+    cursor: pointer;
+  }
+  .putoff > .cap .mark {
+    color: var(--paper-faint);
+  }
+  .putoff > .cap .what {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .putoff.shown > .cap {
+    color: var(--paper-dim);
   }
   .sheet :global(.hunt) {
     top: 10px;

@@ -1061,8 +1061,8 @@ the whole feature: the old behaviour *was* an automatic open, and a rule that re
 - **Coming back from a long away shuts it too.** That is the same complaint one layer out, and
   `away.md` (the morning pile) owns the reasoning.
 - **Chat view is untouched.** The question is already at the foot of the thread there, which
-  covers nothing away from it; the chat view's own queued-questions container is sink `6f7db693`
-  and a separate piece of work.
+  covers nothing away from it. Since 2026-11-10 the *put-off* questions there are a collapsed
+  bar too (`.putoff`, sink `6f7db693`), so they no longer stack to full height until answered.
 
 #### Designs that are looked at rather than described
 

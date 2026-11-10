@@ -2497,6 +2497,26 @@ export class Conversation {
       if (echo.trim() !== line.text.trim()) line.echo = echo;
       lines.push(line);
     }
+    /* d6712f90: each line was drawn where you typed it — in the middle of the
+       turn that was running then — and everything that turn said afterwards was
+       appended below it, so the transcript read backwards. Move it to the tail
+       now that the turn has ended and the model is actually reading it, and
+       re-stamp its time: it reads at the moment it went, immediately before its
+       own answer. A line the cap has since sliced off the front is re-added at
+       the tail, since it is going *now* whatever scrollback has dropped. The
+       `awaiting` bookkeeping is untouched — the move changes only where the line
+       is drawn, never whether it is owed an echo. A release that later fails
+       leaves the line here: `failHeld` marks it in place and does not move it. */
+    for (const line of lines) {
+      const at = this.lines.indexOf(line);
+      if (at >= 0) this.lines.splice(at, 1);
+      this.lines.push(line);
+      line.at = Date.now();
+    }
+    if (this.lines.length > MAX_LINES) {
+      this.dropped += this.lines.length - MAX_LINES;
+      this.lines = this.lines.slice(-MAX_LINES);
+    }
     if (lines.length > 1) {
       const batch = ++Conversation.#batches;
       for (const l of lines) l.batch = batch;
