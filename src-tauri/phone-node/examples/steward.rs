@@ -12,7 +12,7 @@
 //! ```powershell
 //! cd src-tauri
 //! cargo run -p phone-node --example steward -- "<key-phrase>" "<wall-host>" "open a card for the orchard migration"
-//! cargo run -p phone-node --example steward --confirm -- "<key-phrase>" "<wall-host>" "open a card for the orchard migration"
+//! cargo run -p phone-node --example steward -- --confirm "<key-phrase>" "<wall-host>" "open a card for the orchard migration"
 //! ```
 //!
 //! Prints the whole of what `steward.ts::understand` decided — most often
