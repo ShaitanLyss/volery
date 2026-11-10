@@ -76,11 +76,12 @@ Three loops, all thin on the phone:
   a workspace crate `flyway-core`, which the desktop consumes unchanged and the phone links.
   This is the same move the repo already argues for (one registry, no restated drift), and it
   de-risks the desktop flyway by making it testable without Tauri.
-- **An Android app (Kotlin).** A foreground service so it stays alive while walking, Bluetooth
-  audio, audio-focus ducking, and a settings screen. The Rust core is exposed through uniffi
-  (or JNI). Kotlin native over Flutter for now: the app is mostly headless service + a small
-  settings screen, not rich UI. iPhone-later may argue for Flutter retroactively; that is a
-  later decision, not a reason to carry a Flutter toolchain into M0.
+- **An Android app (Kotlin + Jetpack Compose).** A foreground service so it stays alive while
+  walking, Bluetooth audio, audio-focus ducking, and home/settings/viewer screens. The Rust
+  core is exposed through JNI (a JSON envelope — uniffi can't map the flyway's opaque
+  `serde_json::Value` snapshot). Compose over Flutter: native feel + performance, no rewrite,
+  and the Rust node is already cross-platform, so iPhone-later means redoing only the UI shell
+  (SwiftUI), not the app.
 - **Narration, derived phone-side.** No new wire vocabulary for v1: the phone folds the
   existing digest/ask/notice deltas into spoken lines, gated by the chatty filter. Pure logic,
   testable without a phone (`narration.ts` on the desktop, or its own module).
@@ -120,7 +121,7 @@ wake-word sensitivity.
 | **M0** | the spike: does iroh 1.3.0 build and run on Android? | — | **done** — cross-compiles, links, and ran on the Pixel 7a, printing a node id |
 | **M1** | extract `flyway-core`; desktop consumes it unchanged | M0 | `cargo test --lib` and the flyway lifts green with no behaviour change |
 | **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | **done** — the phone dials the real wall (`queerisfreedom`) over the relay and reads its roster + cards digest |
-| **M2v** | viewing: `Node::fetch` pulls a file/picture over the flyway's `seeing` exchange (done, desktop-proven), plus a Compose viewer that draws them | M2 | fetch done; the viewer is the UI half. Honest limit: pinned far-wall images and `ask_user` previews do not cross the flyway yet |
+| **M2v** | viewing: `Node::fetch` pulls a file/picture over the flyway's `seeing` exchange, and a Compose viewer draws them | M2 | **done** — fetch desktop-proven, Compose viewer built + installed. Honest limit: pinned far-wall images and `ask_user` previews do not cross yet |
 | **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | a digest change becomes a spoken line, at the chosen chatty level |
 | **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
 | **M5** | control + questions: spoken confirm loop, act verbs, `ask_user` answers | M4 | speak "open a card for X", confirm aloud, it opens on the far wall |
