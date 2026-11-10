@@ -176,7 +176,7 @@ async fn main() {
                                         }
                                     }
                                 }
-                                Frame::Cards(_) | Frame::Tail(_) | Frame::Move(_) | Frame::Look(_) | Frame::Act(_) | Frame::Board(_) | Frame::Accounts(_) | Frame::See(_) => {}
+                                Frame::Cards(_) | Frame::Tail(_) | Frame::Move(_) | Frame::Look(_) | Frame::Act(_) | Frame::Board(_) | Frame::Accounts(_) | Frame::See(_) | Frame::Steward(_) => {}
                             }
                         }
                         out
@@ -223,7 +223,7 @@ async fn main() {
                 Frame::Fleet(m) => {
                     lap_fleet.on(m, now(), &facts());
                 }
-                Frame::Cards(_) | Frame::Tail(_) | Frame::Move(_) | Frame::Look(_) | Frame::Act(_) | Frame::Board(_) | Frame::Accounts(_) | Frame::See(_) => {}
+                Frame::Cards(_) | Frame::Tail(_) | Frame::Move(_) | Frame::Look(_) | Frame::Act(_) | Frame::Board(_) | Frame::Accounts(_) | Frame::See(_) | Frame::Steward(_) => {}
             }
         }
     }

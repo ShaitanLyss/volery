@@ -253,6 +253,19 @@ pub fn invite() -> Option<String> {
     invite_naming(&crate::vault::read_at(target())?, &host_name())
 }
 
+/// A named lab's flyway key phrase and host, read out of the vault — what a
+/// phone needs to dial that lab (`docs/PHONE.md`; the `fetch` and `steward`
+/// phone-node examples read the same entry by hand). The studio's own is
+/// `invite()`; this is a lab's, under `dev.skein.lab.<name>/flyway-key`.
+pub fn lab_who(identifier: &str) -> Option<(String, String)> {
+    let held = crate::vault::read_at(&lab_target(identifier))?;
+    let (phrase, host) = held.split_once(SPLIT)?;
+    if phrase.is_empty() || host.is_empty() {
+        return None;
+    }
+    Some((phrase.to_string(), host.to_string()))
+}
+
 /// The stored invite's key, with `host` after the dot. `None` for an entry
 /// with no key in it, so a panel never reveals half an invite.
 fn invite_naming(held: &str, host: &str) -> Option<String> {

@@ -51,6 +51,7 @@ use super::look::LookMsg;
 use super::moving::MoveMsg;
 use super::seeing::SeeMsg;
 use super::session::Msg;
+use super::steward::StewardMsg;
 use super::tail::TailMsg;
 
 /// The target this file logs under: the path it had in the app, so a
@@ -85,6 +86,10 @@ pub enum Frame {
     /// (`seeing.rs`): asked of the wall the card runs on, answered on the same
     /// stream, never gossiped.
     See(SeeMsg),
+    /// A spoken sentence from a phone, and the plan a wall made of it
+    /// (`steward.rs`): asked of the wall the phone chose, answered on the same
+    /// stream, never gossiped.
+    Steward(StewardMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -141,6 +146,7 @@ const KNOWN: &[&str] = &[
     "act", "acted", "board", "unpost", "unposted", "leaving",
     "accounts", "signin_begin", "signin_begun", "signin_code", "signin_done",
     "see", "seen",
+    "steward", "stewarded",
 ];
 
 #[cfg(test)]
@@ -349,6 +355,12 @@ mod tests {
         for m in [
             SeeMsg::See { id: String::new(), card: String::new(), ask: crate::seeing::Sight::Stat { paths: vec![] } },
             SeeMsg::Seen { id: String::new(), why: None, stats: None, names: None, picture: None, part: None },
+        ] {
+            written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
+        }
+        for m in [
+            StewardMsg::Steward { id: String::new(), transcript: String::new() },
+            StewardMsg::Stewarded { id: String::new(), answer: None, why: None },
         ] {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
         }

@@ -62,6 +62,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::servers::jobs;
@@ -266,9 +267,116 @@ fn ask(app: &AppHandle, system: &str, utterance: &str, model: &str) -> Result<St
     Ok(reply)
 }
 
+/* ── the wall, as a transcript handed it is understood against ─────────────
+ *
+ * The steward's prompt and its validation both read a `Wall`
+ * (`src/lib/voice.ts`): cards with a title and a project, territories with a
+ * name and a root, and which card is focused. `voicing.svelte.ts` builds that
+ * wall from the front end's live `$state` for a sentence spoken at the
+ * keyboard. A transcript that arrives over the flyway — from a phone, which
+ * has no `$state` of its own — must be understood against *this wall's* store
+ * and live state, and that is what this command assembles: cards and
+ * territories from the store (`conversation` joined to `project`), `working`
+ * from the supervisor's own turn flag, and file lists left to the front end's
+ * `find_files` for the one or two territories a sentence names. The front end
+ * supplies the one field the store cannot know — the focused card — because it
+ * is viewport state, not a row.
+ */
+
+/// One card as the steward sees it.
+#[derive(Serialize)]
+pub struct WallCard {
+    pub id: String,
+    pub title: String,
+    pub project: String,
+    pub working: bool,
+}
+
+/// One territory as the steward sees it. Files are fetched by the front end,
+/// per the territories a sentence names, as `voicing` already does.
+#[derive(Serialize)]
+pub struct WallTerritory {
+    pub project: String,
+    pub cwd: String,
+}
+
+#[derive(Serialize)]
+pub struct StewardWall {
+    pub cards: Vec<WallCard>,
+    pub territories: Vec<WallTerritory>,
+}
+
+/// The wall a transcript is understood against, read from the store and the
+/// supervisor rather than from the front end's `$state` — which is the same
+/// data materialised, but a transcript can arrive before the wall has painted
+/// itself, and a phone has no `$state` of its own to read anyway.
+#[tauri::command]
+pub async fn steward_wall(app: AppHandle) -> Result<StewardWall, String> {
+    crate::off_main(move || {
+        let store = app.state::<crate::store::Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let territories = crate::store::projects(&conn)
+            .map_err(|e| format!("could not read the wall's projects: {e}"))?
+            .into_iter()
+            .map(|p| WallTerritory { project: p.name, cwd: p.root_path })
+            .collect();
+        let sup = app.state::<crate::supervisor::Supervisor>();
+        let cards = wall_cards(&conn, |id| sup.liveness(id).1)?;
+        Ok(StewardWall { cards, territories })
+    })
+    .await?
+}
+
+/// The open cards, joined to their project's name, with `working` asked of the
+/// supervisor by id — a dormant card has no process and reads `false`.
+fn wall_cards(conn: &rusqlite::Connection, working: impl Fn(&str) -> bool) -> Result<Vec<WallCard>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, COALESCE(c.title, 'untitled'), COALESCE(p.name, '')
+               FROM conversation c LEFT JOIN project p ON p.id = c.project_id
+              WHERE c.closed_at IS NULL",
+        )
+        .map_err(|e| format!("could not read the wall's cards: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .map_err(|e| format!("could not read the wall's cards: {e}"))?;
+    let mut cards = Vec::new();
+    for row in rows {
+        let (id, title, project) = row.map_err(|e| format!("could not read a card: {e}"))?;
+        cards.push(WallCard { working: working(&id), id, title, project });
+    }
+    Ok(cards)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cards a transcript is understood against come from the store, joined
+    /// to their project's name, and only the open ones — a closed card is not
+    /// on the wall. `working` is asked of the caller, never read from a row.
+    #[test]
+    fn the_wall_cards_are_open_and_joined_to_their_project() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL);
+             CREATE TABLE conversation (
+               id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id),
+               cwd TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'untitled',
+               born_at INTEGER NOT NULL, closed_at INTEGER
+             );
+             INSERT INTO project VALUES ('p1', 'orchard', 'C:/orchard');
+             INSERT INTO conversation VALUES ('a', 'p1', 'C:/orchard', 'the migration', 1, NULL);
+             INSERT INTO conversation VALUES ('b', 'p1', 'C:/orchard', 'untitled', 1, 2);",
+        )
+        .unwrap();
+        let cards = wall_cards(&conn, |id| id == "a").unwrap();
+        assert_eq!(cards.len(), 1, "a closed card is not on the wall");
+        assert_eq!(cards[0].id, "a");
+        assert_eq!(cards[0].title, "the migration");
+        assert_eq!(cards[0].project, "orchard");
+        assert!(cards[0].working, "working is the supervisor's, asked by id");
+    }
 
     /// The model is a request for a class, not a pinned build.
     ///

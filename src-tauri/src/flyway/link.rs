@@ -107,6 +107,7 @@ use super::here;
 use super::key;
 use super::look::{self, LookMsg};
 use super::session::Msg;
+use super::steward::{self, StewardMsg};
 use super::tail::{self, TailMsg};
 use super::wire::{Arrival, Dialler, Fault, Wire};
 use crate::parcel::CarriedHere;
@@ -168,6 +169,19 @@ const ACT_WITHIN: Duration = Duration::from_secs(12);
 /// The most acts one exchange may carry, for `TAILS_PER_EXCHANGE`'s reason.
 const ACTS_PER_EXCHANGE: usize = 1;
 
+/// How long a wall asked to turn a transcript into a plan waits for its own
+/// front end to run the steward. The steward's spawn waits up to sixty seconds
+/// (`steward.rs::TIMEOUT`), and the asker holds the exchange open past that
+/// (`steward::WITHIN`), so this has to leave room for the parse itself. Past it
+/// the asker is told the wall did not answer in time, which is the truth — a
+/// sentence can be said again.
+const STEWARD_WITHIN: Duration = Duration::from_secs(70);
+
+/// The most transcripts one exchange may carry, for `TAILS_PER_EXCHANGE`'s
+/// reason: a parse costs a `claude` turn and the waits are serial, so a second
+/// could only be answered after the asker had gone.
+const STEWARDS_PER_EXCHANGE: usize = 1;
+
 /// The running link, if this wall has a key.
 #[derive(Default)]
 pub struct Flyway {
@@ -219,6 +233,10 @@ pub struct Link {
     /// Gestures a person at another wall asked of cards here, parked the same
     /// way until this wall's front end has done them (`act_here`).
     acts: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Option<String>, String>>>>,
+    /// Transcripts a phone asked this wall to turn into plans, parked until the
+    /// front end has run the steward — `tails`' shape, one channel per request
+    /// under an id minted here.
+    stewards: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Value, String>>>>,
     cards_due: AtomicBool,
     /// What every other wall's billboard says, and the version this wall's
     /// own is said under (`boards.rs`, `link/billboard.rs`).
@@ -401,6 +419,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         pictured_out: StdMutex::new(std::collections::HashSet::new()),
         tails: StdMutex::new(HashMap::new()),
         acts: StdMutex::new(HashMap::new()),
+        stewards: StdMutex::new(HashMap::new()),
         cards_due: AtomicBool::new(false),
         boards: StdMutex::new(Boards::new(&me, board_v)),
         board_due: AtomicBool::new(false),
@@ -587,6 +606,7 @@ impl Link {
                         boards::WORD.to_string(),
                         super::seeing::WORD.to_string(),
                         super::seeing::CALL_WORD.to_string(),
+                        steward::WORD.to_string(),
                     ])
                     .chain(act::words())
                     .chain(accounting::words())
@@ -899,9 +919,9 @@ impl Link {
                 /* So is a move's answer (`moves.rs`); one arriving loose is from
                    an exchange that already gave up on it. */
                 Frame::Move(_) => {}
-                /* And a look's (`read_look`), an act's (`read_act`) and a
-                   see's (`read_see`). */
-                Frame::Look(_) | Frame::Act(_) | Frame::See(_) => {}
+                /* And a look's (`read_look`), an act's (`read_act`), a see's
+                   (`read_see`) and a steward's (`read_steward`). */
+                Frame::Look(_) | Frame::Act(_) | Frame::See(_) | Frame::Steward(_) => {}
                 Frame::Board(m @ BoardMsg::Board { .. }) => self.on_board(m),
                 Frame::Accounts(m) => self.on_accounts(m, from),
                 /* An unpost's answer is read by the exchange that asked
@@ -937,9 +957,19 @@ impl Link {
            thread that answers everything else. */
         let (sees, rest): (Vec<Frame>, Vec<Frame>) =
             rest.into_iter().partition(|f| matches!(f, Frame::See(super::seeing::SeeMsg::See { .. })));
+        /* A transcript to turn into a plan (`steward.rs`): like an act, it
+           blocks on this wall's front end and spends a `claude` turn, so it is
+           answered for a named wall only. */
+        let (stewards, rest): (Vec<Frame>, Vec<Frame>) =
+            rest.into_iter().partition(|f| matches!(f, Frame::Steward(StewardMsg::Steward { .. })));
         /* Which wall asked, before `answer` consumes the frames: an act is
            done for a named wall or not at all. */
-        let from = if acts.is_empty() && signins.is_empty() && sees.is_empty() { None } else { self.who_is(&rest, who) };
+        let from =
+            if acts.is_empty() && signins.is_empty() && sees.is_empty() && stewards.is_empty() {
+                None
+            } else {
+                self.who_is(&rest, who)
+            };
         let mut out = self.answer(rest, who);
         if who.current {
             for f in asks.into_iter().take(TAILS_PER_EXCHANGE) {
@@ -957,6 +987,13 @@ impl Link {
             for f in sees.into_iter().take(seen::SEES_PER_EXCHANGE) {
                 if let Frame::See(super::seeing::SeeMsg::See { id, card, ask }) = f {
                     out.push(Frame::See(self.see_here(id, card, ask, from.clone()).await));
+                }
+            }
+            for f in stewards.into_iter().take(STEWARDS_PER_EXCHANGE) {
+                if let Frame::Steward(StewardMsg::Steward { id, transcript }) = f {
+                    if let Some(m) = self.steward_here(id, transcript, from.as_deref()).await {
+                        out.push(Frame::Steward(m));
+                    }
                 }
             }
             for f in signins.into_iter().take(1) {
@@ -2218,6 +2255,72 @@ impl Link {
         tx.send(answer).map_err(|_| "the wall that asked has stopped waiting".to_string())
     }
 
+    /* ── a phone's sentence, turned into a plan here ────────────────────── */
+
+    /// Turn a phone's transcript into a plan, by asking this wall's front end to
+    /// run the steward — parked as `act_here` is. Gated first, here, on this
+    /// wall's switch read fresh: a steward run spends one `claude --print` on
+    /// this wall's own account, which is work. `None` for an id that is not one
+    /// this app minted.
+    async fn steward_here(self: &Arc<Self>, id: String, transcript: String, from: Option<&str>) -> Option<StewardMsg> {
+        if !act::is_id(&id) {
+            return None;
+        }
+        let said = |answer: Option<Value>, why: Option<String>| Some(StewardMsg::Stewarded {
+            id: id.clone(),
+            answer,
+            why,
+        });
+        let transcript: String =
+            crate::clean::scrub(transcript.trim()).chars().take(steward::TRANSCRIPT_MOST).collect();
+        if transcript.is_empty() {
+            return said(None, Some("nothing was said".into()));
+        }
+        let Some(host) = from else {
+            return said(None, Some(format!(
+                "{} could not tell which wall asked — it may not have heard from yours yet; try again in a minute",
+                self.me
+            )));
+        };
+        let accepting =
+            self.store().and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c))).unwrap_or(false);
+        if !accepting {
+            return said(None, Some(format!(
+                "{} is not taking work from other walls — switch that on in the flyway panel on {host}, or ask another wall",
+                self.me
+            )));
+        }
+        let local = crate::store::uuid_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut t) = self.stewards.lock() {
+            t.insert(local.clone(), tx);
+        }
+        let _ = self.app.emit("flyway:steward", StewardHere { id: local.clone(), transcript });
+        let got = tokio::time::timeout(STEWARD_WITHIN, rx).await;
+        /* The slot is this call's to clear, for `tail_here`'s reason. */
+        if let Ok(mut t) = self.stewards.lock() {
+            t.remove(&local);
+        }
+        match got {
+            /* Bounded on the way out as well as on the way in: the front end
+               made it, and this is the wall's own last word on what leaves. */
+            Ok(Ok(Ok(answer))) => said(steward::fit(answer), None),
+            Ok(Ok(Err(why))) => said(None, Some(why)),
+            Ok(Err(_)) | Err(_) => said(None, Some(format!("{} did not answer in time — say it again", self.me))),
+        }
+    }
+
+    /// The front end's answer to a `flyway:steward`.
+    fn steward_answered(&self, id: &str, answer: Result<Value, String>) -> Result<(), String> {
+        let tx = self
+            .stewards
+            .lock()
+            .map_err(|_| "the flyway is wedged".to_string())?
+            .remove(id)
+            .ok_or("nobody is waiting for that sentence any more")?;
+        tx.send(answer).map_err(|_| "the wall that asked has stopped waiting".to_string())
+    }
+
     /// Whether `verb` could be asked of `host` at all — unknown, quiet, too old
     /// to know the verb, and for a work verb a wall that last said it takes no
     /// work. Said at once; never waited on and never queued.
@@ -2802,6 +2905,14 @@ struct ActHere {
     card: String,
     verb: String,
     args: Value,
+}
+
+/// A phone's transcript, as this wall's front end is handed it: already gated
+/// and capped. `id` is minted here; see `Link::stewards`.
+#[derive(Serialize, Clone)]
+struct StewardHere {
+    id: String,
+    transcript: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -3389,6 +3500,24 @@ pub async fn flyway_act_answer(
         Err(w.unwrap_or_else(|| "the card could not do that".into()))
     };
     crate::off_main(move || l.act_answered(&id, answer)).await?
+}
+
+/// This wall's front end's answer to a `flyway:steward`: the whole of what
+/// `understand` decided — `{ kind: "plan", plan: … }` most often — or a reason
+/// there is none (still starting, the steward could not be reached).
+#[tauri::command]
+pub async fn flyway_steward_answer(
+    app: AppHandle,
+    id: String,
+    answer: Option<Value>,
+    why: Option<String>,
+) -> Result<(), String> {
+    let Some(l) = current(&app) else { return Ok(()) };
+    let answer = match why.map(|w| crate::clean::scrub(w.trim()).into_owned()).filter(|w| !w.is_empty()) {
+        Some(why) => Err(why),
+        None => Ok(answer.unwrap_or(Value::Null)),
+    };
+    crate::off_main(move || l.steward_answered(&id, answer)).await?
 }
 
 /// Pull what a question parked on another wall shows — its arguments and its

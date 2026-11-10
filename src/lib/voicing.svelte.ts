@@ -58,7 +58,7 @@ import {
   type VoiceTerritory,
   type Wall,
 } from "./voice";
-import { narrow, replyIn, stewardPrompt, understand } from "./steward";
+import { narrow, replyIn, stewardPrompt, understand, type Understood } from "./steward";
 
 /** Which rung answered. Carried on every plan, because the two cost different
  *  things and only one of them can be wrong in an interesting way. */
@@ -314,6 +314,11 @@ export class Voicing {
       }),
     );
     this.#ears.keep(onEvent<string>("voice:utterance", (e) => void this.heard(e.payload)));
+    /* A transcript a phone dialled in with (`flyway:steward`): the wall is the
+       brain, so it runs the steward and hands the plan back — not acted on. */
+    this.#ears.keep(
+      onEvent<{ id: string; transcript: string }>("flyway:steward", (e) => void this.#stewardFor(e.payload)),
+    );
     try {
       this.open = await invoke<boolean>("voice_ear");
     } catch {
@@ -577,6 +582,58 @@ export class Voicing {
   async wallFor(utterance: string): Promise<Wall> {
     for (const t of territoriesIn(utterance, this.#snapshot())) await this.#list(t.cwd);
     return this.#snapshot();
+  }
+
+  /** Turn a transcript that arrived over the flyway into a plan, and hand it
+   *  back — never acted on, since the confirm loop (M5's second half) is what
+   *  makes a plan happen.
+   *
+   *  **The wall is built from the store and the supervisor, not from the open
+   *  ear's `$state`.** `steward_wall` reads the `conversation` and `project`
+   *  tables and the supervisor's turn flag in Rust, because a phone has no
+   *  `$state` of its own and a transcript can arrive before the wall has
+   *  painted itself. The one field the store cannot know — the focused card —
+   *  is this wall's own focus, since "this one" said into a phone still means
+   *  the card this wall has in front. File lists come from `find_files`, only
+   *  for the territories the sentence names, exactly as `wallFor` fetches them.
+   *
+   *  **The prompt and the validation are reused unchanged** — `narrow`,
+   *  `stewardPrompt` and `understand` are the measured `steward.ts` artefacts,
+   *  and `voice_steward` is the existing spawn. A reword here would be an
+   *  unmeasured change to the one number this rung has.
+   *
+   *  Always answered, for `#take`'s reason: the phone can only say
+   *  "thinking…" until it is. */
+  async #stewardFor(p: { id: string; transcript: string }) {
+    const answer = (result: Understood) =>
+      void invoke("flyway_steward_answer", { id: p.id, answer: result }).catch(() => {
+        /* The asker's own bound says it was not answered in time. */
+      });
+    try {
+      if (!this.#host.skein.loaded) {
+        return answer({ kind: "unusable", why: "still starting — say it again in a moment" });
+      }
+      const facts = await invoke<{
+        cards: VoiceCard[];
+        territories: { project: string; cwd: string }[];
+      }>("steward_wall", {});
+      const wall: Wall = {
+        cards: facts.cards,
+        territories: facts.territories.map((t) => ({ ...t, files: [] })),
+        focusedId: this.#host.focusedId(),
+      };
+      for (const t of territoriesIn(p.transcript, wall)) await this.#list(t.cwd);
+      for (const t of wall.territories) t.files = this.#files.get(t.cwd) ?? [];
+      const seen = narrow(wall, p.transcript);
+      const said = await invoke<string>("voice_steward", {
+        system: stewardPrompt(seen),
+        utterance: p.transcript,
+      });
+      const { reply } = replyIn(said);
+      answer(understand(reply, p.transcript, seen));
+    } catch (e) {
+      answer({ kind: "unusable", why: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   /* ── the hands ─────────────────────────────────────────────────────────── */

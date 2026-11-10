@@ -47,6 +47,7 @@ use flyway_core::frame::Frame;
 use flyway_core::seal::WallKey;
 use flyway_core::seeing::{self, SeeMsg, Sight};
 use flyway_core::session::Msg;
+use flyway_core::steward::{self, StewardMsg};
 use flyway_core::wire::{carrying_within, Wire};
 
 /// A bound phone node: on the flyway, but with no cards, no store and no wall.
@@ -202,6 +203,42 @@ impl Node {
             _ => None,
         });
         seeing::answer_in(sees, &id, host)
+    }
+
+    /// Hand a spoken transcript to a wall and read back the plan it made. The
+    /// phone has ears and a mouth but no `claude` child, so understanding stays
+    /// on the wall — `docs/PHONE.md` M5, "the wall stays the brain". One
+    /// exchange, held open past the steward's own spawn (`steward::WITHIN`),
+    /// answered on the same stream and never kept. Returns the whole of what
+    /// `steward.ts::understand` decided — most often `{ "kind": "plan",
+    /// "plan": { "reads": …, "needs": … } }` — as an opaque value, for the
+    /// Kotlin side to read and narrate.
+    pub async fn plan(&self, host: &str, transcript: &str) -> Result<serde_json::Value, String> {
+        let transcript = transcript.trim().to_string();
+        if transcript.is_empty() {
+            return Err("nothing was said".into());
+        }
+        if transcript.chars().count() > steward::TRANSCRIPT_MOST {
+            return Err(format!(
+                "that sentence is longer than the {} characters a transcript may be",
+                steward::TRANSCRIPT_MOST
+            ));
+        }
+        let peer = self.wire.peer(host)?;
+        let id = fresh_id();
+        let m = StewardMsg::Steward { id: id.clone(), transcript };
+        let mut out = self.greeting();
+        out.push(Frame::Steward(m));
+        let back = self
+            .wire
+            .exchange_within(peer, out, true, steward::WITHIN)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        let stewards = back.iter().filter_map(|f| match f {
+            Frame::Steward(m) => Some(m),
+            _ => None,
+        });
+        steward::answer_in(stewards, &id, host)
     }
 
     /// The greeting the node opens an exchange with — the same shape a wall

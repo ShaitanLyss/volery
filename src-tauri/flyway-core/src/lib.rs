@@ -38,6 +38,7 @@ pub mod screen;
 pub mod seal;
 pub mod seeing;
 pub mod session;
+pub mod steward;
 pub mod sync;
 pub mod tail;
 pub mod wire;

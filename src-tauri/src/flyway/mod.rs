@@ -64,7 +64,7 @@
    its core module whole and adds the half that reads this machine (the
    provider table; the disk). Everything else below is the wiring — it reads
    the store, emits to the front end, or spawns. */
-pub use flyway_core::{accounts, boards, cards, cast, directory, fleet, frame, look, moving, seal, session, sync, tail, wire};
+pub use flyway_core::{accounts, boards, cards, cast, directory, fleet, frame, look, moving, seal, session, steward, sync, tail, wire};
 
 pub mod act;
 pub mod here;
