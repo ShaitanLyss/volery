@@ -77,7 +77,19 @@ use crate::flyway::sync::{Event, Stamp, What};
 /// nothing is lost if a carry is cut short. `wire::MAX_FRAME` is the ceiling
 /// this must sit under with room to spare, since the frame is the JSON again
 /// plus a seal.
-pub const CARRY_MOST: usize = 4 * 1024 * 1024;
+///
+/// **One mebibyte rather than the four that would still be under `MAX_FRAME`,
+/// because the exchange has a clock as well as a ceiling.** The carry goes out
+/// on a plain `wire::exchange`, which allows twenty seconds for the dial and
+/// the body both; `carrying_within` prices a slow link at a megabit a second,
+/// which is 128 KB/s. A mebibyte is eight seconds of that, leaving the dial
+/// most of the budget. Four would have been thirty-two — a carry that could
+/// never finish on a relay somebody else runs, retried from the same watermark
+/// every tick, which is the failure this bound exists to end and not one to
+/// reintroduce at a smaller size. A sink body is capped at `store::MAX_SINK_BODY`
+/// (six thousand characters), so a mebibyte is still well over a hundred events
+/// an exchange.
+pub const CARRY_MOST: usize = 1024 * 1024;
 
 /// Run `f` so that everything it writes lands together or not at all.
 ///
