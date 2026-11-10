@@ -488,6 +488,22 @@ impl Wire {
     async fn write_one(&self, send: &mut iroh::endpoint::SendStream, m: &Frame) -> Result<(), String> {
         let plain = serde_json::to_vec(m).map_err(|e| format!("could not write a frame: {e}"))?;
         let sealed = self.key.seal(&self.room, &plain)?;
+        /* Refused here as well as on the way in, and the two must agree.
+           The reader drops anything over `MAX_FRAME` (`read_all`), so a frame
+           this large was never delivered — it was built, sealed, written, and
+           refused at the far end, with the caller reading that as "the other
+           machine is asleep" and trying again next tick. Saying so here names
+           the size and the fault instead, and it is the same number rather
+           than a second guess at one. The sink's carry is bounded far below
+           this (`sinksync::CARRY_MOST`); this is the backstop for every other
+           frame that can grow with a backlog. */
+        if sealed.len() > MAX_FRAME {
+            return Err(format!(
+                "that frame is {} bytes and no wall will accept more than {MAX_FRAME} — what it \
+                 carries has to be sent in pieces",
+                sealed.len()
+            ));
+        }
         let n = u32::try_from(sealed.len()).map_err(|_| "that frame is too large".to_string())?;
         send.write_all(&n.to_be_bytes())
             .await
