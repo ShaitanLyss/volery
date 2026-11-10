@@ -123,7 +123,7 @@ wake-word sensitivity.
 | **M2** | the app skeleton + node: foreground service, Rust core linked, dial by key, roster, digest receive | M1 | **done** — the phone dials the real wall (`queerisfreedom`) over the relay and reads its roster + cards digest |
 | **M2v** | viewing: `Node::fetch` pulls a file/picture over the flyway's `seeing` exchange, and a Compose viewer draws them | M2 | **done** — fetch desktop-proven, Compose viewer built + installed. Honest limit: pinned far-wall images and `ask_user` previews do not cross yet |
 | **M3** | ears + mouth + narration: ASR, TTS, the digest→speech fold, chatty filter | M2 | **done** — the phone speaks a line when the wall changes, at the chosen chatty level |
-| **M4** | modes + audio: audio-focus duck/pause, push-to-talk, wake word, seamless | M3 | music ducks on a question, resumes on the answer |
+| **M4** | modes + audio: audio-focus duck/pause, push-to-talk, seamless (wake word deferred) | M3 | **done** — ducking wired (duck or pause), push-to-talk + seamless shipped, proven on-device |
 | **M5** | control + questions: spoken confirm loop, act verbs, `ask_user` answers | M4 | speak "open a card for X", confirm aloud, it opens on the far wall |
 | **M6** | iOS (later) | M5 | — |
 | **M7** | chat view (later) — a native chat screen over the node's `prompt`/`tail` verbs | after the walking modes | type to a card, read its thread |
