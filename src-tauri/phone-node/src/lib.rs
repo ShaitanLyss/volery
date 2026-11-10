@@ -7,6 +7,8 @@
 //! vocabularies and the transport. A wall has its own wiring
 //! (`src-tauri/src/flyway/link.rs`); a phone links this.
 
+pub mod narration;
 pub mod node;
 
+pub use narration::{diff, Chatty, Kind, Line, Narration};
 pub use node::{Digest, Fetched, Media, Node, Sighting};
