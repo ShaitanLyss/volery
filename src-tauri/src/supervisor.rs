@@ -2336,7 +2336,11 @@ fn write_prompt(w: &mut impl Write, content: &[Block]) -> Result<(), String> {
 /// clipboard to attach. Only a prompt *you* typed can carry an image, so
 /// `send_prompt` is the one path that takes blocks.
 pub fn deliver(app: &AppHandle, id: &str, text: &str) -> Result<(), String> {
-    deliver_blocks(app, id, &[Block::text(text)])
+    /* The answer is dropped here rather than passed on: every caller of this
+       one wants *did the wall take it*, and a message kept for a renewal has
+       been taken. Whether a turn opened is a question only the front end's own
+       drawn prompt asks (`send_prompt`, `Delivery`). */
+    deliver_blocks(app, id, &[Block::text(text)]).map(|_| ())
 }
 
 /// Whether a card has a turn open: `Some(true)` mid-turn, `Some(false)` idle,
@@ -2350,15 +2354,42 @@ pub fn turn_open(app: &AppHandle, id: &str) -> Option<bool> {
     map.get(id).map(|conv| conv.turn.load(Ordering::Relaxed))
 }
 
+/// What became of a prompt: put in front of the card's process, or kept for it
+/// because the card is renewing.
+///
+/// **The distinction is the front end's, and it is not bookkeeping.** A prompt
+/// written to the process opens a turn — the card draws `sending…`, then
+/// `thinking`, and the `result` closes it. A prompt *kept* reaches no model and
+/// the card is idle by construction, so no `result` will ever come for it: the
+/// front end must take back the turn its own `echo` opened on the gesture, or
+/// the card is drawn working with nothing behind it. That is not merely a
+/// wrong reading — it stops the renewal itself, because `Skein.#renewSoon`
+/// declines to renew a card that looks busy, and the renewal is the one thing
+/// that would have delivered the prompt and cleared the state. The card then
+/// says so for the life of the process (EOS coordinator `cf3ca26d`,
+/// 2026-11-11: a prompt typed into the three-second window after the turn that
+/// scheduled a renewal, kept in the inbox, and a card left reading `stopping…`
+/// with a message nothing would ever send).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delivery {
+    /// Written to the process. A turn is open and owes a `result`.
+    Sent,
+    /// Kept in the card's inbox, behind the renewal's note (`renew.rs`).
+    Held,
+}
+
 /// `deliver`, for a turn that is more than words.
-pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<(), String> {
+pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<Delivery, String> {
     /* A card renewing itself takes nothing into the session it is leaving:
        whatever arrives is written to its inbox, behind the note its new session
        opens on, and drained when that session spawns (`renew.rs`). Ahead of the
        spending cap because a held prompt is not a sent one — the cap is asked
-       again when the inbox is drained. */
+       again when the inbox is drained. The answer says which happened, because
+       only one of the two opens a turn here. */
     if crate::renew::holds(app, id) {
-        return crate::renew::hold(app, id, content);
+        crate::renew::hold(app, id, content)?;
+        return Ok(Delivery::Held);
     }
     /* The spending cap, on the one door every prompt goes through — typed,
        spawned, woken by a subscription or written by a relay. A cap enforced in
@@ -2383,7 +2414,7 @@ pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<()
        have: nothing takes the store's lock and then the supervisor's, so nothing
        here can be half of a cycle. */
     persist_turn(app, id, true);
-    Ok(())
+    Ok(Delivery::Sent)
 }
 
 /// Send one user turn from the front end — `deliver`, off the main thread.
@@ -2409,12 +2440,14 @@ pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<()
 /// each language, is two implementations of one rule where the failure of the
 /// second is silent. So it is cut once, in TypeScript, where it is a pure
 /// function with tests, and this takes what came out.
+/// Answers which of the two happened, because only one of them is a turn this
+/// card can honestly draw (`Delivery`).
 #[tauri::command]
 pub async fn send_prompt(
     app: AppHandle,
     id: String,
     content: Vec<Block>,
-) -> Result<(), String> {
+) -> Result<Delivery, String> {
     /* A turn with nothing in it is a 400 rather than a quiet no-op — the API
        refuses an empty `content` — and the webview can produce one: a draft that
        is nothing but the token of an image that is no longer attached composes
@@ -2458,8 +2491,21 @@ pub async fn send_prompt(
 /// **A command sharing a mutex with a blocking one has to leave the main thread
 /// too** — the rule `release_azdo` records, and Escape is the worst possible
 /// gesture to have queued behind a wedged card.
+///
+/// **It answers whether the process had a turn open**, and that answer is the
+/// command's second job rather than a curio. An interrupt aimed at a turn that
+/// does not exist is accepted and answered with nothing at all — no `assistant`
+/// block, no `result`, no `control_response` this wall folds — so a card that
+/// believed it was working before the write goes on believing it afterwards.
+/// The front end draws `stopping…` before the round trip and expects the
+/// aborted `result` to settle it; when there is no turn, nothing ever does, and
+/// that is the one state on the wall with no gesture that gets out of it
+/// (`Skein.stop`, `Conversation.nothingWasRunning`). The mark read here is the
+/// supervisor's own — set when a prompt is written, kept by the reader thread
+/// on speech — so it is the answer Rust already owns rather than a second
+/// opinion about the front end's `working`.
 #[tauri::command]
-pub async fn interrupt_conversation(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn interrupt_conversation(app: AppHandle, id: String) -> Result<bool, String> {
     crate::off_main(move || {
         /* A stopped turn asks nothing any more: the CLI abandons an `ask_user`
            on its own, and the shell-delete hand-off — which no socket stands
@@ -2471,6 +2517,10 @@ pub async fn interrupt_conversation(app: AppHandle, id: String) -> Result<(), St
         let conv = map
             .get_mut(&id)
             .ok_or_else(|| format!("no open conversation {id}"))?;
+        /* Read before the write: the `result` it may cause cannot have been
+           folded yet, but reading first keeps the answer about the turn the
+           interrupt was aimed at rather than about one it started. */
+        let turning = conv.turn.load(Ordering::Relaxed);
 
         /* Nothing here correlates the receipt, but two interrupts in flight under
            one id would make the pair on the wire unreadable to anything that did. */
@@ -2484,7 +2534,8 @@ pub async fn interrupt_conversation(app: AppHandle, id: String) -> Result<(), St
         writeln!(conv.stdin, "{msg}").map_err(|e| format!("write to claude stdin: {e}"))?;
         conv.stdin
             .flush()
-            .map_err(|e| format!("flush claude stdin: {e}"))
+            .map_err(|e| format!("flush claude stdin: {e}"))?;
+        Ok(turning)
     })
     .await?
 }

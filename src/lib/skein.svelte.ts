@@ -73,6 +73,7 @@ import {
   WAKE_GRACE_S,
   windowForObserved,
   answeredLocally,
+  type Delivery,
 } from "./classify";
 import {
   followUpText,
@@ -5167,11 +5168,38 @@ export class Skein {
       /* `content` is the blocks the draft composed to, and a text-only prompt
          builds the one-block array it has always sent. Composed in the dock
          rather than here or in Rust, because the same cut also decides what the
-         wire will replay — see `Field.turn`. */
-      await invoke("send_prompt", {
+         wire will replay — see `Field.turn`.
+
+         **The answer says whether the prompt reached the process**, and it is
+         read: a card with a renewal scheduled keeps what arrives in its inbox
+         rather than writing it to the session it is leaving (`renew.rs::hold`),
+         and a prompt that reached nobody opens no turn. Drawn as one, the card
+         says `working` for ever — and the renewal that would have delivered the
+         words declines to renew a card that looks busy, so nothing ever comes
+         to close it (`Delivery`). */
+      const how = await invoke<Delivery>("send_prompt", {
         id: conv.id,
         content: turn?.content ?? [{ type: "text", text }],
       });
+      if (how === "held") {
+        /* **The renewal is re-armed here, and that is not belt and braces.**
+           Its timer may already have fired while the card looked busy — the
+           gesture's own turn, which is exactly what this answer says was not
+           real — and it goes without rescheduling because its premise is that
+           a real turn ends in a `result`, and a kept prompt produces none. So
+           the one thing that will deliver these words gets its clock back at
+           the moment the card is honestly idle. Not while one is already being
+           performed, though — that one drains the inbox itself, and the answer
+           to a second ask would be "not scheduled". */
+        if (this.#renewals.has(conv.id) && !this.#renewing.has(conv.id)) this.#renewSoon(conv);
+        /* The wall has the words and will send them; it is the *turn* that is
+           not real. `interrupted` and `aside` below are still right to settle:
+           the card is being spoken to, and will be the one reading them. */
+        conv.keptForRenewal();
+        conv.interrupted = false;
+        if (conv.aside) this.setAside(conv, false);
+        return true;
+      }
       /* The lost turn has been answered for — by you, or by the rousing queue's
          resume prompt, and it does not matter which. The card stops saying so
          at once; what it must *not* do is write that through, which is a change
@@ -5296,7 +5324,38 @@ export class Skein {
        an announcement of the question. */
     conv.activity = "stopping…";
     try {
-      await invoke("interrupt_conversation", { id: conv.id });
+      /* **The answer is whether the process had a turn open**, and it is the
+         one thing that can say the card was wrong about `working`. An
+         interrupt aimed at a turn that does not exist is accepted and answered
+         with nothing — no aborted `result` ever comes — so without this the
+         card says `stopping…` for the life of the process, and Escape, the
+         dock's stop and *send now* all aim at the same nothing. The mark is
+         Rust's own, so this is not the wall asking itself. */
+      const turning = await invoke<boolean>("interrupt_conversation", { id: conv.id });
+      /* **And never on the gesture's own bare word.** `openedByGesture` is true
+         from the Enter to the first thing the process says, and in that span
+         the mark can say nothing useful: the write may not have landed yet (the
+         account is settled by a round trip first), and a broadcast draws every
+         target working before delivering any of them, so a card late in one is
+         drawn working with no write even begun. Recovering there would put the
+         card at rest under a turn about to start, and — with *send now* —
+         release the queued round ahead of the prompt still travelling, so the
+         agent would answer the second message first. Nothing is left stuck by
+         waiting: that prompt's own answer settles it, `working` if it reached
+         the process and `keptForRenewal` if the wall kept it. */
+      if (!turning && !conv.openedByGesture) {
+        conv.nothingWasRunning();
+        /* And a queue waiting behind that turn has nothing to wait for. Only
+           `waiting: "turn"` is released; an allowance hold is not this
+           gesture's to spend. */
+        this.#drain(conv);
+        /* A renewal this card had asked for may be stranded on the same false
+           busy: its timer fires, finds `working`, and goes without
+           rescheduling because it expects a `result` to bring it back. The
+           card is honestly idle now, so the renewal gets its clock back —
+           which is also what delivers whatever is waiting in its inbox. */
+        if (this.#renewals.has(conv.id) && !this.#renewing.has(conv.id)) this.#renewSoon(conv);
+      }
     } catch (err) {
       this.fault = String(err);
       conv.activity = "could not stop";

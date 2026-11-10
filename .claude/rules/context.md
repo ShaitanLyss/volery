@@ -99,6 +99,19 @@ Rust performs it rather than the front end.
    directed message, whose spawn performs or finishes the renewal. Holding past that point
    (the first build) answered every sender "delivered" for a card nothing was going to wake.
 
+   **And the front end has to be told which happened.** `deliver_blocks` answers
+   `Delivery::Sent` or `Delivery::Held` and `send_prompt` hands it on, because the two are
+   the same answer to the wall and opposite answers to the *card*: a written prompt opens a
+   turn and owes a `result`, and a kept one is drawn `working` with nothing behind it — no
+   `result` will ever come. That is not a wrong reading but a wedge, because
+   `Skein.#renewSoon` declines to renew a card that looks busy, and the renewal is the thing
+   that would have delivered the words. A typed prompt into the three-second window after a
+   renewing card's turn ended did exactly that on 2026-11-11 (EOS coordinator `cf3ca26d`):
+   the card read `stopping…` for ever and the message sat in the inbox. So a `held` answer
+   takes back the turn the gesture drew (`Conversation.keptForRenewal`, `classify.ts::turnStands`)
+   and re-arms the renewal's clock — the timer's premise is that a real turn ends in a
+   `result`, which is exactly what a kept prompt never produces.
+
 **Rust performs it; the front end spawns** (`relay.md`, "Rust asks; the webview spawns"). The
 first build had the front end decide everything, `clear`'s way, and the 0.94 review found the
 gap between its awaits was the whole bug surface. Now:

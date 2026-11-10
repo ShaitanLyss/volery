@@ -59,6 +59,22 @@ emits the aborted result. Three things follow:
 written to stdin behind it is one you sent and are owed an answer to, and the transcript is
 marking it unacknowledged until it lands.
 
+**An interrupt answers whether there was a turn to stop**, and that half is the one that
+keeps a card from wedging (`interrupt_conversation` returns `conv.turn`). Stopping is the
+only gesture that draws its own answer before the wire's: `Skein.stop` writes `stopping…`
+and then waits for the aborted `result` to settle it. An interrupt aimed at a turn that does
+not exist — a card whose drawn turn has nothing behind it — is accepted and answered with
+nothing at all, so no `result` ever comes and the card says `stopping…` for the life of the
+process, with Escape, the dock's stop and *send now* all aimed at the same nothing. The mark
+read is the supervisor's own (`turn_mark`), not the front end's `working`, which is why the
+answer can contradict the drawing rather than agree with it. `Conversation.nothingWasRunning`
+is what the contradiction does: `working` off, the honest activity line, a queue waiting
+behind that turn released (`#drain`), and — the only case that reaches it so far — a renewal
+whose timer went by re-armed. The same question is asked of the same place by
+`renew_conversation`, which refuses a card mid-turn rather than trusting the caller's
+`dormant` (`context.md`, *`renew`*); **a process's own mark is the answer to "is a turn
+open", and the front end's is a drawing.**
+
 The gesture is Escape, which is what the same hands do in Claude Code, and a `stop` button
 in the dock beside the target readout. Escape reaching it first is the existing ladder
 rather than an exception to it — a running turn is the innermost thing there is — and it

@@ -1868,6 +1868,42 @@ export const HOLD_LINE = "holding — every account is at its limit";
  *  taking", which is the whole of what this has to say. */
 export const UNACKNOWLEDGED_LINE = "sent, not picked up";
 
+/** What became of a prompt handed to the wall — `supervisor.rs::Delivery`, in
+ *  the same two words, and `test/delivery.test.ts` holds the two spellings
+ *  together.
+ *
+ *  `sent` — written to the card's process. A turn is open there and owes a
+ *  `result`.
+ *  `held` — the card is renewing, so the words went into its inbox behind the
+ *  renewal's note (`renew.rs::hold`) instead (`renewing.ts`). No model has
+ *  them, and the card is idle by construction while a renewal is scheduled:
+ *  **nothing will ever close a turn drawn on this one.** */
+export type Delivery = "sent" | "held";
+
+/** Whether the turn a card is drawn in is one, once the wall has heard back.
+ *
+ *  `gestureOpenedIt` is `echo`'s optimistic half — the turn this window opened
+ *  when you pressed Enter, before the process said anything. It stands unless
+ *  the wall comes back saying the prompt never reached a model, which is the
+ *  one case with no `result` to close it:
+ *
+ *  - a prompt the card was already going to take (`sent`) has its own
+ *    `result` on the way;
+ *  - a turn that was already running when the words were added belongs to the
+ *    process and keeps its own `result`;
+ *  - a kept prompt (`held`) into an otherwise idle card has neither, and a
+ *    card drawn `working` with nothing behind it is the state with no gesture
+ *    out of it — `stop` writes an interrupt no turn answers, and the renewal
+ *    that would have delivered the words declines to renew a card that looks
+ *    busy (EOS coordinator `cf3ca26d`, 2026-11-11). So it is taken back. */
+export function turnStands(how: Delivery, gestureOpenedIt: boolean): boolean {
+  return how === "sent" || !gestureOpenedIt;
+}
+
+/** What a card says when the wall kept what you sent for its renewal. Replaced
+ *  three seconds later by the renewal's own words (`renewing.ts`). */
+export const KEPT_FOR_RENEWAL = "held — it goes with the renewal";
+
 /** The number the CLI gave a freshly created plan item.
  *
  *  `TaskCreate` answers `Task #1 created successfully: <subject>`, and that

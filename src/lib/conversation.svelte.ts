@@ -62,6 +62,8 @@ import {
   nudgeGaveUpNote,
   type NudgeKind,
   UNACKNOWLEDGED_LINE,
+  KEPT_FOR_RENEWAL,
+  turnStands,
   parseTaskNotification,
   sameModel,
   unwokenNote,
@@ -1485,6 +1487,23 @@ export class Conversation {
 
   /** Text blocks seen in the current turn, used to classify how it ended. */
   #turnText: string[] = [];
+
+  /** Whether the turn this card is in was opened by your gesture rather than by
+   *  the process — `echo`'s optimistic half, and taken back only by a thing the
+   *  process said (`#beginTurn`). It exists so the wall can tell, when a
+   *  delivery comes back saying the words reached nobody (`Delivery`), whether
+   *  the turn it is drawing is one it opened on the gesture. False for every
+   *  turn that has any evidence behind it, which is all of them but the one
+   *  `turnStands` is about. */
+  #openedBySend = false;
+
+  /** The same question, for the one caller outside this class that has to ask
+   *  it: `Skein.stop` will not take a turn back on the process's word while it
+   *  is still only the gesture's, because the prompt may not have been written
+   *  yet — or, in a broadcast, not even begun (`Skein.stop`). */
+  get openedByGesture(): boolean {
+    return this.#openedBySend;
+  }
   /** What the turn said after its last tool call — the closing message a
    *  notice shows. `#turnText` is the whole turn's prose, which is right for
    *  `endingFor` and too much for a box you read the end of a card in. */
@@ -2206,8 +2225,14 @@ export class Conversation {
     this.awaiting += 1;
     /* The turn starts when you send, which is the same rule the echo used to
        apply — only now it applies from the gesture rather than from the
-       acknowledgement. `echoFailed` takes it back if nothing ever left. */
-    if (idle) this.#beginTurn();
+       acknowledgement. Three things take it back if nothing ever left:
+       `echoFailed`, for a send that failed; `echoHeld`, for one an account
+       kept; and `keptForRenewal`, for one the wall kept for a renewal
+       (`Delivery`). */
+    if (idle) {
+      this.#beginTurn();
+      this.#openedBySend = true;
+    }
     /* This text is what a heal of the turn may repeat — but only if it opens
        one. Written into a busy card it is queued behind the running turn, and
        if *that* turn breaks the heal must not answer for it with these words:
@@ -2421,10 +2446,60 @@ export class Conversation {
     }
     if (!giveTurn) return;
     if (!this.streaming && this.#turnText.length === 0) {
+      this.#openedBySend = false;
       this.working = false;
       this.restingSince ??= Date.now();
     }
     this.activity = why;
+  }
+
+  /** The wall took the prompt and kept it: this card is renewing, so what you
+   *  sent is behind the renewal's note in its inbox rather than in a session
+   *  (`renew.rs::hold`, `Delivery::held`). **No turn is open**, and the one
+   *  `echo` opened on the gesture has to go.
+   *
+   *  What happens to the line afterwards depends on the renewal, and neither
+   *  way is the user's words lost: performed, `clear` retires this card's
+   *  lines with the old session and the fresh one's replay draws the prompt
+   *  again where it is read; dropped, Rust drains the inbox into the live
+   *  process and that replay claims this line by its text. The one thing that
+   *  does not travel is a picture — `renew::hold` keeps text only and says so
+   *  in the words it holds.
+   *
+   *  Left standing, it is not merely a wrong reading: the card says `working`
+   *  for the life of the process, the renewal's own timer declines to renew a
+   *  card that looks busy (`Skein.#renewSoon`), and the words wait in the inbox
+   *  for the renewal that will never happen. That is a card with no gesture out
+   *  of it — Escape and *send now* write an interrupt no turn answers — and it
+   *  cost an EOS coordinator its turn on 2026-11-11 (`cf3ca26d`).
+   *
+   *  Only the gesture's own turn: a prompt added to a turn that was already
+   *  running is the process's, and that one still has its `result`
+   *  (`turnStands`). */
+  keptForRenewal() {
+    if (!turnStands("held", this.#openedBySend)) {
+      this.#openedBySend = false;
+      this.working = false;
+      this.restingSince ??= Date.now();
+    }
+    this.activity = KEPT_FOR_RENEWAL;
+  }
+
+  /** An interrupt came back saying the process had no turn open — the wall was
+   *  drawing a turn with nothing behind it.
+   *
+   *  The mark is Rust's own (`interrupt_conversation`), set when a prompt is
+   *  written and kept by the reader thread on speech, so this is not a second
+   *  opinion about `working`: it is the process contradicting what the card
+   *  drew, and the drawing is what has to give. `stopping…` is written before
+   *  the round trip in `Skein.stop` and was settled by the aborted `result`;
+   *  with no turn there is no `result`, and the card would go on saying so for
+   *  the life of the process. */
+  nothingWasRunning() {
+    this.#openedBySend = false;
+    this.working = false;
+    this.restingSince ??= Date.now();
+    this.activity = this.busy ? this.#jobsLine() : "at rest";
   }
 
   /** Each held message's line, by `HeldItem.key`. See `echoHeld`. */
@@ -2523,7 +2598,10 @@ export class Conversation {
       this.#rounds.set(batch, lines);
     }
     const idle = !this.working;
-    if (idle) this.#beginTurn();
+    if (idle) {
+      this.#beginTurn();
+      this.#openedBySend = true;
+    }
     /* `echo`'s rule: the held text opens the turn it is sent into only if
        nothing else is running. A hold can release into a card a relay is
        already answering, and the prompt then queues behind that turn. */
@@ -2734,6 +2812,10 @@ export class Conversation {
     this.#closingText = [];
     this.#sawAskTool = false;
     this.#producedOutput = false;
+    /* Every turn but `echo`'s opens with something behind it — speech, a
+       replay, a relay — so the gesture's turn is over the moment one exists.
+       `echo` sets it again *after* calling this. */
+    this.#openedBySend = false;
     /* Opened by output alone until something says otherwise — every arm that
        knows better (`echo`, a replay, a relay) says so straight after calling
        this. A turn nothing opened is the CLI waking itself on a job's report. */
@@ -3882,6 +3964,8 @@ export class Conversation {
     this.interrupted = false;
     this.died = false;
     this.working = false;
+    /* The gesture's turn went with the lines it was drawn for. */
+    this.#openedBySend = false;
     this.lastError = null;
     this.lastFault = null;
     this.diedAt = null;
@@ -3951,6 +4035,9 @@ export class Conversation {
   /** stdout closed — the process is gone. */
   markExited(code: number | null) {
     this.exitCount += 1;
+    /* Whatever the exit means, the turn drawn for a send to this process has
+       nothing left behind it. */
+    this.#openedBySend = false;
     if (this.swallowExit) {
       this.swallowExit = false;
       return;
