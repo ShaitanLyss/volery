@@ -101,7 +101,7 @@ import { costStep, priceOf } from "./usage";
 import { providerOf, providerModel } from "./providers";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
-import { isQueuedSpawn, type Held, type HeldItem } from "./holding";
+import { WAITING_TO_SEND, isQueuedSpawn, type Held, type HeldItem } from "./holding";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
@@ -270,6 +270,17 @@ export type Line = {
    *  Separate from `state` because the two stopped being the same question —
    *  see `#settleEchoes`. */
   awaited?: true;
+  /** On a `you` line, that it was drawn while a turn was **already running** —
+   *  the CLI holds it behind that turn, or this wall's queue does until the
+   *  turn ends. It is the only case the transcript's *queued — it goes when
+   *  this turn finishes* is true of, and it is a fact about the drawing rather
+   *  than about the card: a prompt sent into an idle card opens the turn it is
+   *  in (`echo`), and one sent into a sleeping card is waiting out a spawn, and
+   *  neither is behind anything. Drawing both as queued made a message sent to
+   *  a resting card read as held behind a turn that did not exist, with a
+   *  *send now* aimed at it (reported 2026-11-11). Read only by that receipt,
+   *  and cleared when the line is claimed or released. */
+  behindTurn?: true;
   /** On a `held` line, the `HeldItem.key` it stands for — the handle the
    *  queue's own edits and cancellations go through, and what lets the
    *  transcript ask whether this is the message that goes next. Unset
@@ -1808,9 +1819,18 @@ export class Conversation {
        and stops rather than inventing a time. */
     /* A queue waiting behind a round that is out is a card *working* on that
        round, and says what the work is; only a card held at rest says why. */
-    if (this.held && !(this.held.waiting === "turn" && this.working)) {
-      const when = this.held.until === null ? null : until(this.held.until - clock.t);
-      return when ? `${this.held.why} · ${when}` : this.held.why;
+    if (this.held) {
+      if (this.held.waiting === "turn") {
+        /* With the turn running, the card's own activity is the better line.
+           With none — the card was stood down, or its process died mid-turn —
+           the queue has nothing to be behind, and `QUEUED_BEHIND` would name a
+           turn that is not there. The next event or the minute's sweep sends it
+           (`Skein.#drain`, `releaseHeld`), which is what the line says. */
+        if (!this.working) return WAITING_TO_SEND;
+      } else {
+        const when = this.held.until === null ? null : until(this.held.until - clock.t);
+        return when ? `${this.held.why} · ${when}` : this.held.why;
+      }
     }
     if (this.stalled) return `${this.activity} · not picked up`;
     /* Below `stalled`, which is the one that has a job's own summary to append
@@ -2211,12 +2231,27 @@ export class Conversation {
    *  `wire` is what the replay will actually say, for a prompt whose drawn text
    *  is not what goes on the wire — which today means one carrying images. See
    *  `Line.echo`; passing nothing is the ordinary case and keeps the two one
-   *  string. */
-  echo(text: string, wire?: { echo: string; shots?: { name: string; thumb: string }[] }) {
+   *  string.
+   *
+   *  `behindTurn` is **the sender's reading of whether the card was already in
+   *  a turn**, not this function's: `send` and `broadcast` compute it before
+   *  drawing anything, and they have to, because the first `echo` of a gesture
+   *  opens a turn — so a second line of the same gesture asking `working` would
+   *  answer its own question, and a `/effort` companion to a `/model` sent to a
+   *  sleeping card would call itself queued behind the turn its sibling had
+   *  just opened (found in review). It is also exactly the value `#route`
+   *  queues on, so the line and the routing cannot disagree. Defaults to false:
+   *  a prompt drawn without being told is one that opened its turn. */
+  echo(
+    text: string,
+    wire?: { echo: string; shots?: { name: string; thumb: string }[] },
+    behindTurn = false,
+  ) {
     const idle = !this.working;
     this.#push("you", text, "pending");
     const line = this.lines[this.lines.length - 1]!;
     line.awaited = true;
+    if (behindTurn) line.behindTurn = true;
     this.#drawnAt.set(line, Date.now());
     /* Only when it differs, so the ordinary prompt keeps one string and
        `#echoOf`'s fallback is never reading a copy that could drift. */
@@ -2273,6 +2308,8 @@ export class Conversation {
     if (!line) return null;
     line.state = undefined;
     line.awaited = undefined;
+    /* The process has it, so whatever it was behind is behind it now. */
+    delete line.behindTurn;
     this.awaiting = Math.max(0, this.awaiting - 1);
     /* A round of held messages went out as one prompt and comes back as one
        replay, so the claim that finds the first of its lines is the claim for
@@ -2563,12 +2600,30 @@ export class Conversation {
    *  past `MAX_LINES`, which a search of `lines` would never find again. */
   echoResumed(round: readonly { key: string }[], echo: string) {
     const lines: Line[] = [];
+    /* A round drawn into a turn that was already running says so, and one that
+       goes out of an idle card does not — **on both sides**, because these
+       lines were drawn earlier, by an `echo` of their own, and a line released
+       from the queue at the turn's end is going now rather than behind
+       anything. Leaving the old mark standing was the shipped bug this field
+       exists to prevent, arrived at from the other end: the line moved to the
+       tail still read *queued behind this turn* for the whole of its echo, and
+       offered to stop the turn that was delivering it (found in review).
+
+       `#openedBySend` as well as `working`, and that is not the same question:
+       the release awaits a picture read and an account settle, and a prompt
+       typed into that window opens a turn before this round has gone — so the
+       round *is* the turn, and marking it queued behind one would be the
+       original defect again. A turn this window's own send is drawing is not
+       one anything is behind yet. */
+    const behindTurn = this.working && !this.#openedBySend;
     for (const { key } of round) {
       const line = this.#heldLines.get(key);
       this.#heldLines.delete(key);
       if (!line) continue;
       line.state = "pending";
       line.heldKey = undefined;
+      if (behindTurn) line.behindTurn = true;
+      else delete line.behindTurn;
       if (echo.trim() !== line.text.trim()) line.echo = echo;
       lines.push(line);
     }

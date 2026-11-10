@@ -105,6 +105,30 @@ export const QUEUED_BEHIND = "goes when this turn finishes";
  *  that went out ahead of it. */
 export const QUEUED_LINE = "held — sending the rest after this turn";
 
+/** What a queue says when there is **no turn for it to be behind** — the card
+ *  was stood down, or its process died mid-turn, leaving `waiting: "turn"` on
+ *  something that is really just waiting for the next release (the minute's
+ *  sweep, or the next event; `Skein.#drain`, `releaseHeld`).
+ *
+ *  Short, and it names no turn, which is the whole of the point: a card with no
+ *  turn in it that says *it goes when this turn finishes* is naming something
+ *  that does not exist, and offering a *send now* aimed at nothing (reported
+ *  2026-11-11). It is true of every surface that draws a queue, so it lives
+ *  here rather than in one of them. */
+export const WAITING_TO_SEND = "waiting to send";
+
+/** What the collapsed queued bar says, and the one place its two halves are
+ *  decided: how many messages, and what they are waiting for. `working` is
+ *  whether there is a turn for them to be behind — the bar is one sentence
+ *  about the queue, so it may not claim one the card has not got. */
+export function queuedCaption(n: number, working: boolean): string {
+  const what = n === 1 ? "1 message queued" : `${n} messages queued`;
+  const then = working
+    ? `${n === 1 ? "it goes" : "they go"} when this turn finishes`
+    : WAITING_TO_SEND;
+  return `${what} — ${then}`;
+}
+
 /** What the face says when nothing is signed in, or every account is switched
  *  off. Held rather than failed, which it was until 2026-10-16: it does end —
  *  when you sign one in or turn one on, and the minute's sweep notices — and a

@@ -5062,7 +5062,7 @@ export class Skein {
        would ever drain it. A dormant card is not behind anything: this send is
        what wakes it. */
     const behindTurn = conv.working && !conv.dormant;
-    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots });
+    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, behindTurn);
     const sent = await this.#route(conv, text, turn, { ...opts, behindTurn });
     /* A model switch carries its usual effort with it — see `effortForModel`.
        Sent as a second prompt of its own because `/effort` is the CLI's and the
@@ -5073,7 +5073,10 @@ export class Skein {
     const effort = effortForModel(text);
     if (effort) {
       const line = `/effort ${effort}`;
-      conv.echo(line);
+      /* The same reading as the prompt it follows, rather than one taken after
+         that prompt opened a turn — the two are one gesture and go the same
+         way (`Conversation.echo`). */
+      conv.echo(line, undefined, behindTurn);
       await this.#route(conv, line, undefined, { behindTurn });
     }
     return sent;
@@ -6179,7 +6182,7 @@ export class Skein {
     const behind = new Map(convs.map((c) => [c.id, c.working && !c.dormant]));
     for (const c of convs) {
       const t = turnFor(c);
-      c.echo(t?.text ?? text, t && { echo: t.echo, shots: t.shots });
+      c.echo(t?.text ?? text, t && { echo: t.echo, shots: t.shots }, behind.get(c.id) ?? false);
     }
     for (const c of convs) {
       const t = turnFor(c);

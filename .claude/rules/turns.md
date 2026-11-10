@@ -396,6 +396,19 @@ deleted while it waits. Its line is `held` rather than a line the wire owes an e
 below is the history of the CLI's queue, and still governs the lines that do reach stdin — a
 composing bypass, an older wall, a race.
 
+**And `queued — it goes when this turn finishes` may only be drawn where there is a turn.**
+`echo` marks every prompt `awaited` and opens a turn on the gesture, so "awaiting an echo and
+working" is true of a prompt sent into a sleeping card for the whole of its spawn: it read as
+queued behind a turn that did not exist, with a *send now* aimed at it (reported 2026-11-11).
+The line therefore carries `behindTurn`, set by its **sender** (`send`, `broadcast`) from the
+reading it took before `echo` opened anything, and set or cleared on release
+(`echoResumed`) — a round let out of the queue at the turn's end is going, not behind
+anything. On the wall's side a queue can outlive its turn (the card stood down, its process
+lost mid-turn), so the receipt, the collapsed bar, the card's `doing` and the digest all say
+`holding.ts::WAITING_TO_SEND` instead. Two rules underneath, both learned here: **a drawing
+may not answer its own question** (the first `echo` of a gesture opens the turn the second
+one would ask about), and **the fact belongs to the sender, not the renderer**.
+
 `tools/probe-queue.ts` says the ordinary path is fine — spawning with Skein's exact argv, a
 prompt sent mid-turn came back ~3s after the running turn's `result`, and an interrupt in
 between did not lose it:

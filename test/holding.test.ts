@@ -8,6 +8,7 @@ import {
   NO_ACCOUNT_HELD,
   QUEUED_BEHIND,
   QUEUED_LINE,
+  WAITING_TO_SEND,
   admit,
   composeRound,
   cutsRound,
@@ -15,6 +16,7 @@ import {
   heldDivider,
   heldHeader,
   nextRound,
+  queuedCaption,
   queuedHeader,
   withoutMissing,
   type HeldItem,
@@ -214,6 +216,64 @@ describe("a message waiting for the turn to finish", () => {
     expect(src).toContain("card.cancelQueued");
     /* And the allowance caption is not drawn over a turn's own receipt. */
     expect(src).toContain(".line.you.held.queued::after");
+  });
+
+  /* A prompt is `awaited` from the moment Enter opens a turn, which is true of
+     one sent into an idle card and of one sent to a sleeping card waiting out
+     its spawn — neither of which is behind anything. So the CLI's own queue is
+     only claimed for a line its sender said was drawn into a turn already
+     running, and only while that turn still is. Without this, sending to a
+     resting card read as *queued behind a turn that does not exist* with a
+     *send now* aimed at it (reported 2026-11-11). */
+  test("the queue receipt is only drawn for a prompt behind a running turn", () => {
+    const src = readFileSync("src/lib/Thread.svelte", "utf8");
+    expect(src).toContain("line.awaited && line.behindTurn && conv.working");
+    /* The wall's own queue says the same words, and it can outlive its turn
+       when the card is stood down mid-queue, so both halves are gated: the
+       words, and the button that interrupts a turn that has to exist. */
+    expect(src).toContain('conv.working ? "queued — it goes when this turn finishes" : WAITING_TO_SEND');
+    expect(src).toContain('item.head && conv.working && card.can("stop") === "yes"');
+    /* And the bar above them goes through the one function that decides it. */
+    expect(src).toContain("queuedCaption(heldLines.length, conv.working)");
+  });
+
+  /* The line's own record of how it was sent, on both sides. `echoResumed` is
+     the one that caught the first cut out: a line queued behind a turn keeps
+     its mark, and when the queue is released at the turn's end it is going
+     rather than behind anything — left standing it read as queued for the whole
+     of its own delivery and offered to stop the turn that was answering it
+     (found in review). */
+  test("a released round is not still called queued", () => {
+    const src = readFileSync("src/lib/conversation.svelte.ts", "utf8");
+    const resumed = src.slice(src.indexOf("echoResumed(round:"));
+    const body = resumed.slice(0, resumed.indexOf("this.activity = \"sending…\""));
+    expect(body).toContain("line.behindTurn = true");
+    expect(body).toContain("delete line.behindTurn");
+    /* And the flag reaches the line only if the senders pass their own reading
+       to `echo` — reverting that argument leaves every other assertion green
+       while the receipt silently disappears from the only path the field is
+       for (found in review). */
+    const skein = readFileSync("src/lib/skein.svelte.ts", "utf8");
+    expect(skein).toContain("conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, behindTurn)");
+    expect(skein).toContain("behind.get(c.id) ?? false");
+    /* And the sender's reading is what the line wears, not one taken after the
+       echo opened the turn — a `/effort` companion to a `/model` sent to a
+       sleeping card was the case that found it. */
+    expect(src).toContain("if (behindTurn) line.behindTurn = true");
+  });
+});
+
+describe("what a queue says with no turn to be behind", () => {
+  /* One sentence, decided in one place: the count, and what it is waiting for.
+     The alternative half is the whole point — a queue left with no turn (the
+     card stood down, or its process lost mid-turn) is waiting for the minute's
+     sweep, and naming a turn that does not exist is the bug this covers. */
+  test("the bar names the turn only while there is one", () => {
+    expect(queuedCaption(1, true)).toBe("1 message queued — it goes when this turn finishes");
+    expect(queuedCaption(3, true)).toBe("3 messages queued — they go when this turn finishes");
+    expect(queuedCaption(1, false)).toBe(`1 message queued — ${WAITING_TO_SEND}`);
+    expect(queuedCaption(2, false)).toBe(`2 messages queued — ${WAITING_TO_SEND}`);
+    expect(WAITING_TO_SEND).not.toContain("turn");
   });
 });
 

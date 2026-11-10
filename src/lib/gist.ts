@@ -31,6 +31,7 @@
 
 import type { Plan, Timeline } from "./timeline";
 import type { Ending } from "./classify";
+import { WAITING_TO_SEND } from "./holding";
 
 /** A card's live plan, as far as drawing it goes (`timeline.md`). The plan is
  *  `timeline.rs`'s, written by the owner alone; what crosses is the reading. */
@@ -137,7 +138,12 @@ export function gistOf(c: GistSource, live: Timeline | null): Gist {
        its own words in `why`, so a wall from before it reads it unchanged. */
     held: c.held
       ? {
-          why: c.held.why,
+          /* A turn's own words are only true while the turn runs, and the
+             digest carries no `working` — so a queue that outlived its turn
+             travels as what it is, and the far wall's face says what this
+             one says instead of naming a turn nothing has (`doing`,
+             `holding.ts::WAITING_TO_SEND`). */
+          why: c.held.waiting === "turn" && !c.working ? WAITING_TO_SEND : c.held.why,
           until: c.held.until,
           waiting: c.held.waiting === "turn" ? "turn" : "allowance",
           queue: c.held.queue.length,

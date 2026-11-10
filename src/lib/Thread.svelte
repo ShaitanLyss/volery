@@ -38,6 +38,7 @@
   import { ansiVar, parseAnsi } from "./ansi";
   import type { Line } from "./conversation.svelte";
   import type { CardHandle } from "./cards.svelte";
+  import { WAITING_TO_SEND, queuedCaption } from "./holding";
   import Markdown from "./Markdown.svelte";
   import ToolCall from "./ToolCall.svelte";
   import Figure from "./Figure.svelte";
@@ -501,8 +502,23 @@
          the composing bypass and a race or two can still put one there. The
          ordinary path now keeps the words here instead (below), where they can
          be read and changed; this branch is the CLI's business, and *send now*
-         is its stop. -->
-    {#if line.kind === "you" && line.awaited && conv.working && line.state !== "held" && line.state !== "failed"}
+         is its stop.
+
+         **Only for a line its sender drew into a turn that was already
+         running** (`behindTurn`), and only while that turn still is. Awaiting
+         an echo is true of every prompt from the moment Enter opens a turn,
+         including one sent to a sleeping card that is waiting out a spawn —
+         and calling that *queued behind this turn* offered a *send now* aimed
+         at nothing, which is what a message sent to a resting card used to look
+         like. A prompt that opened its own turn is simply on its way.
+
+         The residue is a prompt this window sends into a turn **Rust** started
+         (a relay, a wake coming due) before the process has said anything: the
+         front end reads `working` false, draws the line as its own, and the
+         receipt it would deserve is missing until the first event. The
+         supervisor's turn mark is the only thing that knows, and asking it here
+         would be a round trip per send. -->
+    {#if line.kind === "you" && line.awaited && line.behindTurn && conv.working && line.state !== "held" && line.state !== "failed"}
       <div class="receipt queued" aria-live="polite">
         queued — it goes when this turn finishes
         {#if card.can("stop") === "yes"}
@@ -525,8 +541,14 @@
       {@const item = card.queued(line.heldKey)}
       {#if item}
         <div class="receipt queued" aria-live="polite">
-          queued — it goes when this turn finishes
-          {#if item.head && card.can("stop") === "yes"}
+          <!-- The turn's own words are only true while a turn is running. A
+               queue that outlived its turn — the card was stood down, or its
+               process died mid-turn — is released by the next event or the
+               minute's sweep, and says so rather than naming a turn that is
+               not there. No *send now* there: there is nothing to interrupt,
+               and the minute's sweep is already what will send it. -->
+          {conv.working ? "queued — it goes when this turn finishes" : WAITING_TO_SEND}
+          {#if item.head && conv.working && card.can("stop") === "yes"}
             <button
               type="button"
               class="now"
@@ -1006,14 +1028,14 @@
         class="cap"
         aria-expanded={heldOpen ? "true" : "false"}
         onclick={() => (heldOpen = !heldOpen)}
-        title={heldOpen ? "fold the queued messages away" : "what is queued behind this turn"}
+        title={heldOpen
+          ? "fold the queued messages away"
+          : conv.working
+            ? "what is queued behind this turn"
+            : "what is waiting to send"}
       >
         <span class="mark" aria-hidden="true">{heldOpen ? "▾" : "▸"}</span>
-        <span class="what"
-          >{heldLines.length === 1 ? "1 message queued" : `${heldLines.length} messages queued`} — {heldLines.length === 1
-            ? "it goes"
-            : "they go"} when this turn finishes</span
-        >
+        <span class="what">{queuedCaption(heldLines.length, conv.working)}</span>
       </button>
       {#if heldOpen}
         <div class="inside">
