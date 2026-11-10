@@ -15,6 +15,15 @@ import androidx.compose.runtime.setValue
  *  it. */
 const val SEAMLESS_LISTEN_MS = 20_000L
 
+/** A hold that has run this long ends by itself — a finger that never lifts
+ *  must not leave the microphone open for the life of the app. */
+const val HOLD_MAX_MS = 60_000L
+
+/** How long a released hold waits for the recogniser to resolve before the
+ *  ears are closed anyway. A session that has been asked to finish and says
+ *  nothing is one to stop holding open. */
+const val HOLD_SETTLE_MS = 4_000L
+
 /**
  * The ears as one thing the home screen's button (push-to-talk) and the
  * seamless window both drive. Compose state, so the listen bar redraws; the
@@ -27,6 +36,7 @@ class VoiceController(context: Context) {
     private val listener = Listener(appContext)
     private val handler = Handler(Looper.getMainLooper())
     private val stopRunnable = Runnable { stop() }
+    private val settleRunnable = Runnable { if (listening) stop() }
 
     var listening by mutableStateOf(false)
         private set
@@ -59,6 +69,24 @@ class VoiceController(context: Context) {
         if (listening) stop() else start(timeoutMs = null)
     }
 
+    /** A hold begins: the ears open and stay open while the orb is held. */
+    fun holdStart() {
+        if (listening) return
+        start(timeoutMs = HOLD_MAX_MS)
+    }
+
+    /** The hold is released: ask the recogniser to finish, so the session
+     *  resolves into a final transcript instead of being cancelled. The ears
+     *  stay "listening" until it does, which is what the rail's title reads;
+     *  [HOLD_SETTLE_MS] closes a session that never answers. */
+    fun holdEnd() {
+        if (!listening) return
+        handler.removeCallbacks(stopRunnable)
+        listener.finish()
+        handler.removeCallbacks(settleRunnable)
+        handler.postDelayed(settleRunnable, HOLD_SETTLE_MS)
+    }
+
     /** The seamless window: open the ears, and close them after the yes-window
      *  if no final answer has come. */
     fun startSeamless() = start(SEAMLESS_LISTEN_MS)
@@ -66,6 +94,7 @@ class VoiceController(context: Context) {
     /** Set an error the caller already knows (a denied permission) and stop. */
     fun fail(message: String) {
         handler.removeCallbacks(stopRunnable)
+        handler.removeCallbacks(settleRunnable)
         listener.stop()
         error = message
         listening = false
@@ -76,6 +105,7 @@ class VoiceController(context: Context) {
         listening = true
         heard = ""
         error = null
+        handler.removeCallbacks(settleRunnable)
         listener.start()
         if (timeoutMs != null) {
             handler.removeCallbacks(stopRunnable)
@@ -85,6 +115,7 @@ class VoiceController(context: Context) {
 
     fun stop() {
         handler.removeCallbacks(stopRunnable)
+        handler.removeCallbacks(settleRunnable)
         listener.stop()
         listening = false
     }

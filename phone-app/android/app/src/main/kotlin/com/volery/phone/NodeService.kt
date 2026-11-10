@@ -30,6 +30,14 @@ class NodeService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val host = intent?.getStringExtra(EXTRA_HOST) ?: BuildConfig.PHONE_HOST
+        if (intent?.getBooleanExtra(EXTRA_ONLY_SIGHT, false) == true) {
+            // Another wall was chosen on the roster. The node is already
+            // started and is the same node on every wall, so this asks it what
+            // the other host publishes rather than throwing the dial away and
+            // making a second one.
+            sight(host)
+            return START_NOT_STICKY
+        }
         val key = intent?.getStringExtra(EXTRA_KEY) ?: BuildConfig.PHONE_KEY
         val name = intent?.getStringExtra(EXTRA_NAME) ?: BuildConfig.PHONE_NAME
         dial(host, key, name)
@@ -37,6 +45,25 @@ class NodeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /** Sight one wall while the node stays as it is: the roster's chips. The
+     *  page keeps drawing what it has until the new sighting lands, so
+     *  choosing a wall is a change of reading rather than a blank page. */
+    private fun sight(host: String) {
+        Log.i(TAG, "sight: host=$host")
+        NodeState.update(working = true, sighting = NodeState.sighting, error = null)
+        executor.execute {
+            when (val sight = NativeBridge.parse(NativeBridge.sight(host))) {
+                is NativeBridge.Envelope.Error -> {
+                    Log.w(TAG, "sight failed: ${sight.message}")
+                    NodeState.update(false, NodeState.sighting, sight.message)
+                }
+                is NativeBridge.Envelope.Ok -> {
+                    NodeState.update(false, parseSighting(sight.payload), null)
+                }
+            }
+        }
+    }
 
     private fun dial(host: String, key: String, name: String) {
         Log.i(TAG, "dial: host=$host name=$name")
@@ -100,6 +127,16 @@ class NodeService : Service() {
         const val EXTRA_HOST = "host"
         const val EXTRA_KEY = "key"
         const val EXTRA_NAME = "name"
+        const val EXTRA_ONLY_SIGHT = "only_sight"
+
+        /** Read another wall with the node already up — the roster's chips. */
+        fun sight(context: Context, host: String) {
+            val intent = Intent(context, NodeService::class.java)
+                .putExtra(EXTRA_HOST, host)
+                .putExtra(EXTRA_ONLY_SIGHT, true)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+            else context.startService(intent)
+        }
 
         fun dial(context: Context, host: String, key: String, name: String) {
             val intent = Intent(context, NodeService::class.java)

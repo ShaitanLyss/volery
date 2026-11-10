@@ -62,6 +62,52 @@ The wall key phrase is a secret: it lives in `android/local.properties`
 (gitignored) as `phone.key`, read into `BuildConfig` at build time. `phone.host`
 and `phone.name` default to the `m2` lab wall and `phone`.
 
+**The `.so` is a build artifact and is gitignored, so it does not rebuild
+itself.** Any change under `src-tauri/phone-ffi/**` or `src-tauri/phone-node/**`
+must be followed by step 1 and a reinstall, or the phone runs new Kotlin against
+an old bridge. That is exactly what a stale one looked like on 2026-11-10: the
+first typed sentence after M5b reached `NativeBridge.steward`, the library had
+never heard of it, and the process died on an executor thread with no message
+anywhere on screen. `Steer.call` now catches the failure and the rail says *the
+phone's bridge is out of date* — but the cure is still to rebuild step 1.
+
+## The look
+
+The phone is chat view's identity at arm's length, and the design is the
+mockups in `.scratch-e6abc47c/` (`01-roster` … `07-play`) with the system
+described in `00-overview.html`. `Theme.kt` is that system as Compose: a
+[Palette] holds the wall's own primitives (ground, sheet, surface, raised, edge,
+the four paper steps, the five status colours) and derives the mixed ones —
+`lift` = surface 82% + paper 3%, `hair` = edge@80%, `lamp` = paper@6%, `prose` =
+paper-dim 45% / paper — with `lerp`, which interpolates in Oklab exactly as
+`color-mix(in oklab, …)` does. Two grounds are built from them: `studio` (the
+default, the signature) and `vellum` (studio by day, nothing white, no glare).
+Colour is status only; the mark's work→ask gradient is the brand and the one
+exception.
+
+Type follows the wall's split: chrome is the system sans (Segoe UI Variable on
+Windows, Roboto here), the agent's and the card's prose is the serif at
+`tx × 1.2` with 1.62 leading (Sitka on the desktop, Noto Serif here), names are
+the display serif and machinery is mono. `Motion` is five durations and two
+easings, transform and opacity only, folded into `LocalMotion` with the
+`full`/`spare`/`still` preference — `still` runs nothing, `spare` drops the
+endless breathing.
+
+Material 3 stays as **substrate**, not as a look: it is what supplies insets,
+touch, text selection and accessibility, and `VoleryTheme` paints the system
+bars so no screen can forget them. Everything it would draw is ours — no
+TopAppBar, no tonal elevation, no ripple (a 90 ms press instead), no Material
+palette, no Material icons (`Glyph.kt` draws the mockups' own 16-unit strokes).
+The screens are `MainActivity` (roster, a card's page and the confirm gate in
+one room, so the narration loop keeps running while a question is answered),
+`ViewerActivity` and `SettingsActivity`; `Components.kt` holds the ground, the
+status light, the rail, the sheet and the segmented choice they share.
+
+`--ez phone.seedGate true` raises the gate with a representative plan in a debug
+build, so its layout can be photographed or driven in a lab against a wall that
+does not answer `Steward` (a wall from before M5a drops the request, and the
+phone can only say *did not answer*).
+
 ## The one Android-only step
 
 On Android, iroh's `platform-verifier` feature reads the system trust store

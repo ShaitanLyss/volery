@@ -40,6 +40,13 @@ class Listener(private val context: Context) {
         )
     }
 
+    /** End listening the way a released hold does: ask the recogniser to
+     *  finish rather than throwing the session away, so it hands back what it
+     *  heard. [stop] cancels; this resolves. */
+    fun finish() {
+        recognizer?.let { runCatching { it.stopListening() } }
+    }
+
     /** Cancel and release the current session, if any. `cancel` before
      *  `destroy` so a user-initiated stop does not surface as an error. */
     fun stop() {

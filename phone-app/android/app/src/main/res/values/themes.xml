@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- The app is drawn in Compose; this theme only stops the classic action
-         bar and paints the window the warm paper colour so there is no white
-         flash between the process starting and the first Compose frame. -->
-    <style name="Theme.VoleryPhone" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#E8E3D6</item>
+         bar and paints the window the studio's ground so there is no white
+         flash between the process starting and the first Compose frame. Each
+         activity repaints it from whichever ground Config names, so vellum
+         opens vellum rather than opening dark and blinking. -->
+    <style name="Theme.VoleryPhone" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0F0D0C</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

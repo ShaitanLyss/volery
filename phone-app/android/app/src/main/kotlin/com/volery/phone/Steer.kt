@@ -2,6 +2,7 @@ package com.volery.phone
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -26,7 +27,9 @@ class Steer(private val voice: VoiceController) {
     private val executor = Executors.newSingleThreadExecutor()
 
     /** A plan waiting for a yes. Its `id` is the phone's own — what `steward`
-     *  handed back — and what `confirm` names. */
+     *  handed back — and what `confirm` names. `steps` and `heard` exist for
+     *  the gate to draw, never to send: confirmation carries the id alone and
+     *  the wall runs the plan it already holds. */
     private var pendingPlan: PendingPlan? = null
     /** A question waiting for an answer, named by its card and its ask id. */
     private var pendingQuestion: PendingQuestion? = null
@@ -34,12 +37,23 @@ class Steer(private val voice: VoiceController) {
     var status by mutableStateOf("")
         private set
 
+    /** The plan the gate is showing, so the sheet is a fold over state rather
+     *  than a callback a screen can miss. Null means nothing is waiting. */
+    var pending by mutableStateOf<PendingPlan?>(null)
+        private set
+
+    /** Whether the next transcript will be sent as a question's answer. The
+     *  card screen offers "answer aloud" only when this is true; offering it
+     *  otherwise would aim a sentence at the steward instead. */
+    var awaitingQuestion by mutableStateOf(false)
+        private set
+
     init {
         voice.onFinalTranscript = { text -> handle(text) }
     }
 
-    private data class PendingPlan(val id: String, val reads: String)
     private data class PendingQuestion(val card: String, val askId: String)
+    private var heard = ""
 
     /** One settled transcript. A yes/no when a plan is waiting; an answer when
      *  a question is; otherwise a new command. */
@@ -51,6 +65,7 @@ class Steer(private val voice: VoiceController) {
             when (answeredIn(t)) {
                 "yes" -> confirm(plan)
                 "no" -> {
+                    pending = null
                     pendingPlan = null
                     status = "let go"
                     Speaker.speak("let go")
@@ -72,34 +87,87 @@ class Steer(private val voice: VoiceController) {
      *  question itself. */
     fun armQuestion(card: String, askId: String) {
         pendingQuestion = PendingQuestion(card, askId)
+        awaitingQuestion = true
+    }
+
+    /** The gate's yes. The sheet's button and a spoken "yes" are the same
+     *  call: one confirm, carrying the plan's id and nothing else. */
+    fun confirmPending() {
+        pendingPlan?.let { confirm(it) }
+    }
+
+    /** The gate's "no, never mind". Silent, because the person is looking at
+     *  it; the spoken no speaks, because they may not be. */
+    fun dismissPending() {
+        if (pendingPlan == null) return
+        pendingPlan = null
+        pending = null
+        status = "let go"
+    }
+
+    /**
+     * Debug builds only: stand a representative plan in front of the gate, so
+     * its layout can be photographed (or a lab can drive it) without a wall
+     * that answers `Steward` — a wall running a build from before the steward
+     * crossed the flyway drops the request, and the phone can only say so.
+     *
+     * There is no UI path to this and it cannot exist in a release: the one
+     * caller is guarded by `BuildConfig.DEBUG` *and* an explicit intent extra,
+     * the same shape as the desktop's `VOLERY_CRASH_SELF`. It confirms nothing
+     * — the id it carries is a preview's, and pressing yes would ask a wall to
+     * carry a plan that wall never made.
+     */
+    fun seedForPreview(plan: PendingPlan) {
+        if (pending != null) return
+        pendingPlan = plan
+        pending = plan
+        status = plan.reads
     }
 
     /** One command: hand the sentence to the wall's steward, off the main
      *  thread. */
     private fun run(text: String) {
+        heard = text
         status = "…"
         executor.execute {
-            val result = NativeBridge.parse(NativeBridge.steward(Config.host, text))
+            val result = call { NativeBridge.steward(Config.host, text) }
             handler.post { onSteward(result) }
         }
+    }
+
+    /** A call into the bridge that cannot take the process down with it.
+     *
+     *  `libphone_ffi.so` is a checked-in artifact, and one built before the
+     *  Kotlin that calls it answers `UnsatisfiedLinkError` — on an executor
+     *  thread, where nothing catches it and the whole app disappears. That is
+     *  what a stale `.so` looks like from the outside: you say a sentence and
+     *  the phone is back on the home screen with no message anywhere. So the
+     *  call is caught and reported as the failure it is. */
+    private fun call(block: () -> String?): NativeBridge.Envelope = try {
+        NativeBridge.parse(block())
+    } catch (t: Throwable) {
+        Log.w("PhoneSteer", "the bridge refused a call", t)
+        NativeBridge.Envelope.Error("the phone's bridge is out of date — rebuild libphone_ffi.so")
     }
 
     /** Confirm a plan and let the wall carry it out. The phone sends only the
      *  id — it never sends the steps back. */
     private fun confirm(plan: PendingPlan) {
+        pending = null
         pendingPlan = null
         status = "…"
         executor.execute {
-            val result = NativeBridge.parse(NativeBridge.confirm(Config.host, plan.id))
+            val result = call { NativeBridge.confirm(Config.host, plan.id) }
             handler.post { onConfirm(result) }
         }
     }
 
     private fun answerQuestion(question: PendingQuestion, text: String) {
         pendingQuestion = null
+        awaitingQuestion = false
         status = "…"
         executor.execute {
-            val result = NativeBridge.parse(NativeBridge.answer(Config.host, question.card, question.askId, text))
+            val result = call { NativeBridge.answer(Config.host, question.card, question.askId, text) }
             handler.post {
                 when (result) {
                     is NativeBridge.Envelope.Error -> {
@@ -130,13 +198,15 @@ class Steer(private val voice: VoiceController) {
                             status = "nothing to do"
                             Speaker.speak("nothing to do")
                         } else if (needs == "confirmation") {
-                            pendingPlan = PendingPlan(id, reads)
+                            val stepList = stepsOf(plan)
+                            pendingPlan = PendingPlan(id, reads, stepList, heard)
+                            pending = pendingPlan
                             status = reads
                             speakThenListen("$reads — yes?")
                         } else {
                             // A plan that only changes how you look still runs
                             // on the wall; the phone just does not ask first.
-                            confirm(PendingPlan(id, reads))
+                            confirm(PendingPlan(id, reads, emptyList(), heard))
                         }
                     }
                     "ask" -> {
@@ -193,6 +263,62 @@ class Steer(private val voice: VoiceController) {
             if (Speaker.isSpeaking()) Speaker.onQuiet = { voice.startSeamless() } else voice.startSeamless()
         }
     }
+}
+
+/**
+ * One step of a plan, as the gate draws it. `verb` is the op the wall declared
+ * (`spawn`, `prompt`, `close`, …), `said` the short phrase the wall templated
+ * for it, and `detail` a quiet summary of what it acts on.
+ *
+ * The steps exist here only so the gate can show the plan in order before
+ * anything moves. Confirming sends the plan's id alone; the wall holds the
+ * steps and runs them, so nothing the phone draws can alter what happens.
+ */
+data class PlanStep(val verb: String, val said: String, val detail: String)
+
+/** The plan a gate is standing over: what the wall will do, in order, and the
+ *  sentence it understood. */
+data class PendingPlan(
+    val id: String,
+    val reads: String,
+    val steps: List<PlanStep>,
+    val heard: String,
+)
+
+/** The steps out of the steward's `answer.plan`, tolerated the way every read
+ *  off the wire in this app is: a step with no op is skipped, a step with no
+ *  `said` falls back to its op, and a plan the wall sent with no steps still
+ *  reads as one line (`reads`) rather than as nothing. */
+private fun stepsOf(plan: JSONObject): List<PlanStep> {
+    val arr = plan.optJSONArray("steps") ?: return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val s = arr.optJSONObject(i) ?: return@mapNotNull null
+        val op = s.optString("op")
+        if (op.isEmpty()) return@mapNotNull null
+        PlanStep(
+            verb = op,
+            said = s.optString("said").ifEmpty { op },
+            detail = detailOf(s.optJSONObject("args")),
+        )
+    }
+}
+
+/** What a step acts on, in the fewest words that are still true: the first
+ *  three of the args that name a thing, each as `name value`, joined with a
+ *  quiet dot. An array is joined the way the wall would say it. */
+private fun detailOf(args: JSONObject?): String {
+    if (args == null) return ""
+    val wanted = listOf("project", "card", "cards", "path", "title", "subject", "file", "text", "minutes")
+    val parts = wanted.mapNotNull { key ->
+        if (!args.has(key) || args.isNull(key)) return@mapNotNull null
+        val raw = args.opt(key)
+        val value = when (raw) {
+            is org.json.JSONArray -> (0 until raw.length()).mapNotNull { raw.opt(it)?.toString() }.joinToString(" and ")
+            else -> raw?.toString() ?: return@mapNotNull null
+        }.ifEmpty { return@mapNotNull null }
+        "$key $value"
+    }.take(3)
+    return parts.joinToString(" · ").take(96)
 }
 
 /** A spoken yes or no, or null for anything that is neither — the desktop's

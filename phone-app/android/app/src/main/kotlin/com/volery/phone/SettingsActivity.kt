@@ -5,243 +5,600 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * Settings: the three fields the node needs — the wall host, the key phrase
- * and this phone's name — readable and editable, then the walking knobs: how
- * much the phone says, how you talk back, and what happens to your music while
- * it speaks. These feed [Config], which the home screen dials and narrates
- * with. The wake word is shown disabled — it is deferred, not forgotten.
+ * Settings: the phone's one page of choices, in the order they matter — the
+ * look and how much of it moves, how it listens, how much it says, and the
+ * three fields that join this phone to a wall.
+ *
+ * There is no save button. A segmented choice is made and it is; a field is
+ * kept with "keep it" inside its own sheet, so the keyboard only covers the one
+ * line being typed. The key phrase is the exception to everything stored: it
+ * lives in memory for the life of the process and [Config.persist] never sees
+ * it, which is why the row that shows it shows only its first six characters.
  */
 class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            VoleryTheme { SettingsScreen(onSaved = { finish() }) }
-        }
+        setContent { SettingsScreen(onBack = { finish() }) }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** The theme is applied here rather than at the activity, so choosing a ground
+ *  inside the sheet recolours the page under it in the same frame. */
 @Composable
-private fun SettingsScreen(onSaved: () -> Unit) {
-    var host by rememberSaveable { mutableStateOf(Config.host) }
-    var key by rememberSaveable { mutableStateOf(Config.key) }
-    var name by rememberSaveable { mutableStateOf(Config.name) }
-    var chatty by rememberSaveable { mutableStateOf(Config.chatty) }
-    var mode by rememberSaveable { mutableStateOf(Config.mode) }
-    var music by rememberSaveable { mutableStateOf(Config.music) }
+private fun SettingsScreen(onBack: () -> Unit) {
+    VoleryTheme(theme = Config.theme, motion = Config.motion) {
+        SettingsContent(onBack)
+    }
+}
 
-    Box(Modifier.fillMaxSize().background(groundBrush())) {
-        Scaffold(
-            containerColor = Color.Transparent,
-            topBar = {
-                TopAppBar(
-                    title = { Text("settings", fontFamily = FontFamily.Serif) },
-                    navigationIcon = {
-                        IconButton(onClick = onSaved) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "back", tint = InkMute)
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+@Composable
+private fun SettingsContent(onBack: () -> Unit) {
+    val ears = rememberEars()
+    var typing by remember { mutableStateOf(false) }
+    // Which sheet is up: the theme list, or one of the three flyway fields.
+    // One at a time — a second sheet replacing the first is the only thing a
+    // tap on a covered row could do anyway.
+    var sheet by remember { mutableStateOf<String?>(null) }
+
+    Ground {
+        Column(Modifier.fillMaxSize()) {
+            Head(onBack)
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                SettingsBody(onOpen = { sheet = it })
+                VoiceRail(
+                    ears.voice,
+                    ears.steer.status,
+                    onType = { typing = true },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 26.dp),
                 )
-            },
-        ) { padding ->
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "the phone joins a wall by its name and key phrase — the same invite a laptop carries.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = InkMute,
-                )
-                SettingsField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = "wall host",
-                )
-                SettingsField(
-                    value = key,
-                    onValueChange = { key = it },
-                    label = "wall key phrase",
-                )
-                SettingsField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = "this phone's name",
-                )
-                Spacer(Modifier.height(4.dp))
-                ChattyControl(selected = chatty, onSelect = { chatty = it })
-                Spacer(Modifier.height(4.dp))
-                ModeControl(selected = mode, onSelect = { mode = it })
-                Spacer(Modifier.height(4.dp))
-                MusicControl(selected = music, onSelect = { music = it })
-                Spacer(Modifier.height(4.dp))
-                Button(
-                    onClick = {
-                        Config.host = host
-                        Config.key = key
-                        Config.name = name
-                        Config.chatty = chatty
-                        Config.mode = mode
-                        Config.music = music
-                        onSaved()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Text("save")
-                }
             }
         }
+
+        when (sheet) {
+            "theme" -> ThemeSheet(
+                current = Config.theme,
+                onPick = {
+                    Config.theme = it
+                    Config.persist()
+                    sheet = null
+                },
+                onDismiss = { sheet = null },
+            )
+            "key" -> FieldSheet(
+                title = "key phrase",
+                label = "the phrase the wall knows you by",
+                value = Config.key,
+                mono = true,
+                masked = true,
+                onKeep = { Config.key = it },
+                onDismiss = { sheet = null },
+            )
+            "host" -> FieldSheet(
+                title = "steward wall",
+                label = "the wall's address",
+                value = Config.host,
+                mono = true,
+                onKeep = {
+                    Config.host = it
+                    Config.persist()
+                },
+                onDismiss = { sheet = null },
+            )
+            "name" -> FieldSheet(
+                title = "this phone",
+                label = "what the wall calls it",
+                value = Config.name,
+                onKeep = {
+                    Config.name = it
+                    Config.persist()
+                },
+                onDismiss = { sheet = null },
+            )
+        }
+
+        EarsOverlay(ears = ears, typing = typing, onTyping = { typing = it })
     }
 }
 
+/* ── the head ───────────────────────────────────────────────────────────── */
+
+/** A back button and the name, in the display serif. No bar, no elevation: the
+ *  head is the top of the page, not a surface laid over it. */
 @Composable
-private fun SettingsField(value: String, onValueChange: (String) -> Unit, label: String) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        singleLine = true,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth(),
+private fun Head(onBack: () -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 62.dp)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(start = 8.dp, end = 20.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconBtn(Glyph.Back, "back", onBack)
+        Spacer(Modifier.width(8.dp))
+        Text("settings", style = Type.display(p, 31f), maxLines = 1)
+    }
+}
+
+/* ── the body ───────────────────────────────────────────────────────────── */
+
+@Composable
+private fun SettingsBody(onOpen: (String) -> Unit) {
+    val p = LocalPalette.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .fadeAtTheFoot()
+            .verticalScroll(rememberScrollState())
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 18.dp)
+            .padding(bottom = 112.dp),
+    ) {
+        Section("the look")
+        Group {
+            SettingRow("theme", onClick = { onOpen("theme") }) {
+                Swatch(paletteFor(Config.theme), 13.dp)
+                Text(Config.theme, style = Type.label(p, p.paper, 13.5f), maxLines = 1)
+            }
+            RowNote("studio is volery's own, and what the phone starts on. vellum is studio by day.")
+            Control(
+                label = "motion",
+                note = "full, quietly stepped, or not at all.",
+                options = listOf("full" to "full", "spare" to "spare", "still" to "still"),
+                selected = Config.motion,
+                onSelect = {
+                    Config.motion = it
+                    Config.persist()
+                },
+            )
+        }
+
+        Section("the ears")
+        Group {
+            Control(
+                label = "how it listens",
+                note = modeNote(Config.mode),
+                options = listOf(
+                    "push-to-talk" to "hold to talk",
+                    "hey-volery" to "hey volery",
+                    "seamless" to "seamless",
+                ),
+                selected = Config.mode,
+                onSelect = {
+                    Config.mode = it
+                    Config.persist()
+                },
+                enabled = { it != "hey-volery" },
+            )
+        }
+
+        Section("the mouth")
+        Group {
+            Control(
+                label = "how much it says",
+                note = chattyNote(Config.chatty),
+                options = listOf(
+                    "off" to "off",
+                    "needs" to "what needs you",
+                    "murmur" to "murmur",
+                ),
+                selected = Config.chatty,
+                onSelect = {
+                    Config.chatty = it
+                    Config.persist()
+                },
+            )
+            Seam()
+            MusicRow(
+                selected = Config.music,
+                onSelect = {
+                    Config.music = it
+                    Config.persist()
+                },
+            )
+        }
+
+        Section("the flyway")
+        Group {
+            SettingRow("key phrase", onClick = { onOpen("key") }) {
+                Text(
+                    if (Config.key.isEmpty()) "not set" else Config.key.take(6) + "···",
+                    style = Type.mono(p, 12.5f, p.paperDim),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Seam()
+            SettingRow("steward wall", onClick = { onOpen("host") }) {
+                Text(
+                    Config.host,
+                    style = Type.label(p, p.paper, 13.5f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Seam()
+            SettingRow("this phone", onClick = { onOpen("name") }) {
+                StatusDot(if (NodeState.working) DotKind.Work else DotKind.Done)
+                Text(
+                    if (NodeState.sighting != null) "${Config.name} · on the flyway"
+                    else "${Config.name} · not dialed yet",
+                    style = Type.label(p, p.paperDim, 12f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        About()
+    }
+}
+
+/** A group heading: "the look", "the ears", small and quiet above its plate. */
+@Composable
+private fun Section(text: String) {
+    val p = LocalPalette.current
+    Text(
+        text,
+        style = Type.group(p),
+        modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 12.dp, bottom = 6.dp),
     )
 }
 
-/** The chatty level: three words that gate the narration loop, with the
- *  selected one's meaning said in quiet prose beneath. */
+/** One plate of rows: an 18 dp corner, the surface at a third, one hairline
+ *  round it. The rows inside carry no shape of their own — the plate clips. */
 @Composable
-private fun ChattyControl(selected: String, onSelect: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("how much the phone says", style = MaterialTheme.typography.labelMedium, color = InkMute)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChattyOption("off", selected, onSelect)
-            ChattyOption("needs", selected, onSelect)
-            ChattyOption("murmur", selected, onSelect)
+private fun Group(content: @Composable ColumnScope.() -> Unit) {
+    val p = LocalPalette.current
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(p.surface.copy(alpha = 0.32f))
+            .border(1.dp, p.hair, shape),
+        content = content,
+    )
+}
+
+/** The hairline between two rows — a step quieter than the plate's own edge. */
+@Composable
+private fun Seam() {
+    val p = LocalPalette.current
+    Box(Modifier.fillMaxWidth().height(1.dp).background(p.seam))
+}
+
+/**
+ * One row: a key on the left taking whatever room is left, a value at the
+ * trailing edge (capped so a long host cannot eat the key), and a chevron when
+ * it opens something. The press lightens the row's face; nothing ripples.
+ */
+@Composable
+private fun SettingRow(
+    key: String,
+    onClick: (() -> Unit)? = null,
+    value: @Composable RowScope.() -> Unit,
+) {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp)
+            .then(
+                pressable(
+                    onClick,
+                    RectangleShape,
+                    tint = p.surface.copy(alpha = 0.55f),
+                ),
+            )
+            .padding(horizontal = 15.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            key,
+            style = Type.label(p, p.paperDim, 14f),
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
+        Row(
+            Modifier.widthIn(max = 200.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            value()
         }
-        Text(chattyDetail(selected), style = MaterialTheme.typography.labelMedium, color = InkMute)
+        if (onClick != null) Icon(Glyph.ChevronRight, tint = p.paperFaint, size = 18.dp)
+    }
+}
+
+/** A sentence under a row, saying what the thing above it is. */
+@Composable
+private fun RowNote(text: String) {
+    val p = LocalPalette.current
+    Text(
+        text,
+        style = Type.note(p),
+        modifier = Modifier.padding(start = 15.dp, end = 15.dp, bottom = 13.dp),
+    )
+}
+
+/** A labelled choice on its own track, with the meaning of the chosen one
+ *  underneath — the shape every setting in the middle of this page takes. */
+@Composable
+private fun Control(
+    label: String,
+    note: String,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    enabled: (String) -> Boolean = { true },
+) {
+    val p = LocalPalette.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 12.dp)) {
+        Text(label, style = Type.label(p, p.paperDim, 14f))
+        Spacer(Modifier.height(11.dp))
+        Segmented(options, selected, onSelect, enabled = enabled)
+        Spacer(Modifier.height(9.dp))
+        Note(note)
+    }
+}
+
+/** What happens to your music while the phone speaks a line that needs you:
+ *  ducked under it or paused for it, and back either way. It rides in the row
+ *  rather than on a track of its own, so it reads as a modifier of "how much it
+ *  says" — which is what it is. */
+@Composable
+private fun MusicRow(selected: String, onSelect: (String) -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp)
+            .padding(horizontal = 15.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            "music",
+            style = Type.label(p, p.paperDim, 14f),
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
+        Segmented(
+            options = listOf("duck" to "duck", "pause" to "pause"),
+            selected = selected,
+            onSelect = onSelect,
+            modifier = Modifier.width(172.dp),
+            compact = true,
+        )
+    }
+}
+
+/** The version and the two sentences that say what this thing is. Quiet on
+ *  purpose: it is the last thing on the page and the least urgent. */
+@Composable
+private fun About() {
+    val p = LocalPalette.current
+    Column(Modifier.padding(start = 4.dp, end = 4.dp, top = 20.dp)) {
+        Text(
+            "volery ${BuildConfig.VERSION_NAME} · a flock on the flyway.",
+            style = Type.note(p, p.paperDim),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "the phone hears and speaks; every plan is judged, and confirmed, on a wall.",
+            style = Type.note(p, p.paperMute),
+        )
+    }
+}
+
+/* ── the sheets ─────────────────────────────────────────────────────────── */
+
+/** The ground itself, as a choice: each one is a row with its own swatch, so
+ *  picking one is looking at it. The swatch is the only colour in this file —
+ *  it is the thing being chosen, not a tint on a control. */
+@Composable
+private fun ThemeSheet(current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    VolerySheet(title = "the look", onDismiss = onDismiss) {
+        PALETTES.forEachIndexed { i, (name, palette) ->
+            if (i > 0) Spacer(Modifier.height(4.dp))
+            ThemeChoice(name, palette, chosen = name == current) { onPick(name) }
+        }
+        Spacer(Modifier.height(12.dp))
+        Note("studio is volery's own, and what the phone starts on. vellum is studio by day.")
+        Spacer(Modifier.height(6.dp))
     }
 }
 
 @Composable
-private fun ChattyOption(value: String, selected: String, onSelect: (String) -> Unit) {
-    if (selected == value) {
-        FilledTonalButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
-    } else {
-        OutlinedButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
+private fun ThemeChoice(name: String, palette: Palette, chosen: Boolean, onPick: () -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 46.dp)
+            .then(
+                pressable(
+                    onPick,
+                    RoundedCornerShape(13.dp),
+                    tint = p.surface.copy(alpha = 0.55f),
+                    role = Role.RadioButton,
+                ),
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Swatch(palette, 20.dp)
+        Text(
+            name,
+            style = Type.label(p, if (chosen) p.paper else p.paperDim, 15f),
+            modifier = Modifier.weight(1f),
+        )
+        if (chosen) Icon(Glyph.Check, tint = p.paper, size = 16.dp)
     }
 }
 
-private fun chattyDetail(value: String): String = when (value) {
+/** A ground as a small circle of itself: lit from the same corner the page is,
+ *  so studio reads warm-dark and vellum reads day. */
+@Composable
+private fun Swatch(palette: Palette, diameter: Dp) {
+    val p = LocalPalette.current
+    Box(
+        Modifier
+            .size(diameter)
+            .clip(CircleShape)
+            .drawWithCache {
+                val colours = if (palette.light) {
+                    listOf(palette.surface, palette.ground)
+                } else {
+                    listOf(lerp(palette.surface, palette.paper, 0.10f), palette.sheet)
+                }
+                val brush = Brush.radialGradient(
+                    colours,
+                    center = Offset(size.width * 0.35f, size.height * 0.30f),
+                    radius = size.maxDimension * 0.85f,
+                )
+                onDrawBehind { drawRect(brush) }
+            }
+            .border(1.dp, p.edge, CircleShape),
+    )
+}
+
+/** One flyway field: the line you came to type, and the one button that keeps
+ *  it. Back, the scrim or "keep it" all close the sheet; the microphone behind
+ *  it is covered while it is up, as it should be — this is a keyboard. */
+@Composable
+private fun FieldSheet(
+    title: String,
+    label: String,
+    value: String,
+    onKeep: (String) -> Unit,
+    onDismiss: () -> Unit,
+    mono: Boolean = false,
+    masked: Boolean = false,
+) {
+    var draft by remember(value) { mutableStateOf(value) }
+    val keep = {
+        onKeep(draft.trim())
+        onDismiss()
+    }
+    VolerySheet(title = title, onDismiss = onDismiss) {
+        QuietField(
+            value = draft,
+            onValueChange = { draft = it },
+            label = label,
+            mono = mono,
+            masked = masked,
+            onDone = keep,
+        )
+        Spacer(Modifier.height(14.dp))
+        ActionButton(
+            "keep it",
+            onClick = keep,
+            modifier = Modifier.fillMaxWidth(),
+            primary = draft.isNotBlank(),
+        )
+        Spacer(Modifier.height(6.dp))
+    }
+}
+
+/* ── the copy ───────────────────────────────────────────────────────────── */
+
+/** What each way of listening means, in the one sentence that matters: what
+ *  the microphone is doing when you are not talking to it. */
+private fun modeNote(value: String): String = when (value) {
+    "seamless" -> "after something needs you, it listens on its own for a moment"
+    "hey-volery" -> "not yet — the wake word would keep the microphone open"
+    else -> "hold the orb and talk — nothing listens until you do"
+}
+
+/** How much of the wall's life becomes speech. */
+private fun chattyNote(value: String): String = when (value) {
     "off" -> "nothing, even when a card is asking"
     "needs" -> "only what needs you — a card opened, a question waiting"
     "murmur" -> "everything notable — finishes, starts, notices too"
     else -> ""
 }
 
-/** How she talks back: one of the walking modes. The wake word is present but
- *  disabled — it would keep the microphone always on, which is battery-costly
- *  on Android, so it is deferred rather than shipped half-done. */
-@Composable
-private fun ModeControl(selected: String, onSelect: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("how you talk to it", style = MaterialTheme.typography.labelMedium, color = InkMute)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ModeOption("push-to-talk", selected, onSelect)
-            ModeOption("seamless", selected, onSelect)
-            OutlinedButton(
-                onClick = {},
-                enabled = false,
-                shape = RoundedCornerShape(10.dp),
-            ) { Text("hey-volery") }
-        }
-        Text(modeDetail(selected), style = MaterialTheme.typography.labelMedium, color = InkMute)
+/* ── the foot ───────────────────────────────────────────────────────────── */
+
+/** The page dissolves into the ground before it reaches the rail, the way the
+ *  mockup's mask does — content scrolling under an opaque rail would read as
+ *  clipped rather than as continuing. */
+private fun Modifier.fadeAtTheFoot(): Modifier = this
+    .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+    .drawWithContent {
+        drawContent()
+        val h = size.height
+        if (h <= 0f) return@drawWithContent
+        val head = (6.dp.toPx() / h).coerceIn(0f, 1f)
+        val start = (head.coerceAtLeast((h - 106.dp.toPx()) / h)).coerceIn(0f, 1f)
+        val end = (start.coerceAtLeast((h - 78.dp.toPx()) / h)).coerceIn(0f, 1f)
+        drawRect(
+            brush = Brush.verticalGradient(
+                0f to Color.Transparent,
+                head to Color.Black,
+                start to Color.Black,
+                end to Color.Transparent,
+            ),
+            blendMode = BlendMode.DstIn,
+        )
     }
-}
 
-@Composable
-private fun ModeOption(value: String, selected: String, onSelect: (String) -> Unit) {
-    if (selected == value) {
-        FilledTonalButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
-    } else {
-        OutlinedButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
-    }
-}
-
-private fun modeDetail(value: String): String = when (value) {
-    "push-to-talk" -> "tap to talk — nothing listens until you do"
-    "seamless" -> "after something needs you, it listens on its own for a moment"
-    else -> ""
-}
-
-/** What happens to her music while the phone speaks something that needs her:
- *  duck lowers it, pause stops it — both resume when the line is done. */
-@Composable
-private fun MusicControl(selected: String, onSelect: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("when it needs you, your music", style = MaterialTheme.typography.labelMedium, color = InkMute)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MusicOption("duck", selected, onSelect)
-            MusicOption("pause", selected, onSelect)
-        }
-        Text(musicDetail(selected), style = MaterialTheme.typography.labelMedium, color = InkMute)
-    }
-}
-
-@Composable
-private fun MusicOption(value: String, selected: String, onSelect: (String) -> Unit) {
-    if (selected == value) {
-        FilledTonalButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
-    } else {
-        OutlinedButton(onClick = { onSelect(value) }, shape = RoundedCornerShape(10.dp)) { Text(value) }
-    }
-}
-
-private fun musicDetail(value: String): String = when (value) {
-    "duck" -> "lowers for the line, then back up"
-    "pause" -> "stops for the line, then resumes"
-    else -> ""
-}
