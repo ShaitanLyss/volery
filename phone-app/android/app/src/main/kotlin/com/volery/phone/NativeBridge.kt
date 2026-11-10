@@ -21,6 +21,9 @@ object NativeBridge {
     external fun sight(host: String): String
     external fun fetch(host: String, card: String, kind: String, kept: String, path: String): String
     external fun narrate(prev: String, curr: String, chatty: String): String
+    external fun steward(host: String, transcript: String): String
+    external fun confirm(host: String, id: String): String
+    external fun answer(host: String, card: String, askId: String, text: String): String
 
     sealed class Envelope {
         class Ok(val payload: JSONObject) : Envelope()

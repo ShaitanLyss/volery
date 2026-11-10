@@ -178,6 +178,78 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_narrate<'caller>(
         .resolve::<LogErrorAndDefault>()
 }
 
+/// `steward(host, transcript)` → `{"ok": {"id": …, "answer": {…}}}` or
+/// `{"err": …}`.
+///
+/// Hands a spoken transcript to a wall to be turned into a plan, and returns
+/// the plan's id and the whole of what the wall's steward decided — most often
+/// `{ "kind": "plan", "plan": { "reads": …, "needs": … } }`. The id is what
+/// `confirm` names, so the app never holds or sends the steps back.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_steward<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    host: JString<'caller>,
+    transcript: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let host = read(env, &host);
+            let transcript = read(env, &transcript);
+            to_jstring(env, steward(&host, &transcript))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
+/// `confirm(host, id)` → `{"ok": {…}}` or `{"err": …}`.
+///
+/// Confirms the plan the wall returned for `id` — the id `steward` handed
+/// back — and has the wall carry it out. The answer is the carry's outcome,
+/// `{ "kind": "done" | "refused" | "stopped", … }`, which the app narrates
+/// (a failure carries `why`; a success says nothing, since the digest delta
+/// then says what opened).
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_confirm<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    host: JString<'caller>,
+    id: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let host = read(env, &host);
+            let id = read(env, &id);
+            to_jstring(env, confirm(&host, &id))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
+/// `answer(host, card, askId, text)` → `{"ok": true}` or `{"err": …}`.
+///
+/// Answers a question a card on the wall has parked on `ask_user`. Fire-and-
+/// forget: the wall hands the text to the parked call through its own answer
+/// path, and the result surfaces in the wall's next digest (the question gone,
+/// the card resumed). A refusal reads the same way there.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_answer<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    host: JString<'caller>,
+    card: JString<'caller>,
+    ask_id: JString<'caller>,
+    text: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let host = read(env, &host);
+            let card = read(env, &card);
+            let ask_id = read(env, &ask_id);
+            let text = read(env, &text);
+            to_jstring(env, answer(&host, &card, &ask_id, &text))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
 fn read(env: &Env<'_>, s: &JString<'_>) -> String {
     s.try_to_string(env).unwrap_or_default()
 }
@@ -207,6 +279,23 @@ fn fetch(host: &str, card: &str, kind: &str, kept: &str, path: &str) -> Result<V
     };
     let f = rt().block_on(held.fetch(host, card, want))?;
     Ok(fetch_value(f))
+}
+
+fn steward(host: &str, transcript: &str) -> Result<Value, String> {
+    let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
+    let (id, answer) = rt().block_on(held.plan(host, transcript))?;
+    Ok(json!({ "id": id, "answer": answer }))
+}
+
+fn confirm(host: &str, id: &str) -> Result<Value, String> {
+    let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
+    rt().block_on(held.confirm(host, id))
+}
+
+fn answer(host: &str, card: &str, ask_id: &str, text: &str) -> Result<Value, String> {
+    let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
+    rt().block_on(held.answer(host, card, ask_id, text))?;
+    Ok(json!(true))
 }
 
 /// Flatten a `Fetched` into the JSON the Kotlin side reads: the bytes stay
@@ -303,6 +392,7 @@ fn narration_value(n: phone_node::Narration) -> Value {
                 "kind": kind_name(l.kind),
                 "card": l.card,
                 "text": l.text,
+                "askId": l.ask_id,
             }))
             .collect::<Vec<_>>(),
         "needsYou": n.needs_you,

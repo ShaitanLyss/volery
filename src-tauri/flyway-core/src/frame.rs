@@ -146,7 +146,7 @@ const KNOWN: &[&str] = &[
     "act", "acted", "board", "unpost", "unposted", "leaving",
     "accounts", "signin_begin", "signin_begun", "signin_code", "signin_done",
     "see", "seen",
-    "steward", "stewarded",
+    "steward", "stewarded", "confirm",
 ];
 
 #[cfg(test)]
@@ -360,6 +360,7 @@ mod tests {
         }
         for m in [
             StewardMsg::Steward { id: String::new(), transcript: String::new() },
+            StewardMsg::Confirm { id: String::new() },
             StewardMsg::Stewarded { id: String::new(), answer: None, why: None },
         ] {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());

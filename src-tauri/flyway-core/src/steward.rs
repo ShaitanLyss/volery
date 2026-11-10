@@ -84,12 +84,20 @@ pub enum StewardMsg {
     /// Ask the wall to turn a spoken transcript into a plan. `id` is the
     /// asker's, and only ties the answer to the question in this exchange.
     Steward { id: String, transcript: String },
+    /// Confirm the plan the wall returned for `id` — the id of the `Steward`
+    /// whose `Stewarded` answer is being confirmed — and carry it out. The
+    /// phone speaks the plan's `reads`, hears a yes, and sends this; it never
+    /// sends the plan back, so the wall is the only thing that ever held the
+    /// steps and the only thing that runs them. Answered `Stewarded` with the
+    /// carry's `Outcome` — `{ "kind": "done" | "refused" | "stopped", … }`.
+    Confirm { id: String },
     /// The answer. `answer` is the whole of what `steward.ts::understand`
     /// decided — `{ "kind": "plan", "plan": { "steps": …, "reads": …,
     /// "needs": … } }` most often, else `ask`, `question`, `decline` or
-    /// `unusable` — carried as an opaque value. `why` is a *wall-side* failure:
-    /// the wall could not run the steward at all (still starting, no front
-    /// end), rather than a reply the steward made.
+    /// `unusable` — carried as an opaque value; on a `Confirm` it is the
+    /// carry's `Outcome`. `why` is a *wall-side* failure: the wall could not
+    /// run the steward at all (still starting, no front end), rather than a
+    /// reply the steward made.
     Stewarded {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +187,8 @@ mod tests {
     fn the_words_round_trip_and_a_newer_field_is_free() {
         let ask = StewardMsg::Steward { id: "r".into(), transcript: "open a card for the orchard migration".into() };
         assert_eq!(ask, serde_json::from_value(serde_json::to_value(&ask).unwrap()).unwrap());
+        let confirm = StewardMsg::Confirm { id: "r".into() };
+        assert_eq!(confirm, serde_json::from_value(serde_json::to_value(&confirm).unwrap()).unwrap());
         let plan = StewardMsg::Stewarded {
             id: "r".into(),
             answer: Some(json!({ "kind": "plan", "plan": { "steps": [], "reads": "nothing", "needs": "nothing" } })),

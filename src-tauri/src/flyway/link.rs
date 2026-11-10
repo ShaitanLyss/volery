@@ -957,11 +957,13 @@ impl Link {
            thread that answers everything else. */
         let (sees, rest): (Vec<Frame>, Vec<Frame>) =
             rest.into_iter().partition(|f| matches!(f, Frame::See(super::seeing::SeeMsg::See { .. })));
-        /* A transcript to turn into a plan (`steward.rs`): like an act, it
-           blocks on this wall's front end and spends a `claude` turn, so it is
-           answered for a named wall only. */
-        let (stewards, rest): (Vec<Frame>, Vec<Frame>) =
-            rest.into_iter().partition(|f| matches!(f, Frame::Steward(StewardMsg::Steward { .. })));
+        /* A transcript to turn into a plan, or a confirmation of one
+           (`steward.rs`): like an act, it blocks on this wall's front end and
+           the steward spends a `claude` turn, so it is answered for a named
+           wall only. */
+        let (stewards, rest): (Vec<Frame>, Vec<Frame>) = rest.into_iter().partition(|f| {
+            matches!(f, Frame::Steward(StewardMsg::Steward { .. } | StewardMsg::Confirm { .. }))
+        });
         /* Which wall asked, before `answer` consumes the frames: an act is
            done for a named wall or not at all. */
         let from =
@@ -990,10 +992,18 @@ impl Link {
                 }
             }
             for f in stewards.into_iter().take(STEWARDS_PER_EXCHANGE) {
-                if let Frame::Steward(StewardMsg::Steward { id, transcript }) = f {
-                    if let Some(m) = self.steward_here(id, transcript, from.as_deref()).await {
-                        out.push(Frame::Steward(m));
+                match f {
+                    Frame::Steward(StewardMsg::Steward { id, transcript }) => {
+                        if let Some(m) = self.steward_here(id, transcript, from.as_deref()).await {
+                            out.push(Frame::Steward(m));
+                        }
                     }
+                    Frame::Steward(StewardMsg::Confirm { id }) => {
+                        if let Some(m) = self.steward_confirm_here(id, from.as_deref()).await {
+                            out.push(Frame::Steward(m));
+                        }
+                    }
+                    _ => {}
                 }
             }
             for f in signins.into_iter().take(1) {
@@ -2295,7 +2305,7 @@ impl Link {
         if let Ok(mut t) = self.stewards.lock() {
             t.insert(local.clone(), tx);
         }
-        let _ = self.app.emit("flyway:steward", StewardHere { id: local.clone(), transcript });
+        let _ = self.app.emit("flyway:steward", StewardHere { id: local.clone(), asker: id.clone(), transcript });
         let got = tokio::time::timeout(STEWARD_WITHIN, rx).await;
         /* The slot is this call's to clear, for `tail_here`'s reason. */
         if let Ok(mut t) = self.stewards.lock() {
@@ -2304,6 +2314,54 @@ impl Link {
         match got {
             /* Bounded on the way out as well as on the way in: the front end
                made it, and this is the wall's own last word on what leaves. */
+            Ok(Ok(Ok(answer))) => said(steward::fit(answer), None),
+            Ok(Ok(Err(why))) => said(None, Some(why)),
+            Ok(Err(_)) | Err(_) => said(None, Some(format!("{} did not answer in time — say it again", self.me))),
+        }
+    }
+
+    /// Carry out the plan a phone confirmed: the phone has spoken the plan's
+    /// `reads` and heard a yes, and sends only the id it was given. The plan
+    /// itself was held by this wall's front end under that id (`flyway:steward`
+    /// carried it as `asker`), so the front end looks it up and runs `carry` —
+    /// the same path a spoken yes at the keyboard takes. Gated on the switch
+    /// read fresh, as `steward_here` is: the plan runs work, and the switch may
+    /// have flipped since the plan was returned. `None` for an id that is not
+    /// one this app minted.
+    async fn steward_confirm_here(self: &Arc<Self>, id: String, from: Option<&str>) -> Option<StewardMsg> {
+        if !act::is_id(&id) {
+            return None;
+        }
+        let said = |answer: Option<Value>, why: Option<String>| Some(StewardMsg::Stewarded {
+            id: id.clone(),
+            answer,
+            why,
+        });
+        let Some(host) = from else {
+            return said(None, Some(format!(
+                "{} could not tell which wall asked — it may not have heard from yours yet; try again in a minute",
+                self.me
+            )));
+        };
+        let accepting =
+            self.store().and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c))).unwrap_or(false);
+        if !accepting {
+            return said(None, Some(format!(
+                "{} is not taking work from other walls — switch that on in the flyway panel on {host}, or ask another wall",
+                self.me
+            )));
+        }
+        let local = crate::store::uuid_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut t) = self.stewards.lock() {
+            t.insert(local.clone(), tx);
+        }
+        let _ = self.app.emit("flyway:steward-confirm", StewardConfirm { id: local.clone(), asker: id.clone() });
+        let got = tokio::time::timeout(STEWARD_WITHIN, rx).await;
+        if let Ok(mut t) = self.stewards.lock() {
+            t.remove(&local);
+        }
+        match got {
             Ok(Ok(Ok(answer))) => said(steward::fit(answer), None),
             Ok(Ok(Err(why))) => said(None, Some(why)),
             Ok(Err(_)) | Err(_) => said(None, Some(format!("{} did not answer in time — say it again", self.me))),
@@ -2908,11 +2966,25 @@ struct ActHere {
 }
 
 /// A phone's transcript, as this wall's front end is handed it: already gated
-/// and capped. `id` is minted here; see `Link::stewards`.
+/// and capped. `id` is minted here; see `Link::stewards`. `asker` is the
+/// phone's own id for the request — the id the phone will later name in its
+/// `Confirm` — carried so the front end can hold the plan under the key the
+/// phone confirms by.
 #[derive(Serialize, Clone)]
 struct StewardHere {
     id: String,
+    asker: String,
     transcript: String,
+}
+
+/// A phone's confirmation, as this wall's front end is handed it. `id` is
+/// minted here (the front end answers it back through `flyway_steward_answer`);
+/// `asker` is the id the phone named in its `Confirm` — the plan the front end
+/// held under it.
+#[derive(Serialize, Clone)]
+struct StewardConfirm {
+    id: String,
+    asker: String,
 }
 
 #[derive(Serialize, Clone)]

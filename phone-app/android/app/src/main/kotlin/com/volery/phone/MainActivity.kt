@@ -123,6 +123,10 @@ private fun HomeScreen() {
 
     // The ears, as one controller the tap and the seamless window both drive.
     val voice = remember { VoiceController(context.applicationContext) }
+    // The steer loop: a transcript becomes a plan on the wall, spoken back and
+    // confirmed aloud; a question is spoken and answered. Hooks itself into
+    // `voice`'s settled transcript.
+    val steer = remember { Steer(voice) }
     DisposableEffect(voice) { onDispose { voice.stop() } }
 
     val mode = Config.mode
@@ -131,7 +135,7 @@ private fun HomeScreen() {
     // speak what changed, gated by the chatty level. A line that needs her
     // ducks her music (every mode) and, in seamless mode, opens the ears for a
     // short yes-window once the words are out of the air.
-    NarrationLoop(context, host, chatty, mode, onNeedsYou = {
+    NarrationLoop(context, host, chatty, mode, steer, onNeedsYou = {
         if (mode == "seamless") {
             if (voice.hasMic()) voice.startSeamless() else voice.fail("the ears need the microphone")
         }
@@ -183,7 +187,13 @@ private fun HomeScreen() {
                 )
             },
             bottomBar = {
-                ListenBar(listening = voice.listening, heard = voice.heard, error = voice.error, onToggle = toggleListen)
+                ListenBar(
+                    listening = voice.listening,
+                    heard = voice.heard,
+                    status = steer.status,
+                    error = voice.error,
+                    onToggle = toggleListen,
+                )
             },
         ) { padding ->
             Box(
@@ -512,17 +522,17 @@ private fun ContextRing(ctx: Double?, dormant: Boolean) {
  *  moment the screen stops being shown. `off` gates it entirely — no sighting,
  *  no voice. */
 @Composable
-private fun NarrationLoop(context: Context, host: String, chatty: String, mode: String, onNeedsYou: () -> Unit) {
+private fun NarrationLoop(context: Context, host: String, chatty: String, mode: String, steer: Steer, onNeedsYou: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(host, chatty, mode) {
         if (chatty == "off") return@LaunchedEffect
         Speaker.init(context)
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             try {
-                narrateOnce(context, host, chatty, onNeedsYou)
+                narrateOnce(context, host, chatty, steer, onNeedsYou)
                 while (true) {
                     delay(NARRATION_CADENCE_MS)
-                    narrateOnce(context, host, chatty, onNeedsYou)
+                    narrateOnce(context, host, chatty, steer, onNeedsYou)
                 }
             } finally {
                 // Leaving the home screen cancels this block; a needs_you line
@@ -538,13 +548,21 @@ private fun NarrationLoop(context: Context, host: String, chatty: String, mode: 
  *  back on it, where [android.speech.tts.TextToSpeech] is happiest. A turn that
  *  needs her ducks her music for the line, then hands the caller `onNeedsYou`
  *  once the words are out of the air — seamless mode opens the ears on it. */
-private suspend fun narrateOnce(context: Context, host: String, chatty: String, onNeedsYou: () -> Unit) {
+private suspend fun narrateOnce(context: Context, host: String, chatty: String, steer: Steer, onNeedsYou: () -> Unit) {
     val prev = withContext(Dispatchers.IO) { NarrationStore.load(context) }
     val turn = sightAndNarrate(host, prev, chatty) ?: return
     if (turn.lines.isNotEmpty()) {
-        Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ")}")
+        Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ") { it.text }}")
     }
-    turn.lines.forEach { Speaker.speak(it, needsFocus = turn.needsYou) }
+    for (line in turn.lines) {
+        // A question with a parked id arms the answer *before* it is spoken, so
+        // the seamless window that follows (and the tap in push-to-talk) knows
+        // the next transcript is the answer, not a command.
+        if (line.kind == "ask" && line.askId != null) {
+            steer.armQuestion(line.card, line.askId)
+        }
+        Speaker.speak(line.text, needsFocus = turn.needsYou)
+    }
     withContext(Dispatchers.IO) { NarrationStore.save(context, turn.curr) }
     if (turn.needsYou) {
         // Listen only after the words are out of the air, so the ears do not
@@ -556,7 +574,7 @@ private suspend fun narrateOnce(context: Context, host: String, chatty: String, 
 /* ── the ears: the listen button and its transcript ────────────────────── */
 
 @Composable
-private fun ListenBar(listening: Boolean, heard: String, error: String?, onToggle: () -> Unit) {
+private fun ListenBar(listening: Boolean, heard: String, status: String, error: String?, onToggle: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -578,6 +596,12 @@ private fun ListenBar(listening: Boolean, heard: String, error: String?, onToggl
             error != null -> Text(error, style = MaterialTheme.typography.bodyMedium, color = Rust)
             heard.isNotEmpty() -> Text(heard, style = MaterialTheme.typography.bodyMedium, color = InkDim)
             else -> Text("speak and your words appear here", style = MaterialTheme.typography.labelMedium, color = InkMute)
+        }
+        // What became of the last thing said — the plan read back, "done",
+        // "let go", a refusal. Kept on the bar so the phone never reads as
+        // having heard nothing.
+        if (status.isNotEmpty()) {
+            Text(status, style = MaterialTheme.typography.labelMedium, color = InkMute)
         }
         FilledTonalButton(onClick = onToggle, shape = RoundedCornerShape(12.dp)) {
             Text(if (listening) "stop" else "listen")

@@ -79,8 +79,15 @@ pub struct Line {
     pub kind: Kind,
     /// The card's id on its wall — what a later answer is addressed to.
     pub card: String,
-    /// The sentence. Short, templated from the card's own fields.
+    /// The sentence. Short, templated from the card's own fields; for an
+    /// `Ask` it carries the question itself, so the phone can speak it rather
+    /// than only "is asking you something".
     pub text: String,
+    /// The parked question's id, for an `Ask` line — what an answer is sent
+    /// against. `None` for every other kind, and `None` for an `Ask` whose
+    /// digest carried no question (a question left in prose, or a `question`
+    /// notice), which has no parked id to answer.
+    pub ask_id: Option<String>,
 }
 
 /// What to say now, and whether it needs her.
@@ -122,7 +129,8 @@ pub fn diff(prev: Option<&Digest>, curr: &Digest, chatty: Chatty) -> Narration {
     let mut lines = Vec::new();
     for (kind, card) in events {
         if speak(kind, chatty) {
-            lines.push(Line { kind, card: card.id.clone(), text: say(kind, card) });
+            let ask_id = if kind == Kind::Ask { card.ask.as_ref().map(|a| a.id.clone()) } else { None };
+            lines.push(Line { kind, card: card.id.clone(), text: say(kind, card), ask_id });
         }
     }
 
@@ -186,7 +194,19 @@ struct Card {
     dormant: bool,
     ending: Option<Ending>,
     asks: usize,
+    /// The card's oldest parked question, with its id and its words — what the
+    /// phone speaks for an `Ask`, and what an answer is sent against.
+    ask: Option<AskInfo>,
     notices: Vec<Notice>,
+}
+
+/// One parked question, as the digest carries it. `question` is the words to
+/// speak; `None` for a question the digest kept as words the phone should not
+/// read out (empty, or a wall from before it said them) — the line then falls
+/// back to the generic "is asking you something".
+struct AskInfo {
+    id: String,
+    question: Option<String>,
 }
 
 impl Card {
@@ -253,7 +273,10 @@ fn event_of(prev: Option<&Card>, curr: &Card) -> Option<Kind> {
 fn say(kind: Kind, card: &Card) -> String {
     match kind {
         Kind::Opened => format!("{} opened.", card.title),
-        Kind::Ask => format!("{} is asking you something.", card.title),
+        Kind::Ask => match card.ask.as_ref().and_then(|a| a.question.as_deref()) {
+            Some(q) => format!("{} is asking: {q}", card.title),
+            None => format!("{} is asking you something.", card.title),
+        },
         Kind::Finished => format!("{} finished.", card.title),
         Kind::Started => format!("{} started.", card.title),
         Kind::Dormant => format!("{} went dormant.", card.title),
@@ -293,9 +316,30 @@ fn read_card(raw: &Value) -> Option<Card> {
     let working = obj.get("working").and_then(Value::as_bool).unwrap_or(false);
     let dormant = obj.get("dormant").and_then(Value::as_bool).unwrap_or(false);
     let ending = obj.get("ending").and_then(Value::as_str).and_then(read_ending);
-    let asks = obj.get("asks").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
+    let asks_arr = obj.get("asks").and_then(Value::as_array);
+    let asks = asks_arr.map(|a| a.len()).unwrap_or(0);
+    let ask = asks_arr.and_then(|a| a.first()).and_then(read_ask);
     let notices = read_notices(obj.get("notices"));
-    Some(Card { id: id.to_string(), title, working, dormant, ending, asks, notices })
+    Some(Card { id: id.to_string(), title, working, dormant, ending, asks, ask, notices })
+}
+
+/// The first parked question, as an id plus the words to speak. A question with
+/// no id is not answerable (there is nothing to send the answer against), and
+/// one with no words is kept — the line falls back to the generic form.
+fn read_ask(raw: &Value) -> Option<AskInfo> {
+    let id = raw.get("askId")?.as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let question = raw
+        .get("questions")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|q| q.get("question").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Some(AskInfo { id: id.to_string(), question })
 }
 
 fn read_ending(s: &str) -> Option<Ending> {
@@ -472,6 +516,33 @@ mod tests {
         assert_eq!(n.lines[0].kind, Kind::Ask);
         assert_eq!(n.lines[0].text, "caravan is asking you something.");
         assert!(n.needs_you);
+    }
+
+    #[test]
+    fn a_question_speaks_its_words_and_carries_its_id() {
+        let prev = digest(1, &[card("a", "caravan", false, false, Some("ok"), 0, &[])]);
+        let mut asked = card("a", "caravan", false, false, None, 1, &[]);
+        asked["asks"] = json!([{
+            "askId": "ask-9",
+            "since": 0,
+            "questions": [{ "header": "which", "question": "square or circle?", "options": [] }],
+        }]);
+        let n = diff(Some(&prev), &digest(2, &[asked]), Chatty::Needs);
+        assert_eq!(n.lines.len(), 1);
+        assert_eq!(n.lines[0].kind, Kind::Ask);
+        assert_eq!(n.lines[0].text, "caravan is asking: square or circle?");
+        assert_eq!(n.lines[0].ask_id.as_deref(), Some("ask-9"));
+    }
+
+    #[test]
+    fn a_question_without_a_parked_id_carries_none() {
+        // A question left in prose has no parked ask to answer against.
+        let prev = digest(1, &[card("a", "caravan", true, false, None, 0, &[])]);
+        let curr = digest(2, &[card("a", "caravan", false, false, Some("question"), 0, &[])]);
+        let n = diff(Some(&prev), &curr, Chatty::Needs);
+        assert_eq!(n.lines.len(), 1);
+        assert_eq!(n.lines[0].kind, Kind::Ask);
+        assert_eq!(n.lines[0].ask_id, None);
     }
 
     #[test]

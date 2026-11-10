@@ -35,9 +35,18 @@ class VoiceController(context: Context) {
     var error by mutableStateOf<String?>(null)
         private set
 
+    /** A settled transcript, handed to whoever routes it — the steer loop for
+     *  M5. Fired after `heard` is set and the ears are closed, so a reader sees
+     *  the final words and a listening flag that is already false. */
+    var onFinalTranscript: ((String) -> Unit)? = null
+
     init {
         listener.onHeard = { heard = it }
-        listener.onFinal = { final -> heard = final; stop() }
+        listener.onFinal = { final ->
+            heard = final
+            stop()
+            onFinalTranscript?.invoke(final)
+        }
         listener.onError = { message -> error = message; stop() }
     }
 

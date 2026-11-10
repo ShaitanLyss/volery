@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flyway_core::cards::CardsMsg;
-use flyway_core::fleet::{Announcement, Facts, FleetMsg, Heard};
+use flyway_core::fleet::{Act, Announcement, Ask, Facts, FleetMsg, Heard, Origin, Territory};
 use flyway_core::frame::Frame;
 use flyway_core::seal::WallKey;
 use flyway_core::seeing::{self, SeeMsg, Sight};
@@ -209,11 +209,12 @@ impl Node {
     /// phone has ears and a mouth but no `claude` child, so understanding stays
     /// on the wall — `docs/PHONE.md` M5, "the wall stays the brain". One
     /// exchange, held open past the steward's own spawn (`steward::WITHIN`),
-    /// answered on the same stream and never kept. Returns the whole of what
-    /// `steward.ts::understand` decided — most often `{ "kind": "plan",
-    /// "plan": { "reads": …, "needs": … } }` — as an opaque value, for the
-    /// Kotlin side to read and narrate.
-    pub async fn plan(&self, host: &str, transcript: &str) -> Result<serde_json::Value, String> {
+    /// answered on the same stream and never kept. Returns the request's id and
+    /// the whole of what `steward.ts::understand` decided — most often
+    /// `{ "kind": "plan", "plan": { "reads": …, "needs": … } }` — as an opaque
+    /// value, for the Kotlin side to read and narrate. The id is what a later
+    /// `confirm` names, so the phone never sends the plan back.
+    pub async fn plan(&self, host: &str, transcript: &str) -> Result<(String, serde_json::Value), String> {
         let transcript = transcript.trim().to_string();
         if transcript.is_empty() {
             return Err("nothing was said".into());
@@ -238,7 +239,87 @@ impl Node {
             Frame::Steward(m) => Some(m),
             _ => None,
         });
-        steward::answer_in(stewards, &id, host)
+        let answer = steward::answer_in(stewards, &id, host)?;
+        Ok((id, answer))
+    }
+
+    /// Confirm the plan the wall returned for `id` and have it carried out.
+    /// The phone has already spoken the plan's `reads` and heard a yes; it
+    /// sends only the id — the wall is the only thing that ever held the steps,
+    /// so the wall runs them (`docs/PHONE.md` M5, "the phone sends only the
+    /// confirmation"). One exchange, answered on the same stream, and the
+    /// answer is the carry's `Outcome`: `{ "kind": "done" }` when it ran, else
+    /// `refused`/`stopped` with a `why` to narrate.
+    pub async fn confirm(&self, host: &str, id: &str) -> Result<serde_json::Value, String> {
+        let peer = self.wire.peer(host)?;
+        let m = StewardMsg::Confirm { id: id.to_string() };
+        let mut out = self.greeting();
+        out.push(Frame::Steward(m));
+        let back = self
+            .wire
+            .exchange_within(peer, out, true, steward::WITHIN)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        let stewards = back.iter().filter_map(|f| match f {
+            Frame::Steward(m) => Some(m),
+            _ => None,
+        });
+        steward::answer_in(stewards, id, host)
+    }
+
+    /// Answer a question a card on the wall has parked on `ask_user`, as a
+    /// person speaking through the phone. `card` is the card's id on that wall
+    /// and `ask_id` the question's id, both read out of the digest the wall
+    /// published; `text` is the spoken answer.
+    ///
+    /// This is the wall's own answer path (`docs/PHONE.md` M5, questions): a
+    /// `fleet` prompt whose `answers` names the parked question, handed by the
+    /// wall straight into the parked call (`ask::answer_from_afar`) — the same
+    /// channel a click in that wall's dock uses, and it passes even while the
+    /// wall is not taking work, since an answer starts nothing. The phone never
+    /// executes anything itself.
+    ///
+    /// **Fire-and-forget on purpose.** A prompt's answer is gossiped back to
+    /// the asker by the wall dialling *us* (`fleet::Answer`), and this node is
+    /// dial-only — it accepts no dials and runs no tick to read one. So the
+    /// result is not read here; it surfaces in the wall's next digest, where
+    /// the question has gone and the card has resumed. A refusal (the card
+    /// closed, the question gone) reads the same way: the question is still
+    /// there, and the sentence can be said again.
+    pub async fn answer(&self, host: &str, card: &str, ask_id: &str, text: &str) -> Result<(), String> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("nothing was said".into());
+        }
+        let peer = self.wire.peer(host)?;
+        let ask = Ask {
+            id: fresh_answer_id(),
+            from: Origin { host: self.name.clone(), card: None },
+            to: host.to_string(),
+            /* A prompt has no territory; the name is where the asking node
+               stands, for the envelope over there. */
+            territory: Territory { identity: String::new(), name: String::new() },
+            brief: text,
+            title: None,
+            asked_at: now_ms(),
+            model: None,
+            effort: None,
+            needs: Vec::new(),
+            worktree: None,
+            worktree_base: None,
+            card: Some(card.to_string()),
+            answers: Some(ask_id.to_string()),
+            pictures: Vec::new(),
+            parcel: None,
+            act: Act::Prompt,
+        };
+        let mut out = self.greeting();
+        out.push(Frame::Fleet(FleetMsg::Prompt { ask, age_ms: 0 }));
+        self.wire
+            .exchange(peer, out, true)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        Ok(())
     }
 
     /// The greeting the node opens an exchange with — the same shape a wall
@@ -338,6 +419,17 @@ fn fresh_id() -> String {
     format!("p{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
+/// An id for a prompt this node sends. The fleet remembers a request for ten
+/// minutes after it is answered (`fleet::ANSWER_KEPT_MS`), which outlives a
+/// phone process — so a bare counter would reuse an id after a restart and a
+/// redelivered old answer could swallow the new one. A wall-clock prefix makes
+/// a repeat impossible in practice; the counter disambiguates two sends in one
+/// millisecond.
+fn fresh_answer_id() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("a{}-{}", now_ms(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
@@ -399,6 +491,18 @@ mod tests {
         assert_eq!(f.size, Some((2, 3)));
         assert!(!f.too_large);
         assert!(f.full.is_empty());
+    }
+
+    /// A prompt id is unique and stays within the alphabet the wire carries —
+    /// and, unlike the exchange id, it carries a wall-clock prefix so a phone
+    /// restarted within the fleet's ten-minute memory cannot reuse one.
+    #[test]
+    fn a_prompt_id_is_unique_and_clocked() {
+        let a = fresh_answer_id();
+        let b = fresh_answer_id();
+        assert_ne!(a, b);
+        assert!(a.bytes().all(|x| x.is_ascii_alphanumeric() || x == b'-'), "{a}");
+        assert!(a.contains('-'), "the clock prefix is what survives a restart: {a}");
     }
 
     /// A file folds out of the gathering: its bytes re-encoded, its size as the

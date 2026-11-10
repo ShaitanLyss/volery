@@ -33,8 +33,9 @@ object NarrationStore {
  *  persist as the new baseline, and whether anything needs Lyss right now.
  *  A plain finish at `needs`, for instance, is a real digest worth persisting
  *  even though it has nothing to say; `needsYou` is the flag that ducks music
- *  and (in seamless mode) opens the ears. */
-internal data class NarrationTurn(val lines: List<String>, val curr: String, val needsYou: Boolean)
+ *  and (in seamless mode) opens the ears. Lines keep their `kind`, `card` and
+ *  `askId`, so the loop can route an answer to a question. */
+internal data class NarrationTurn(val lines: List<NarrationLine>, val curr: String, val needsYou: Boolean)
 
 /** How often the loop re-sights the wall. A modest poll is the honest first
  *  cut: the node is dial-only, so there is no push stream to fold, and each
@@ -57,5 +58,5 @@ internal suspend fun sightAndNarrate(host: String, prev: String?, chatty: String
             is NativeBridge.Envelope.Error -> return@withContext null
             is NativeBridge.Envelope.Ok -> parseNarration(narr.payload)
         }
-        NarrationTurn(lines = n.lines.map { it.text }, curr = curr, needsYou = n.needsYou)
+        NarrationTurn(lines = n.lines, curr = curr, needsYou = n.needsYou)
     }

@@ -138,11 +138,14 @@ private fun longOrNull(o: JSONObject, key: String): Long? =
     if (o.has(key) && !o.isNull(key)) o.optLong(key) else null
 
 /** One spoken line, as `phone-ffi`'s `narrate` flattens it: the brain's stable
- *  kind word, the card id a later answer is addressed to, and the sentence. */
+ *  kind word, the card id a later answer is addressed to, the sentence, and —
+ *  for an `ask` line — the parked question's id (`askId`), which an answer is
+ *  sent against. Null for every other kind. */
 data class NarrationLine(
     val kind: String,
     val card: String,
     val text: String,
+    val askId: String?,
 )
 
 /** What `narrate` came back with: the lines to speak, and whether anything
@@ -160,6 +163,7 @@ fun parseNarration(ok: JSONObject): Narration {
             kind = l.optString("kind"),
             card = l.optString("card"),
             text = l.optString("text"),
+            askId = l.optString("askId").ifEmpty { null },
         )
     }
     return Narration(lines = lines, needsYou = ok.optBoolean("needsYou"))

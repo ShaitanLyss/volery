@@ -201,6 +201,28 @@ export class Voicing {
    *  releasing. */
   #files = new Map<string, string[]>();
 
+  /** Plans a phone asked for and has not confirmed yet, held under the id the
+   *  phone gave — the same id it will name in its confirmation. The phone never
+   *  sends the steps back, so this wall is the only thing that ever held them;
+   *  the confirmation looks them up here and runs `carry`, the same path a
+   *  spoken yes at the keyboard takes. Plain, not `$state` — nothing draws it —
+   *  and pruned by age so a plan nobody confirmed does not linger.
+   */
+  #phonePlans = new Map<string, { plan: Plan; at: number }>();
+
+  /** How long a phone's plan is held for its confirmation. Generous against the
+   *  twenty-second yes-window, and finite so an abandoned plan does not linger. */
+  #phonePlanTtl = 10 * 60_000;
+
+  /** Drop a phone plan held past its window. Called on the two paths that touch
+   *  the map, so nothing here schedules a timer for it. */
+  #prunePlans(): void {
+    const now = Date.now();
+    for (const [k, v] of this.#phonePlans) {
+      if (now - v.at > this.#phonePlanTtl) this.#phonePlans.delete(k);
+    }
+  }
+
   /** Which rung proposed the plan now waiting for a yes. Kept so `confirm` can
    *  say the same thing `report` would have. */
   #pendingFrom: Rung = "grammar";
@@ -317,7 +339,12 @@ export class Voicing {
     /* A transcript a phone dialled in with (`flyway:steward`): the wall is the
        brain, so it runs the steward and hands the plan back — not acted on. */
     this.#ears.keep(
-      onEvent<{ id: string; transcript: string }>("flyway:steward", (e) => void this.#stewardFor(e.payload)),
+      onEvent<{ id: string; asker: string; transcript: string }>("flyway:steward", (e) => void this.#stewardFor(e.payload)),
+    );
+    /* A phone's confirmation (`flyway:steward-confirm`): carry the plan it
+       named — the one `#stewardFor` held under that id. */
+    this.#ears.keep(
+      onEvent<{ id: string; asker: string }>("flyway:steward-confirm", (e) => void this.#confirmFor(e.payload)),
     );
     try {
       this.open = await invoke<boolean>("voice_ear");
@@ -604,7 +631,7 @@ export class Voicing {
    *
    *  Always answered, for `#take`'s reason: the phone can only say
    *  "thinking…" until it is. */
-  async #stewardFor(p: { id: string; transcript: string }) {
+  async #stewardFor(p: { id: string; asker: string; transcript: string }) {
     const answer = (result: Understood) =>
       void invoke("flyway_steward_answer", { id: p.id, answer: result }).catch(() => {
         /* The asker's own bound says it was not answered in time. */
@@ -630,10 +657,35 @@ export class Voicing {
         utterance: p.transcript,
       });
       const { reply } = replyIn(said);
-      answer(understand(reply, p.transcript, seen));
+      const got = understand(reply, p.transcript, seen);
+      /* A plan is held under the phone's own id, so the confirmation that
+         follows can carry just that id — the phone never sends the steps back,
+         and this wall is the only thing that ever held them. */
+      if (got.kind === "plan") this.#phonePlans.set(p.asker, { plan: got.plan, at: Date.now() });
+      this.#prunePlans();
+      answer(got);
     } catch (e) {
       answer({ kind: "unusable", why: e instanceof Error ? e.message : String(e) });
     }
+  }
+
+  /** Carry out the plan a phone confirmed. The plan was held under `asker` by
+   *  `#stewardFor`; this runs `carry` — the same path `confirm()` takes for a
+   *  spoken yes at the keyboard — and hands the outcome back. The wall may have
+   *  moved since the plan was made, which is what `carry`'s per-step failure
+   *  (`no card X any more`) reports rather than this guessing at.
+   */
+  async #confirmFor(p: { id: string; asker: string }) {
+    const answer = (result: Outcome) =>
+      void invoke("flyway_steward_answer", { id: p.id, answer: result }).catch(() => {
+        /* The asker's own bound says it was not answered in time. */
+      });
+    const held = this.#phonePlans.get(p.asker);
+    this.#phonePlans.delete(p.asker);
+    if (!held) {
+      return answer({ kind: "refused", why: "that plan is gone — say the sentence again" });
+    }
+    answer(await carry(held.plan, this.hands()));
   }
 
   /* ── the hands ─────────────────────────────────────────────────────────── */
