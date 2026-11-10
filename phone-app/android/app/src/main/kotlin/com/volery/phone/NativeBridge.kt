@@ -17,6 +17,7 @@ object NativeBridge {
     external fun initPlatformVerifier(context: Context): String
     external fun start(phrase: String, name: String): String
     external fun sight(host: String): String
+    external fun fetch(host: String, card: String, kind: String, kept: String, path: String): String
 
     sealed class Envelope {
         class Ok(val payload: JSONObject) : Envelope()

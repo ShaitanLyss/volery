@@ -3,6 +3,7 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // The wall key phrase is a secret and lives in `local.properties` (gitignored),
@@ -42,6 +43,7 @@ android {
 
     buildFeatures {
         buildConfig = true
+        compose = true
     }
 
     compileOptions {
@@ -60,4 +62,19 @@ dependencies {
     // crate in `../ffi/Cargo.lock` (0.2.0 today); the crate README's "Gradle
     // setup" shows the dynamic Cargo-synced variant if this ever drifts.
     implementation("org.rustls:rustls-platform-verifier:0.2.0")
+
+    // Jetpack Compose (M2v). The BOM pins the whole set so ui, material3 and
+    // the icons resolve to one version; `activity-compose` is what turns an
+    // activity into `setContent`, and `ui-tooling` (debug) is the preview
+    // source. Coroutines drive the blocking JNI `fetch` off the main thread.
+    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    implementation(composeBom)
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }

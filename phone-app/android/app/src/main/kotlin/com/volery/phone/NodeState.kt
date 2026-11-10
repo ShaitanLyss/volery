@@ -1,35 +1,25 @@
 package com.volery.phone
 
-import android.os.Handler
-import android.os.Looper
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 /**
- * One place the service writes and the screen reads. The node lives in the
- * foreground service (and, on the Rust side, in a process-wide slot), so it
- * outlives the activity; the screen is just a view over this. A single
- * observer, re-posted on the main thread.
+ * One place the service writes and the screens read, as Compose state rather
+ * than the observer callback it was. The node lives in the foreground service
+ * (and, on the Rust side, in a process-wide slot), so it outlives any
+ * activity; the home screen is a view over this. Writes arrive from the
+ * service's background thread — snapshot state is thread-safe, so the setter
+ * needs no handler hop.
  */
 object NodeState {
-    @Volatile var working = false
-    @Volatile var result: String? = null
-    @Volatile var error: String? = null
+    var working by mutableStateOf(false)
+    var sighting by mutableStateOf<Sighting?>(null)
+    var error by mutableStateOf<String?>(null)
 
-    private val main = Handler(Looper.getMainLooper())
-    @Volatile private var observer: (() -> Unit)? = null
-
-    fun observe(fn: () -> Unit) {
-        observer = fn
-        main.post(fn)
-    }
-
-    fun clear() {
-        observer = null
-    }
-
-    fun update(working: Boolean, result: String?, error: String?) {
+    fun update(working: Boolean, sighting: Sighting?, error: String?) {
         this.working = working
-        this.result = result
+        this.sighting = sighting
         this.error = error
-        main.post { observer?.invoke() }
     }
 }

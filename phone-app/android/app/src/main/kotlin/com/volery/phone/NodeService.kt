@@ -10,7 +10,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import org.json.JSONObject
 import java.util.concurrent.Executors
 
 /**
@@ -41,7 +40,7 @@ class NodeService : Service() {
 
     private fun dial(host: String, key: String, name: String) {
         Log.i(TAG, "dial: host=$host name=$name")
-        NodeState.update(working = true, result = null, error = null)
+        NodeState.update(working = true, sighting = null, error = null)
         executor.execute {
             try {
                 // The one thing Android needs that the desktop never did: the
@@ -65,9 +64,9 @@ class NodeService : Service() {
                         NodeState.update(false, null, sight.message)
                     }
                     is NativeBridge.Envelope.Ok -> {
-                        val rendered = render(name, sight.payload)
-                        Log.i(TAG, "dial result:\n$rendered")
-                        NodeState.update(false, rendered, null)
+                        val sighting = parseSighting(sight.payload)
+                        Log.i(TAG, "dial result: ${sight.payload.toString(2)}")
+                        NodeState.update(false, sighting, null)
                     }
                 }
             } catch (e: Exception) {
@@ -75,29 +74,6 @@ class NodeService : Service() {
                 NodeState.update(false, null, e.message ?: "the node threw")
             }
         }
-    }
-
-    private fun render(name: String, payload: JSONObject): String {
-        val sb = StringBuilder()
-        val roster = payload.optJSONArray("roster")
-        if (roster != null) {
-            sb.append("roster — ${roster.length()} wall(s):\n")
-            for (i in 0 until roster.length()) {
-                val w = roster.getJSONObject(i)
-                val host = w.optString("host")
-                val mine = if (host == name) "  ← this phone" else ""
-                sb.append("  ${host}  live ${w.optInt("cards_live")}  working ${w.optInt("cards_working")}  build ${w.optString("build", "?")}$mine\n")
-            }
-        }
-        val cards = payload.optJSONObject("cards")
-        if (cards != null) {
-            sb.append("\ncards digest from ${cards.optString("host")} (v${cards.optLong("version")}):\n")
-            val snapshot = cards.optJSONObject("snapshot")
-            if (snapshot != null) sb.append(snapshot.toString(2))
-        } else {
-            sb.append("\nno cards digest yet — the wall may still be painting itself")
-        }
-        return sb.toString()
     }
 
     private fun notification(): Notification {
@@ -111,7 +87,7 @@ class NodeService : Service() {
             if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, channelId)
             else Notification.Builder(this)
         return builder
-            .setContentTitle("Volery phone")
+            .setContentTitle("Volery")
             .setContentText("on the flyway")
             .setSmallIcon(R.drawable.ic_stat_node)
             .setContentIntent(pi)
