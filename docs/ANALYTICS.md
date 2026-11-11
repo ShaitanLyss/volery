@@ -1343,7 +1343,7 @@ A pass writes its facts in **transactions of a bounded size**, not one for the w
 deep pass is ~90,000 requests, and the store mutex it holds is the one every command waits on,
 so one transaction is a freeze of the wall for as long as it takes. The batch is cut into
 `CHUNK_REQUESTS` (1,000) and each chunk commits on its own, inside a lock taken and released for
-that chunk alone. What must still land together is a fact and its `usage_seen` key — the pair
+that chunk alone. What must still land together is a fact and its `usage_seen` key, the pair
 that makes a re-read a no-op. The **file offsets advance only in a final, small transaction**
 after every chunk is durable: the record of how far the pass got lands as one thing, never
 partly written, so it cannot claim bytes whose facts did not commit. (Landing it *with* each
@@ -1677,7 +1677,9 @@ The spec is data. It is stored in `analytics_view.config_json`, carried inside a
 degrades to something drawable rather than throwing.
 
 One spec, three surfaces (the overlay, the widget, the report) is the same rule as `Said` and
-the glance: one reader, one reading, so two faces cannot disagree.
+the glance: one reader, one reading, so two faces cannot disagree. **Presentation is not in the
+spec.** Which skin draws it, the room or the page, is the surface's decision and the host mode
+only picks the default (§11.15); a report and a widget have no host mode to pick from.
 
 ### 9.3 Bucketing
 
@@ -1978,18 +1980,20 @@ report model are shared; only the drawing changes.
 
 Two surfaces, and they are the same distinction the widget already draws:
 
-- **The page** is the room. It opens from the sidebar's `analytics` row, from the palette, and
-  from `space n n` while chat view is in front. The sidebar stays; the reading column gets a
-  wider figure plate than `--cv-measure` for charts, and returns to the measure for prose.
+- **The page** is the document presentation, and §11.15 says which mode opens it by default.
+  It opens from the sidebar's `analytics` row, from the palette, and from `space n n` while
+  chat view is in front. The sidebar stays; the reading column gets a wider figure plate than
+  `--cv-measure` for charts, and returns to the measure for prose.
 - **The sheet** is the glance. `analytics` carries a `sheet` letter in `widgets.ts`, so
   `space b d` opens the same face in `ReadingSheet.svelte` over either view, with the
   widget's own knobs. `d` for data, because `a` is Asana and `n` is the billboard; the letter
   is free, and `test/leader.test.ts` holds the family unique.
 
-**The chat page is editorial, not instrumental.** The wall's version is a panel you operate;
-this is a document you read. The differences are all in the skin, never in the marks:
+**The page is editorial, not instrumental.** The room is a panel you operate; the page is a
+document you read. The differences are all in the skin, never in the marks, and §11.15 makes
+them independent of which mode is in front:
 
-| | the wall | chat view |
+| | the room | the page |
 |---|---|---|
 | type | UI sans, 11–13px labels | the book's face (`--body`, Sitka/Georgia) for prose, UI sans for axes |
 | measure | fills the room | 44rem of prose, a 64rem plate for a figure |
@@ -2309,6 +2313,37 @@ spend pages cannot: whether the work was worth what it cost. §3.9 is the data.
 - **A card with no artifact is drawn as *no artifact*, not as zero output.** Design, review and
   answers are work; §3.9's caveat is on the page in one sentence, and there is no ranking of
   people anywhere in it.
+
+### 11.15 Two presentations, and the mode does not decide which
+
+The room and the page are two presentations of one view, so the choice between them is a
+redraw and never a second implementation. The design tied them to the host mode, which was the
+mistake: a presentation belongs to the surface, and **the host mode only chooses the default.**
+
+| mode in front | opens by default | because |
+|---|---|---|
+| wall | **the page** | on the wall you are glancing; a calm document is the right density |
+| chat view | **the room** | in chat you are reading, and the instrument is where the detail is |
+
+The inversion is deliberate. Each mode gets the presentation that matches its attention, and
+the one intuition would have picked is a keystroke away.
+
+- **`v` swaps them**, and a small achromatic control beside the title does the same. The
+  choice is remembered per mode (`skein.analytics.presentation.wall` and `.chat`, the
+  `localStorage` bargain `berth` strikes), so a wall left on the instrument stays there and
+  chat view is unaffected.
+- **The view spec is untouched by it.** Span, filters and panels carry across, because both
+  presentations read the same surface state; only the drawing changes. §9.2's spec has no
+  presentation field on purpose: a report and a widget have no host mode to default from.
+- **Both open over the host and close back into it.** The wall's viewport and focused card, or
+  the chat column's scroll and focus, are exactly where you left them. Switching presentation
+  never changes the app mode, and changing the app mode never changes the presentation you
+  chose.
+- **The sheet stays the third and smallest presentation.** `space b d` opens the glance over
+  either mode, with the widget's own knobs; it is not part of the `v` swap.
+- **The numbers must agree across the swap.** `test/analyticsroom.test.ts` renders the room's
+  series and the page's figures from one fixture and asserts they are the same values, so a
+  skin change cannot quietly become a data change.
 
 ---
 
@@ -3345,6 +3380,13 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   the card's median cache write. The estimate is available at the gesture, before the spend.
 - **An unmeasured invalidation is null, not zero.** A probe-less wall and a free event are
   different readings; the page says which one it is looking at.
+- **The mode picks the default presentation, not the allowed one.** Opening analytics on the
+  wall lands on the page and in chat view on the room; `v` swaps either, the choice is
+  remembered per mode, and neither gesture changes the app mode.
+- **The swap keeps the question.** Span and filters survive it, and the room and the page
+  produce the same numbers for one fixture, so presentation can never become a data change.
+- **Closing returns the host exactly as it was.** The wall's viewport and focused card, the
+  chat column's scroll and focus, unchanged by opening either presentation.
 - **The widget and the overlay agree.** One view spec, two surfaces, one number.
 - **A report is self-contained.** It opens from a copied file with the network off, draws
   every panel, and carries no path and no token when anonymized.
@@ -3469,6 +3511,12 @@ not re-opened by accident.
     to them, and an unmeasured event is null rather than zero. A churn episode is a run of
     writes, costed after its last write. The account move offers the estimate at the gesture,
     and the re-read mechanism is probed before any of it is drawn.
+18. **A presentation is not a mode.** The room and the page are two skins over one view, both
+    reachable from either mode, swapped with `v` without changing the app mode and remembered
+    per mode. The wall opens the page and chat view opens the room, deliberately: each mode
+    gets the density that matches its attention, and the other is one keystroke away. The
+    spec carries no presentation field, because a report and a widget have no mode to pick a
+    default from.
 
 ### 20.1 One left: how live is another machine
 
