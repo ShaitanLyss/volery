@@ -9031,13 +9031,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         let at = 1_786_601_268_000;
+        /* `call_line` is written for the sink, which parses a record as a
+           string, and it is pretty-printed across several physical lines. The
+           backfill reads a transcript the way the CLI writes one, a record per
+           line, so the fixture has to be folded to one line here or the walk
+           splits it and every record fails to parse. */
         let line = call_line(
             "w1",
             at,
             "s1",
             "Write",
             r#"{"file_path":"C:\\x\\CLAUDE.md","content":"x"}"#,
-        );
+        )
+        .replace('\n', " ");
         std::fs::write(&path, format!("{line}\n{line}\n")).unwrap();
 
         let conns = Mutex::new(db());
