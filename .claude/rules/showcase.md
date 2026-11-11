@@ -94,9 +94,9 @@ hands, and no part of this chapter changes that.
 - `Welcome.svelte` takes an optional `ontour`. The tour opens over the question and leaves it
   standing, so taking the tour does not answer the question for you.
 
-Keyboard: arrows or j/k move, 1 to 9 jump, Home and End, Escape closes. The root stops every
-key from reaching the wall while it is up, and the app's overlay guards include `showTour` so
-a key that somehow escapes still does nothing.
+Keyboard: arrows or PageUp/PageDown move, 1 to 9 jump, Home and End go to the ends, Escape
+closes. The root stops every key from reaching the wall while it is up, and the app's overlay
+guards include `showTour` so a key that somehow escapes still does nothing.
 
 ## Looking at it without MSVC
 
