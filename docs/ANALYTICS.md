@@ -1251,14 +1251,16 @@ let a generated glyph stand in for a designed one.
 
 **The page moves as you read it**, which is the second half of the ask:
 
-- **The page arrives on a soft diagonal wipe.** A 1.5-second `mask-image` gradient travels from
-  the top-left corner with a 30% feathered edge, so the content is revealed progressively
-  rather than switched on. No hard `clip-path`, and no fully-visible-or-fully-invisible opacity.
+- **The page arrives on a soft diagonal wipe.** A 1.9-second `mask-image` gradient travels from
+  the top-left corner with a 60% feathered edge, so the content is revealed through a wide,
+  smooth gradient rather than switched on. No hard `clip-path`, and no fully-visible-or-fully-
+  invisible opacity.
 - **Sections are tied to the scroll, not to a timer.** A section's opacity and vertical offset
   are a function of how far it has come into the viewport, recomputed on scroll in one rAF. It
   is still moving when it is genuinely in sight at a normal pace, and it never finishes its
-  transition below the fold. It starts at 0.30 and rises to 1 with a 40px settle over half a
-  viewport of scroll, so the motion is unmistakable without the words ever being unreadable.
+  transition below the fold. It starts at 0.45 and rises to 1 with a 30px settle over two
+  thirds of a viewport of scroll, so the change is spread wide and the words are readable the
+  whole way.
 - **The hero line draws once**, 950ms of `stroke-dashoffset` when the page opens.
 - Nothing else animates, there is no animated gradient and no pulse at rest, and every one of
   these answers reduced motion and the `motion` settings. The motion budget is the one
