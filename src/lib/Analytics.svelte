@@ -656,7 +656,18 @@
               <svg class="an-svg" viewBox={`0 0 ${box.w} ${box.h}`} width={box.w} height={box.h} role="presentation">
                 {#each axis.ticks as v (v)}
                   <line class="an-grid" x1={PAD.l} x2={PAD.l + plotW} y1={yOf(v)} y2={yOf(v)} />
-                  <text class="an-axis" x={PAD.l - 8} y={yOf(v) + 3.5} text-anchor="end">{tickText(measure, v)}</text>
+                  {#if v !== 0}
+                    <!-- The gridline at zero stays; its *number* does not. An
+                         area chart's baseline is the axis line it is filled
+                         to, so the figure is the one label an axis can do
+                         without — and it is the one that lands in the bottom
+                         left corner, 13px above the first x label and 8px
+                         left of it, where `$0` and `12 oct` at 10px read as a
+                         single broken label (`$0` is what looks like a
+                         truncated `30`). The lowest printed tick still fixes
+                         the scale. -->
+                    <text class="an-axis" x={PAD.l - 8} y={yOf(v) + 3.5} text-anchor="end">{tickText(measure, v)}</text>
+                  {/if}
                 {/each}
 
                 {#each bands as band (band.run[0])}
