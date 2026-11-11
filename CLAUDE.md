@@ -465,8 +465,14 @@ is what makes it editable, deletable, and safe to interrupt. The paragraph above
 why the two fields exist, and still governs the lines that do reach the CLI — a composing
 bypass, an older wall, a race.
 
-`src/lib/skein.svelte.ts` is the only place that talks to Rust. `src/lib/conversation.svelte.ts`
-owns per-card state and is the only place that reads the raw event shapes.
+`src/lib/skein.svelte.ts` owns the wire: the Tauri subscriptions, the routing of every
+`conv:*` event, and the commands that act on a card as a whole. Commands about one subsystem
+are invoked where that subsystem lives, which is why the pure `.ts` modules have a
+`.svelte.ts` beside them rather than a method on `Skein` (52 files import `invoke` directly).
+The one import that must not exist is `conversation.svelte.ts` importing `Skein`, since
+`skein.svelte.ts` already imports `Conversation` and a value back the other way is a cycle.
+`src/lib/conversation.svelte.ts` owns per-card state and is the only place that reads the raw
+event shapes.
 
 `App.svelte` is the wiring root and holds what genuinely spans the window: the header, the
 wall, the panel, the two keyboard ladders (`onDraftKey` and `onGlobalKey`, which have to be

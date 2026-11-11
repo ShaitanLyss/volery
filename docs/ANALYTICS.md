@@ -751,9 +751,13 @@ So three rules follow, and each one is a correction to the obvious design:
   across that turn's facts **by token share**, which is the only per-request shape available.
   The inspector says the figure is apportioned rather than measured, and the sum over the turn
   equals the reported figure exactly, so no money is invented or lost.
-- **Going forward, the turn row records `model` and `provider` as columns.** That is a schema
-  rung, and it makes future provider history re-modelable and filterable. History before the
-  rung keeps `usd_reported` and an `unknown` provider model; it is not guessed.
+- **Going forward, the turn row records `model` as a column, and `provider` beside it only
+  when there is a provider fact to write.** Model is read off the card at the open. Provider is
+  **derived from `account_label`** by `provider::of`, the same mapping the spawn uses, because a
+  provider is a sentinel in that column rather than a fact of its own; `turn.provider` stays
+  NULL until a build has a value that is not just the label parsed a second way, and the fold
+  reads the label. History before the rung keeps `usd_reported` and an `unknown` provider
+  model; it is not guessed.
 
 **A turn is a row from its open, and that is a change to the turn table rather than a
 reconstruction in the analytics layer.** The table has always recorded an end and no start, and
@@ -2434,7 +2438,9 @@ CREATE TABLE turn (
   kind             TEXT,
   in_tokens        INTEGER NOT NULL DEFAULT 0,
   out_tokens       INTEGER NOT NULL DEFAULT 0,
-  cache_tokens     INTEGER NOT NULL DEFAULT 0,
+  cache_tokens        INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
   usd              REAL NOT NULL DEFAULT 0,
   account_label    TEXT,
   account_identity TEXT,
@@ -2783,12 +2789,12 @@ reason `widget` has one: the shape belongs to the front end, and a renamed form 
 rather than need a migration.
 
 The `turn` rebuild is this rung rather than a rung of its own because every column it adds or
-relaxes exists for this subsystem's attribution rule. `model` and `provider` are taken as
-`Option` from the front end, and a row written by an older front end stays NULL, which the
-query layer reads as unknown rather than as Claude. `opened_at` is **not** an argument: it is
-set by the insert `open_turn` performs, and `record_turn` only closes that row, so there is
-nothing for a caller to forget. `agent_session_id` is the join section 7.4 needs; a row written
-before this rung has none, and the backfill says so instead of guessing.
+relaxes exists for this subsystem's attribution rule. `model` is read off the conversation by
+`open_turn`, and `provider` is left NULL and derived from `account_label` (§4.1), so neither is
+an argument a caller can drop. `opened_at` is set by that same insert and `record_turn` only
+closes the row, so there is nothing for a front end to forget. `agent_session_id` is the join
+section 7.4 needs; a row written before this rung has none, and the backfill says so instead of
+guessing.
 
 ---
 
