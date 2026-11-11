@@ -549,7 +549,7 @@ private fun About() {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "the birds are lucide's and iconpark's, under their open licences " +
+            "the birds are lucide's and font awesome's, under their open licences " +
                 "(assets/icons-license.txt).",
             style = Type.meta(p, p.paperFaint, 11f),
         )

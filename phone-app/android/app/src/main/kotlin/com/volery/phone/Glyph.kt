@@ -33,9 +33,11 @@ import androidx.compose.ui.unit.dp
  *
  * Two exceptions, both birds: [`Glyph.Bird`] is Lucide's `bird`
  * (`lucide-static` v1.71.0, ISC licence, https://lucide.dev) and
- * [`Glyph.BirdFlying`] is IconPark's `swallow` (Apache-2.0,
- * https://iconpark.oceanengine.com), scaled from their own boxes into this one.
- * Their notices travel in the app's assets; see `assets/icons-license.txt`.
+ * [`Glyph.BirdFlying`] is Font Awesome's `dove` (6.7.2, CC BY 4.0,
+ * https://fontawesome.com), scaled from their own boxes into this one. The
+ * dove is drawn solid where every other glyph here is a line — see its own
+ * comment for why. Their notices travel in the app's assets; see
+ * `assets/icons-license.txt`.
  */
 enum class Glyph {
     Dial, Gear, Back, More, Bird, BirdFlying, Keyboard, Bell, ChevronRight, ChevronLeft,
@@ -133,27 +135,30 @@ private fun DrawScope.drawGlyph(g: Glyph, color: Color, u: Float, stroke: Stroke
             }
         }
         Glyph.BirdFlying -> {
-            /* IconPark's `swallow` (Apache-2.0, https://iconpark.oceanengine.com),
-               a bird in flight with swept, open wings and a forked tail. It is
-               the open-winged bird whose hand suits this file: 48 units with a
-               4-unit stroke, the same 1:12 ratio as Lucide's 24/2, so it reads
-               as the same pen. Scaled into 16; both paths stroked, including
-               the one the source fills as the wing, so nothing here is solid.
-               The notice travels in `assets/icons-license.txt`. */
-            val scale = (16f / 48f) * u
-            listOf(
-                "M8.99902 33.3135L24.0339 6.94269C24.958 4.9809 26.6267 4 29.0402 4C32.6603 4 " +
-                    "35.0172 8.98626 35.0172 8.98626C35.0172 8.98626 36.3445 9.18401 38.999 9.57953" +
-                    "C34.9888 9.64514 32.6699 10.452 32.0424 12C31.1012 14.3221 34.4983 16.7308 " +
-                    "35.0172 20.0039C35.5361 23.2769 33.4663 28.8051 28.4882 31.567C25.1694 33.4083 " +
-                    "21.0262 33.8859 16.0583 33L9.95844 44",
-                "M18.9424 27.978C21.5213 23.3284 23.2169 20.3429 24.0293 19.0215C25.2478 17.0394 " +
-                    "30.2745 17.637 28.4685 22.5843C27.2645 25.8824 24.0891 27.6803 18.9424 27.978Z",
-            ).forEach { d ->
-                val path = androidx.compose.ui.graphics.vector.PathParser().parsePathString(d).toPath()
-                path.transform(androidx.compose.ui.graphics.Matrix().apply { scale(scale, scale) })
-                drawPath(path, color, style = stroke)
-            }
+            /* Font Awesome's `dove` (6.7.2, CC BY 4.0, https://fontawesome.com),
+               scaled from its 512-unit box into this file's 16. It is the one
+               solid glyph here, and that is the point: it is drawn at 25dp in
+               the rail, where an outlined bird of this pose turns into a hook.
+               The first cut was IconPark's `swallow`, a 4-unit stroke on 48,
+               which is the same 1:12 pen as Lucide's 24/2 and read as a "P"
+               with a horn at rail size. A silhouette keeps the raised wing and
+               the beak when the lines cannot. Its eye is a hole in the same
+               path, so the nonzero fill leaves it open. The notice travels in
+               `assets/icons-license.txt`. */
+            val scale = (16f / 512f) * u
+            val path = androidx.compose.ui.graphics.vector.PathParser().parsePathString(
+                "M160.8 96.5c14 17 31 30.9 49.5 42.2c25.9 15.8 53.7 25.9 77.7 31.6l0-31.5" +
+                    "C265.8 108.5 250 71.5 248.6 28c-.4-11.3-7.5-21.5-18.4-24.4c-7.6-2-15.8-.2-21 5.8" +
+                    "c-13.3 15.4-32.7 44.6-48.4 87.2zM320 144l0 30.6s0 0 0 0l0 1.3s0 0 0 0l0 32.1" +
+                    "c-60.8-5.1-185-43.8-219.3-157.2C97.4 40 87.9 32 76.6 32c-7.9 0-15.3 3.9-18.8 11" +
+                    "C46.8 65.9 32 112.1 32 176c0 116.9 80.1 180.5 118.4 202.8L11.8 416.6" +
+                    "C6.7 418 2.6 421.8 .9 426.8s-.8 10.6 2.3 14.8C21.7 466.2 77.3 512 160 512" +
+                    "c3.6 0 7.2-1.2 10-3.5L245.6 448l74.4 0c88.4 0 160-71.6 160-160l0-160 29.9-44.9" +
+                    "c1.3-2 2.1-4.4 2.1-6.8c0-6.8-5.5-12.3-12.3-12.3L400 64c-44.2 0-80 35.8-80 80" +
+                    "zm80-16a16 16 0 1 1 0 32 16 16 0 1 1 0-32z",
+            ).toPath()
+            path.transform(androidx.compose.ui.graphics.Matrix().apply { scale(scale, scale) })
+            drawPath(path, color)
         }
         Glyph.Keyboard -> {
             rr(2.2f, 4.2f, 11.6f, 7.6f, 1.8f)
