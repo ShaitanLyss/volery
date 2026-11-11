@@ -14,7 +14,7 @@
   import AnalyticsWorkTable from "./AnalyticsWorkTable.svelte";
   import { niceAxis } from "./analyticsroom";
   import { seriesColor } from "./analytics";
-  import { scatterTicks, signed, type ScatterMeasure, type WorkModel } from "./analyticswork";
+  import { episodeLabel, scatterTicks, signed, type ScatterMeasure, type WorkModel } from "./analyticswork";
   import { count, money } from "./usage";
 
   let {
@@ -202,6 +202,41 @@
         <AnalyticsWorkTable cards={model.cards} compact />
         <p class="awk-hint">a dash is a ratio with no divisor, never a zero.</p>
       </section>
+
+      {#if model.invalidations.episodesCount > 0 || model.invalidationsUnread}
+        <section class="awk-sec awk-table-sec">
+          <h4>re-reads, by tree and episode</h4>
+          <table class="awk-table">
+            <thead>
+              <tr>
+                <th scope="col">tree</th>
+                <th scope="col">path</th>
+                <th scope="col">time</th>
+                <th scope="col">run</th>
+                <th scope="col" class="awk-num">cards paid</th>
+                <th scope="col" class="awk-num">cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each model.invalidations.episodes as e (`${e.key}`)}
+                <tr>
+                  <th scope="row">{e.tree || "no tree"}</th>
+                  <td>{episodeLabel(e)}</td>
+                  <td>{new Date(e.end).toLocaleString("en-GB")}</td>
+                  <td>{e.writes > 1 ? `churn, ${count(e.writes)} writes` : "one write"}</td>
+                  <td class="awk-num">{e.measured ? count(e.payers.length) : "—"}</td>
+                  <td class="awk-num">{e.measured ? money(e.usd ?? 0) : "unmeasured"}</td>
+                </tr>
+              {:else}
+                <tr><td colspan="6">{model.invalidationsUnread ? "the invalidation reading did not answer for this span." : "nothing was recorded: no instruction file was written in this window."}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="awk-hint">
+            unmeasured is not zero: no paying card took a request within thirty minutes of the last write, so there is no excess to divide.
+          </p>
+        </section>
+      {/if}
 
       <section class="awk-sec">
         <h4>what this cannot see</h4>
@@ -423,6 +458,34 @@
     font-style: italic;
     font-size: 12px;
     color: var(--paper-mute);
+  }
+  .awk-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .awk-table th,
+  .awk-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid color-mix(in oklab, var(--edge) 60%, transparent);
+    text-align: left;
+    vertical-align: top;
+  }
+  .awk-table thead th {
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: lowercase;
+    color: var(--paper-mute);
+  }
+  .awk-table tbody th {
+    font-weight: 400;
+    color: var(--paper-dim);
+  }
+  .awk-table .awk-num {
+    text-align: right;
   }
   .awk-clock {
     margin: 34px 0 0;

@@ -19,10 +19,14 @@
   import AnalyticsWorkTable from "./AnalyticsWorkTable.svelte";
   import { niceAxis } from "./analyticsroom";
   import {
+    INVALIDATE_ADVICE,
     SCATTER_MEASURES,
+    episodeAuthor,
+    episodeLabel,
     scatterTicks,
     signed,
     type ConflictEpisode,
+    type InvalidateEpisode,
     type ScatterMeasure,
     type WorkModel,
   } from "./analyticswork";
@@ -50,6 +54,7 @@
 
   let active = $state<string | null>(null);
   let episode = $state<ConflictEpisode | null>(null);
+  let reread = $state<InvalidateEpisode | null>(null);
   let costW = $state(320);
   let artW = $state(320);
   let scatterW = $state(560);
@@ -169,7 +174,52 @@
 
   const barRows = $derived(model.bars);
   const rowIndex = $derived(new Map(barRows.map((b, i) => [b.card, i])));
-  const stripHeight = $derived(Math.max(ROW, barRows.length * ROW));
+  /* §11.14's instruction-churn episodes share the strip and the timescale with
+     the card bars, on a row of their own underneath them. A whole wall's cards
+     are not the thing a `CLAUDE.md` write affects; the tree and the run are. */
+  const inv = $derived(model.invalidations);
+  const invRow = $derived(barRows.length);
+  const stripHeight = $derived(Math.max(ROW, (barRows.length + (inv.episodesCount > 0 ? 1 : 0)) * ROW));
+
+  const invMarks = $derived(
+    inv.episodes
+      .filter((e) => e.kind === "instructions" || e.kind === "rule")
+      .map((e) => ({
+        episode: e,
+        x: xStrip(e.start),
+        w: Math.max(6, xStrip(e.end) - xStrip(e.start)),
+        size: Math.max(7, Math.min(16, 6 + e.writes * 2)),
+      })),
+  );
+
+  function invSaid(e: InvalidateEpisode): string {
+    const when = new Date(e.start).toLocaleString("en-GB");
+    const payers = e.measured
+      ? e.payers.length
+        ? `${e.payers.length === 1 ? "one card" : `${e.payers.length} cards`} paid ${money(e.usd ?? 0)}`
+        : "measured at nothing"
+      : "unmeasured";
+    const run = e.writes > 1 ? `${e.writes} writes in the run, ` : "";
+    return `${episodeLabel(e)} on ${e.tree || "an unnamed tree"}: ${run}${when}, by ${episodeAuthor(e, nameOf)}; ${payers}`;
+  }
+
+  const nameOf = $derived(new Map(model.cards.map((c) => [c.card, c.label])));
+
+  const invSummary = $derived.by(() => {
+    if (model.invalidationsUnread) {
+      return "the invalidation reading did not answer for this span, so nothing is claimed about re-reading.";
+    }
+    if (inv.events + inv.switches === 0) {
+      return "nothing was recorded in this span: no instruction file was written and no card moved account, provider or model.";
+    }
+    const dollars =
+      inv.usd === null
+        ? "the excess is unmeasured"
+        : `${money(inv.usd)} of excess re-reading${inv.share !== null ? ` · ${Math.round(inv.share * 100)}% of the span's spend` : ""}`;
+    const churn = inv.churnEpisodes > 0 ? ` · ${count(inv.churnWriteCount)} writes in ${count(inv.churnEpisodes)} churn ${inv.churnEpisodes === 1 ? "run" : "runs"}` : "";
+    const moves = inv.switches > 0 ? ` · ${count(inv.switches)} ${inv.switches === 1 ? "move" : "moves"}` : "";
+    return `${count(inv.events)} ${inv.events === 1 ? "write" : "writes"} to an instruction or rule file in ${count(inv.writeEpisodes)} ${inv.writeEpisodes === 1 ? "episode" : "episodes"}${moves} · ${dollars}${churn}`;
+  });
 
   function xStrip(at: number): number {
     return ((at - from) / width) * Math.max(20, stripW);
@@ -252,6 +302,12 @@
   /* Escape closes the episode before it closes the surface, the same order the
      prompts tab keeps. Returns true for a key it used. */
   export function key(e: KeyboardEvent): boolean {
+    if (e.key === "Escape" && reread) {
+      e.preventDefault();
+      e.stopPropagation();
+      reread = null;
+      return true;
+    }
     if (e.key === "Escape" && episode) {
       e.preventDefault();
       e.stopPropagation();
@@ -511,6 +567,7 @@
     <section class="aw-section">
       <h4>coordination</h4>
       <p class="aw-stripnote">{stripNote}</p>
+      <p class="aw-stripnote">{invSummary}</p>
       <div class="aw-strip" style:height={`${stripHeight}px`}>
         <div class="aw-striplabels">
           {#each barRows as bar, i (bar.card)}
@@ -519,6 +576,12 @@
               <span class="aw-rowcost">{bar.cost === null ? "unpriced" : money(bar.cost)}</span>
             </div>
           {/each}
+          {#if inv.episodesCount > 0}
+            <div class="aw-rowlabel" style:height={`${ROW}px`} title="writes to instruction and rule files, and what the other cards paid to read again">
+              <span class="aw-rowname">re-reads</span>
+              <span class="aw-rowcost">{inv.usd === null ? "unmeasured" : money(inv.usd)}</span>
+            </div>
+          {/if}
         </div>
         <div class="aw-track" bind:clientWidth={stripW} style:height={`${stripHeight}px`}>
           {#each strips.bands as band (`${band.left}|${band.right}`)}
@@ -558,6 +621,24 @@
               {/each}
             </div>
           {/each}
+          {#if invMarks.length > 0}
+            <div class="aw-row aw-invrow" style:top={`${invRow * ROW}px`} style:height={`${ROW}px`}>
+              {#each invMarks as m (`${m.episode.key}`)}
+                <button
+                  type="button"
+                  class="aw-inv"
+                  class:rule={m.episode.kind === "rule"}
+                  class:churn={m.episode.writes > 1}
+                  style:left={`${m.x}px`}
+                  style:width={`${m.size}px`}
+                  style:height={`${m.size}px`}
+                  title={`${invSaid(m.episode)} (open it)`}
+                  aria-label={invSaid(m.episode)}
+                  onclick={() => (reread = m.episode)}
+                ></button>
+              {/each}
+            </div>
+          {/if}
           {#each [0, 0.5, 1] as f, i (i)}
             <span class="aw-tick" style:left={`${f * stripW}px`}></span>
             <span class="aw-ticktext" class:end={i === 2} style:left={`${f * stripW}px`}>{tickText(from + width * f)}</span>
@@ -565,7 +646,7 @@
         </div>
       </div>
       <p class="aw-hint">
-        a bar is a card's session, a band is two cards in the same file, and a mark is a conflict episode. open a mark for its branch, files and cost.
+        a bar is a card's session, a band is two cards in the same file, an amber mark is a conflict episode, and a mark on the re-reads row is a write to an instruction file that made other cards read again. a square is an instruction and a diamond is a rule; the bigger it is, the more writes the run swallowed. open a mark for its path, time, author and who paid.
       </p>
 
       <!-- The strip's honest table, because every chart owes one and a band's
@@ -613,8 +694,63 @@
               {/each}
             </tbody>
           </table>
+
+          <!-- The invalidation half's honest table: every episode worth acting
+               on, with the cards that paid. -->
+          <table class="aw-hours">
+            <thead>
+              <tr>
+                <th scope="col">tree</th>
+                <th scope="col">path</th>
+                <th scope="col">time</th>
+                <th scope="col">run</th>
+                <th scope="col" class="aw-num">cards paid</th>
+                <th scope="col" class="aw-num">cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each inv.episodes as e (`${e.key}`)}
+                <tr>
+                  <th scope="row">{e.tree || "no tree"}</th>
+                  <td>{episodeLabel(e)}</td>
+                  <td>{new Date(e.end).toLocaleString("en-GB")}</td>
+                  <td>{e.writes > 1 ? `churn, ${count(e.writes)} writes` : "one write"}</td>
+                  <td class="aw-num">{e.measured ? count(e.payers.length) : "—"}</td>
+                  <td class="aw-num">{e.measured ? money(e.usd ?? 0) : "unmeasured"}</td>
+                </tr>
+              {:else}
+                <tr><td colspan="6">{model.invalidationsUnread ? "the invalidation reading did not answer for this span." : "nothing was recorded: no instruction file was written in this window."}</td></tr>
+              {/each}
+            </tbody>
+          </table>
         </div>
       </details>
+
+      {#if reread}
+        <div class="aw-episode" role="group" aria-label="invalidation episode">
+          <div class="aw-ephead">
+            <strong>{episodeLabel(reread)}</strong>
+            <span>{episodeAuthor(reread, nameOf)}</span>
+            <button type="button" class="aw-epclose" title="close (esc)" aria-label="close episode" onclick={() => (reread = null)}>×</button>
+          </div>
+          <dl class="aw-epfacts">
+            <div><dt>tree</dt><dd>{reread.tree || "no tree"}</dd></div>
+            <div><dt>when</dt><dd>{new Date(reread.start).toLocaleString("en-GB")}</dd></div>
+            <div><dt>kind</dt><dd>{reread.kind}</dd></div>
+            <div><dt>writes in the run</dt><dd>{count(reread.writes)}</dd></div>
+            <div><dt>cards working</dt><dd>{count(reread.affected)}</dd></div>
+            <div><dt>cost</dt><dd>{reread.measured ? money(reread.usd ?? 0) : "unmeasured"}</dd></div>
+          </dl>
+          {#if reread.payers.length > 0}
+            <p class="aw-hint">
+              paid by {#each reread.payers as p, i (p.session)}{i > 0 ? ", " : ""}{bandLabel(p.card)}{p.usd === null ? " (unpriced)" : ` (${money(p.usd)})`}{/each}.
+            </p>
+          {:else}
+            <p class="aw-hint">no card's next request was seen within thirty minutes of the last write, so the excess is unmeasured rather than zero.</p>
+          {/if}
+          <p class="aw-hint">{INVALIDATE_ADVICE}</p>
+        </div>
+      {/if}
 
       {#if episode}
         <div class="aw-episode" role="group" aria-label="conflict episode">
@@ -961,6 +1097,33 @@
     height: 8px;
     border-radius: 2px;
     background: color-mix(in oklab, var(--paper) 28%, transparent);
+  }
+  /* The re-reads row: an instruction is a square, a rule a diamond, and a run
+     of more than one write is the bigger mark. Colour comes from the status
+     palette and says *kind*, never decoration. */
+  .aw-inv {
+    position: absolute;
+    top: 9px;
+    border: 0;
+    padding: 0;
+    border-radius: 2px;
+    background: var(--st-ask);
+    opacity: 0.72;
+    cursor: pointer;
+  }
+  .aw-inv.rule {
+    background: var(--st-soft);
+    border-radius: 1px;
+    transform: rotate(45deg);
+  }
+  .aw-inv.churn {
+    opacity: 0.95;
+  }
+  .aw-inv:hover,
+  .aw-inv:focus-visible {
+    opacity: 1;
+    outline: 1px solid var(--paper);
+    outline-offset: 1px;
   }
   .aw-band {
     position: absolute;

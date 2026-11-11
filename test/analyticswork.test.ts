@@ -2,16 +2,24 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ARTIFACT_KINDS,
+  CHURN_GAP_MS,
   CONFLICT_CAP_MS,
+  INVALIDATE_ADVICE,
   WORK_CAVEAT,
+  asInvalidateRows,
   asOverlaps,
   asWorkRows,
   asWorkSeries,
   bandsOf,
   barsOf,
+  attributedUsd,
+  cacheWriteUsd,
   cardWorkOf,
   conflictEpisodes,
   coordinationOf,
+  inputUsd,
+  invalidateKey,
+  invalidationOf,
   kpisOf,
   panelsOf,
   ratioText,
@@ -25,6 +33,7 @@ import {
   workStoryState,
   type CardSpendRow,
   type CardWork,
+  type InvalidateRow,
   type PairOverlap,
   type WorkRow,
   type WorkSeries,
@@ -515,7 +524,7 @@ describe("what the page says, in each of its states", () => {
     expect(model.story.lede).toContain("+100 net lines");
     expect(model.story.lede).toContain("15 minutes went to 1 conflict");
     expect(model.story.facts.find((f) => f.label === "merged")?.value).toBe(count(1));
-    expect(model.story.sections.map((s) => s.id)).toEqual(["bought", "coordination", "cannot"]);
+    expect(model.story.sections.map((s) => s.id)).toEqual(["bought", "coordination", "reread", "cannot"]);
   });
 
   test("a pair listing that was not read is said, not left looking empty", () => {
@@ -720,5 +729,252 @@ describe("the leading project is artifacts, and it says its share", () => {
     const kpis = kpisOf([], [], coordinationOf([], []));
     expect(kpis.leading).toBe(null);
     expect(kpis.cost).toBe(null);
+  });
+});
+
+/* ── invalidation (§3.9) ───────────────────────────────────────────────────*/
+
+const TREE = "C:/workbench/volery";
+const CLAUDE = "C:/workbench/volery/CLAUDE.md";
+
+function inv(over: Partial<InvalidateRow> & Pick<InvalidateRow, "at" | "kind">): InvalidateRow {
+  return {
+    host: "here",
+    session: "s1",
+    card: "c1",
+    ref: CLAUDE,
+    tree: TREE,
+    affected: 1,
+    tokens: 0,
+    inTokens: 0,
+    model: "",
+    usd: 0,
+    provenance: "receipt",
+    ...over,
+  };
+}
+
+function paid(over: Partial<InvalidateRow> & Pick<InvalidateRow, "at">): InvalidateRow {
+  return inv({
+    kind: "instructions",
+    provenance: "attributed",
+    session: "s2",
+    card: "c2",
+    affected: 0,
+    tokens: 60_000,
+    model: "claude-opus-5-5",
+    usd: 0,
+    ...over,
+  });
+}
+
+describe("a churn episode is a run of writes, not a write", () => {
+  test("three writes inside the gap are one episode, priced at its last write", () => {
+    const rows = [
+      inv({ at: T0, kind: "instructions" }),
+      inv({ at: T0 + 3 * MINUTE, kind: "instructions" }),
+      inv({ at: T0 + 8 * MINUTE, kind: "instructions" }),
+      paid({ at: T0 + 8 * MINUTE, tokens: 40_000 }),
+    ];
+    const one = invalidationOf(rows, null);
+    expect(one.episodes).toHaveLength(1);
+    expect(one.episodes[0].writes).toBe(3);
+    expect(one.episodes[0].end).toBe(T0 + 8 * MINUTE);
+    expect(one.churnEpisodes).toBe(1);
+    expect(one.churnWriteCount).toBe(3);
+    expect(one.episodes[0].measured).toBe(true);
+    expect(one.episodes[0].tokens).toBe(40_000);
+    expect(one.episodes[0].usd).toBeGreaterThan(0);
+  });
+
+  test("a write after the gap opens a second episode", () => {
+    const rows = [
+      inv({ at: T0, kind: "instructions" }),
+      inv({ at: T0 + CHURN_GAP_MS + 1, kind: "instructions" }),
+    ];
+    expect(invalidationOf(rows, null).episodes).toHaveLength(2);
+  });
+
+  test("rules are grouped by their directory, not their file", () => {
+    const rows = [
+      inv({ at: T0, kind: "rule", ref: "C:/x/.claude/rules/style.md" }),
+      inv({ at: T0 + MINUTE, kind: "rule", ref: "C:/x/.claude/rules/tests.md" }),
+    ];
+    const one = invalidationOf(rows, null);
+    expect(one.episodes).toHaveLength(1);
+    expect(one.episodes[0].writes).toBe(2);
+    expect(invalidateKey("rule", "C:/x/.claude/rules/style.md")).toBe("C:/x/.claude/rules");
+    expect(invalidateKey("instructions", CLAUDE)).toBe(CLAUDE);
+  });
+
+  test("a switch is its own episode, and a repeated one is not churn", () => {
+    const rows = [
+      inv({ at: T0, kind: "account", ref: "tx-team", session: "s1" }),
+      inv({ at: T0 + MINUTE, kind: "account", ref: "tx-team", session: "s1" }),
+      inv({ at: T0 + 2 * MINUTE, kind: "model", ref: "claude-opus-5-5", session: "s1" }),
+    ];
+    const one = invalidationOf(rows, null);
+    expect(one.episodes).toHaveLength(3);
+    expect(one.churnEpisodes).toBe(0);
+    expect(one.switches).toBe(3);
+    expect(one.events).toBe(0);
+  });
+});
+
+describe("events and dollars are never one number", () => {
+  test("a receipt row carrying tokens is still only an event", () => {
+    const rows = [
+      /* A receipt row with a dollar figure on it, which no writer of this build
+         produces — and if a later one does, it must not be summed as cost. */
+      inv({ at: T0, kind: "instructions", tokens: 90_000, usd: 5 }),
+    ];
+    const one = invalidationOf(rows, 100);
+    expect(one.events).toBe(1);
+    expect(one.tokens).toBe(0);
+    expect(one.usd).toBe(null);
+  });
+
+  test("an attributed row is cost and never an event", () => {
+    const rows = [paid({ at: T0 })];
+    const one = invalidationOf(rows, null);
+    expect(one.events).toBe(0);
+    expect(one.episodesCount).toBe(0);
+    expect(one.usd).toBe(null);
+  });
+
+  test("the share has no divisor and is null rather than zero", () => {
+    const rows = [inv({ at: T0, kind: "instructions" }), paid({ at: T0 })];
+    expect(invalidationOf(rows, null).share).toBe(null);
+    expect(invalidationOf(rows, 0).share).toBe(null);
+    expect(invalidationOf(rows, 1000).share).toBeGreaterThan(0);
+  });
+});
+
+describe("unmeasured is not free", () => {
+  test("an episode with no attributed row is null, not zero", () => {
+    const one = invalidationOf([inv({ at: T0, kind: "instructions" })], 100);
+    expect(one.episodes[0].measured).toBe(false);
+    expect(one.episodes[0].usd).toBe(null);
+    expect(one.unmeasured).toBe(1);
+    expect(one.usd).toBe(null);
+  });
+
+  test("an attributed row of zero tokens is measured and costs nothing", () => {
+    const one = invalidationOf(
+      [inv({ at: T0, kind: "rule", ref: "C:/x/.claude/rules/a.md" }), paid({ at: T0, kind: "rule", ref: "C:/x/.claude/rules/a.md", tokens: 0 })],
+      100,
+    );
+    expect(one.episodes[0].measured).toBe(true);
+    expect(one.episodes[0].usd).toBe(0);
+    expect(one.usd).toBe(0);
+  });
+
+  test("a payer whose model has no rate leaves the episode unpriced", () => {
+    const one = invalidationOf(
+      [inv({ at: T0, kind: "instructions" }), paid({ at: T0, model: "a-model-nobody-priced" })],
+      100,
+    );
+    expect(one.episodes[0].payers[0].usd).toBe(null);
+    expect(one.episodes[0].usd).toBe(null);
+    expect(one.episodes[0].measured).toBe(false);
+  });
+});
+
+describe("the excess is priced through the one rate table", () => {
+  test("a cache-write-only row prices the same two ways", () => {
+    const tokens = 123_456;
+    const viaHelper = cacheWriteUsd(tokens, "claude-opus-5-5", T0);
+    const viaRecord = modeledUsd({
+      at: T0,
+      host: "here",
+      session: "s1",
+      agent: "",
+      parentAgent: "",
+      depth: 0,
+      model: "claude-opus-5-5",
+      effort: "",
+      cli: "",
+      source: "card",
+      account: "lyss",
+      accountIdentity: "",
+      provider: "claude",
+      project: "volery",
+      provenance: "transcript",
+      inTok: 0,
+      outTok: 0,
+      cacheRead: 0,
+      write5m: tokens,
+      write1h: 0,
+      requests: 1,
+      usdReported: 0,
+    });
+    expect(viaHelper).not.toBe(null);
+    expect(viaHelper).toBeCloseTo(viaRecord ?? 0, 12);
+  });
+
+  test("an unknown model has no price rather than a zero", () => {
+    expect(cacheWriteUsd(1000, "a-model-nobody-priced", T0)).toBe(null);
+  });
+
+  test("fresh input is priced at the input rate, not the cache-write one", () => {
+    const tokens = 3_620;
+    const input = inputUsd(tokens, "claude-opus-5-5", T0) ?? 0;
+    const write = cacheWriteUsd(tokens, "claude-opus-5-5", T0) ?? 0;
+    expect(input).toBeGreaterThan(0);
+    expect(input).toBeLessThan(write);
+    /* Both buckets are what one payer costs. */
+    expect(attributedUsd(0, tokens, "claude-opus-5-5", T0)).toBeCloseTo(input, 12);
+    expect(attributedUsd(tokens, 0, "claude-opus-5-5", T0)).toBeCloseTo(write, 12);
+  });
+
+  test("a payer whose excess landed in fresh input is measured, not free", () => {
+    const one = invalidationOf(
+      [inv({ at: T0, kind: "instructions" }), paid({ at: T0, tokens: 0, inTokens: 3_620 })],
+      100,
+    );
+    expect(one.episodes[0].measured).toBe(true);
+    expect(one.episodes[0].payers[0].tokens).toBe(3_620);
+    expect(one.episodes[0].usd).toBeGreaterThan(0);
+  });
+});
+
+describe("the by-tree reading, and the rows a bad command answer dropped", () => {
+  test("groups episodes and keeps a tree whose dollars were never measured at null", () => {
+    const rows = [
+      inv({ at: T0, kind: "instructions", tree: "C:/a" }),
+      paid({ at: T0, tree: "C:/a" }),
+      inv({ at: T0 + HOUR, kind: "instructions", tree: "C:/b", ref: "C:/b/AGENTS.md" }),
+    ];
+    const one = invalidationOf(rows, null);
+    const a = one.byTree.find((t) => t.tree === "C:/a");
+    const b = one.byTree.find((t) => t.tree === "C:/b");
+    expect(a?.measured).toBe(1);
+    expect(a?.usd).toBeGreaterThan(0);
+    expect(b?.measured).toBe(0);
+    expect(b?.usd).toBe(null);
+    expect(one.unmeasured).toBe(1);
+
+    const writes = one.byKind.find((k) => k.kind === "instructions");
+    expect(writes?.events).toBe(2);
+    expect(writes?.episodes).toBe(2);
+    expect(writes?.measured).toBe(1);
+    expect(writes?.usd).toBeGreaterThan(0);
+  });
+
+  test("a row that will not parse is dropped rather than drawn as a zero", () => {
+    const rows = asInvalidateRows([
+      { at: T0, kind: "instructions", ref: CLAUDE },
+      { at: "x", kind: "" },
+      null,
+      42,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].provenance).toBe("receipt");
+  });
+
+  test("the advice is advice, not a ban, and carries no em dash", () => {
+    expect(INVALIDATE_ADVICE).not.toContain("—");
+    expect(INVALIDATE_ADVICE).toContain(".claude/rules/");
+    expect(INVALIDATE_ADVICE).toContain("new cards");
   });
 });

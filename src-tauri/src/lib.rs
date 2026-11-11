@@ -1173,6 +1173,7 @@ pub fn run() {
             analytics::tool_facts,
             analytics::work_facts,
             analytics::work_series,
+            analytics::invalidate_facts,
             store::overlap_minutes,
             store::overlap_pairs,
             limits::read_limits,

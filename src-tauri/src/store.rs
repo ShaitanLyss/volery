@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 66;
+const SCHEMA_VERSION: i64 = 67;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -446,6 +446,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (64, migrate_v64),
     (65, migrate_v65),
     (66, migrate_v66),
+    (67, migrate_v67),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3868,6 +3869,100 @@ fn migrate_v66(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// §3.9's invalidation half: an event that made somebody read the context again.
+///
+/// **The event is exact and the cost is attributed**, which is why `provenance`
+/// is part of the key rather than a column beside it. One write produces one
+/// receipt row naming the card that made it, and one attributed row per card
+/// that paid for it, at the same instant and path. A receipt row and an
+/// attributed row are different facts about the same event, and summing events
+/// with dollars across both is the one thing a reader must not do (§9.1).
+///
+/// `tree` is the absolute directory the agent stood in: `conversation.cwd` for a
+/// card in a shared checkout, and `worktree::run_dir(cwd, worktree)` for a card
+/// in one. It is deliberately a path in a fine-tier, local-only table rather
+/// than on `analytics_session`, which is synced and drops worktree paths on
+/// purpose. An instruction write from a terminal session that no card owns has
+/// the transcript's own `cwd`, which is the directory the CLI ran in; that is
+/// the only tree such a fact can have and it is exactly the directory whose
+/// `CLAUDE.md` was edited.
+///
+/// `affected` is a count of **other card sessions** sharing the tree whose
+/// interval overlaps the episode a write opens: the ten minutes on from it. A
+/// session that has not started is not counted, a still-open one is, a terminal
+/// is not a card, and a chat card is excluded because every chat card shares one
+/// home and would be counted as paying for every other. For a switch (`account`,
+/// `provider`, `model`) it is the cards working at the instant, because a switch
+/// invalidates the cache of the card that moved and no tree's worth of cards.
+///
+/// **`tokens`, `in_tokens` and `usd` are one attribution's three parts.** Rust
+/// records the excess in the two buckets a retired prefix can land in and never
+/// prices anything (`usage.rs`'s rule, and `analytics.rs` deliberately has no
+/// rate table): the front end prices them through `usage.ts` at the event's own
+/// model and instant, which is the arithmetic every other dollar on this wall
+/// already goes through. `usd` is kept for a writer that genuinely knows
+/// dollars; a row written by the ingest has `usd = 0`, and the query layer says
+/// *unmeasured* only when no attributed row exists at all.
+fn migrate_v67(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS invalidate_fact (
+            at         INTEGER NOT NULL,
+            host       TEXT NOT NULL,
+            session    TEXT NOT NULL DEFAULT '',
+            card       TEXT NOT NULL DEFAULT '',
+            kind       TEXT NOT NULL,   -- instructions | rule | account | provider | model
+            ref        TEXT NOT NULL DEFAULT '',  -- path, account label, model or provider
+            tree       TEXT NOT NULL DEFAULT '',  -- the directory the card stood in
+            affected   INTEGER NOT NULL DEFAULT 0,
+            -- The attributed excess and the model it was written against. 0 on
+            -- a receipt row, and `usd` stays 0 until something that knows a
+            -- price writes it.
+            --
+            -- **Two buckets, because the retired prefix lands in whichever one
+            -- the CLI books it in.** A cache-write excess is billed at 1.25x
+            -- input and `tokens` carries it; a prefix re-read by a process that
+            -- restarted arrives as ordinary input, which the probe on this
+            -- machine measured at 3,795 tokens with zero cache creation
+            -- (`tools/probe-invalidate.ts`, 2026-11-12), and `in_tokens` carries
+            -- that. Measuring only the first would read every real invalidation
+            -- as free on this build.
+            tokens     INTEGER NOT NULL DEFAULT 0,
+            in_tokens  INTEGER NOT NULL DEFAULT 0,
+            model      TEXT NOT NULL DEFAULT '',
+            usd        REAL NOT NULL DEFAULT 0,
+            provenance TEXT NOT NULL DEFAULT 'receipt',  -- receipt | attributed
+            PRIMARY KEY (at, host, session, card, kind, ref, tree, provenance)
+        );
+
+        -- The two questions the page asks: which episodes happened on this tree,
+        -- and which happened in this window. Both are range reads, never scans.
+        CREATE INDEX IF NOT EXISTS invalidate_fact_by_tree ON invalidate_fact(tree, at);
+        CREATE INDEX IF NOT EXISTS invalidate_fact_by_at   ON invalidate_fact(at);
+
+        -- Who was working when. The affected count and the payer list both ask
+        -- "which sessions overlapped this interval", and without this each ask
+        -- is a scan of every session the wall has ever recorded.
+        CREATE INDEX IF NOT EXISTS analytics_session_by_start
+            ON analytics_session(host, started_at);
+
+        -- The one-off backfill's mark. A transcript is read from the beginning
+        -- once and never again; the row records the shape it was read at, so a
+        -- file that was still growing is not re-read either. This is a table of
+        -- its own rather than a column on `usage_file` because the backfill must
+        -- not touch the collector's offsets: those drive every other fact.
+        CREATE TABLE IF NOT EXISTS invalidate_walk (
+            path    TEXT PRIMARY KEY,
+            host    TEXT NOT NULL,
+            size    INTEGER NOT NULL,
+            mtime   INTEGER NOT NULL,
+            done_at INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v67: {e}"))
+}
+
 /* ── saved views ───────────────────────────────────────────────────────────*/
 
 /// A view's name is the library's identity for it, so it is capped here as
@@ -4118,6 +4213,68 @@ pub(crate) fn save_window_frame(
     Ok(())
 }
 
+/// Record a move of account, provider or model as an invalidation event
+/// (`docs/ANALYTICS.md` §3.9).
+///
+/// **The event is exact because Volery is the one asking.** A move made here
+/// knows the card, and therefore the session and the tree; the ingest would
+/// only see it on the card's next request, and it deliberately skips a move
+/// that already has a row (`analytics::switch_seen`).
+///
+/// **One row per move, not one per dimension.** A provider switch changes the
+/// account label and the model as well, and all three retire one cache; three
+/// rows would be one cost counted three times, so the caller passes the most
+/// specific kind it can name.
+///
+/// The row carries no dollars: Rust does not price (the rule `usage.rs` states),
+/// and attribution measures the excess on the card's next request. A card with
+/// no session cannot be attributed and is still recorded with an empty one,
+/// which reads as unmeasured rather than free.
+fn note_invalidate(conn: &Connection, id: &str, kind: &str, reference: &str) -> Result<(), String> {
+    let row: Option<(String, String, String, String)> = conn
+        .query_row(
+            "SELECT COALESCE(agent_session_id, ''), COALESCE(cwd, ''),
+                    COALESCE(worktree, ''), COALESCE(kind, 'project')
+               FROM conversation WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| format!("invalidate: {e}"))?;
+    let Some((session, cwd, worktree, card_kind)) = row else {
+        return Ok(());
+    };
+    /* A chat card records nothing (§3.9): its territory is the shared chat
+       home, where every card would pay for every other's move. */
+    if card_kind == "chat" || session.is_empty() {
+        return Ok(());
+    }
+    let tree = crate::worktree::run_dir(&cwd, Some(worktree.as_str())).replace('\\', "/");
+    let reference = crate::clip::preview(reference, crate::analytics::MAX_INVALIDATE_REF);
+    let at = now();
+    let host = crate::flyway::key::host_name();
+    /* A switch is a timing reading: the cards working at the instant, this one
+       included. The same definition `analytics::working_at` uses, so a row
+       written here and one written by the ingest mean the same thing. */
+    let affected: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM analytics_session
+              WHERE host = ?1 AND card_id IS NOT NULL
+                AND started_at <= ?2 AND (ended_at IS NULL OR ended_at >= ?2)",
+            params![host, at],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT OR IGNORE INTO invalidate_fact
+           (at, host, session, card, kind, ref, tree, affected, provenance)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'receipt')",
+        params![at, host, session, id, kind, reference, tree, affected],
+    )
+    .map_err(|e| format!("invalidate: {e}"))?;
+    Ok(())
+}
+
 /// Remember which service and model a card is on.
 ///
 /// Written the moment a card is spawned or swapped rather than at the next
@@ -4136,15 +4293,41 @@ pub fn set_conversation_mode(
     account_label: Option<String>,
     model: Option<String>,
 ) -> Result<(), String> {
-    store
+    let conn = store
         .0
         .lock()
-        .map_err(|_| "the store is wedged".to_string())?
-        .execute(
-            "UPDATE conversation SET account_label = ?1, model = ?2, credits_home = NULL WHERE id = ?3",
-            params![account_label, model, id],
+        .map_err(|_| "the store is wedged".to_string())?;
+    let before: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT account_label, model FROM conversation WHERE id = ?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
+        .optional()
         .map_err(|e| format!("set mode: {e}"))?;
+    let (old_label, old_model) = before.unwrap_or((None, None));
+    conn.execute(
+        "UPDATE conversation SET account_label = ?1, model = ?2, credits_home = NULL WHERE id = ?3",
+        params![account_label, model, id],
+    )
+    .map_err(|e| format!("set mode: {e}"))?;
+
+    /* The most specific kind the move can name. A provider change is the one
+       that explains the other two, so it is asked first. */
+    let old_provider = crate::analytics::provider_of(old_label.as_deref());
+    let new_provider = crate::analytics::provider_of(account_label.as_deref());
+    let new_model = model.clone().unwrap_or_default();
+    let old_model = old_model.unwrap_or_default();
+    if old_provider != new_provider && old_provider != "unknown" && new_provider != "unknown" {
+        note_invalidate(&conn, &id, "provider", new_provider)?;
+    } else if old_label.as_deref().unwrap_or("") != account_label.as_deref().unwrap_or("") {
+        note_invalidate(&conn, &id, "account", account_label.as_deref().unwrap_or(""))?;
+    } else if !old_model.is_empty()
+        && !new_model.is_empty()
+        && !crate::analytics::same_model(&old_model, &new_model)
+    {
+        note_invalidate(&conn, &id, "model", &new_model)?;
+    }
     Ok(())
 }
 
@@ -4163,15 +4346,29 @@ pub fn set_conversation_account(
        caller that omits it (every caller but the move onto credits) is a card
        that has no home to go back to, which is exactly what NULL says. */
     let home = credits_home.filter(|_| crate::credits::is_credits(account_label.as_deref()));
-    store
+    let conn = store
         .0
         .lock()
-        .map_err(|_| "the store is wedged".to_string())?
-        .execute(
-            "UPDATE conversation SET account_label = ?1, credits_home = ?3 WHERE id = ?2",
-            params![account_label, id, home],
+        .map_err(|_| "the store is wedged".to_string())?;
+    let before: Option<String> = conn
+        .query_row(
+            "SELECT account_label FROM conversation WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
         )
-        .map_err(|e| format!("set account: {e}"))?;
+        .optional()
+        .map_err(|e| format!("set account: {e}"))?
+        .flatten();
+    conn.execute(
+        "UPDATE conversation SET account_label = ?1, credits_home = ?3 WHERE id = ?2",
+        params![account_label, id, home],
+    )
+    .map_err(|e| format!("set account: {e}"))?;
+    /* Only a change is a move: every launch resolves a card's account again,
+       and a row per resolution would be a wall of events that never happened. */
+    if before.as_deref().unwrap_or("") != account_label.as_deref().unwrap_or("") {
+        note_invalidate(&conn, &id, "account", account_label.as_deref().unwrap_or(""))?;
+    }
     Ok(())
 }
 
@@ -15741,6 +15938,129 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, (0, 0), "an existing call keeps its row with empty counters");
+    }
+
+    /// §3.9's invalidation tables, the two indexes the page reads them by, and
+    /// the walk mark. Run twice on a database that already has a receipt row,
+    /// because the v9 lockout is what a rung without this costs.
+    #[test]
+    fn v67_adds_the_invalidation_tables_and_can_run_twice() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for (_, step) in STEPS.iter().take(66) {
+            step(&conn).unwrap();
+        }
+        let exists = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(exists("invalidate_fact"), 0, "the table must not exist before this rung");
+        assert_eq!(exists("invalidate_walk"), 0, "the mark must not exist before this rung");
+
+        migrate_v67(&conn).unwrap();
+        migrate_v67(&conn).expect("a rung of CREATE IF NOT EXISTS must be safe to re-run");
+
+        assert_eq!(exists("invalidate_fact"), 1);
+        assert_eq!(exists("invalidate_walk"), 1);
+        for index in ["invalidate_fact_by_tree", "invalidate_fact_by_at"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{index} was not created");
+        }
+        /* **The key includes `provenance`**, which is what lets one event carry
+           a receipt row and a row per paying card at the same instant and path.
+           Without it the second write would replace the first. */
+        conn.execute(
+            "INSERT INTO invalidate_fact (at, host, session, card, kind, ref, tree)
+             VALUES (10, 'h', 's', 'c', 'instructions', 'a/CLAUDE.md', 'a')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO invalidate_fact (at, host, session, card, kind, ref, tree, provenance, tokens)
+             VALUES (10, 'h', 's2', 'c2', 'instructions', 'a/CLAUDE.md', 'a', 'attributed', 4000)",
+            [],
+        )
+        .expect("an attributed row must stand beside the receipt at the same instant");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM invalidate_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "two provenances, two rows");
+    }
+
+    /// A rung that leaves a real file openable, not only a fresh in-memory one:
+    /// a database written by the previous build is opened by this one and then
+    /// reopened, which is what a launch actually does.
+    #[test]
+    fn v67_leaves_a_file_the_next_launch_can_open() {
+        let path = std::env::temp_dir().join(format!("skein-v67-{}.db", uuid_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (_, step) in STEPS.iter().take(66) {
+                step(&conn).unwrap();
+            }
+            migrate_v67(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO invalidate_walk (path, host, size, mtime, done_at)
+                 VALUES ('a.jsonl', 'h', 10, 10, 10)",
+                [],
+            )
+            .unwrap();
+        }
+        {
+            let conn = Connection::open(&path).unwrap();
+            migrate(&conn).expect("a file this build wrote must open again");
+            let version: i64 = conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+            let marked: i64 = conn
+                .query_row("SELECT COUNT(*) FROM invalidate_walk", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(marked, 1, "the backfill's mark survives a reopen");
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    /// A move Volery made is a row the moment it happens, and a chat card's
+    /// move is not: its territory is the shared chat home, where every chat card
+    /// would be counted as paying for every other's switch.
+    #[test]
+    fn an_invalidation_row_names_the_card_its_session_and_its_tree() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, agent_session_id, project_id, cwd, branch, born_at, kind)
+             VALUES ('c1', 's1', 'p1', 'C:/x', 'main', 0, 'project'),
+                    ('c2', 's2', 'p1', 'C:/x', 'main', 0, 'chat')",
+            [],
+        )
+        .unwrap();
+
+        note_invalidate(&conn, "c1", "account", "tx-team").unwrap();
+        note_invalidate(&conn, "c2", "account", "tx-team").unwrap();
+        note_invalidate(&conn, "missing", "account", "tx-team").unwrap();
+
+        let rows: Vec<(String, String, String, String)> = conn
+            .prepare("SELECT session, card, kind, tree FROM invalidate_fact")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 1, "a chat card and a missing card record nothing");
+        assert_eq!(rows[0], ("s1".into(), "c1".into(), "account".into(), "C:/x".into()));
     }
 
     /* ── overlap (§3.9) ───────────────────────────────────────────────────── */

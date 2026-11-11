@@ -406,6 +406,19 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Every transcript on this machine, for the one-off invalidation backfill.
+///
+/// `docs/ANALYTICS.md` §3.9's walk reads files the collector has already
+/// passed and files it never will, so it asks for the whole tree rather than
+/// for the window. The listing is cheap (a directory walk and a `stat` each)
+/// and the backfill bounds how many of them it opens in one pass.
+pub(crate) fn transcript_paths(app: &AppHandle) -> Vec<PathBuf> {
+    let Ok(home) = app.path().home_dir() else {
+        return Vec::new();
+    };
+    transcripts(&home.join(".claude").join("projects"))
+}
+
 /// Bring the ledger up to date and hand back everything inside the window.
 ///
 /// Cheap to call often, which is the point: the first pass after launch reads a

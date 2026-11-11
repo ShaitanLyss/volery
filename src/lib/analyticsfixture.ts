@@ -18,6 +18,7 @@ import type { AnalyticsWindow, WindowRequest } from "./analyticsroom";
 import type { Fact, HourFact, UsageRow } from "./analytics";
 import type {
   CardSpendRow,
+  InvalidateRow,
   PairOverlap,
   WorkBundle,
   WorkHourRow,
@@ -330,6 +331,7 @@ export function fixtureWork(req: WindowRequest, mode: FixtureMode = "normal"): W
       rows: [],
       series: { hourly: [], spend: [], sessions: [] },
       overlaps: [],
+      invalidations: [],
     };
   }
 
@@ -508,10 +510,122 @@ export function fixtureWork(req: WindowRequest, mode: FixtureMode = "normal"): W
     },
   ];
 
+  /* The invalidation half (§3.9), with the holes a review needs to see:
+   *
+   *  - a **churn run** of three writes to one `CLAUDE.md` in eight minutes,
+   *    priced once, after the last write, with two paying cards;
+   *  - a **rule** write whose excess measured at nothing, drawn as $0 rather
+   *    than as unmeasured;
+   *  - an instruction write nobody could measure, which must read *unmeasured*
+   *    and never zero;
+   *  - an account, a provider and a model move, each its own episode.
+   */
+  const inv: InvalidateRow[] = [];
+  const tree = (name: string) => `C:/workbench/${name}`;
+  const write = (at: number, card: string, session: string, kind: "instructions" | "rule", ref: string, affected: number) =>
+    inv.push({
+      at,
+      host: "here",
+      session,
+      card,
+      kind,
+      ref,
+      tree: tree(card || "volery"),
+      affected,
+      tokens: 0,
+      inTokens: 0,
+      model: "",
+      usd: 0,
+      provenance: "receipt",
+    });
+  const paid = (at: number, card: string, session: string, kind: string, ref: string, tokens: number, inTokens = 0) =>
+    inv.push({
+      at,
+      host: "here",
+      session,
+      card,
+      kind,
+      ref,
+      tree: tree(kind === "instructions" || kind === "rule" ? "volery" : card),
+      affected: 0,
+      tokens,
+      inTokens,
+      model: "claude-opus-5-5",
+      usd: 0,
+      provenance: "attributed",
+    });
+
+  /* The churn run: three writes, eight minutes apart at most, one episode. */
+  const churn = at(0.3);
+  write(churn, "volery", "s-volery", "instructions", "C:/x/CLAUDE.md", 2);
+  write(churn + 3 * MINUTE, "volery", "s-volery", "instructions", "C:/x/CLAUDE.md", 2);
+  write(churn + 8 * MINUTE, "volery", "s-volery", "instructions", "C:/x/CLAUDE.md", 2);
+  paid(churn + 8 * MINUTE, "nova", "s-nova", "instructions", "C:/x/CLAUDE.md", 64_000);
+  /* The other bucket: a resumed card reads the file as fresh input, which is
+     what `tools/probe-invalidate.ts` measured on this machine. */
+  paid(churn + 8 * MINUTE, "rise", "s-rise", "instructions", "C:/x/CLAUDE.md", 0, 38_000);
+
+  /* A rule write, measured and free. */
+  const rule = at(0.48);
+  write(rule, "volery", "s-volery", "rule", "C:/x/.claude/rules/analytics.md", 1);
+  paid(rule, "nova", "s-nova", "rule", "C:/x/.claude/rules/analytics.md", 0);
+
+  /* An instruction write on a tree where nobody's next request was seen. */
+  write(at(0.66), "rise", "s-rise", "instructions", "C:/x/rise/AGENTS.md", 1);
+
+  /* The moves, which the strip marks and the summary counts. */
+  inv.push({
+    at: at(0.18),
+    host: "here",
+    session: "s-volery",
+    card: "volery",
+    kind: "account",
+    ref: "tx-team",
+    tree: tree("volery"),
+    affected: 3,
+    tokens: 0,
+    inTokens: 0,
+    model: "",
+    usd: 0,
+    provenance: "receipt",
+  });
+  paid(at(0.18), "volery", "s-volery", "account", "tx-team", 22_000);
+  inv.push({
+    at: at(0.4),
+    host: "here",
+    session: "s-nova",
+    card: "nova",
+    kind: "provider",
+    ref: "deepseek",
+    tree: tree("nova"),
+    affected: 2,
+    tokens: 0,
+    inTokens: 0,
+    model: "",
+    usd: 0,
+    provenance: "receipt",
+  });
+  inv.push({
+    at: at(0.6),
+    host: "here",
+    session: "s-atlas",
+    card: "atlas",
+    kind: "model",
+    ref: "claude-haiku-4-5",
+    tree: tree("atlas"),
+    affected: 1,
+    tokens: 0,
+    inTokens: 0,
+    model: "",
+    usd: 0,
+    provenance: "receipt",
+  });
+
   return {
     rows,
     series: { hourly: [...hourlyMap.values()], spend, sessions },
     overlaps,
+    invalidations: inv.sort((a, b) => a.at - b.at || a.provenance.localeCompare(b.provenance)),
   };
 }
 

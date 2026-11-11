@@ -61,6 +61,50 @@ pub(crate) const FINE_KEEP_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 /// third of a percent in twenty seconds, and the fine grain is five minutes.
 const BEAT_EVERY: Duration = Duration::from_secs(60);
 
+/// How close two writes to one path must be to be one churn episode (§3.9).
+///
+/// **A churn episode is a run, not a write.** Three edits to `CLAUDE.md` in ten
+/// minutes is one episode and its cost is the excess after the last write,
+/// because the earlier ones were overwritten before anybody read them. Ten
+/// minutes is the same span a conflict episode is measured over, so the two
+/// readings on the coordination strip are cut at one scale.
+pub(crate) const CHURN_GAP_MS: i64 = 10 * 60 * 1000;
+
+/// How long attribution waits for the paying card to take its next request, and
+/// how far back the fold re-reads events.
+///
+/// **The wait is thirty minutes** (§3.9): a card with no request in that span
+/// leaves the event unmeasured rather than priced at nothing. **The lookback is
+/// six hours**, so an event is revisited many times while its payers' requests
+/// land and the median settles; an event that aged out unmeasured stays that
+/// way, which is the honest reading and not a hole.
+pub(crate) const ATTRIBUTE_WAIT_MS: i64 = 30 * 60 * 1000;
+const ATTRIBUTE_LOOKBACK_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// How many requests before an event the median is taken over, and the fewest
+/// that add up to a measurement (§3.9).
+pub(crate) const MEDIAN_REQUESTS: usize = 20;
+pub(crate) const MEDIAN_FLOOR: usize = 5;
+
+/// The backfill's bound per pass: files and bytes.
+///
+/// The one-off walk reads every transcript from the beginning, because those
+/// files are on the CLI's own deletion clock. It is bounded per pass rather
+/// than one long read: the collector's beat is a minute, and a wall that spent
+/// that minute walking a year of transcripts would answer no card meanwhile.
+const BACKFILL_FILES: usize = 12;
+const BACKFILL_BYTES: u64 = 64 * 1024 * 1024;
+/// A transcript larger than this is not read by the backfill at all. The
+/// measured maximum on this machine is ~11 MB; this is a refusal with a number
+/// beside it rather than a silent hole, and it is counted in the log line.
+const BACKFILL_FILE_CAP: u64 = 128 * 1024 * 1024;
+
+/// The cap on a path stored as an invalidation's `ref`. It is a label, not a
+/// document: the path is also the whole of what makes one event different from
+/// another, so it is clipped with `preview` (an ellipsis, no marker) rather
+/// than `keep`.
+pub(crate) const MAX_INVALIDATE_REF: usize = 400;
+
 /// How many requests one store transaction carries.
 ///
 /// **The mutex is the reason this exists.** Every command that touches the store
@@ -203,6 +247,26 @@ pub(crate) struct Receipt {
     pub(crate) conflict_files: i64,
 }
 
+/// One write to an instruction file, read off a `tool_use` block (§3.9).
+///
+/// **Only the path is kept, and only for a file that governs an agent's
+/// reading.** The content of a `Write` is the largest part of its input and
+/// nothing here reads it: what crosses is that a path was written at an
+/// instant, by a session, which is the whole of an invalidation fact.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InstructionWrite {
+    pub(crate) at: i64,
+    pub(crate) session: String,
+    /// The `tool_use` id, so a re-read of a replaced transcript is recognised.
+    pub(crate) tool_use_id: String,
+    /// The working directory the record carried, for a session with no card.
+    pub(crate) cwd: String,
+    /// The path as the tool named it, forward slashes, already clipped.
+    pub(crate) path: String,
+    /// `instructions` or `rule`.
+    pub(crate) kind: &'static str,
+}
+
 /// One pass's worth of readings, filled by the walk and written afterwards.
 ///
 /// The batch is why the store lock is not held across file IO: the walk appends
@@ -234,6 +298,13 @@ pub(crate) struct Batch {
     /// Work receipts parsed off a result: a commit, a push, a conflict. These
     /// are facts of their own and are written in the same pass (§3.9).
     receipts: Vec<Receipt>,
+    /// Writes to an instruction file, from a `tool_use` block (§3.9). Kept
+    /// apart from `calls` because a call is a shape and this is an event with a
+    /// path; the two are read from the same line and neither needs the other.
+    writes: Vec<InstructionWrite>,
+    /// Write ids already taken this pass, for the replaced-file reason
+    /// `call_ids` exists.
+    write_ids: HashSet<String>,
     /// Tool-use ids already taken this pass, for the replaced-file reason
     /// `keys` and `prompt_ids` exist.
     call_ids: HashSet<String>,
@@ -416,6 +487,21 @@ impl Reading {
                     continue;
                 }
                 self.batch.calls.push(call);
+            }
+            /* The invalidation half of the same record (§3.9). A write to an
+               instruction file is an event, and it is read here rather than off
+               a result because a result names no path: `toolUseResult` carries
+               what the call did, not what it was pointed at. */
+            for write in parse_writes(line) {
+                if write.at < self.cutoff || write.session.is_empty() {
+                    continue;
+                }
+                if !write.tool_use_id.is_empty()
+                    && !self.batch.write_ids.insert(write.tool_use_id.clone())
+                {
+                    continue;
+                }
+                self.batch.writes.push(write);
             }
         } else if line.contains("\"tool_result\"") {
             for parsed in parse_tool_result(line) {
@@ -877,6 +963,150 @@ pub(crate) fn classify_tool(name: &str, input: Option<&serde_json::Value>) -> To
         requested_model: String::new(),
         receipt: background || name == "Monitor" || name == "Workflow",
     }
+}
+
+/// The tools whose input names a file that is written. `NotebookEdit` is here
+/// because a notebook is a governed file like any other; `Bash` is not, because
+/// a shell line that writes `CLAUDE.md` through a redirection is a guess rather
+/// than a path, and an invalidation fact may not be invented.
+pub(crate) const WRITE_TOOLS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
+
+/// The path a write tool's input names, or `None` for an input that names none.
+///
+/// **Read out of the input, never built.** `file_path` is what `Write` and
+/// `Edit` carry; `NotebookEdit` spells the same thing `notebook_path`, and
+/// `path` is the fallback for a shape this build has not seen. A write with no
+/// path is recorded as nothing at all, which is the guard the suite holds.
+pub(crate) fn write_path(input: Option<&serde_json::Value>) -> Option<String> {
+    let pick = |k: &str| {
+        input
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    pick("file_path")
+        .or_else(|| pick("notebook_path"))
+        .or_else(|| pick("path"))
+        .map(|p| p.replace('\\', "/"))
+}
+
+/// What an instruction file is called (§3.9).
+///
+/// **A rule wins over an instruction**, because a file under `.claude/rules/`
+/// is read only when a governed path is opened whatever it is named, and
+/// calling it an instruction would overstate what it costs.
+///
+/// The comparison is case-insensitive because this is a Windows-first wall and
+/// `claude.md` is the same file as `CLAUDE.md` there; on a case-sensitive disk
+/// it is a name the CLI would not read either, so the false positive costs a
+/// row and never a wrong one about a file anybody reads.
+pub(crate) fn instruction_kind(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("/.claude/rules/") || lower.starts_with(".claude/rules/") {
+        return Some("rule");
+    }
+    let name = lower.rsplit(['/', '\\']).next().unwrap_or("");
+    if name == "claude.md" || name == "agents.md" {
+        return Some("instructions");
+    }
+    None
+}
+
+/// The episode a write belongs to (§3.9): the path for an instruction file,
+/// the rules directory for a rule, and the reference itself for a switch.
+///
+/// **A rule's key is its directory, not its file.** Every rule under one
+/// `.claude/rules/` is a change to the same reading, so six edits across three
+/// rule files in ten minutes is one churn episode rather than six events no
+/// reader can act on. The same function exists in `analyticswork.ts`, and the
+/// two are held together by the fixture and the suite rather than by a shared
+/// constant, because one is Rust and one is TypeScript.
+pub(crate) fn invalidate_key(kind: &str, reference: &str) -> String {
+    if kind != "rule" {
+        return reference.to_string();
+    }
+    let lower = reference.to_ascii_lowercase();
+    /* The needle with a leading slash starts one character before the segment,
+       so its cut lands one later than the bare one. Getting this wrong answers
+       `…/.claude/rule`, which groups nothing with anything. */
+    if let Some(at) = lower.find("/.claude/rules/") {
+        return reference[..at + 1 + ".claude/rules".len()].to_string();
+    }
+    match lower.find(".claude/rules/") {
+        Some(at) => reference[..at + ".claude/rules".len()].to_string(),
+        None => reference.to_string(),
+    }
+}
+
+/// One `tool_use` block that wrote a file governing an agent's reading.
+///
+/// The cheap gate is two conditions rather than one: most assistant records
+/// carry a call, and only a handful of names can make an invalidation fact.
+/// Parsing those and only those is what keeps this from being a second full
+/// parse of every record the pass already paid for.
+pub(crate) fn parse_writes(line: &str) -> Vec<InstructionWrite> {
+    if !line.contains("tool_use") {
+        return Vec::new();
+    }
+    /* Literal needles rather than a `format!` per tool per line: the backfill
+       runs this over every transcript on the machine, and a write tool's name
+       in the CLI's compact JSON is a constant. */
+    let named = line.contains("\"name\":\"Write\"")
+        || line.contains("\"name\":\"Edit\"")
+        || line.contains("\"name\":\"MultiEdit\"")
+        || line.contains("\"name\":\"NotebookEdit\"");
+    if !named || !line.contains("\"type\":\"assistant\"") {
+        return Vec::new();
+    }
+    let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    if rec.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+        return Vec::new();
+    }
+    let Some(at) = rec
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(epoch_ms)
+    else {
+        return Vec::new();
+    };
+    let session = rec.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let cwd = rec.get("cwd").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let Some(blocks) = rec
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for block in blocks {
+        if block.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+            continue;
+        }
+        let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if !WRITE_TOOLS.contains(&name) {
+            continue;
+        }
+        let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let Some(path) = write_path(block.get("input")) else {
+            continue;
+        };
+        let Some(kind) = instruction_kind(&path) else {
+            continue;
+        };
+        out.push(InstructionWrite {
+            at,
+            session: session.clone(),
+            tool_use_id: id,
+            cwd: cwd.clone(),
+            path: crate::clip::preview(&path, MAX_INVALIDATE_REF),
+            kind,
+        });
+    }
+    out
 }
 
 /// A `tool_use` record's timestamp, session and agent, and its calls.
@@ -1516,6 +1746,136 @@ struct Card {
     /// §4.1 makes the provider's source for a session with no turn covering a
     /// request. Empty for a card on the CLI's own sign-in.
     label: String,
+    /// The territory the card was opened in, and the worktree group it works in
+    /// when it has one. Both are needed for `tree`, which is the directory the
+    /// agent actually stands in and therefore the scope of an invalidation.
+    cwd: String,
+    worktree: String,
+    /// `conversation.kind == "chat"`. A chat card can write no file, and is
+    /// excluded from every invalidation reading rather than counted as a card
+    /// in a tree of its own.
+    chat: bool,
+}
+
+impl Card {
+    /// The directory the agent stands in: the territory for a card in the
+    /// shared checkout, `worktree::run_dir` for one in a group.
+    ///
+    /// **Forward slashes, so `tree` and a write's `ref` agree.** The value is
+    /// compared for equality against another session's tree, and two spellings
+    /// of one directory would make two cards in one tree look like two trees.
+    fn tree(&self) -> String {
+        crate::worktree::run_dir(&self.cwd, Some(self.worktree.as_str()))
+            .replace('\\', "/")
+    }
+}
+
+/// The same answer for a session with no card: the directory the transcript
+/// recorded. Empty when the record carried none, which is a fact with no tree
+/// rather than a guess at one.
+fn tree_of(cwd: &str) -> String {
+    cwd.trim().replace('\\', "/")
+}
+
+/// A move of account, provider or model inside one session (§3.9).
+struct Switch {
+    at: i64,
+    session: String,
+    card: String,
+    tree: String,
+    kind: &'static str,
+    reference: String,
+}
+
+/// Whether two readings of one dimension are a move.
+///
+/// **`unknown` is not a value and a first sighting is not a move.** A session
+/// whose earlier requests were funded by no turn has `unknown` on the row, and
+/// the first turn label would otherwise be recorded as a switch that never
+/// happened. An empty side is the same absence.
+fn moved(prev: &str, next: &str) -> bool {
+    let (a, b) = (prev.trim(), next.trim());
+    !a.is_empty() && !b.is_empty() && a != "unknown" && b != "unknown" && a != b
+}
+
+/// `classify.ts::sameModel`, in Rust: the window tier is a suffix, not a model.
+///
+/// A `system/init` id can carry `[1m]` and every per-message id is bare, so the
+/// same model arrives spelled two ways and must never be recorded as a move.
+pub(crate) fn same_model(a: &str, b: &str) -> bool {
+    fn base(m: &str) -> String {
+        let m = m.trim();
+        /* `baseModel`'s suffix, end-anchored: only a bracket at the end is the
+           window tier, so an id carrying one in the middle keeps it. */
+        let m = if m.ends_with(']') {
+            match m.rfind('[') {
+                Some(at) => &m[..at],
+                None => m,
+            }
+        } else {
+            m
+        };
+        m.strip_suffix("-1m").unwrap_or(m).trim().to_string()
+    }
+    let x = base(a);
+    !x.is_empty() && x == base(b)
+}
+
+/// Whether this session's move is already a fact.
+///
+/// A move Volery made is written the moment it happens (`store::note_invalidate`),
+/// and the first request that shows it must not write a second row for the same
+/// cache. A switch the wall did not make has no such row, so the ingest is what
+/// records it. Ten minutes is the churn gap: a card that genuinely moved twice
+/// inside it is one episode of churn rather than two events.
+fn switch_seen(conn: &Connection, host: &str, session: &str, at: i64) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM invalidate_fact
+          WHERE host = ?1 AND session = ?2 AND provenance = 'receipt'
+            AND kind IN ('account', 'provider', 'model')
+            AND at >= ?3 AND at <= ?4",
+        params![host, session, at - CHURN_GAP_MS, at + CHURN_GAP_MS],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .map_err(|e| format!("analytics: switch: {e}"))
+}
+
+/// The model this session's own thread was on before `before`, if the store
+/// still holds a request for it.
+///
+/// **The card's thread, not a subagent's.** A subagent may run a requested
+/// model of its own, and reading that as the card's would invent a switch every
+/// time one was opened.
+fn prior_model(conn: &Connection, session: &str, host: &str, before: i64) -> Result<String, String> {
+    conn.query_row(
+        "SELECT model FROM usage_fact
+          WHERE session = ?1 AND host = ?2 AND agent = '' AND at < ?3
+          ORDER BY at DESC LIMIT 1",
+        params![session, host, before],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map(|r| r.unwrap_or_default())
+    .map_err(|e| format!("analytics: prior model: {e}"))
+}
+
+/// The cards working at one instant, for a switch's `affected` (§3.9).
+///
+/// **A switch is a timing reading, not a payer count.** What it invalidates is
+/// the moved card's cache; what `affected` says is how many cards were mid-turn
+/// when it happened, because a switch during other cards' work invalidates the
+/// turn that is running as well as the next one. That is why the moved card is
+/// counted too.
+fn working_at(conn: &Connection, host: &str, at: i64) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM analytics_session s
+          WHERE s.host = ?1 AND s.card_id IS NOT NULL
+            AND s.started_at <= ?2 AND (s.ended_at IS NULL OR s.ended_at >= ?2)",
+        params![host, at],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
 }
 
 /// What one write did, for the report and the log line.
@@ -1546,6 +1906,14 @@ struct Counts {
     /// Commits the history observer wrote, and the ones it skipped because a
     /// receipt already held them.
     history: i64,
+    /// Invalidation events written, and attributed rows (§3.9). Apart from the
+    /// events, because one event can produce a row per paying card and the two
+    /// are the halves a reader may never add together.
+    invalidations: i64,
+    attributed: i64,
+    /// Transcripts the one-off walk read, and those too large to read.
+    walked: i64,
+    unreadable: i64,
 }
 
 impl Counts {
@@ -1570,6 +1938,10 @@ impl Counts {
         self.folds += other.folds;
         self.no_turn += other.no_turn;
         self.history += other.history;
+        self.invalidations += other.invalidations;
+        self.attributed += other.attributed;
+        self.walked += other.walked;
+        self.unreadable += other.unreadable;
     }
 }
 
@@ -1612,6 +1984,12 @@ pub struct Report {
     pub folds: i64,
     pub no_turn: i64,
     pub history: i64,
+    /// Invalidation events and attributed rows written (§3.9), and the
+    /// transcripts the one-off walk read or refused this pass.
+    pub invalidations: i64,
+    pub attributed: i64,
+    pub walked: i64,
+    pub unreadable: i64,
     pub refused: i64,
     pub ms: u64,
 }
@@ -1670,6 +2048,10 @@ fn write_chunk(
     let mut facts: HashMap<FactKey, (Sums, String)> = HashMap::new();
     let mut hours: HashMap<HourKey, Sums> = HashMap::new();
     let mut session_rows: Vec<SessionWrite> = Vec::new();
+    /* §3.9's moves, written in this transaction with the facts they belong
+       beside: a switch is exact, and a row that landed a pass late would be a
+       fact about the wall nobody was on any more. */
+    let mut switches: Vec<Switch> = Vec::new();
 
     let mut sessions: Vec<(String, Vec<Record>)> = by_session.into_iter().collect();
     /* Sorted so a run over one wall writes its rows in the same order twice,
@@ -1688,6 +2070,20 @@ fn write_chunk(
             .filter(|i| !i.is_empty())
             .or_else(|| prior.identity.get(&session).cloned().flatten());
         let card = card_for(&tx, &session);
+        /* **The row before this batch is read here, not after the fold.** §3.9
+           detects a switch by comparing consecutive requests, and that needs
+           the state the session was in when the batch arrived. Read after the
+           fold, `account_last` would already be the batch's own last request
+           and no move could ever be seen. */
+        let old = session_old(&tx, &session, host)?;
+        let mut prev_account = old.as_ref().map(|o| o.account_last.clone()).unwrap_or_default();
+        let mut prev_provider = old.as_ref().map(|o| o.provider_last.clone()).unwrap_or_default();
+        let mut prev_model = prior_model(&tx, &session, host, first)?;
+        /* A chat card records nothing (§3.9): it can write no instruction file,
+           and its territory is the shared chat home, where every chat card
+           would count as affected by every other. */
+        let chat = card.as_ref().is_some_and(|c| c.chat);
+        let tree = card.as_ref().map(Card::tree).unwrap_or_default();
 
         /* One lookup per *identity*, once: a session's turns all carry the same
            identity, and running the query per span would be one round trip per
@@ -1728,6 +2124,56 @@ fn write_chunk(
                 &labels,
                 card.as_ref().map(|c| c.label.as_str()),
             );
+            /* §3.9's moves, on a transition only: an account, provider or model
+               that differs from the request before it retired a cache, and the
+               first request that shows the new one is where the fact belongs.
+               The tier-bearing id versus its bare form is the same model and is
+               deliberately not a move (`classify.ts::sameModel`).
+
+               **One row per move, not one per dimension.** A provider switch
+               changes the account label and the model as well, and they all
+               retire the same cache; three rows would be one cost counted three
+               times. The order is provider, account, model, and when one fires
+               the others at that instant are the same move. A move Volery
+               itself made has already written its row (`store::note_invalidate`)
+               and the lookback below is what stops this arm writing it again. */
+            if !chat {
+                let mut fired = false;
+                for (kind, prev, next) in [
+                    ("provider", prev_provider.clone(), funding.provider.clone()),
+                    ("account", prev_account.clone(), funding.account.clone()),
+                ] {
+                    if !fired && moved(&prev, &next) && !switch_seen(&tx, host, &session, rec.at)? {
+                        switches.push(Switch {
+                            at: rec.at,
+                            session: session.clone(),
+                            card: card.as_ref().map(|c| c.id.clone()).unwrap_or_default(),
+                            tree: tree.clone(),
+                            kind,
+                            reference: next,
+                        });
+                        fired = true;
+                    }
+                }
+                if !fired
+                    && !prev_model.is_empty()
+                    && !rec.model.is_empty()
+                    && !same_model(&prev_model, &rec.model)
+                    && !switch_seen(&tx, host, &session, rec.at)?
+                {
+                    switches.push(Switch {
+                        at: rec.at,
+                        session: session.clone(),
+                        card: card.as_ref().map(|c| c.id.clone()).unwrap_or_default(),
+                        tree: tree.clone(),
+                        kind: "model",
+                        reference: rec.model.clone(),
+                    });
+                }
+                prev_account = funding.account.clone();
+                prev_provider = funding.provider.clone();
+                prev_model = rec.model.clone();
+            }
             /* What an earlier pass proved about this agent, read once for the
                whole pass rather than once per chunk: a chunk that read it late
                would see the rows an earlier chunk had just written and fund the
@@ -1831,7 +2277,6 @@ fn write_chunk(
             .map(|c| c.branch.clone())
             .unwrap_or_default();
 
-        let old = session_old(&tx, &session, host)?;
         let turns = turns_for(&tx, &session)?;
         let row = merge_session(&session, host, old, &now_row, card.as_ref(), turns);
         session_rows.push(row);
@@ -1968,6 +2413,11 @@ fn write_chunk(
         }
     }
     counts.sessions = session_rows.len() as i64;
+
+    /* 7. The moves, after the session rows so `affected` counts this session
+          too: a switch is a fact about how many cards were working, and the
+          card that moved is one of them. */
+    counts.invalidations += write_switches(&tx, host, &switches)?;
 
     tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
     Ok(counts)
@@ -2551,6 +3001,464 @@ fn write_receipts(conn: &mut Connection, host: &str, receipts: &[Receipt]) -> Re
     drop(fact);
     drop(hour);
     tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(counts)
+}
+
+/* ── invalidation: the event and the excess (§3.9) ───────────────────────── */
+
+/// One instruction write as a row, with its tree and the cards that pay for it.
+///
+/// `INSERT OR IGNORE` is the whole idempotence story: a transcript re-read from
+/// zero offers the same write again, and `(at, host, session, card, kind, ref,
+/// tree, provenance)` is the same key. The backfill and the live pass can touch
+/// the same write and the row is written once.
+fn write_writes(conn: &Connection, host: &str, writes: &[InstructionWrite]) -> Result<i64, String> {
+    if writes.is_empty() {
+        return Ok(0);
+    }
+    let mut cards: HashMap<String, Option<Card>> = HashMap::new();
+    let mut sql = conn
+        .prepare(
+            "INSERT OR IGNORE INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'receipt')",
+        )
+        .map_err(|e| format!("analytics: invalidate: {e}"))?;
+    let mut written = 0;
+    for w in writes {
+        let card = cards
+            .entry(w.session.clone())
+            .or_insert_with(|| card_for(conn, &w.session));
+        if card.as_ref().is_some_and(|c| c.chat) {
+            continue;
+        }
+        let tree = card
+            .as_ref()
+            .map(Card::tree)
+            .unwrap_or_else(|| tree_of(&w.cwd));
+        let card_id = card.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+        /* The episode this write opens, as far as it is knowable at the write:
+           ten minutes on from it. A later write extends the episode, and the
+           reading takes the episode's `affected` from its first row, whose
+           window contains the whole run. */
+        let affected =
+            sessions_sharing(conn, host, &tree, &w.session, w.at, w.at + CHURN_GAP_MS)?.len() as i64;
+        written += sql
+            .execute(params![
+                w.at,
+                host,
+                w.session,
+                card_id,
+                w.kind,
+                w.path,
+                tree,
+                affected
+            ])
+            .map_err(|e| format!("analytics: invalidate: {e}"))? as i64;
+    }
+    Ok(written)
+}
+
+/// A move of account, provider or model as a row (§3.9).
+///
+/// Written in the same transaction as the facts it was detected beside, and
+/// again idempotent by key. `affected` is the timing reading: the cards working
+/// at that instant, this one included.
+fn write_switches(conn: &Connection, host: &str, switches: &[Switch]) -> Result<i64, String> {
+    if switches.is_empty() {
+        return Ok(0);
+    }
+    let mut sql = conn
+        .prepare(
+            "INSERT OR IGNORE INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'receipt')",
+        )
+        .map_err(|e| format!("analytics: invalidate: {e}"))?;
+    let mut written = 0;
+    for s in switches {
+        let reference = crate::clip::preview(&s.reference, MAX_INVALIDATE_REF);
+        let affected = working_at(conn, host, s.at);
+        written += sql
+            .execute(params![
+                s.at,
+                host,
+                s.session,
+                s.card,
+                s.kind,
+                reference,
+                s.tree,
+                affected
+            ])
+            .map_err(|e| format!("analytics: invalidate: {e}"))? as i64;
+    }
+    Ok(written)
+}
+
+/// The last request before an event and the ones around it, for §3.9's excess.
+///
+/// **The grain is the five-minute fact row**, because that is the finest thing
+/// the store holds: a "request" here is one row's tokens divided by its request
+/// count, which is the card's typical cache write per request. The first row
+/// wholly after the event is the row at or after its instant — a bucket that
+/// began before the event mixes pre-event requests into the write and would
+/// overstate the excess.
+fn measure_excess(
+    conn: &Connection,
+    session: &str,
+    host: &str,
+    at: i64,
+) -> Result<Option<(String, i64, i64)>, String> {
+    let first: Option<(String, i64, i64, i64)> = conn
+        .query_row(
+            "SELECT model, write_5m + write_1h, in_tok, requests FROM usage_fact
+              WHERE session = ?1 AND host = ?2 AND agent = '' AND requests > 0
+                AND at >= ?3 AND at <= ?4
+              ORDER BY at ASC LIMIT 1",
+            params![session, host, at, at + ATTRIBUTE_WAIT_MS],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| format!("analytics: attribute: {e}"))?;
+    let Some((model, write, input, requests)) = first else {
+        /* No request within the wait: unmeasured, which is not the same as
+           free and is why no row is written. */
+        return Ok(None);
+    };
+    if requests <= 0 {
+        return Ok(None);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT write_5m + write_1h, in_tok, requests FROM usage_fact
+              WHERE session = ?1 AND host = ?2 AND agent = '' AND requests > 0 AND at < ?3
+              ORDER BY at DESC LIMIT ?4",
+        )
+        .map_err(|e| format!("analytics: attribute: {e}"))?;
+    let mut recent: Vec<(f64, f64)> = stmt
+        .query_map(params![session, host, at, MEDIAN_REQUESTS as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("analytics: attribute: {e}"))?
+        .filter_map(Result::ok)
+        .filter(|(_, _, n)| *n > 0)
+        .map(|(w, i, n)| (w as f64 / n as f64, i as f64 / n as f64))
+        .collect();
+    drop(stmt);
+    if recent.len() < MEDIAN_FLOOR {
+        return Ok(None);
+    }
+    /* A median per bucket rather than one over their sum: the two are billed at
+       different rates, and a request whose cache write fell while its fresh
+       input rose is not evidence of a re-read. Sorting by the bucket's own
+       value and taking the middle is what §3.9 means by *that card's median*. */
+    let median = |pick: fn(&(f64, f64)) -> f64| {
+        let mut values: Vec<f64> = recent.iter().map(pick).collect();
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = values.len() / 2;
+        if values.len() % 2 == 0 {
+            (values[mid - 1] + values[mid]) / 2.0
+        } else {
+            values[mid]
+        }
+    };
+    let write_excess = (write as f64 / requests as f64) - median(|v| v.0);
+    let input_excess = (input as f64 / requests as f64) - median(|v| v.1);
+    Ok(Some((
+        model,
+        write_excess.max(0.0).round() as i64,
+        input_excess.max(0.0).round() as i64,
+    )))
+}
+
+/// One event's attributed excess, written as a second row at the same key.
+struct Event {
+    at: i64,
+    session: String,
+    card: String,
+    kind: String,
+    reference: String,
+    tree: String,
+    /// The run of writes this event closes, for an instruction or a rule.
+    start: i64,
+    end: i64,
+}
+
+/// Attribute the excess to the cards that paid it (§3.9).
+///
+/// **The event is exact and the cost is an inference, and the two are different
+/// rows.** Every receipt row in the lookback window is grouped into its churn
+/// episode; only the episode's *last* write is priced, because the earlier ones
+/// were overwritten before anybody read them. For each payer — the other card
+/// sessions that overlapped the episode, or the moved card itself for a switch
+/// — the first request after the event is compared with that card's own median
+/// cache write, and the excess is stored in cache-write tokens. Rust never
+/// prices (`usage.rs`'s rule); the front end does, through the one rate table.
+///
+/// Re-running is safe and intended: the same inputs write the same row, and an
+/// event revisited as its payers' requests land moves from unmeasured to
+/// measured without a second event.
+fn attribute(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Counts, String> {
+    let mut counts = Counts::default();
+    let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+    let from = now - ATTRIBUTE_LOOKBACK_MS;
+    let upto = now - CHURN_GAP_MS;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT at, session, card, kind, ref, tree FROM invalidate_fact
+              WHERE host = ?1 AND provenance = 'receipt' AND at >= ?2 AND at <= ?3
+              ORDER BY at ASC, session ASC",
+        )
+        .map_err(|e| format!("analytics: attribute: {e}"))?;
+    let rows: Vec<(i64, String, String, String, String, String)> = stmt
+        .query_map(params![host, from, upto], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .map_err(|e| format!("analytics: attribute: {e}"))?
+        .filter_map(Result::ok)
+        .collect();
+    drop(stmt);
+
+    /* Group into episodes. A run of writes to one tree and one key within the
+       gap is one event; a switch is its own. */
+    let mut events: Vec<Event> = Vec::new();
+    let mut open: HashMap<(String, String), usize> = HashMap::new();
+    for (at, session, card, kind, reference, tree) in rows {
+        let key = invalidate_key(&kind, &reference);
+        let churn = kind == "instructions" || kind == "rule";
+        if churn {
+            if let Some(&i) = open.get(&(tree.clone(), key.clone())) {
+                if at >= events[i].start && at - events[i].end <= CHURN_GAP_MS {
+                    events[i].at = at;
+                    events[i].end = at;
+                    events[i].session = session;
+                    events[i].card = card;
+                    continue;
+                }
+            }
+        }
+        let i = events.len();
+        events.push(Event {
+            at,
+            session,
+            card,
+            kind: kind.clone(),
+            reference,
+            tree: tree.clone(),
+            start: at,
+            end: at,
+        });
+        if churn {
+            open.insert((tree, key), i);
+        }
+    }
+
+    let mut insert = conn
+        .prepare(
+            "INSERT OR REPLACE INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, tokens, in_tokens,
+                model, usd, provenance)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, 0, 'attributed')",
+        )
+        .map_err(|e| format!("analytics: attribute: {e}"))?;
+
+    for event in &events {
+        /* Who pays. A write is paid by the other cards in its tree that were
+           working through the episode; a switch by the card that moved. The
+           payer is a *session*, because that is the grain the request facts
+           are keyed by and one card can have had several. */
+        let payers: Vec<String> = if event.kind == "instructions" || event.kind == "rule" {
+            sessions_sharing(&conn, host, &event.tree, &event.session, event.start, event.end)?
+        } else if event.session.is_empty() {
+            Vec::new()
+        } else {
+            vec![event.session.clone()]
+        };
+
+        for session in payers {
+            let card = card_for(&conn, &session)
+                .map(|c| c.id)
+                .unwrap_or_else(|| {
+                    if session == event.session {
+                        event.card.clone()
+                    } else {
+                        String::new()
+                    }
+                });
+            let Some((model, tokens, in_tokens)) = measure_excess(&conn, &session, host, event.at)? else {
+                continue;
+            };
+            insert
+                .execute(params![
+                    event.at,
+                    host,
+                    session,
+                    card,
+                    event.kind,
+                    event.reference,
+                    event.tree,
+                    tokens,
+                    in_tokens,
+                    model
+                ])
+                .map_err(|e| format!("analytics: attribute: {e}"))?;
+            counts.attributed += 1;
+        }
+    }
+    Ok(counts)
+}
+
+/// The sessions — not the cards — that shared a tree through an episode.
+fn sessions_sharing(
+    conn: &Connection,
+    host: &str,
+    tree: &str,
+    writer: &str,
+    from: i64,
+    to: i64,
+) -> Result<Vec<String>, String> {
+    if tree.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.session FROM analytics_session s
+              WHERE s.host = ?1 AND s.session <> ?2
+                AND s.started_at <= ?3 AND (s.ended_at IS NULL OR s.ended_at >= ?4)
+              ORDER BY s.session",
+        )
+        .map_err(|e| format!("analytics: sharers: {e}"))?;
+    let sessions: Vec<String> = stmt
+        .query_map(params![host, writer, to, from], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("analytics: sharers: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: sharers: {e}"))?;
+    drop(stmt);
+    let mut out = Vec::new();
+    for session in sessions {
+        let Some(card) = card_for(conn, &session) else { continue };
+        if !card.chat && card.tree() == tree {
+            out.push(session);
+        }
+    }
+    Ok(out)
+}
+
+/// The one-off walk of every transcript, for the writes that happened before
+/// this feature shipped (§3.9).
+///
+/// **Transcripts are on a deletion clock and the store is not.** A `CLAUDE.md`
+/// written three months ago and since swept is an invalidation this wall paid
+/// for and would otherwise never know about, so this reads each file from its
+/// beginning once and marks it in `invalidate_walk`. It touches no offset in
+/// `usage_file` and writes no other fact: those offsets are the collector's, and
+/// a backfill that moved one would make every other reading skip bytes.
+///
+/// **Bounded per pass, on the existing beat.** Twelve files and sixty-four
+/// megabytes a minute is one minute's disk work rather than a launch-long
+/// stall; the mark means the work shrinks to nothing and never comes back. A
+/// file past the size cap is marked and counted rather than retried for ever —
+/// a hole with a number beside it is a reading, a silent skip is not.
+fn backfill(
+    conns: &Mutex<Connection>,
+    app: &AppHandle,
+    host: &str,
+    now: i64,
+) -> Result<Counts, String> {
+    backfill_paths(conns, host, now, crate::usage::transcript_paths(app))
+}
+
+/// The walk itself, over a list of transcripts, so a suite can hand it a
+/// temporary directory rather than this machine's history.
+fn backfill_paths(
+    conns: &Mutex<Connection>,
+    host: &str,
+    now: i64,
+    paths: Vec<PathBuf>,
+) -> Result<Counts, String> {
+    let mut counts = Counts::default();
+    let done: HashSet<String> = {
+        let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT path FROM invalidate_walk WHERE host = ?1")
+            .map_err(|e| format!("analytics: invalidate walk: {e}"))?;
+        let rows = stmt
+            .query_map([host], |r| r.get::<_, String>(0))
+            .map_err(|e| format!("analytics: invalidate walk: {e}"))?;
+        rows.filter_map(Result::ok).collect()
+    };
+
+    let mut bytes = 0u64;
+    for path in paths {
+        if counts.walked as usize >= BACKFILL_FILES || bytes >= BACKFILL_BYTES {
+            break;
+        }
+        let key = path.to_string_lossy().to_string();
+        if done.contains(&key) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        /* A file too large to read whole is marked rather than retried every
+           minute for the rest of the wall's life. */
+        if size > BACKFILL_FILE_CAP {
+            let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            conn.execute(
+                "INSERT OR REPLACE INTO invalidate_walk (path, host, size, mtime, done_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![key, host, size as i64, mtime, now],
+            )
+            .map_err(|e| format!("analytics: invalidate walk: {e}"))?;
+            counts.unreadable += 1;
+            continue;
+        }
+        let Ok(data) = std::fs::read(&path) else { continue };
+        let needle: &[u8] = b"\"tool_use\"";
+        let mut writes: Vec<InstructionWrite> = Vec::new();
+        for line in data.split(|b| *b == b'\n') {
+            if !line.windows(needle.len()).any(|w| w == needle) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(line);
+            writes.extend(parse_writes(&text));
+        }
+        bytes += size;
+        counts.walked += 1;
+
+        let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("analytics: begin: {e}"))?;
+        let written = write_writes(&tx, host, &writes)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO invalidate_walk (path, host, size, mtime, done_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![key, host, size as i64, mtime, now],
+        )
+        .map_err(|e| format!("analytics: invalidate walk: {e}"))?;
+        tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+        counts.invalidations += written;
+    }
     Ok(counts)
 }
 
@@ -3272,6 +4180,34 @@ fn write_tail(
         .map_err(|e| format!("analytics: prune work: {e}"))?;
     tx.execute("DELETE FROM analytics_fold WHERE at < ?1", [cutoff])
         .map_err(|e| format!("analytics: prune folds: {e}"))?;
+    /* The invalidation fine tier keeps the same ninety days. The walk mark is
+       not pruned on that clock: it is a fact about a file rather than about a
+       moment, and forgetting it would re-read an old transcript. It is pruned
+       to the files that still exist, under the same "a walk that could not
+       read the root reports nothing" guard the offsets use. */
+    tx.execute("DELETE FROM invalidate_fact WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune invalidation: {e}"))?;
+    if !alive.is_empty() {
+        let known: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT path FROM invalidate_walk")
+                .map_err(|e| format!("analytics: walk: {e}"))?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| format!("analytics: walk: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("analytics: walk: {e}"))?
+        };
+        let mut gone = tx
+            .prepare("DELETE FROM invalidate_walk WHERE path = ?1")
+            .map_err(|e| format!("analytics: walk: {e}"))?;
+        for path in known {
+            if !alive.contains(&path) {
+                gone.execute([&path])
+                    .map_err(|e| format!("analytics: walk: {e}"))?;
+            }
+        }
+    }
 
     tx.commit().map_err(|e| format!("analytics: commit: {e}"))
 }
@@ -3388,6 +4324,16 @@ fn flush(
             write_receipts(&mut conn, host, part)?
         };
         counts.add(written);
+    }
+    /* A write to an instruction file is an event, and it needs its tree and its
+       payers resolved against the session rows written a moment ago — which is
+       why it follows the requests rather than riding beside them. */
+    for part in batch.writes.chunks(chunk.max(1)) {
+        let written = {
+            let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            write_writes(&conn, host, part)?
+        };
+        counts.invalidations += written;
     }
     /* The offsets advance only once every chunk is durable, so an interrupted
        pass re-reads what it already wrote and `usage_seen` makes that a no-op. */
@@ -3532,15 +4478,26 @@ impl Prior {
 /// newest; the tie is not possible in practice and the order keeps the answer
 /// stable if it ever is.
 fn card_for(conn: &Connection, session: &str) -> Option<Card> {
-    let (id, project, branch, label): (String, String, String, String) = conn
+    let (id, project, branch, label, cwd, worktree, kind): (String, String, String, String, String, String, String) = conn
         .query_row(
             "SELECT c.id, COALESCE(p.name, ''), COALESCE(c.branch, ''),
-                    COALESCE(c.account_label, '')
+                    COALESCE(c.account_label, ''), COALESCE(c.cwd, ''),
+                    COALESCE(c.worktree, ''), COALESCE(c.kind, 'project')
                FROM conversation c LEFT JOIN project p ON p.id = c.project_id
               WHERE c.agent_session_id = ?1
               ORDER BY c.born_at DESC LIMIT 1",
             [session],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
         )
         .optional()
         .ok()
@@ -3559,6 +4516,9 @@ fn card_for(conn: &Connection, session: &str) -> Option<Card> {
         project,
         branch,
         label,
+        cwd,
+        worktree,
+        chat: kind == "chat",
     })
 }
 
@@ -3822,6 +4782,13 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
        still there rather than a turn folded around half a call. */
     counts.add(fold_tools(&store.0, &host, now)?);
 
+    /* §3.9's invalidation half. The walk is one-off and bounded per pass; the
+       attribution is a fold over the last few hours, re-run each pass so an
+       event its payers had not yet answered moves from unmeasured to measured.
+       Both are store-and-file work on this thread, never the main one. */
+    counts.add(backfill(&store.0, app, &host, now)?);
+    counts.add(attribute(&store.0, &host, now)?);
+
     /* The one reader that is not a fold (`docs/ANALYTICS.md` §3.9): a commit
        made in a terminal emits nothing this app can hear. Bounded by its own
        clock, because a `git log` per root per minute is three process spawns
@@ -3848,6 +4815,10 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
         folds: counts.folds,
         no_turn: counts.no_turn,
         history: counts.history,
+        invalidations: counts.invalidations,
+        attributed: counts.attributed,
+        walked: counts.walked,
+        unreadable: counts.unreadable,
         refused,
         ms: began.elapsed().as_millis() as u64,
     })
@@ -5111,6 +6082,94 @@ pub fn work_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<WorkRow>, 
         ));
     }
     Ok(rows)
+}
+
+/// One invalidation fact, as the work page reads it (§3.9).
+///
+/// **Two provenances, one event.** A `receipt` row is the write or the move; an
+/// `attributed` row is one paying card's excess at the same instant. The page
+/// counts events from receipts and sums dollars from attributed rows, and the
+/// two numbers are never added together (§9.1).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvalidateRow {
+    pub at: i64,
+    pub host: String,
+    pub session: String,
+    pub card: String,
+    pub kind: String,
+    pub r#ref: String,
+    pub tree: String,
+    pub affected: i64,
+    /// The attributed excess, in cache-write tokens. The front end prices it.
+    pub tokens: i64,
+    /// The same excess in fresh input tokens, where a restarted process's
+    /// re-read of the prefix lands on the CLI this was measured against.
+    pub in_tokens: i64,
+    /// The model the excess was written against, `''` on a receipt row.
+    pub model: String,
+    /// Dollars a writer that knows them stored. 0 on every row this build
+    /// writes, because Rust does not price.
+    pub usd: f64,
+    pub provenance: String,
+}
+
+pub const INVALIDATE_ROW_CAP: usize = 20_000;
+
+pub fn invalidate_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<InvalidateRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT at, host, session, card, kind, ref, tree, affected, tokens, in_tokens,
+                    model, usd, provenance
+               FROM invalidate_fact
+              WHERE at >= ?1 AND at < ?2
+              ORDER BY at, kind, ref, provenance
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: invalidate: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, INVALIDATE_ROW_CAP as i64 + 1], |r| {
+            Ok(InvalidateRow {
+                at: r.get(0)?,
+                host: r.get(1)?,
+                session: r.get(2)?,
+                card: r.get(3)?,
+                kind: r.get(4)?,
+                r#ref: r.get(5)?,
+                tree: r.get(6)?,
+                affected: r.get(7)?,
+                tokens: r.get(8)?,
+                in_tokens: r.get(9)?,
+                model: r.get(10)?,
+                usd: r.get(11)?,
+                provenance: r.get(12)?,
+            })
+        })
+        .map_err(|e| format!("analytics: invalidate: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: invalidate: {e}"))?;
+    if rows.len() > INVALIDATE_ROW_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {INVALIDATE_ROW_CAP} invalidation facts, so \
+             it is refused rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn invalidate_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<InvalidateRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        invalidate_rows(&conn, from, to)
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -7778,5 +8837,332 @@ mod tests {
             series.spend.iter().any(|r| r.card.is_empty()),
             "a fact no session claims is still spend, and is not given to a card"
         );
+    }
+
+    /* ── invalidation (§3.9; phase 6b) ────────────────────────────────────── */
+
+    #[test]
+    fn only_a_governing_file_is_an_instruction_write() {
+        let at = 1_786_601_268_000;
+        let claude = parse_writes(&call_line(
+            "w1",
+            at,
+            "s1",
+            "Write",
+            r#"{"file_path":"C:\\x\\CLAUDE.md","content":"x"}"#,
+        ));
+        assert_eq!(claude.len(), 1);
+        assert_eq!(claude[0].kind, "instructions");
+        assert_eq!(claude[0].path, "C:/x/CLAUDE.md", "the path is forward-slashed");
+
+        let rule = parse_writes(&call_line(
+            "w2",
+            at,
+            "s1",
+            "Edit",
+            r#"{"file_path":"C:\\x\\.claude\\rules\\style.md"}"#,
+        ));
+        assert_eq!(rule[0].kind, "rule");
+        assert_eq!(invalidate_key("rule", &rule[0].path), "C:/x/.claude/rules");
+
+        let agents = parse_writes(&call_line(
+            "w3",
+            at,
+            "s1",
+            "MultiEdit",
+            r#"{"file_path":"/repo/AGENTS.md","edits":[]}"#,
+        ));
+        assert_eq!(agents[0].kind, "instructions");
+
+        let notebook = parse_writes(&call_line(
+            "w4",
+            at,
+            "s1",
+            "NotebookEdit",
+            r#"{"notebook_path":"C:\\x\\CLAUDE.md","new_source":"x"}"#,
+        ));
+        assert_eq!(notebook.len(), 1, "a notebook edit names its path as notebook_path");
+
+        for (name, input) in [
+            ("Write", r#"{"file_path":"C:\\x\\src\\main.ts","content":"x"}"#),
+            /* A write with no path at all records nothing: an invalidation may
+               never invent the file it is about. */
+            ("Write", r#"{"content":"x"}"#),
+            ("Bash", r#"{"command":"echo x > CLAUDE.md"}"#),
+        ] {
+            assert!(
+                parse_writes(&call_line("w5", at, "s1", name, input)).is_empty(),
+                "{name} {input} is not an instruction write"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chat_card_records_no_instruction_write() {
+        let conn = db();
+        let id = seed(&conn, "s1");
+        conn.execute("UPDATE conversation SET kind = 'chat' WHERE id = ?1", [&id])
+            .unwrap();
+        let at = 1_786_601_268_000;
+        let batch = tool_batch(&[call_line(
+            "w1",
+            at,
+            "s1",
+            "Write",
+            r#"{"file_path":"C:\\x\\CLAUDE.md","content":"x"}"#,
+        )]);
+        let conns = Mutex::new(conn);
+        write(&conns, "here", &batch, at + 1).unwrap();
+        let conn = conns.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM invalidate_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "a chat card has no tree to invalidate");
+    }
+
+    #[test]
+    fn a_project_write_names_its_card_and_tree_and_counts_its_payers() {
+        let conn = db();
+        seed(&conn, "s1");
+        seed(&conn, "s2");
+        let at = 1_786_601_268_000;
+        /* Two sessions in one tree, both live at the instant of the write. */
+        for (session, card) in [("s1", "card-s1"), ("s2", "card-s2")] {
+            conn.execute(
+                "INSERT OR REPLACE INTO analytics_session
+                   (session, host, project, source, card_id, started_at, ended_at)
+                 VALUES (?1, 'here', 'volery', 'card', ?2, ?3, NULL)",
+                params![session, card, at - 60_000],
+            )
+            .unwrap();
+        }
+        let batch = tool_batch(&[call_line(
+            "w1",
+            at,
+            "s1",
+            "Write",
+            r#"{"file_path":"C:\\x\\CLAUDE.md","content":"x"}"#,
+        )]);
+        let conns = Mutex::new(conn);
+        write(&conns, "here", &batch, at + 1).unwrap();
+        let conn = conns.lock().unwrap();
+        let row: (String, String, String, i64) = conn
+            .query_row(
+                "SELECT card, kind, tree, affected FROM invalidate_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "card-s1");
+        assert_eq!(row.1, "instructions");
+        assert_eq!(row.2, "C:/x");
+        assert_eq!(row.3, 1, "the other card in the tree pays; the writer does not");
+    }
+
+    #[test]
+    fn a_tier_suffix_is_not_a_model_move_and_unknown_is_not_a_value() {
+        assert!(same_model("claude-opus-5[1m]", "claude-opus-5"));
+        assert!(same_model("claude-opus-5-1m", "claude-opus-5"));
+        assert!(!same_model("claude-opus-5", "claude-sonnet-5"));
+        assert!(!moved("unknown", "lyss"), "the first turn is not a switch");
+        assert!(!moved("", "lyss"), "a first sighting is not a switch");
+        assert!(!moved("lyss", "lyss"));
+        assert!(moved("lyss", "tx-team"));
+    }
+
+    #[test]
+    fn the_backfill_reads_each_transcript_once() {
+        let dir = std::env::temp_dir().join(format!("skein-backfill-{}", crate::store::uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let at = 1_786_601_268_000;
+        let line = call_line(
+            "w1",
+            at,
+            "s1",
+            "Write",
+            r#"{"file_path":"C:\\x\\CLAUDE.md","content":"x"}"#,
+        );
+        std::fs::write(&path, format!("{line}\n{line}\n")).unwrap();
+
+        let conns = Mutex::new(db());
+        let host = "here";
+        let first = backfill_paths(&conns, host, at + 1000, vec![path.clone()]).unwrap();
+        assert_eq!(first.walked, 1);
+        assert_eq!(first.invalidations, 1, "the same write twice is one row");
+
+        /* The mark is what makes it one-off. A second pass does not re-read. */
+        let second = backfill_paths(&conns, host, at + 2000, vec![path.clone()]).unwrap();
+        assert_eq!(second.walked, 0, "a marked transcript is never re-read");
+        let conn = conns.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM invalidate_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        let walked: i64 = conn
+            .query_row("SELECT COUNT(*) FROM invalidate_walk", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(walked, 1);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Seed a card's own requests: one fact row per five-minute bucket, with a
+    /// cache write of `write` per request.
+    fn write_row(conn: &Connection, session: &str, at: i64, write: i64, input: i64, requests: i64) {
+        conn.execute(
+            "INSERT INTO usage_fact
+               (at, host, session, agent, model, source, account, provider, project,
+                in_tok, write_5m, requests)
+             VALUES (?1, 'here', ?2, '', 'claude-opus-5-5', 'card', 'lyss', 'claude', 'volery',
+                     ?3, ?4, ?5)",
+            params![at, session, input, write, requests],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn attribution_is_the_excess_over_the_cards_own_median() {
+        let conn = db();
+        seed(&conn, "s1");
+        seed(&conn, "s2");
+        let at = 1_786_601_268_000;
+        /* The writer and the payer share a tree and overlap the episode. */
+        for (session, card) in [("s1", "card-s1"), ("s2", "card-s2")] {
+            conn.execute(
+                "INSERT INTO analytics_session
+                   (session, host, project, source, card_id, started_at, ended_at)
+                 VALUES (?1, 'here', 'volery', 'card', ?2, ?3, NULL)",
+                params![session, card, at - 3_600_000],
+            )
+            .unwrap();
+        }
+        /* The payer's own recent median is 100 tokens a request, all of it
+           strictly before the event so it is the baseline and not the answer. */
+        for i in 0..6 {
+            write_row(&conn, "s2", at - 1_800_000 + i * 300_000, 100, 0, 1);
+        }
+        /* Its first request after the event writes 5,100. */
+        write_row(&conn, "s2", at + 300_000, 5_100, 0, 1);
+        conn.execute(
+            "INSERT INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (?1, 'here', 's1', 'card-s1', 'instructions', 'C:/x/CLAUDE.md', 'C:/x', 1, 'receipt')",
+            params![at],
+        )
+        .unwrap();
+
+        let conns = Mutex::new(conn);
+        let counts = attribute(&conns, "here", at + 3_600_000).unwrap();
+        assert_eq!(counts.attributed, 1);
+        let conn = conns.lock().unwrap();
+        let row: (String, String, i64, String, i64) = conn
+            .query_row(
+                "SELECT session, card, tokens, model, affected FROM invalidate_fact
+                  WHERE provenance = 'attributed'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "s2", "the payer is the other card, not the writer");
+        assert_eq!(row.1, "card-s2");
+        assert_eq!(row.2, 5_000, "5,100 written less a 100 median");
+        assert_eq!(row.3, "claude-opus-5-5", "the model is what prices it");
+        assert_eq!(row.4, 0);
+
+        /* Re-running is the same row, not a second one. */
+        drop(conn);
+        attribute(&conns, "here", at + 3_600_000).unwrap();
+        let conn = conns.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM invalidate_fact WHERE provenance = 'attributed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn an_unmeasured_event_writes_no_row_rather_than_a_zero() {
+        let conn = db();
+        seed(&conn, "s1");
+        seed(&conn, "s2");
+        let at = 1_786_601_268_000;
+        conn.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, started_at, ended_at)
+             VALUES ('s2', 'here', 'volery', 'card', 'card-s2', ?1, NULL)",
+            params![at - 3_600_000],
+        )
+        .unwrap();
+        /* Four requests before the event: fewer than the floor, so unmeasured. */
+        for i in 0..4 {
+            write_row(&conn, "s2", at - 1_200_000 + i * 300_000, 100, 0, 1);
+        }
+        write_row(&conn, "s2", at + 300_000, 5_100, 0, 1);
+        conn.execute(
+            "INSERT INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (?1, 'here', 's1', 'card-s1', 'instructions', 'C:/x/CLAUDE.md', 'C:/x', 1, 'receipt')",
+            params![at],
+        )
+        .unwrap();
+        let conns = Mutex::new(conn);
+        let counts = attribute(&conns, "here", at + 3_600_000).unwrap();
+        assert_eq!(counts.attributed, 0);
+        let conn = conns.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM invalidate_fact WHERE provenance = 'attributed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "unmeasured is not free, and no row may say it is");
+    }
+
+    /// The mechanism `tools/probe-invalidate.ts` measured on this machine
+    /// (2026-11-12): a card that restarts reads the new `CLAUDE.md` as fresh
+    /// input, with no cache creation at all. Measuring only `write_5m` would
+    /// read that as an invalidation that cost nothing.
+    #[test]
+    fn a_prefix_re_read_as_fresh_input_is_an_excess_too() {
+        let conn = db();
+        seed(&conn, "s1");
+        seed(&conn, "s2");
+        let at = 1_786_601_268_000;
+        conn.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, started_at, ended_at)
+             VALUES ('s2', 'here', 'volery', 'card', 'card-s2', ?1, NULL)",
+            params![at - 3_600_000],
+        )
+        .unwrap();
+        for i in 0..6 {
+            write_row(&conn, "s2", at - 1_800_000 + i * 300_000, 0, 180, 1);
+        }
+        /* The resumed process: the 3,600-token file arrives as input tokens. */
+        write_row(&conn, "s2", at + 300_000, 0, 3_800, 1);
+        conn.execute(
+            "INSERT INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (?1, 'here', 's1', 'card-s1', 'instructions', 'C:/x/CLAUDE.md', 'C:/x', 1, 'receipt')",
+            params![at],
+        )
+        .unwrap();
+        let conns = Mutex::new(conn);
+        attribute(&conns, "here", at + 3_600_000).unwrap();
+        let conn = conns.lock().unwrap();
+        let row: (i64, i64) = conn
+            .query_row(
+                "SELECT tokens, in_tokens FROM invalidate_fact WHERE provenance = 'attributed'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, 0, "no cache creation was reported");
+        assert_eq!(row.1, 3_620, "3,800 input less a 180 median");
     }
 }

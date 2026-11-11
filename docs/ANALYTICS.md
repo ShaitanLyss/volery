@@ -746,7 +746,7 @@ avoidable cost there is, and it is invisible today: the card that caused it look
 
 | event | what it invalidates | who pays |
 |---|---|---|
-| a write to `CLAUDE.md` | the prefix of every card whose tree reads it | every other card in that tree, on its next turn |
+| a write to `CLAUDE.md` | the prefix of every card whose tree reads it | every other card in that tree, when it next **starts** (a running process does not re-read it: §20 decision 19) |
 | a write to a `.claude/rules/` file | the prefix of cards that open a governed path | those cards, when they next touch one |
 | an account switch | the cache, which is per account | the card, on its first turn on the new account |
 | a provider switch | the provider's cache, which is separate | the card |
@@ -757,17 +757,25 @@ avoidable cost there is, and it is invisible today: the card that caused it look
 - **The write is exact; the cost is attributed.** A `Write`/`Edit` receipt names the path, and
   an account or model move is a Volery action already recorded, so the event is a fact. What
   follows is an inference: the first request each affected card makes after the event is
-  compared with that card's own recent median cache write, and the excess is the re-read.
-  It is labelled `attributed`, and the page says the mechanism was measured by a probe before
-  it was trusted (the same `tools/probe-context.ts` pattern: one card, one write, the next
-  turn's `usage`).
+  compared with that card's own recent median, and the excess is the re-read. It is labelled
+  `attributed`, and the mechanism was measured before it was trusted
+  (`tools/probe-invalidate.ts`, 2026-11-12): a 14 KB `CLAUDE.md` was invisible to the running
+  process, and a `--resume` of the same session read it as **3,795 fresh input tokens with no
+  cache creation at all**. So the excess is measured in two buckets, each against its own
+  median and priced at its own rate: `tokens` for a cache write, `in_tokens` for fresh input.
+  A probe that only looked for the first would have reported every real invalidation on this
+  machine as free.
 - **A churn episode is a run of writes, not a write.** Three edits to `CLAUDE.md` in ten
   minutes is one episode, and its cost is the excess after the *last* write, because the
   earlier ones were overwritten before anybody read them. The episode is what the page draws
   and what the advice is about.
 - **The tree is the scope for instructions and the card is the scope for funding.** A write
-  affects every card whose `cwd` or worktree group is the same; a switch affects one card.
-  Both are joinable because `analytics_session` already carries the tree and the interval.
+  affects every card standing in the same directory: `conversation.cwd` for a shared checkout,
+  `worktree::run_dir(cwd, worktree)` for a card in a group, and the transcript's own `cwd` for
+  a session no card owns. The tree is a path in the fine tier only; `analytics_session`
+  deliberately carries no path (it is synced), so the join is session to `conversation` and
+  then a resolved-path comparison. A switch affects one card. Both are joinable because
+  `analytics_session` carries the interval.
 - **Account and model moves get a timing reading, not just a total.** A switch while the other
   cards are mid-turn costs more than the same switch at rest, because it invalidates the turn
   that is running as well as the next one. `invalidate_usd` for a switch is attributed to the
@@ -2358,8 +2366,19 @@ spend pages cannot: whether the work was worth what it cost. §3.9 is the data.
   question rather than a verdict.
 - **The coordination strip is under it**: each card a bar across the day, overlap bands where
   two touched a file, conflict episodes marked where they happened, with the minutes and the
-  dollars they took, and instruction-churn episodes drawn on the same strip (§3.9). That is the
-  moment-to-moment answer to "where did parallel work fight itself".
+  dollars they took, and instruction-churn episodes drawn on the same strip (§3.9). A re-reads
+  row under the bars carries one mark per episode, a square for an instruction and a diamond
+  for a rule, sized by how many writes the run swallowed; the sunburst of status colour is the
+  wall's own, never decoration. Opening a mark names the path, the time, the card that wrote
+  it and the cards that paid. That is the moment-to-moment answer to "where did parallel work
+  fight itself".
+- **The invalidation summary is a row, not a headline.** Events, episodes, and attributed
+  dollars, or the word *unmeasured* where no paying card's next request was seen: an
+  unmeasured invalidation and a free one are different readings (§9.1). A table under it lists
+  the episodes worth acting on by tree, path, time, whether it was a churn run, the cards that
+  paid and the cost, and one sentence of advice stands beside it: a path-scoped rule is read
+  only when a governed file is opened, and the wall's standing instructions reach new cards and
+  not live ones. It is advice, never a ban on documenting something.
 - **A card with no artifact is drawn as *no artifact*, not as zero output.** Design, review and
   answers are work; §3.9's caveat is on the page in one sentence, and there is no ranking of
   people anywhere in it.
@@ -2955,11 +2974,31 @@ CREATE TABLE invalidate_fact (
   card       TEXT NOT NULL DEFAULT '',
   kind       TEXT NOT NULL,   -- instructions | rule | account | provider | model | compact | renew
   ref        TEXT NOT NULL DEFAULT '',  -- path, account label, model or provider
-  tree       TEXT NOT NULL DEFAULT '',  -- project root or worktree key; scopes who pays
-  affected   INTEGER NOT NULL DEFAULT 0,
-  usd        REAL NOT NULL DEFAULT 0,   -- attributed excess, 0 when unmeasured
+  tree       TEXT NOT NULL DEFAULT '',  -- the directory the agent stood in; scopes who pays
+  affected   INTEGER NOT NULL DEFAULT 0, -- write: other card sessions overlapping the run
+                                         -- switch: cards working at the instant
+  -- The attributed excess, in the two buckets a retired prefix can land in.
+  -- Each is measured against that bucket's own median and priced at its own
+  -- rate by the front end; Rust never prices (usage.rs's rule).
+  tokens     INTEGER NOT NULL DEFAULT 0, -- cache-write excess, 1.25x input
+  in_tokens  INTEGER NOT NULL DEFAULT 0, -- fresh-input excess, 1x input
+  usd        REAL NOT NULL DEFAULT 0,    -- a writer that knows dollars; 0 from the ingest
   provenance TEXT NOT NULL DEFAULT 'receipt',  -- receipt | attributed
-  PRIMARY KEY (at, host, session, card, kind, ref, tree)
+  -- `provenance` is in the key because one event has a receipt row *and* a row
+  -- per paying card at the same instant and path. Without it the second write
+  -- would replace the first.
+  PRIMARY KEY (at, host, session, card, kind, ref, tree, provenance)
+);
+
+CREATE INDEX invalidate_fact_by_tree ON invalidate_fact(tree, at);
+CREATE INDEX invalidate_fact_by_at   ON invalidate_fact(at);
+
+-- The one-off backfill's mark: a transcript read from its beginning once, and
+-- never again. A table of its own because the walk must not touch the
+-- collector's offsets in `usage_file`.
+CREATE TABLE invalidate_walk (
+  path TEXT PRIMARY KEY, host TEXT NOT NULL,
+  size INTEGER NOT NULL, mtime INTEGER NOT NULL, done_at INTEGER NOT NULL
 );
 
 -- One digest per (host, UTC day), over that day's hourly rows. The manifest
@@ -3576,6 +3615,17 @@ not re-opened by accident.
     remembered per mode. The point is that the mode does not decide; the skin is a choice.
     The spec carries no presentation field, because a report and a widget have no mode to
     pick a default from.
+19. **The probe was run, and it moved where the excess is measured.** On 2026-11-12 against
+    claude 2.1.319 on `haiku`, a 14 KB `CLAUDE.md` written into a card's tree was **not**
+    re-read by the running process: the next turn paid 177 fresh input tokens against a
+    45,440-token cache read. A `--resume` of the same session then read the file as **3,795
+    fresh input tokens**, with **zero cache creation reported on any request**. So the
+    invalidation is real and two details of §3.9 above were wrong: it lands at a card's next
+    **start**, not its next turn, and on this CLI it lands in fresh input rather than in the
+    cache-write bucket. `invalidate_fact` therefore carries both, each against its own median
+    and priced at its own rate; measuring only the cache write would have read every real
+    invalidation here as free. `tools/probe-invalidate.ts` is the measurement and stays
+    runnable.
 
 ### 20.1 One left: how live is another machine
 

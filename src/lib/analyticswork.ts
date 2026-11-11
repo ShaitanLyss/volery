@@ -139,14 +139,47 @@ export type PairOverlap = {
   spans: Span[];
 };
 
+/** One invalidation fact (§3.9): an instruction write, a rule write, or a move
+ *  of account, provider or model, and the excess attributed to it.
+ *
+ *  **Two provenances, one event.** A `receipt` row is the write or the move; an
+ *  `attributed` row is one paying card's excess measured at the same instant.
+ *  Event counts come from receipts and dollars from attributed rows, and the
+ *  two are never added together (§9.1).
+ */
+export type InvalidateRow = {
+  at: number;
+  host: string;
+  session: string;
+  card: string;
+  kind: string;
+  ref: string;
+  /** The directory the card stood in: the scope of who pays. */
+  tree: string;
+  affected: number;
+  /** The attributed excess, in cache-write tokens. Priced here, never in Rust. */
+  tokens: number;
+  /** The same excess in fresh input tokens, where a restarted process's
+   *  re-read of the prefix lands on the CLI this wall was measured against. */
+  inTokens: number;
+  /** The model the excess was written against, `''` on a receipt row. */
+  model: string;
+  usd: number;
+  provenance: "receipt" | "attributed";
+};
+
 /** Everything one work read asks of the wall. */
 export type WorkBundle = {
   rows: WorkRow[];
   series: WorkSeries;
   overlaps: PairOverlap[];
+  invalidations: InvalidateRow[];
   /** The pair listing was refused or failed while the facts and the series
    *  answered. The strip says so rather than claiming nothing overlapped. */
   overlapsUnread?: boolean;
+  /** The invalidation read failed. Its absence is said out loud rather than
+   *  drawn as a window in which nothing was invalidated. */
+  invalidationsUnread?: boolean;
 };
 
 /** The command, or a fixture. */
@@ -190,6 +223,34 @@ function asWorkRow(raw: unknown): WorkRow | null {
     ms: Math.max(0, Math.trunc(num(r.ms))),
     provenance: r.provenance === "history" ? "history" : "receipt",
   };
+}
+
+export function asInvalidateRows(raw: unknown): InvalidateRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: InvalidateRow[] = [];
+  for (const one of raw) {
+    const o = obj(one);
+    if (!o) continue;
+    const kind = str(o.kind);
+    if (!kind) continue;
+    const provenance = o.provenance === "attributed" ? "attributed" : "receipt";
+    out.push({
+      at: num(o.at),
+      host: str(o.host),
+      session: str(o.session),
+      card: str(o.card),
+      kind,
+      ref: str(o.ref),
+      tree: str(o.tree),
+      affected: num(o.affected),
+      tokens: num(o.tokens),
+      inTokens: num(o.inTokens),
+      model: str(o.model),
+      usd: num(o.usd),
+      provenance,
+    });
+  }
+  return out.sort((a, b) => a.at - b.at);
 }
 
 export function asWorkRows(raw: unknown): WorkRow[] {
@@ -1030,6 +1091,305 @@ export function kpisOf(rows: readonly WorkRow[], cards: readonly CardWork[], coo
   };
 }
 
+/* ── invalidation (§3.9) ───────────────────────────────────────────────────*/
+
+/** How close two writes to one path must be to be one churn episode. The same
+ *  ten minutes `analytics.rs::CHURN_GAP_MS` chains them with, and the same span
+ *  a conflict episode is measured over, so the strip's two readings share a
+ *  scale. */
+export const CHURN_GAP_MS = 10 * MINUTE;
+
+/** The kinds that are a write to a governing file, and so can churn. */
+export const WRITE_KINDS: readonly string[] = ["instructions", "rule"];
+/** The kinds that are a move of the funding a cache is keyed by. */
+export const SWITCH_KINDS: readonly string[] = ["account", "provider", "model"];
+
+/** The episode a write belongs to: the path, or the rules directory.
+ *
+ *  The mirror of `analytics.rs::invalidate_key`, and it has to agree with it:
+ *  the store groups events for attribution and this groups them for the page. */
+export function invalidateKey(kind: string, ref: string): string {
+  if (kind !== "rule") return ref;
+  const lower = ref.toLowerCase();
+  const lead = lower.indexOf("/.claude/rules/");
+  /* The needle with a leading slash starts one character before the segment,
+     which is the off-by-one that made this answer `…/.claude/rule`. */
+  if (lead >= 0) return ref.slice(0, lead + 1 + ".claude/rules".length);
+  const bare = lower.indexOf(".claude/rules/");
+  return bare >= 0 ? ref.slice(0, bare + ".claude/rules".length) : ref;
+}
+
+/** One card that paid for an invalidation, with its excess. */
+export type InvalidatePayer = {
+  session: string;
+  card: string;
+  tokens: number;
+  /** Priced through `usage.ts`'s rate table at the event's model and instant.
+   *  Null when the model has no rate, which is unmeasured rather than free. */
+  usd: number | null;
+};
+
+/** A run of writes to one path, or one switch, and what it cost. */
+export type InvalidateEpisode = {
+  /** Identity for a keyed list: tree, key and start. */
+  key: string;
+  kind: string;
+  /** The path as the last write named it, or the account/provider/model. */
+  path: string;
+  tree: string;
+  start: number;
+  end: number;
+  /** How many writes the episode swallowed. 1 for a switch. */
+  writes: number;
+  /** The card that made the last write. Empty for a terminal or an unknown. */
+  author: string;
+  affected: number;
+  payers: InvalidatePayer[];
+  tokens: number;
+  /** **Null is unmeasured, never zero.** A measured episode whose excess was
+   *  nothing is 0, and the two are different readings (§9.1). */
+  usd: number | null;
+  measured: boolean;
+};
+
+/** §9.1's invalidation measures, one row per kind. */
+export type KindInvalidation = {
+  kind: string;
+  events: number;
+  episodes: number;
+  measured: number;
+  usd: number | null;
+};
+
+export type TreeInvalidation = {
+  tree: string;
+  /** The directory's last segment, which is what a table can read. */
+  label: string;
+  events: number;
+  episodes: number;
+  churnEpisodes: number;
+  writes: number;
+  impacted: number;
+  usd: number | null;
+  measured: number;
+  last: number;
+};
+
+export type Invalidation = {
+  episodes: InvalidateEpisode[];
+  /** The runs of more than one write: the ones the advice is about. */
+  churn: InvalidateEpisode[];
+  /** Receipt rows that are a write to an instruction or rule file. */
+  events: number;
+  /** Receipt rows that are a move. */
+  switches: number;
+  episodesCount: number;
+  /** Episodes that are a write to a governing file. The rest are moves, so a
+   *  summary that counts every episode beside a write count reads wrong. */
+  writeEpisodes: number;
+  churnEpisodes: number;
+  churnWriteCount: number;
+  tokens: number;
+  /** Summed attributed dollars; null when not one event could be measured. */
+  usd: number | null;
+  /** Episodes whose excess nobody could measure, which is not the same as 0. */
+  unmeasured: number;
+  byTree: TreeInvalidation[];
+  /** The same reading split by kind, which §9.1 asks for beside the tree. */
+  byKind: KindInvalidation[];
+  /** The excess as a share of the window's spend, or null with no divisor. */
+  share: number | null;
+  advice: string;
+};
+
+/** The one sentence of advice the page may not drop (§3.9), and it is advice
+ *  rather than a ban: document the change, and put it where the reader is. */
+export const INVALIDATE_ADVICE =
+  "a rule under .claude/rules/ is read only when a file it governs is opened, and the wall's standing instructions reach new cards and not live ones. the narrowest of the three fits the change without making every card read again.";
+
+/** Price attributed cache-write tokens through the one rate table.
+ *
+ *  **Not a second price table.** `usage.ts::rateAt` is the table every other
+ *  dollar on this wall is priced from, and 1.25 is the five-minute write
+ *  multiplier `modeledUsd` applies; `test/analyticswork.test.ts` holds the two
+ *  against each other on a row that carries nothing but a cache write. */
+export function cacheWriteUsd(tokens: number, model: string, at: number): number | null {
+  if (!Number.isFinite(tokens)) return null;
+  const rate = rateAt(model, at);
+  if (!rate) return null;
+  return (tokens * rate.input * 1.25) / 1e6;
+}
+
+/** Fresh input at the model's own input rate: the other bucket a retired
+ *  prefix lands in, and the one this machine's probe measured. */
+export function inputUsd(tokens: number, model: string, at: number): number | null {
+  if (!Number.isFinite(tokens)) return null;
+  const rate = rateAt(model, at);
+  if (!rate) return null;
+  return (tokens * rate.input) / 1e6;
+}
+
+/** What one attributed row cost: the two buckets through their own rates. */
+export function attributedUsd(tokens: number, inTokens: number, model: string, at: number): number | null {
+  const write = cacheWriteUsd(tokens, model, at);
+  const input = inputUsd(inTokens, model, at);
+  if (write === null && input === null) return null;
+  return (write ?? 0) + (input ?? 0);
+}
+
+/** Every episode in a window, with the excess its payers were measured against.
+ *
+ *  **Rows stay per write; the episode is derived here.** Three edits to one
+ *  `CLAUDE.md` in ten minutes is one episode and its cost is the excess after
+ *  the *last* write, because the earlier ones were overwritten before anybody
+ *  read them. A switch is its own episode: there is no run to fold it into.
+ */
+export function invalidationOf(
+  rows: readonly InvalidateRow[],
+  spendUsd: number | null,
+): Invalidation {
+  const receipts = rows.filter((r) => r.provenance === "receipt").sort((a, b) => a.at - b.at);
+  const attributed = rows.filter((r) => r.provenance === "attributed");
+
+  const episodes: InvalidateEpisode[] = [];
+  const open = new Map<string, InvalidateEpisode>();
+  for (const row of receipts) {
+    const isWrite = WRITE_KINDS.includes(row.kind);
+    const key = isWrite ? invalidateKey(row.kind, row.ref) : `${row.session}\u0000${row.ref}`;
+    const group = `${row.tree}\u0000${key}`;
+    const prior = isWrite ? open.get(group) : undefined;
+    if (prior && row.at - prior.end <= CHURN_GAP_MS) {
+      prior.end = row.at;
+      prior.path = row.ref;
+      prior.writes += 1;
+      prior.author = row.card;
+      continue;
+    }
+    const episode: InvalidateEpisode = {
+      key: `${group}\u0000${row.at}`,
+      kind: row.kind,
+      path: row.ref,
+      tree: row.tree,
+      start: row.at,
+      end: row.at,
+      writes: 1,
+      author: row.card,
+      /* The first write's count: its window contains the run, which is what
+         makes it the episode's count rather than the last write's. */
+      affected: row.affected,
+      payers: [],
+      tokens: 0,
+      usd: null,
+      measured: false,
+    };
+    episodes.push(episode);
+    if (isWrite) open.set(group, episode);
+  }
+
+  /* Attribution is written at the episode's last write, so that is where a
+     payer is looked for. A row at another instant belongs to another episode. */
+  for (const episode of episodes) {
+    const paid = attributed.filter(
+      (r) => r.at === episode.end && r.tree === episode.tree && r.ref === episode.path && r.kind === episode.kind,
+    );
+    if (!paid.length) continue;
+    episode.measured = true;
+    const payers = paid.map((r) => ({
+      session: r.session,
+      card: r.card,
+      tokens: r.tokens + r.inTokens,
+      usd: r.usd !== 0 ? r.usd : attributedUsd(r.tokens, r.inTokens, r.model, r.at),
+    }));
+    episode.payers = payers;
+    episode.tokens = payers.reduce((n, p) => n + p.tokens, 0);
+    const priced = payers.filter((p) => p.usd !== null);
+    episode.usd = priced.length === payers.length ? payers.reduce((n, p) => n + (p.usd ?? 0), 0) : null;
+    if (episode.usd === null) episode.measured = false;
+  }
+
+  const churn = episodes.filter((e) => e.writes > 1);
+  const measured = episodes.filter((e) => e.measured);
+  const usd = measured.length ? measured.reduce((n, e) => n + (e.usd ?? 0), 0) : null;
+  const tokens = measured.reduce((n, e) => n + e.tokens, 0);
+
+  const byTree = new Map<string, TreeInvalidation>();
+  for (const episode of episodes) {
+    const tree = episode.tree || "no tree";
+    const one = byTree.get(tree) ?? {
+      tree,
+      label: tree === "no tree" ? tree : tree.split(/[\\/]/).filter(Boolean).pop() ?? tree,
+      events: 0,
+      episodes: 0,
+      churnEpisodes: 0,
+      writes: 0,
+      impacted: 0,
+      usd: 0,
+      measured: 0,
+      last: 0,
+    };
+    one.episodes += 1;
+    one.writes += episode.writes;
+    one.events += episode.writes;
+    if (episode.writes > 1) one.churnEpisodes += 1;
+    one.impacted = Math.max(one.impacted, episode.affected);
+    if (episode.measured) {
+      one.measured += 1;
+      one.usd = (one.usd ?? 0) + (episode.usd ?? 0);
+    }
+    one.last = Math.max(one.last, episode.end);
+    byTree.set(tree, one);
+  }
+
+  const kinds = new Map<string, KindInvalidation>();
+  for (const episode of episodes) {
+    const one = kinds.get(episode.kind) ?? { kind: episode.kind, events: 0, episodes: 0, measured: 0, usd: 0 };
+    one.episodes += 1;
+    one.events += episode.writes;
+    if (episode.measured) {
+      one.measured += 1;
+      one.usd = (one.usd ?? 0) + (episode.usd ?? 0);
+    }
+    kinds.set(episode.kind, one);
+  }
+
+  return {
+    episodes,
+    churn,
+    events: receipts.filter((r) => WRITE_KINDS.includes(r.kind)).length,
+    switches: receipts.filter((r) => SWITCH_KINDS.includes(r.kind)).length,
+    episodesCount: episodes.length,
+    writeEpisodes: episodes.filter((e) => WRITE_KINDS.includes(e.kind)).length,
+    churnEpisodes: churn.length,
+    churnWriteCount: churn.reduce((n, e) => n + e.writes, 0),
+    tokens,
+    usd,
+    unmeasured: episodes.length - measured.length,
+    byTree: [...byTree.values()]
+      .map((t) => ({ ...t, usd: t.measured ? t.usd : null }))
+      .sort((a, b) => b.events - a.events || a.tree.localeCompare(b.tree)),
+    byKind: [...kinds.values()]
+      .map((k) => ({ ...k, usd: k.measured ? k.usd : null }))
+      .sort((a, b) => b.events - a.events || a.kind.localeCompare(b.kind)),
+    share: usd !== null && spendUsd !== null && spendUsd > 0 ? usd / spendUsd : null,
+    advice: INVALIDATE_ADVICE,
+  };
+}
+
+/** What an episode is called in a table or a hover, without a wall of path. */
+export function episodeLabel(episode: InvalidateEpisode): string {
+  if (episode.kind === "account") return episode.path || "its own sign-in";
+  if (episode.kind === "provider") return episode.path || "an unnamed provider";
+  if (episode.kind === "model") return episode.path || "an unnamed model";
+  const parts = episode.path.split(/[\\/]/).filter(Boolean);
+  const tail = parts.slice(-2).join("/");
+  return tail || episode.path || "an unnamed file";
+}
+
+/** The author of an episode, named where the wall can name it. */
+export function episodeAuthor(episode: InvalidateEpisode, names?: ReadonlyMap<string, string>): string {
+  return labelOf(episode.author, names);
+}
+
 /* ── the prose ─────────────────────────────────────────────────────────────*/
 
 /** The one sentence no skin is allowed to drop. It is the page's caveat and
@@ -1052,7 +1412,7 @@ export type WorkStory = {
   state: WorkStoryState;
   lede: string;
   facts: WorkFact[];
-  sections: { id: "bought" | "coordination" | "cannot"; title: string; body: string }[];
+  sections: { id: "bought" | "coordination" | "reread" | "cannot"; title: string; body: string }[];
   empty: boolean;
 };
 
@@ -1076,6 +1436,9 @@ export type WorkStoryInput = {
      *  Without it the prose must not claim what is on record elsewhere. */
     outsideKnown?: boolean;
   };
+  /** §3.9's invalidation reading. Optional so a caller that has no rows (a
+   *  suite, an older build's command) draws nothing rather than a zero. */
+  invalidation?: Invalidation;
 };
 
 function spanSaid(span: string): string {
@@ -1238,6 +1601,35 @@ export function workStoryOf(input: WorkStoryInput): WorkStory {
     coordinationBody.push(" the pair listing could not be read for this span, so the bands are missing rather than absent.");
   }
 
+  /* §3.9's invalidation half, said in the same breath as coordination because
+     it is the other way parallel work spends money on itself. **The summary is
+     events, episodes and dollars or the word *unmeasured***: a window with no
+     attributed row is not a window that cost nothing. */
+  const inv = input.invalidation;
+  const rereadBody = inv
+    ? inv.events + inv.switches === 0
+      ? `nothing was recorded in ${when}: no instruction file was written and no card moved account, provider or model.`
+      : (() => {
+          const parts = [
+            `${plural(inv.events, "write to an instruction or rule file", "writes to instruction and rule files")} in ${plural(inv.writeEpisodes, "episode", "episodes")}`,
+            inv.churnEpisodes > 0
+              ? `${plural(inv.churnEpisodes, "churn run", "churn runs")} swallowed ${plural(inv.churnWriteCount, "write", "writes")}`
+              : "",
+            inv.switches > 0 ? `${plural(inv.switches, "move", "moves")} of account, provider or model` : "",
+          ].filter(Boolean);
+          const dollars =
+            inv.usd === null
+              ? "the excess could not be measured on any paying card, so no dollar figure is drawn rather than a zero"
+              : `${money(inv.usd)} of excess re-reading${inv.share !== null ? `, ${Math.round(inv.share * 100)}% of the window's spend` : ""}`;
+          const unmeasured =
+            inv.unmeasured > 0 && inv.usd !== null
+              ? ` ${plural(inv.unmeasured, "episode", "episodes")} left unmeasured.`
+              : "";
+          return `${parts.join(", ")}: ${dollars}.${unmeasured} ${INVALIDATE_ADVICE}`;
+        })()
+    : `the invalidation reading did not answer for ${when}, so nothing is claimed about re-reading.`;
+
+
   return {
     state,
     lede,
@@ -1247,6 +1639,7 @@ export function workStoryOf(input: WorkStoryInput): WorkStory {
       : [
           { id: "bought", title: "what it bought", body: bought.join(" ") },
           { id: "coordination", title: "what coordination cost", body: coordinationBody.join("") },
+          { id: "reread", title: "what re-reading cost", body: rereadBody },
           { id: "cannot", title: "what this cannot see", body: WORK_CAVEAT },
         ],
     empty,
@@ -1262,9 +1655,11 @@ export type WorkModel = {
   panels: WorkPanels;
   episodes: ConflictEpisode[];
   coordination: Coordination;
+  invalidations: Invalidation;
   bars: CardBar[];
   bands: OverlapBand[];
   overlapsUnread: boolean;
+  invalidationsUnread: boolean;
   story: WorkStory;
   caveat: string;
   empty: boolean;
@@ -1274,7 +1669,9 @@ export type WorkModelInput = {
   rows: readonly WorkRow[];
   series: WorkSeries;
   overlaps: readonly PairOverlap[];
+  invalidations?: readonly InvalidateRow[];
   overlapsUnread?: boolean;
+  invalidationsUnread?: boolean;
   names?: ReadonlyMap<string, string>;
   measure: ScatterMeasure;
   from: number;
@@ -1298,6 +1695,7 @@ export function workModelOf(input: WorkModelInput): WorkModel {
   const panels = panelsOf(series);
   const bars = barsOf(cards, series, input.from, input.to);
   const bands = bandsOf(input.overlaps, cards, input.from, input.to);
+  const invalidations = invalidationOf(input.invalidations ?? [], kpis.cost);
   const story = workStoryOf({
     span: input.span,
     rows: input.rows,
@@ -1305,6 +1703,7 @@ export function workModelOf(input: WorkModelInput): WorkModel {
     coordination,
     bands,
     overlapsUnread: input.overlapsUnread,
+    invalidation: invalidations,
     scratch: input.scratch,
   });
   return {
@@ -1314,6 +1713,8 @@ export function workModelOf(input: WorkModelInput): WorkModel {
     panels,
     episodes,
     coordination,
+    invalidations,
+    invalidationsUnread: input.invalidationsUnread === true,
     bars,
     bands,
     overlapsUnread: input.overlapsUnread === true,

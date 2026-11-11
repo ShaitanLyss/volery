@@ -12,13 +12,27 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { asOverlaps, asWorkRows, asWorkSeries, type WorkBundle } from "./analyticswork";
+import {
+  asInvalidateRows,
+  asOverlaps,
+  asWorkRows,
+  asWorkSeries,
+  type InvalidateRow,
+  type WorkBundle,
+} from "./analyticswork";
 
 export async function readWorkWindow(from: number, to: number): Promise<WorkBundle> {
-  const [rows, series] = await Promise.all([
+  const [rows, series, invalidations] = await Promise.all([
     invoke<unknown>("work_facts", { from, to }),
     invoke<unknown>("work_series", { from, to }),
+    /* Its own catch, for the reason the pair listing has one: an older build
+       or a refused window must not take the cost and the artifacts with it. */
+    invoke<unknown>("invalidate_facts", { from, to }).then(asInvalidateRows).catch(() => null),
   ]);
+  let invalidationRows: InvalidateRow[] = [];
+  let invalidationsUnread = false;
+  if (invalidations === null) invalidationsUnread = true;
+  else invalidationRows = invalidations;
   /* The pair listing is the one read that can be refused on a wide window
      (its cap is over a whole wall's touches, not two cards'). It is caught on
      its own: the table, the scatter and the episodes do not stop being true
@@ -35,6 +49,8 @@ export async function readWorkWindow(from: number, to: number): Promise<WorkBund
     rows: asWorkRows(rows),
     series: asWorkSeries(series),
     overlaps,
+    invalidations: invalidationRows,
     overlapsUnread,
+    invalidationsUnread,
   };
 }
