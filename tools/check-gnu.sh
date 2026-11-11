@@ -19,24 +19,62 @@ set -e
 # nothing and means the workaround would have worked too.
 cd "$(git rev-parse --show-toplevel)"
 
-# The shim is a build artefact and `.build-tools` is gitignored, so a fresh
-# clone does not have it. Saying so here is worth it: the failure without it is
-# the same misleading windres error.
-if [ ! -x .build-tools/windres.exe ]; then
-  echo "tools/check-gnu.sh: .build-tools/windres.exe is missing." >&2
-  echo "  Build it once with:" >&2
-  echo "    gcc -O2 -o .build-tools/windres.exe tools/windres-shim.c" >&2
-  echo "  Why it exists: cygwin's windres cannot read a Windows path, and" >&2
-  echo "  embed-resource spawns the bare name. See .claude/rules/build.md." >&2
-  exit 1
-fi
+# A mingw-w64 compiler, located rather than assumed.
+#
+# The one this machine has is WinLibs, installed through winget. Its `bin` is on
+# the *user* PATH in the registry, and a card's shell does not see it: the
+# environment a process gets is the one captured when its parent started, so a
+# toolchain installed after the wall was launched is invisible until the wall is
+# restarted. That failure is `cc-rs: failed to find tool "gcc.exe"`, which names
+# nothing about PATH, so the lookup lives here where the reason does.
+#
+# `VOLERY_MINGW_BIN` overrides it, for a toolchain somewhere else.
+find_mingw() {
+  if [ -n "$VOLERY_MINGW_BIN" ] && [ -x "$VOLERY_MINGW_BIN/gcc.exe" ]; then
+    printf '%s\n' "$VOLERY_MINGW_BIN"; return 0
+  fi
+  if command -v gcc >/dev/null 2>&1 && gcc --version 2>/dev/null | grep -qi mingw; then
+    dirname "$(command -v gcc)"; return 0
+  fi
+  local w
+  for w in "$HOME"/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_*/mingw64/bin \
+           "$HOME"/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.*/mingw64/bin; do
+    [ -x "$w/gcc.exe" ] && { printf '%s\n' "$w"; return 0; }
+  done
+  [ -x /c/cygwin/bin/x86_64-w64-mingw32-gcc.exe ] && { printf '%s\n' /c/cygwin/bin; return 0; }
+  return 1
+}
 
-export PATH="$PWD/.build-tools:$PATH"
+MINGW_BIN="$(find_mingw)" || {
+  echo "tools/check-gnu.sh: no mingw-w64 gcc found." >&2
+  echo "  Install one (no admin needed):" >&2
+  echo "    winget install --id BrechtSanders.WinLibs.POSIX.UCRT" >&2
+  echo "  or set VOLERY_MINGW_BIN to the directory holding gcc.exe," >&2
+  echo "  or build a terminal windres as .claude/rules/build.md describes." >&2
+  exit 1
+}
+# Windows-style, because the two variables below are read by CreateProcess.
+MINGW_WIN="$(cygpath -m "$MINGW_BIN" 2>/dev/null || printf '%s' "$MINGW_BIN")"
+
+export PATH="$MINGW_BIN:$PATH"
 export RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu
-export SKEIN_REAL_WINDRES=C:/cygwin/bin/windres.exe
-export CC_x86_64_pc_windows_gnu=C:/cygwin/bin/x86_64-w64-mingw32-gcc.exe
-export CXX_x86_64_pc_windows_gnu=C:/cygwin/bin/x86_64-w64-mingw32-g++.exe
-export AR_x86_64_pc_windows_gnu=C:/cygwin/bin/x86_64-w64-mingw32-ar.exe
+export CC_x86_64_pc_windows_gnu="$MINGW_WIN/gcc.exe"
+export CXX_x86_64_pc_windows_gnu="$MINGW_WIN/g++.exe"
+export AR_x86_64_pc_windows_gnu="$MINGW_WIN/ar.exe"
+
+# The windres shim is only needed where the real one cannot read a Windows path,
+# which is Cygwin's. A mingw-w64 windres handles it, so the shim is optional
+# here and a missing one is no longer an error on this machine.
+if [ ! -x "$MINGW_BIN/windres.exe" ]; then
+  if [ ! -x .build-tools/windres.exe ]; then
+    echo "tools/check-gnu.sh: no windres, and no shim at .build-tools/windres.exe." >&2
+    echo "  Build it once with:" >&2
+    echo "    gcc -O2 -o .build-tools/windres.exe tools/windres-shim.c" >&2
+    exit 1
+  fi
+  export PATH="$PWD/.build-tools:$PATH"
+  export SKEIN_REAL_WINDRES="$MINGW_WIN/windres.exe"
+fi
 
 # sherpa-onnx's shared runtime, for `voice.rs`. `tools/fetch-sherpa.sh` is
 # idempotent and prints the directory, so this one line both ensures and

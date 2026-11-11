@@ -57,6 +57,15 @@ install_into_repo() {
   echo "$VENDOR"
 }
 
+# A warm tree needs no download. The vendor copy is what the build reads, so a
+# checkout that already holds the two DLLs has everything this script exists to
+# provide, and asking the network for what is already on disk fails on a machine
+# whose route to GitHub is behind an intercepting proxy.
+if [ -f "$VENDOR/sherpa-onnx-c-api.dll" ] && [ -f "$VENDOR/onnxruntime.dll" ]; then
+  echo "$VENDOR"
+  exit 0
+fi
+
 if [ -f "$DEST/sherpa-onnx-c-api.lib" ] && [ -f "$DEST/onnxruntime.dll" ]; then
   install_into_repo
   exit 0
@@ -66,7 +75,11 @@ WORK="$(mktemp -d)"
 trap 'rm -r "$WORK" 2>/dev/null || true' EXIT
 
 echo "fetching $ARCHIVE (7.5MB)" >&2
-curl -fsSL --retry 3 -o "$WORK/$ARCHIVE" "$URL"
+# `--ssl-no-revoke` because this network's interception answers the schannel
+# revocation check with CRYPT_E_NO_REVOCATION_CHECK, which curl reports as a
+# TLS failure and which reads as GitHub being down. The certificate itself is
+# fine and is in the Windows store; only the revocation lookup cannot reach out.
+curl -fsSL --ssl-no-revoke --retry 3 -o "$WORK/$ARCHIVE" "$URL"
 bzip2 -t "$WORK/$ARCHIVE"
 
 # **Native bsdtar, never cygwin's.** Cygwin's tar silently truncates a large
