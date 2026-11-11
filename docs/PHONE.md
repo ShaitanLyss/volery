@@ -45,6 +45,31 @@ automatic fallback moves only the wall being read, so the laptop you meant is
 tried again next time rather than being replaced by whichever wire answered.
 `phone.host` seeds the preference at build time and defaults to empty.
 
+### The key is typed here now, and kept by the Keystore (2026-11-11)
+
+The APK used to carry the flyway phrase, baked in from `local.properties` at
+build time. That is the wrong place for it: an APK is copied around far more
+easily than a vault entry, and anybody holding one can pull the phrase out of
+it. It is entered in settings under **key phrase** instead, and the wall's own
+invite line (`phrase · host`) is accepted whole, filling the preferred wall
+with it.
+
+- **Stored wrapped, never in the clear.** `Kept.kt` generates an AES-256 key
+  inside the Android Keystore (StrongBox where the device has it) and keeps the
+  phrase in preferences only as ciphertext under a random IV. A preferences file
+  copied off the device is useless on another one.
+- **No backup.** `android:allowBackup="false"`: a backup of the wrapped phrase
+  would be a file nothing could open, and a restore onto another phone would be
+  a phone that looks configured and is not.
+- **Losing it reads like a fresh install.** A wiped Keystore, a restored backup
+  or a factory reset leaves the phrase unreadable, and the app asks for it again
+  rather than failing in some new way. Lyss chose this over keeping it in memory
+  only, which would mean retyping it after every reboot.
+- **One seam still.** `Config.key` remains the only place the phrase lives in
+  the app, seeded by `Config.restoreKey` before anything dials — so the
+  per-device keys being designed elsewhere can change *what the phrase is* (an
+  enrolment) without touching where it is kept.
+
 ### What the phone does with a wall (2026-11-11)
 
 The first cut spoke questions and drew a count. That is not usable on a walk.
@@ -102,7 +127,9 @@ allows it.
 This is the path the first cut never said out loud, and the reason the mode was
 hard to find:
 
-1. install the app (it carries the flyway key at build time);
+1. install the app, open it, and paste the invite into settings under
+   **key phrase** (the wall's own `phrase · host` line works, and fills the
+   preferred wall too);
 2. open it once. The loop starts with the node and keeps polling;
 3. settings, **hands-free, ask me out loud**. That sets seamless listening,
    raises the chatty level if it was off, and asks for the microphone;

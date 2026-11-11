@@ -8,19 +8,19 @@ import androidx.compose.runtime.setValue
 import org.json.JSONArray
 
 /**
- * The fields settings edits and the screens read, seeded from `BuildConfig`
- * (which reads `local.properties` at build time, so the committed project
- * carries no key).
+ * The fields settings edits and the screens read.
  *
  * Two kinds of value live here and they are not kept the same way. The **key
- * phrase** is in memory only, deliberately: it is exactly the thing you type at
- * the wall rather than leave lying around in an app's preferences, and it is
- * seeded from the build when the machine that built the app knew it. The rest —
- * how the phone looks and behaves, and which wall it prefers and reads — are
- * preferences, and a settings screen that forgets your theme the moment the
- * process dies is not a settings screen. They go through [restore] and
- * [persist], a small `SharedPreferences` file; the walls and this phone's name
- * persist with them because neither is a secret.
+ * phrase** is the one secret: it used to be baked into the APK from
+ * `local.properties`, which meant every copy of the APK carried it, and it is
+ * now typed in on this phone and kept wrapped by the Android Keystore
+ * (`Kept.kt`) — so a preferences file copied off the device carries ciphertext
+ * and nothing else. It is read back with [restoreKey] before anything dials.
+ * The rest — how the phone looks and behaves, and which wall it prefers and
+ * reads — are preferences, and a settings screen that forgets your theme the
+ * moment the process dies is not a settings screen. They go through [restore]
+ * and [persist], a small `SharedPreferences` file; the walls and this phone's
+ * name persist with them because neither is a secret.
  */
 object Config {
     /** The wall being read now. Set by a sighting; what `Ears`, `Steer` and the
@@ -36,8 +36,31 @@ object Config {
      *  falls to [host], the roster and then the flyway's directory. */
     var preferred by mutableStateOf(BuildConfig.PHONE_HOST)
 
-    var key by mutableStateOf(BuildConfig.PHONE_KEY)
+    /** The phrase this phone joins the flyway with. Empty until it is typed
+     *  in, and empty again only if the device loses the key that wrapped it —
+     *  which reads exactly like a fresh install, deliberately. */
+    var key by mutableStateOf("")
     var name by mutableStateOf(BuildConfig.PHONE_NAME)
+
+    /** Read the kept phrase before anything dials. Both the activity and the
+     *  service call it: the service can be started by the OS with no activity
+     *  in front of it, and a dial with an empty key fails silently. */
+    fun restoreKey(context: Context) {
+        key = Kept.get(context) ?: ""
+    }
+
+    /** Keep what was typed. The phrase is stored wrapped; an invite pasted in
+     *  the wall's own shape (`phrase · host`) also fills [preferred], because
+     *  the wall that handed you the invite is the one you meant to reach. */
+    fun keepKey(context: Context, typed: String) {
+        val (phrase, wall) = inviteOf(typed)
+        key = phrase
+        if (phrase.isEmpty()) Kept.forget(context) else Kept.put(context, phrase)
+        if (!wall.isNullOrEmpty()) {
+            preferred = wall
+            persist()
+        }
+    }
 
     /** The walls the last sighting showed, in the order the answering wall
      *  listed them. Kept because the wall in [host] may be off while the
@@ -165,4 +188,24 @@ object Config {
             emptyList()
         }
     }
+}
+
+/**
+ * An invite, as a wall hands one over: the phrase, a middle dot, the wall's
+ * name (`key.rs::join` joins them and splits on the same character). Typing
+ * only the phrase is the ordinary case; pasting the whole line is the reason
+ * this exists, and it is also how [Config.preferred] gets filled without a
+ * second field — the wall that gave you the invite is the one you meant.
+ *
+ * Pure, so the two shapes are a thing to read rather than to discover by
+ * pasting; the dot is the only separator, because the phrase has spaces in it
+ * and a dash-dash spelling would collide with its own punctuation.
+ */
+fun inviteOf(typed: String): Pair<String, String?> {
+    val text = typed.trim()
+    val at = text.indexOf('·')
+    if (at < 0) return text to null
+    val phrase = text.substring(0, at).trim()
+    val wall = text.substring(at + 1).trim().ifEmpty { null }
+    return phrase to wall
 }

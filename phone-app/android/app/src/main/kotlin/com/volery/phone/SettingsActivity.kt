@@ -125,11 +125,26 @@ private fun SettingsContent(onBack: () -> Unit) {
             )
             "key" -> FieldSheet(
                 title = "key phrase",
-                label = "the phrase the wall knows you by",
+                label = "paste the invite, or the phrase the wall knows you by",
                 value = Config.key,
                 mono = true,
                 masked = true,
-                onKeep = { Config.key = it },
+                onKeep = {
+                    /* Kept wrapped by the Keystore, and dialled at once: a
+                       phrase you typed and then had to go and find a redial
+                       for is a phrase you would type twice. An invite in the
+                       wall's own shape also fills the preferred wall. */
+                    Config.keepKey(context, it)
+                    if (Config.key.isNotEmpty()) {
+                        NodeService.dial(
+                            context,
+                            Config.firstDoor(),
+                            Config.walkJson(),
+                            Config.key,
+                            Config.name,
+                        )
+                    }
+                },
                 onDismiss = { sheet = null },
             )
             "host" -> FieldSheet(

@@ -143,6 +143,10 @@ private fun VoleryPhone(seedGate: Boolean = false, seedPrompts: Boolean = false)
     // flyway the moment you open it, walking the walls it last saw if the one
     // it was pointed at is off.
     LaunchedEffect(Unit) {
+        /* Before anything asks, because the phrase is no longer in the build:
+           it is opened from the Keystore, and an empty key is the honest state
+           for a phone that has never been given one. */
+        Config.restoreKey(context)
         if (Config.key.isNotEmpty()) {
             NodeService.dial(context, Config.firstDoor(), Config.walkJson(), Config.key, Config.name)
         }

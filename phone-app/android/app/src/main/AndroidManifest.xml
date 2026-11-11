@@ -16,7 +16,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- No backup, deliberately. The phrase this phone joins the flyway with
+         is kept here, wrapped by a Keystore key that cannot leave the device,
+         so a backup of it would be a file nothing could open — and a restore
+         onto another phone would be a phone that looks configured and is not.
+         The handful of preferences a backup would carry (theme, preferred
+         wall) cost one tap to set again. -->
     <application
+        android:allowBackup="false"
         android:label="@string/app_name"
         android:theme="@style/Theme.VoleryPhone">
 

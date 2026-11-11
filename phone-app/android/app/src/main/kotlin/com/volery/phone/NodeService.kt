@@ -128,7 +128,12 @@ class NodeService : Service() {
             sight(host)
             return START_NOT_STICKY
         }
-        val key = intent?.getStringExtra(EXTRA_KEY) ?: BuildConfig.PHONE_KEY
+        /* No build-time seed any more: the phrase is typed on the phone and
+           kept wrapped by the Keystore, so a service the OS starts with no
+           activity in front of it reads it itself. An empty key is answered
+           with "not set" on the roster rather than a dial that goes nowhere. */
+        if (Config.key.isEmpty()) Config.restoreKey(this)
+        val key = intent?.getStringExtra(EXTRA_KEY) ?: Config.key
         val name = intent?.getStringExtra(EXTRA_NAME) ?: BuildConfig.PHONE_NAME
         val remembered = intent?.getStringExtra(EXTRA_REMEMBERED) ?: "[]"
         dial(host, remembered, key, name)

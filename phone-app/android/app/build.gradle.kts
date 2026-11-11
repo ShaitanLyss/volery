@@ -30,7 +30,6 @@ android {
         versionCode = 3
         versionName = "0.3.0"
 
-        buildConfigField("String", "PHONE_KEY", quoted(local.getProperty("phone.key", "")))
         // Empty is the honest default: the walk starts at the flyway's
         // directory and the first wall that answers becomes the one it reads.
         // A name here is a preference, tried first, not a requirement.
