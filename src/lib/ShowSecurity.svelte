@@ -4,7 +4,7 @@
    *
    * A list of controls reads as reassurance. Taking the key and watching what
    * it buys is harder to nod past, and it is the same sentence the other card
-   * will need when the second factor lands: here is the door, here is what
+   * will need when membership lands: here is the door, here is what
    * happens without it.
    */
   import {
@@ -55,7 +55,7 @@
         <div class="thief" class:blocked={guarded}>
           <span class="tag">someone else</span>
           <span class="nm">{guarded ? "holds the key" : "holds the key and joins"}</span>
-          <span class="door">{guarded ? "the door asks for a second factor" : "the door opens"}</span>
+          <span class="door">{guarded ? "the door asks a person" : "the door opens"}</span>
         </div>
       {/if}
     </div>
@@ -68,10 +68,10 @@
       {#if !hardened}
         <button type="button" class="switch" class:on={second} role="switch" aria-checked={second} onclick={() => (second = !second)}>
           <span class="knob" aria-hidden="true"></span>
-          <span class="sword">add the second factor</span>
+          <span class="sword">approve the device</span>
         </button>
       {:else}
-        <span class="shippedline">the second factor is shipped</span>
+        <span class="shippedline">a person approves each device</span>
       {/if}
     </div>
 

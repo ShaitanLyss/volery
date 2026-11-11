@@ -104,7 +104,7 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "security and trust",
     head: "What is protected, and what is still exposed.",
     lede: "Volery keeps its own data on this machine. The flyway is the one thing that leaves, and it is where the risk is.",
-    do: "take the key, then add the second factor.",
+    do: "take the key, then approve the device.",
   },
   {
     id: "next",
@@ -945,7 +945,7 @@ export const COMPARE_NOTE =
 
 /* ── security ───────────────────────────────────────────────────────────── */
 
-/** Flip this when the second factor ships. Both drafts are below, so the
+/** Flip this when membership and the machine-bound vault ship. Both drafts are below, so the
  *  chapter changes by one word and the copy that is no longer true does not
  *  have to be rewritten from memory. */
 export const SECURITY_STAGE: "current" | "hardened" = "current";
@@ -1008,15 +1008,15 @@ export type Plan = { title: string; body: string; status: "shipped" | "planned" 
 export const SECURITY_PLANS: Record<"current" | "hardened", readonly Plan[]> = {
   current: [
     {
-      title: "a second factor for the flyway",
+      title: "membership that is a device, not a key",
       body:
-        "A wall key on its own should not be enough to join a flyway or drive another wall. The plan is a second factor at the two moments that matter: joining, and accepting work from another machine. A stolen key would then be a key to a locked door.",
+        "The wall key should let a machine ask to join and do nothing else. The plan is a member list: every laptop and phone makes a key of its own, and a person approves it on a device that is already a member by comparing six digits on both screens. A stolen key would then be a request nobody answers.",
       status: "planned",
     },
     {
-      title: "credentials bound to this machine",
+      title: "credentials that do not open on another machine",
       body:
-        "A vault entry copied to another laptop should not work there. The plan is to wrap each stored secret with a machine-bound key before it reaches Credential Manager, so the entry is useless anywhere else.",
+        "A vault entry copied to another laptop should not work there. The plan is to wrap each stored secret with a key held by this machine's TPM, before it reaches Credential Manager, and fall back to machine-scope DPAPI where there is no chip. A copied profile and the Windows password would open nothing.",
       status: "planned",
     },
     {
@@ -1034,15 +1034,15 @@ export const SECURITY_PLANS: Record<"current" | "hardened", readonly Plan[]> = {
   ],
   hardened: [
     {
-      title: "a second factor for the flyway",
+      title: "membership that is a device, not a key",
       body:
-        "Joining a flyway, and accepting work from another machine, now ask for a second factor. The wall key alone opens nothing, so a copied key is a key to a locked door.",
+        "Every laptop and phone has a key of its own, and a person approves it on a device that is already a member by comparing six digits on both screens. The wall key still seals the frames and still lets a machine ask to join. It no longer makes anybody a member, so a copied invite is refused at the connection.",
       status: "shipped",
     },
     {
-      title: "credentials bound to this machine",
+      title: "credentials that do not open on another machine",
       body:
-        "Each stored secret is wrapped with a machine-bound key before it reaches Credential Manager. Copying the vault to another laptop yields an entry that cannot be opened there.",
+        "Each stored secret is wrapped by this machine's TPM before it reaches Credential Manager, with machine-scope DPAPI where there is no chip. A copied vault opens nothing, and the panel says which binding a credential has instead of showing it as merely missing.",
       status: "shipped",
     },
     {
@@ -1052,9 +1052,9 @@ export const SECURITY_PLANS: Record<"current" | "hardened", readonly Plan[]> = {
       status: "shipped",
     },
     {
-      title: "one record of what happened",
+      title: "a phone that asks for your fingerprint",
       body:
-        "Every cross-machine verb writes a chronicle row naming the host, the card and the person who answered. The record is the audit trail, not a second log.",
+        "The phone's membership carries a second key the Android Keystore only uses behind a fingerprint, and each session is a short-lived key that one vouches for. A phone in somebody else's hands can read the wall and cannot prompt, answer, or open a card.",
       status: "shipped",
     },
   ],
@@ -1065,7 +1065,7 @@ export const SECURITY_HEADLINE: Record<"current" | "hardened", string> = {
   current:
     "The model today is one key per flyway. That is the part to be honest about, and the next section is what replaces it.",
   hardened:
-    "The flyway key is no longer enough on its own. Membership needs the key and a second factor, and a copied vault does not open on another machine.",
+    "The flyway key no longer makes anybody a member. A device joins when a person approves it on another device, and a vault copied off this machine does not open anywhere else.",
 };
 
 /** What the stolen-key demo says in each state. Pure, so the two halves of the
@@ -1091,7 +1091,7 @@ export function theftStory(stage: "current" | "hardened", stolen: boolean, secon
   return {
     title: "the key is not enough",
     body:
-      "The key still opens the frames, and the join is refused without the second factor. The attacker has ciphertext and no membership, so joining, reading and spawning all stop at the door.",
+      "The key still seals the frames, and the join is refused until a person approves this device on a machine that is already a member. The attacker holds ciphertext and no membership, so reading, answering and spawning all stop at the connection.",
   };
 }
 
