@@ -53,6 +53,11 @@
     if (stage === "review" && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
       stage = "resumed";
+      /* And stop here. A `$state` write is read back synchronously, so the
+         arm below would match the stage this line just set and reset the
+         demo on the same press. The UI review caught it with Enter; Space
+         only looked fine because the reset arm tests Enter alone. */
+      return;
     }
     if ((stage === "resumed" || stage === "filed") && e.key === "Enter") {
       e.preventDefault();

@@ -102,7 +102,7 @@ export const CHAPTERS: readonly Chapter[] = [
     id: "next",
     title: "what comes next",
     head: "What is not built yet.",
-    lede: "Plugins, Volery as an MCP server, and models on Azure so allowance stops being the ceiling.",
+    lede: "Parity with the apps you already use, a wall with depth, and models on Azure so allowance stops being the ceiling.",
   },
 ] as const;
 
@@ -827,6 +827,13 @@ export const NEXT: readonly NextItem[] = [
     tone: "next",
   },
   {
+    title: "skills, connectors and MCPs from the app",
+    body:
+      "A card can be given a skill and a project can share an MCP server today, but both are files somebody edits. The next step is a panel: add a skill, add a connector, add an MCP server, see what it may reach, and turn it off. The wall already knows how to carry the capability; what is missing is a way to choose it from inside the app, and a registry so other people can publish one.",
+    when: "next",
+    tone: "next",
+  },
+  {
     title: "volery as an MCP server",
     body:
       "The same tools a card calls today, offered to anything that speaks MCP. Codex, an IDE agent, a phone, or a script could read the wall, send a prompt, ask a question and wait for the answer. Volery stops being the only place the flock can be driven from.",
@@ -846,6 +853,13 @@ export const NEXT: readonly NextItem[] = [
       "The phone already links the flyway core and can answer a question. Screens go the other way: a machine's display on the wall. Both are the same wire, so the next surface costs a client rather than a protocol.",
     when: "in progress",
     tone: "now",
+  },
+  {
+    title: "a wall you can stand in",
+    body:
+      "A 3D mode gives the wall depth: territories as layers, cards at different distances, plans as strands in space. VR is the same scene with a headset as the display, through WebXR where the runtime exists. Neither changes what a card is; both change how much of the flock you can hold in view at once.",
+    when: "later",
+    tone: "later",
   },
 ];
 

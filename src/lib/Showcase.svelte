@@ -151,6 +151,7 @@
     </div>
   </aside>
 
+  <div class="room">
   <main class="main" bind:this={scroller}>
     <div class="stage">
       <div class="eyebrow">
@@ -188,6 +189,7 @@
       {/key}
 
     </div>
+  </main>
 
     <div class="nav">
       <div class="navin">
@@ -200,7 +202,7 @@
         <span class="count">{at + 1} / {CHAPTERS.length}</span>
       </div>
     </div>
-  </main>
+  </div>
 </div>
 
 <style>
@@ -210,6 +212,7 @@
     z-index: 70;
     display: grid;
     grid-template-columns: 252px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     color: var(--paper);
     font-family: var(--cv-ui, var(--util));
     font-size: 13.5px;
@@ -371,10 +374,21 @@
     border: 1px solid var(--edge);
     background: color-mix(in oklab, var(--surface) 55%, transparent);
   }
-  .main {
-    overflow: auto;
-    padding: 40px 52px 56px;
+  /* The chapter and its bar are two rows of this column, so the bar never
+     covers the chapter. A sticky bar did cover it: the wall's detail strip,
+     the thing a click changes, sat underneath it at 1280x800. */
+  .room {
+    display: flex;
+    flex-direction: column;
     min-width: 0;
+    min-height: 0;
+  }
+  .main {
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 32px 52px 20px;
+    min-width: 0;
+    min-height: 0;
   }
   .stage {
     max-width: 980px;
@@ -429,17 +443,15 @@
       transform: translateY(7px);
     }
   }
-  /* The chapter's own bar stays at the foot of the window. Six of nine
-     chapters are taller than 800px, and a next button below the fold is a
-     next button a presenter has to find while a room waits. */
+  /* The chapter's own bar is a row of the room rather than something floating
+     over it. It used to be sticky, and the wall's detail strip, the thing a
+     card click changes, sat under it at 1280x800 where nobody could see it.
+     Here it can cover nothing. */
   .nav {
-    position: sticky;
-    bottom: 0;
-    z-index: 3;
-    margin: 26px -52px -56px;
-    padding: 13px 52px 15px;
+    flex: none;
+    padding: 12px 52px 14px;
     border-top: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
-    background: linear-gradient(180deg, transparent, var(--well) 34%), var(--well);
+    background: var(--well);
   }
   .navin {
     max-width: 980px;
@@ -522,13 +534,12 @@
       white-space: nowrap;
     }
     .main {
-      padding: 24px 20px 40px;
+      padding: 24px 20px 24px;
     }
     .headline {
       font-size: 30px;
     }
     .nav {
-      margin: 22px -20px -40px;
       padding: 11px 20px 13px;
     }
     .ghost {
