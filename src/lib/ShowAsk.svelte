@@ -78,7 +78,9 @@
     <span class="proj">portfolio</span>
     <span class="title">Split the billing migration</span>
     <span class="ring"><CtxRing ctx={0.67} size={16} /></span>
-    <span class="state">waiting on you</span>
+    <span class="state" data-stage={stage}
+      >{stage === "resumed" ? "working" : stage === "filed" ? "filed" : "waiting on you"}</span
+    >
   </div>
 
   <div class="body">
@@ -193,6 +195,12 @@
     flex: none;
     font-size: 10.5px;
     color: var(--st-ask);
+  }
+  .state[data-stage="resumed"] {
+    color: var(--st-work);
+  }
+  .state[data-stage="filed"] {
+    color: var(--paper-mute);
   }
   .body {
     padding: 15px 16px 13px;
