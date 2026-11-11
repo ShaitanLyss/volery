@@ -656,7 +656,15 @@ export function measureValue(row: UsageRow, key: MeasureKey, rates: RateResolver
     case "usd_modeled":
       return modeledUsd(row, rates);
     case "usd_reported":
-      return row.usdReported;
+      /* **Null on a transcript fact, because a transcript carries no money.**
+         The ingest writes zero there and is right to: pricing is a query-time
+         read of the rate table, and the only rows that can carry a reported
+         figure are the `turn`-provenance ones the backfill writes from the CLI's
+         own `total_cost_usd`. Returning the stored zero for a transcript row
+         made this measure read a flat nothing for every row that exists today,
+         which looks like a price of free rather than like a measurement nobody
+         took. */
+      return row.provenance === "turn" ? row.usdReported : null;
     case "requests":
       return row.requests;
     default:

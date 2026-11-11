@@ -349,11 +349,13 @@ describe("aggregating", () => {
   test("a sum over facts equals a sum over hours for the same window", () => {
     /* The hourly tier is a stored rollup of the fine one, so the two must agree
        about a total even though they disagree about their grain. */
+    /* `turn` provenance for this pair, because a reported dollar only exists on
+       a row the backfill wrote from the CLI's own figure (see the next test). */
     const facts = [
-      fact({ at: T0, inTok: 100, outTok: 10, requests: 1, usdReported: 0.5 }),
-      fact({ at: T0 + 6 * MINUTE, inTok: 250, outTok: 30, requests: 2, usdReported: 1.5 }),
+      fact({ at: T0, inTok: 100, outTok: 10, requests: 1, usdReported: 0.5, provenance: "turn" }),
+      fact({ at: T0 + 6 * MINUTE, inTok: 250, outTok: 30, requests: 2, usdReported: 1.5, provenance: "turn" }),
     ];
-    const hours = [hour({ hour: T0, inTok: 350, outTok: 40, requests: 3, usdReported: 2 })];
+    const hours = [hour({ hour: T0, inTok: 350, outTok: 40, requests: 3, usdReported: 2, provenance: "turn" })];
 
     expect(fold(facts, "tokens").value).toBe(390);
     expect(fold(hours, "tokens").value).toBe(390);
@@ -387,8 +389,22 @@ describe("aggregating", () => {
     const s = series([row], "usd_modeled", "1h");
     expect(s.points).toEqual([]);
     expect(s.unpriced).toBe(1);
-    /* usd_reported is still the figure that wins for that card. */
-    expect(fold([{ ...row, usdReported: 3 }], "usd_reported").value).toBe(3);
+    /* usd_reported is still the figure that wins for that card, and it is only
+       ever on a `turn` row: a transcript fact carries no money at all. */
+    expect(fold([{ ...row, provenance: "turn", usdReported: 3 }], "usd_reported").value).toBe(3);
+    expect(fold([{ ...row, usdReported: 3 }], "usd_reported").value).toBeNull();
+  });
+
+  test("a reported dollar needs a turn row behind it", () => {
+    /* The ingest writes zero into a transcript fact and is right to: the
+       record carries no money, and pricing is a query-time read of the rate
+       table. Reading that stored zero as a reported figure made the measure
+       flat for every row that exists today, which reads as free rather than
+       as unmeasured. */
+    const transcript = fact({ usdReported: 9 });
+    const backfill = fact({ provenance: "turn", usdReported: 9 });
+    expect(measureValue(transcript, "usd_reported")).toBeNull();
+    expect(measureValue(backfill, "usd_reported")).toBe(9);
   });
 
   test("the hour row carries no session or subagent, and dimsOf says so", () => {
