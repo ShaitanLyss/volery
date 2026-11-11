@@ -525,6 +525,16 @@ was said, and `seen_count` says how many records carried it.
 
 A prompt's content is a string or text blocks; image blocks are counted and never stored.
 
+**A prompt the wall wrote is not a person's prompt.** A relay message, a wake, a resume prompt,
+a job prompt, a nudge and a pick-up are all `user` records, and counting them would put
+Volery's own words into the kind mix and into any redirect or nudge rate, which is the one
+number the trace exists to make trustworthy. They are rejected by their openings the same way
+an injected marker is (the openings come from the app's own composers rather than from this
+list, and `test/prompt.test.ts` holds the two together), plus the mark a heal appends to a
+retry, which is detected anywhere because it is a sentence this app composes. They are
+**dropped rather than recorded**: the trace is the person's, and a count of wall chatter is a
+different reading nobody asked for.
+
 What is kept is the **form**: characters, words, lines, code fences, code lines, images,
 question marks, the kind, and the redaction counts. Length is measured *before* redaction, so
 taking out a key does not change the shape being read.
@@ -3296,6 +3306,9 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   prompt; the five-day scan yields 832 prompts out of 29,268 user records, and the classes
   partition; a fenced prompt reaches the form with its lines and fences intact, which the
   flattened title path would have destroyed.
+- **A prompt the wall wrote is not counted.** One fixture record for each composer (relay,
+  wake, resume, jobs, nudge, pick-up, the heal retry mark) is excluded, and a real prompt that
+  merely mentions `[skein relay]` mid-sentence is kept.
 - **A repeated prompt id keeps the first.** A prompt written twice at two timestamps produces
   one row at the first `at` with `seen_count = 2`, and a stop note sharing the id does not
   replace it.
