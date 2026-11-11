@@ -5612,9 +5612,22 @@ pub fn open_turn_row(conn: &Connection, conversation_id: &str) -> Result<i64, St
 /// silence — the same hazard that made `kind` and `account_label` optional on
 /// `record_turn`. There is nothing here for a caller to get wrong.
 #[tauri::command]
-pub fn open_turn(store: tauri::State<'_, Store>, conversation_id: String) -> Result<(), String> {
-    let conn = store.0.lock().unwrap();
-    open_turn_row(&conn, &conversation_id).map(|_| ())
+pub async fn open_turn(app: tauri::AppHandle, conversation_id: String) -> Result<(), String> {
+    /* `off_main`, because this command waits on the store mutex and one writer
+       holds it for a transaction rather than a statement (`analytics::pass`).
+       A synchronous command runs on the thread that dispatched the IPC, which
+       is the thread that paints the wall; waiting there for a lock is how a
+       command that does almost nothing freezes every card. */
+    crate::off_main(move || {
+        use tauri::Manager;
+        let store = app.state::<Store>();
+        let conn = store
+            .0
+            .lock()
+            .map_err(|_| "the store is wedged".to_string())?;
+        open_turn_row(&conn, &conversation_id).map(|_| ())
+    })
+    .await?
 }
 
 /// One row per settled turn, and the only place the wall records what a turn
@@ -5664,8 +5677,8 @@ pub fn open_turn(store: tauri::State<'_, Store>, conversation_id: String) -> Res
 /// the month's figure by its cost.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn record_turn(
-    store: tauri::State<'_, Store>,
+pub async fn record_turn(
+    app: tauri::AppHandle,
     conversation_id: String,
     status_tier: String,
     kind: Option<String>,
@@ -5676,19 +5689,31 @@ pub fn record_turn(
     usd: f64,
     account_label: Option<String>,
 ) -> Result<(), String> {
-    let conn = store.0.lock().unwrap();
-    record_turn_row(
-        &conn,
-        &conversation_id,
-        &status_tier,
-        kind.as_deref(),
-        in_tokens,
-        out_tokens,
-        cache_read_tokens,
-        cache_write_tokens,
-        usd,
-        account_label.as_deref(),
-    )
+    /* `off_main` for `open_turn`'s reason: this waits on the store mutex, and
+       the analytics ingest holds it for a transaction. Every card settles a
+       turn on this command, so the one place it must never wait is the thread
+       painting them. */
+    crate::off_main(move || {
+        use tauri::Manager;
+        let store = app.state::<Store>();
+        let conn = store
+            .0
+            .lock()
+            .map_err(|_| "the store is wedged".to_string())?;
+        record_turn_row(
+            &conn,
+            &conversation_id,
+            &status_tier,
+            kind.as_deref(),
+            in_tokens,
+            out_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            usd,
+            account_label.as_deref(),
+        )
+    })
+    .await?
 }
 
 /// The statement under `record_turn`, so the two arms — closing an open row,

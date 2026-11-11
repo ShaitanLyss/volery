@@ -2273,13 +2273,19 @@ fn settle_lost_turn(app: &AppHandle, id: &str, at: i64, after: i64, bound: i64) 
 /// yet, and `#beginTurn`'s guard cannot tell it from the gesture's. `turn_open`
 /// is the process's own mark, so it can.
 #[tauri::command]
-pub fn abandon_turn(app: AppHandle, conversation_id: String) -> Result<(), String> {
-    if turn_open(&app, &conversation_id) == Some(true) {
-        return Ok(());
-    }
-    let store = app.state::<crate::store::Store>();
-    let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-    crate::store::abandon_turn_row(&conn, &conversation_id)
+pub async fn abandon_turn(app: AppHandle, conversation_id: String) -> Result<(), String> {
+    /* `off_main`: it takes the store mutex, which the analytics ingest holds
+       for a transaction, and a synchronous command would wait for it on the
+       thread that paints the wall. */
+    crate::off_main(move || {
+        if turn_open(&app, &conversation_id) == Some(true) {
+            return Ok(());
+        }
+        let store = app.state::<crate::store::Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        crate::store::abandon_turn_row(&conn, &conversation_id)
+    })
+    .await?
 }
 
 /// Write the turn mark through to the card's row.
