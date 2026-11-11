@@ -334,6 +334,13 @@
   .viewport:active {
     cursor: grabbing;
   }
+  /* The shell focuses this so the tour's keys have somewhere to land, and a
+     wall-sized amber focus ring is not a control's outline. The keyboard still
+     works; the ring goes. */
+  .viewport:focus,
+  .viewport:focus-visible {
+    outline: none;
+  }
   .plane {
     position: absolute;
     left: 0;

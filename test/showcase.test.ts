@@ -2,11 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 import {
+  ADMISSION_SAID,
   ASK,
+  ASSIGNMENTS,
+  ASSIGNMENT_SUMMARY,
+  BOOST_SAID,
   CARD_PROSE,
   CARD_PROSE_AFTER,
   CARD_RUN,
   CHAPTERS,
+  DESK,
   COMPARE,
   COMPARE_NOTE,
   NEXT,
@@ -17,8 +22,10 @@ import {
   SECURITY_PLANS,
   SECURITY_STAGE,
   SHOW_CARD_H,
+  SLEEP_SAID,
   SHOW_CARD_W,
   STATUS_SAID,
+  USAGE_SAID,
   TABS_STORY,
   TERMINAL_LINES,
   TOOLS,
@@ -32,9 +39,9 @@ import {
 } from "../src/lib/showcase";
 
 describe("the tour's chapters", () => {
-  test("there are nine of them and every id is reachable", () => {
-    expect(CHAPTERS.length).toBe(9);
-    expect(new Set(CHAPTERS.map((c) => c.id)).size).toBe(9);
+  test("there are ten of them and every id is reachable", () => {
+    expect(CHAPTERS.length).toBe(10);
+    expect(new Set(CHAPTERS.map((c) => c.id)).size).toBe(10);
   });
 
   test("every chapter has a title and a lede worth reading", () => {
@@ -98,6 +105,78 @@ describe("the demo wall", () => {
         (c) => c.x >= t.x && c.y >= t.y && c.x + SHOW_CARD_W <= t.x + t.w && c.y + SHOW_CARD_H <= t.y + t.h,
       );
       expect(inside.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("spreading the work", () => {
+  test("every assignment names all four resources and says why", () => {
+    for (const a of ASSIGNMENTS) {
+      for (const f of ["job", "model", "effort", "source", "host", "why"] as const) {
+        expect(a[f].trim().length).toBeGreaterThan(2);
+      }
+    }
+  });
+
+  test("the fan-out actually spreads", () => {
+    expect(new Set(ASSIGNMENTS.map((a) => a.model)).size).toBeGreaterThanOrEqual(3);
+    expect(new Set(ASSIGNMENTS.map((a) => a.source)).size).toBe(3);
+    expect(new Set(ASSIGNMENTS.map((a) => a.host)).size).toBe(2);
+  });
+
+  test("the summary is counted from the assignments, not typed", () => {
+    expect(ASSIGNMENT_SUMMARY).toContain(`${ASSIGNMENTS.length} cards`);
+    expect(ASSIGNMENT_SUMMARY).toContain("2 subscriptions and 1 balance");
+    expect(ASSIGNMENT_SUMMARY).toContain("2 machines");
+  });
+
+  test("boost, admission, sleep and usage each say enough to act on", () => {
+    for (const said of [BOOST_SAID, ADMISSION_SAID, SLEEP_SAID, USAGE_SAID]) {
+      expect(said.trim().length).toBeGreaterThan(60);
+    }
+  });
+});
+
+describe("the desk", () => {
+  test("every thing says what it is, what it needs and what it costs", () => {
+    for (const d of DESK) {
+      expect(d.name.trim().length).toBeGreaterThan(2);
+      expect(d.line.trim().length).toBeGreaterThan(30);
+      expect(d.needs.trim().length).toBeGreaterThan(3);
+      expect(d.cost.trim().length).toBeGreaterThan(20);
+      expect(["wall", "machine", "wire", "service"]).toContain(d.where);
+    }
+  });
+
+  test("all four places have something in them, so no heading is empty", () => {
+    for (const w of ["wall", "machine", "wire", "service"] as const) {
+      expect(DESK.filter((d) => d.where === w).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("the services the user named are on it", () => {
+    for (const id of ["asana", "pipelines", "spotify", "claude-status", "analytics", "sources"]) {
+      expect(DESK.some((d) => d.id === id)).toBe(true);
+    }
+  });
+
+  test("the things that are the wall's identity are on it", () => {
+    for (const id of [
+      "plans",
+      "instructions",
+      "themes",
+      "chronicle",
+      "pictures",
+      "toys",
+      "away",
+      "notifications",
+      "portage",
+      "kit",
+      "compact",
+      "finder",
+      "voice",
+    ]) {
+      expect(DESK.some((d) => d.id === id)).toBe(true);
     }
   });
 });
@@ -243,6 +322,13 @@ describe("the copy is the house's", () => {
     const copy = strings({
       CHAPTERS,
       WALL_CARDS,
+      ASSIGNMENTS,
+      ASSIGNMENT_SUMMARY,
+      BOOST_SAID,
+      ADMISSION_SAID,
+      SLEEP_SAID,
+      USAGE_SAID,
+      DESK,
       STATUS_SAID,
       CARD_PROSE,
       CARD_PROSE_AFTER,

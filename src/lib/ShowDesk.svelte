@@ -8,30 +8,59 @@
   import { DESK, type DeskThing } from "./showcase";
 
   const GLYPH: Record<string, IconName> = {
+    plans: "plan",
+    instructions: "quote",
+    themes: "sun",
+    chronicle: "list",
+    pictures: "image",
+    toys: "flame",
+    away: "moon",
+    notifications: "bell",
+    portage: "up",
+    kit: "brain",
+    compact: "min",
     flyway: "globe",
     screens: "screen",
     phone: "chat",
     browser: "search",
     editor: "pen",
     shell: "term",
+    finder: "search",
+    voice: "mic",
+    timers: "clock",
     pipelines: "pipe",
     asana: "board",
     spotify: "wave",
-    timers: "clock",
+    "claude-status": "pulse",
+    analytics: "gauge",
+    sources: "wave",
   };
 
   const WHERE: Record<DeskThing["where"], string> = {
+    wall: "the wall itself",
     machine: "this machine",
     wire: "another machine",
     service: "a service outside",
   };
 
-  let at = $state("flyway");
+  let at = $state("plans");
+  let list = $state<HTMLElement>();
   const thing = $derived(DESK.find((d) => d.id === at) ?? DESK[0]);
+
+  /* The list is long enough to scroll inside its own box, so the keyboard
+     selection has to be brought back into view or it walks off the bottom. */
+  $effect(() => {
+    const el = list?.querySelector<HTMLElement>(`[data-id="${at}"]`);
+    if (!el || !list) return;
+    const r = el.getBoundingClientRect();
+    const l = list.getBoundingClientRect();
+    if (r.top < l.top) list.scrollTop += r.top - l.top - 6;
+    else if (r.bottom > l.bottom) list.scrollTop += r.bottom - l.bottom + 6;
+  });
 </script>
 
 <div class="desk">
-  <div class="rows" role="listbox" aria-label="the rest of the desk" tabindex="0" data-tour-focus
+  <div class="rows" bind:this={list} role="listbox" aria-label="the rest of the desk" tabindex="0" data-tour-focus
     onkeydown={(e) => {
       const i = DESK.findIndex((d) => d.id === at);
       if (e.key === "ArrowDown" || e.key === "j") {
@@ -43,12 +72,16 @@
       }
     }}
   >
-    {#each DESK as d (d.id)}
+    {#each DESK as d, i (d.id)}
+      {#if i === 0 || DESK[i - 1].where !== d.where}
+        <div class="grouphead">{WHERE[d.where]}</div>
+      {/if}
       <button
         type="button"
         class="row"
         class:on={at === d.id}
         role="option"
+        data-id={d.id}
         aria-selected={at === d.id}
         onclick={() => (at = d.id)}
       >
@@ -57,7 +90,6 @@
           <span class="nm">{d.name}</span>
           <span class="ln">{d.line}</span>
         </span>
-        <span class="where">{WHERE[d.where]}</span>
       </button>
     {/each}
   </div>
@@ -98,6 +130,8 @@
     display: grid;
     gap: 2px;
     padding: 5px;
+    max-height: 468px;
+    overflow-y: auto;
     border-radius: 11px;
     border: 1px solid color-mix(in oklab, var(--edge) 78%, transparent);
     background: color-mix(in oklab, var(--well) 55%, transparent);
@@ -106,9 +140,17 @@
   .rows:focus-visible {
     border-color: color-mix(in oklab, var(--edge) 50%, var(--paper) 22%);
   }
+  .grouphead {
+    grid-column: 1 / -1;
+    padding: 8px 9px 3px;
+    font-size: 8.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--paper-faint);
+  }
   .row {
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto;
+    grid-template-columns: 22px minmax(0, 1fr);
     align-items: center;
     gap: 9px;
     padding: 7px 9px;
@@ -150,13 +192,6 @@
     color: var(--paper-faint);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .where {
-    font-size: 9px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--paper-faint);
     white-space: nowrap;
   }
   .fact {

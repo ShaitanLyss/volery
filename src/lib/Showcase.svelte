@@ -17,11 +17,12 @@
   import ShowCompare from "./ShowCompare.svelte";
   import ShowDesk from "./ShowDesk.svelte";
   import ShowNext from "./ShowNext.svelte";
+  import ShowMeans from "./ShowMeans.svelte";
   import ShowRelay from "./ShowRelay.svelte";
   import ShowSecurity from "./ShowSecurity.svelte";
   import ShowTabs from "./ShowTabs.svelte";
   import ShowTranscript from "./ShowTranscript.svelte";
-  import ShowWall from "./ShowWall.svelte";
+  import ShowViews from "./ShowViews.svelte";
   import { CHAPTERS, chapterIndex, nextChapter, previousChapter, progress, type ChapterId } from "./showcase";
 
   let { onclose, start = "why" }: { onclose: () => void; start?: ChapterId } = $props();
@@ -100,6 +101,13 @@
       go(Number(e.key) - 1);
       return;
     }
+    /* `0` is the last chapter, so the tenth is one key rather than an arrow
+       past the ninth. There is no tenth digit. */
+    if (e.key === "0") {
+      e.preventDefault();
+      go(CHAPTERS.length - 1);
+      return;
+    }
     if ((e.key === " " || e.key === "Enter") && !on) {
       e.preventDefault();
       at = nextChapter(at);
@@ -147,7 +155,7 @@
     <div class="railfoot">
       <div class="pbar" aria-hidden="true"><span style:width={`${progress(at) * 100}%`}></span></div>
       <p class="keys"><kbd>&larr;</kbd><kbd>&rarr;</kbd> move &nbsp; <kbd>1</kbd> to <kbd>9</kbd> jump</p>
-      <p class="keys"><kbd>esc</kbd> close</p>
+      <p class="keys"><kbd>0</kbd> last &nbsp; <kbd>esc</kbd> close</p>
     </div>
   </aside>
 
@@ -169,13 +177,15 @@
           {#if chapter.id === "why"}
             <ShowTabs />
           {:else if chapter.id === "wall"}
-            <ShowWall />
+            <ShowViews />
           {:else if chapter.id === "card"}
             <ShowTranscript />
           {:else if chapter.id === "ask"}
             <ShowAsk />
           {:else if chapter.id === "relay"}
             <ShowRelay />
+          {:else if chapter.id === "means"}
+            <ShowMeans />
           {:else if chapter.id === "desk"}
             <ShowDesk />
           {:else if chapter.id === "compare"}

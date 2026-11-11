@@ -1,7 +1,7 @@
 # The tour: what Volery is, shown in Volery
 
 `<space>h`, the title bar's **tour** button, an offer on an empty wall and on the first
-launch's wall-or-chat question. A full-window overlay with nine chapters, one idea each, and
+launch's wall-or-chat question. A full-window overlay with ten chapters, one idea each, and
 one thing to touch in each.
 
 It exists for two audiences that are the same audience: a room being introduced to the app,
@@ -43,10 +43,12 @@ likeness when it takes a live card.
 
 ## Chapter order is the argument
 
-`CHAPTERS` in `showcase.ts` is one array, and the order is the argument: why, the wall, a
-card, a question, cards together, the desk, the comparison, security, what comes next. The
-rail, the keyboard numbers, the progress line and the next/previous labels all read from it,
-so a chapter added tomorrow costs one entry and one branch in `Showcase.svelte`.
+`CHAPTERS` in `showcase.ts` is one array, and the order is the argument: why, the wall and
+chat view, a card, a question, cards together, spreading the work, the desk, the comparison,
+security, what comes next. The rail, the keyboard numbers, the progress line and the
+next/previous labels all read from it, so a chapter added tomorrow costs one entry and one
+branch in `Showcase.svelte`. `1` to `9` jump to the first nine and `0` to the last, because
+there is no tenth digit.
 
 A chapter carries a `title` (the rail's word), a `head` (a sentence), a `lede` and an optional
 `do` line. The head is not the title repeated: `test/showcase.test.ts` asserts they differ.

@@ -23,6 +23,7 @@ export type ChapterId =
   | "card"
   | "ask"
   | "relay"
+  | "means"
   | "desk"
   | "compare"
   | "security"
@@ -51,10 +52,10 @@ export const CHAPTERS: readonly Chapter[] = [
   },
   {
     id: "wall",
-    title: "the wall",
+    title: "the wall, and chat view",
     head: "The whole flock, on one surface.",
-    lede: "Every conversation on one surface. Colour is the state, so you can read the room without opening anything.",
-    do: "drag to pan, wheel to zoom, click a card.",
+    lede: "Every conversation on one surface, or one in front of you with the rest down the side. Same agents, same sessions, same queue.",
+    do: "switch between the wall and chat view, then drag, zoom and click a card.",
   },
   {
     id: "card",
@@ -67,7 +68,7 @@ export const CHAPTERS: readonly Chapter[] = [
     id: "ask",
     title: "when an agent asks",
     head: "An agent that needs an answer stops, and says so.",
-    lede: "A question parks the turn. Answering it resumes the same turn, in the same session.",
+    lede: "A question parks the turn. Answering it resumes the same turn; if you are away, it is filed for the morning instead of timing out.",
     do: "pick an option.",
   },
   {
@@ -76,6 +77,13 @@ export const CHAPTERS: readonly Chapter[] = [
     head: "A card can open a card.",
     lede: "A card can open another card, send it a message, and read what it said without costing it a turn.",
     do: "send a message, then open a worker.",
+  },
+  {
+    id: "means",
+    title: "spreading the work",
+    head: "Five workers, four models, two machines.",
+    lede: "A coordinator can open each card on the model, the effort, the account and the machine that piece deserves. The wall routes the work; you set the budget.",
+    do: "click a worker to see what its assignment buys.",
   },
   {
     id: "desk",
@@ -262,6 +270,85 @@ export const STATUS_SAID: Record<Status, string> = {
   idle: "dormant, it wakes when you send",
 };
 
+/* ── spreading the work ─────────────────────────────────────────────────── */
+
+/** One card a coordinator opened, and the four resources it was given. This
+ *  is the shape of the argument: a fan-out is not four copies of one choice,
+ *  it is four different choices made in one call. */
+export type Assignment = {
+  id: string;
+  job: string;
+  model: string;
+  effort: string;
+  /** Whose money, which may be a subscription or a provider balance. */
+  source: string;
+  host: string;
+  why: string;
+};
+
+export const ASSIGNMENTS: readonly Assignment[] = [
+  {
+    id: "test",
+    job: "read the failing test",
+    model: "haiku 5.5",
+    effort: "low",
+    source: "work subscription",
+    host: "this laptop",
+    why: "Reading a stack trace is cheap work. A small model at low effort finds the line; spending Opus on it buys nothing.",
+  },
+  {
+    id: "fix",
+    job: "write the fix",
+    model: "sonnet 5.5",
+    effort: "medium",
+    source: "work subscription",
+    host: "this laptop",
+    why: "The fix touches three files and the suite. Sonnet at medium is what this wall opens most implementation cards on.",
+  },
+  {
+    id: "review",
+    job: "review the diff",
+    model: "opus 5.5",
+    effort: "high",
+    source: "personal subscription",
+    host: "this laptop",
+    why: "A review is the one place a bigger model pays. Naming the account keeps the spend off the work subscription.",
+  },
+  {
+    id: "build",
+    job: "run the Unreal build",
+    model: "sonnet 5.5",
+    effort: "medium",
+    source: "work subscription",
+    host: "the desktop",
+    why: "The toolchain and the GPU are on the desktop. The flyway opens the card there, and this wall still collects the result and its process.",
+  },
+  {
+    id: "logs",
+    job: "summarise the logs",
+    model: "deepseek flash",
+    effort: "low",
+    source: "DeepSeek balance",
+    host: "this laptop",
+    why: "A different provider, billed per token, for an hour of reading that does not need the subscription at all.",
+  },
+] as const;
+
+/** The line under the demo, counted from the data so it cannot drift. */
+export const ASSIGNMENT_SUMMARY = `${ASSIGNMENTS.length} cards · haiku, sonnet, opus and flash · 2 subscriptions and 1 balance · 2 machines`;
+
+export const BOOST_SAID =
+  "If a subscription runs out mid-job, boost spends the organisation's API credits rather than stopping the wall. It is a switch, a budget, and a light on the cards it covers.";
+
+export const ADMISSION_SAID =
+  "A new card queues when the five-hour window is past 85% and another card is still working on the same account. Running work finishes before new work starts, so a window does not end with eight half-done contexts re-reading themselves at the reset.";
+
+export const SLEEP_SAID =
+  "An idle card puts its process down after three hours, and wakes in five to seven seconds. Inside the hour the prompt cache still answers, so a nap costs no tokens.";
+
+export const USAGE_SAID =
+  "The accounts panel shows each window's reset, what is left and today's spend. The title bar carries the burn rate, and analytics reads token consumption per card, account and project. The design is finalised; implementation is under way.";
+
 /* ── the transcript ─────────────────────────────────────────────────────── */
 
 /** What the terminal shows. Not a real JSONL dump (that would be unreadable in
@@ -410,34 +497,100 @@ export type DeskThing = {
   needs: string;
   /** What it spends, and what it can reach. */
   cost: string;
-  /** `machine` is this computer, `wire` is another one, `service` is outside. */
-  where: "machine" | "wire" | "service";
+  /** `wall` is the surface itself, `machine` is this computer, `wire` is
+   *  another one, and `service` is outside. The list is ordered by this, and
+   *  the desk draws a heading where it changes. */
+  where: "wall" | "machine" | "wire" | "service";
 };
 
 export const DESK: readonly DeskThing[] = [
   {
-    id: "flyway",
-    name: "the flyway",
-    line: "Your other machines as one roster. A card runs where the repo, the toolchain and the credentials already are.",
-    needs: "a wall key on each machine.",
-    cost: "one sealed connection per wall. Work crosses it; tokens never do.",
-    where: "wire",
+    id: "plans",
+    name: "plans",
+    line: "A card's plan drawn as a frise on the wall: the steps, what each one found, and a receipt that opens the write in the transcript.",
+    needs: "a card in plan mode, or an agent that keeps a timeline.",
+    cost: "nothing. A plate is a reading, not a process.",
+    where: "wall",
   },
   {
-    id: "screens",
-    name: "screens",
-    line: "A machine's display on the wall, or every display on the flyway at once.",
-    needs: "a wall on the flyway, and a person there to allow it.",
-    cost: "video, sealed per connection and consent per session.",
-    where: "wire",
+    id: "instructions",
+    name: "instructions",
+    line: "Standing instructions for the whole wall and for each project, handed to every card when it starts.",
+    needs: "nothing.",
+    cost: "a system prompt, not a lock. A card already running hears an edit at its next start.",
+    where: "wall",
   },
   {
-    id: "phone",
-    name: "the phone",
-    line: "See what the flock is doing and answer a question from your pocket.",
-    needs: "the flyway key and a phone build.",
-    cost: "text: a question, an answer, a card's state. Not a transcript.",
-    where: "wire",
+    id: "themes",
+    name: "themes",
+    line: "Two rings: how the reading is set and how the wall looks. Live, reversible, and remembered per machine.",
+    needs: "nothing.",
+    cost: "one click. The base skin removes every override, exactly.",
+    where: "wall",
+  },
+  {
+    id: "chronicle",
+    name: "the chronicle",
+    line: "What happened on this wall while you were not looking, as a wisp when it lands and a row forever.",
+    needs: "nothing.",
+    cost: "one row per event. The trim deletes the rows you have seen first.",
+    where: "wall",
+  },
+  {
+    id: "pictures",
+    name: "pinned pictures",
+    line: "Drop an image on the wall and it stays as reference beside the work.",
+    needs: "nothing.",
+    cost: "a copy in the app's data, deleted with the pin.",
+    where: "wall",
+  },
+  {
+    id: "toys",
+    name: "the toy shelf",
+    line: "A synthesiser and four puzzles for the hands while an agent works.",
+    needs: "nothing.",
+    cost: "one overlay, no allowance, and no frames when it is closed.",
+    where: "wall",
+  },
+  {
+    id: "away",
+    name: "away mode",
+    line: "Files every question, silences the chime and the peek, and greets you with the pile when you are back.",
+    needs: "nothing.",
+    cost: "nothing. It is a switch, not a pause: the cards keep working.",
+    where: "wall",
+  },
+  {
+    id: "notifications",
+    name: "notifications",
+    line: "A card that needs you flashes the taskbar, then shows the peek window, then rings a chime if you asked for one.",
+    needs: "nothing.",
+    cost: "one attention ladder. The chime is off until you turn it on.",
+    where: "wall",
+  },
+  {
+    id: "portage",
+    name: "portage",
+    line: "Carry the wall's layout off as a file, or bring one in. A territory can be re-rooted when its folder moves.",
+    needs: "nothing.",
+    cost: "a file. No secrets travel in it.",
+    where: "wall",
+  },
+  {
+    id: "kit",
+    name: "the card kit",
+    line: "Every project card starts with a coordination skill and two subagents: a red team and a verifier.",
+    needs: "a project card.",
+    cost: "a plugin directory on this machine. Nothing leaves it.",
+    where: "wall",
+  },
+  {
+    id: "compact",
+    name: "compact and renew",
+    line: "A full card can fold its context, or start a fresh session from a note it writes, keeping its children, its queue and its subscriptions.",
+    needs: "a card with a long session.",
+    cost: "one turn. The old session stays on disk.",
+    where: "wall",
   },
   {
     id: "browser",
@@ -464,6 +617,54 @@ export const DESK: readonly DeskThing[] = [
     where: "machine",
   },
   {
+    id: "finder",
+    name: "the finder",
+    line: "Every file in the project, scored as you type, with a viewer for the ones you open. Space, then ff.",
+    needs: "nothing.",
+    cost: "one list read when you open it; no watch.",
+    where: "machine",
+  },
+  {
+    id: "voice",
+    name: "your voice",
+    line: "Speak a line to the wall. It is transcribed and lands in the dock.",
+    needs: "a microphone and a speech engine.",
+    cost: "one engine, chosen in the panel; the local one runs here.",
+    where: "machine",
+  },
+  {
+    id: "timers",
+    name: "timers",
+    line: "A pomodoro that takes its breaks rather than offering them.",
+    needs: "nothing.",
+    cost: "one tick a second, which the wall already runs.",
+    where: "machine",
+  },
+  {
+    id: "flyway",
+    name: "the flyway",
+    line: "Your other machines as one roster. A card runs where the repo, the toolchain and the credentials already are.",
+    needs: "a wall key on each machine.",
+    cost: "one sealed connection per wall. Work crosses it; tokens never do.",
+    where: "wire",
+  },
+  {
+    id: "screens",
+    name: "screens",
+    line: "A machine's display on the wall, or every display on the flyway at once.",
+    needs: "a wall on the flyway, and a person there to allow it.",
+    cost: "video, sealed per connection and consent per session.",
+    where: "wire",
+  },
+  {
+    id: "phone",
+    name: "the phone",
+    line: "See what the flock is doing and answer a question from your pocket.",
+    needs: "the flyway key and a phone build.",
+    cost: "text: a question, an answer, a card's state. Not a transcript.",
+    where: "wire",
+  },
+  {
     id: "pipelines",
     name: "pipelines and reviews",
     line: "Builds and pull requests from Azure DevOps and GitHub in one list, with the run openable in the app.",
@@ -488,12 +689,28 @@ export const DESK: readonly DeskThing[] = [
     where: "service",
   },
   {
-    id: "timers",
-    name: "timers",
-    line: "A pomodoro that takes its breaks rather than offering them.",
-    needs: "nothing.",
-    cost: "one tick a second, which the wall already runs.",
-    where: "machine",
+    id: "claude-status",
+    name: "claude status",
+    line: "Whether Claude Code is up and signed in on this machine, and what the CLI says about it.",
+    needs: "the CLI.",
+    cost: "one status read, asked when a panel opens and on demand, never on a clock.",
+    where: "service",
+  },
+  {
+    id: "analytics",
+    name: "analytics",
+    line: "Token consumption, context and cost across cards, accounts and projects, and the plan around the windows. In implementation.",
+    needs: "turns on the wall.",
+    cost: "reads the store; no API turn.",
+    where: "service",
+  },
+  {
+    id: "sources",
+    name: "event sources",
+    line: "An Event Hub or Eventstream a card can subscribe to and be woken by, without polling.",
+    needs: "a connection string.",
+    cost: "one connection while a card subscribes; no polling.",
+    where: "service",
   },
 ] as const;
 
