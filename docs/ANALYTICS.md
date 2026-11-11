@@ -516,6 +516,19 @@ summary each read as a human prompt, and the reminder's own text, which can name
 contents, stayed inside the stored body. It also caps the line at 256 KB, which is the one
 unbounded parse in the walk.
 
+**A record the wall itself wrote is not a prompt either, and it is dropped rather than
+counted.** Relay messages, wakes, rousing's resume and jobs prompts, the background-job
+notification, a pick-up, a carry-on and the heal's resend mark all land in a transcript shaped
+exactly like something typed. Counted, the kind mix and the nudge rate would measure Volery
+talking to itself, which is the one number the trace exists to make trustworthy. So they are a
+second list beside the injected markers, each with the class it is, rejected by the same fold.
+The list is a copy of strings the composers write (`relay.ts`, `rousing.ts`, `classify.ts`) and
+`test/prompt.test.ts` holds every entry to the composer it came from. The resend mark is
+**appended** rather than prefixed, so it is found by its shape anywhere: the alternative is
+every healed turn polluting the counts, and a person typing two newlines and
+`skein: attempt N of M at this prompt.` is the rarer case. The counts in the table above were
+measured before this exclusion, so a wall with traffic will come out slightly lower.
+
 **Deduplicate by `(host, prompt_id)`, keeping the first occurrence.** A repeated id carries a
 different timestamp, so `at` cannot be the key; the stop note also reuses the prompt's id, and
 `prompt_of` excludes it before dedupe. In the five-day window there are 832 prompts and 832

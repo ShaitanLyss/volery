@@ -35,6 +35,8 @@ const ITEMS: string[] = [
   "fn without_tag",
   "enum Why",
   "const INJECTED",
+  "const WALL",
+  "fn resend_marked",
   "enum Folded",
   "fn carries_text",
   "fn fold",
@@ -45,6 +47,8 @@ const ITEMS: string[] = [
 const TESTS: string[] = [
   /* The partition, one record per class, and the order that makes it one. */
   "each_user_record_reaches_exactly_one_class",
+  /* The wall's own words, dropped rather than counted. */
+  "the_wall_speaking_is_not_somebody_speaking",
   /* The gate on a record's shape must not reject prose that names it. */
   "prose_about_the_format_is_still_a_prompt",
   /* The reason the fold exists at all: the form keeps the lines and fences. */

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { CARRY_ON_TEXT, NUDGE_PROMPT_TEXT, NUDGE_TEXT, pickUpText } from "../src/lib/classify";
+import { jobsPrompt, resumePrompt } from "../src/lib/rousing";
+import { RELAY_MARK, WAKE_MARK } from "../src/lib/relay";
 
 /* The prompt vocabulary, held to the Rust that decides it.
  *
@@ -85,5 +88,67 @@ describe("the prompt vocabulary", () => {
     expect(statement.trimEnd().endsWith("'none',0,NULL)")).toBe(true);
     /* And a body would arrive as a bound parameter. */
     expect(statement).not.toMatch(/body_sealed\s*=\s*\?/);
+  });
+});
+
+/* The wall's own openings, held to the composers that write them.
+ *
+ * `sessions.rs` keeps a copy of each opening so the fold can reject a record the
+ * wall wrote into a card's stdin. A copy that drifts is one of two failures, and
+ * neither is loud: a wall prompt read as a person's pollutes the mix, and a
+ * person's read as the wall's loses words nobody can recover. So every prefix in
+ * Rust must be the start of exactly one composer's output, and every composer
+ * here must be claimed by one.
+ *
+ * The resend mark is not in this list: it is *appended* rather than prefixed, so
+ * `sessions.rs` finds it by its own shape and `classify.ts::RESEND_CAP` is the
+ * sentence it draws. That link is checked by `classify.test.ts`, which owns the
+ * mark's two halves.
+ */
+const sessions = await Bun.file(new URL("../src-tauri/src/sessions.rs", import.meta.url)).text();
+
+/** The first string of every tuple in `sessions.rs`'s `WALL` array. */
+function wallPrefixes(source: string): string[] {
+  const at = source.indexOf("const WALL:");
+  if (at < 0) throw new Error("sessions.rs has no WALL list");
+  const open = source.indexOf("[", source.indexOf("=", at));
+  const close = source.indexOf("];", open);
+  if (open < 0 || close < 0) throw new Error("WALL is not a closed array literal");
+  return [...source.slice(open, close).matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) =>
+    m[1].replace(/\\(.)/g, "$1"),
+  );
+}
+
+describe("the wall's own prompts", () => {
+  /* One entry per composer, named by the source it comes from so a failure
+     reads as which one drifted. */
+  const composers: [string, string][] = [
+    ["relay.ts", RELAY_MARK],
+    ["relay.ts", WAKE_MARK],
+    ["rousing.ts", resumePrompt()],
+    ["rousing.ts", jobsPrompt([])],
+    ["classify.ts", NUDGE_TEXT],
+    ["classify.ts", NUDGE_PROMPT_TEXT],
+    ["classify.ts", pickUpText("overloaded")],
+    ["classify.ts", CARRY_ON_TEXT],
+  ];
+
+  test("every opener Rust rejects is one a composer writes", () => {
+    const prefixes = wallPrefixes(sessions);
+    expect(prefixes.length).toBe(composers.length);
+    for (const prefix of prefixes) {
+      const claimed = composers.filter(([, text]) => text.startsWith(prefix));
+      expect(claimed.length, `"${prefix}" is not the opening of exactly one composer`).toBe(1);
+    }
+  });
+
+  test("and every composer's opening is rejected", () => {
+    const prefixes = wallPrefixes(sessions);
+    for (const [where, text] of composers) {
+      expect(
+        prefixes.some((prefix) => text.startsWith(prefix)),
+        `${where}'s opening is not in sessions.rs's WALL list`,
+      ).toBe(true);
+    }
   });
 });

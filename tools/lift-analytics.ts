@@ -168,7 +168,9 @@ function sessionsModule(): string {
   const items = [
     "enum Why",
     "const INJECTED",
+    "const WALL",
     "const MAX_PROMPT_BYTES",
+    "fn resend_marked",
     "enum Folded",
     "fn without_tag",
     "fn carries_text",

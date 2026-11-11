@@ -171,6 +171,29 @@ pub(crate) enum Why {
     TaskNotification,
     /// `[Request interrupted by user…`: the CLI's own stop note.
     StopNote,
+    /// `[skein relay]`: a message from another card, the billboard, the sink, a
+    /// subscription or the wall's own ride-along. Everything `relay.rs` and
+    /// `subscribe/` write into a card's stdin.
+    Relay,
+    /// `[skein wake]`: a `wake_me` coming due (`later.rs`).
+    Wake,
+    /// Rousing's resume prompt, sent to a card whose turn was cut off.
+    Resume,
+    /// Rousing's jobs prompt, sent to a card whose background work never
+    /// reported in.
+    Jobs,
+    /// A `skein here` notice: the background-job notification, and the queue
+    /// nudge an older wall still has on the wire.
+    Nudge,
+    /// The pick-up a card is sent when a turn the *wall* opened failed before a
+    /// model saw it.
+    Pickup,
+    /// The carry-on a card is sent when its account ran out and another one has
+    /// room (`classify.ts::CARRY_ON_TEXT`).
+    Carry,
+    /// The heal's mark, **appended** to a prompt that is sent again rather than
+    /// prefixed to it.
+    Resend,
     /// Nothing said once the reminder was taken out.
     NoText,
 }
@@ -265,10 +288,85 @@ const INJECTED: [(&str, Why); 8] = [
     ("[Request interrupted by user", Why::StopNote),
 ];
 
+/// Text the **wall** composed and wrote into a card's stdin.
+///
+/// These are `user` records on disk, exactly like something typed, and counted
+/// as prompts they would make the mix and the nudge rate a measurement of
+/// Volery talking to itself. So they are rejected and dropped: the prompt
+/// record is the person's, and a count of wall chatter is a feature nobody
+/// asked for.
+///
+/// **The strings are copies, and `test/prompt.test.ts` holds each one to the
+/// composer it came from** (`classify.ts`, `rousing.ts`, `relay.ts`), because a
+/// copy that drifts is either a wall prompt read as a person's or a person's
+/// read as the wall's, and the second loses a prompt that cannot be recovered.
+/// Each is anchored at the opening, which is where a composed record starts; a
+/// person *quoting* one is kept, for the reason `INJECTED`'s anchored test
+/// exists.
+const WALL: [(&str, Why); 8] = [
+    ("[skein relay]", Why::Relay),
+    ("[skein wake]", Why::Wake),
+    (
+        "you were part-way through a turn when skein closed",
+        Why::Resume,
+    ),
+    (
+        "background work you started was still running when skein last closed",
+        Why::Jobs,
+    ),
+    (
+        "skein here — a background job you started has reported in",
+        Why::Nudge,
+    ),
+    (
+        "skein here — if a message is queued behind this one, answer that instead",
+        Why::Nudge,
+    ),
+    (
+        "skein: the turn before this one never reached a model",
+        Why::Pickup,
+    ),
+    (
+        "skein: your last turn was cut off because the account's allowance ran out",
+        Why::Carry,
+    ),
+];
+
 /// The longest `user` record worth parsing. A tool result is a `user` record
 /// too, and the big ones are megabytes; nothing worth naming a conversation
 /// after is this long, and this is the one unbounded parse in the walk.
 const MAX_PROMPT_BYTES: usize = 256 * 1024;
+
+/// The heal's mark, which is **appended** and so cannot be an opening test.
+///
+/// `withResendMark` (classify.ts) writes `"\n\n"` and then
+/// `skein: attempt N of M at this prompt.` and a sentence, onto a prompt that is
+/// being sent again. The whole string is one `user` record, so a retry would
+/// otherwise count as a second thing the person said.
+///
+/// **Found by its shape anywhere, and that is safe enough to accept.** The
+/// alternative is to let every healed turn pollute the counts, and it is the
+/// rarer case that a person writes two newlines, `skein: attempt `, two numbers
+/// around ` of ` and ` at this prompt.` by hand. The `\n\n` is the same anchor
+/// `RESEND_MARK_RE` uses on the other side, so the two folds agree about what a
+/// mark is.
+fn resend_marked(text: &str) -> bool {
+    let Some(at) = text.rfind("\n\nskein: attempt ") else {
+        return false;
+    };
+    let rest = &text[at + "\n\n".len()..];
+    let Some(rest) = rest.strip_prefix("skein: attempt ") else {
+        return false;
+    };
+    let Some((n, rest)) = rest.split_once(" of ") else {
+        return false;
+    };
+    let Some((m, _)) = rest.split_once(" at this prompt.") else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    digits(n) && digits(m)
+}
 
 /// What this line is: somebody speaking, or the class of thing it is instead.
 ///
@@ -355,6 +453,16 @@ pub(crate) fn fold(line: &str) -> Folded {
     let opening = said.trim_start();
     if let Some((_, why)) = INJECTED.iter().find(|(m, _)| opening.starts_with(m)) {
         return Folded::Aside(*why);
+    }
+    /* The wall's own words, rejected the same way and for a different reason:
+       they are not one of the eight markers, they are sentences this app wrote
+       to a card. See `WALL`. */
+    if let Some((_, why)) = WALL.iter().find(|(m, _)| opening.starts_with(m)) {
+        return Folded::Aside(*why);
+    }
+    /* The heal's mark is at the other end, so it cannot be an opening test. */
+    if resend_marked(&said) {
+        return Folded::Aside(Why::Resend);
     }
     if said.trim().is_empty() {
         return Folded::Aside(Why::NoText);
@@ -1057,6 +1165,13 @@ mod tests {
             r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"},"timestamp":"2026-08-01T10:00:01.000Z"}"#,
             "\n"
         ));
+        /* And the wall's own words, which are the one record class that looks
+           most like a prompt: a card first spoken to by a relay has to be named
+           by the first thing a *person* said, or stay untitled. */
+        tui.push_str(concat!(
+            r#"{"type":"user","message":{"content":"[skein relay] from \"another card\" (ab12) in volery —\n\nlook at this"},"timestamp":"2026-08-01T10:00:02.000Z"}"#,
+            "\n"
+        ));
         tui.push_str(concat!(
             r#"{"cwd":"C:\\atelier\\skein","gitBranch":"main","type":"user","message":{"content":"the shader representing flow on the 2d plane\nis drawing the wrong way round<system-reminder>this is not what anybody said</system-reminder>"},"timestamp":"2026-08-01T10:01:00.000Z"}"#,
             "\n"
@@ -1275,6 +1390,80 @@ mod tests {
         assert_eq!(class(&said("   ")), Some(Why::NoText));
         /* And the one that is somebody speaking reaches none of them. */
         assert_eq!(class(&said("a real question")), None);
+    }
+
+    /// One record per shape the **wall** writes into a card's stdin, and a
+    /// person who merely talks about one.
+    ///
+    /// The fixtures are the composers' own openings, escaped by the JSON writer
+    /// rather than by hand so a quote or a newline in one is a fixture, not a
+    /// broken line. The last two are the other direction, and they are the ones
+    /// that matter: a prompt *about* the relay format is exactly what gets
+    /// typed in this repository, and rejecting it would lose words nobody can
+    /// get back.
+    #[test]
+    fn the_wall_speaking_is_not_somebody_speaking() {
+        let record = |text: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":{}}}}}"#,
+                serde_json::to_string(text).unwrap()
+            )
+        };
+        let class = |text: &str| match fold(&record(text)) {
+            Folded::Prompt { .. } => None,
+            Folded::Aside(why) => Some(why),
+        };
+        let shapes: [(&str, Why); 8] = [
+            (
+                "[skein relay] from \"a card\" (ab12) in volery —\n\nhere is what I found",
+                Why::Relay,
+            ),
+            (
+                "[skein wake] you asked to be woken about this 10 minutes ago, and it is now:",
+                Why::Wake,
+            ),
+            (
+                "you were part-way through a turn when skein closed, so that turn was cut\noff mid-flight.",
+                Why::Resume,
+            ),
+            (
+                "background work you started was still running when skein last closed, and\nits result was never reported back to you.",
+                Why::Jobs,
+            ),
+            (
+                "skein here — a background job you started has reported in.",
+                Why::Nudge,
+            ),
+            (
+                "skein here — if a message is queued behind this one, answer that instead.",
+                Why::Nudge,
+            ),
+            (
+                "skein: the turn before this one never reached a model — the api was overloaded — so whatever opened it has not been answered",
+                Why::Pickup,
+            ),
+            (
+                "skein: your last turn was cut off because the account's allowance ran out — nothing you did.",
+                Why::Carry,
+            ),
+        ];
+        for (text, want) in shapes {
+            assert_eq!(class(text), Some(want), "the wall's {text:?} was read as a prompt");
+        }
+
+        /* The heal's mark, which is appended rather than prefixed. */
+        let resent = "fix the header, it is one line too tall\n\nskein: attempt 2 of 3 at this prompt. the one before it failed before reaching a model";
+        assert_eq!(class(resent), Some(Why::Resend));
+        /* And a prompt that opens normally but carries no mark is a prompt. */
+        assert_eq!(class("fix the header\n\nskein: the attempt before it failed"), None);
+
+        /* A person talking about the wall is a person. */
+        assert_eq!(class("why does [skein relay] appear in the transcript?"), None);
+        assert_eq!(
+            class("the relay prefixed its message with [skein relay], is that right?"),
+            None
+        );
+        assert_eq!(class("skein: here is what I mean by that"), None);
     }
 
     /// The gate on a record's shape must not reject a prompt that merely *says*
