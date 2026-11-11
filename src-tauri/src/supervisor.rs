@@ -1810,6 +1810,13 @@ fn spawn_now(
                closed there would say the turn took no time at all. One
                `SystemTime::now` beside a parse and an emit is noise. */
             let mut last_seen: Option<i64> = None;
+            /* Whether the turn this stream is in has been settled by a
+               `result`. A stream that ends after one is not a lost turn: the
+               front end's `record_turn` owns that row and is on its way, and
+               closing it here would race it into two rows — a lost one and a
+               boundaryless one carrying the money. Reset when the next turn
+               opens, so a stream that dies in turn 2 is still closed. */
+            let mut saw_result = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
@@ -1835,6 +1842,11 @@ fn spawn_now(
                                of them says "open", while the row only wants
                                telling at the two boundaries. */
                             if turn.swap(open, Ordering::Relaxed) != open {
+                                if open {
+                                    saw_result = false;
+                                } else {
+                                    saw_result = true;
+                                }
                                 persist_turn(&app, &id, open);
                             }
                         }
@@ -1890,9 +1902,18 @@ fn spawn_now(
                is closed here, at the last moment this thread can prove the
                child was alive.
 
-               The two cases differ only in which instant is honest, and both
-               close, because in both the money was spent and nothing reported
-               it:
+               **Only a turn that never settled is closed here.** `saw_result`
+               is the difference: after a `result`, the row belongs to the front
+               end's `record_turn`, which is an asynchronous call that may not
+               have run yet — closing first would strip that turn of its span
+               and race the settle into a second row, one lost and one
+               boundaryless with the money on it. A stream that ends after a
+               result is therefore left alone; if the settle never lands either,
+               the next launch closes it, which is a rarer and cheaper loss.
+
+               For a turn that did not settle, the two exits differ only in
+               which instant is honest, and both close, because in both the
+               money was spent and nothing reported it:
 
                - **The app is not going away** — the child died, was closed,
                  cleared, moved or reaped for rest. The turn was over before
@@ -1906,11 +1927,13 @@ fn spawn_now(
                  to it. A wall closed mid-turn comes back with the loss named as
                  an interval rather than only as a flag. */
             let going = app.state::<Supervisor>().going_away();
-            let lost_at = match last_seen {
-                Some(at) if !going => at,
-                _ => crate::store::now(),
-            };
-            settle_lost_turn(&app, &id, lost_at);
+            if !saw_result {
+                let lost_at = match last_seen {
+                    Some(at) if !going => at,
+                    _ => crate::store::now(),
+                };
+                settle_lost_turn(&app, &id, lost_at);
+            }
             if !going {
                 persist_turn(&app, &id, false);
                 /* And it no longer has a process — rested, closed, cleared,
