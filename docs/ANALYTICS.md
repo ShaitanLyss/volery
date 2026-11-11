@@ -792,10 +792,24 @@ row is then the open turn, carrying its id, session, account, model and provider
   stream closes without a `result`, with `ended_at` set to the last event it saw, the tier
   failed and `usd = 0`. It does the same at a clean quit, so a wall closed mid-turn comes back
   with the lost turn named as a span instead of only a flag, and `interrupted` keeps its job of
-  prompting the agent. **A hard crash runs no reader thread**, so launch closes any row still
-  open with `ended_at = opened_at`, a zero-length row the fold treats as boundaryless: that
-  turn's calls are then no-turn, which is the honest answer, and without the close its interval
-  would run to the end of time and swallow every later call in the session.
+  prompting the agent. **The close is bounded by the stream, not by event time** (a row can
+  only belong to this stream if it opened before the stream ended, and `open_turn` runs on the
+  front end after a batched fold, so a turn killed before it spoke opens *after* the last event
+  the reader saw), and it closes only a row that opened **after the last `result` this stream
+  saw**, which is what tells the lost turn from the settled one whose `record_turn` is still on
+  its way. **A hard crash runs no reader thread**, so launch closes any row still open with
+  `ended_at = opened_at`, a zero-length row the fold treats as boundaryless: that turn's calls
+  are then no-turn, which is the honest answer, and without the close its interval would run to
+  the end of time and swallow every later call in the session.
+- **A turn the wall gives back is closed too.** `#beginTurn` opens the row on the gesture,
+  before the prompt is routed, and five paths then decide the turn never happened: held for an
+  account, refused by the send, kept for a renewal, contradicted by an interrupt that found
+  nothing running, and a held round cancelled. Each already sets `working` false; each now also
+  closes the row at zero length (`abandon_turn`). Without that, `turn_one_open` makes the next
+  open a no-op and the turn that finally runs is dated from the moment you typed, on the
+  account in force then. The command refuses while the process holds a turn of its own
+  (`supervisor::turn_open`), so a relay's or a wake's unspoken turn cannot be mistaken for the
+  gesture's.
 - **A session driven from a terminal has no turn rows**, unchanged. Analytics reads its tokens
   and tools by interval and reports no cost.
 
@@ -2976,6 +2990,10 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
 - **A turn opened by a relay is a turn like any other.** The row is opened by the same
   transition whatever wrote the prompt, so a relay's turn and yours fold separately and neither
   collapses onto the other.
+- **A turn the wall gives back is closed.** A prompt held for an account, a failed send, a
+  round kept for a renewal and an interrupt that found nothing running each close the row the
+  gesture opened, at zero length. The next turn then opens with its own start, and a watch set
+  on it counts from when it ran rather than when you typed.
 - **A prompt written during a turn opens no second row.** Its turn begins later, and only then
   does an `open_turn` insert; until that moment the prompt has no row and no interval, so no
   call can match two turns.
