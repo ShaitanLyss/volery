@@ -89,7 +89,7 @@ export const CHAPTERS: readonly Chapter[] = [
     id: "desk",
     title: "the rest of the desk",
     head: "The things around the agents.",
-    lede: "Pipelines, pull requests, Asana, a browser, your editor, a shell, music, and your other machines.",
+    lede: "The wall's own furniture, the tools on this machine, and the services outside it. Each row says what it needs and what it can reach.",
     do: "click a thing to see what it needs.",
   },
   {
