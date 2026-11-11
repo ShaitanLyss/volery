@@ -103,7 +103,11 @@ describe("the prompt vocabulary", () => {
     ).text();
     const at = vault.indexOf("pub(crate) struct Body {");
     expect(at).toBeGreaterThan(-1);
-    const body = vault.slice(at, vault.indexOf("\n}\n", at));
+    /* `\n}` rather than `\n}\n`: the runner checks out with CRLF, where the
+       closing line is `\r\n}`, and a search for the LF-only form misses and
+       slices to the end of the file. That is how this guard passed here and
+       failed in CI on a file it was right about. */
+    const body = vault.slice(at, vault.indexOf("\n}", at));
     expect(body).not.toMatch(/^\s*(pub\(crate\) )?(text|said|prompt|plain)\s*:/m);
     /* The only fields it may have. `vault_id` is an identifier and the locator
        is a path and an offset; neither is words. */
@@ -124,7 +128,7 @@ describe("the prompt vocabulary", () => {
     expect(above).not.toMatch(/#\[derive\([^)]*Debug/);
     const implAt = vault.indexOf("impl std::fmt::Debug for PromptBody");
     expect(implAt).toBeGreaterThan(-1);
-    const impl = vault.slice(implAt, vault.indexOf("\n}\n", implAt));
+    const impl = vault.slice(implAt, vault.indexOf("\n}", implAt));
     /* A length may be printed; the string may not. `&self.text.as_ref().map(…)`
        is the count and is fine; `&self.text` handed to a field, or a clone, is
        the leak. */
