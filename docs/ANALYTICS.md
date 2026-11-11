@@ -1341,6 +1341,9 @@ the row sits.
 - Rows are capped and scrubbed on the way in (`crate::clean`), and every string is a dimension
   value with a length ceiling. A peer is trusted by the flyway key, but a different build's
   numbers still must not be able to put a bad value in a column this wall reads.
+- **A card's own watch never crosses.** `spend_watch` is a preference about one card, not an
+  observation about the fleet: a second wall holding the same card's history does not inherit
+  it, and no frame carries it. Its breach is a local notice and a line in that card's reading.
 
 ### 8.3 Live, without a new poll
 
@@ -2001,6 +2004,77 @@ again. A hall entry is a favourite, and it is a row of its own:
 - **A report may include the hall** only with the explicit opt-in, because a report is a
   plaintext export. Default off, and the warning says what the file will contain.
 
+### 11.13 A card's own reading, and its own warning
+
+Everything above is the wall's view. A card needs the other direction: **what have I spent**,
+and **what did I say I would care about**. Today `allowance` answers the account's windows and
+the wall's last day, which is a general reading; a card cannot see its own turns, its own
+subagents, or the cost of the turn it is in.
+
+One MCP tool, `spend`, in its own file beside `limits.rs`, with four verbs:
+
+```text
+spend read                    -- what this card has used
+spend watch <measure> <at>    -- warn me when this card passes it
+spend unwatch <id>
+spend list                    -- the watches on this card, and whether they have fired
+```
+
+**What `read` answers**, all of it measured from this card's own rows and none of it another
+card's unless asked:
+
+| reading | source | note |
+|---|---|---|
+| `session` | facts for this card's sessions | the current session from its first request |
+| `today` | the same, from local midnight | the wall's own day, not UTC |
+| `lifetime` | every session this card has had | a card that cleared has several |
+| `turn` | the open turn, if one is running | partial by construction |
+| `by_model`, `by_subagent` | the facts, grouped | a subagent's share is its own depth, not folded |
+| `turns`, `requests`, `cache_hit_share` | the facts | the shape behind the number |
+| `context_tokens` | the conversation fold | what every request re-reads |
+| `next_turn_usd` | modelled | labelled, from context × the model's rates |
+| `children` | spawn lineage, opt-in | cards it opened are separate sessions and are not its own |
+
+- **It catches up first, and that is what makes it a reading rather than a report.** The pass
+  runs on a minute; a card asking mid-turn deserves the turn it is in. So `read` runs the
+  ingest for its own session over the tail since the last offset, bounded to the current file
+  and a few megabytes, and then answers. It costs one local read and no API turn. The answer
+  carries `as_of` and `live_turn`, so a card can tell a caught-up figure from a stale one.
+- **`children` is opt-in, and the sum is explicit.** A spawned card is a session of its own
+  (§4.4); including it silently would answer a different question from the one asked. The
+  coordinator skill asks with `children: true`.
+- **The card's own allowance share is a share, not a window.** `allowance` keeps its job of
+  reporting the account's counters. `spend` adds `share_of_window`: how much of the window's
+  attributed delta this card's facts account for, which is the number a card can act on when it
+  is deciding whether to fan out.
+
+**A watch is a bookmark, not a brake.** `spend watch usd 10 session` is a card saying *tell me
+when I pass ten dollars in this session*; it is stored per conversation and never synced.
+
+- **On breach, three things happen and none of them stops anything.** A `notice` row is
+  written for the person (the card's own words: `$10.40 of $10, this session`), the watch is
+  marked fired for that period instance, and every later `read` answers `breached` with the
+  numbers until the period rolls or the watch is acknowledged. The turn carries on. A threshold
+  that could stop work would be a second allowance gate nobody configured, and the first one
+  already exists.
+- **Once per period instance**, not once per ingest. The period is `session`, `day`, `turn`,
+  or `window` (the account's current allowance window, for a share watch). A rolling clock
+  restarts the next instance, so a card that warned yesterday is not silent today.
+- **A card sets its own; the person may edit it.** Both write the same row, and the card page
+  shows the watches beside its spend. That is the point of the feature: the card is the only
+  thing that knows what it is about to attempt.
+- **It is a local preference, never a fleet fact.** `spend_watch` does not travel (§8.2), and a
+  report carries it only as a line in the card's own history, never as a target someone else
+  is measured against.
+- **The obvious defaults are not shipped.** No watch exists until a card sets one, because a
+  wall-wide default is a number that is wrong for most cards. The coordinator skill suggests
+  one in the brief it hands each worker, which is where the intent actually lives.
+
+The watch is the first analytics reading an agent can *write for itself*, and it stays inside
+the rule the roster follows: a tool that changes something asks, a tool that reads does not.
+`watch` is the card's own preference, so it needs no confirmation; it can only change its own
+row.
+
 ---
 
 ## 12. The widget
@@ -2558,6 +2632,20 @@ CREATE TABLE analytics_view (
   updated_at  INTEGER NOT NULL
 );
 
+-- A threshold a card set on its own spend (§11.13). Local, never synced:
+-- this is a preference about one card, not an observation about a fleet.
+CREATE TABLE spend_watch (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+  measure         TEXT NOT NULL,   -- usd | tokens | allowance_points
+  period          TEXT NOT NULL,   -- session | day | turn | window
+  at_value        REAL NOT NULL,
+  scope           TEXT NOT NULL DEFAULT 'self',  -- self | self+children
+  created_at      INTEGER NOT NULL,
+  fired_for       TEXT,            -- the period instance it last fired for
+  fired_at        INTEGER
+);
+
 -- The prompt vault: a data key sealed with a passphrase-derived key. The
 -- passphrase is never stored; without it the bodies are ciphertext. Keyed by
 -- vault_id because two walls may each have made one and neither may lose.
@@ -2718,9 +2806,11 @@ Each phase is useful on its own and commits on its own.
    the prompt redactor and `prompt.rs`, the vault and `seal pending`, the deep first backfill,
    and a control-surface op to read raw facts. No UI. This is the half that cannot be added
    later, because the transcripts it reads are on a deletion clock.
-3. **The query layer.** Dimensions, measures, buckets, the view spec, the residual arithmetic,
-   the prompt kind vocabulary, all pure and tested. This is where the arguments live, so it is
-   worth having before a pixel is drawn.
+3. **The query layer, and the card's own reading.** Dimensions, measures, buckets, the view
+   spec, the residual arithmetic, the prompt kind vocabulary, all pure and tested. The same
+   layer answers `spend read`, so a card gets the self-reading as soon as there are facts to
+   read, before any UI exists. This is where the arguments live, so it is worth having before
+   a pixel is drawn.
 4. **The overlay, minimal.** KPI strip, one area chart, one filter row, the inspector, the
    table view, the keyboard. Enough to answer the weekly question.
 5. **The prompt trace and the hall.** The page, the kind correction, favourites, tags, the
@@ -2915,6 +3005,17 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   `--surface #1e1a18`, and the first three pass `--pairs all`.
 - **Every chart has a table.** A wall test opens the table from the keyboard and reads the
   same totals.
+- **A card reads its own spend, not the wall's.** `spend read` on a fixture card answers only
+  that card's facts, includes its subagents, and excludes a card it spawned unless `children`
+  is asked for; `share_of_window` is a share and the answer says so.
+- **The reading is caught up to the running turn.** A card whose turn has written three
+  requests since the last pass sees them in `read`, marked `live_turn`; a turn that can no
+  longer be read is answered from the facts with `as_of` unchanged.
+- **A watch fires once and stops nothing.** A card that passes its own threshold gets one
+  notice for that period instance, `breached` on every later read until the period rolls or it
+  acknowledges, and its turn goes on. A second pass over the same period writes nothing.
+- **A watch is local.** `spend_watch` appears in no flyway frame and in no report target; a
+  second wall holding the same card's history does not inherit it.
 - **The widget and the overlay agree.** One view spec, two surfaces, one number.
 - **A report is self-contained.** It opens from a copied file with the network off, draws
   every panel, and carries no path and no token when anonymized.
@@ -3013,6 +3114,13 @@ not re-opened by accident.
     interval query over two stored facts. It also makes a turn lost to a kill visible as a span
     rather than only as a flag. The cost is one table rebuild and a NULL check in the readers
     that sum turns.
+15. **A card is a reader of its own analytics, and may set its own warning.** `spend read`
+    answers this card's facts, including its subagents and excluding the cards it spawned
+    unless asked, and catches up the running turn first. `spend watch` is a threshold on one
+    measure for one period, stored per card and never synced. A breach writes one notice for
+    the person and every later read says so; it never stops a turn. The default is no watch,
+    because a wall-wide number is wrong for most cards, and the coordinator's brief is where
+    a worker is given one.
 
 ### 20.1 One left: how live is another machine
 
