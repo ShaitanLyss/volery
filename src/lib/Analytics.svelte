@@ -29,8 +29,8 @@
   import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
+  import { surface } from "./analyticsview.svelte";
   import {
-    DEFAULT_SPAN,
     ROOM_MEASURES,
     ROOM_SPLITS,
     SPANS,
@@ -47,16 +47,18 @@
     spreadLabels,
     stepAt,
     tickLabel,
+    runsOfTimes,
     tickText,
     tierSaid,
     timesOf,
     windowTier,
     type AnalyticsWindow,
-    type RoomMeasure,
+    type RoomSeries,
     type RoomSplit,
+    type SlotBook,
     type WindowReader,
   } from "./analyticsroom";
-  import { BUCKET_MS, bucketOf, spanMsOf } from "./analytics";
+  import { bucketOf, spanMsOf } from "./analytics";
   import { count } from "./usage";
 
   let {
@@ -70,10 +72,22 @@
 
   /* ── what is being asked ─────────────────────────────────────────────── */
 
-  let span = $state(DEFAULT_SPAN);
-  let measure = $state<RoomMeasure>("usd_modeled");
-  let split = $state<RoomSplit>(null);
+  /* Span, measure and split are the surface's, not this drawing's (§11.15):
+     the page will read the same three, and a swap between presentations carries
+     them because this one does not own them. Everything below — the window that
+     came back, the selection, the table toggle — is this drawing's alone. */
+  const span = $derived(surface.span);
+  const measure = $derived(surface.measure);
+  const split = $derived(surface.split);
   let table = $state(false);
+
+  /* Colours by identity rather than by rank, so changing the span does not
+     repaint the survivors (§10.1). The book is per split dimension: a project's
+     slot means nothing in an account chart, so it is emptied when the dimension
+     changes. A plain `Map` on purpose — what it remembers is palette history,
+     not something to redraw on. */
+  let book: SlotBook = new Map();
+  let bookFor: RoomSplit | null = null;
 
   /* ── what came back ──────────────────────────────────────────────────── */
 
@@ -106,10 +120,6 @@
     try {
       const next = await reader(span, Date.now());
       if (mine !== gen) return;
-      /* The axis may have changed under a selection that is still valid in
-         time; `stepAt` and `nearestAt` cope, so only a fresh window clears it. */
-      if (loaded?.since !== next.since || loaded?.until !== next.until) selected = null;
-      hovered = null;
       loaded = next;
       readAt = Date.now();
       failed = null;
@@ -124,9 +134,15 @@
 
   /* One read on open and one per span change. Nothing else re-reads, and the
      effect has no other dependency because the reader's own arguments are the
-     span alone. */
+     span alone.
+     The selection is cleared here and only here: a new axis does not have the
+     old bucket in it. The once-a-minute refresh does *not* clear it, which is
+     the difference between a room you left reading a bucket and one that drops
+     your place under you. */
   $effect(() => {
     void span;
+    selected = null;
+    hovered = null;
     void readNow();
   });
 
@@ -141,10 +157,48 @@
     return () => clearTimeout(t);
   });
 
-  /* Focus comes in on open and goes back where it was on close, as the reading
-     sheet does. */
+  /* Focus comes in on open, stays in while the room is up, and goes back where
+     it was on close.
+     **Staying in is not tidiness.** The room is `aria-modal`, and the wall and
+     the dock behind it are still in the tab order — `inert` covers the wall but
+     the dock is a component of its own. A tab that reached the draft would let
+     a letter be typed into a field behind an opaque overlay, which is invisible
+     and survives closing. So a focus that lands outside is pulled back, and the
+     flag keeps the pull-back from fighting the restore on the way out. */
   const cameFrom = typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null);
-  onMount(() => root?.focus());
+  let closing = false;
+
+  function holdFocus() {
+    if (closing || !root) return;
+    if (!root.contains(document.activeElement)) root.focus();
+  }
+
+  onMount(() => {
+    root?.focus();
+    /* A focus that moves *to* something else fires `focusin`, which is the Tab
+       case. */
+    const hold = (e: FocusEvent) => {
+      if (closing || !root || root.contains(e.target as Node)) return;
+      root.focus();
+    };
+    document.addEventListener("focusin", hold);
+    return () => {
+      closing = true;
+      document.removeEventListener("focusin", hold);
+    };
+  });
+
+  /* A focus that *disappears* fires no `focusin` at all: removing the focused
+     element hands focus to `body` and Chromium tells nobody. That is the path
+     that matters here — `t` takes the plot away, and the plot's button is where
+     the pointer had just put the focus — so it is answered where the thing that
+     removed it is known, after the DOM has caught up. */
+  $effect(() => {
+    void table;
+    void loaded;
+    holdFocus();
+  });
+
   $effect(() => () => cameFrom?.focus?.());
 
   /* ── what it means ───────────────────────────────────────────────────── */
@@ -153,7 +207,13 @@
   const tier = $derived(windowTier(spanMs));
   const bucket = $derived(roomBucket(spanMs, tier));
   const rows = $derived(loaded?.rows ?? []);
-  const list = $derived(splitSeries(rows, measure, bucket, split));
+  const list = $derived.by(() => {
+    if (bookFor !== split) {
+      book = new Map();
+      bookFor = split;
+    }
+    return splitSeries(rows, measure, bucket, split, book);
+  });
   const times = $derived(timesOf(list));
   const readings = $derived(readingsOf(list));
   const kpis = $derived(kpisOf(rows, loaded?.cards ?? 0));
@@ -201,21 +261,11 @@
   });
 
   /* A run is a stretch of adjacent recorded buckets. The break is where the
-     line stops, which is what makes a quiet hour a gap rather than a dip. */
-  const timeRuns = $derived.by(() => {
-    const gap = BUCKET_MS[bucket] * 1.5;
-    const out: number[][] = [];
-    let run: number[] = [];
-    for (const t of times) {
-      if (run.length && t - run[run.length - 1] > gap) {
-        out.push(run);
-        run = [];
-      }
-      run.push(t);
-    }
-    if (run.length) out.push(run);
-    return out;
-  });
+     line stops, which is what makes a quiet hour a gap rather than a dip. The
+     rule itself is `analyticsroom.ts::runsOfTimes`, tested there, because it is
+     the one the module's header promises and a second copy here would be a rule
+     that gets fixed once. */
+  const timeRuns = $derived(runsOfTimes(times, bucket));
 
   const bands = $derived.by(() =>
     timeRuns.map((run) => ({
@@ -284,22 +334,32 @@
     return out;
   });
 
+  /* Svelte keys an `each` by identity and throws on a duplicate in production as
+     well as in development. A series' own `key` is its split value, and that is
+     not unique in two reaches: a dimension value can literally be named `other`
+     beside the fold, and two distinct values can both render as `unnamed`. The
+     slot is unique by construction — five of them plus the fold — so that is
+     what the markup keys on. */
+  function seriesKey(s: RoomSeries): string {
+    return s.slot === null ? "fold" : `s${s.slot}`;
+  }
+
   /* ── verbs ───────────────────────────────────────────────────────────── */
 
   function stepSpan(delta: number) {
     const i = SPANS.findIndex((s) => s.span === span);
     const next = SPANS[Math.min(SPANS.length - 1, Math.max(0, (i === -1 ? 0 : i) + delta))];
-    if (next) span = next.span;
+    if (next) surface.span = next.span;
   }
 
   function cycleMeasure() {
     const i = ROOM_MEASURES.findIndex((m) => m.key === measure);
-    measure = ROOM_MEASURES[(i + 1) % ROOM_MEASURES.length].key;
+    surface.measure = ROOM_MEASURES[(i + 1) % ROOM_MEASURES.length].key;
   }
 
   function cycleSplit() {
     const i = ROOM_SPLITS.findIndex((s) => s.key === split);
-    split = ROOM_SPLITS[(i + 1) % ROOM_SPLITS.length].key;
+    surface.split = ROOM_SPLITS[(i + 1) % ROOM_SPLITS.length].key;
   }
 
   function move(delta: number) {
@@ -438,7 +498,7 @@
         role="radiogroup"
         tabindex="-1"
         aria-label="span"
-        onkeydown={(e) => radioKeys(e, SPANS.length, SPANS.findIndex((s) => s.span === span), (i) => (span = SPANS[i].span))}
+        onkeydown={(e) => radioKeys(e, SPANS.length, SPANS.findIndex((s) => s.span === span), (i) => (surface.span = SPANS[i].span))}
       >
         {#each SPANS as s (s.span)}
           <button
@@ -447,7 +507,7 @@
             aria-checked={span === s.span}
             class:on={span === s.span}
             title={`${s.said} ([ and ] step it)`}
-            onclick={() => (span = s.span)}>{s.label}</button
+            onclick={() => (surface.span = s.span)}>{s.label}</button
           >
         {/each}
       </div>
@@ -459,7 +519,7 @@
         tabindex="-1"
         aria-label="measure"
         onkeydown={(e) =>
-          radioKeys(e, ROOM_MEASURES.length, ROOM_MEASURES.findIndex((m) => m.key === measure), (i) => (measure = ROOM_MEASURES[i].key))}
+          radioKeys(e, ROOM_MEASURES.length, ROOM_MEASURES.findIndex((m) => m.key === measure), (i) => (surface.measure = ROOM_MEASURES[i].key))}
       >
         {#each ROOM_MEASURES as m (m.key)}
           <button
@@ -468,7 +528,7 @@
             aria-checked={measure === m.key}
             class:on={measure === m.key}
             title={`${m.said} (m cycles it)`}
-            onclick={() => (measure = m.key)}>{m.label}</button
+            onclick={() => (surface.measure = m.key)}>{m.label}</button
           >
         {/each}
       </div>
@@ -480,7 +540,7 @@
         tabindex="-1"
         aria-label="split"
         onkeydown={(e) =>
-          radioKeys(e, ROOM_SPLITS.length, ROOM_SPLITS.findIndex((s) => s.key === split), (i) => (split = ROOM_SPLITS[i].key))}
+          radioKeys(e, ROOM_SPLITS.length, ROOM_SPLITS.findIndex((s) => s.key === split), (i) => (surface.split = ROOM_SPLITS[i].key))}
       >
         {#each ROOM_SPLITS as s (String(s.key))}
           <button
@@ -489,7 +549,7 @@
             aria-checked={split === s.key}
             class:on={split === s.key}
             title={`split by ${s.label} (g cycles it)`}
-            onclick={() => (split = s.key)}>{s.label}</button
+            onclick={() => (surface.split = s.key)}>{s.label}</button
           >
         {/each}
       </div>
@@ -550,11 +610,14 @@
             <span class="an-grow"></span>
             {#if list.length >= 2}
               <span class="an-legend">
-                {#each list as s (s.key)}
+                {#each list as s (seriesKey(s))}
                   <span class="an-key">
                     <span class="an-dot" style:background={s.color}></span>
                     {s.label}{#if labelled}&nbsp;{/if}
-                    <span class="an-key-value">{measureText(measure, s.total)}</span>
+                    <!-- A group whose rows the measure could not answer has no
+                         points and no total: a dash, never the $0 that would
+                         read as free. -->
+                    <span class="an-key-value">{measureText(measure, s.points.length ? s.total : null)}</span>
                   </span>
                 {/each}
               </span>
@@ -567,7 +630,7 @@
                 <thead>
                   <tr>
                     <th scope="col">bucket</th>
-                    {#each list as s (s.key)}
+                    {#each list as s (seriesKey(s))}
                       <th scope="col" class="an-num">{s.label || "value"}</th>
                     {/each}
                     <th scope="col" class="an-num">total</th>
@@ -579,7 +642,7 @@
                     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                     <tr class="an-tr" class:on={active === t} onpointerenter={() => (hovered = t)} onpointerdown={() => pick(t)}>
                       <th scope="row">{bucketLabel(t, bucket)}</th>
-                      {#each list as s, si (s.key)}
+                      {#each list as s, si (seriesKey(s))}
                         <td class="an-num">{measureText(measure, valueAt[si]?.get(t) ?? null)}</td>
                       {/each}
                       <td class="an-num">{measureText(measure, reading?.total ?? null)}</td>
@@ -615,7 +678,7 @@
 
                 {#if active !== null}
                   <line class="an-cross" x1={xOf(active)} x2={xOf(active)} y1={PAD.t} y2={PAD.t + plotH} />
-                  {#each list as s, si (s.key)}
+                  {#each list as s, si (seriesKey(s))}
                     {@const reading = readings.get(active)}
                     {#if reading?.parts.some((p) => p.key === s.key)}
                       <circle cx={xOf(active)} cy={yOf(cum[si].get(active) ?? 0)} r="3.4" fill={s.color} stroke="var(--surface)" stroke-width="1.5" />
@@ -623,7 +686,7 @@
                   {/each}
                 {/if}
 
-                {#each labels as l (l.label)}
+                {#each labels as l, i (i)}
                   <circle cx={PAD.l + plotW + 9} cy={l.y} r="3" fill={l.color} />
                   <text class="an-direct" x={PAD.l + plotW + 17} y={l.y + 3.5}>{l.label}</text>
                 {/each}
@@ -636,7 +699,7 @@
                   {#if tip.reading.parts.length > 1}
                     <table class="an-tip-parts">
                       <tbody>
-                        {#each tip.reading.parts as part (part.key)}
+                        {#each tip.reading.parts as part, i (i)}
                           <tr>
                             <td><span class="an-dot" style:background={part.color}></span>{part.label}</td>
                             <td class="an-num">{measureText(measure, part.value)}</td>
@@ -672,7 +735,7 @@
             <p class="an-inspect-value">{measureText(measure, activeReading.total)}</p>
             {#if activeReading.parts.length > 1}
               <ul class="an-inspect-parts">
-                {#each activeReading.parts as part (part.key)}
+                {#each activeReading.parts as part, i (i)}
                   <li>
                     <span class="an-dot" style:background={part.color}></span>
                     <span class="an-inspect-name">{part.label}</span>

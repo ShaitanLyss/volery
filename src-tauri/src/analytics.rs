@@ -1661,8 +1661,25 @@ pub const FINE_WINDOW_MS: i64 = 48 * 60 * 60 * 1000;
 /// with more history than this one must be **refused with a reason** rather
 /// than answered in part. A silently truncated window is a chart that says the
 /// month cost less than it did.
-pub const ROW_CAP: usize = 60_000;
-pub const BYTE_CAP: usize = 12 * 1024 * 1024;
+///
+/// **The numbers are sized for the widest span the room offers, a year.** §16
+/// puts three years of hourly rollups at ~100,000 rows, so a year is ~33,000 at
+/// the design's own volume; a serialized hour row measures ~300 bytes, which is
+/// ~10 MB. That fits the old 12 MB bound with a fifth to spare, which is why
+/// this is not 12 MB: a wall a quarter denser than the design's estimate — more
+/// models, more projects per hour — would have lost the year to a cap that was
+/// silently doing the choosing. Twenty-four megabytes admits ~80,000 rows, a
+/// little over twice the estimate, and the refusal still stands past it.
+///
+/// **These rows cannot be folded in SQL to shrink them**, which is the fix
+/// §9.3 reaches for beyond a year. `usd_modeled` prices each row through the
+/// rate in force at its own timestamp, so summing tokens first and pricing the
+/// sum would price a mixed-model bucket at one model's rate. To fold in SQL you
+/// must group by the split dimension *and* the model, which is the grain the
+/// rows already have. So the shape is right and the bound is what carries the
+/// honest answer or the honest refusal.
+pub const ROW_CAP: usize = 150_000;
+pub const BYTE_CAP: usize = 24 * 1024 * 1024;
 
 /// One `usage_fact` row, as `analytics.ts::Fact` reads it. The five-minute
 /// grain carries the session and the agent, which the hourly rollup does not.
@@ -1744,10 +1761,16 @@ pub struct Window {
     /// The earliest instant either tier holds, or `None` when nothing has ever
     /// been recorded. This is what lets the empty state tell "the collector has
     /// not run yet" from "nothing happened in this window".
+    ///
+    /// **Both this and `recorded` are only answered for an empty window.** They
+    /// exist for the empty state and nothing else reads them, and one of the
+    /// two queries behind them is the only unindexed scan in this function.
+    /// `None` on a window with rows is "not asked", not "nothing recorded".
     pub first: Option<i64>,
     /// Requests recorded across the whole store, so an empty window can say how
     /// much there is elsewhere. Read from the hourly tier, which outlives the
-    /// fine one and holds every request either tier saw.
+    /// fine one and holds every request either tier saw. Zero on a window with
+    /// rows, for the same reason `first` is `None` there.
     pub recorded: i64,
 }
 
@@ -1862,21 +1885,30 @@ pub(crate) fn query_window(
         }
     }
 
-    /* The three readings that are not rows. `MIN` is answered by the index on
-       each tier's own clock, and the sum is answered by the hourly tier's
-       primary key, so none of them scans a table. */
-    let (first_at, first_hour, recorded): (Option<i64>, Option<i64>, i64) = conn
-        .query_row(
-            "SELECT (SELECT MIN(at)   FROM usage_fact),
-                    (SELECT MIN(hour) FROM usage_hour),
-                    (SELECT COALESCE(SUM(requests), 0) FROM usage_hour)",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|e| format!("analytics: read the store's span: {e}"))?;
-    let first = match (first_at, first_hour) {
-        (Some(a), Some(h)) => Some(a.min(h)),
-        (a, h) => a.or(h),
+    /* `first` and `recorded` are only ever read by the empty state, so they are
+       asked for only when the window is empty. That matters because the sum is
+       not indexed: `EXPLAIN QUERY PLAN` says `SCAN usage_hour` for
+       `SUM(requests)`, and `usage_hour` is never pruned, so on a wall years old
+       it is the most expensive thing in this function and the least often
+       useful. `MIN` on each tier is the other way round — both clocks are
+       indexed, so each is a covering-index search. */
+    let (first, recorded) = if rows.is_empty() {
+        let (first_at, first_hour, recorded): (Option<i64>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT (SELECT MIN(at)   FROM usage_fact),
+                        (SELECT MIN(hour) FROM usage_hour),
+                        (SELECT COALESCE(SUM(requests), 0) FROM usage_hour)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| format!("analytics: read the store's span: {e}"))?;
+        let first = match (first_at, first_hour) {
+            (Some(a), Some(h)) => Some(a.min(h)),
+            (a, h) => a.or(h),
+        };
+        (first, recorded)
+    } else {
+        (None, 0)
     };
 
     /* A session counts while it overlaps the window, and one with no `ended_at`
@@ -1885,7 +1917,15 @@ pub(crate) fn query_window(
 
        Only a session with a card is a card. A terminal session has no card row
        and counting it here would put a number under a word that does not mean
-       it. */
+       it.
+
+       This one is not window-bounded by an index (`analytics_session` is keyed
+       by session and host, not by time), so it is a scan. It is a scan of the
+       *sessions* table, which is one row per conversation rather than one per
+       request: thousands on the busiest wall this app has seen, against the
+       hundreds of thousands in `usage_hour`. It is paid on every read because
+       the strip shows it on every read, and an index for that would be a schema
+       rung for a microsecond. */
     let cards: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM analytics_session
@@ -2228,8 +2268,10 @@ mod tests {
         let now = now_ms();
         let window = query_window(&conn, now - 3_600_000, now, true).unwrap();
         assert_eq!(window.rows.len(), 1, "one fine row inside the hour");
-        assert!(window.first.is_some(), "and the store now knows when it began");
-        assert_eq!(window.recorded, 1, "one request recorded");
+        /* The store's own span is not asked for when the window has rows: it is
+           the empty state's reading, and one of its two queries is a scan. */
+        assert_eq!(window.first, None);
+        assert_eq!(window.recorded, 0);
 
         /* An hour earlier holds nothing, and says so without claiming the store
            is empty. */
@@ -2255,7 +2297,6 @@ mod tests {
         let wide = query_window(&conn, now - 7 * 24 * 3_600_000, now, false).unwrap();
         assert_eq!(wide.tier, "hourly");
         assert_eq!(wide.rows.len(), 1);
-        assert_eq!(wide.recorded, 1);
     }
 
     #[test]

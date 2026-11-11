@@ -4104,6 +4104,18 @@
        focused card's turn, since a window listener's `stopPropagation` does not
        reach another window listener. */
     if (unfinished || exodus) return;
+    /* The analytics room owns the keyboard the same way, and the reason is the
+       paragraph above stated as a bug: its fallback `svelte:window` handler was
+       written on the belief that `stopPropagation` there would keep keys off the
+       wall, and a window listener's `stopPropagation` does not reach another
+       window listener — this one is registered first, so it ran first. That was
+       harmless while the room's focus stayed inside it and not harmless the
+       moment it did not: `t` removes the plot the pointer button lives in, so
+       focus falls to `body`, and the next `m` or `g` was appended to a card's
+       draft behind the overlay while Delete could take a widget off the wall.
+       The room answers its own keys from its root; this is what makes that true
+       wherever the focus is. */
+    if (showAnalytics) return;
     /* The toy owns the whole keyboard while it is up, and that is the point
        rather than an inconvenience — thirty keys are an instrument and the rest
        are its controls, so there is nothing left for the wall to be given.
@@ -6197,7 +6209,7 @@
   <main
     class="wall"
     class:offstage={chat}
-    inert={chat || welcoming}
+    inert={chat || welcoming || showAnalytics}
     class:sizing={!!grip}
     style:--beside-left={footInset.left ? `${footInset.left}px` : undefined}
     style:--beside-right={footInset.right ? `${footInset.right}px` : undefined}

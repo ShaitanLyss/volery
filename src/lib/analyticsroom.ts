@@ -120,9 +120,12 @@ export type AnalyticsWindow = {
   rows: UsageRow[];
   /** Cards whose session overlaps the window. */
   cards: number;
-  /** The earliest instant the store holds, or null when nothing is recorded. */
+  /** The earliest instant the store holds, or null when nothing is recorded.
+   *  Only answered for an empty window — the empty state is the one reader, and
+   *  one of the queries behind it is the read's only unindexed scan. */
   first: number | null;
-  /** Requests across the whole store. */
+  /** Requests across the whole store. Zero on a window with rows, for the same
+   *  reason `first` is null there. */
   recorded: number;
 };
 
@@ -214,22 +217,76 @@ export type RoomSeries = {
   color: string;
   points: Point[];
   total: number;
+  /** Rows in this group the measure could not answer. A series with no points
+   *  but unpriced rows is *unknown*, not free, and the face prints a dash. */
+  unpriced: number;
 };
 
-/** Ordering is by size, so the biggest thing is first and its colour is the
- *  first slot. Past the ceiling the tail is summed into one `other` series in
- *  the fold colour: five identities is where the palette stops, and a sixth
- *  hue would be a colour nobody can tell from the five (§10.1). */
+/** A value's palette slot, remembered for as long as the book lives.
+ *
+ * §10.1 is explicit: *"a filter that changes the series count does not repaint
+ * the survivors, because the series keeps its slot by identity."* So a slot is
+ * never handed out by rank — sorting by size would repaint two series the
+ * moment they swapped — and it is never cycled. A value keeps the slot it was
+ * given; a new value takes the lowest one still free; past five, null means the
+ * fold.
+ *
+ * The book is per split dimension and the caller owns it (the room clears it
+ * when the dimension changes): a project's slot means nothing in an account
+ * chart, and one book for both would starve the second of hues. */
+export type SlotBook = Map<string, number>;
+
+export function slotFor(key: string, book: SlotBook, taken: Set<number>): number | null {
+  const held = book.get(key);
+  if (held !== undefined) {
+    taken.add(held);
+    return held;
+  }
+  /* A slot the book has already given away is not free, even when the value
+     holding it is absent from this window. Reading only `taken` — this
+     window's series — is how a value loses its colour the first time a window
+     contains it and the one it displaced: the absent holder's hue looks free,
+     gets handed out, and the next window containing both has to repaint one of
+     them. */
+  const owned = new Set(book.values());
+  for (let i = 0; i < SERIES_CEILING; i += 1) {
+    if (!owned.has(i) && !taken.has(i)) {
+      book.set(key, i);
+      taken.add(i);
+      return i;
+    }
+  }
+  return null;
+}
+
+/** The window as series, ordered by size so the legend reads biggest first, and
+ *  coloured by identity so a change of window does not repaint them.
+ *
+ * Past the ceiling the rest is summed into one `other` series in the fold
+ * colour: five identities is where the palette stops, and a sixth hue would be
+ * a colour nobody can tell from the five (§10.1). `book` is what makes a
+ * survivor keep its slot across a read; without one every call starts fresh. */
 export function splitSeries(
   rows: readonly UsageRow[],
   measure: RoomMeasure,
   bucket: Bucket,
   split: RoomSplit,
+  book: SlotBook = new Map(),
 ): RoomSeries[] {
   const key = measure as MeasureKey;
   if (!split) {
     const one = series(rows, key, bucket);
-    return [{ key: "", label: "", slot: 0, color: seriesColor(0), points: one.points, total: sum(one.points) }];
+    return [
+      {
+        key: "",
+        label: "",
+        slot: 0,
+        color: seriesColor(0),
+        points: one.points,
+        total: sum(one.points),
+        unpriced: one.unpriced,
+      },
+    ];
   }
 
   const groups = new Map<string, UsageRow[]>();
@@ -242,28 +299,39 @@ export function splitSeries(
 
   const sized = [...groups.entries()]
     .map(([value, group]) => {
-      const points = series(group, key, bucket).points;
-      return { key: value, label: value || "unnamed", points, total: sum(points) };
+      const one = series(group, key, bucket);
+      return {
+        key: value,
+        label: value || "unnamed",
+        points: one.points,
+        total: sum(one.points),
+        unpriced: one.unpriced,
+      };
     })
     .sort((a, b) => b.total - a.total || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
 
-  if (sized.length <= SERIES_CEILING) {
-    return sized.map((s, i) => ({ ...s, slot: i, color: seriesColor(i) }));
+  const taken = new Set<number>();
+  const kept: RoomSeries[] = [];
+  const folded: typeof sized = [];
+  for (const s of sized) {
+    const slot = slotFor(s.key, book, taken);
+    if (slot === null) folded.push(s);
+    else kept.push({ ...s, slot, color: seriesColor(slot) });
   }
+  if (!folded.length) return kept;
 
-  const kept = sized.slice(0, SERIES_CEILING - 1);
-  const rest = sized.slice(SERIES_CEILING - 1);
-  const folded = new Map<number, number>();
-  for (const s of rest) for (const p of s.points) folded.set(p.at, (folded.get(p.at) ?? 0) + p.value);
+  const points = new Map<number, number>();
+  for (const s of folded) for (const p of s.points) points.set(p.at, (points.get(p.at) ?? 0) + p.value);
   const other: RoomSeries = {
     key: "other",
     label: "other",
     slot: null,
     color: SERIES_FOLD,
-    points: [...folded.entries()].map(([at, value]) => ({ at, value })).sort((a, b) => a.at - b.at),
-    total: rest.reduce((a, s) => a + s.total, 0),
+    points: [...points.entries()].map(([at, value]) => ({ at, value })).sort((a, b) => a.at - b.at),
+    total: folded.reduce((a, s) => a + s.total, 0),
+    unpriced: folded.reduce((a, s) => a + s.unpriced, 0),
   };
-  return [...kept.map((s, i) => ({ ...s, slot: i, color: seriesColor(i) })), other];
+  return [...kept, other];
 }
 
 function sum(points: readonly Point[]): number {
@@ -272,24 +340,44 @@ function sum(points: readonly Point[]): number {
   return total;
 }
 
-/** Where a series breaks. Two recorded buckets further apart than one and a
- *  half bucket-widths are not neighbours: something was not recorded in
- *  between, and a line drawn across it would claim a value for a time the
+/** Where a stretch of instants breaks. Two recorded buckets further apart than
+ *  one and a half bucket-widths are not neighbours: something was not recorded
+ *  in between, and a line drawn across it would claim a value for a time the
  *  store knows nothing about. The half is slack for a local day that is an hour
- *  longer across a DST change. */
-export function runsOf(points: readonly Point[], bucket: Bucket): Point[][] {
+ *  longer across a DST change.
+ *
+ *  This is the single statement of that rule. `runsOf` is the same thing over
+ *  points, and the chart — which works on the union of every series' instants —
+ *  calls this one: a rule written twice is a rule that gets fixed once. */
+function runsByAt<T extends { at: number }>(items: readonly T[], bucket: Bucket): T[][] {
   const gap = BUCKET_MS[bucket] * 1.5;
-  const runs: Point[][] = [];
-  let run: Point[] = [];
-  for (const p of points) {
-    if (run.length && p.at - run[run.length - 1].at > gap) {
+  const runs: T[][] = [];
+  let run: T[] = [];
+  for (const item of items) {
+    if (run.length && item.at - run[run.length - 1].at > gap) {
       runs.push(run);
       run = [];
     }
-    run.push(p);
+    run.push(item);
   }
   if (run.length) runs.push(run);
   return runs;
+}
+
+/** The rule over a set of instants, which is what the chart holds: the union of
+ *  every series' buckets rather than one series' points. */
+export function runsOfTimes(times: readonly number[], bucket: Bucket): number[][] {
+  return runsByAt(
+    times.map((at) => ({ at })),
+    bucket,
+  ).map((run) => run.map((x) => x.at));
+}
+
+/** The same rule over points, for a caller holding one series rather than the
+ *  union. Linear, like the rule it wraps: a `find` per point would be the wrong
+ *  shape for the one place this runs on every redraw. */
+export function runsOf(points: readonly Point[], bucket: Bucket): Point[][] {
+  return runsByAt(points, bucket);
 }
 
 /** Every instant any series has a reading at, sorted. A bucket no series saw
@@ -439,7 +527,11 @@ export type Kpis = {
   /** Cache reads as a share of every token, in percent; null with no tokens. */
   cacheShare: number | null;
   cards: number;
-  leading: { project: string; tokens: number; share: number } | null;
+  /** The project that saw the most tokens, and what share of the window's
+   *  tokens that is. Null share when the window has no tokens at all, because a
+   *  ratio with no denominator is null and never zero (§9.1), and every tile
+   *  that cannot be measured says so rather than drawing a zero. */
+  leading: { project: string; tokens: number; share: number | null } | null;
 };
 
 export function kpisOf(rows: readonly UsageRow[], cards: number): Kpis {
@@ -462,7 +554,7 @@ export function kpisOf(rows: readonly UsageRow[], cards: number): Kpis {
   let leading: Kpis["leading"] = null;
   for (const [project, t] of byProject) {
     if (!leading || t > leading.tokens || (t === leading.tokens && project < leading.project)) {
-      leading = { project, tokens: t, share: allTokens > 0 ? (t / allTokens) * 100 : 0 };
+      leading = { project, tokens: t, share: allTokens > 0 ? (t / allTokens) * 100 : null };
     }
   }
 

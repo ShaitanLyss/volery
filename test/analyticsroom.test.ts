@@ -26,6 +26,7 @@ import {
   readingsOf,
   roomBucket,
   runsOf,
+  runsOfTimes,
   shareText,
   splitSeries,
   spreadLabels,
@@ -219,19 +220,82 @@ describe("a window into series", () => {
   });
 
   test("past the palette the tail folds into one series in a text token", () => {
+    /* Five hues is the ceiling, and the fold is not a sixth: it is a text
+       token, so the chart may carry five identities plus `other` and no two
+       marks are asked to be told apart by a colour (§10.1). */
     const many: UsageRow[] = [];
     for (let i = 0; i < SERIES_CEILING + 3; i += 1) {
       many.push(fact({ at: 0, project: `p${i}`, inTok: (i + 1) * 1000, outTok: 0, cacheRead: 0 }));
     }
     const list = splitSeries(many, "tokens", "5m", "project");
-    expect(list.length).toBe(SERIES_CEILING);
+    expect(list.length).toBe(SERIES_CEILING + 1);
     expect(list[list.length - 1].key).toBe("other");
     expect(list[list.length - 1].slot).toBeNull();
     expect(list[list.length - 1].color).toBe(SERIES_FOLD);
-    /* The four biggest keep identities; nothing is lost from the total. */
-    expect(list.slice(0, -1).map((s) => s.label)).toEqual(["p7", "p6", "p5", "p4"]);
+    /* Every hue is used, and nothing is lost from the total. */
+    expect(list.slice(0, -1).map((s) => s.slot)).toEqual([0, 1, 2, 3, 4]);
+    expect(list.slice(0, -1).map((s) => s.label)).toEqual(["p7", "p6", "p5", "p4", "p3"]);
     const total = list.reduce((a, s) => a + s.total, 0);
     expect(total).toBe(many.reduce((a, r) => a + r.inTok, 0));
+  });
+
+  test("a survivor keeps its slot when the window changes, whatever the ranks", () => {
+    /* §10.1: a filter that changes the series count does not repaint the
+       survivors. Two spans, one book: the same project is the same colour, and
+       the one that overtakes keeps its own slot rather than inheriting. */
+    const book = new Map<string, number>();
+    const monday = [
+      fact({ at: 0, project: "nova", inTok: 900, outTok: 0, cacheRead: 0 }),
+      fact({ at: 0, project: "volery", inTok: 100, outTok: 0, cacheRead: 0 }),
+    ];
+    const tuesday = [
+      fact({ at: 0, project: "nova", inTok: 100, outTok: 0, cacheRead: 0 }),
+      fact({ at: 0, project: "volery", inTok: 900, outTok: 0, cacheRead: 0 }),
+    ];
+    const first = splitSeries(monday, "tokens", "5m", "project", book);
+    const second = splitSeries(tuesday, "tokens", "5m", "project", book);
+    const slotOf = (l: typeof first, label: string) => l.find((s) => s.label === label)?.slot;
+    expect(slotOf(first, "nova")).toBe(0);
+    expect(slotOf(first, "volery")).toBe(1);
+    /* volery is now the biggest, and it is still slot 1. */
+    expect(second[0].label).toBe("volery");
+    expect(slotOf(second, "nova")).toBe(0);
+    expect(slotOf(second, "volery")).toBe(1);
+  });
+
+  test("a new identity takes the lowest slot still free, and the sixth folds", () => {
+    const book = new Map<string, number>();
+    const rows = (labels: string[]) =>
+      labels.map((p, i) => fact({ at: 0, project: p, inTok: (i + 1) * 100, outTok: 0, cacheRead: 0 }));
+    /* The first reading hands hues out in its own size order: biggest, first
+       slot. That is the only reading rank is allowed to decide. */
+    splitSeries(rows(["a", "b", "c"]), "tokens", "5m", "project", book);
+    expect([...book.entries()]).toEqual([
+      ["c", 0],
+      ["b", 1],
+      ["a", 2],
+    ]);
+    /* `d` arrives alone: it takes 3, the lowest free. */
+    expect(splitSeries(rows(["d"]), "tokens", "5m", "project", book)[0].slot).toBe(3);
+    /* One more fills the palette, and everything after it folds. */
+    expect(splitSeries(rows(["e"]), "tokens", "5m", "project", book)[0].slot).toBe(4);
+    const last = splitSeries(rows(["f", "g"]), "tokens", "5m", "project", book);
+    expect(last.map((s) => s.key)).toEqual(["other"]);
+    expect(last[0].slot).toBeNull();
+    expect(last[0].unpriced).toBe(0);
+  });
+
+  test("a group the measure cannot price has no points and says how many rows", () => {
+    /* A sentinel account is unpriced under `usd_modeled` by design (§3.5): the
+       series is empty, and the count is what stops the legend printing $0. */
+    const list = splitSeries(
+      [fact({ at: 0, project: "nova", account: "@deepseek", model: "deepseek-flash" })],
+      "usd_modeled",
+      "5m",
+      "project",
+    );
+    expect(list[0].points).toEqual([]);
+    expect(list[0].unpriced).toBe(1);
   });
 });
 
@@ -247,6 +311,15 @@ describe("gaps", () => {
     expect(runs.length).toBe(2);
     expect(runs[0].length).toBe(3);
     expect(runs[1].length).toBe(1);
+  });
+
+  test("the same rule over instants, which is what the chart holds", () => {
+    /* `runsOfTimes` is the one the room calls: the axis is the union of every
+       series' buckets, not one series' points. A rule written twice is a rule
+       fixed once, so the two are the same function. */
+    expect(runsOfTimes([0, 300_000, 600_000, 1_800_000], "5m")).toEqual([[0, 300_000, 600_000], [1_800_000]]);
+    expect(runsOfTimes([], "5m")).toEqual([]);
+    expect(runsOfTimes([0], "5m")).toEqual([[0]]);
   });
 
   test("a day rung across a DST change is still one run", () => {
@@ -406,10 +479,14 @@ describe("the strip", () => {
     expect(k.leading?.share).toBe(90);
   });
 
-  test("a share never divides by zero", () => {
+  test("a share never divides by zero, and says so rather than printing a nought", () => {
     const k = kpisOf([fact({ at: 0, inTok: 0, outTok: 0, cacheRead: 0, write5m: 0, write1h: 0 })], 1);
     expect(k.cacheShare).toBeNull();
-    expect(Number.isFinite(k.leading?.share ?? 0)).toBe(true);
+    /* A project can lead a window of no tokens; its share of them is null, not
+       0% (§9.1), and the tile prints the dash. */
+    expect(k.leading?.project).toBe("volery");
+    expect(k.leading?.share).toBeNull();
+    expect(shareText(k.leading?.share ?? null)).toBe("—");
   });
 });
 
