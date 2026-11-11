@@ -54,6 +54,7 @@ const ANALYTICS_ITEMS: string[] = [
   "fn funding_at",
   "fn provider_of",
   "fn source_of",
+  "fn source_rank",
   "fn resolve_agent",
   "fn depth_of",
   "fn hour_of",

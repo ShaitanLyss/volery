@@ -1339,9 +1339,20 @@ facts. It is one row per request, so on this machine's rate it is the larger of 
 is far fewer; the two numbers in the first draft were the same figure used for both, and they
 are not. Phase 1 measures each.
 
-Every pass writes its facts in **one transaction**. A crash leaves either the pass or not, not
-half a bucket, which is the lesson `migrate` and `set_mid_turn` both paid for: bookkeeping that
-records how far something got must land with the thing it records.
+A pass writes its facts in **transactions of a bounded size**, not one for the whole batch. The
+deep pass is ~90,000 requests, and the store mutex it holds is the one every command waits on,
+so one transaction is a freeze of the wall for as long as it takes. The batch is cut into
+`CHUNK_REQUESTS` (1,000) and each chunk commits on its own, inside a lock taken and released for
+that chunk alone. What must still land together is a fact and its `usage_seen` key — the pair
+that makes a re-read a no-op. The **file offsets advance only in a final, small transaction**
+after every chunk is durable: the record of how far the pass got lands as one thing, never
+partly written, so it cannot claim bytes whose facts did not commit. (Landing it *with* each
+chunk would be the one arrangement that breaks the re-read: a crash after chunk one would have
+moved the offset past requests chunk two never wrote.) So a crash between chunks leaves
+committed facts whose offsets are still old; the next pass re-reads those bytes, finds their
+keys, and writes nothing twice. It really does hold half a bucket after such
+a crash, briefly and visibly repaired by the next pass, and that is the trade for a wall that
+does not stop painting.
 
 ### 7.3 When a pass runs
 
@@ -2534,7 +2545,8 @@ measured or reasoned basis.
   `tool_result` is a `user` record and is often the largest record in a file, so the tool
   branch parses the bytes the current assistant-only gate skips. That cost is measured in phase
   1 before the cadence is fixed; if it is heavy, the tool pass runs on a longer beat than the
-  usage pass and the two are reported apart. A pass writes one transaction and does no network.
+  usage pass and the two are reported apart. A pass writes chunk-sized transactions and does no
+  network.
   The first-ever pass is the deep backfill section 7.3 describes.
 - **Storage**: the two tables were given one number in the first draft and they are not one
   table. `usage_seen` is one row per request, roughly 450,000 rows over 90 days on this

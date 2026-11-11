@@ -15,10 +15,12 @@
 //!   usage widget is on the wall (`usage.md`), so recording cannot ride it: a
 //!   wall with no widget would record nothing. `start` is a collector of its own
 //!   at sixty seconds, and the ledger's beat is simply an extra caller.
-//! - **The store lock is never held across file IO.** The offsets are read under
-//!   it and it is released for the walk; it is taken again once, to write one
-//!   transaction. `open_turn`, `record_turn` and every other command wait on
-//!   that mutex, so holding it while a file is parsed would stop the wall.
+//! - **The store lock is never held across file IO, and never for a whole
+//!   backfill.** The offsets are read under it and it is released for the walk.
+//!   The write is then cut into `CHUNK_REQUESTS`-sized transactions, each taking
+//!   the lock and handing it back. `open_turn`, `record_turn` and every other
+//!   command wait on that mutex, so holding it for a file parse — or for the
+//!   deep pass's ninety thousand requests — would stop the wall.
 //!
 //! What a fact is, is §3.1's grain and §4's attribution ladder. What is
 //! deliberately absent: tool facts, prompt facts, vault, allowances, machine
@@ -51,6 +53,25 @@ pub(crate) const FINE_KEEP_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 /// hundredth of the value at ten times the cost: a five-hour window moves by a
 /// third of a percent in twenty seconds, and the fine grain is five minutes.
 const BEAT_EVERY: Duration = Duration::from_secs(60);
+
+/// How many requests one store transaction carries.
+///
+/// **The mutex is the reason this exists.** Every command that touches the store
+/// waits on it, and the synchronous ones run on the thread that paints the wall,
+/// so a single transaction over the deep pass's ~90,000 requests is a freeze for
+/// as long as it takes. A chunk bounds the wait instead: at most four rows per
+/// request (one fact, one hour row, one `usage_seen` key, one session row) makes
+/// this 4,000 rows, measured on this machine's SQLite in WAL at a median 15 ms
+/// and a 34 ms worst case; one card's real requests collapse their facts and
+/// hours and measure at a median 14 ms. Ninety chunks over the corpus cost the
+/// same in total as the one transaction did (401 ms against 409 ms, no fsync),
+/// so the protection is paid for out of contention rather than throughput.
+///
+/// The number is small on purpose. Per-chunk overhead is a prepare of four
+/// statements and one commit's fsync, which is cheap next to the latency of a
+/// command waiting behind it; a larger chunk buys five milliseconds of total
+/// work and costs tens of milliseconds of held lock.
+const CHUNK_REQUESTS: usize = 1_000;
 
 /* ── what the walk offers the sink ───────────────────────────────────────── */
 
@@ -95,8 +116,9 @@ struct FileMark {
 
 /// One pass's worth of readings, filled by the walk and written afterwards.
 ///
-/// The batch is the whole reason the store lock is not held across file IO: the
-/// walk appends here, `write` takes the lock once and does one transaction.
+/// The batch is why the store lock is not held across file IO: the walk appends
+/// here, and only the facts are written under it — a chunk at a time, with the
+/// marks and the retention deletes left to one small transaction at the end.
 #[derive(Default)]
 pub(crate) struct Batch {
     requests: Vec<Record>,
@@ -420,6 +442,21 @@ pub(crate) fn source_of(entrypoint: &str, card: bool) -> &'static str {
     }
 }
 
+/// How a session's `source` merges: `card` beats `terminal` beats `unknown`.
+///
+/// A *maximum*, so it is commutative: folding it over a session's records and
+/// then over its chunks gives the same answer however a pass was batched, which
+/// is what lets a session span a chunk boundary without the row depending on
+/// which half was written first. The order also keeps the two transitions that
+/// matter — a card stays a card, and a later pass may upgrade an `unknown`.
+fn source_rank(source: &str) -> u8 {
+    match source {
+        "card" => 2,
+        "terminal" => 1,
+        _ => 0,
+    }
+}
+
 /// How deep a subagent is, and who spawned it — §4.4.
 ///
 /// `parent` is the agent that made the spawning call, or `''` for the card
@@ -612,6 +649,22 @@ struct Counts {
     bytes: u64,
 }
 
+impl Counts {
+    /// Sum a chunk's counts into the pass's.
+    ///
+    /// A fact or session key that spans two chunks is counted by both, because
+    /// both transactions touched its row (`ON CONFLICT` adds, `INSERT OR
+    /// REPLACE` rewrites). The tables still hold one row; this number is what
+    /// the pass did, not how many rows exist.
+    fn add(&mut self, other: Counts) {
+        self.requests += other.requests;
+        self.duplicates += other.duplicates;
+        self.facts += other.facts;
+        self.hours += other.hours;
+        self.sessions += other.sessions;
+    }
+}
+
 /// What one forced pass did, as `analytics_pass` answers it.
 ///
 /// **It is the answer to a question somebody asked, not a health check.** The
@@ -628,26 +681,36 @@ pub struct Report {
     pub bytes: u64,
     pub requests: i64,
     pub duplicates: i64,
+    /// Facts the chunks wrote. A key that spans two chunks is counted by both,
+    /// because both transactions touched its row; the table still holds one.
     pub facts: i64,
+    /// Hour rows, counted the same way.
     pub hours: i64,
+    /// Session rows, counted the same way.
     pub sessions: i64,
     pub refused: i64,
     pub ms: u64,
 }
 
-/// Fold one batch into the store, in **one transaction** (§7.2).
+/// Fold one chunk of requests into the store, in **one transaction** (§7.2).
 ///
-/// A crash leaves either the pass or not: a fact and its `usage_seen` key and
-/// its file offset land together, which is the lesson `migrate` and
-/// `set_mid_turn` both paid for. That is also what makes the offset safe to
-/// advance — if this fails, the next pass re-reads the same bytes and the dedupe
-/// has nothing, which is the truth.
-fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Counts, String> {
+/// A fact and its `usage_seen` key land together, which is the lesson `migrate`
+/// and `set_mid_turn` both paid for. The file offset is deliberately **not** in
+/// this transaction: it advances once, in `write_tail`, after every chunk has
+/// committed. A crash between chunks therefore leaves committed facts whose
+/// offsets are still old, and the next pass re-reads those bytes and finds their
+/// `usage_seen` keys — nothing double counted, nothing committed lost.
+fn write_chunk(
+    conn: &mut Connection,
+    host: &str,
+    requests: &[Record],
+    session_owners: &HashMap<String, String>,
+    parents: &HashMap<(String, String), String>,
+    prior: &Prior,
+    now: i64,
+) -> Result<Counts, String> {
     let cutoff = now - FINE_KEEP_MS;
-    let mut counts = Counts {
-        bytes: batch.bytes,
-        ..Counts::default()
-    };
+    let mut counts = Counts::default();
 
     let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
 
@@ -657,7 +720,7 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
         let mut seen = tx
             .prepare("SELECT 1 FROM usage_seen WHERE key = ?1")
             .map_err(|e| format!("analytics: read seen: {e}"))?;
-        for rec in &batch.requests {
+        for rec in requests {
             if rec.at < cutoff {
                 continue;
             }
@@ -695,12 +758,11 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
         let last = recs.last().map(|r| r.at).unwrap_or(0);
 
         let spans = spans_for(&tx, &session, first, last)?;
-        let owners = batch
-            .owners
+        let owners = session_owners
             .get(&session)
             .cloned()
             .filter(|i| !i.is_empty())
-            .or_else(|| prior_identity(&tx, &session));
+            .or_else(|| prior.identity.get(&session).cloned().flatten());
         let card = card_for(&tx, &session);
 
         /* One lookup per *identity*, once: a session's turns all carry the same
@@ -733,10 +795,6 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
             provider_last: String::new(),
         };
         let mut seen_entry = false;
-        /* Asked once per agent rather than once per request: a subagent file
-           can hold hundreds of records, and the answer cannot change inside
-           one transaction. */
-        let mut known_agents: HashMap<String, Option<(String, i64)>> = HashMap::new();
 
         for rec in &recs {
             let funding = funding_at(
@@ -746,18 +804,19 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
                 &labels,
                 card.as_ref().map(|c| c.label.as_str()),
             );
-            let known = match known_agents.get(&rec.agent) {
-                Some(k) => k.clone(),
-                None => {
-                    let k = prior_agent(&tx, &session, &rec.agent)?;
-                    known_agents.insert(rec.agent.clone(), k.clone());
-                    k
-                }
-            };
+            /* What an earlier pass proved about this agent, read once for the
+               whole pass rather than once per chunk: a chunk that read it late
+               would see the rows an earlier chunk had just written and fund the
+               same agent differently. */
+            let known = prior
+                .agents
+                .get(&(session.clone(), rec.agent.clone()))
+                .cloned()
+                .flatten();
             let (parent_agent, depth) = resolve_agent(
                 &session,
                 &rec.agent,
-                &batch.parents,
+                parents,
                 known.as_ref().map(|(p, d)| (p.as_str(), *d)),
             );
             let source = source_of(&rec.entrypoint, card.is_some());
@@ -801,12 +860,24 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
 
             if !seen_entry {
                 seen_entry = true;
-                now_row.project = project.clone();
-                now_row.source = source.to_string();
                 now_row.account_first = funding.account.clone();
                 now_row.provider_first = funding.provider.clone();
                 now_row.cli_min = rec.cli.clone();
                 now_row.cli_max = rec.cli.clone();
+            }
+            /* The session's earliest record that names a project, not simply
+               its earliest record: a record with no `cwd` says nothing, and
+               taking it would leave the one-chunk batch with an empty project
+               while a split batch fell back to the next record's. */
+            if now_row.project.is_empty() {
+                now_row.project = project.clone();
+            }
+            /* Folded as a maximum rather than taken from the first record: a
+               session's records can disagree (a card resumed in a terminal), and
+               "first" would then be whichever chunk the batch happened to put
+               first. */
+            if source_rank(source) > source_rank(&now_row.source) {
+                now_row.source = source.to_string();
             }
             /* The first and last readings are by time, and the batch is sorted
                by it, so the last one to land wins the `last` half. */
@@ -927,7 +998,7 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
         let mut seen = tx
             .prepare("INSERT OR IGNORE INTO usage_seen (key, at) VALUES (?1, ?2)")
             .map_err(|e| format!("analytics: seen: {e}"))?;
-        for rec in &batch.requests {
+        for rec in requests {
             if rec.at < cutoff {
                 continue;
             }
@@ -974,13 +1045,39 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
     }
     counts.sessions = session_rows.len() as i64;
 
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(counts)
+}
+
+/// The marks and the retention deletes: **the end of the pass, in one small
+/// transaction**.
+///
+/// The offsets advance only here, after every chunk has committed. That is what
+/// makes the chunking safe: a pass that dies between chunks leaves committed
+/// facts whose `usage_seen` keys are committed and whose offsets are still old,
+/// so the next pass re-reads the same bytes and writes nothing new. Had the
+/// offset gone into the chunk's own transaction, a crash after chunk one would
+/// have advanced past requests chunk two never wrote — the one thing `usage_seen`
+/// cannot repair.
+///
+/// Small is a property, not a hope: a mark per transcript the walk read (hundreds
+/// at most) and two indexed deletes, never a row per request.
+fn write_tail(
+    conn: &mut Connection,
+    files: &[FileMark],
+    alive: &HashSet<String>,
+    now: i64,
+) -> Result<(), String> {
+    let cutoff = now - FINE_KEEP_MS;
+    let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+
     /* 7. The offsets — only the bytes that ended in a newline, which is what
           `usage.rs` hands over — and the marks for files that are gone. */
     {
         let mut sql = tx
             .prepare("INSERT OR REPLACE INTO usage_file (path, offset, mtime, size) VALUES (?1,?2,?3,?4)")
             .map_err(|e| format!("analytics: file: {e}"))?;
-        for f in &batch.files {
+        for f in files {
             sql.execute(params![f.path, f.mark.offset as i64, f.mark.mtime, f.mark.size as i64])
                 .map_err(|e| format!("analytics: file: {e}"))?;
         }
@@ -990,7 +1087,7 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
            guard is not cosmetic: a walk that could not read the root at all
            reports no files, and pruning on that would throw away every offset
            and re-read ninety days the next time the disk came back. */
-        if !batch.alive.is_empty() {
+        if !alive.is_empty() {
             let known: Vec<String> = {
                 let mut stmt = tx
                     .prepare("SELECT path FROM usage_file")
@@ -1005,7 +1102,7 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
                 .prepare("DELETE FROM usage_file WHERE path = ?1")
                 .map_err(|e| format!("analytics: file: {e}"))?;
             for path in known {
-                if !batch.alive.contains(&path) {
+                if !alive.contains(&path) {
                     gone.execute([&path])
                         .map_err(|e| format!("analytics: file: {e}"))?;
                 }
@@ -1019,17 +1116,100 @@ fn write(conn: &mut Connection, host: &str, batch: Batch, now: i64) -> Result<Co
           the bucket's beginning, so `at < cutoff` deleted a row for a request
           that was inside the window while keeping its `usage_seen` key: that
           request could never be written again, and a five-minute band at the old
-          edge of the tier was a hole for ever. */
-    tx.execute(
-        "DELETE FROM usage_fact WHERE at + ?2 <= ?1",
-        params![cutoff, BUCKET_MS],
-    )
-    .map_err(|e| format!("analytics: prune facts: {e}"))?;
+          edge of the tier was a hole for ever.
+          **Written as a bound on `at` rather than on `at + BUCKET_MS`** so
+          `usage_fact_by_at` answers it with a range search: the arithmetic form
+          is not sargable and scans the whole fine tier. This tail is the entire
+          store hold on a quiet pass, which is exactly where a cost proportional
+          to the table rather than to the work cannot hide. */
+    tx.execute("DELETE FROM usage_fact WHERE at <= ?1", [cutoff - BUCKET_MS])
+        .map_err(|e| format!("analytics: prune facts: {e}"))?;
     tx.execute("DELETE FROM usage_seen WHERE at < ?1", [cutoff])
         .map_err(|e| format!("analytics: prune seen: {e}"))?;
 
-    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))
+}
+
+/// The write half of a pass: the prior snapshot, then every chunk under its own
+/// hold on the store, then the tail.
+///
+/// **The lock is taken and released per chunk.** Every command that touches the
+/// store waits on this mutex, so it is never held across a chunk boundary: the
+/// longest hold is one chunk's transaction, bounded by `CHUNK_REQUESTS`, plus
+/// this one snapshot read before it, which is bounded by the batch's sessions and
+/// agents rather than by its requests.
+///
+/// `stop_after` is the crash seam. A test cannot kill a process between two
+/// chunks, so the loop returns after that many chunks without the tail — the
+/// exact state a crash leaves: the chunks' facts and dedupe keys durable, the
+/// offsets old. Production always passes `None`.
+fn flush(
+    conns: &Mutex<Connection>,
+    host: &str,
+    batch: &Batch,
+    now: i64,
+    chunk: usize,
+    stop_after: Option<usize>,
+) -> Result<Counts, String> {
+    /* The distinct sessions and agents, built from the batch **before** the
+       lock is taken: a hash insert and two clones per request is not work that
+       belongs inside a hold this function exists to keep short. Under the lock
+       there is one query per distinct session and agent. A session whose owner
+       the batch already read out of a transcript needs no query — that owner
+       wins anyway. */
+    let mut sessions: Vec<String> = Vec::new();
+    let mut agents: Vec<(String, String)> = Vec::new();
+    {
+        let mut seen_sessions: HashSet<&str> = HashSet::new();
+        let mut seen_agents: HashSet<(&str, &str)> = HashSet::new();
+        for rec in &batch.requests {
+            if seen_sessions.insert(&rec.session) && !batch.owners.contains_key(&rec.session) {
+                sessions.push(rec.session.clone());
+            }
+            if !rec.agent.is_empty() && seen_agents.insert((&rec.session, &rec.agent)) {
+                agents.push((rec.session.clone(), rec.agent.clone()));
+            }
+        }
+    }
+    let prior = {
+        let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        Prior::read(&conn, &sessions, &agents)?
+    };
+    let mut counts = Counts {
+        bytes: batch.bytes,
+        ..Counts::default()
+    };
+    for (n, part) in batch.requests.chunks(chunk.max(1)).enumerate() {
+        if stop_after.is_some_and(|stop| n >= stop) {
+            return Ok(counts);
+        }
+        let written = {
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            write_chunk(
+                &mut conn,
+                host,
+                part,
+                &batch.owners,
+                &batch.parents,
+                &prior,
+                now,
+            )?
+        };
+        counts.add(written);
+    }
+    /* The offsets advance only once every chunk is durable, so an interrupted
+       pass re-reads what it already wrote and `usage_seen` makes that a no-op. */
+    {
+        let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        write_tail(&mut conn, &batch.files, &batch.alive, now)?;
+    }
     Ok(counts)
+}
+
+/// One batch on one store, at the chunk size the wall writes with.
+#[cfg(test)]
+fn write(conns: &Mutex<Connection>, host: &str, batch: &Batch, now: i64) -> Result<Counts, String> {
+    flush(conns, host, batch, now, CHUNK_REQUESTS, None)
 }
 
 /// The turn rows whose interval can contain one of this session's requests.
@@ -1103,6 +1283,54 @@ fn prior_agent(
     )
     .optional()
     .map_err(|e| format!("analytics: prior agent: {e}"))
+}
+
+/// What earlier passes recorded, read **once for the whole pass**.
+///
+/// `prior_identity` and `prior_agent` answer "what did a previous pass prove",
+/// and a chunk that asked them would sometimes get rows an earlier chunk of the
+/// same pass had just written — the very thing the answer must not include. A
+/// session split across a boundary would then fund its halves differently, and a
+/// different account is a different `usage_fact` primary key: `usage_seen` would
+/// make that permanent. One snapshot taken before the first chunk makes every
+/// chunk see what the old single transaction saw.
+struct Prior {
+    /// Session → the owner identity a previous pass recorded.
+    identity: HashMap<String, Option<String>>,
+    /// `(session, agent)` → the parent and depth a previous pass proved.
+    agents: HashMap<(String, String), Option<(String, i64)>>,
+}
+
+impl Prior {
+    /// The keys are handed in already distinct, built from the batch before the
+    /// lock is taken, so this is one query per session and per agent and nothing
+    /// proportional to the requests. Each is an indexed lookup that stops at its
+    /// first match, and on the deep first pass the tables it reads are empty.
+    ///
+    /// It is a point in time, and a second pass overlapping this one could commit
+    /// after it. That costs attribution at worst, never a count, and the two were
+    /// already outside any lock for the whole walk.
+    fn read(
+        conn: &Connection,
+        sessions: &[String],
+        agents: &[(String, String)],
+    ) -> Result<Prior, String> {
+        let mut identity: HashMap<String, Option<String>> = HashMap::new();
+        for session in sessions {
+            identity.insert(session.clone(), prior_identity(conn, session));
+        }
+        let mut known: HashMap<(String, String), Option<(String, i64)>> = HashMap::new();
+        for (session, agent) in agents {
+            known.insert(
+                (session.clone(), agent.clone()),
+                prior_agent(conn, session, agent)?,
+            );
+        }
+        Ok(Prior {
+            identity,
+            agents: known,
+        })
+    }
 }
 
 /// The Volery card behind a session, if there is one.
@@ -1228,16 +1456,18 @@ fn merge_session(
     card: Option<&Card>,
     turns: i64,
 ) -> SessionWrite {
-    let source = match old.as_ref().map(|o| o.source.as_str()) {
-        Some("card") => "card",
-        Some("terminal") => {
-            if now.source == "card" {
-                "card"
-            } else {
-                "terminal"
-            }
-        }
-        _ => now.source.as_str(),
+    /* **The source is a maximum, not "whichever chunk was written last."** A
+       session can hold records from more than one entrypoint (a card resumed in
+       a terminal appends to the same transcript), and now that one pass writes it
+       in several transactions, the answer must not depend on where the cuts
+       fell. `card` beats `terminal` beats `unknown` is commutative, keeps the
+       card stickiness the old match had, and still upgrades an `unknown` row a
+       later pass learns more about. */
+    let old_source = old.as_ref().map(|o| o.source.as_str()).unwrap_or("unknown");
+    let source = if source_rank(old_source) > source_rank(&now.source) {
+        old_source
+    } else {
+        now.source.as_str()
     };
     let old_started = old.as_ref().map(|o| o.started_at).unwrap_or(now.started_at);
     let old_ended = old.as_ref().and_then(|o| o.ended_at);
@@ -1276,12 +1506,31 @@ fn merge_session(
         _ => now.cli_max.clone(),
     };
 
+    /* The project belongs to the earlier half, for the same reason: a session
+       resumed from another directory would otherwise be named by whichever chunk
+       went last, and the same batch cut differently is the same session. The
+       card, where there is one, remains the authority. */
     let project = card
         .map(|c| c.project.clone())
         .filter(|p| !p.is_empty())
-        .or_else(|| Some(now.project.clone()).filter(|p| !p.is_empty()))
-        .or_else(|| old.as_ref().map(|o| o.project.clone()).filter(|p| !p.is_empty()))
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            let (early, late) = if batch_is_earlier {
+                (
+                    now.project.clone(),
+                    old.as_ref().map(|o| o.project.clone()).unwrap_or_default(),
+                )
+            } else {
+                (
+                    old.as_ref().map(|o| o.project.clone()).unwrap_or_default(),
+                    now.project.clone(),
+                )
+            };
+            if early.is_empty() {
+                late
+            } else {
+                early
+            }
+        });
     let branch = card
         .map(|c| c.branch.clone())
         .filter(|b| !b.is_empty())
@@ -1364,10 +1613,11 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
     let batch = reading.into_batch();
     let refused = batch.refused;
 
-    let counts = {
-        let mut conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-        write(&mut conn, &host, batch, now)?
-    };
+    /* A command arriving mid-pass waits for one chunk rather than for the whole
+       backfill — the difference between the 34 ms worst case measured for
+       `CHUNK_REQUESTS` and a single transaction over every request on the
+       machine. `flush` is where the per-chunk lock lives. */
+    let counts = flush(&store.0, &host, &batch, now, CHUNK_REQUESTS, None)?;
 
     Ok(Report {
         files: scan.read,
@@ -1578,15 +1828,17 @@ mod tests {
 
     #[test]
     fn a_request_is_folded_once_however_often_it_is_read() {
-        let mut conn = db();
+        let conns = Mutex::new(db());
         /* Relative to now, and that is not tidiness: `write` drops anything
            older than the fine tier's ninety days, so a fixture written as a
            fixed stamp passes on the day it is written and fails on CI a season
            later. */
         let line = request(now_ms() - 60_000, "claude-opus-5-5", 1000);
-        let counts = write(&mut conn, "here", batch(&[line.clone()]), now_ms()).unwrap();
+        let counts = write(&conns, "here", &batch(&[line.clone()]), now_ms()).unwrap();
         assert_eq!(counts.requests, 1);
-        let one: (i64, i64) = conn
+        let one: (i64, i64) = conns
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT SUM(requests), SUM(in_tok) FROM usage_fact",
                 [],
@@ -1596,10 +1848,12 @@ mod tests {
         assert_eq!(one, (1, 1000));
 
         /* The same file offered again — a replacement re-read from zero. */
-        let again = write(&mut conn, "here", batch(&[line]), now_ms()).unwrap();
+        let again = write(&conns, "here", &batch(&[line]), now_ms()).unwrap();
         assert_eq!(again.requests, 0, "the dedupe stopped the second count");
         assert_eq!(again.duplicates, 1);
-        let two: (i64, i64) = conn
+        let two: (i64, i64) = conns
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT SUM(requests), SUM(in_tok) FROM usage_fact",
                 [],
@@ -1611,7 +1865,7 @@ mod tests {
 
     #[test]
     fn the_hour_is_the_sum_of_its_facts() {
-        let mut conn = db();
+        let conns = Mutex::new(db());
         /* A minute past an hour boundary and half a minute apart, so six
            requests cannot straddle an hour or a five-minute bucket and both
            tiers are one row either way. */
@@ -1619,16 +1873,20 @@ mod tests {
         let lines: Vec<String> = (0..6)
             .map(|i| request(base + i * 30 * 1000, "claude-opus-5-5", 10))
             .collect();
-        write(&mut conn, "here", batch(&lines), now_ms()).unwrap();
+        write(&conns, "here", &batch(&lines), now_ms()).unwrap();
 
-        let facts: (i64, i64, i64) = conn
+        let facts: (i64, i64, i64) = conns
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT SUM(requests), SUM(in_tok), COUNT(*) FROM usage_fact",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        let hours: (i64, i64, i64) = conn
+        let hours: (i64, i64, i64) = conns
+            .lock()
+            .unwrap()
             .query_row(
                 "SELECT SUM(requests), SUM(in_tok), COUNT(*) FROM usage_hour",
                 [],
@@ -1951,5 +2209,311 @@ mod tests {
         assert_eq!(mark.offset, 100);
         assert_eq!(mark.size, 200);
         assert_eq!(reading.batch.bytes, 100);
+    }
+
+    /// The same fixture under another session, entrypoint or working directory,
+    /// so a test can build a session whose records disagree. A card resumed in a
+    /// terminal appends to the same transcript, and a session resumed from
+    /// another directory carries a second `cwd`; neither may make the session
+    /// row depend on where a chunk boundary fell.
+    fn request_with(session: &str, entrypoint: &str, cwd: &str, at: i64, tokens: i64) -> String {
+        request(at, "claude-opus-5-5", tokens)
+            .replace("\"sessionId\":\"s1\"", &format!("\"sessionId\":\"{session}\""))
+            .replace("\"entrypoint\":\"sdk-cli\"", &format!("\"entrypoint\":\"{entrypoint}\""))
+            .replace(
+                r#""cwd":"C:\\workbench\\volery""#,
+                &format!(r#""cwd":"{}""#, cwd.replace('\\', "\\\\")),
+            )
+    }
+
+    /// The same fixture under another session id, so a test can build two cards
+    /// or one whose requests fall either side of a chunk boundary.
+    fn request_for(session: &str, at: i64, tokens: i64) -> String {
+        request_with(session, "sdk-cli", r"C:\workbench\volery", at, tokens)
+    }
+
+    /// One table's rows as text, every column, in a stable order — so two
+    /// databases can be compared without a column list per call site.
+    fn dump(conn: &Connection, sql: &str, cols: usize) -> Vec<String> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.query_map([], |r| {
+            let mut out = String::new();
+            for i in 0..cols {
+                out.push_str(&format!("{:?}|", r.get_ref(i)?));
+            }
+            Ok(out)
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    /// Every row the ingest writes, from the four tables batching could move.
+    fn dump_all(conn: &Connection) -> Vec<Vec<String>> {
+        vec![
+            dump(
+                conn,
+                "SELECT at, host, session, agent, parent_agent, depth, model, effort, cli,
+                        source, account, account_identity, provider, project, provenance,
+                        in_tok, out_tok, cache_read, write_5m, write_1h, requests, usd_reported
+                   FROM usage_fact
+                  ORDER BY at, session, agent, model, source, account, provider, project",
+                22,
+            ),
+            dump(
+                conn,
+                "SELECT hour, host, account, provider, model, effort, cli, source, project,
+                        provenance, in_tok, out_tok, cache_read, write_5m, write_1h, requests,
+                        usd_reported
+                   FROM usage_hour
+                  ORDER BY hour, account, provider, model, source, project",
+                17,
+            ),
+            dump(
+                conn,
+                "SELECT session, host, project, source, card_id, parent_card, opened_by, branch,
+                        started_at, ended_at, cli_min, cli_max, account_first, account_last,
+                        provider_first, provider_last, turns, endings_json
+                   FROM analytics_session
+                  ORDER BY session, host",
+                18,
+            ),
+            dump(conn, "SELECT key, at FROM usage_seen ORDER BY key", 2),
+        ]
+    }
+
+    /// **The property the chunking must not break.** What ends up in the tables
+    /// may not depend on how the batch was cut: the same requests in one
+    /// transaction and one at a time have to leave byte-identical rows.
+    ///
+    /// The fixture is built to break each merge rule the first cut got wrong,
+    /// because every one of them is a row that used to depend on the cut:
+    ///
+    /// - `a`: four records in one five-minute bucket, so a fact key spans chunks
+    ///   and its sums must add; and an entrypoint that changes halfway, which is
+    ///   what a terminal `--resume` of a card leaves in one transcript.
+    /// - `c`: two working directories, so the earlier one must name the session.
+    /// - `d`: its earliest record has no `cwd`, so the earliest *naming* record
+    ///   must win.
+    /// - `priors`: a turn row carries the account identity of the request inside
+    ///   it and nothing covers the one after it, so a chunk that read
+    ///   `prior_identity` live would fund the second request from the first
+    ///   chunk's row while a single transaction would not.
+    #[test]
+    fn a_chunked_batch_writes_the_same_rows_as_one_transaction() {
+        let base = hour_of(now_ms() - 6 * 3_600_000) + 60_000;
+        let volery = r"C:\workbench\volery";
+        /* (session, entrypoint, cwd, at, tokens). */
+        let spec: [(&str, &str, &str, i64, i64); 14] = [
+            ("a", "sdk-cli", volery, base, 100),
+            ("a", "cli", volery, base + 1_000, 101),
+            ("a", "sdk-cli", volery, base + 2_000, 102),
+            ("a", "cli", volery, base + 3_000, 103),
+            ("b", "sdk-cli", volery, base + BUCKET_MS, 104),
+            ("b", "cli", volery, base + 2 * BUCKET_MS, 105),
+            ("b", "sdk-cli", volery, base + 3 * BUCKET_MS, 106),
+            ("b", "cli", volery, base + 4 * BUCKET_MS, 107),
+            ("c", "sdk-cli", r"C:\workbench\alpha", base + 30 * 60_000, 108),
+            ("c", "sdk-cli", r"C:\workbench\beta", base + 31 * 60_000, 109),
+            ("d", "sdk-cli", "", base + 40 * 60_000, 110),
+            ("d", "sdk-cli", r"C:\workbench\gamma", base + 41 * 60_000, 111),
+            ("priors", "sdk-cli", volery, base + 50 * 60_000, 112),
+            ("priors", "sdk-cli", volery, base + 52 * 60_000, 113),
+        ];
+        let lines: Vec<String> = spec
+            .iter()
+            .map(|(s, e, cwd, at, tokens)| request_with(s, e, cwd, *at, *tokens))
+            .collect();
+
+        /* The turn row is the only thing that can put an identity on a request
+           with no `session-owner` record, which is what `prior_identity` reads
+           back. It claims no conversation, so the foreign key is off for this
+           insert alone. */
+        let inside = base + 50 * 60_000;
+        let seeded = || {
+            let conn = db();
+            conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+            conn.execute(
+                "INSERT INTO turn
+                   (conversation_id, opened_at, ended_at, status_tier, account_label,
+                    account_identity, agent_session_id)
+                 VALUES ('priors', ?1, ?2, 'working', 'lyss', 'acct:org', 'priors')",
+                params![inside - 1_000, inside + 1_000],
+            )
+            .unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            conn
+        };
+
+        let one = Mutex::new(seeded());
+        flush(&one, "here", &batch(&lines), now_ms(), 4096, None).unwrap();
+
+        let many = Mutex::new(seeded());
+        flush(&many, "here", &batch(&lines), now_ms(), 1, None).unwrap();
+
+        let whole = dump_all(&one.lock().unwrap());
+        assert_eq!(whole[2].len(), 5, "five sessions, five rows");
+        assert_eq!(whole[3].len(), 14, "one dedupe key per request");
+        assert_eq!(
+            whole,
+            dump_all(&many.lock().unwrap()),
+            "fourteen chunks wrote the same rows"
+        );
+
+        let field = |conn: &Connection, session: &str, column: &str| -> String {
+            conn.query_row(
+                &format!("SELECT {column} FROM analytics_session WHERE session = ?1"),
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let one = one.lock().unwrap();
+        let many = many.lock().unwrap();
+        /* Holding both guards is safe: nothing here takes a second one. */
+        assert_eq!(
+            field(&one, "a", "source"),
+            "terminal",
+            "the strongest record names the session, not the first one seen"
+        );
+        assert_eq!(field(&many, "a", "source"), "terminal");
+        assert_eq!(
+            field(&one, "c", "project"),
+            "alpha",
+            "the earlier directory names the session"
+        );
+        assert_eq!(field(&many, "c", "project"), "alpha");
+        assert_eq!(
+            field(&one, "d", "project"),
+            "gamma",
+            "a record with no cwd defers to the first that names one"
+        );
+        assert_eq!(field(&many, "d", "project"), "gamma");
+
+        let funded: i64 = one
+            .query_row(
+                "SELECT COUNT(*) FROM usage_fact
+                  WHERE session = 'priors' AND account_identity = 'acct:org'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            funded, 1,
+            "only the request inside the turn is funded by it"
+        );
+        let funded: i64 = many
+            .query_row(
+                "SELECT COUNT(*) FROM usage_fact
+                  WHERE session = 'priors' AND account_identity = 'acct:org'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(funded, 1, "and a chunk cannot be funded by the one before it");
+    }
+
+    /// **§7.2 under chunking.** A pass commits facts a chunk at a time and
+    /// advances the offsets only in the tail, so a crash between chunks leaves
+    /// the old offset behind. The next pass re-reads from it; `usage_seen` is
+    /// what turns that re-read into nothing.
+    ///
+    /// This drives the shipped `flush` rather than re-cutting the batch by hand,
+    /// so a future edit that moved the mark write into the chunk loop fails
+    /// here: with two of three chunks committed there would be an offset for the
+    /// file and the re-read would start past requests nothing had written.
+    #[test]
+    fn a_pass_that_dies_between_chunks_counts_nothing_twice() {
+        let base = hour_of(now_ms() - 6 * 3_600_000) + 60_000;
+        let lines: Vec<String> = (0..9)
+            .map(|i| request_for(&format!("s{i}"), base + i as i64 * BUCKET_MS, 1000))
+            .collect();
+        let mut reading = Reading::new(HashMap::new(), 0);
+        for line in &lines {
+            reading.request(&record(line));
+        }
+        /* A file the walk finished reading; its mark is the tail's to write. */
+        let path = Path::new("C:\\t\\s.jsonl");
+        reading.consumed(path, 100, 5, 200, 100);
+        let whole = reading.into_batch();
+        let now = now_ms();
+        let conns = Mutex::new(db());
+
+        /* Two of three chunks commit, then the process dies: the loop returns
+           before the third chunk and before the tail. */
+        flush(&conns, "here", &whole, now, 3, Some(2)).unwrap();
+        {
+            let conn = conns.lock().unwrap();
+            let committed: i64 = conn
+                .query_row("SELECT COUNT(*) FROM usage_fact", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(committed, 6, "two chunks of three are durable");
+            let marks: i64 = conn
+                .query_row("SELECT COUNT(*) FROM usage_file", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(marks, 0, "and no offset moved, so a re-read starts at zero");
+        }
+
+        /* The next pass: the same batch, from the old marks. */
+        let again = flush(&conns, "here", &whole, now, 3, None).unwrap();
+        assert_eq!(again.requests, 3, "only the third chunk was new");
+        assert_eq!(again.duplicates, 6, "the committed chunks were recognised");
+
+        let conn = conns.lock().unwrap();
+        let facts: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(requests), SUM(in_tok) FROM usage_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(facts, (9, 9, 9000), "each request counted exactly once");
+        let seen: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_seen", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seen, 9);
+        let mark: (i64, i64) = conn
+            .query_row(
+                "SELECT offset, size FROM usage_file WHERE path = ?1",
+                ["C:\\t\\s.jsonl"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mark, (100, 200), "and the tail advanced the offset");
+    }
+
+    /// **Sessions outlive a chunk.** `merge_session` is an upsert, so the
+    /// second chunk's share of a card folds into the row the first wrote: one
+    /// row, spanning the whole session's times, with every request in it.
+    #[test]
+    fn a_session_split_across_chunks_keeps_one_row() {
+        let base = hour_of(now_ms() - 6 * 3_600_000) + 60_000;
+        let lines: Vec<String> = (0..4)
+            .map(|i| request_for("split", base + i as i64 * BUCKET_MS, 100))
+            .collect();
+        let conns = Mutex::new(db());
+        /* Two requests a chunk: the session has rows in both transactions. */
+        flush(&conns, "here", &batch(&lines), now_ms(), 2, None).unwrap();
+
+        let conn = conns.lock().unwrap();
+        let row: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MIN(started_at), MAX(ended_at)
+                   FROM analytics_session WHERE session = 'split'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (1, base, base + 3 * BUCKET_MS), "one row, the whole span");
+
+        let totals: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(requests), SUM(in_tok)
+                   FROM usage_fact WHERE session = 'split'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(totals, (4, 4, 400), "and both chunks' requests are in it");
     }
 }
