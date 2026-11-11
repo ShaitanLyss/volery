@@ -140,7 +140,7 @@ private fun VoleryPhone(seedGate: Boolean = false) {
     // it was pointed at is off.
     LaunchedEffect(Unit) {
         if (Config.key.isNotEmpty()) {
-            NodeService.dial(context, Config.host, Config.rememberedJson(), Config.key, Config.name)
+            NodeService.dial(context, Config.firstDoor(), Config.walkJson(), Config.key, Config.name)
         }
     }
 
@@ -225,7 +225,7 @@ private fun VoleryPhone(seedGate: Boolean = false) {
                         onOpen = { openId = it.id },
                         onSettings = { context.open(Intent(context, SettingsActivity::class.java)) },
                         onDial = {
-                            NodeService.dial(context, Config.host, Config.rememberedJson(), Config.key, Config.name)
+                            NodeService.dial(context, Config.firstDoor(), Config.walkJson(), Config.key, Config.name)
                         },
                     )
                 }
@@ -287,10 +287,15 @@ private fun RosterScreen(
                     title = "no key yet",
                     note = "set the wall's key phrase in settings and the phone will join the flyway.",
                 ) { ActionButton("open settings", onSettings) }
-                else -> Stood(
+                host.isNotBlank() -> Stood(
                     kind = DotKind.Work,
                     title = "dialing $host…",
                     note = "the flyway takes a moment to answer.",
+                ) { ActionButton("dial again", onDial) }
+                else -> Stood(
+                    kind = DotKind.Work,
+                    title = "looking for a wall…",
+                    note = "asking the flyway's directory. a wall has to be up somewhere.",
                 ) { ActionButton("dial again", onDial) }
             }
         }
@@ -332,7 +337,7 @@ private fun Walls(sighting: Sighting?, selected: String, working: Boolean, onHos
     val roster = sighting?.roster.orEmpty()
     val chips = buildList {
         val chosen = roster.firstOrNull { it.host == selected }
-        if (chosen == null) {
+        if (chosen == null && selected.isNotBlank()) {
             add(WallChip(selected, sighting?.cards?.cards?.size ?: 0, working))
         }
         roster.forEach { wall ->
@@ -906,7 +911,7 @@ private fun NarrationLoop(context: Context, host: String, chatty: String, mode: 
  *  are out of the air. */
 private suspend fun narrateOnce(context: Context, host: String, chatty: String, steer: Steer, onNeedsYou: () -> Unit) {
     val prev = withContext(Dispatchers.IO) { NarrationStore.load(context) }
-    val turn = sightAndNarrate(host, Config.rememberedJson(), prev, chatty) ?: return
+    val turn = sightAndNarrate(host, Config.walkJson(), prev, chatty) ?: return
     if (turn.lines.isNotEmpty()) {
         Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ") { it.text }}")
     }

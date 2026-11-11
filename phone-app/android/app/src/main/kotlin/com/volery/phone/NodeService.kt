@@ -65,7 +65,7 @@ class NodeService : Service() {
                     restoreShownWall(ifCurrent = host)
                     NodeState.update(false, NodeState.sighting, sight.message)
                 }
-                is NativeBridge.Envelope.Ok -> landed(parseSighting(sight.payload))
+                is NativeBridge.Envelope.Ok -> landed(parseSighting(sight.payload), choose = true)
             }
         }
     }
@@ -186,8 +186,13 @@ private val landing = Any()
  * `settles` is false for a narration poll. A poll refreshes what the page
  * draws, but the working indicator belongs to a dial still walking; a poll
  * landing first must not clear it.
+ *
+ * `choose` is true only for a tap on a wall chip: a wall the person picked and
+ * which answered is a preference from then on. An automatic fallback moves the
+ * wall being read and leaves the preference alone, so the laptop you meant is
+ * tried again next time.
  */
-internal fun landed(sighting: Sighting, settles: Boolean = true) {
+internal fun landed(sighting: Sighting, settles: Boolean = true, choose: Boolean = false) {
     synchronized(landing) {
         var changed = false
         if (sighting.host.isNotEmpty() && sighting.host != Config.host) {
@@ -203,6 +208,10 @@ internal fun landed(sighting: Sighting, settles: Boolean = true) {
             changed = true
         }
         if (changed) Config.persistWalls()
+        if (choose && sighting.host.isNotEmpty() && sighting.host != Config.preferred) {
+            Config.preferred = sighting.host
+            Config.persistPreferred()
+        }
         /* The page's own sighting is part of the landing, not the caller's to
            remember: a narration poll that switches walls must move the roster
            and the address together, or the page keeps drawing one wall while

@@ -733,6 +733,15 @@ mod tests {
         assert_eq!(remainder(&known, &listed, &tried), vec!["w4", "w5", "annex"]);
     }
 
+    /// With no configured wall and no roster, the directory is the whole walk.
+    /// This is the fresh-install shape now that `phone.host` may be empty.
+    #[test]
+    fn a_walk_with_no_seed_starts_at_the_directory() {
+        let listed = doors("phone", "", &[], &BTreeSet::from(["annex".to_string(), "workshop".to_string()]));
+        assert_eq!(listed, vec!["annex", "workshop"]);
+        assert_eq!(remainder(&[], &listed, &BTreeSet::new()), vec!["annex", "workshop"]);
+    }
+
     /// A directory name the known pass will dial anyway must not take an
     /// attempt away from a known wall: the directory usually lists the walls
     /// the roster came from, so this is the common shape, not a corner.

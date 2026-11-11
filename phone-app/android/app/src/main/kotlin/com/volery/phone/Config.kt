@@ -16,14 +16,26 @@ import org.json.JSONArray
  * phrase** is in memory only, deliberately: it is exactly the thing you type at
  * the wall rather than leave lying around in an app's preferences, and it is
  * seeded from the build when the machine that built the app knew it. The rest —
- * how the phone looks and behaves, and which wall and name it reads — are
+ * how the phone looks and behaves, and which wall it prefers and reads — are
  * preferences, and a settings screen that forgets your theme the moment the
  * process dies is not a settings screen. They go through [restore] and
- * [persist], a small `SharedPreferences` file; the wall host and this phone's
- * name persist with them because neither is a secret.
+ * [persist], a small `SharedPreferences` file; the walls and this phone's name
+ * persist with them because neither is a secret.
  */
 object Config {
+    /** The wall being read now. Set by a sighting; what `Ears`, `Steer` and the
+     *  viewer address. Empty until a wall has answered, which is a real state:
+     *  a phone with no configured wall starts by asking the directory. */
     var host by mutableStateOf(BuildConfig.PHONE_HOST)
+
+    /** The wall the person chose to start from, or empty for none. Tried first
+     *  when the phone opens or is redialled, and deliberately separate from
+     *  [host]: a fallback moves the wall being read, not the preference, so
+     *  the laptop you meant is tried again next time rather than being lost to
+     *  whichever wall happened to answer. Empty is not a failure; the walk
+     *  falls to [host], the roster and then the flyway's directory. */
+    var preferred by mutableStateOf(BuildConfig.PHONE_HOST)
+
     var key by mutableStateOf(BuildConfig.PHONE_KEY)
     var name by mutableStateOf(BuildConfig.PHONE_NAME)
 
@@ -66,13 +78,34 @@ object Config {
         chatty = sp.getString("chatty", chatty) ?: chatty
         mode = sp.getString("mode", mode) ?: mode
         music = sp.getString("music", music) ?: music
-        host = sp.getString("host", host) ?: host
+        /* A missing `preferred` means no preference, not "use the wall being
+         * read": the current wall is written on every sighting, so reading it
+         * back as a preference would quietly pin a phone that never chose one.
+         * A phone from before the preference existed keeps its wall as the
+         * first fallback through `host`, which is where it belongs. */
+        preferred = sp.getString("preferred", preferred) ?: preferred
+        host = sp.getString("host", preferred) ?: preferred
         name = sp.getString("name", name) ?: name
         remembered = readWalls(sp.getString("remembered", null))
     }
 
-    /** The walls last seen, as the JSON array `sightAny` takes. */
-    fun rememberedJson(): String = JSONArray(remembered).toString()
+    /** The wall to try first: the preference when there is one, else the wall
+     *  last read. Empty means the walk starts at the directory. */
+    fun firstDoor(): String = preferred.trim().ifEmpty { host.trim() }
+
+    /** What the walk takes after its first door: the preference and the wall
+     *  being read, then the roster. The node dedupes, so a repeat costs
+     *  nothing; putting both first is what lets a poll stay on the wall it is
+     *  reading while a startup dial goes back to the preferred one. */
+    fun walkJson(): String {
+        val seeds = (listOf(preferred, host) + remembered)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        return JSONArray(seeds).toString()
+    }
+
+    private fun wallsJson(): String = JSONArray(remembered).toString()
 
     /** Write the preferences back. A key phrase never reaches this. */
     fun persist() {
@@ -83,19 +116,26 @@ object Config {
             ?.putString("mode", mode)
             ?.putString("music", music)
             ?.putString("host", host)
+            ?.putString("preferred", preferred)
             ?.putString("name", name)
-            ?.putString("remembered", rememberedJson())
+            ?.putString("remembered", wallsJson())
             ?.apply()
     }
 
-    /** Write only the two fields a sighting owns. [persist] writes every field,
-     *  so a sighting landing on the service's thread at the same moment as a
+    /** Write only the fields a sighting owns. [persist] writes every field, so
+     *  a sighting landing on the service's thread at the same moment as a
      *  setting was changed would put the old value back; this cannot. */
     fun persistWalls() {
         prefs?.edit()
             ?.putString("host", host)
-            ?.putString("remembered", rememberedJson())
+            ?.putString("remembered", wallsJson())
             ?.apply()
+    }
+
+    /** Write only the preference. A tap that succeeds becomes the preference
+     *  without dragging the rest of the settings through a second write. */
+    fun persistPreferred() {
+        prefs?.edit()?.putString("preferred", preferred)?.apply()
     }
 
     /** A stored list that cannot be read is no list, never a crash: the phone

@@ -78,8 +78,12 @@ cd phone-app/android
 ```
 
 The wall key phrase is a secret: it lives in `android/local.properties`
-(gitignored) as `phone.key`, read into `BuildConfig` at build time. `phone.host`
-and `phone.name` default to the `m2` lab wall and `phone`.
+(gitignored) as `phone.key`, read into `BuildConfig` at build time. `phone.name`
+defaults to `phone`. `phone.host` defaults to **empty**, which is the honest
+default: the phone starts by asking the flyway's directory and the first wall
+that answers becomes the one it reads. A name there is a preference, tried
+first when the phone opens, and a fallback never overwrites it; the same
+preference is editable on the phone under settings.
 
 **The `.so` is a build artifact and is gitignored, so it does not rebuild
 itself.** Any change under `src-tauri/phone-ffi/**` or `src-tauri/phone-node/**`

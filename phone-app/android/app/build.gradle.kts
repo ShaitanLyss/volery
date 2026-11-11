@@ -31,7 +31,10 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "PHONE_KEY", quoted(local.getProperty("phone.key", "")))
-        buildConfigField("String", "PHONE_HOST", quoted(local.getProperty("phone.host", "lab-m2.queerisfreedom")))
+        // Empty is the honest default: the walk starts at the flyway's
+        // directory and the first wall that answers becomes the one it reads.
+        // A name here is a preference, tried first, not a requirement.
+        buildConfigField("String", "PHONE_HOST", quoted(local.getProperty("phone.host", "")))
         buildConfigField("String", "PHONE_NAME", quoted(local.getProperty("phone.name", "phone")))
     }
 

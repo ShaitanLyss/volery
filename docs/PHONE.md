@@ -22,9 +22,9 @@ never worked on this network (see `docs/VOICE.md`, sink `4caa13ed`).
 A phone used to hold one wall name and dial only that. When the laptop
 it named was shut, the phone dropped off the flyway even though the other
 laptops were still meshed with each other: it had one name to dial, and no
-memory of the rest. `Node::sight_any` now walks three lists in order — the wall
-it was pointed at, the walls its last sighting showed (the app persists them),
-then every name the flyway's directory holds — and returns the wall that
+memory of the rest. `Node::sight_any` now walks three lists in order, the
+wall it was pointed at, the walls its last sighting showed (the app persists
+them), then every name the flyway's directory holds, and returns the wall that
 opened, which becomes the address every later call uses. The directory read is
 one small HTTP request, made only after the known walls have had their
 attempts, so the ordinary dial pays nothing for it. The walk reserves room for
@@ -34,11 +34,21 @@ can come from. **The phone reads the directory and never writes it:** a name
 there is an invitation to dial, and this node answers no dials. It reached the
 roster by dialling, which is the half that matters.
 
+**A configured wall is optional.** The first door is the *preferred* wall if
+one is set, else the wall last read, else nothing, and a phone with neither
+starts at the directory. The preference is a setting, not a requirement: a
+tap on a wall chip that answers makes that wall the preference, while an
+automatic fallback moves only the wall being read, so the laptop you meant is
+tried again next time rather than being replaced by whichever wire answered.
+`phone.host` seeds the preference at build time and defaults to empty.
+
 Proved on the Pixel on 2026-11-11 against the real flyway: with the configured
 host set to a name that is not a wall and the remembered list emptied, the
 phone found the flyway through the directory and drew AU-LT-285's cards. With
-the host still dead and the learned roster in place, it dialled the remembered
-wall instead; the same roster came back and was written down again.
+the host still dead and six dead remembered walls in front of it, it still
+found AU-LT-285 through the directory, which is the case the attempt reserve
+exists for. With a live host and the learned roster, it dialled the remembered
+wall directly.
 
 ## The decisions, as made with Lyss
 
@@ -124,7 +134,7 @@ continuously.
    speak it, and listen for an answer for a short window. The desktop already has this exact
    window (`SPOKEN_YES_MS` in `voice.md`); the phone inherits the semantics, not the engine.
 
-Settings, one screen: mode · chatty level · duck vs pause · voice quality · steward wall ·
+Settings, one screen: mode · chatty level · duck vs pause · voice quality · preferred wall ·
 wake-word sensitivity.
 
 ## Voice, at the cost asked

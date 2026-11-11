@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -83,6 +84,7 @@ private fun SettingsScreen(onBack: () -> Unit) {
 
 @Composable
 private fun SettingsContent(onBack: () -> Unit) {
+    val context = LocalContext.current
     val ears = rememberEars()
     var typing by remember { mutableStateOf(false) }
     // Which sheet is up: the theme list, or one of the three flyway fields.
@@ -128,13 +130,19 @@ private fun SettingsContent(onBack: () -> Unit) {
                 onDismiss = { sheet = null },
             )
             "host" -> FieldSheet(
-                title = "steward wall",
-                label = "the wall to try first",
-                value = Config.host,
+                title = "preferred wall",
+                label = "the wall to try first, if you like",
+                value = Config.preferred,
                 mono = true,
                 onKeep = {
-                    Config.host = it
-                    Config.persistWalls()
+                    Config.preferred = it.trim()
+                    Config.persist()
+                    /* A preference takes effect now, not at the next launch:
+                       redial from the wall it names, and the walk falls to
+                       the directory when that wall is off. */
+                    if (Config.key.isNotEmpty()) {
+                        NodeService.dial(context, Config.firstDoor(), Config.walkJson(), Config.key, Config.name)
+                    }
                 },
                 onDismiss = { sheet = null },
             )
@@ -264,9 +272,9 @@ private fun SettingsBody(onOpen: (String) -> Unit) {
                 )
             }
             Seam()
-            SettingRow("steward wall", onClick = { onOpen("host") }) {
+            SettingRow("preferred wall", onClick = { onOpen("host") }) {
                 Text(
-                    Config.host,
+                    Config.preferred.ifEmpty { "any wall" },
                     style = Type.label(p, p.paper, 13.5f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
