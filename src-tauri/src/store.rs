@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 61;
+const SCHEMA_VERSION: i64 = 62;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -441,6 +441,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (59, migrate_v59),
     (60, migrate_v60),
     (61, migrate_v61),
+    (62, migrate_v62),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3333,6 +3334,217 @@ fn migrate_v61(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v61: {e}"))
+}
+
+/// The fact tables analytics reads, and nothing that fills them yet
+/// (`docs/ANALYTICS.md` §17, §3.1, §3.6, §7.2).
+///
+/// **Every statement here is `IF NOT EXISTS`, and that is the whole of what
+/// makes the rung safe to re-run.** The wedge `migrate` describes — a
+/// `user_version` that fell behind the schema it names — presents a rung that
+/// has already half run, and this one creates only new tables, so a second pass
+/// is a no-op rather than an error. There are no ALTERs in it for the same
+/// reason: nothing existing changes, so there is no column to add twice.
+///
+/// **No foreign keys, deliberately.** `turn_id` is a number the facts are told
+/// apart by, not a parent: a fact outlives the card that caused it, and the
+/// ninety-day fine tier is meant to still answer for a conversation long since
+/// deleted. `analytics_session` has no reference to `conversation` either,
+/// because a session can come from a terminal, which no card row describes.
+///
+/// The five-minute `usage_fact` key is `docs/ANALYTICS.md` §3.1's, and the
+/// dimensions are on the fact rather than only on the session row because a
+/// card can change account or provider mid-session and two requests in one
+/// bucket under two accounts must not merge into one row.
+///
+/// `usage_file` and `usage_seen` are §7.2's durability pair, not §17's: the
+/// offset makes a restart incremental and the per-request key makes a re-read
+/// of a replaced file idempotent.
+fn migrate_v62(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS usage_fact (
+            at               INTEGER NOT NULL,
+            host             TEXT NOT NULL,
+            session          TEXT NOT NULL,
+            agent            TEXT NOT NULL DEFAULT '',
+            parent_agent     TEXT NOT NULL DEFAULT '',
+            depth            INTEGER NOT NULL DEFAULT 0,
+            model            TEXT NOT NULL,
+            effort           TEXT NOT NULL DEFAULT '',
+            cli              TEXT NOT NULL DEFAULT '',
+            source           TEXT NOT NULL,
+            account          TEXT NOT NULL,
+            account_identity TEXT NOT NULL DEFAULT '',
+            provider         TEXT NOT NULL,
+            project          TEXT NOT NULL,
+            provenance       TEXT NOT NULL DEFAULT 'transcript',
+            in_tok           INTEGER NOT NULL DEFAULT 0,
+            out_tok          INTEGER NOT NULL DEFAULT 0,
+            cache_read       INTEGER NOT NULL DEFAULT 0,
+            write_5m         INTEGER NOT NULL DEFAULT 0,
+            write_1h         INTEGER NOT NULL DEFAULT 0,
+            requests         INTEGER NOT NULL DEFAULT 0,
+            usd_reported     REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (at, host, session, agent, parent_agent, depth, model,
+                         effort, cli, source, account, provider, project, provenance)
+        );
+
+        CREATE TABLE IF NOT EXISTS usage_hour (
+            hour         INTEGER NOT NULL,
+            host         TEXT NOT NULL,
+            account      TEXT NOT NULL,
+            provider     TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            effort       TEXT NOT NULL DEFAULT '',
+            cli          TEXT NOT NULL DEFAULT '',
+            source       TEXT NOT NULL,
+            project      TEXT NOT NULL,
+            provenance   TEXT NOT NULL DEFAULT 'transcript',
+            in_tok       INTEGER NOT NULL DEFAULT 0,
+            out_tok      INTEGER NOT NULL DEFAULT 0,
+            cache_read   INTEGER NOT NULL DEFAULT 0,
+            write_5m     INTEGER NOT NULL DEFAULT 0,
+            write_1h     INTEGER NOT NULL DEFAULT 0,
+            requests     INTEGER NOT NULL DEFAULT 0,
+            usd_reported REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour, host, account, provider, model, effort, cli,
+                         source, project, provenance)
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_session (
+            session        TEXT NOT NULL,
+            host           TEXT NOT NULL,
+            project        TEXT NOT NULL DEFAULT '',
+            source         TEXT NOT NULL DEFAULT 'unknown',
+            card_id        TEXT,
+            parent_card    TEXT,
+            opened_by      TEXT NOT NULL DEFAULT 'unknown',
+            branch         TEXT NOT NULL DEFAULT '',
+            started_at     INTEGER NOT NULL,
+            ended_at       INTEGER,
+            cli_min        TEXT,
+            cli_max        TEXT,
+            account_first  TEXT NOT NULL DEFAULT 'unknown',
+            account_last   TEXT NOT NULL DEFAULT 'unknown',
+            provider_first TEXT NOT NULL DEFAULT 'unknown',
+            provider_last  TEXT NOT NULL DEFAULT 'unknown',
+            turns          INTEGER NOT NULL DEFAULT 0,
+            endings_json   TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (session, host)
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_agent (
+            agent_id        TEXT NOT NULL,
+            session         TEXT NOT NULL,
+            host            TEXT NOT NULL,
+            parent_agent    TEXT NOT NULL DEFAULT '',
+            depth           INTEGER NOT NULL DEFAULT 0,
+            kind            TEXT NOT NULL DEFAULT 'subagent',
+            requested_model TEXT NOT NULL DEFAULT '',
+            started_at      INTEGER NOT NULL,
+            ended_at        INTEGER,
+            turns           INTEGER NOT NULL DEFAULT 0,
+            cost_usd        REAL NOT NULL DEFAULT 0,
+            account         TEXT NOT NULL DEFAULT 'unknown',
+            provider        TEXT NOT NULL DEFAULT 'unknown',
+            PRIMARY KEY (agent_id, session, host)
+        );
+
+        CREATE TABLE IF NOT EXISTS tool_fact (
+            turn_id         INTEGER NOT NULL DEFAULT 0,
+            at              INTEGER NOT NULL,
+            host            TEXT NOT NULL,
+            session         TEXT NOT NULL,
+            agent           TEXT NOT NULL DEFAULT '',
+            kind            TEXT NOT NULL,
+            server          TEXT NOT NULL DEFAULT '',
+            tool            TEXT NOT NULL,
+            target          TEXT NOT NULL DEFAULT '',
+            child_agent     TEXT NOT NULL DEFAULT '',
+            requested_model TEXT NOT NULL DEFAULT '',
+            calls           INTEGER NOT NULL DEFAULT 0,
+            errors          INTEGER NOT NULL DEFAULT 0,
+            ms_total        INTEGER NOT NULL DEFAULT 0,
+            out_bytes       INTEGER NOT NULL DEFAULT 0,
+            turn_usd        REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (turn_id, at, host, session, agent, kind, server, tool,
+                         target, child_agent)
+        );
+
+        CREATE TABLE IF NOT EXISTS tool_pending (
+            tool_use_id     TEXT PRIMARY KEY,
+            at              INTEGER NOT NULL,
+            host            TEXT NOT NULL,
+            session         TEXT NOT NULL,
+            agent           TEXT NOT NULL DEFAULT '',
+            kind            TEXT NOT NULL,
+            server          TEXT NOT NULL DEFAULT '',
+            tool            TEXT NOT NULL,
+            target          TEXT NOT NULL DEFAULT '',
+            child_agent     TEXT NOT NULL DEFAULT '',
+            requested_model TEXT NOT NULL DEFAULT '',
+            async           INTEGER NOT NULL DEFAULT 0,
+            resolved_at     INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS tool_hour (
+            hour         INTEGER NOT NULL,
+            host         TEXT NOT NULL,
+            account      TEXT NOT NULL,
+            provider     TEXT NOT NULL,
+            project      TEXT NOT NULL,
+            kind         TEXT NOT NULL,
+            server       TEXT NOT NULL DEFAULT '',
+            tool         TEXT NOT NULL,
+            target       TEXT NOT NULL DEFAULT '',
+            calls        INTEGER NOT NULL DEFAULT 0,
+            errors       INTEGER NOT NULL DEFAULT 0,
+            receipts     INTEGER NOT NULL DEFAULT 0,
+            ms_total     INTEGER NOT NULL DEFAULT 0,
+            ms_under_50  INTEGER NOT NULL DEFAULT 0,
+            ms_under_200 INTEGER NOT NULL DEFAULT 0,
+            ms_under_1s  INTEGER NOT NULL DEFAULT 0,
+            ms_under_5s  INTEGER NOT NULL DEFAULT 0,
+            ms_over_5s   INTEGER NOT NULL DEFAULT 0,
+            out_bytes    INTEGER NOT NULL DEFAULT 0,
+            turn_usd     REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour, host, account, provider, project, kind, server,
+                         tool, target)
+        );
+
+        CREATE TABLE IF NOT EXISTS analytics_fold (
+            turn_id INTEGER NOT NULL PRIMARY KEY,
+            at      INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS usage_file (
+            path   TEXT PRIMARY KEY,
+            offset INTEGER NOT NULL,
+            mtime  INTEGER NOT NULL,
+            size   INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS usage_seen (
+            key TEXT PRIMARY KEY,
+            at  INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS usage_fact_by_at       ON usage_fact(at);
+        CREATE INDEX IF NOT EXISTS usage_fact_by_host_at  ON usage_fact(host, at);
+        CREATE INDEX IF NOT EXISTS usage_fact_by_session  ON usage_fact(session);
+        CREATE INDEX IF NOT EXISTS usage_fact_by_account_at ON usage_fact(account, at);
+        CREATE INDEX IF NOT EXISTS tool_fact_by_at        ON tool_fact(at);
+        CREATE INDEX IF NOT EXISTS tool_fact_by_session   ON tool_fact(session);
+        CREATE INDEX IF NOT EXISTS tool_fact_by_server_at ON tool_fact(server, at);
+        CREATE INDEX IF NOT EXISTS tool_fact_by_turn      ON tool_fact(turn_id);
+        CREATE INDEX IF NOT EXISTS tool_pending_by_session ON tool_pending(session);
+        CREATE INDEX IF NOT EXISTS usage_hour_by_hour     ON usage_hour(hour);
+        CREATE INDEX IF NOT EXISTS tool_hour_by_hour      ON tool_hour(hour);
+        CREATE INDEX IF NOT EXISTS usage_seen_by_at       ON usage_seen(at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v62: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -11702,6 +11914,147 @@ mod tests {
             })
             .unwrap();
         assert_eq!(still, (1500, Some(1500)));
+    }
+
+    /// Ten fresh tables on a database that has none of them, and not one of the
+    /// prompt vault's — that is a later phase, and a rung that quietly created
+    /// half of it would be a schema nobody agreed to.
+    #[test]
+    fn v62_creates_the_ten_analytics_tables_on_a_v61_fixture() {
+        let tables = [
+            "usage_fact",
+            "usage_hour",
+            "analytics_session",
+            "analytics_agent",
+            "tool_fact",
+            "tool_pending",
+            "tool_hour",
+            "analytics_fold",
+            "usage_file",
+            "usage_seen",
+        ];
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for (_, step) in STEPS.iter().take(61) {
+            step(&conn).unwrap();
+        }
+        for table in tables {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{table} must not exist before this rung");
+        }
+
+        migrate_v62(&conn).unwrap();
+
+        for table in tables {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{table} must exist after this rung");
+        }
+        let indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN (
+                    'usage_fact_by_at', 'usage_fact_by_host_at', 'usage_fact_by_session',
+                    'usage_fact_by_account_at', 'tool_fact_by_at', 'tool_fact_by_session',
+                    'tool_fact_by_server_at', 'tool_fact_by_turn', 'tool_pending_by_session',
+                    'usage_hour_by_hour', 'tool_hour_by_hour', 'usage_seen_by_at')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 12, "every index section 17 names, and the one the prune needs");
+
+        let prompts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'prompt_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(prompts, 0, "the prompt vault is a later phase");
+    }
+
+    /// The columns that are easiest to lose to a one-line block in the design,
+    /// plus the two whose absence is a rule rather than an omission.
+    #[test]
+    fn v62_tables_carry_the_columns_the_design_names() {
+        let conn = db();
+        for (table, column) in [
+            ("usage_fact", "parent_agent"),
+            ("usage_fact", "depth"),
+            ("usage_fact", "account_identity"),
+            ("usage_fact", "provenance"),
+            ("tool_fact", "turn_id"),
+            ("tool_fact", "child_agent"),
+            ("analytics_session", "opened_by"),
+            ("usage_seen", "at"),
+        ] {
+            assert!(
+                has_column(&conn, table, column).unwrap(),
+                "{table}.{column} is in section 17 and missing from the rung"
+            );
+        }
+        // The expanded one-line column list in `usage_hour`, checked whole.
+        for column in [
+            "in_tok",
+            "out_tok",
+            "cache_read",
+            "write_5m",
+            "write_1h",
+            "requests",
+            "usd_reported",
+        ] {
+            assert!(
+                has_column(&conn, "usage_hour", column).unwrap(),
+                "usage_hour.{column} was on the compressed line and must still exist"
+            );
+        }
+        // A call no turn claimed is a zero, not a NULL, so the column can stay
+        // in the primary key.
+        conn.execute(
+            "INSERT INTO tool_fact (at, host, session, kind, tool)
+             VALUES (1, 'h', 's', 'builtin', 'Bash')",
+            [],
+        )
+        .unwrap();
+        let turn_id: i64 = conn
+            .query_row("SELECT turn_id FROM tool_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(turn_id, 0, "0 is the fact saying no turn claimed this call");
+    }
+
+    /// The wedge case `migrate` names: the rung already ran and the stamp fell
+    /// behind it. `IF NOT EXISTS` is what makes the second pass a no-op.
+    #[test]
+    fn v62_can_run_twice() {
+        let conn = Connection::open_in_memory().unwrap();
+        for (_, step) in STEPS.iter().take(61) {
+            step(&conn).unwrap();
+        }
+        migrate_v62(&conn).unwrap();
+        migrate_v62(&conn).expect("a rung of CREATE IF NOT EXISTS must be safe to re-run");
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+                    'usage_fact', 'usage_hour', 'analytics_session', 'analytics_agent',
+                    'tool_fact', 'tool_pending', 'tool_hour', 'analytics_fold',
+                    'usage_file', 'usage_seen')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 10, "a second pass must not drop or duplicate anything");
     }
 
     /// The one thing in the tiers feature that cannot be got wrong. Every
