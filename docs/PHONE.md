@@ -116,14 +116,61 @@ off**, or **hands-free needs the microphone**, with one tap to the screen that
 fixes it. Settings has a **try it** button once it is on, which speaks a line
 and opens the ears after it.
 
+### The front desk (2026-11-11)
+
+Lyss, on what she actually wants from the phone: *"I want to be able to talk to
+my walls through my phone as if I was at the keyboard of that laptop and create
+a conversation to write a simulation in python. The answer shouldn't be no, it
+should be, what kind of simulation do you want?"*
+
+That is a conversation, and neither rung the phone had can hold one: the steward
+turns one utterance into one plan, and the DeepSeek call below is one question
+and one answer with no memory of the next. So the wall keeps a **card** for the
+phone to talk to, and every part of the loop is something this codebase already
+had:
+
+```
+you speak ──▶ steward declines ──▶ the wall's front desk card
+                                        │
+                      ask_user ◀────────┤ the only channel its words have
+                          │             │
+   the phone reads it aloud, you answer │
+                          └────────────▶│ her words, as the tool result
+                                        │
+                       spawn / send ────┴──▶ a card that does the work
+```
+
+- **Why a card and not a rung.** A card remembers between sentences, so *"make
+  it 3D"* has a referent. A card can open another card (`spawn`), which is where
+  work that needs a computer happens. And a card's question reaches the phone
+  through the ask queue the phone already reads aloud and answers in its own
+  words — the reply channel is one that has been working for weeks, not a new
+  one.
+- **The wall owns which card it is**, in `flyway_setting` (`assistant::SETTING`),
+  and the window owns opening it: `assistant` emits `voice:say` and the front
+  end calls `openSpawned`, the one birth path that writes a row, settles a preset
+  and delivers a first prompt. A stale id heals itself, because `find` asks for
+  an *open* card and anything else mints a new one.
+- **It stands in workbench** (`assistant::pick_home`), preferring that folder by
+  name and falling back to the wall's first root, so a wall without workbench
+  still gets a front desk. It is a project card on `deepseek-flash`, so it can
+  spawn and it costs pennies a turn.
+- **`assistant::BRIEF` is what makes the loop work, and losing it fails
+  silently**: the card answers in prose, ends its turn, and the phone hears
+  nothing. So the brief says plainly that its words travel through `ask_user`,
+  that work belongs in a card, and that it is never to claim an act.
+- **A wall with no project has nowhere to put one**, and for that wall the phone
+  falls back to the one-shot DeepSeek answer below.
+
 ### A question is not a command (2026-11-11)
 
 The steward turns a sentence into a plan, and it declines anything that is not
 a Volery command. "what's the weather" used to be answered with "not
-understood". Now the phone asks the wall a second question, and the wall answers
-it from its own **DeepSeek** balance: `deepseek-flash`, thinking on at low
-effort (`output_config.effort: "low"`). No card, no plan, no Claude turn, and
-the key never leaves the wall.
+understood". The wall answers it from its own **DeepSeek** balance:
+`deepseek-flash`, thinking on at low effort (`output_config.effort: "low"`).
+No card, no plan, no Claude turn, and the key never leaves the wall. It is the
+fallback now — a wall with a project hands the sentence to the front desk
+instead — and everything below describes it.
 
 - **The wire is the steward's.** One more word in the same exchange
   (`steward::StewardMsg::General`), answered on the stream it was asked on and

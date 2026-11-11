@@ -2365,13 +2365,30 @@ impl Link {
                 self.me
             )));
         }
-        match crate::off_main(move || crate::provider::answer_question(&text)).await {
-            Ok(Ok(answer)) => said(
-                steward::fit(serde_json::json!({ "kind": "general", "text": answer })),
+        /* The sentence goes to the wall's **front desk card** (`assistant`),
+           which is the one thing here that can hold a conversation: it asks a
+           follow-up through the ask queue the phone already reads and answers,
+           and it opens a card when the work needs one. The answer says only
+           which card it is; its words arrive as a question of its own.
+
+           A wall with no project has nowhere to put a front desk, and that one
+           still answers like it used to — one question, one spoken answer, no
+           memory. Better than a person hearing a refusal about a territory. */
+        match crate::assistant::said(&self.app, &text) {
+            Ok((card, fresh)) => said(
+                steward::fit(serde_json::json!({
+                    "kind": "talk", "card": card, "fresh": fresh,
+                })),
                 None,
             ),
-            Ok(Err(why)) => said(None, Some(why)),
-            Err(why) => said(None, Some(why)),
+            Err(_) => match crate::off_main(move || crate::provider::answer_question(&text)).await {
+                Ok(Ok(answer)) => said(
+                    steward::fit(serde_json::json!({ "kind": "general", "text": answer })),
+                    None,
+                ),
+                Ok(Err(why)) => said(None, Some(why)),
+                Err(why) => said(None, Some(why)),
+            },
         }
     }
 

@@ -5,6 +5,7 @@ mod amqp;
    before it lands nowhere — see the module's own note. */
 mod applog;
 mod arrange;
+mod assistant;
 mod attach;
 mod attachments;
 mod asana;

@@ -1278,6 +1278,47 @@ export class Skein {
     );
 
     keep(
+      /* Speech from the phone, handed to this wall's front desk by
+         `assistant::said`: into the card this wall already keeps, or as the
+         first prompt of one it is opening. `brief` is present only in the
+         second case, and it is the only thing that tells the card its words
+         reach the phone through `ask_user` — a front desk without it answers
+         in prose, ends its turn, and the phone hears nothing.
+
+         `openSpawned` rather than `open`, because the id is Rust's: the wall
+         wrote it down before the card existed (`assistant::said`), and a second
+         mint here would leave the setting pointing at a card nobody opens. Its
+         handover envelope is right for this one: the brief is written for the
+         card rather than typed at a keyboard. */
+      listen<{ id: string; cwd: string; text: string; title: string; brief: string }>(
+        "voice:say",
+        (e) => {
+          const { id, cwd, text, title, brief } = e.payload;
+          const card = this.#byId.get(id);
+          void (async () => {
+            /* Not `own`: these are her words, spoken into the card, and the
+               transcript draws them as hers. `own` is for prompts the wall
+               writes on an agent's behalf. */
+            if (card) await this.send(card, text);
+            else
+              await this.openSpawned(
+                id,
+                cwd,
+                null,
+                `${brief}\n\n${text}`,
+                title,
+                "deepseek",
+                "flash",
+                null,
+                null,
+                null,
+              );
+          })();
+        },
+      ),
+    );
+
+    keep(
       /* A card moving here from another wall — see `openMoved`. */
       listen<Parameters<Skein["openMoved"]>[0]>("flyway:move-in", (e) => {
         void this.openMoved(e.payload);

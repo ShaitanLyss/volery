@@ -200,6 +200,19 @@ class Steer(private val voice: VoiceController) {
                         Speaker.speak(line)
                     }
                     is NativeBridge.Envelope.Ok -> {
+                        /* Handed to the wall's front desk card. Its words
+                           arrive as a parked question from that card, which
+                           the prompt reader draws and this reads aloud, so
+                           there is nothing to say here. A card being opened
+                           for the first time takes a spawn and a turn. */
+                        if (result.payload.optString("kind") == "talk") {
+                            status = if (result.payload.optBoolean("fresh", false)) {
+                                "opening your front desk…"
+                            } else {
+                                "…"
+                            }
+                            return@post
+                        }
                         val said = result.payload.optString("text").trim()
                         if (said.isEmpty()) {
                             status = "nothing came back"
