@@ -127,6 +127,7 @@
   import Showcase from "./lib/Showcase.svelte";
   import Analytics from "./lib/Analytics.svelte";
   import type { Presentation } from "./lib/analyticpage";
+  import type { SurfaceTab } from "./lib/analyticstrace";
   import Icon from "./lib/Icon.svelte";
   import Annals from "./lib/Annals.svelte";
   import Unfinished from "./lib/Unfinished.svelte";
@@ -709,6 +710,7 @@
       else if (verb.what === "showcase") showTour = true;
       else if (verb.what === "analytics") openAnalytics("room");
       else if (verb.what === "analyticspage") openAnalytics("page");
+      else if (verb.what === "analyticstrace") openAnalytics(undefined, "prompts");
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -1842,8 +1844,12 @@
   /* Which drawing was asked for as it opened. Undefined means "whichever this
      mode remembers", which is what the sidebar row and a plain open mean. */
   let analyticsAs = $state<Presentation | undefined>(undefined);
-  function openAnalytics(as?: Presentation) {
+  /* Which tab: `space n t` asks for the prompt trace, everything else leaves it
+     to the surface's memory. */
+  let analyticsTab = $state<SurfaceTab | undefined>(undefined);
+  function openAnalytics(as?: Presentation, at?: SurfaceTab) {
     analyticsAs = as;
+    analyticsTab = at;
     showAnalytics = true;
   }
   /* The sink's two gestures, which had no keyboard path at all before — the
@@ -5957,9 +5963,11 @@
   {#if showAnalytics}
     <Analytics
       as={analyticsAs}
+      asTab={analyticsTab}
       onclose={() => {
         showAnalytics = false;
         analyticsAs = undefined;
+        analyticsTab = undefined;
       }}
     />
   {/if}

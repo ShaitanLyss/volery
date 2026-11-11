@@ -34,6 +34,8 @@ const NOT_AGENT_BOUND: Record<string, string> = {
   "lib/PromptBox.svelte": "the primitive itself",
   "lib/Accounts.svelte": "account names and settings",
   "lib/AnalyticsViews.svelte": "a saved view's name, stored in the library rather than sent to a card",
+  "lib/AnalyticsPrompts.svelte":
+    "the vault's passphrase, a hall entry's title/tags/note and the trace's correction, all written to this wall's own store rather than sent to a card",
   "lib/Away.svelte": "search terms over sketches",
   "lib/Basin.svelte": "the sink's own fields, written to the store",
   "lib/Billboard.svelte": "a notice on the board, written to the store",

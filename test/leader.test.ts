@@ -325,6 +325,7 @@ describe("the which-key hint", () => {
       { keys: "mu", label: "update claude code & plugins now" },
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "nn", label: "analytics as a document" },
+      { keys: "nt", label: "the prompt trace" },
       { keys: "o", label: "the integrations panel" },
       { keys: "p", label: "questions that piled up" },
       { keys: "ra", label: "every screen on the flyway" },

@@ -36,8 +36,10 @@
   import Icon from "./Icon.svelte";
   import AnalyticsRoom from "./AnalyticsRoom.svelte";
   import AnalyticsPage from "./AnalyticsPage.svelte";
+  import AnalyticsPrompts from "./AnalyticsPrompts.svelte";
   import AnalyticsViews from "./AnalyticsViews.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
+  import { prompts as realPrompts } from "./promptsread.svelte";
   import {
     presentation,
     openPresentation,
@@ -45,6 +47,9 @@
     surface,
     swapPresentation,
     adoptSurface,
+    tab,
+    openTab,
+    setTab,
   } from "./analyticsview.svelte";
   import {
     ROOM_MEASURES,
@@ -61,17 +66,22 @@
   } from "./analyticsroom";
   import { pageModel, surfaceOfView, type HostMode, type Presentation } from "./analyticpage";
   import { spanMsOf, type ViewSpec } from "./analytics";
+  import type { PromptReader, SurfaceTab } from "./analyticstrace";
   import { count } from "./usage";
   import { view } from "./view.svelte";
 
   let {
     read,
+    prompts,
     onclose,
     mode = view.current,
     as,
+    asTab,
   }: {
     /** The command, or a fixture. Absent means the real one. */
     read?: WindowReader;
+    /** The prompt trace's reader, or a fixture. Absent means the commands. */
+    prompts?: PromptReader;
     onclose: () => void;
     /** Which host is underneath: it only picks the *default* presentation,
      *  and never changes when `v` swaps them (§11.15). */
@@ -80,15 +90,21 @@
      *  room, `space n n` the page. Absent means the remembered one for the
      *  mode, which is what the sidebar row and a plain open mean. */
     as?: Presentation;
+    /** An explicit tab asked for as it opened: `space n t` is the trace.
+     *  Absent means the remembered tab. */
+    asTab?: SurfaceTab;
   } = $props();
 
-  /* The remembered choice, read once, before the first frame — an effect would
+  /* The remembered choices, read once, before the first frame — an effect would
      paint the room and then flip to the page. An explicit request is a choice
-     too, so it is remembered against the mode it was made in. */
+     too, so it is remembered. */
   untrack(() => {
     openPresentation(mode);
     if (as) setPresentation(as);
+    openTab(asTab);
   });
+
+  const tabNow = $derived(tab.current);
 
   /* ── what is being asked ─────────────────────────────────────────────── */
 
@@ -116,6 +132,7 @@
   let controls = $state<HTMLElement>();
   let room = $state<ReturnType<typeof AnalyticsRoom> | undefined>();
   let page = $state<ReturnType<typeof AnalyticsPage> | undefined>();
+  let promptsTab = $state<ReturnType<typeof AnalyticsPrompts> | undefined>();
 
   /* A closure rather than the prop itself: a prop read outside one captures
      its initial value, which is exactly the bug a fixture that swapped its
@@ -163,7 +180,10 @@
      cleanup runs when the surface closes, so one left before the minute costs
      nothing and one left open costs one read. */
   onMount(() => {
-    const t = setTimeout(() => void readNow(), 65_000);
+    const t = setTimeout(() => {
+      void readNow();
+      if (tab.current === "prompts") void promptsTab?.reload();
+    }, 65_000);
     return () => clearTimeout(t);
   });
 
@@ -252,6 +272,7 @@
     void views;
     void showing;
     void loaded;
+    void tab.current;
     holdFocus();
   });
 
@@ -311,8 +332,14 @@
       }
       return;
     }
+    /* The prompts tab wants several of the same letters, and it decides about
+       them before the surface does: Escape closes a detail or a confirmation
+       before it closes the surface, a field blurs rather than taking the whole
+       tab away. It answers `true` only for a key it actually used. */
+    if (tabNow === "prompts" && promptsTab?.key(e)) return;
+
     const target = e.target as HTMLElement | null;
-    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
 
     if (e.key === "Escape") {
       e.preventDefault();
@@ -323,10 +350,32 @@
     /* Everything else is the surface's while it is up, including the letters
        the wall would otherwise take into the composer. */
     e.stopPropagation();
+    /* The tabs are on `1` and `2`, and are the surface's in either drawing. */
+    if (e.key === "1") {
+      e.preventDefault();
+      setTab("spend");
+      return;
+    }
+    if (e.key === "2") {
+      e.preventDefault();
+      setTab("prompts");
+      return;
+    }
     if (e.key === "v") {
       e.preventDefault();
       swap();
-    } else if (e.key === "[") {
+      return;
+    }
+    /* The prompts tab's own verbs are its own. `r` is the one the shell still
+       owes it, because the read is the surface's refresh rule. */
+    if (tabNow === "prompts") {
+      if (e.key === "r") {
+        e.preventDefault();
+        void promptsTab?.reload();
+      }
+      return;
+    }
+    if (e.key === "[") {
       e.preventDefault();
       stepSpan(-1);
     } else if (e.key === "]") {
@@ -415,9 +464,40 @@
       <div class="an-what">
         <h2 id="an-head">analytics</h2>
         <p>
-          {spanSaid} · {tierSaid(loaded?.tier ?? tier)}
-          {#if loaded && loaded.rows.length > 0}· {count(loaded.rows.length)} rows{/if}
+          {#if tabNow === "prompts"}
+            prompt trace · form only · bodies sealed under the vault
+          {:else}
+            {spanSaid} · {tierSaid(loaded?.tier ?? tier)}
+            {#if loaded && loaded.rows.length > 0}· {count(loaded.rows.length)} rows{/if}
+          {/if}
         </p>
+      </div>
+      <!-- One surface, two tabs (§11.11): the money and the words. The tab is a
+           choice of the surface's own and survives a presentation swap, which
+           draws the same tab in the other skin. -->
+      <div
+        class="an-tabs"
+        role="tablist"
+        tabindex="-1"
+        aria-label="which reading"
+        onkeydown={(e) => radioKeys(e, 2, tabNow === "spend" ? 0 : 1, (i) => setTab(i === 0 ? "spend" : "prompts"))}
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tabNow === "spend"}
+          class:on={tabNow === "spend"}
+          title="the money (1)"
+          onclick={() => setTab("spend")}>spend <kbd>1</kbd></button
+        >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tabNow === "prompts"}
+          class:on={tabNow === "prompts"}
+          title="the prompt trace and the hall (2, or space n t)"
+          onclick={() => setTab("prompts")}>prompts <kbd>2</kbd></button
+        >
       </div>
       <!-- The swap, achromatic and small, beside the title: it says where you
            are going rather than where you are, because that is the thing you
@@ -433,15 +513,18 @@
         <kbd>v</kbd>
       </button>
       <span class="an-grow"></span>
-      <span class="an-keys">space b d</span>
-      <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
-        <Icon name="pin" small />views
-      </button>
+      <span class="an-keys">{tabNow === "prompts" ? "space n t" : "space b d"}</span>
+      {#if tabNow === "spend"}
+        <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
+          <Icon name="pin" small />views
+        </button>
+      {/if}
       <button type="button" class="an-btn an-close" title="close (esc)" aria-label="close" onclick={onclose}>
         <Icon name="x" small />
       </button>
     </header>
 
+    {#if tabNow === "spend"}
     <div class="an-filters" bind:this={controls} role="group" aria-label="what to read">
       <span class="an-label">span</span>
       <div
@@ -511,8 +594,11 @@
         <Icon name="clock" small />read again
       </button>
     </div>
+    {/if}
 
-    {#if failed}
+    {#if tabNow === "prompts"}
+      <AnalyticsPrompts bind:this={promptsTab} reader={prompts ?? realPrompts} presentation={showing} />
+    {:else if failed}
       <div class="an-body an-message">
         <p class="an-fail">could not read the window</p>
         <p class="an-note">{failed}</p>
@@ -554,7 +640,7 @@
       </div>
     {/if}
 
-    {#if readAt && !empty}
+    {#if readAt && !empty && tabNow === "spend"}
       <p class="an-read">read at {new Date(readAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</p>
     {/if}
 
@@ -696,6 +782,41 @@
   }
   .an-pres {
     margin-left: 4px;
+  }
+  /* The two tabs are a choice of the surface's own, so they sit beside the
+     title rather than in the filter row: they change what the whole overlay is
+     about, not what one chart is asking. */
+  .an-tabs {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 2px;
+    margin-left: 6px;
+    align-self: stretch;
+  }
+  .an-tabs button {
+    border: 0;
+    border-bottom: 1px solid transparent;
+    background: transparent;
+    color: var(--paper-mute);
+    font: 11.5px var(--cv-ui, var(--util));
+    padding: 2px 10px 1px;
+    cursor: pointer;
+  }
+  .an-tabs button:hover {
+    color: var(--paper);
+  }
+  .an-tabs button.on {
+    color: var(--paper);
+    border-bottom-color: color-mix(in oklab, var(--paper) 62%, transparent);
+  }
+  .an-tabs button kbd {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--paper-faint);
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    padding: 0 3px;
+    margin-left: 3px;
   }
   .an-close {
     border-color: transparent;

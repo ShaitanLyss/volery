@@ -13,7 +13,7 @@
 import { mount } from "svelte";
 import "./lib/tokens.css";
 import Analytics from "./lib/Analytics.svelte";
-import { fixtureWindow, type FixtureMode } from "./lib/analyticsfixture";
+import { fixturePromptReader, fixtureWindow, type FixtureMode, type VaultMode } from "./lib/analyticsfixture";
 import { windowRequest, type AnalyticsWindow } from "./lib/analyticsroom";
 
 const asked = new URLSearchParams(location.search);
@@ -24,11 +24,21 @@ const mode: FixtureMode = asked.has("empty") ? "empty" : asked.has("quiet") ? "q
    as it does in the app, which is how the swap is looked at without a wall. */
 const as = asked.has("page") ? "page" : asked.has("room") ? "room" : undefined;
 
+/* `?tab=prompts` opens the trace, `?tab=spend` the money. `?vault=none`,
+   `?vault=locked` (the default) and `?vault=unlocked` choose the vault state
+   the fixture starts in, which is what makes a locked body and an open one two
+   page loads rather than two edits. */
+const tab = asked.get("tab") === "prompts" ? "prompts" : asked.get("tab") === "spend" ? "spend" : undefined;
+const vault: VaultMode =
+  asked.get("vault") === "none" ? "none" : asked.get("vault") === "unlocked" ? "unlocked" : "locked";
+
 mount(Analytics, {
   target: document.getElementById("app")!,
   props: {
     as,
+    asTab: tab,
     mode: "wall",
+    prompts: fixturePromptReader(mode, vault),
     onclose: () => location.reload(),
     read: async (span: string, now: number): Promise<AnalyticsWindow> =>
       fixtureWindow(windowRequest(span, now), mode),

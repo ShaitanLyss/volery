@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex, Weak};
 use argon2::{Algorithm, Argon2, Params, Version};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305, NONCE_LEN};
 use ring::rand::{SecureRandom, SystemRandom};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use zeroize::Zeroizing;
@@ -82,6 +82,17 @@ const WATCH_MS: u64 = 30_000;
 /// keeps: a pass that dies mid-way leaves whole chunks committed, and every
 /// write here is idempotent against the fact row's state guard.
 const SEAL_CHUNK: usize = 50;
+
+/// A hall entry's title, tags and note, capped here as well as in the field.
+///
+/// Title and tags are the plaintext the gallery filters on, so they are short
+/// on purpose: a tag is a label, not a place to paste a description. The note is
+/// the one that carries a sentence worth keeping, and 2,000 characters is far
+/// more than "why this one mattered" needs.
+pub const TITLE_CAP: usize = 120;
+pub const TAG_CAP: usize = 32;
+pub const TAGS_MAX: usize = 12;
+pub const NOTE_CAP: usize = 2_000;
 
 /// How many unresolved ids an answer names before it just counts them.
 const NAMED_UNRESOLVED: usize = 20;
@@ -206,6 +217,24 @@ pub fn body_ad(
         out.extend_from_slice(part.as_bytes());
     }
     out.extend_from_slice(&first_at.to_le_bytes());
+    out
+}
+
+/// The associated data a hall entry's note is sealed against.
+///
+/// Deliberately *not* [`body_ad`]: a note belongs to a favourite, not to a
+/// body, and binding it with an empty session would make the session field
+/// carry nothing while still costing a length prefix. The favourite's
+/// `created_at` is the stamp rather than a prompt's `at`, because a note is
+/// written once and updated in place, and the row it is bound to is the
+/// favourite's.
+pub fn note_ad(vault_id: &str, host: &str, prompt_id: &str, created_at: i64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(48);
+    for part in [vault_id, host, prompt_id] {
+        out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+        out.extend_from_slice(part.as_bytes());
+    }
+    out.extend_from_slice(&created_at.to_le_bytes());
     out
 }
 
@@ -579,6 +608,50 @@ impl PromptVault {
             open.active = None;
             open.touched = 0;
         }
+    }
+
+    /// Seal a hall entry's note under the active vault.
+    ///
+    /// `None` means there is no key to seal one with, and the command answers
+    /// with a sentence rather than storing plaintext. Sealing a note **is** a
+    /// gesture: it is a person typing, not the ingestor walking a transcript,
+    /// so it moves the idle clock the way reading a body does.
+    pub fn seal_note(
+        &self,
+        host: &str,
+        prompt_id: &str,
+        created_at: i64,
+        text: &str,
+    ) -> Option<(String, Vec<u8>)> {
+        let mut open = self.0.open.lock().ok()?;
+        let now = store::now();
+        open.expire(now);
+        let vault_id = open.active.clone()?;
+        let key = open.keys.get(&vault_id)?;
+        let ad = note_ad(&vault_id, host, prompt_id, created_at);
+        let blob = seal_blob(key, &ad, text.as_bytes()).ok()?;
+        open.touched = now;
+        Some((vault_id, blob))
+    }
+
+    /// Open one hall note. The same binding, so a note moved to another
+    /// favourite is a blob that does not open.
+    ///
+    /// `touch` is false for a listing: the hall is re-read by the surface's
+    /// 65-second refresh, and a refresh nobody performed must not move the idle
+    /// clock and keep the key alive for another fifteen minutes. A body read,
+    /// which is always a person selecting a row, touches.
+    pub fn open_note(
+        &self,
+        vault_id: &str,
+        host: &str,
+        prompt_id: &str,
+        created_at: i64,
+        blob: &[u8],
+        touch: bool,
+    ) -> Result<Zeroizing<String>, String> {
+        let ad = note_ad(vault_id, host, prompt_id, created_at);
+        self.with_key(vault_id, touch, |key| open_blob(key, &ad, blob))?
     }
 
     /// Milliseconds until the keys expire, for a face that wants to say so.
@@ -1540,6 +1613,302 @@ pub fn override_kind(
     Ok(())
 }
 
+/* ── the hall (§11.12) ──────────────────────────────────────────────────── */
+
+/// One favourite, with the prompt form it marks and what that card cost.
+///
+/// **`note` is the only text field here that is sealed on disk**, so this type
+/// does not derive `Debug`: the same reason `PromptBody` does not, one surface
+/// over. `title` and `tags` are plaintext by design (the gallery filters on
+/// them) and are what the manual `Debug` prints.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavouriteRow {
+    pub host: String,
+    pub prompt_id: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    /// The form, read back through the fact so a hall entry needs no copy.
+    pub at: i64,
+    pub project: String,
+    pub kind: String,
+    pub kind_override: Option<String>,
+    /// `sealed`, `locked`, `withheld`, `deleted` or `none`, as the trace says it.
+    pub body_state: String,
+    pub words: i64,
+    /// The card's own cost and turn count, from its `turn` rows. A card that
+    /// cleared has several sessions; the prompt's own session is the one that
+    /// counts, because that is the card whose work the prompt started.
+    pub cost: f64,
+    pub turns: i64,
+    /// The note, unsealed, when the vault that holds it is open.
+    pub note: Option<String>,
+    /// A note exists and could not be opened: the vault is locked, or this
+    /// build cannot read it. The gallery says `sealed` rather than pretending
+    /// the entry never had one.
+    pub note_locked: bool,
+}
+
+impl std::fmt::Debug for FavouriteRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FavouriteRow")
+            .field("host", &self.host)
+            .field("prompt_id", &self.prompt_id)
+            .field("title", &self.title)
+            .field("tags", &self.tags)
+            .field("note", &self.note.as_ref().map(|_| "<sealed>"))
+            .field("note_locked", &self.note_locked)
+            .finish()
+    }
+}
+
+/// Tags as the gallery stores them: trimmed, lowercased, deduplicated.
+///
+/// Lowercasing is not cosmetic. Two tags typed `Nova` and `nova` are one tag
+/// pretending to be two, and a filter list built from them would offer the same
+/// word twice.
+fn tags_in(raw: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in raw {
+        let cut = crate::clip::keep(tag, TAG_CAP);
+        if cut.happened() {
+            return Err(format!(
+                "a tag is at most {TAG_CAP} characters, and one of these is longer"
+            ));
+        }
+        let tag = cut.kept.trim().to_lowercase();
+        if tag.is_empty() || out.iter().any(|t| *t == tag) {
+            continue;
+        }
+        out.push(tag);
+    }
+    if out.len() > TAGS_MAX {
+        return Err(format!("a hall entry carries at most {TAGS_MAX} tags"));
+    }
+    Ok(out)
+}
+
+/// The card's cost and turn count for every session in `sessions`, in one query.
+///
+/// One pass rather than one per favourite: a hall is small, but the cost of one
+/// query per row grows with a number a person chooses to grow, which is the
+/// wrong shape for a list that redraws on every sort.
+fn card_costs(
+    conn: &Connection,
+    sessions: &[String],
+) -> Result<HashMap<String, (f64, i64)>, String> {
+    let mut out = HashMap::new();
+    if sessions.is_empty() {
+        return Ok(out);
+    }
+    let marks = (0..sessions.len())
+        .map(|i| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT agent_session_id, COALESCE(SUM(usd), 0), COUNT(*)
+           FROM turn
+          WHERE agent_session_id IN ({marks})
+          GROUP BY agent_session_id"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    let it = stmt
+        .query_map(rusqlite::params_from_iter(sessions), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, f64>(1)?, r.get::<_, i64>(2)?),
+            ))
+        })
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    for row in it {
+        let (session, pair) = row.map_err(|e| format!("prompt vault: favourites: {e}"))?;
+        out.insert(session, pair);
+    }
+    Ok(out)
+}
+
+/// Every hall entry, newest marker first.
+///
+/// A favourite whose fact is gone is not listed: `forget` deletes both in one
+/// transaction, and a peer's tombstone can only reach a body this wall has. An
+/// orphan row would be a title pointing at nothing, which is the one thing a
+/// gallery cannot draw.
+pub fn favourites(conn: &Connection, vault: &PromptVault) -> Result<Vec<FavouriteRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.host, f.prompt_id, f.title, f.tags, f.created_at,
+                    p.at, p.project, p.kind, p.kind_override, p.body_state, p.words,
+                    p.session, f.vault_id, f.note_sealed
+               FROM prompt_favourite f
+               JOIN prompt_fact p ON p.host = f.host AND p.prompt_id = f.prompt_id
+              ORDER BY f.created_at DESC, f.prompt_id",
+        )
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    let raw = stmt
+        .query_map([], |r| {
+            Ok((
+                FavouriteRow {
+                    host: r.get(0)?,
+                    prompt_id: r.get(1)?,
+                    title: r.get(2)?,
+                    tags: Vec::new(),
+                    created_at: r.get(4)?,
+                    at: r.get(5)?,
+                    project: r.get(6)?,
+                    kind: r.get(7)?,
+                    kind_override: r.get(8)?,
+                    body_state: r.get(9)?,
+                    words: r.get(10)?,
+                    cost: 0.0,
+                    turns: 0,
+                    note: None,
+                    note_locked: false,
+                },
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(11)?,
+                r.get::<_, String>(12)?,
+                r.get::<_, Option<Vec<u8>>>(13)?,
+            ))
+        })
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+
+    let sessions: Vec<String> = raw.iter().map(|r| r.2.clone()).collect();
+    let costs = card_costs(conn, &sessions)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for (mut row, tags, session, vault_id, sealed) in raw {
+        row.tags = serde_json::from_str::<Vec<String>>(&tags).unwrap_or_default();
+        if let Some((cost, turns)) = costs.get(&session) {
+            row.cost = *cost;
+            row.turns = *turns;
+        }
+        if let Some(blob) = sealed {
+            match vault.open_note(&vault_id, &row.host, &row.prompt_id, row.created_at, &blob, false) {
+                Ok(text) => row.note = Some(text.to_string()),
+                Err(_) => row.note_locked = true,
+            }
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
+/// Keep a prompt, or change what its marker says.
+///
+/// `note` is three-way on purpose: `None` leaves whatever is there alone (a
+/// title edit must not silently drop a sealed note), `Some("")` clears it, and
+/// text replaces it. Sealing needs the vault open; title and tags do not, which
+/// is what lets a hall be curated on a locked wall.
+pub fn keep_favourite(
+    conn: &Connection,
+    vault: &PromptVault,
+    host: &str,
+    prompt_id: &str,
+    title: &str,
+    tags: &[String],
+    note: Option<&str>,
+) -> Result<FavouriteRow, String> {
+    let title = crate::clip::keep(title.trim(), TITLE_CAP);
+    if title.happened() {
+        return Err(format!(
+            "a hall title is at most {TITLE_CAP} characters"
+        ));
+    }
+    let title = title.kept.trim().to_string();
+    if title.is_empty() {
+        return Err("a hall entry needs a title, so it can be found by name later".into());
+    }
+    let tags = tags_in(tags)?;
+
+    let known: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM prompt_fact WHERE host = ?1 AND prompt_id = ?2",
+            params![host, prompt_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    if known.is_none() {
+        return Err("that prompt is not on this wall, so there is nothing to keep".into());
+    }
+
+    /* `optional`, not `ok`: a store that failed the read is not a favourite
+       that does not exist, and the difference is whether a sealed note is
+       wiped by a title edit. */
+    let existing = conn
+        .query_row(
+            "SELECT created_at, vault_id, note_sealed FROM prompt_favourite
+              WHERE host = ?1 AND prompt_id = ?2",
+            params![host, prompt_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    let created_at = existing.as_ref().map(|e| e.0).unwrap_or_else(store::now);
+
+    /* The note this row will hold after the write. `None` means there is no
+       sealed note, and the column is cleared. */
+    let (note_sealed, vault_id): (Option<Vec<u8>>, String) = match note {
+        None => match &existing {
+            Some((_, vault_id, Some(blob))) => (Some(blob.clone()), vault_id.clone()),
+            _ => (None, String::new()),
+        },
+        Some(text) if text.trim().is_empty() => (None, String::new()),
+        Some(text) => {
+            let cut = crate::clip::keep(text, NOTE_CAP);
+            if cut.happened() {
+                return Err(format!("a note is at most {NOTE_CAP} characters"));
+            }
+            let (vault_id, blob) = vault
+                .seal_note(host, prompt_id, created_at, cut.kept.trim())
+                .ok_or_else(|| {
+                    "a note is sealed, so the vault has to be open before you can keep one".to_string()
+                })?;
+            (Some(blob), vault_id)
+        }
+    };
+
+    let tags = serde_json::to_string(&tags).map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    conn.execute(
+        "INSERT INTO prompt_favourite (host, prompt_id, vault_id, title, note_sealed, tags, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(host, prompt_id) DO UPDATE SET
+           vault_id = excluded.vault_id,
+           title = excluded.title,
+           note_sealed = excluded.note_sealed,
+           tags = excluded.tags",
+        params![host, prompt_id, vault_id, title, note_sealed, tags, created_at],
+    )
+    .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+
+    favourites(conn, vault)?
+        .into_iter()
+        .find(|f| f.host == host && f.prompt_id == prompt_id)
+        .ok_or_else(|| "the hall entry was written and could not be read back".to_string())
+}
+
+/// Take a marker off. `false` means nothing was there, which the face says
+/// rather than drawing a change that did not happen.
+pub fn drop_favourite(conn: &Connection, host: &str, prompt_id: &str) -> Result<bool, String> {
+    let gone = conn
+        .execute(
+            "DELETE FROM prompt_favourite WHERE host = ?1 AND prompt_id = ?2",
+            params![host, prompt_id],
+        )
+        .map_err(|e| format!("prompt vault: favourites: {e}"))?;
+    Ok(gone > 0)
+}
+
 /* ── the commands ───────────────────────────────────────────────────────── */
 
 /// Every one is `async` and goes through `off_main`: Argon2id deliberately takes
@@ -1723,6 +2092,67 @@ pub async fn prompt_body(
                 truncated: truncated != 0,
             }),
         }
+    })
+    .await?
+}
+
+/// The hall (§11.12), newest marker first. Notes come back unsealed only when
+/// the vault that holds them is open, and a locked one says so rather than
+/// disappearing.
+#[tauri::command]
+pub async fn prompt_favourites(app: AppHandle) -> Result<Vec<FavouriteRow>, String> {
+    crate::off_main(move || {
+        let vault = vault_of(&app);
+        let store = store_of(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        favourites(&conn, &vault)
+    })
+    .await?
+}
+
+/// Mark a prompt, or correct what its marker says.
+///
+/// `note` absent leaves an existing note alone, which is what lets a title be
+/// fixed without discarding a sealed sentence. An empty string clears it. A
+/// note needs the vault open, which the command's own sentence says.
+#[tauri::command]
+pub async fn keep_prompt_favourite(
+    app: AppHandle,
+    host: String,
+    prompt_id: String,
+    title: String,
+    tags: Vec<String>,
+    note: Option<String>,
+) -> Result<FavouriteRow, String> {
+    crate::off_main(move || {
+        let vault = vault_of(&app);
+        let store = store_of(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        keep_favourite(
+            &conn,
+            &vault,
+            &host,
+            &prompt_id,
+            &title,
+            &tags,
+            note.as_deref(),
+        )
+    })
+    .await?
+}
+
+/// Take the marker off. The body is untouched: a favourite is a pointer, and
+/// unmarking was never a delete.
+#[tauri::command]
+pub async fn remove_prompt_favourite(
+    app: AppHandle,
+    host: String,
+    prompt_id: String,
+) -> Result<bool, String> {
+    crate::off_main(move || {
+        let store = store_of(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        drop_favourite(&conn, &host, &prompt_id)
     })
     .await?
 }
@@ -2482,5 +2912,146 @@ mod tests {
         fact(&conn, "h", "p1", 1_700_000_000_000, "other", 4);
         assert!(override_kind(&conn, "h", "p1", "vibes").is_err());
         assert!(override_kind(&conn, "h", "nope", "task").is_err());
+    }
+
+    /* ── the hall (§11.12) ─────────────────────────────────────────────── */
+
+    /// A card with one turn costing two dollars, so a favourite's `cost` has
+    /// something to find. The conversation is the FK the turn table insists on.
+    fn card_with_a_turn(conn: &Connection, session: &str, usd: f64) {
+        conn.execute(
+            "INSERT OR IGNORE INTO project (id, name, root_path, created_at)
+             VALUES ('pr','volery','C:\\volery',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO conversation (id, agent_session_id, project_id, cwd, born_at)
+             VALUES ('c1', ?1, 'pr', 'C:\\volery', 1)",
+            params![session],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier, usd, agent_session_id)
+             VALUES ('c1', 1, 2, 'done', ?1, ?2)",
+            params![usd, session],
+        )
+        .unwrap();
+    }
+
+    /// The note's binding has the same obligation as a body's: two rows whose
+    /// fields only *look* different must not share an encoding.
+    #[test]
+    fn the_note_ad_cannot_be_re_split_between_fields() {
+        assert_ne!(
+            note_ad("v", "h", "ab", 7),
+            note_ad("v", "ha", "b", 7),
+            "the split between host and prompt must be part of the encoding"
+        );
+        assert_ne!(note_ad("v", "host", "p", 7), note_ad("v", "host", "p", 8));
+    }
+
+    #[test]
+    fn a_note_opens_only_under_the_row_it_was_sealed_to() {
+        let conn = db();
+        let vault = PromptVault::default();
+        fact(&conn, "h", "p1", 1_700_000_000_000, "design", 40);
+        fact(&conn, "h", "p2", 1_700_000_001_000, "task", 4);
+        create(&conn, PASS.into(), &vault).unwrap();
+
+        keep_favourite(&conn, &vault, "h", "p1", "the analytics design", &[], Some("four currents")).unwrap();
+        let rows = favourites(&conn, &vault).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].note.as_deref(), Some("four currents"));
+        assert!(!rows[0].note_locked);
+
+        /* The blob is bound to the prompt it was written for: moving it to
+           another favourite is a note that does not open, not one that opens
+           with the wrong words. */
+        conn.execute(
+            "INSERT INTO prompt_favourite (host, prompt_id, vault_id, title, note_sealed, tags, created_at)
+             SELECT host, 'p2', vault_id, 'moved', note_sealed, '[]', created_at
+               FROM prompt_favourite WHERE prompt_id = 'p1'",
+            [],
+        )
+        .unwrap();
+        let rows = favourites(&conn, &vault).unwrap();
+        let moved = rows.iter().find(|r| r.prompt_id == "p2").unwrap();
+        assert!(moved.note.is_none(), "a note moved to another row opened");
+        assert!(moved.note_locked);
+    }
+
+    #[test]
+    fn a_title_change_keeps_the_note_and_a_locked_vault_cannot_write_one() {
+        let conn = db();
+        let vault = PromptVault::default();
+        fact(&conn, "h", "p1", 1_700_000_000_000, "design", 40);
+        create(&conn, PASS.into(), &vault).unwrap();
+        keep_favourite(&conn, &vault, "h", "p1", "first", &[], Some("keep me")).unwrap();
+
+        /* No note argument means "leave it alone", which is what lets a title be
+           fixed without discarding a sealed sentence. */
+        let row = keep_favourite(&conn, &vault, "h", "p1", "second", &[], None).unwrap();
+        assert_eq!(row.title, "second");
+        assert_eq!(row.note.as_deref(), Some("keep me"));
+
+        vault.lock();
+        let err = keep_favourite(&conn, &vault, "h", "p1", "third", &[], Some("new")).unwrap_err();
+        assert!(err.contains("vault has to be open"), "wrong refusal: {err}");
+        let rows = favourites(&conn, &vault).unwrap();
+        assert_eq!(rows[0].note, None, "a locked vault lost or leaked the note");
+        assert!(rows[0].note_locked);
+
+        /* An empty string is the deliberate clear, and needs no key. */
+        let row = keep_favourite(&conn, &vault, "h", "p1", "third", &[], Some("")).unwrap();
+        assert_eq!(row.note, None);
+        assert!(!row.note_locked);
+    }
+
+    #[test]
+    fn a_favourite_carries_its_cards_cost_and_normalised_tags() {
+        let conn = db();
+        let vault = PromptVault::default();
+        fact(&conn, "h", "p1", 1_700_000_000_000, "design", 40);
+        card_with_a_turn(&conn, "s1", 2.5);
+        card_with_a_turn(&conn, "s1", 1.25);
+
+        let row = keep_favourite(
+            &conn,
+            &vault,
+            "h",
+            "p1",
+            "  the analytics design  ",
+            &[" Nova ".into(), "NOVA".into(), "".into(), "orchestration".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(row.title, "the analytics design");
+        assert_eq!(row.tags, vec!["nova".to_string(), "orchestration".to_string()]);
+        /* Two turn rows on one session are two turns and both their dollars:
+           the query groups by `agent_session_id`, which is the card's session
+           rather than one conversation's row. */
+        assert!((row.cost - 3.75).abs() < 1e-9, "cost was {}", row.cost);
+        assert_eq!(row.turns, 2);
+    }
+
+    #[test]
+    fn a_favourite_needs_a_title_a_known_prompt_and_short_tags() {
+        let conn = db();
+        let vault = PromptVault::default();
+        fact(&conn, "h", "p1", 1_700_000_000_000, "task", 4);
+
+        assert!(keep_favourite(&conn, &vault, "h", "p1", "   ", &[], None).is_err());
+        assert!(keep_favourite(&conn, &vault, "h", "nope", "t", &[], None).is_err());
+        assert!(keep_favourite(&conn, &vault, "h", "p1", "t", &["x".repeat(TAG_CAP + 1)], None).is_err());
+
+        let many: Vec<String> = (0..=TAGS_MAX).map(|i| format!("t{i}")).collect();
+        assert!(keep_favourite(&conn, &vault, "h", "p1", "t", &many, None).is_err());
+
+        let row = keep_favourite(&conn, &vault, "h", "p1", "kept", &[], None).unwrap();
+        assert_eq!(row.title, "kept");
+        assert!(drop_favourite(&conn, "h", "p1").unwrap());
+        assert!(!drop_favourite(&conn, "h", "p1").unwrap(), "a second drop reported a change");
+        assert!(favourites(&conn, &vault).unwrap().is_empty());
     }
 }

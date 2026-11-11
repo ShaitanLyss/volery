@@ -39,6 +39,7 @@ import {
   type SurfaceInput,
 } from "./analyticpage";
 import { DEFAULT_SPAN, type RoomMeasure, type RoomSplit } from "./analyticsroom";
+import { TAB_STORE, tabFor, type SurfaceTab } from "./analyticstrace";
 
 /** The question being asked of the facts, independent of who draws it. */
 export type Surface = SurfaceInput;
@@ -99,6 +100,45 @@ export function swapPresentation(): Presentation {
 export function setPresentation(p: Presentation): void {
   presentation.current = p;
   remember(presentation.mode, p);
+}
+
+/** Which tab of the surface is in front: the money, or the words (§11.11).
+ *
+ * One memory for both presentations and both host modes, unlike the
+ * presentation itself. The presentation is per mode because the wall and chat
+ * view are different rooms; the tab is one surface's own place, and a person
+ * reading prompts on the wall means it when they open the page. `space n t`
+ * asks for prompts explicitly, which is a choice and is remembered like one.
+ */
+export const tab = $state<{ current: SurfaceTab }>({ current: "spend" });
+
+function storedTab(): SurfaceTab {
+  try {
+    return tabFor(localStorage.getItem(TAB_STORE));
+  } catch {
+    return "spend";
+  }
+}
+
+function rememberTab(next: SurfaceTab) {
+  try {
+    localStorage.setItem(TAB_STORE, next);
+  } catch {
+    /* a browser refusing storage costs the choice next launch, nothing more */
+  }
+}
+
+/** The one read of the remembered tab, on open. An explicit `space n t` is
+ *  applied on top of it and remembered the same way. */
+export function openTab(asked?: SurfaceTab): SurfaceTab {
+  tab.current = asked ?? storedTab();
+  if (asked) rememberTab(asked);
+  return tab.current;
+}
+
+export function setTab(next: SurfaceTab): void {
+  tab.current = next;
+  rememberTab(next);
 }
 
 /** A saved view, opened: the four controls become its question. A field it does

@@ -124,7 +124,8 @@ export type Verb =
         | "integrations"
         | "showcase"
         | "analytics"
-        | "analyticspage";
+        | "analyticspage"
+        | "analyticstrace";
     }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
@@ -446,6 +447,10 @@ export const CHORDS: readonly Chord[] = [
      (§11.15) — the chord is the way in when you want the page from the wall,
      which has no other door to it. */
   { keys: "nn", label: "analytics as a document", verb: { kind: "open", what: "analyticspage" } },
+  /* `nt`: the prompt trace and the hall (`§11.11`), the tab the vault exists
+     for. It opens the surface on that tab in whichever presentation the mode
+     remembers, because `t` chooses a tab and not a skin; `v` still swaps. */
+  { keys: "nt", label: "the prompt trace", verb: { kind: "open", what: "analyticstrace" } },
   ...readings(),
 ];
 

@@ -2,20 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { CARRY_ON_TEXT, NUDGE_PROMPT_TEXT, NUDGE_TEXT, pickUpText } from "../src/lib/classify";
 import { jobsPrompt, resumePrompt } from "../src/lib/rousing";
 import { RELAY_MARK, WAKE_MARK } from "../src/lib/relay";
+import { PROMPT_KINDS } from "../src/lib/analyticstrace";
 
 /* The prompt vocabulary, held to the Rust that decides it.
  *
  * `docs/ANALYTICS.md` §3.8 names the seven kinds and says the TypeScript is
  * display only, held to the Rust enum by this file, the pattern
- * `test/afar.test.ts` uses for `remove.rs`'s labels. There is no TypeScript
- * vocabulary to compare against yet (the trace it draws is phase 5b), so what
- * this asserts is the half that exists: `prompt.rs` has exactly those seven
- * words, once each, in the published order, and a `store.rs` default names one
- * of them.
+ * `test/afar.test.ts` uses for `remove.rs`'s labels. So this asserts both
+ * halves: `prompt.rs` has exactly those seven words, once each, in the
+ * published order, and `analyticstrace.ts`'s display list is the same seven.
  *
  * A kind added to the enum without being added here fails, which is the whole
- * point: an eighth kind would reach a chart whose colours and labels were chosen
- * for seven.
+ * point: an eighth kind would reach a chart whose labels were chosen for seven.
  */
 
 const rust = await Bun.file(new URL("../src-tauri/src/prompt.rs", import.meta.url)).text();
@@ -58,6 +56,12 @@ describe("the prompt vocabulary", () => {
      column says something the code cannot name back. */
   test("KINDS and as_str cannot drift apart", () => {
     expect(spelledKinds(rust)).toEqual(declaredKinds(rust));
+  });
+
+  /* And the trace's display list is the same list, in the same order, so the
+     filter's options cannot offer a word the decoder never answers. */
+  test("the TypeScript the trace draws is the Rust's own seven", () => {
+    expect([...PROMPT_KINDS]).toEqual(declaredKinds(rust));
   });
 
   /* The schema's default is a word the enum has to know, or a row written
@@ -135,6 +139,22 @@ describe("the prompt vocabulary", () => {
     expect(impl).not.toMatch(/&self\.text\s*[,)]/);
     expect(impl).not.toMatch(/self\.text\.clone\(\)/);
     expect(impl).toContain('"chars"');
+  });
+
+  /* The hall's note is sealed text too, so its row type owes the same two
+     refusals: no `Debug` derive and a hand-written impl that prints that a note
+     is there rather than what it says. */
+  test("a hall note may not reach a log line either", async () => {
+    const vault = await Bun.file(new URL("../src-tauri/src/promptvault.rs", import.meta.url)).text();
+    const at = vault.indexOf("pub struct FavouriteRow {");
+    expect(at).toBeGreaterThan(-1);
+    const above = vault.slice(Math.max(0, at - 500), at);
+    expect(above).not.toMatch(/#\[derive\([^)]*Debug/);
+    const implAt = vault.indexOf("impl std::fmt::Debug for FavouriteRow");
+    expect(implAt).toBeGreaterThan(-1);
+    const impl = vault.slice(implAt, vault.indexOf("\n}", implAt));
+    expect(impl).not.toMatch(/&self\.note\s*[,)]/);
+    expect(impl).toContain("<sealed>");
   });
 });
 
