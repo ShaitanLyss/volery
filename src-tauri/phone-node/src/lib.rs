@@ -9,6 +9,8 @@
 
 pub mod narration;
 pub mod node;
+pub mod prompts;
 
 pub use narration::{diff, Chatty, Kind, Line, Narration};
 pub use node::{Digest, Fetched, Media, Node, Sighting};
+pub use prompts::{compose, read as prompts_of, said_before, Prompt, Question, Said};

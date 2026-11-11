@@ -272,6 +272,73 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_answer<'caller>(
         .resolve::<LogErrorAndDefault>()
 }
 
+/// `prompts(cards)` → `{"ok": {"prompts": […]}}` or `{"err": …}`.
+///
+/// Everything a wall is waiting on a person for, read off the `cards` envelope
+/// `sight` returns: parked and filed questions, removal and close
+/// confirmations, every other confirmation, and the notice queue. Pure, so it
+/// needs no node and no network — the app calls it whenever a sighting lands.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_prompts<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    cards: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let cards = read(env, &cards);
+            to_jstring(env, prompts(&cards))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
+/// `tail(host, card)` → `{"ok": {"lines": [{"you": bool, "text": …}]}}` or
+/// `{"err": …}`.
+///
+/// The prose that led to a card's prompt: its conversation read on demand,
+/// reduced to the agent's and the person's own words. Tool calls, tool results,
+/// compaction summaries and skills never cross — a phone wants the paragraph,
+/// not a transcript.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_tail<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    host: JString<'caller>,
+    card: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let host = read(env, &host);
+            let card = read(env, &card);
+            to_jstring(env, tail(&host, &card))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
+/// `composeAnswers(headers, picks)` → `{"ok": {"text": …}}` or `{"err": …}`.
+///
+/// The reply a sheet of picks composes, in the exact shape the agent reads:
+/// one question is the bare answer, several are a numbered list carrying each
+/// question's header, and an unanswered slot is `skipped`. Both arguments are
+/// JSON arrays of strings; the shape is `asking.ts::composeAnswer`'s and must
+/// not drift, which is why the phone asks this crate rather than composing in
+/// Kotlin.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_composeAnswers<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    headers: JString<'caller>,
+    picks: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let headers = read(env, &headers);
+            let picks = read(env, &picks);
+            to_jstring(env, compose_answers(&headers, &picks))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
 fn read(env: &Env<'_>, s: &JString<'_>) -> String {
     s.try_to_string(env).unwrap_or_default()
 }
@@ -334,6 +401,70 @@ fn answer(host: &str, card: &str, ask_id: &str, text: &str) -> Result<Value, Str
     let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
     rt().block_on(held.answer(host, card, ask_id, text))?;
     Ok(json!(true))
+}
+
+fn prompts(cards: &str) -> Result<Value, String> {
+    let v: Value = serde_json::from_str(cards).map_err(|e| format!("unreadable digest: {e}"))?;
+    let snapshot = v.get("snapshot").cloned().unwrap_or(Value::Null);
+    let age = v.get("age_ms").and_then(Value::as_u64).unwrap_or(0);
+    let rows = phone_node::prompts_of(&snapshot, age);
+    Ok(json!({
+        "prompts": rows.iter().map(prompt_value).collect::<Vec<_>>(),
+    }))
+}
+
+fn tail(host: &str, card: &str) -> Result<Value, String> {
+    let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
+    let said = rt().block_on(held.tail(host, card))?;
+    Ok(json!({
+        "lines": said
+            .iter()
+            .map(|s| json!({ "you": s.you, "text": s.text }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn compose_answers(headers: &str, picks: &str) -> Result<Value, String> {
+    let headers: Vec<String> = serde_json::from_str(headers).map_err(|e| format!("unreadable questions: {e}"))?;
+    let picks: Vec<String> = serde_json::from_str(picks).map_err(|e| format!("unreadable answers: {e}"))?;
+    if headers.is_empty() {
+        return Err("there was no question to answer".into());
+    }
+    let questions: Vec<phone_node::Question> = headers
+        .into_iter()
+        .map(|header| phone_node::Question { header, body: String::new(), options: Vec::new(), shows: false })
+        .collect();
+    Ok(json!({ "text": phone_node::compose(&questions, &picks) }))
+}
+
+/// One prompt in the shape the app draws: the card it belongs to, the exact
+/// `answers` value an answer names, and its questions. `blocking` and
+/// `startsWork` are decisions the screen makes before a tap, so they are said
+/// here rather than re-derived in Kotlin.
+fn prompt_value(p: &phone_node::Prompt) -> Value {
+    json!({
+        "card": p.card,
+        "title": p.title,
+        "kind": p.kind.word(),
+        "answers": p.answers,
+        "waitedMs": p.waited_ms,
+        "blocking": p.kind != phone_node::prompts::Kind::Notice,
+        "startsWork": p.kind.starts_work(),
+        "questions": p
+            .questions
+            .iter()
+            .map(|q| json!({
+                "header": q.header,
+                "body": q.body,
+                "shows": q.shows,
+                "options": q
+                    .options
+                    .iter()
+                    .map(|o| json!({ "label": o.label, "detail": o.detail }))
+                    .collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Flatten a `Fetched` into the JSON the Kotlin side reads: the bytes stay

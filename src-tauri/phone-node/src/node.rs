@@ -66,6 +66,7 @@ use flyway_core::seal::WallKey;
 use flyway_core::seeing::{self, SeeMsg, Sight};
 use flyway_core::session::Msg;
 use flyway_core::steward::{self, StewardMsg};
+use flyway_core::tail::{self, TailMsg};
 use flyway_core::wire::{carrying_within, Wire, EXCHANGE_WITHIN};
 
 /// How long every wall after the first gets in a walk. Shorter than the wire's
@@ -463,6 +464,40 @@ impl Node {
             .await
             .map_err(|e| format!("could not reach {host}: {e}"))?;
         Ok(())
+    }
+
+    /// The prose that led to a card's prompt: its conversation, read on demand
+    /// and reduced to what a person can read on a phone.
+    ///
+    /// `tail.rs`'s exchange, and the phone asks it for a `tail` frame exactly
+    /// as another wall does — the owning wall holds this exchange open while
+    /// its front end makes the tail and answers on the same stream. Nothing is
+    /// kept on either side. The reduction to prose lines (`prompts::said_before`)
+    /// is this crate's, because a phone screen wants the paragraph that led to
+    /// a question and *not* a transcript with tool calls in it.
+    ///
+    /// Read on demand, never by a clock: this is the most expensive thing the
+    /// phone asks a wall for (up to half a megabyte before the reduction), and
+    /// it is wanted only when a person presses *what led to this* on a prompt.
+    pub async fn tail(&self, host: &str, card: &str) -> Result<Vec<crate::prompts::Said>, String> {
+        let peer = self.wire.peer(host)?;
+        let id = fresh_id();
+        let m = TailMsg::Tail { id: id.clone(), card: card.to_string() };
+        let mut out = self.greeting();
+        out.push(Frame::Tail(m));
+        let back = self
+            .wire
+            .exchange_within(peer, out, true, EXCHANGE_WITHIN)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        let tails = back.iter().filter_map(|f| match f {
+            Frame::Tail(m) => Some(m),
+            _ => None,
+        });
+        match tail::answer_in(tails, &id, host)? {
+            tail::Read::Nothing => Ok(Vec::new()),
+            tail::Read::Lines(lines) => Ok(crate::prompts::said_before(&lines, crate::prompts::SAID_MOST)),
+        }
     }
 
     /// The greeting the node opens an exchange with — the same shape a wall

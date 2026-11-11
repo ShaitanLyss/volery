@@ -203,6 +203,9 @@ describe("the answer goes back and is taken once", () => {
   test("names the row with the prefix presence.rs reads, and is not a notice", async () => {
     const rs = await Bun.file(new URL("../src-tauri/src/presence.rs", import.meta.url)).text();
     expect(rs).toContain(`pub const AFAR_PREFIX: &str = "${PILE_AFAR_PREFIX}";`);
+    /* And the phone's reader, which cannot link presence.rs. */
+    const phone = await Bun.file(new URL("../src-tauri/phone-node/src/prompts.rs", import.meta.url)).text();
+    expect(phone).toContain(`pub const PILE_PREFIX: &str = "${PILE_AFAR_PREFIX}";`);
     expect(pileAnswer("row-1")).toBe("deferred:row-1");
     expect(noticeOf(pileAnswer("row-1"))).toBeNull();
   });

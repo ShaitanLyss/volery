@@ -237,6 +237,16 @@ describe("the question drawn on the other wall", () => {
     expect(rs).toContain(`const KEEP_IT: &str = "${KEEP_IT}";`);
   });
 
+  /* And the phone is a third far wall, sending the same two labels from a
+     reader Rust-side that cannot link remove.rs. Held to the same source. */
+  test("the phone sends remove.rs's own labels", async () => {
+    const rs = await Bun.file(new URL("../src-tauri/phone-node/src/prompts.rs", import.meta.url)).text();
+    expect(rs).toContain(`pub const DELETE_IT: &str = "${DELETE_IT}";`);
+    expect(rs).toContain(`pub const KEEP_IT: &str = "${KEEP_IT}";`);
+    expect(rs).toContain(`pub const CLOSE_IT: &str = "${CLOSE_IT}";`);
+    expect(rs).toContain(`pub const LEAVE_IT: &str = "${LEAVE_IT}";`);
+  });
+
   /* The caps are Rust's too: a far wall reading fewer than the owning wall
      asks about would drop the question rather than draw it. */
   test("the path caps are remove.rs's own", async () => {
@@ -449,6 +459,13 @@ describe("notices travel", () => {
     const rs = await Bun.file(new URL("../src-tauri/src/notice.rs", import.meta.url)).text();
     expect(rs).toContain(`pub const AFAR_PREFIX: &str = "${NOTICE_AFAR_PREFIX}";`);
     expect(rs).toContain(`pub const AFAR_ACK: &str = "${NOTICE_AFAR_ACK}";`);
+  });
+
+  /* The phone's reader names a notice with the same two words. */
+  test("the phone names a notice the same way", async () => {
+    const rs = await Bun.file(new URL("../src-tauri/phone-node/src/prompts.rs", import.meta.url)).text();
+    expect(rs).toContain(`pub const NOTICE_PREFIX: &str = "${NOTICE_AFAR_PREFIX}";`);
+    expect(rs).toContain(`pub const ACKNOWLEDGED: &str = "${NOTICE_AFAR_ACK}";`);
   });
 
   test("the ladder hears one row per card, and not over an open question", () => {
