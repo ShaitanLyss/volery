@@ -54,6 +54,16 @@ pub const SKIPPED: &str = "skipped";
 /// `asking.ts`'s opening for a reply of several questions.
 const PREAMBLE: &str = "Answering each in turn:";
 
+/// How a note *about* the call is set apart from the answer to it, and the
+/// note a skipped slot owes. Both are `asking.ts`'s own strings: `answerNote`
+/// cuts at this marker when the reply is read back off disk, so a different
+/// one here would put Skein's words in the person's mouth in the transcript.
+const ASIDE: &str = "\n\n— skein: ";
+const SKIPPED_ASIDE: &str =
+    "a question answered `skipped` was passed over, not decided, and a skip is not permission: \
+     don't do anything it was gating. Carry on with what it doesn't block, say plainly what you \
+     are holding and why, and ask again if you need it.";
+
 /// As many as the digest itself carries, restated so a hostile snapshot cannot
 /// make a phone draw more than a person could answer.
 pub const ASKS_MOST: usize = 6;
@@ -145,6 +155,10 @@ pub struct Prompt {
     /// ever compared.
     pub waited_ms: u64,
     pub questions: Vec<Question>,
+    /// For a notice that holds no turn open: the word that takes it down
+    /// without saying anything (`notice::AFAR_ACK`). `None` on everything
+    /// else, which is answered with words.
+    pub ack: Option<String>,
 }
 
 impl Prompt {
@@ -171,8 +185,9 @@ impl Prompt {
     }
 }
 
-/// Read every prompt a digest carries, most urgent first: the things that
-/// block a card, oldest first, then the notices, newest first.
+/// Read every prompt a digest carries, most useful first: a live question or
+/// confirmation (the card is stopped now) oldest first, then the pile newest
+/// first (an inbox), then the notices newest first (news).
 ///
 /// `age_ms` is the digest's own age from publish, and the snapshot's `at` is
 /// the owner's clock; `waited_ms` subtracts one owner-clock value from the
@@ -187,18 +202,26 @@ pub fn read(snapshot: &Value, age_ms: u64) -> Vec<Prompt> {
     for raw in cards {
         read_card(raw, at, age_ms, &mut prompts);
     }
-    /* Blocking first (the `Kind` order), then the oldest of those; notices last
-       and newest first, because a notice is news and an old one is history. */
+    /* A live question first, then the pile, then the notices — and the pile is
+       newest-first where a live question is oldest-first.
+     *
+     * This was one "blocking" group ordered by age, and a real wall showed why
+     * that is wrong on a phone: the pile had accumulated every deferred question
+     * for eight days, and the roster's three rows were three of them while a
+     * question asked this minute sat below. A live question is somebody stopped
+     * *now*; the pile is an inbox, and its newest row is the one still worth
+     * reading. Notices last, newest first, because a notice is news. */
+    let rank = |k: Kind| match k {
+        Kind::Filed => 1,
+        Kind::Notice => 2,
+        _ => 0,
+    };
     prompts.sort_by(|a, b| {
-        let blocking = |p: &Prompt| p.kind != Kind::Notice;
-        blocking(b)
-            .cmp(&blocking(a))
-            .then_with(|| {
-                if a.kind == Kind::Notice {
-                    a.waited_ms.cmp(&b.waited_ms)
-                } else {
-                    b.waited_ms.cmp(&a.waited_ms)
-                }
+        rank(a.kind)
+            .cmp(&rank(b.kind))
+            .then_with(|| match rank(a.kind) {
+                0 => b.waited_ms.cmp(&a.waited_ms),
+                _ => a.waited_ms.cmp(&b.waited_ms),
             })
             .then_with(|| a.kind.cmp(&b.kind))
             .then_with(|| a.card.cmp(&b.card))
@@ -219,27 +242,43 @@ fn read_card(raw: &Value, at: Option<i64>, age_ms: u64, out: &mut Vec<Prompt>) {
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "a card".to_string());
 
-    let mut push = |kind: Kind, answers: String, since: Option<i64>, questions: Vec<Question>| {
-        if answers.is_empty() || questions.is_empty() {
-            return;
-        }
-        out.push(Prompt {
-            card: card.to_string(),
-            title: title.clone(),
-            kind,
-            answers,
-            waited_ms: waited(at, since, age_ms),
-            questions,
-        });
-    };
+    let mut push =
+        |kind: Kind, answers: String, since: Option<i64>, questions: Vec<Question>, ack: Option<String>| {
+            if answers.is_empty() || questions.is_empty() {
+                return;
+            }
+            out.push(Prompt {
+                card: card.to_string(),
+                title: title.clone(),
+                kind,
+                answers,
+                waited_ms: waited(at, since, age_ms),
+                questions,
+                ack,
+            });
+        };
 
     /* An agent's parked questions. `ours` never travel here — a confirmation of
        Volery's own is in one of the four fields below, carrying its evidence. */
     for ask in arr(obj.get("asks")).take(ASKS_MOST) {
         let Some(answers) = text(ask.get("askId"), 80) else { continue };
         let since = ask.get("since").and_then(Value::as_i64);
-        let questions = read_questions(ask.get("questions"));
-        push(Kind::Ask, answers, since, questions);
+        let mut questions = read_questions(ask.get("questions"));
+        /* An ask the digest carried without words of its own is still an ask:
+           the card is stopped, and the roster's own count says so. Dropping it
+           left a card reading "1 question waiting" with nothing anywhere to
+           answer, which is worse than a question that has to be asked for. */
+        if questions.is_empty() {
+            questions.push(Question {
+                header: String::new(),
+                body: "This card is asking you something, but its words did not reach this phone. \
+                       Answer in your own words, or open the card on the wall to read it."
+                    .to_string(),
+                options: Vec::new(),
+                shows: false,
+            });
+        }
+        push(Kind::Ask, answers, since, questions, None);
     }
 
     /* The pile. Absent and `null` both mean this wall has not said (the latter
@@ -250,27 +289,27 @@ fn read_card(raw: &Value, at: Option<i64>, age_ms: u64, out: &mut Vec<Prompt>) {
         let Some(row_id) = text(row.get("askId").or_else(|| row.get("id")), 80) else { continue };
         let since = row.get("since").or_else(|| row.get("askedAt")).and_then(Value::as_i64);
         let questions = read_questions(row.get("questions"));
-        push(Kind::Filed, format!("{PILE_PREFIX}{row_id}"), since, questions);
+        push(Kind::Filed, format!("{PILE_PREFIX}{row_id}"), since, questions, None);
     }
 
     for removal in arr(obj.get("removals")).take(ASKS_MOST) {
         let Some(answers) = text(removal.get("askId"), 80) else { continue };
         if let Some(q) = removal_question(removal.get("removal")) {
-            push(Kind::Removal, answers, removal.get("since").and_then(Value::as_i64), vec![q]);
+            push(Kind::Removal, answers, removal.get("since").and_then(Value::as_i64), vec![q], None);
         }
     }
 
     for closing in arr(obj.get("closings")).take(ASKS_MOST) {
         let Some(answers) = text(closing.get("askId"), 80) else { continue };
         if let Some(q) = closing_question(closing.get("closing")) {
-            push(Kind::Close, answers, closing.get("since").and_then(Value::as_i64), vec![q]);
+            push(Kind::Close, answers, closing.get("since").and_then(Value::as_i64), vec![q], None);
         }
     }
 
     for confirm in arr(obj.get("confirms")).take(ASKS_MOST) {
         let Some(answers) = text(confirm.get("askId"), 80) else { continue };
         if let Some(q) = confirm_question(confirm.get("confirm")) {
-            push(Kind::Confirm, answers, confirm.get("since").and_then(Value::as_i64), vec![q]);
+            push(Kind::Confirm, answers, confirm.get("since").and_then(Value::as_i64), vec![q], None);
         }
     }
 
@@ -279,7 +318,9 @@ fn read_card(raw: &Value, at: Option<i64>, age_ms: u64, out: &mut Vec<Prompt>) {
         /* A notice holding its card's turn open is answered by its ask id, into
            the call, exactly as a question is. Any other names itself with the
            prefix and takes an acknowledgement or a follow-up. */
-        let answers = match text(notice.get("askId"), 80) {
+        let ask = text(notice.get("askId"), 80);
+        let ack = if ask.is_none() { Some(ACKNOWLEDGED.to_string()) } else { None };
+        let answers = match ask {
             Some(ask) => ask,
             None => format!("{NOTICE_PREFIX}{id}"),
         };
@@ -292,6 +333,7 @@ fn read_card(raw: &Value, at: Option<i64>, age_ms: u64, out: &mut Vec<Prompt>) {
             answers,
             since,
             vec![Question { header: String::new(), body: cut(&body, BODY_MOST), options: Vec::new(), shows: false }],
+            ack,
         );
     }
 }
@@ -306,13 +348,6 @@ fn read_questions(raw: Option<&Value>) -> Vec<Question> {
         let Some(obj) = q.as_object() else { continue };
         let header = text(obj.get("header"), HEADER_MOST).unwrap_or_default();
         let body = text(obj.get("question"), BODY_MOST).unwrap_or_default();
-        if header.is_empty() && body.is_empty() {
-            continue;
-        }
-        if spent + body.chars().count() > BODY_SUM_MOST {
-            break;
-        }
-        spent += body.chars().count();
         let mut options = Vec::new();
         for o in arr(obj.get("options")).take(OPTIONS_MOST) {
             let Some(label) = text(o.get("label"), LABEL_MOST) else { continue };
@@ -321,6 +356,15 @@ fn read_questions(raw: Option<&Value>) -> Vec<Question> {
                 detail: text(o.get("detail"), DETAIL_MOST).unwrap_or_default(),
             });
         }
+        /* A question with options and no words is a real choice, so it is
+           kept: the labels are the question. One with neither is nothing. */
+        if header.is_empty() && body.is_empty() && options.is_empty() {
+            continue;
+        }
+        if spent + body.chars().count() > BODY_SUM_MOST {
+            break;
+        }
+        spent += body.chars().count();
         out.push(Question { header, body, options, shows: obj.get("shows").and_then(Value::as_bool).unwrap_or(false) });
     }
     out
@@ -542,14 +586,23 @@ pub fn compose(questions: &[Question], picks: &[String]) -> String {
         .enumerate()
         .map(|(i, _)| picks.get(i).map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).unwrap_or_else(|| SKIPPED.to_string()))
         .collect();
-    if questions.len() == 1 {
-        return slots.first().cloned().unwrap_or_default();
+    let said = if questions.len() == 1 {
+        slots.first().cloned().unwrap_or_default()
+    } else {
+        let mut out = String::from(PREAMBLE);
+        for (i, q) in questions.iter().enumerate() {
+            out.push_str(&format!("\n{}. {}: {}", i + 1, q.header, slots[i]));
+        }
+        out
+    };
+    /* A skip is not permission, and the word alone leaves the model to infer
+       what to do with it. Said once, however many slots carry it, under the
+       marker the transcript's fold takes off again. */
+    if slots.iter().any(|s| s == SKIPPED) {
+        format!("{said}{ASIDE}{SKIPPED_ASIDE}")
+    } else {
+        said
     }
-    let mut out = String::from(PREAMBLE);
-    for (i, q) in questions.iter().enumerate() {
-        out.push_str(&format!("\n{}. {}: {}", i + 1, q.header, slots[i]));
-    }
-    out
 }
 
 /* ── what was said before it ───────────────────────────────────────────── */
@@ -819,6 +872,7 @@ mod tests {
         assert_eq!(p[0].answers, "notice:n1");
         assert_eq!(p[0].questions[0].body, "all green");
         assert!(!p[0].pickable());
+        assert_eq!(p[0].ack.as_deref(), Some(ACKNOWLEDGED), "a notice with no turn is taken down by the ack word");
     }
 
     #[test]
@@ -830,6 +884,7 @@ mod tests {
         let p = read(&s, 0);
         assert_eq!(p[0].answers, "ask-7");
         assert_eq!(p[0].questions[0].body, "It stopped on a question.");
+        assert!(p[0].ack.is_none(), "a notice holding a turn is answered, not acknowledged");
     }
 
     #[test]
@@ -847,16 +902,58 @@ mod tests {
         assert_eq!(p[0].answers, "old");
     }
 
+    /// The pile is an inbox, not a queue: its newest row is the one still worth
+    /// reading, and an eight-day-old one must not sit above a live question.
     #[test]
-    fn a_card_with_no_id_or_a_question_with_no_identifying_words_is_dropped() {
+    fn a_live_question_outranks_the_pile_and_the_piles_newest_comes_first() {
+        let s = snapshot(json!([
+            card("c1", json!({ "filed": [
+                { "askId": "old", "since": 0, "questions": [{ "question": "from last week" }] },
+                { "askId": "new", "since": 9_000, "questions": [{ "question": "from this morning" }] },
+            ] })),
+            card("c2", json!({ "asks": [{ "askId": "live", "since": 9_500, "questions": [{ "question": "now" }] }] })),
+        ]));
+        let p = read(&s, 0);
+        assert_eq!(p[0].answers, "live", "a question somebody is stopped on comes first");
+        assert_eq!(p[1].answers, "deferred:new", "then the pile, newest first");
+        assert_eq!(p[2].answers, "deferred:old");
+    }
+
+    #[test]
+    fn a_card_with_no_id_or_an_ask_with_no_id_is_dropped() {
         let s = snapshot(json!([
             json!({ "title": "nameless", "asks": [{ "askId": "a", "questions": [{ "question": "q" }] }] }),
-            card("c1", json!({ "asks": [
-                { "since": 0, "questions": [{ "question": "no id" }] },
-                { "askId": "empty", "questions": [] },
-            ] })),
+            card("c1", json!({ "asks": [{ "since": 0, "questions": [{ "question": "no id" }] }] })),
         ]));
         assert!(read(&s, 0).is_empty());
+    }
+
+    /// An ask whose words did not survive into the digest is still an ask. The
+    /// card is stopped and the roster counts it; dropping it left a row saying
+    /// "1 question waiting" with nothing anywhere to answer.
+    #[test]
+    fn a_wordless_ask_is_drawn_as_a_question_that_can_be_answered() {
+        let s = snapshot(json!([card("c1", json!({ "asks": [{ "askId": "ask-1", "since": 0, "questions": [] }] }))]));
+        let p = read(&s, 0);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].kind, Kind::Ask);
+        assert_eq!(p[0].answers, "ask-1");
+        assert!(!p[0].pickable());
+        assert!(p[0].questions[0].body.contains("did not reach this phone"), "{}", p[0].questions[0].body);
+    }
+
+    /// A question with options and no words is a real choice: the labels are
+    /// the question, so it is kept rather than dropped.
+    #[test]
+    fn a_question_with_only_options_is_kept() {
+        let s = snapshot(json!([card(
+            "c1",
+            json!({ "asks": [{ "askId": "a", "questions": [{ "options": [{ "label": "yes" }, { "label": "no" }] }] }] })
+        )]));
+        let p = read(&s, 0);
+        assert_eq!(p.len(), 1);
+        assert!(p[0].pickable());
+        assert_eq!(p[0].questions[0].options.len(), 2);
     }
 
     #[test]
@@ -895,10 +992,13 @@ mod tests {
             compose(&two, &["square".into(), "three".into()]),
             "Answering each in turn:\n1. which: square\n2. how many: three"
         );
-        assert_eq!(
-            compose(&two, &["square".into(), "".into()]),
-            "Answering each in turn:\n1. which: square\n2. how many: skipped"
+        let skipped = compose(&two, &["square".into(), "".into()]);
+        assert!(
+            skipped.starts_with("Answering each in turn:\n1. which: square\n2. how many: skipped"),
+            "{skipped}"
         );
+        assert!(skipped.contains("a skip is not permission"), "{skipped}");
+        assert!(skipped.contains("— skein: "), "the aside rides the marker answerNote strips");
     }
 
     fn tail() -> Value {

@@ -64,6 +64,11 @@ object Config {
     /** "full", "spare" or "still" — how much the wall is allowed to move. */
     var motion by mutableStateOf("full")
 
+    /** Whether the first-launch introduction has been shown. Set when it opens,
+     *  not when it is finished, so a half-read or skipped one does not come
+     *  back on the next launch; settings reopens it for ever after. */
+    var tutorialSeen by mutableStateOf(false)
+
     private const val FILE = "volery"
     private var prefs: SharedPreferences? = null
 
@@ -86,6 +91,7 @@ object Config {
         preferred = sp.getString("preferred", preferred) ?: preferred
         host = sp.getString("host", preferred) ?: preferred
         name = sp.getString("name", name) ?: name
+        tutorialSeen = sp.getBoolean("tutorialSeen", tutorialSeen)
         remembered = readWalls(sp.getString("remembered", null))
     }
 
@@ -118,8 +124,15 @@ object Config {
             ?.putString("host", host)
             ?.putString("preferred", preferred)
             ?.putString("name", name)
+            ?.putBoolean("tutorialSeen", tutorialSeen)
             ?.putString("remembered", wallsJson())
             ?.apply()
+    }
+
+    /** The introduction was shown. Its own write so a launch does not push every
+     *  setting through the preferences file to record one flag. */
+    fun persistTutorial() {
+        prefs?.edit()?.putBoolean("tutorialSeen", tutorialSeen)?.apply()
     }
 
     /** Write only the fields a sighting owns. [persist] writes every field, so

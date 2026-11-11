@@ -407,9 +407,14 @@ fn prompts(cards: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_str(cards).map_err(|e| format!("unreadable digest: {e}"))?;
     let snapshot = v.get("snapshot").cloned().unwrap_or(Value::Null);
     let age = v.get("age_ms").and_then(Value::as_u64).unwrap_or(0);
+    /* The wall that published this, carried on every row: an answer must be
+       dialled to the wall that holds the card, and `Config.host` is only the
+       wall the screen happens to be drawing — a chip tap or a background walk
+       can move it between the draw and the tap. */
+    let host = v.get("host").and_then(Value::as_str).unwrap_or_default();
     let rows = phone_node::prompts_of(&snapshot, age);
     Ok(json!({
-        "prompts": rows.iter().map(prompt_value).collect::<Vec<_>>(),
+        "prompts": rows.iter().map(|p| prompt_value(p, host)).collect::<Vec<_>>(),
     }))
 }
 
@@ -441,8 +446,9 @@ fn compose_answers(headers: &str, picks: &str) -> Result<Value, String> {
 /// `answers` value an answer names, and its questions. `blocking` and
 /// `startsWork` are decisions the screen makes before a tap, so they are said
 /// here rather than re-derived in Kotlin.
-fn prompt_value(p: &phone_node::Prompt) -> Value {
+fn prompt_value(p: &phone_node::Prompt, host: &str) -> Value {
     json!({
+        "host": host,
         "card": p.card,
         "title": p.title,
         "kind": p.kind.word(),
@@ -450,6 +456,7 @@ fn prompt_value(p: &phone_node::Prompt) -> Value {
         "waitedMs": p.waited_ms,
         "blocking": p.kind != phone_node::prompts::Kind::Notice,
         "startsWork": p.kind.starts_work(),
+        "ack": p.ack,
         "questions": p
             .questions
             .iter()
@@ -750,6 +757,47 @@ mod tests {
         let bad = remembered_list("[a,b]").unwrap_err();
         assert!(bad.contains("wall list"), "the error names what was wrong: {bad}");
         assert!(remembered_list(r#"["a",3]"#).is_err(), "a name is a string, not a number");
+    }
+
+    /// The prompts envelope the app draws: a parked question, its options, and
+    /// the id an answer names, read from the same `cards` object a sighting
+    /// leaves in `NodeState`.
+    #[test]
+    fn prompts_reads_the_cards_object_the_app_holds() {
+        let c = cards(
+            1,
+            json!([{
+                "id": "c1", "title": "caravan",
+                "asks": [{
+                    "askId": "ask-1", "since": 0,
+                    "questions": [{
+                        "header": "which", "question": "square or circle?",
+                        "options": [{ "label": "square", "detail": "the honest one" }, { "label": "circle" }],
+                    }],
+                }],
+            }]),
+        );
+        let v = prompts(&c).unwrap();
+        assert_eq!(v["prompts"][0]["host"], "desk", "the publishing wall rides every row");
+        assert_eq!(v["prompts"][0]["card"], "c1");
+        assert_eq!(v["prompts"][0]["answers"], "ask-1");
+        assert_eq!(v["prompts"][0]["kind"], "question");
+        assert_eq!(v["prompts"][0]["blocking"], true);
+        assert_eq!(v["prompts"][0]["questions"][0]["body"], "square or circle?");
+        assert_eq!(v["prompts"][0]["questions"][0]["options"][0]["detail"], "the honest one");
+        assert_eq!(v["prompts"][0]["questions"][0]["options"][1]["detail"], "");
+    }
+
+    /// A reply of several is the numbered shape an agent reads, composed here
+    /// rather than in Kotlin; an empty question list is refused by name.
+    #[test]
+    fn a_reply_of_several_is_numbered_by_the_bridge() {
+        let v = compose_answers(r#"["which","how many"]"#, r#"["square","three"]"#).unwrap();
+        assert_eq!(v["text"], "Answering each in turn:\n1. which: square\n2. how many: three");
+        let bare = compose_answers(r#"["which"]"#, r#"["square"]"#).unwrap();
+        assert_eq!(bare["text"], "square");
+        assert!(compose_answers("[]", "[]").unwrap_err().contains("no question"));
+        assert!(compose_answers("[a]", "[]").unwrap_err().contains("unreadable questions"));
     }
 
     /// A digest with no snapshot reads as `null`, not a crash — the same lenient

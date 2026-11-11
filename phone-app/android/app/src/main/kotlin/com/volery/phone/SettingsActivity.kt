@@ -1,9 +1,12 @@
 package com.volery.phone
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -188,6 +191,7 @@ private fun Head(onBack: () -> Unit) {
 @Composable
 private fun SettingsBody(onOpen: (String) -> Unit) {
     val p = LocalPalette.current
+    val context = LocalContext.current
     Column(
         Modifier
             .fillMaxSize()
@@ -233,6 +237,85 @@ private fun SettingsBody(onOpen: (String) -> Unit) {
                 },
                 enabled = { it != "hey-volery" },
             )
+        }
+
+        /* The one combination that makes the walking mode true, stated as one
+           choice rather than three settings somebody has to discover add up to
+           it. Lyss could not find the path: the ears were a listening mode, the
+           mouth was a chatty level, and the microphone was a permission nobody
+           had been asked for because only the orb asks. */
+        Section("hands-free")
+        Group {
+            val context = LocalContext.current
+            val ears = rememberEars()
+            var mic by remember { mutableStateOf(ears.voice.hasMic()) }
+            val askMic = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                mic = granted
+                /* The foreground service's microphone type can only be added
+                   while this screen is in front, which it is right now. */
+                if (granted) NodeService.promote(context)
+            }
+            val on = Config.mode == "seamless" && Config.chatty != "off" && mic
+            SettingRow(
+                "ask me out loud",
+                onClick = {
+                    /* Turning it on sets the pair and asks for the microphone;
+                       it never turns a deliberate `off` into noise unless the
+                       row is what turned the voice on. */
+                    if (on) {
+                        Config.mode = "push-to-talk"
+                        Config.persist()
+                    } else {
+                        Config.mode = "seamless"
+                        if (Config.chatty == "off") Config.chatty = "needs"
+                        Config.persist()
+                        if (!mic) askMic.launch(Manifest.permission.RECORD_AUDIO)
+                        /* Always, not only on the grant path: the permission may
+                           have been given in the system settings, in which case
+                           the running service still carries data alone. */
+                        NodeService.promote(context)
+                    }
+                },
+            ) {
+                StatusDot(if (on) DotKind.Work else DotKind.Rest, breathing = on)
+                Text(if (on) "on" else "off", style = Type.label(p, if (on) p.paper else p.paperDim, 13.5f))
+            }
+            RowNote(
+                if (on) {
+                    "a card that needs you is read aloud, the music ducks, and the ears open when " +
+                        "the words are done — answer in your own words without touching the phone. " +
+                        "it works with the screen off."
+                } else {
+                    "turns on seamless listening and speaking what needs you, and asks for the " +
+                        "microphone. with it off the phone still reads the wall and draws what waits; " +
+                        "it does not listen for the answer."
+                },
+            )
+            if (!mic) {
+                Box(Modifier.padding(horizontal = 15.dp).padding(bottom = 12.dp)) {
+                    ActionButton(
+                        "allow the microphone",
+                        onClick = { askMic.launch(Manifest.permission.RECORD_AUDIO) },
+                        height = 44.dp,
+                    )
+                }
+            } else if (on) {
+                Box(Modifier.padding(horizontal = 15.dp).padding(bottom = 12.dp)) {
+                    ActionButton(
+                        "try it",
+                        onClick = {
+                            val voice = ears.voice
+                            Speaker.init(context)
+                            Speaker.speak("the ears are open. say something after this.")
+                            val listen = { voice.startSeamless() }
+                            if (Speaker.isSpeaking()) Speaker.onQuiet = listen else listen()
+                        },
+                        height = 44.dp,
+                    )
+                }
+            }
         }
 
         Section("the mouth")
@@ -291,6 +374,17 @@ private fun SettingsBody(onOpen: (String) -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+
+        Section("the guide")
+        Group {
+            SettingRow(
+                "how to use volery",
+                onClick = { context.startActivity(android.content.Intent(context, TutorialActivity::class.java)) },
+            ) {
+                Text("six slides", style = Type.meta(p, p.note, 12f))
+            }
+            RowNote("the introduction the first launch opens on. nothing here is only in it.")
         }
 
         About()

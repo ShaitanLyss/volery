@@ -12,9 +12,10 @@ import java.util.Locale
  * lazily and once, and a voice chosen by [pickVoice] rather than left to the
  * robotic default. Lines the narration loop wants to say are queued until the
  * engine is ready, so a line can be spoken the moment the loop has one without
- * waiting on init. `speak` is called from the main thread (the loop resumes on
- * it after the blocking JNI calls), which is the thread [TextToSpeech] is
- * happiest on.
+ * waiting on init. `speak` and **`init` are called from the main thread**, which
+ * is the thread [TextToSpeech] delivers its callbacks to: constructing it
+ * elsewhere lets `onInit` run before the field is published, and the engine
+ * then stays unready for the life of the process.
  *
  * A line that needs her (`needsYou`) also takes transient audio focus for as
  * long as the words are in the air, so her music lowers or pauses for the line
@@ -42,11 +43,11 @@ object Speaker {
 
     private class Pending(val text: String, val needsFocus: Boolean)
 
+    /** Call on the main thread only: `onInit` is delivered there, and the
+     *  field must be assigned before that callback can read it. */
     fun init(context: Context) {
         this.context = context.applicationContext
         if (tts != null) return
-        // The engine is assigned to the field before its onInit can fire, so
-        // the callback reads the field (never a local still being initialised).
         tts = TextToSpeech(context.applicationContext) { status -> handleInit(status) }
     }
 
@@ -63,7 +64,12 @@ object Speaker {
         speakNow(t, text, needsFocus)
     }
 
-    fun isSpeaking(): Boolean = inFlight > 0
+    /** Whether anything is in the air **or waiting for the engine**. The queued
+     *  half was missed, and it is the half that matters to the ears: a question
+     *  spoken before `TextToSpeech` finished initialising sat in `pending`
+     *  while `inFlight` stayed at zero, so the seamless window opened at once
+     *  and the recogniser heard the phone's own voice as the answer. */
+    fun isSpeaking(): Boolean = inFlight > 0 || pending.isNotEmpty()
 
     private fun speakNow(t: TextToSpeech, text: String, needsFocus: Boolean) {
         val id = "n-${System.nanoTime()}"

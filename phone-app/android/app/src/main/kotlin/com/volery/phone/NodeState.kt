@@ -17,6 +17,23 @@ object NodeState {
     var sighting by mutableStateOf<Sighting?>(null)
     var error by mutableStateOf<String?>(null)
 
+    /** Everything the wall being read is waiting on a person for, newest
+     *  digest first. Composed from the same snapshot the page draws, so a
+     *  question, a delete or a pull request is one row a tap answers. */
+    var prompts by mutableStateOf<List<PromptRow>>(emptyList())
+        private set
+
+    /** Debug builds only: a seeded set of prompts stands in for what a wall
+     *  would publish, so the surfaces can be photographed and driven without a
+     *  card parked on the flyway. A poll does not overwrite it while it stands;
+     *  nothing in the app reaches this. */
+    private var pinned by mutableStateOf(false)
+
+    fun seedForPreview(rows: List<PromptRow>) {
+        pinned = true
+        prompts = rows
+    }
+
     fun update(working: Boolean, sighting: Sighting?, error: String?) {
         this.working = working
         this.sighting = sighting
@@ -29,6 +46,7 @@ object NodeState {
     fun landed(sighting: Sighting, settle: Boolean) {
         this.sighting = sighting
         error = null
+        if (!pinned) prompts = sighting.cards?.let { NativeBridge.promptsOf(it.json) } ?: emptyList()
         if (settle) working = false
     }
 }

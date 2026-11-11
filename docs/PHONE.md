@@ -4,10 +4,13 @@ Design work 2026-11-09, from the request: *control Volery and the full flyway fr
 while walking, earbuds-only, with audio narration.* Voice in, voice out, mesh connectivity —
 a phone app that is itself a node on the flyway.
 
-**Status: M0 answered 2026-11-09 — iroh 1.3.0 cross-compiles, links, and runs on the Pixel 7a
-(see below).** M1 landed the same day: the flyway's pure core is the workspace crate
-`src-tauri/flyway-core`, which the desktop re-exports module for module (`src/flyway/mod.rs`)
-and a phone can link with no Tauri in its graph. M2 (the app + node) is next. This file will grow a `.claude/rules/` file when there is code to govern.
+**Status: M0 through M5 are built and run on the Pixel 7a.** M1 landed the flyway's pure
+core as the workspace crate `src-tauri/flyway-core`, which the desktop re-exports module for
+module (`src/flyway/mod.rs`) and a phone links with no Tauri in its graph. M2 brought the app
+and the node, M3 the ears and the mouth, M4 the modes and audio, and M5 the steward, the
+confirm gate and answers. **2026-11-11 made the walking mode usable**: every parked prompt is
+drawn and answerable, the narration loop runs in the foreground service, and a first-launch
+introduction says what all of it is for. iOS (M6) and chat view (M7) are still later.
 
 ## What this is
 
@@ -41,6 +44,96 @@ tap on a wall chip that answers makes that wall the preference, while an
 automatic fallback moves only the wall being read, so the laptop you meant is
 tried again next time rather than being replaced by whichever wire answered.
 `phone.host` seeds the preference at build time and defaults to empty.
+
+### What the phone does with a wall (2026-11-11)
+
+The first cut spoke questions and drew a count. That is not usable on a walk.
+A card parked on a question on the laptop was heard, or it was not, and there
+was nothing to read if the words went past you. Three things changed.
+
+**Every parked prompt is drawn, and a tap answers it.** The wall's digest
+already carried the words for every kind of thing that waits: an agent's
+`ask_user` (`asks`), the questions filed into its pile while nobody was at the
+wall (`filed`), a removal (`removals`), a close (`closings`), every other
+confirmation such as a pull request or an Asana write (`confirms`), and the
+notice queue (`notices`). `phone-node/src/prompts.rs` reads the snapshot into
+rows for a phone screen: a kind, the card it belongs to, the question's own
+words and options, and the exact `answers` value the owning wall reads. The
+roster's first section is the blocking ones, live questions first and then the
+pile; notices are drawn on the card's page and flagged on its roster row. A
+single question with options is answerable from the roster
+without opening a card. The card's own page draws the whole sheet, several
+questions included, and sends them in the numbered shape an agent expects.
+
+The answer is the same wire a spoken one takes: a fleet prompt naming the
+parked ask, `notice:<id>` for a notice, or `deferred:<row>` for a pile row.
+Nothing about the answer knows it came from a phone.
+
+**The prose that led to a prompt is a tap away.** A short question sometimes
+needs the paragraph before it. `Node::tail` pulls the card's conversation on
+demand through `tail.rs`, and `prompts::said_before` keeps only the person's
+and the agent's own lines. Tool calls, results, compaction summaries and skills
+never cross. Nothing is polled for this: it is fetched when a prompt's **what
+led to this** is opened, and kept for the session.
+
+**The loop runs in the foreground service, not on a screen.** It used to be a
+`LaunchedEffect` gated on the activity being resumed, so putting the phone in a
+pocket stopped the whole hands-free story: the screen went off, the coroutine
+was cancelled, and nothing read the wall until the app was opened again. The
+service kept the process alive and read nothing. `Narrator` now owns the poll
+on a process-wide scope started with the node, and `Listening` shares one
+`VoiceController` and `Steer` with every surface, so the service and the screen
+drive one set of ears rather than two recognisers fighting for one microphone.
+
+**Android will not give a background app the microphone for free.** A
+foreground service must declare `microphone` to use the mic with the screen
+off, and Android 14 refuses both the declaration without `RECORD_AUDIO` and the
+start of such a service while the app is not visible. Declaring the type in the
+manifest and calling `startForeground` in `onCreate` killed the app at launch
+on a phone that had never been asked for the microphone. So the service chooses
+its active type per call: data and microphone when the permission is held, data
+alone when it is not, with a catch that falls back rather than taking the
+process down. Granting the permission in settings promotes the running service
+while the settings screen is in front, which is the one moment the platform
+allows it.
+
+### The prerequisites for hands-free, in order
+
+This is the path the first cut never said out loud, and the reason the mode was
+hard to find:
+
+1. install the app (it carries the flyway key at build time);
+2. open it once. The loop starts with the node and keeps polling;
+3. settings, **hands-free, ask me out loud**. That sets seamless listening,
+   raises the chatty level if it was off, and asks for the microphone;
+4. allow the microphone. The service widens to carry it;
+5. leave it. A card that stops on a question is spoken, the music ducks, and
+   the ears open when the words are done. Answer in your own words. The screen
+   can be off.
+
+The roster says when the three conditions do not all hold: **hands-free is
+off**, or **hands-free needs the microphone**, with one tap to the screen that
+fixes it. Settings has a **try it** button once it is on, which speaks a line
+and opens the ears after it.
+
+### The introduction
+
+First launch opens six slides over the roster: what the wall is, how the phone
+finds a wall, hands-free, what waits on you, what led to this, and speaking a
+command. Skip is on every slide and the last one starts the app. It is marked
+seen when it is shown, so a skipped or interrupted read does not come back, and
+**settings, the guide, how to use volery** reopens it for ever after.
+
+### What is not here
+
+- **The wake word.** Seamless is the walking mode; "hey volery" is still a
+  disabled choice in settings.
+- **Designs and files attached to a question.** The digest says a question has
+  one and the phone says so, but the gallery is the wall's; the phone's viewer
+  reads pictures and files a card produced.
+- **Answering a filed question offline.** A pile answer is sent as a new
+  message, so the wall must be heard for it to go. The wall refuses rather than
+  holding it.
 
 Proved on the Pixel on 2026-11-11 against the real flyway: with the configured
 host set to a name that is not a wall and the remembered list emptied, the

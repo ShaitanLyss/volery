@@ -4,8 +4,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Text
+import android.content.Context
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,13 +27,34 @@ import androidx.compose.ui.unit.dp
  */
 class Ears(val voice: VoiceController, val steer: Steer)
 
+/**
+ * The one set of ears this process has.
+ *
+ * It used to be made per composition, which was right while every surface made
+ * its own — a screen constructed one, disposed it leaving, and nothing else
+ * existed. The narration loop now lives in the foreground service so it can
+ * hear a question with the screen off, and two controllers would be two
+ * `SpeechRecognizer` sessions fighting for one microphone: the service's ears
+ * would close the moment a screen opened its own. So there is one, made with
+ * the application context, owned by the process and shared by every surface
+ * that draws the rail.
+ */
+object Listening {
+    @Volatile
+    private var shared: Ears? = null
+
+    fun of(context: Context): Ears = synchronized(this) {
+        shared ?: run {
+            val voice = VoiceController(context.applicationContext)
+            Ears(voice, Steer(voice)).also { shared = it }
+        }
+    }
+}
+
 @Composable
 fun rememberEars(): Ears {
     val context = LocalContext.current.applicationContext
-    val voice = remember { VoiceController(context) }
-    val steer = remember { Steer(voice) }
-    DisposableEffect(voice) { onDispose { voice.stop() } }
-    return remember(voice, steer) { Ears(voice, steer) }
+    return remember(context) { Listening.of(context) }
 }
 
 /**

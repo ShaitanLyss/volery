@@ -5,6 +5,15 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 14 refuses the microphone to an app that is not in front unless
+         its foreground service declares this type: the ears are open while the
+         screen is off, which is the whole of the walking mode. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Android 15 caps dataSync at six hours in the background per day. This
+         service reads a private mesh all day, which is what specialUse is for;
+         dataSync stays declared for the versions before 34 that have no
+         specialUse at all. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -25,12 +34,21 @@
             android:exported="false" />
 
         <activity
+            android:name=".TutorialActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ViewerActivity"
             android:exported="false" />
 
         <service
             android:name=".NodeService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse|microphone|dataSync">
+            <!-- The sentence the platform asks specialUse for. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="a node on the user's private peer-to-peer mesh, reading their own wall for questions that need them" />
+        </service>
     </application>
 </manifest>

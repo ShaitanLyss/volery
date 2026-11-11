@@ -22,6 +22,16 @@ import java.util.concurrent.Executors
  * blocking JNI calls run on one executor and hop back to the main thread,
  * where [Speaker] and the Compose state are happiest.
  */
+/** How long an armed question may take a sentence as its answer. Longer than
+ *  the seamless window it exists for, short enough that a command said later in
+ *  the walk is a command. */
+private const val ARM_WINDOW_MS = 60_000L
+
+/** How long a sent answer is trusted before the row is offered again. A
+ *  dial-only node cannot hear a refusal, so this is what stops a refused answer
+ *  locking its row for the life of the process. */
+private const val SENT_TRUST_MS = 45_000L
+
 class Steer(private val voice: VoiceController) {
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
@@ -48,11 +58,37 @@ class Steer(private val voice: VoiceController) {
     var awaitingQuestion by mutableStateOf(false)
         private set
 
+    /** The prompts a tap or a sentence has already answered, by their wire id
+     *  and the moment they were answered.
+     *
+     *  **Timed, not permanent**, because a dial-only node cannot hear the wall
+     *  say no: a prompt's answer comes back by the wall dialling us, and this
+     *  node accepts no dials. A refusal therefore looks exactly like an
+     *  acceptance from here, and a mark that never expired would lock a row
+     *  that is still in the digest out of ever being answered. After
+     *  [`SENT_TRUST_MS`] the row is offered again; an accepted answer has left
+     *  the digest by then and the mark is pruned. */
+    var sent by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+
+    fun isSent(answers: String, now: Long = System.currentTimeMillis()): Boolean {
+        val at = sent[answers] ?: return false
+        return now - at < SENT_TRUST_MS
+    }
+
     init {
         voice.onFinalTranscript = { text -> handle(text) }
     }
 
-    private data class PendingQuestion(val card: String, val askId: String)
+    private data class PendingQuestion(
+        /** The wall that published it, which is where the answer is dialled. */
+        val host: String,
+        val card: String,
+        val askId: String,
+        /** When the arm stops applying. A question spoken and put in a pocket
+         *  must not swallow a command said an hour later. */
+        val until: Long,
+    )
     private var heard = ""
 
     /** One settled transcript. A yes/no when a plan is waiting; an answer when
@@ -76,8 +112,14 @@ class Steer(private val voice: VoiceController) {
         }
         val question = pendingQuestion
         if (question != null) {
-            answerQuestion(question, t)
-            return
+            if (System.currentTimeMillis() <= question.until) {
+                answerQuestion(question, t)
+                return
+            }
+            /* Heard, not answered, and the window is long gone: this is a new
+               sentence, not an answer to something said minutes ago. */
+            pendingQuestion = null
+            awaitingQuestion = false
         }
         run(t)
     }
@@ -85,8 +127,8 @@ class Steer(private val voice: VoiceController) {
     /** A question arrived in the digest; stand ready to send the next
      *  transcript as its answer. The line that called this already spoke the
      *  question itself. */
-    fun armQuestion(card: String, askId: String) {
-        pendingQuestion = PendingQuestion(card, askId)
+    fun armQuestion(host: String, card: String, askId: String) {
+        pendingQuestion = PendingQuestion(host, card, askId, System.currentTimeMillis() + ARM_WINDOW_MS)
         awaitingQuestion = true
     }
 
@@ -162,15 +204,86 @@ class Steer(private val voice: VoiceController) {
         }
     }
 
-    private fun answerQuestion(question: PendingQuestion, text: String) {
-        pendingQuestion = null
-        awaitingQuestion = false
+    /** A prompt answered by a tap rather than by ear. `answers` is the wire id
+     *  the reader composed (`prompts.rs`): a parked ask, a notice behind
+     *  `notice:`, or a pile row behind `deferred:`. The wall hands it to the
+     *  same channel a click in its own dock uses, so there is nothing different
+     *  about the answer because it came from a phone.
+     *
+     *  A spoken question waiting on the same ask is let go of: the person
+     *  answered it, and leaving the ears armed would send the next unrelated
+     *  sentence into a question that is already decided. */
+    fun answerPrompt(host: String, card: String, answers: String, text: String) {
+        val said = text.trim()
+        if (said.isEmpty() || host.isEmpty()) return
+        val held = pendingQuestion
+        if (held != null && held.card == card && held.askId == answers) {
+            pendingQuestion = null
+            awaitingQuestion = false
+        }
         status = "…"
+        markSent(answers)
         executor.execute {
-            val result = call { NativeBridge.answer(Config.host, question.card, question.askId, text) }
+            val result = call { NativeBridge.answer(host, card, answers, said) }
             handler.post {
                 when (result) {
                     is NativeBridge.Envelope.Error -> {
+                        /* Only this id, never a snapshot: another answer may
+                           have been marked while this one was in flight. */
+                        sent = sent - answers
+                        status = result.message
+                        Speaker.speak(result.message)
+                    }
+                    is NativeBridge.Envelope.Ok -> status = "sent"
+                }
+            }
+        }
+    }
+
+    /** A prompt's reply, composed from a sheet of picks by the bridge — one
+     *  question bare, several numbered, exactly as an agent reads it. */
+    fun answerPicks(prompt: PromptRow, picks: List<String>) {
+        executor.execute {
+            val composed = NativeBridge.composeOf(prompt.headers, picks)
+            handler.post {
+                when (composed) {
+                    is NativeBridge.Envelope.Error -> {
+                        status = composed.message
+                        Speaker.speak(composed.message)
+                    }
+                    is NativeBridge.Envelope.Ok -> {
+                        val text = composed.payload.optString("text")
+                        if (text.isEmpty()) {
+                            status = "nothing to send"
+                        } else {
+                            answerPrompt(prompt.host, prompt.card, prompt.answers, text)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** A spoken answer is a tap as far as the screens are concerned: the row
+     *  it answered says it is on its way rather than offering a second one.
+     *  Old marks are dropped here, so the map cannot grow with the session. */
+    private fun markSent(answers: String) {
+        val now = System.currentTimeMillis()
+        val live = sent.filterValues { now - it < SENT_TRUST_MS }
+        sent = if (live.size >= 32) live.toList().takeLast(31).toMap() + (answers to now) else live + (answers to now)
+    }
+
+    private fun answerQuestion(question: PendingQuestion, text: String) {
+        pendingQuestion = null
+        awaitingQuestion = false
+        markSent(question.askId)
+        status = "…"
+        executor.execute {
+            val result = call { NativeBridge.answer(question.host, question.card, question.askId, text) }
+            handler.post {
+                when (result) {
+                    is NativeBridge.Envelope.Error -> {
+                        sent = sent - question.askId
                         status = result.message
                         Speaker.speak(result.message)
                     }

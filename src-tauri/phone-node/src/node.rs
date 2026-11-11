@@ -427,9 +427,10 @@ impl Node {
     /// the asker by the wall dialling *us* (`fleet::Answer`), and this node is
     /// dial-only — it accepts no dials and runs no tick to read one. So the
     /// result is not read here; it surfaces in the wall's next digest, where
-    /// the question has gone and the card has resumed. A refusal (the card
-    /// closed, the question gone) reads the same way: the question is still
-    /// there, and the sentence can be said again.
+    /// the question has gone and the card has resumed. **A refusal looks
+    /// exactly like an acceptance from this side**, which is why the app's mark
+    /// on an answered row expires: a question still in the digest after that is
+    /// offered again, so the sentence can be said again.
     pub async fn answer(&self, host: &str, card: &str, ask_id: &str, text: &str) -> Result<(), String> {
         let text = text.trim().to_string();
         if text.is_empty() {

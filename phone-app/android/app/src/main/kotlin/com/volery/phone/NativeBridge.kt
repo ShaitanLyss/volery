@@ -1,6 +1,7 @@
 package com.volery.phone
 
 import android.content.Context
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -41,6 +42,44 @@ object NativeBridge {
     external fun steward(host: String, transcript: String): String
     external fun confirm(host: String, id: String): String
     external fun answer(host: String, card: String, askId: String, text: String): String
+
+    /** Everything a wall is waiting on a person for, read off the `cards`
+     *  object `sight` returned: parked and filed questions, removal and close
+     *  confirmations, every other confirmation, and the notice queue. Pure. */
+    external fun prompts(cards: String): String
+
+    /** The prose that led to a card's prompt, pulled on demand. */
+    external fun tail(host: String, card: String): String
+
+    /** The reply a sheet of picks composes, in the shape an agent reads. */
+    external fun composeAnswers(headers: String, picks: String): String
+
+    /** [prompts] with the bridge's own failures caught. An artifact built
+     *  before this call reads as "nothing is waiting", which is the one wrong
+     *  answer that cannot strand a card — the wall's digest still shows its
+     *  counts, and the cure is the README's rebuild step. */
+    fun promptsOf(cards: String): List<PromptRow> = try {
+        when (val e = parse(prompts(cards))) {
+            is Envelope.Ok -> parsePrompts(e.payload).also {
+                android.util.Log.d("PhonePrompts", "read ${it.size} prompt(s), ${it.count { p -> p.blocking }} blocking")
+            }
+            is Envelope.Error -> emptyList()
+        }
+    } catch (e: UnsatisfiedLinkError) {
+        emptyList()
+    }
+
+    fun proseOf(host: String, card: String): Envelope = try {
+        parse(tail(host, card))
+    } catch (e: UnsatisfiedLinkError) {
+        Envelope.Error("the phone's bridge is out of date — rebuild libphone_ffi.so")
+    }
+
+    fun composeOf(headers: List<String>, picks: List<String>): Envelope = try {
+        parse(composeAnswers(JSONArray(headers).toString(), JSONArray(picks).toString()))
+    } catch (e: UnsatisfiedLinkError) {
+        Envelope.Error("the phone's bridge is out of date — rebuild libphone_ffi.so")
+    }
 
     sealed class Envelope {
         class Ok(val payload: JSONObject) : Envelope()

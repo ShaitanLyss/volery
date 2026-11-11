@@ -4,9 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -23,12 +26,99 @@ class NodeService : Service() {
 
     private val executor = Executors.newSingleThreadExecutor()
 
+    /** Whether `NativeBridge.start` has succeeded in this process. A promotion
+     *  before the first dial must not start a poll loop with no node behind it:
+     *  it would fail every fifteen seconds for ever, under a notification. */
+    @Volatile
+    private var nodeUp = false
+
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIF_ID, notification())
+        foreground()
+    }
+
+    /**
+     * Become foreground — with the microphone type only when this app actually
+     * holds the microphone.
+     *
+     * **The manifest declaring a type is not permission to use it.** Android 14
+     * refuses `startForeground` for a microphone service whose app has no
+     * `RECORD_AUDIO`: it throws `ForegroundServiceStartNotAllowedException`,
+     * and because this is called from `onCreate` the whole process dies at
+     * launch — which is exactly what happened the first time the type was
+     * declared. So the active type is chosen per call: both bits when the
+     * permission is held (which is what lets the ears open with the screen
+     * off), data alone when it is not (the phone still reads the wall, and a
+     * question still arrives on screen).
+     *
+     * Called again on every start command, because that is where a permission
+     * granted in settings becomes an active type: granting happens with the
+     * settings screen in front, which is the one moment Android allows this
+     * service to widen.
+     */
+    private fun foreground() {
+        val mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        /* `specialUse`, not `dataSync`, from Android 14 on: Android 15 caps
+           `dataSync` at six hours in the background per day and then kills the
+           service, which is exactly the walking day this exists for. A node on
+           a private mesh is what `specialUse` is for, and the subtype property
+           in the manifest is the sentence the platform asks for. */
+        if (Build.VERSION.SDK_INT >= 34) {
+            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                (if (mic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+            try {
+                startForeground(NOTIF_ID, notification(), types)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "the special-use type was refused; falling back for this session", e)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 30 && mic) {
+            /* Refused rather than thrown out of the process: the platform's
+               condition for the microphone is the app being visible at this
+               moment, and a start that arrives a beat before the window does
+               must cost the ears, never the whole app. */
+            try {
+                startForeground(
+                    NOTIF_ID,
+                    notification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+                )
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "the microphone type was refused; reading without the ears", e)
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIF_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, notification())
+        }
+    }
+
+    /**
+     * Android 15 tells a service it has overrun its type's background budget
+     * before it kills it. This should never fire on `specialUse`; if it does
+     * (a fallback type), stopping is the honest end: the next time the app is
+     * opened the dial starts the service again, and dying without a word is the
+     * outcome this override exists to avoid.
+     */
+    override fun onTimeout(startId: Int) {
+        Log.w(TAG, "the foreground type timed out; the node will restart on the next dial")
+        stopSelf()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        /* Re-evaluated every command: a permission granted a moment ago in
+           settings widens the type here, and a phone that never granted one
+           still runs. */
+        foreground()
+        if (intent?.getBooleanExtra(EXTRA_PROMOTE, false) == true) {
+            /* Only if there is a node: a promotion is a permission change, not
+               a reason to start polling a wall this phone has not dialled. */
+            if (nodeUp) Narrator.of(applicationContext).ensure()
+            return START_NOT_STICKY
+        }
         val host = intent?.getStringExtra(EXTRA_HOST) ?: BuildConfig.PHONE_HOST
         if (intent?.getBooleanExtra(EXTRA_ONLY_SIGHT, false) == true) {
             // Another wall was chosen on the roster. The node is already
@@ -46,6 +136,12 @@ class NodeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        Narrator.of(this).stop()
+        Speaker.shutdown()
+        super.onDestroy()
+    }
 
     /** Sight one wall while the node stays as it is: the roster's chips. The
      *  page keeps drawing what it has until the new sighting lands, so
@@ -65,7 +161,10 @@ class NodeService : Service() {
                     restoreShownWall(ifCurrent = host)
                     NodeState.update(false, NodeState.sighting, sight.message)
                 }
-                is NativeBridge.Envelope.Ok -> landed(parseSighting(sight.payload), choose = true)
+                is NativeBridge.Envelope.Ok -> {
+                    landed(parseSighting(sight.payload), choose = true)
+                    Narrator.of(applicationContext).ensure()
+                }
             }
         }
     }
@@ -95,6 +194,7 @@ class NodeService : Service() {
                     NodeState.update(false, NodeState.sighting, started.message)
                     return@execute
                 }
+                nodeUp = true
                 Log.i(TAG, "node started as $name, dialing $host")
                 /* `sightAny`, not `sight`: the wall named here may be off
                    while the flyway is still up on others, and the answer
@@ -109,6 +209,10 @@ class NodeService : Service() {
                         val sighting = parseSighting(sight.payload)
                         Log.i(TAG, "dial result: ${sight.payload.toString(2)}")
                         landed(sighting)
+                        /* The loop belongs to the service, so it starts where
+                           the node does: from here it keeps polling with the
+                           screen off, which is the whole of hands-free. */
+                        Narrator.of(applicationContext).ensure()
                     }
                 }
             } catch (e: Exception) {
@@ -145,6 +249,19 @@ class NodeService : Service() {
         const val EXTRA_NAME = "name"
         const val EXTRA_REMEMBERED = "remembered"
         const val EXTRA_ONLY_SIGHT = "only_sight"
+        /** Widen the service's foreground type after a permission was granted.
+         *  Nothing else: the node keeps reading, the loop keeps polling. */
+        const val EXTRA_PROMOTE = "promote"
+
+        /** The microphone was just granted (or hands-free was switched on):
+         *  re-enter the service so its foreground type is re-evaluated. It does
+         *  start the service if it was not running, and that start fronts it;
+         *  it does not start polling unless a node is already up. */
+        fun promote(context: Context) {
+            val intent = Intent(context, NodeService::class.java).putExtra(EXTRA_PROMOTE, true)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+            else context.startService(intent)
+        }
 
         /** Read another wall with the node already up — the roster's chips. */
         fun sight(context: Context, host: String) {

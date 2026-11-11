@@ -1,10 +1,8 @@
 package com.volery.phone
 
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -55,33 +53,29 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
  * Home: the roster and a card's page, as one room.
  *
  * The desktop's wall is many cards at once; a phone is one column, so the
- * roster is chat view's sidebar — needs you, working, finished, the projects as
- * a strip — and a card opens in place rather than in a second activity, because
- * the narration loop lives on this screen and a question answered from a card
- * has to have been heard first. The voice rail is drawn above both, on the
- * parent, so there is one rail and one set of ears however deep the page is.
+ * roster is chat view's sidebar: what waits on you, then needs you, working,
+ * finished, and the projects as a strip. A card opens in place rather than in a
+ * second activity, and the top of the roster is every parked prompt answerable
+ * without opening one. The voice rail is drawn above both, on the parent, so
+ * there is one rail and one set of ears however deep the page is. The ears and
+ * the narration loop belong to the foreground service (`Narrator`), not to this
+ * screen, which is why a question can be heard with the phone in a pocket.
  *
- * The card's page is the digest read in the thread's own visual language:
- * what it last said in the book's face, the machinery folded into one quiet
- * card, and the pool of its status at the foot. The transcript itself does not
- * cross the flyway yet (that is M7's `prompt`/`tail`), so the page says what it
- * is rather than pretending to scroll.
+ * The card's page is the digest read in the thread's own visual language: the
+ * prompts the card is waiting on, what it last said in the book's face, the
+ * machinery folded into one quiet card, and the pool of its status at the foot.
+ * The prose that led to a prompt is pulled on demand through the flyway's
+ * `tail`; the transcript itself stays on the wall.
  */
 class MainActivity : ComponentActivity() {
     /** Debug-only: `--ez phone.seedGate true` raises the gate with a
@@ -90,6 +84,11 @@ class MainActivity : ComponentActivity() {
      *  the app reaches it, and a release build ignores it. */
     companion object {
         const val EXTRA_SEED_GATE = "phone.seedGate"
+        /** The same affordance for what waits on a person: four representative
+         *  prompts (a question, a delete, a pull request, a notice) stand in for
+         *  a parked card so the roster and a card's page can be photographed
+         *  without one on the flyway. Debug builds and an explicit extra. */
+        const val EXTRA_SEED_PROMPTS = "phone.seedPrompts"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -103,22 +102,27 @@ class MainActivity : ComponentActivity() {
             ),
         )
         enableEdgeToEdge()
+        /* The first launch opens on the six slides, over the roster. Shown
+           rather than hidden until settings is found — the report was that
+           nobody knew what the app was for — and marked seen here, so a skip or
+           an interrupted read does not present it again. Settings reopens it. */
+        if (!Config.tutorialSeen) {
+            Config.tutorialSeen = true
+            Config.persistTutorial()
+            startActivity(Intent(this, TutorialActivity::class.java))
+        }
         val seedGate = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_SEED_GATE, false)
+        val seedPrompts = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_SEED_PROMPTS, false)
         setContent {
             VoleryTheme(theme = Config.theme, motion = Config.motion) {
-                VoleryPhone(seedGate = seedGate)
+                VoleryPhone(seedGate = seedGate, seedPrompts = seedPrompts)
             }
         }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        Speaker.shutdown()
     }
 }
 
 @Composable
-private fun VoleryPhone(seedGate: Boolean = false) {
+private fun VoleryPhone(seedGate: Boolean = false, seedPrompts: Boolean = false) {
     val context = LocalContext.current
     val working = NodeState.working
     val sighting = NodeState.sighting
@@ -144,14 +148,9 @@ private fun VoleryPhone(seedGate: Boolean = false) {
         }
     }
 
-    // The narration loop: re-sight the wall and speak what changed, gated by
-    // the chatty level. It stays mounted while a card is open, which is what
-    // lets a question be read out and then answered from that card.
-    NarrationLoop(context, selectedHost, Config.chatty, Config.mode, steer, onNeedsYou = {
-        if (Config.mode == "seamless") {
-            if (ears.voice.hasMic()) ears.voice.startSeamless() else ears.voice.fail("the ears need the microphone")
-        }
-    })
+    /* The narration loop is the foreground service's, not this screen's — see
+       `Narration`, which is why a question can be heard with the phone in a
+       pocket. This screen only draws what that loop has landed. */
 
     // The gate's preview seed (debug builds, explicit extra). It is a fold over
     // the same state a real plan sets, so what is photographed is the gate the
@@ -159,10 +158,34 @@ private fun VoleryPhone(seedGate: Boolean = false) {
     LaunchedEffect(seedGate) {
         if (seedGate) steer.seedForPreview(previewPlan())
     }
+    LaunchedEffect(seedPrompts) {
+        if (seedPrompts) {
+            /* Attached to the first card the wall actually published, so
+               "open the card" lands on a real page and the context fetch has a
+               real conversation behind it. The ids are still the seed's and
+               answer nothing. */
+            val first = NodeState.sighting?.cards?.cards?.firstOrNull()
+            NodeState.seedForPreview(
+                previewPrompts().map { p ->
+                    if (first == null) p else p.copy(card = first.id, title = first.title)
+                },
+            )
+        }
+    }
 
     val cards = sighting?.cards?.cards ?: emptyList()
     val open = if (openId.isNotEmpty()) cards.firstOrNull { it.id == openId } else null
     val plan = steer.pending
+
+    /* Answering by tap is the same wire the spoken answer takes: a prompt's
+       `answers` is the id its wall reads, and a sheet of picks is composed by
+       the bridge in the shape an agent expects. */
+    val prompts = NodeState.prompts
+    val isSent: (String) -> Boolean = { answers -> steer.isSent(answers) }
+    val answerPicks = { prompt: PromptRow, picks: List<String> -> steer.answerPicks(prompt, picks) }
+    val acknowledge = { prompt: PromptRow ->
+        steer.answerPrompt(prompt.host, prompt.card, prompt.answers, prompt.ack)
+    }
 
     val motion = LocalMotion.current
     val enter = remember { Animatable(if (motion == MotionLevel.STILL) 1f else 0f) }
@@ -207,7 +230,10 @@ private fun VoleryPhone(seedGate: Boolean = false) {
                         card = open,
                         onBack = { openId = "" },
                         onViewer = { open?.let(openViewer) },
-                        ears = ears,
+                        prompts = prompts,
+                        isSent = isSent,
+                        onPicks = answerPicks,
+                        onAck = acknowledge,
                     )
                 } else {
                     RosterScreen(
@@ -216,13 +242,17 @@ private fun VoleryPhone(seedGate: Boolean = false) {
                         error = error,
                         host = selectedHost,
                         projectFilter = projectFilter,
+                        prompts = prompts,
+                        isSent = isSent,
                         onHost = { host ->
                             Config.host = host
                             Config.persistWalls()
                             NodeService.sight(context, host)
                         },
                         onProject = { projectFilter = it },
-                        onOpen = { openId = it.id },
+                        onOpen = { openId = it },
+                        onPicks = answerPicks,
+                        onAck = acknowledge,
                         onSettings = { context.open(Intent(context, SettingsActivity::class.java)) },
                         onDial = {
                             NodeService.dial(context, Config.firstDoor(), Config.walkJson(), Config.key, Config.name)
@@ -248,6 +278,50 @@ private fun VoleryPhone(seedGate: Boolean = false) {
 
 /* ── the roster ─────────────────────────────────────────────────────────── */
 
+/**
+ * One quiet line when the walking mode is not actually on.
+ *
+ * Lyss's report was not that the feature was broken but that she could not find
+ * the state where a question reaches her ear: the listening mode, the chatty
+ * level and the microphone permission are three settings on two screens, and
+ * only one of them was ever asked for (by holding the orb). So when the three
+ * do not add up, the roster says so, in the same quiet sentence the rest of the
+ * app uses, and one tap goes where they are set.
+ */
+@Composable
+private fun HandsFreeHint(onSettings: () -> Unit) {
+    val p = LocalPalette.current
+    val context = LocalContext.current
+    val mic = context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+    if (Config.mode == "seamless" && Config.chatty != "off" && mic) return
+    /* Three conditions compose this mode, and each missing one fails
+       differently: no microphone means nothing can hear you, `off` means
+       nothing is said, and push-to-talk means it is said but cannot be
+       answered without touching the phone. The line says which one it is
+       rather than calling them all "off". */
+    val said = when {
+        !mic -> "hands-free needs the microphone — turn it on"
+        Config.chatty == "off" -> "the phone is set to say nothing — questions are not read aloud. turn the voice on"
+        else -> "questions are read aloud, but answering needs the phone in your hand. turn on hands-free"
+    }
+    val shape = RoundedCornerShape(13.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp)
+            .padding(bottom = 6.dp)
+            .then(pressable(onSettings, shape, tint = p.surface.copy(alpha = 0.35f)))
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Glyph.Mic, tint = p.paperMute, size = 15.dp)
+        Spacer(Modifier.width(10.dp))
+        Text(said, style = Type.note(p), modifier = Modifier.weight(1f))
+        Icon(Glyph.ChevronRight, tint = p.paperFaint, size = 16.dp)
+    }
+}
+
 @Composable
 private fun RosterScreen(
     sighting: Sighting?,
@@ -255,9 +329,13 @@ private fun RosterScreen(
     error: String?,
     host: String,
     projectFilter: String,
+    prompts: List<PromptRow>,
+    isSent: (String) -> Boolean,
     onHost: (String) -> Unit,
     onProject: (String) -> Unit,
-    onOpen: (CardDigest) -> Unit,
+    onOpen: (String) -> Unit,
+    onPicks: (PromptRow, List<String>) -> Unit,
+    onAck: (PromptRow) -> Unit,
     onSettings: () -> Unit,
     onDial: () -> Unit,
 ) {
@@ -269,13 +347,18 @@ private fun RosterScreen(
     ) {
         RosterHead(onDial = onDial)
         Walls(sighting = sighting, selected = host, working = working, onHost = onHost)
+        HandsFreeHint(onSettings = onSettings)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 sighting != null -> RosterList(
                     sighting = sighting,
                     projectFilter = projectFilter,
+                    prompts = prompts,
+                    isSent = isSent,
                     onProject = onProject,
                     onOpen = onOpen,
+                    onPicks = onPicks,
+                    onAck = onAck,
                 )
                 error != null -> Stood(
                     kind = DotKind.Fail,
@@ -378,8 +461,12 @@ private fun Walls(sighting: Sighting?, selected: String, working: Boolean, onHos
 private fun RosterList(
     sighting: Sighting,
     projectFilter: String,
+    prompts: List<PromptRow>,
+    isSent: (String) -> Boolean,
     onProject: (String) -> Unit,
-    onOpen: (CardDigest) -> Unit,
+    onOpen: (String) -> Unit,
+    onPicks: (PromptRow, List<String>) -> Unit,
+    onAck: (PromptRow) -> Unit,
 ) {
     val p = LocalPalette.current
     val all = sighting.cards?.cards.orEmpty()
@@ -406,16 +493,35 @@ private fun RosterList(
                 }
             }
         }
+        /* What waits on you, before the cards: a question, a delete or a pull
+           request is the reason to have opened the phone, and the row that can
+           be answered is the one that does not need the card opened at all.
+         *
+         * **Always present, with a key.** It draws nothing when nothing waits,
+         * but it must occupy index 0 from the first frame: a list that anchors
+         * to its first item had already laid out without this one, and when a
+         * poll brought thirteen questions in the section was drawn above the
+         * viewport — the roster opening on "needs you" while everything that
+         * needed you was one scroll up. */
+        item(key = "waiting") {
+            WaitingOnRoster(
+                prompts = prompts,
+                isSent = isSent,
+                onPicks = onPicks,
+                onAck = onAck,
+                onOpen = onOpen,
+            )
+        }
         if (groups.needs.isNotEmpty()) {
             item { GroupLabel("needs you", groups.needs.size, Modifier.padding(top = 10.dp, bottom = 2.dp)) }
             items(groups.needs, key = { it.id }) { card ->
-                CardRow(card, tall = true, onClick = { onOpen(card) })
+                CardRow(card, tall = true, onClick = { onOpen(card.id) })
             }
         }
         if (groups.working.isNotEmpty()) {
             item { GroupLabel("working", groups.working.size, Modifier.padding(top = 10.dp, bottom = 2.dp)) }
             items(groups.working, key = { it.id }) { card ->
-                CardRow(card, tall = true, onClick = { onOpen(card) })
+                CardRow(card, tall = true, onClick = { onOpen(card.id) })
             }
         }
         if (groups.finished.isNotEmpty()) {
@@ -425,7 +531,7 @@ private fun RosterList(
             // then it says how many more are at rest — one tap to open them all.
             val shown = if (finishedOpen) groups.finished else groups.finished.take(FINISHED_SHOWN)
             items(shown, key = { it.id }) { card ->
-                CardRow(card, tall = false, onClick = { onOpen(card) })
+                CardRow(card, tall = false, onClick = { onOpen(card.id) })
             }
             if (groups.finished.size > FINISHED_SHOWN) {
                 item {
@@ -637,6 +743,106 @@ private fun previewPlan() = PendingPlan(
     heard = "open a card for the orchard migration, and brief it from the plan",
 )
 
+/** What the prompt seed stands in with: one of each kind Volery draws, so a
+ *  photograph shows the four registers rather than four copies of one. Debug
+ *  only, and the ids name nothing on any wall — pressing one sends nothing. */
+private fun previewPrompts(): List<PromptRow> = listOf(
+    PromptRow(
+        host = "preview",
+        card = "preview-caravan",
+        title = "caravan",
+        kind = "question",
+        answers = "preview-ask",
+        waitedMs = 4 * 60_000,
+        blocking = true,
+        startsWork = true,
+        questions = listOf(
+            PromptQuestion(
+                header = "the migration",
+                body = "The nullable column is the blocker. Do I widen it in place, which locks the " +
+                    "table for about four minutes, or add the new column beside it and write to both " +
+                    "until the backfill lands?",
+                shows = false,
+                options = listOf(
+                    PromptChoice("widen in place", "four minutes of writes blocked, one migration"),
+                    PromptChoice("add beside it", "no lock, two weeks of writing to both"),
+                    PromptChoice("stop and write it up", "nothing moves today"),
+                ),
+            ),
+        ),
+        ack = "",
+    ),
+    PromptRow(
+        host = "preview",
+        card = "preview-orchard",
+        title = "orchard",
+        kind = "delete",
+        answers = "preview-remove",
+        waitedMs = 11 * 60_000,
+        blocking = true,
+        startsWork = false,
+        questions = listOf(
+            PromptQuestion(
+                header = "delete on AU-LT-285",
+                body = "A card on AU-LT-285 wants to delete this, on AU-LT-285's disk, not this phone's.\n\n" +
+                    "C:/atelier/rise/build\n\na directory, 5.0 MB in 40 files\noutside the card's own working tree\n" +
+                    "not in a git work tree, nothing here comes back from a commit\n\n" +
+                    "Its reason: the build directory is stale\n\nThis is permanent.",
+                shows = false,
+                options = listOf(
+                    PromptChoice("delete it", "Gone for good, from AU-LT-285."),
+                    PromptChoice("keep it", "Nothing is touched."),
+                ),
+            ),
+        ),
+        ack = "",
+    ),
+    PromptRow(
+        host = "preview",
+        card = "preview-hold",
+        title = "hold",
+        kind = "confirm",
+        answers = "preview-pr",
+        waitedMs = 26 * 60_000,
+        blocking = true,
+        startsWork = false,
+        questions = listOf(
+            PromptQuestion(
+                header = "open a draft pull request on AU-LT-285",
+                body = "A card on AU-LT-285 wants to open a draft pull request.\n\nrepository: rise/tx-toolkit\n" +
+                    "from: fix/queue-receipt to main\n\nIts reason: the receipt race is proven and green\n\n" +
+                    "Nothing happens on this phone.",
+                shows = false,
+                options = listOf(
+                    PromptChoice("open it", "A draft, on the wall's own credential."),
+                    PromptChoice("not now", "The branch is kept."),
+                ),
+            ),
+        ),
+        ack = "",
+    ),
+    PromptRow(
+        host = "preview",
+        card = "preview-caravan",
+        title = "caravan",
+        kind = "notice",
+        answers = "notice:preview-n1",
+        waitedMs = 2 * 60_000,
+        blocking = false,
+        startsWork = true,
+        questions = listOf(
+            PromptQuestion(
+                header = "",
+                body = "Finished. The parser change is in and the three suites are green; I left the " +
+                    "benchmark alone because it was not what you asked about.",
+                shows = false,
+                options = emptyList(),
+            ),
+        ),
+        ack = "acknowledged",
+    ),
+)
+
 /* ── a card's page ──────────────────────────────────────────────────────── */
 
 @Composable
@@ -644,7 +850,10 @@ private fun CardScreen(
     card: CardDigest?,
     onBack: () -> Unit,
     onViewer: () -> Unit,
-    ears: Ears,
+    prompts: List<PromptRow>,
+    isSent: (String) -> Boolean,
+    onPicks: (PromptRow, List<String>) -> Unit,
+    onAck: (PromptRow) -> Unit,
 ) {
     val p = LocalPalette.current
     if (card == null) {
@@ -718,18 +927,31 @@ private fun CardScreen(
                     )
                 }
             }
+            /* The question comes before the machinery. It is the reason the
+               page was opened, and the figures are what you read while waiting
+               for an answer, not the other way round. */
+            if (prompts.any { it.card == card.id }) {
+                item { Spacer(Modifier.height(2.dp)) }
+                item {
+                    PromptsOnCard(
+                        card = card.id,
+                        prompts = prompts,
+                        isSent = isSent,
+                        onPicks = onPicks,
+                        onAck = onAck,
+                    )
+                }
+            }
             if (card.doing.isNotEmpty()) {
+                item { Spacer(Modifier.height(12.dp)) }
                 item { Doing(card) }
             }
             item { Spacer(Modifier.height(14.dp)) }
             item { Machinery(card) }
-            if (card.asks > 0 || card.notices > 0) {
-                item { Spacer(Modifier.height(14.dp)) }
-                item { Waiting(card, ears) }
-            }
             item {
                 Text(
-                    "the phone reads the wall's digest — the thread itself stays on the wall.",
+                    "the phone reads the wall's digest. what waits on you is drawn in full; " +
+                        "what led to it is a tap away, and the thread itself stays on the wall.",
                     style = Type.note(p),
                     modifier = Modifier.padding(top = 18.dp),
                 )
@@ -820,114 +1042,3 @@ private fun Fact(key: String, value: String) {
     }
 }
 
-/** What is waiting on a person: a parked question (answerable here, by voice,
- *  once it has been read out and the phone is listening for its answer) or a
- *  notice the card has put up. */
-@Composable
-private fun Waiting(card: CardDigest, ears: Ears) {
-    val p = LocalPalette.current
-    val shape = RoundedCornerShape(15.dp)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(p.ask.copy(alpha = 0.10f))
-            .border(1.dp, p.ask.copy(alpha = 0.30f), shape)
-            .padding(horizontal = 15.dp, vertical = 13.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(DotKind.Ask, breathing = false)
-            Spacer(Modifier.width(9.dp))
-            Text(
-                if (card.asks > 0) {
-                    "${card.asks} ${if (card.asks == 1) "question" else "questions"} waiting"
-                } else {
-                    "a notice is waiting"
-                },
-                style = Type.label(p, p.paper, 14f),
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            when {
-                card.asks > 0 && ears.steer.awaitingQuestion ->
-                    "the phone is listening for its answer — hold the orb, or start it here."
-                card.asks > 0 -> "it is read out when the phone next narrates, and then the next sentence is its answer."
-                else -> "a card that finished or gave up says so; it is read out with the next narration."
-            },
-            style = Type.note(p),
-        )
-        if (card.asks > 0 && ears.steer.awaitingQuestion) {
-            Spacer(Modifier.height(11.dp))
-            ActionButton(
-                "answer aloud",
-                onClick = { ears.voice.startSeamless() },
-                primary = true,
-            )
-        }
-    }
-}
-
-/* ── narration: the digest→speech loop ─────────────────────────────────── */
-
-/** Sight the wall and speak its changes, only while this screen is shown.
- *  `repeatOnLifecycle(RESUMED)` is the gate: the block runs once on every
- *  return to the front (so a reopen narrates what changed while away, against
- *  the persisted digest) and then on a modest cadence, and it is cancelled the
- *  moment the screen stops being shown.
- *
- *  **`chatty = off` silences, it does not stop the poll.** The poll is also the
- *  only thing that walks to another wall when the one the phone was on goes
- *  off; gating it on a speech setting left `Ears` and `Steer` addressing a dead
- *  laptop until somebody pressed dial. What is said, and whether a question
- *  opens the ears, is gated in `sightAndNarrate` instead. */
-@Composable
-private fun NarrationLoop(context: Context, host: String, chatty: String, mode: String, steer: Steer, onNeedsYou: () -> Unit) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    LaunchedEffect(host, chatty, mode) {
-        /* The walk runs at every level, but a phone set to say nothing does not
-           bind a speech engine it will never use. */
-        if (chatty != "off") Speaker.init(context)
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            try {
-                narrateOnce(context, host, chatty, steer, onNeedsYou)
-                while (true) {
-                    delay(NARRATION_CADENCE_MS)
-                    narrateOnce(context, host, chatty, steer, onNeedsYou)
-                }
-            } finally {
-                // Leaving the screen cancels this block; a needs_you line still
-                // mid-speech must not open the ears on another screen.
-                Speaker.onQuiet = null
-            }
-        }
-    }
-}
-
-/** One poll, folded against the persisted digest and spoken. The blocking JNI
- *  calls and the store read/write run off the main thread; [Speaker.speak] is
- *  back on it, where `TextToSpeech` is happiest. A turn that needs her ducks
- *  her music for the line, then hands the caller `onNeedsYou` once the words
- *  are out of the air. */
-private suspend fun narrateOnce(context: Context, host: String, chatty: String, steer: Steer, onNeedsYou: () -> Unit) {
-    val prev = withContext(Dispatchers.IO) { NarrationStore.load(context) }
-    val turn = sightAndNarrate(host, Config.walkJson(), prev, chatty) ?: return
-    if (turn.lines.isNotEmpty()) {
-        Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ") { it.text }}")
-    }
-    for (line in turn.lines) {
-        // A question with a parked id arms the answer *before* it is spoken, so
-        // the seamless window that follows (and the hold in push-to-talk)
-        // knows the next transcript is the answer, not a command.
-        if (line.kind == "ask" && line.askId != null) {
-            steer.armQuestion(line.card, line.askId)
-        }
-        Speaker.speak(line.text, needsFocus = turn.needsYou)
-    }
-    withContext(Dispatchers.IO) { NarrationStore.save(context, turn.curr) }
-    if (turn.needsYou) {
-        // Listen only after the words are out of the air, so the ears do not
-        // hear the phone's own voice as an answer.
-        if (Speaker.isSpeaking()) Speaker.onQuiet = onNeedsYou else onNeedsYou()
-    }
-}

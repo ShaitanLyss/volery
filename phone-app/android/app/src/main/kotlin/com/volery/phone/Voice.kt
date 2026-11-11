@@ -92,16 +92,18 @@ class VoiceController(context: Context) {
     fun startSeamless() = start(SEAMLESS_LISTEN_MS)
 
     /** Set an error the caller already knows (a denied permission) and stop. */
-    fun fail(message: String) {
-        handler.removeCallbacks(stopRunnable)
-        handler.removeCallbacks(settleRunnable)
-        listener.stop()
-        error = message
-        listening = false
+    fun fail(message: String): Unit = onMain {
+        onMain {
+            handler.removeCallbacks(stopRunnable)
+            handler.removeCallbacks(settleRunnable)
+            listener.stop()
+            error = message
+            listening = false
+        }
     }
 
-    private fun start(timeoutMs: Long?) {
-        if (listening) return
+    private fun start(timeoutMs: Long?): Unit = onMain {
+        if (listening) return@onMain
         listening = true
         heard = ""
         error = null
@@ -113,10 +115,24 @@ class VoiceController(context: Context) {
         }
     }
 
-    fun stop() {
+    fun stop(): Unit = onMain {
         handler.removeCallbacks(stopRunnable)
         handler.removeCallbacks(settleRunnable)
         listener.stop()
         listening = false
+    }
+
+    /**
+     * Every recogniser call on the thread the platform demands.
+     *
+     * `SpeechRecognizer` warns (and on some builds misbehaves) when it is
+     * created or destroyed off the main thread. The seamless window is opened
+     * from `Speaker.onQuiet`, which is a `TextToSpeech` progress callback, and
+     * those arrive on a binder thread: the first "try it" created the
+     * recogniser there. The hop is here rather than at each caller because the
+     * ear must be safe to ask from anywhere, and the callers are a tap, a TTS
+     * callback and a timeout. */
+    private fun onMain(block: () -> Unit): Unit {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post(block)
     }
 }
