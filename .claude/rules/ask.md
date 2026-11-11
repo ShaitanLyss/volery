@@ -461,6 +461,25 @@ The general shape, and it is a different one from this file's other lesson: **a 
 agent cannot see is indistinguishable from one it declined to use.** Neither half of this
 produced an error, a log line, or a failed call — only a wall whose billboard stayed empty.
 
+#### A new tool module is three registrations, and two of them are not in that module
+
+Adding a tool to this server means touching more than the schema. Learned on 2026-11-12 when
+`spend.rs` landed with none of the rest and **0.117.0 shipped no installer**:
+
+- `roster()` in this file, which is the obvious one.
+- **`SPEAKING_SOURCES` in `supervisor.rs`**, which is hand-written and derived-checked by
+  `every_module_that_declares_a_tool_is_scanned`. That test only runs in `cargo test`, which
+  does not link on the machine this is developed on, so the failure arrives in CI after the tag.
+- **`SOURCES` in `tools/lift-roster.ts`**, or the lift stops compiling and takes the
+  loaded-tier and read-only assertions with it. `bun tools/lift-roster.ts` runs here and is
+  what catches all three: it executes the derived scan, the bare-name guard and the tier
+  budget, and with the module present it found two result strings naming tools without their
+  `mcp__skein__` prefix — one of them `list`, which in a card's hands names the roster tool
+  rather than a verb.
+
+A module's schema function is `*_schema`, never bare `schema`: the lift flattens every source
+into one namespace, and `notice.rs` and `presence.rs` already own that name.
+
 #### Two tiers, because the flag above stopped being affordable
 
 `alwaysLoad` was a good bargain at six tools and ~9KB. On 2026-08-27 it was **22 tools and
