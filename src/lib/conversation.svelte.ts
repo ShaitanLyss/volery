@@ -5,6 +5,7 @@
  * stream-json` already emits. Classification lives in ./classify.ts so it can
  * be tested against real output without a Svelte compiler in the way. */
 
+import { invoke } from "@tauri-apps/api/core";
 import {
   ASK_TOOLS,
   backgroundKind,
@@ -2865,6 +2866,27 @@ export class Conversation {
   }
 
   #beginTurn() {
+    /* **A turn is a row from its open** (`docs/ANALYTICS.md` §4,
+       `store::open_turn`). This is the one place a turn actually starts, and it
+       is the same fold for a prompt you typed, one a relay wrote and one the
+       CLI took up from a queue of its own — Rust's own turn mark cannot see the
+       last of those, because nothing writes it a second time.
+
+       Once per turn and not per event, which is what this method already is:
+       every arm that calls it is guarded by `!this.working`, and `working` is
+       set here. `record_turn` closes the row by conversation at the `result`,
+       so no id travels back and forth and there is nothing for a caller to
+       forget. An open that lands while one is already open costs nothing either
+       — the insert is a no-op (`turn_one_open` makes the state impossible).
+       Fire and forget: a row that did not land costs the analytics layer a
+       span, never the turn.
+
+       Here rather than on a method of `Skein`, which is where the other Rust
+       calls live for a card, because `Skein` imports this module and a value
+       import back the other way would be a cycle. This file already imports
+       `invoke` for nothing else; the alternative is a call that cannot be
+       written on the line where the turn opens. */
+    void invoke("open_turn", { conversationId: this.id }).catch(() => {});
     /* A wake whose time has come is spent once a turn is under way — kept
        until now only so that one which woke nothing could say so. */
     if (this.wakes.length) {

@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 60;
+const SCHEMA_VERSION: i64 = 61;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -440,6 +440,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (58, migrate_v58),
     (59, migrate_v59),
     (60, migrate_v60),
+    (61, migrate_v61),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3243,6 +3244,97 @@ fn migrate_v60(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v60: {e}"))
 }
 
+/// A `turn` row exists from the moment the turn opens, and `ended_at` says
+/// whether it has settled — the oldest change to this table and the one that
+/// makes analytics possible (`docs/ANALYTICS.md` §4).
+///
+/// **The table has always recorded an end and no start.** A reader wanting the
+/// interval of a past turn had to infer it from the row before it, which works
+/// until a prompt is queued and the invented interval overlaps the running
+/// turn's. So the start becomes a column, and a row with `ended_at` NULL *is*
+/// the turn in progress, carrying its session, account and model while it runs.
+///
+/// **A rebuild rather than an ALTER, and the only one in this ladder.**
+/// `ended_at` and `status_tier` are `NOT NULL` today and SQLite cannot relax
+/// that: there is no `ALTER` that drops a constraint, so the table is created
+/// again, copied, dropped and renamed. It all runs inside the transaction
+/// `migrate` opens for this rung, which is what keeps the ladder's rule — the
+/// version and the schema it names land together — true for a rung that touches
+/// four tables' worth of pages rather than one header field.
+///
+/// The copy sets `opened_at = ended_at` for every existing row, because an end
+/// is the only boundary history knows. A zero-length row is the honest way to
+/// say so: the analytics fold treats it as boundaryless and writes no facts for
+/// it, which is the same answer as having no history at all.
+///
+/// **`foreign_keys` is ON here and this rung is safe under it, which is not
+/// true of every rebuild.** The warning on `migrate_v41` is about rebuilding a
+/// table something *points at*: that deletes or orphans the children. `turn`
+/// points at `conversation` and nothing points at `turn`, so the copy is
+/// checked against parents the cascade has kept honest since the table was
+/// made, and dropping it takes nothing with it.
+///
+/// The three columns that could not be recovered are added by the rebuild
+/// rather than by a later rung, since the table was being written out anyway.
+/// `model` and `provider` are what a provider card's turn cannot be priced
+/// from its transcript for (§4.1); `agent_session_id` is copied from the
+/// conversation by `open_turn`, so a row can be joined to the transcript that
+/// carries the same session.
+///
+/// **`turn_one_open` is an invariant, not an optimisation.** One card has one
+/// turn in progress; a second open row would take half the next `record_turn`
+/// and leave an interval running to the end of time. A partial unique index
+/// makes that state impossible rather than something every writer must
+/// remember, and costs one row per card.
+fn migrate_v61(conn: &Connection) -> Result<(), String> {
+    /* Already rebuilt, in the one state that can present itself: the wedge
+       `migrate` describes, where the version fell behind the schema it names.
+       Re-running the copy against a table that already has `opened_at` would
+       overwrite every real start with nothing. */
+    if has_column(conn, "turn", "opened_at")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        DROP TABLE IF EXISTS turn_v61;
+        CREATE TABLE turn_v61 (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id  TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            opened_at        INTEGER NOT NULL,
+            ended_at         INTEGER,
+            status_tier      TEXT,
+            kind             TEXT,
+            in_tokens        INTEGER NOT NULL DEFAULT 0,
+            out_tokens       INTEGER NOT NULL DEFAULT 0,
+            cache_tokens        INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+            usd              REAL NOT NULL DEFAULT 0,
+            account_label    TEXT,
+            account_identity TEXT,
+            model            TEXT,
+            provider         TEXT,
+            agent_session_id TEXT,
+            broadcast_id     TEXT
+        );
+        INSERT INTO turn_v61
+               (id, conversation_id, opened_at, ended_at, status_tier, kind,
+                in_tokens, out_tokens, cache_tokens, cache_read_tokens,
+                cache_write_tokens, usd, account_label, broadcast_id)
+          SELECT id, conversation_id, ended_at, ended_at, status_tier, kind,
+                 in_tokens, out_tokens, cache_tokens, cache_read_tokens,
+                 cache_write_tokens, usd, account_label, broadcast_id
+            FROM turn;
+        DROP TABLE turn;
+        ALTER TABLE turn_v61 RENAME TO turn;
+        CREATE INDEX turn_by_session ON turn(agent_session_id, ended_at);
+        CREATE INDEX turn_by_conversation ON turn(conversation_id, ended_at);
+        CREATE UNIQUE INDEX turn_one_open ON turn(conversation_id) WHERE ended_at IS NULL;
+        "#,
+    )
+    .map_err(|e| format!("migrate v61: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -5229,6 +5321,90 @@ fn clear_row(conn: &Connection, id: &str, session_id: &str) -> Result<(), String
     Ok(())
 }
 
+/// The turn, opened: a row from the moment the work starts rather than from the
+/// moment it is over (`migrate_v61`, `docs/ANALYTICS.md` §4).
+///
+/// **Everything the turn will need to be attributed by is read here, off the
+/// conversation row, and nothing is passed in but an id.** That is deliberate
+/// rather than tidy: a caller that had to hand over the account, the session,
+/// the model and the provider is a caller with four chances to forget one, and
+/// the failure would be a row claiming `unknown` for something the wall knew.
+/// The read and the insert are not in one transaction because there is nothing
+/// that could go between them — the row is only ever read by this statement.
+///
+/// **The label is the one in force now**, which is the account the turn runs on.
+/// A reactive swap settles the turn before it moves the card, and `/account`
+/// changes the label only while nothing is running, so this is safe by
+/// construction rather than by care. It is also why the row exists at all: a
+/// turn that moved accounts mid-card can only be attributed by the interval it
+/// occupied.
+///
+/// **A second open would be a second charge for one turn.** `#beginTurn` runs
+/// once per turn by design, but a lost or repeated call must cost nothing: the
+/// insert is a no-op while a row is already open, and `turn_one_open` makes the
+/// state impossible even if two writers race. What comes back is the id of the
+/// row that is now open, whether this call made it or found it.
+///
+/// `provider` is left NULL, and that is a fact about this build rather than a
+/// placeholder: `conversation` has `model` and no provider, because a provider
+/// is a sentinel in `account_label` (`@deepseek`) rather than a column of its
+/// own — `provider::of` is the mapping, and the label stored beside it on this
+/// same row is what the analytics fold reads it from. Backfilling a guess here
+/// would put a vocabulary in the column that the fold has not decided yet.
+///
+/// `open_turn_row` rather than `open_turn` for the reason `spend_row` is not
+/// `spend_since`: the `#[tauri::command]` answers the invoke and this is the
+/// statement under it, and Rust has one namespace for both.
+pub fn open_turn_row(conn: &Connection, conversation_id: &str) -> Result<i64, String> {
+    let (session, label, model): (Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT agent_session_id, account_label, model FROM conversation WHERE id = ?1",
+            params![conversation_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("read conversation {conversation_id}: {e}"))?
+        .ok_or_else(|| format!("no conversation {conversation_id}"))?;
+    conn.execute(
+        "INSERT INTO turn (conversation_id, opened_at, account_label, model, agent_session_id)
+         SELECT ?1, ?2, ?3, ?4, ?5
+          WHERE NOT EXISTS (SELECT 1 FROM turn WHERE conversation_id = ?1 AND ended_at IS NULL)",
+        params![
+            conversation_id,
+            now(),
+            /* The same fold `record_turn` applies, for the same reason: an
+               empty label means "the account Claude Code is signed in as", and
+               `account_of` already flattens it that way. */
+            label.filter(|l| !l.trim().is_empty()),
+            model,
+            session
+        ],
+    )
+    .map_err(|e| format!("open turn in {conversation_id}: {e}"))?;
+    conn.query_row(
+        "SELECT id FROM turn
+          WHERE conversation_id = ?1 AND ended_at IS NULL
+          ORDER BY id DESC LIMIT 1",
+        params![conversation_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| format!("open turn in {conversation_id}: {e}"))
+}
+
+/// The front end's half of the open: `#beginTurn` calls this once per turn and
+/// `record_turn` closes the row it makes.
+///
+/// **One argument, on purpose.** The account, the session, the model and the
+/// provider are read off the conversation row inside, so a call site cannot
+/// omit one across the Tauri boundary where an unknown key is dropped in
+/// silence — the same hazard that made `kind` and `account_label` optional on
+/// `record_turn`. There is nothing here for a caller to get wrong.
+#[tauri::command]
+pub fn open_turn(store: tauri::State<'_, Store>, conversation_id: String) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    open_turn_row(&conn, &conversation_id).map(|_| ())
+}
+
 /// One row per settled turn, and the only place the wall records what a turn
 /// *cost* — so every argument here has to be a fact about this turn alone.
 /// Two of them were not, and the ledger was unreadable for it: `in_tokens` and
@@ -5260,6 +5436,20 @@ fn clear_row(conn: &Connection, id: &str, session_id: &str) -> Result<(), String
 /// never a row. Same shape as `chat.md`'s "unknown falls to `project`": both
 /// directions are wrong, and this is the one whose symptom is visible in the
 /// data rather than absent from it.
+///
+/// **A settle closes the open row, and only inserts when there is none.** Since
+/// `migrate_v61` the row exists from `open_turn`, so this is an UPDATE: the id
+/// does not travel back and forth, and there is no argument to forget. The
+/// INSERT arm is not dead code and is not a courtesy — it is the one that keeps
+/// the money when the open was lost, which happens to an older front end, to a
+/// card whose `open_turn` never landed, and to a turn whose stream closed
+/// before it settled. A row with `opened_at = ended_at` is what that produces,
+/// and the fold reads it as boundaryless rather than as a span of nothing.
+///
+/// `account_label` is `COALESCE`d rather than overwritten, so a front end that
+/// sends none leaves the label the turn opened with in place. Overwriting it
+/// with NULL would silently move a credits turn into "not credits" and shrink
+/// the month's figure by its cost.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn record_turn(
@@ -5275,31 +5465,148 @@ pub fn record_turn(
     account_label: Option<String>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
+    record_turn_row(
+        &conn,
+        &conversation_id,
+        &status_tier,
+        kind.as_deref(),
+        in_tokens,
+        out_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        usd,
+        account_label.as_deref(),
+    )
+}
+
+/// The statement under `record_turn`, so the two arms — closing an open row,
+/// and inserting a settled one where there was none — can be tested without a
+/// Tauri app. `open_turn_row`'s reason, and `spend_row`'s before it.
+#[allow(clippy::too_many_arguments)]
+fn record_turn_row(
+    conn: &Connection,
+    conversation_id: &str,
+    status_tier: &str,
+    kind: Option<&str>,
+    in_tokens: i64,
+    out_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    usd: f64,
+    account_label: Option<&str>,
+) -> Result<(), String> {
     /* `account_label` optional for `kind`'s reason: Tauri drops a key it does
        not recognise, and a required argument would then lose the whole row —
        the money with it. A turn with no label is one this build did not say the
        funding of, which reads as "not credits". */
+    let at = now();
+    let kind = row_kind(kind);
+    let label = account_label.filter(|l| !l.trim().is_empty());
+    let cache_tokens = cache_read_tokens + cache_write_tokens;
+    let closed = conn
+        .execute(
+            "UPDATE turn SET
+               ended_at = ?2, status_tier = ?3, kind = ?4,
+               in_tokens = ?5, out_tokens = ?6,
+               cache_read_tokens = ?7, cache_write_tokens = ?8, cache_tokens = ?9,
+               usd = ?10, account_label = COALESCE(?11, account_label)
+             WHERE conversation_id = ?1 AND ended_at IS NULL",
+            params![
+                conversation_id,
+                at,
+                status_tier,
+                kind,
+                in_tokens,
+                out_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                cache_tokens,
+                usd,
+                label
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if closed > 0 {
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO turn
-           (conversation_id, ended_at, status_tier, kind, in_tokens, out_tokens,
+           (conversation_id, opened_at, ended_at, status_tier, kind, in_tokens, out_tokens,
             cache_read_tokens, cache_write_tokens, cache_tokens, usd, account_label)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             conversation_id,
-            now(),
+            at,
             status_tier,
-            row_kind(kind.as_deref()),
+            kind,
             in_tokens,
             out_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            cache_read_tokens + cache_write_tokens,
+            cache_tokens,
             usd,
-            account_label.filter(|l| !l.trim().is_empty())
+            label
         ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Close a turn whose stream ended without a `result`, at the last moment
+/// anything was heard from it.
+///
+/// **The process going away is not the turn finishing**, and this is where the
+/// difference is written down. A child killed, crashed, cleared or moved leaves
+/// its row open; an open row's interval runs to the end of time, so every later
+/// call in that session would be attributed to a turn that had already died.
+/// The row is closed with the tier `fail` and no cost, because nothing was
+/// reported: `usd = 0` is the same "no measurement" that a zero-length row
+/// carries, and inventing a figure from the last event would be worse than
+/// saying nothing.
+///
+/// `at` is the last event this reader actually saw, which is the latest moment
+/// the turn can be shown to have been alive. `MAX(opened_at, ?2)` keeps a span
+/// non-negative when a clock steps backwards underneath it (an NTP correction,
+/// a laptop resuming), since a negative interval would be worse than a wrong
+/// one: it sorts before its own start and the fold would read it backwards.
+///
+/// **`opened_at <= ?2` is the guard against a reader that outlived its child.**
+/// A stream ends asynchronously with the kill that ended it, so a card closed
+/// and immediately reopened can have a new process, a new turn and a new open
+/// row before the old reader thread gets here. Closing by id alone would shut a
+/// turn that never stopped; a turn that began after the last event this thread
+/// heard cannot be the one it was serving, so it is left running.
+pub fn close_lost_turn(conn: &Connection, conversation_id: &str, at: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE turn SET ended_at = MAX(opened_at, ?2), status_tier = 'fail', usd = 0
+          WHERE conversation_id = ?1 AND ended_at IS NULL AND opened_at <= ?2",
+        params![conversation_id, at],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("close lost turn in {conversation_id}: {e}"))
+}
+
+/// Close every row still open, at launch.
+///
+/// **A hard crash runs no reader thread**, so the close above never happens and
+/// the row that was open when the process died is still open when the next one
+/// starts — and its interval, having no end, would swallow every later call in
+/// that session for as long as the session's transcript exists. A zero-length
+/// row is the honest record of it: the turn spent money nobody measured, and
+/// the fold reads `opened_at = ended_at` as boundaryless, which makes those
+/// calls no-turn rather than somebody else's. The failed tier says the same.
+///
+/// Best-effort and silent-but-for-the-log: a wall that cannot close a stale row
+/// still has to open, and refusing the launch over bookkeeping would be the
+/// migration breaking the app it was for.
+pub fn close_open_turns(conn: &Connection) {
+    if let Err(e) = conn.execute(
+        "UPDATE turn SET ended_at = opened_at, status_tier = 'fail', usd = 0
+          WHERE ended_at IS NULL",
+        [],
+    ) {
+        log::warn!("could not close the turns a crash left open: {e}");
+    }
 }
 
 /// The two labels a `turn` row may carry, and what anything else becomes.
@@ -5363,9 +5670,17 @@ pub fn spend_since(store: tauri::State<'_, Store>, since: i64) -> Result<f64, St
 /// the mistake matters more here than the tidiness does.
 fn spend_row(conn: &Connection, since: i64) -> Result<f64, String> {
     /* COALESCE because SUM over no rows is NULL, and a day with nothing spent
-       in it yet is the normal state at nine in the morning. */
+       in it yet is the normal state at nine in the morning.
+
+       `ended_at IS NOT NULL` is not the same clause as `ended_at >= ?1` on a
+       nullable column: the turn in progress has no end yet, so it has no
+       reported cost either, and `migrate_v61` made that state storable. It is
+       also **required** rather than defensive — a NULL in a comparison is
+       NULL, which a WHERE discards, so the sum would be right — but reading it
+       as right by accident is how the next reader of this query adds `OR
+       ended_at IS NULL` for an open row whose `usd` is still zero. */
     conn.query_row(
-        "SELECT COALESCE(SUM(usd), 0) FROM turn WHERE ended_at >= ?1",
+        "SELECT COALESCE(SUM(usd), 0) FROM turn WHERE ended_at >= ?1 AND ended_at IS NOT NULL",
         params![since],
         |r| r.get(0),
     )
@@ -6525,8 +6840,11 @@ pub fn provider_budget(conn: &Connection, provider: &str) -> Budget {
 /// conversation being deleted, moved or re-providered. A provider's own id is
 /// not what a turn row holds.
 pub fn provider_spent(conn: &Connection, label: &str, since: i64) -> f64 {
+    /* `ended_at IS NOT NULL` for `spend_row`'s reason: the turn in progress is
+       a row now (`migrate_v61`) and has no cost reported against it yet. */
     conn.query_row(
-        "SELECT COALESCE(SUM(usd), 0) FROM turn WHERE account_label = ?1 AND ended_at >= ?2",
+        "SELECT COALESCE(SUM(usd), 0) FROM turn
+          WHERE account_label = ?1 AND ended_at >= ?2 AND ended_at IS NOT NULL",
         params![label, since],
         |r| r.get::<_, f64>(0),
     )
@@ -9872,7 +10190,8 @@ mod tests {
         }
         for at in [5_000_i64, 9_000, 7_000] {
             conn.execute(
-                "INSERT INTO turn (conversation_id, ended_at, status_tier) VALUES ('spoke', ?1, 'rest')",
+                "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier)
+                 VALUES ('spoke', ?1, ?1, 'rest')",
                 params![at],
             )
             .unwrap();
@@ -11013,8 +11332,8 @@ mod tests {
         .unwrap();
         let turn = |id: &str, at: i64, usd: f64| {
             conn.execute(
-                "INSERT INTO turn (conversation_id, ended_at, status_tier, usd)
-                 VALUES (?1, ?2, 'rest', ?3)",
+                "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier, usd)
+                 VALUES (?1, ?2, ?2, 'rest', ?3)",
                 params![id, at, usd],
             )
             .unwrap();
@@ -11048,8 +11367,8 @@ mod tests {
         .unwrap();
         let row = |at: i64, kind: &str, usd: f64| {
             conn.execute(
-                "INSERT INTO turn (conversation_id, ended_at, status_tier, kind, usd)
-                 VALUES ('c1', ?1, 'rest', ?2, ?3)",
+                "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier, kind, usd)
+                 VALUES ('c1', ?1, ?1, 'rest', ?2, ?3)",
                 params![at, kind, usd],
             )
             .unwrap();
@@ -11070,6 +11389,319 @@ mod tests {
             12495.0,
             "every kind of row, including the label this build did not write"
         );
+    }
+
+    /// One card, one settled turn, and the count of rows is how the two arms of
+    /// `record_turn_row` are told apart.
+    fn turn_rows(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM turn", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A card with everything `open_turn_row` reads off its row, which is the
+    /// half `seed_card` does not carry — it is the sink's, and knows a project
+    /// and a card and nothing about funding.
+    fn seed_card_with_funding(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO conversation (id, agent_session_id, project_id, cwd, born_at,
+                                       account_label, model)
+             VALUES (?1, ?2, 'p1', 'C:/x', 0, 'lyss', 'claude-opus-5-5')",
+            params![id, format!("sess-{id}")],
+        )
+        .unwrap();
+    }
+
+    /// A turn is a row from its open (`docs/ANALYTICS.md` §4): `ended_at` NULL
+    /// *is* the turn in progress, and the row already knows whose money it is
+    /// spending, on which model, in which session.
+    #[test]
+    fn opening_a_turn_makes_a_row_with_no_end() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+
+        let id = open_turn_row(&conn, "c1").unwrap();
+
+        let (ended, label, model, session, at): (
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT ended_at, account_label, model, agent_session_id, opened_at
+                   FROM turn WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(ended, None, "an open turn has no end");
+        assert!(at > 0, "the row is stamped with when it opened");
+        assert_eq!(label.as_deref(), Some("lyss"), "the label in force when it opened");
+        assert_eq!(model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(session.as_deref(), Some("sess-c1"));
+
+        /* A second open while one is running is the same turn, not a second
+           charge for it — the whole of what `turn_one_open` makes impossible. */
+        assert_eq!(open_turn_row(&conn, "c1").unwrap(), id);
+        assert_eq!(turn_rows(&conn), 1, "one card has one turn in progress");
+    }
+
+    /// The ordinary settle: the row `open_turn` made is the row that is closed.
+    #[test]
+    fn a_settle_closes_the_open_row_rather_than_writing_a_second() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+        let id = open_turn_row(&conn, "c1").unwrap();
+
+        record_turn_row(&conn, "c1", "work", Some("turn"), 10, 20, 30, 40, 1.25, None).unwrap();
+
+        assert_eq!(turn_rows(&conn), 1, "the settle took the row it was given");
+        let (row_id, ended, tier, usd, inp, out, cache, label): (
+            i64,
+            Option<i64>,
+            Option<String>,
+            f64,
+            i64,
+            i64,
+            i64,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT id, ended_at, status_tier, usd, in_tokens, out_tokens,
+                        cache_tokens, account_label
+                   FROM turn",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(row_id, id);
+        assert!(ended.is_some(), "a settled turn has an end");
+        assert_eq!(tier.as_deref(), Some("work"));
+        assert_eq!(usd, 1.25);
+        assert_eq!((inp, out, cache), (10, 20, 70), "cache_tokens is the two apart, summed");
+        assert_eq!(
+            label.as_deref(),
+            Some("lyss"),
+            "a settle that says nothing about funding keeps the one the turn opened on"
+        );
+    }
+
+    /// The INSERT arm, which is what keeps the money when the open was lost —
+    /// an older front end, a lost `open_turn`, a stream that closed first.
+    #[test]
+    fn a_settle_with_no_open_row_keeps_the_money_as_a_boundaryless_row() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+
+        record_turn_row(&conn, "c1", "rest", Some("spend"), 0, 0, 0, 0, 0.58, Some("@credits"))
+            .unwrap();
+
+        assert_eq!(turn_rows(&conn), 1);
+        let (opened, ended, usd, label): (i64, Option<i64>, f64, Option<String>) = conn
+            .query_row(
+                "SELECT opened_at, ended_at, usd, account_label FROM turn",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            Some(opened),
+            ended,
+            "history knows no start, so the row says it took no time rather than inventing one"
+        );
+        assert_eq!(usd, 0.58);
+        assert_eq!(label.as_deref(), Some("@credits"));
+    }
+
+    /// A stream that ended without a `result` leaves a turn nobody finished, and
+    /// an interval with no end would swallow every later call in the session.
+    #[test]
+    fn a_lost_turn_is_closed_where_it_was_last_seen_and_marked_failed() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, usd) VALUES ('c1', 1000, 3.0)",
+            [],
+        )
+        .unwrap();
+
+        /* A reader that outlived its child: an instant before this turn opened
+           cannot be the turn it was serving. */
+        close_lost_turn(&conn, "c1", 900).unwrap();
+        let open: Option<i64> = conn
+            .query_row("SELECT ended_at FROM turn", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(open, None, "a turn that began after the last event is left running");
+
+        close_lost_turn(&conn, "c1", 1500).unwrap();
+        let (ended, tier, usd): (Option<i64>, Option<String>, f64) = conn
+            .query_row("SELECT ended_at, status_tier, usd FROM turn", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(ended, Some(1500), "the span is what was seen of it");
+        assert_eq!(tier.as_deref(), Some("fail"));
+        assert_eq!(usd, 0.0, "nothing was reported against it, so it cost nothing");
+    }
+
+    /// Phase 1's own promise (`docs/ANALYTICS.md` §18): the day's figure and the
+    /// activity reading are unchanged by a turn being open, because an open row
+    /// has no reported cost and no end to be the card's last activity.
+    #[test]
+    fn an_open_turn_moves_neither_the_days_figure_nor_the_activity_clock() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier, usd)
+             VALUES ('c1', 100, 200, 'work', 1.5)",
+            [],
+        )
+        .unwrap();
+
+        open_turn_row(&conn, "c1").unwrap();
+
+        assert_eq!(spend_row(&conn, 0).unwrap(), 1.5, "an open turn has spent nothing reported");
+        let active: i64 = conn
+            .query_row(
+                &format!("SELECT {LAST_ACTIVE} FROM conversation c WHERE c.id = 'c1'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 200, "a turn still running is not the last thing that happened");
+    }
+
+    /// A hard crash runs no reader thread, so launch closes what it left — at no
+    /// length at all, which the fold reads as boundaryless.
+    #[test]
+    fn launch_closes_what_a_crash_left_open() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier, usd)
+             VALUES ('c1', 900, 950, 'work', 2.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, usd) VALUES ('c1', 1000, 1.0)",
+            [],
+        )
+        .unwrap();
+
+        close_open_turns(&conn);
+
+        let (opened, ended, tier, usd): (i64, Option<i64>, Option<String>, f64) = conn
+            .query_row("SELECT opened_at, ended_at, status_tier, usd FROM turn WHERE opened_at = 1000", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        assert_eq!(ended, Some(opened), "a zero-length row is the honest record of it");
+        assert_eq!(tier.as_deref(), Some("fail"));
+        assert_eq!(usd, 0.0);
+
+        let settled: (i64, f64) = conn
+            .query_row("SELECT ended_at, usd FROM turn WHERE opened_at = 900", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(settled, (950, 2.0), "a turn that had already settled is not touched");
+    }
+
+    /// The rebuild is the one rung that copies a table, so what it must not lose
+    /// is the money and what it must not invent is a start.
+    #[test]
+    fn v61_keeps_every_row_and_gives_it_the_only_start_history_has() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for (_, step) in STEPS.iter().take(60) {
+            step(&conn).unwrap();
+        }
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO turn (id, conversation_id, ended_at, status_tier, kind,
+                               in_tokens, out_tokens, cache_read_tokens, cache_write_tokens,
+                               cache_tokens, usd, account_label)
+             VALUES (7, 'c1', 1500, 'work', 'turn', 11, 22, 33, 44, 77, 1.5, '@credits')",
+            [],
+        )
+        .unwrap();
+
+        migrate_v61(&conn).unwrap();
+
+        let (id, opened, ended, tier, kind, inp, out, read, wrote, cache, usd, label): (
+            i64, i64, Option<i64>, Option<String>, Option<String>, i64, i64, i64, i64, i64, f64, Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT id, opened_at, ended_at, status_tier, kind, in_tokens, out_tokens,
+                        cache_read_tokens, cache_write_tokens, cache_tokens, usd, account_label
+                   FROM turn",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+                        r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(id, 7, "the id is what a fact will be joined on");
+        assert_eq!(
+            (opened, ended),
+            (1500, Some(1500)),
+            "an end is the only boundary history knows, so the row says it took no time"
+        );
+        assert_eq!((tier.as_deref(), kind.as_deref()), (Some("work"), Some("turn")));
+        assert_eq!((inp, out, read, wrote, cache), (11, 22, 33, 44, 77));
+        assert_eq!(usd, 1.5);
+        assert_eq!(label.as_deref(), Some("@credits"));
+        let model: Option<String> = conn
+            .query_row("SELECT model FROM turn WHERE id = 7", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(model, None, "a model nobody recorded is not guessed at");
+
+        let unique: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'turn_one_open' AND sql LIKE '%UNIQUE%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unique, 1, "one open turn per card is enforced, not remembered");
+
+        /* The wedge `migrate` describes: a version that fell behind its schema.
+           Re-running must not overwrite a real start with nothing. */
+        migrate_v61(&conn).unwrap();
+        let still: (i64, Option<i64>) = conn
+            .query_row("SELECT opened_at, ended_at FROM turn WHERE id = 7", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(still, (1500, Some(1500)));
     }
 
     /// The one thing in the tiers feature that cannot be got wrong. Every
@@ -11234,7 +11866,8 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO turn (conversation_id, ended_at, status_tier) VALUES ('c1', 0, 'fail')",
+            "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier)
+             VALUES ('c1', 0, 0, 'fail')",
             [],
         )
         .unwrap();

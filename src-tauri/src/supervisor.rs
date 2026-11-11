@@ -1802,6 +1802,14 @@ fn spawn_now(
         let turn = turn.clone();
         std::thread::spawn(move || {
             let events = event_outlet(&app, &id);
+            /* The latest wall-clock moment this child was known to be alive,
+               which is the whole span a turn that never settles can be given
+               when the stream ends. Taken per event rather than per turn
+               boundary because the interesting case is a turn that opened and
+               then died: its last boundary is its own beginning, and a row
+               closed there would say the turn took no time at all. One
+               `SystemTime::now` beside a parse and an emit is noise. */
+            let mut last_seen: Option<i64> = None;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
@@ -1840,6 +1848,7 @@ fn spawn_now(
                         /* The card's context size, for `allowance` and
                            `compact` to say back to the card (`compact.rs`). */
                         crate::compact::fold(&id, &event);
+                        last_seen = Some(crate::store::now());
                         events.push(event);
                     }
                     Err(_) => {
@@ -1873,7 +1882,36 @@ fn spawn_now(
                works, and a clear here would undo the flag on the way out. */
             turn.store(false, Ordering::Relaxed);
             forget_browser(&id);
-            if !app.state::<Supervisor>().going_away() {
+            /* **And the turn's row, which is a different question from the
+               turn's flag and is closed on both exits.** `open_turn` made a row
+               when this turn began, and a stream that ends without a `result`
+               leaves it open — an interval with no end, which would run to the
+               end of time and swallow every later call in this session. So it
+               is closed here, at the last moment this thread can prove the
+               child was alive.
+
+               The two cases differ only in which instant is honest, and both
+               close, because in both the money was spent and nothing reported
+               it:
+
+               - **The app is not going away** — the child died, was closed,
+                 cleared, moved or reaped for rest. The turn was over before
+                 this thread noticed, and the last event it read is the last
+                 evidence of that. `now()` would charge the turn for the
+                 seconds this thread spent getting here.
+               - **The app is quitting.** `shutdown` raised `going_away` and
+                 killed every child, so there is nothing left to report and the
+                 turn is genuinely lost; it is closed at `now()`, since the
+                 process was alive until the kill and the span is the truth up
+                 to it. A wall closed mid-turn comes back with the loss named as
+                 an interval rather than only as a flag. */
+            let going = app.state::<Supervisor>().going_away();
+            let lost_at = match last_seen {
+                Some(at) if !going => at,
+                _ => crate::store::now(),
+            };
+            settle_lost_turn(&app, &id, lost_at);
+            if !going {
                 persist_turn(&app, &id, false);
                 /* And it no longer has a process — rested, closed, cleared,
                    moved, or dead on its own. The same exception for the same
@@ -2155,6 +2193,23 @@ fn persist_awake(app: &AppHandle, id: &str, generation: u64, awake: bool) {
                 crate::store::set_awake(&conn, id, generation);
             } else {
                 crate::store::clear_awake(&conn, id, generation);
+            }
+        }
+    }
+}
+
+/// Close whatever turn this stream had open, at the last moment it was seen.
+///
+/// Best-effort for `persist_awake`'s reason: this runs on a reader thread on its
+/// way out, and a row that stays open costs the analytics fold an interval, not
+/// the wall a turn. `store::close_lost_turn` does nothing at all when every row
+/// for this card is already settled, which is the ordinary case — a turn that
+/// ended on a `result` was closed by `record_turn` from the front end.
+fn settle_lost_turn(app: &AppHandle, id: &str, at: i64) {
+    if let Some(store) = app.try_state::<crate::store::Store>() {
+        if let Ok(conn) = store.0.lock() {
+            if let Err(e) = crate::store::close_lost_turn(&conn, id, at) {
+                log::warn!("supervisor: {e}");
             }
         }
     }

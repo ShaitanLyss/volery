@@ -142,8 +142,12 @@ fn noted(app: &AppHandle) -> Noted {
 /// organisation's other keys spend the same credits. So the face says *spent by
 /// this wall*, never *left*.
 pub fn spent_since(conn: &rusqlite::Connection, since: i64) -> f64 {
+    /* `ended_at IS NOT NULL` because a turn is a row from its open
+       (`store::migrate_v61`): the one running now has no end and no reported
+       cost, so it is not part of a sum over settled ones. */
     conn.query_row(
-        "SELECT COALESCE(SUM(usd), 0) FROM turn WHERE account_label = ?1 AND ended_at >= ?2",
+        "SELECT COALESCE(SUM(usd), 0) FROM turn
+          WHERE account_label = ?1 AND ended_at >= ?2 AND ended_at IS NOT NULL",
         rusqlite::params![LABEL, since],
         |r| r.get::<_, f64>(0),
     )

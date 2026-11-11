@@ -588,6 +588,22 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
             splash::raise(at, scale);
         }
     }
+    /* **A hard crash runs no reader thread**, so the turn that was open when
+       this process died is still open now: `open_turn` wrote a row with no end
+       and nothing was alive to close it. Left alone, its interval runs to the
+       end of time and every later call in that session is attributed to a turn
+       that was already over. Closed at launch, with `ended_at = opened_at`,
+       which is the honest reading — the turn spent money nobody measured, and
+       a zero-length row is what the analytics fold draws no facts from.
+
+       Here rather than anywhere later because it is the same door the store
+       was opened through, and above the windows for the reason the test in this
+       file enforces: anything a command reads must exist before one can call.
+       Best-effort, so a wall that cannot write still opens — see
+       `store::close_open_turns`. */
+    if let Ok(conn) = store.0.lock() {
+        store::close_open_turns(&conn);
+    }
     app.manage(store);
 
     /* The ask endpoint, before any conversation can be spawned, so every one
@@ -995,6 +1011,7 @@ pub fn run() {
             store::clear_conversation,
             renew::renew_conversation,
             renew::renewals_pending,
+            store::open_turn,
             store::record_turn,
             store::spend_since,
             store::record_file_touch,
