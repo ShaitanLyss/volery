@@ -375,14 +375,36 @@ Section 17 has the same table as it is built.
   `deliver_blocks` is the one door into a child's stdin: your send reaches it through
   `send_prompt`, and so do the rousing queue, a relay, an inbox drain, a `wake_me` and the
   CLI's own task notifications. A turn opened by any of those has no `send_prompt` anywhere
-  near it, which is why the id is minted there rather than in the front end's send. The open is
-  written durably, `turn_open(open_id, session, card, open_at, account, provider)`, because the
-  ingestor is a different thread and must be able to read it. It is written on the `Sent`
-  answer alone: a prompt the renewal hold took opened no turn, and neither did one the spending
-  cap refused. `record_turn` reads that row itself and writes `open_id`, `open_at` and
-  `ended_at` onto the `turn`, then deletes it. **No new argument travels to the front end**,
-  which is deliberate: an optional `openId` a caller can forget is the `lastTier` failure
-  exactly, and its symptom would be a turn whose tools are all no-turn.
+  near it, which is why the id is minted there rather than in the front end's send. It is
+  written durably, `turn_prompt(open_id, session, card, at, open_at, state, account,
+  provider)`, because the ingestor is another thread and must be able to read it, and it is
+  written **after** the pipe write succeeds: a prompt the renewal hold took, or the spending
+  cap refused, or `write_prompt` failed to send, opened nothing, and a row written before the
+  write is a row a failed write would leave behind. **No new argument travels to the front
+  end**, which is deliberate: an optional `openId` a caller can forget is the `lastTier`
+  failure exactly, and its symptom would be a turn whose tools are all no-turn.
+
+- **At most one open row per session, and a prompt written during a turn waits as `queued`.**
+  The CLI queues a prompt written mid-turn and takes it up after the running one, so its turn
+  starts later than its write. Recording `open_at` as the write time would make its interval
+  begin *inside* the running turn, and a call in the overlap would match both. So `turn_prompt`
+  carries a `state`, with a partial unique index on `session` where `state = 'open'`: a write
+  with no open row opens, and a write with one is `queued` with `open_at` NULL. On
+  `record_turn` the open row is closed, its `open_id` and `open_at` written onto the `turn`,
+  and **the earliest queued row is promoted with `open_at = ended_at`**, which is the
+  earliest instant its turn could have begun and the value that keeps every interval disjoint.
+  Two turns in one second are then two half-open intervals that touch and do not overlap.
+
+- **An open row is cleared by whoever ends the turn, and only by the one that knows.** On a
+  settled turn that is `record_turn`, and it is the *only* deleter on that path: the reader
+  thread must not clear the row at a stream close that followed a `result`, because
+  `record_turn` is an asynchronous call that may not have run yet, and deleting first would
+  strip a real turn of its `open_id` and turn all its money into no-turn. On a close with no
+  `result` since the open, the reader thread deletes the session's rows, queued ones included:
+  the process is gone, a queued prompt died with it, and no turn exists to claim anything. A
+  failed `record_turn` deletes the row too, and **every row is pruned at launch before any
+  `--resume` spawn**. A row that outlives its turn is the one failure here with no symptom
+  except missing money.
 
 - **The settle signal is Volery's own `record_turn`, not anything in the transcript.** This is
   the part the first draft got wrong, and the measurement is blunt: across **466 transcript
@@ -403,27 +425,38 @@ Section 17 has the same table as it is built.
 
 - **The fold is one transaction, and it clears what it consumed.** A turn is folded once its
   `ended_at` is a short grace old, which is what lets a result landing just after the turn's
-  end be written rather than swept. The pass then writes its `tool_fact` rows, inserts
-  `analytics_fold(turn_id NOT NULL PRIMARY KEY, at)`, and **deletes the `tool_pending` rows it
-  folded**, all in one transaction, and it folds every eligible turn before it sweeps. Without the
-  delete, every settled turn's calls would later satisfy the sweep and be written a second
-  time as no-turn rows: the same call counted twice, on the ordinary path, before any crash is
-  involved. The fact's own key makes a re-run harmless (`INSERT … ON CONFLICT DO NOTHING`), so
-  a crash between the write and the marker costs one re-read and changes nothing, and
-  `tool_hour` is incremented only for the rows that actually inserted. Exactly-once rests on
-  the fact key; the marker is what stops a pointless re-read.
+  end be written rather than swept. The pass then, in **one transaction**: writes the
+  `tool_fact` rows, adds each row's share to `tool_hour`, inserts `analytics_fold(turn_id NOT
+  NULL PRIMARY KEY, at)`, and **deletes the `tool_pending` rows it folded**. It folds every
+  eligible turn before it sweeps. Without the delete, every settled turn's calls would later
+  satisfy the sweep and be written a second time as no-turn rows: the same call counted twice,
+  on the ordinary path, before any crash is involved. With `tool_hour` outside the
+  transaction, a crash in that window would lose the monthly reading of those calls for good,
+  which the marker then prevents a re-fold from repairing. There is no "between" to reason
+  about: a crash before the commit rolls the whole fold back and the next pass writes it once,
+  and a crash after it leaves the marker that skips it. The fact's own key is a belt on the
+  same braces (`INSERT … ON CONFLICT DO NOTHING`), not the mechanism.
+
+- **A fold that never happens is bounded.** A `turn` row whose session's prompt rows are gone,
+  or a turn from before this feature, folds with whatever its interval holds; a turn whose
+  interval names nothing writes the marker and no facts, so the pass does not reconsider it
+  every minute.
 
 - **An unresolved call is written once, as `no-result`, and stays that way.** A pending row
   whose result has not arrived when its turn folds is written with its `calls` and no time,
   and deleted with the rest. A result landing after that finds no pending row and is dropped:
   the row keeps `no-result`. The alternative, writing the late result as a no-turn row, would
   put one call in two rows, and `tool_fact` has no `tool_use_id` to match them by. Losing a
-  late latency is the smaller loss and it is bounded by the grace.
+  late latency is the smaller loss and it is bounded by the grace. It also loses the late
+  `child_agent` on an `Agent` receipt that arrives after it, so a slow receipt leaves an
+  `agent` tool call with no child named: a tree with one missing branch, not a wrong one, and
+  the price of one row per call.
 
 - **A call can belong to no turn, and it is kept rather than dropped.** A terminal session has
   no `turn` row at all, a card killed mid-turn never produced one, and a background agent's
   calls can finish after its card's. The sweep writes a pending row once its `turn_id` is
-  neither open (a row in `turn_open`) nor folded (`analytics_fold`), and it is older than a
+  neither open (a `state = 'open'` row in `turn_prompt`) nor folded (`analytics_fold`), and it
+  is older than a
   bounded wait, with `turn_id = ''` and `turn_usd = 0`, labelled *no-turn*. **An open row is
   cleared by whoever ends the turn**: `record_turn` deletes it once the `turn` row carries its
   `open_id` and `open_at`, and the reader thread deletes it when the stream closes with no
@@ -770,7 +803,7 @@ and it is the same reconstruction `usage.ts::blocks` already does for the five-h
 result lands.** A reactive 429 swap settles the turn before it moves the card, so reading the
 conversation row at settle is safe on that path; a direct `/account` or `put it on…` is not,
 because it changes `conv.accountLabel` first and the aborted result can be ingested after. So
-`deliver_blocks` records the label at the open, in the same `turn_open` row that carries the
+`deliver_blocks` records the label at the open, in the same `turn_prompt` row that carries the
 id, and `record_turn` writes it to `turn.account_label`. The label is asked of the store rather
 than passed down, the `kind_of`/`worktree_of` pattern, because the relay, the wake and the
 inbox drain all reach this door without any front end to supply one; the conversation row is
@@ -2313,18 +2346,24 @@ CREATE TABLE tool_fact (
   PRIMARY KEY (turn_id, at, host, session, agent, kind, server, tool, target, child_agent)
 );
 
--- The turn that is open for a session right now, written by deliver_blocks
--- (the one door into a child's stdin) before the prompt reaches the pipe. It
--- is how the ingestor claims a call by interval rather than by guessing which
--- turn is current, and it is durable because the ingestor is another thread.
-CREATE TABLE turn_open (
+-- The prompts written into a child, open or waiting behind the running turn.
+-- Written by deliver_blocks (the one door into a child's stdin) after the pipe
+-- accepts the prompt. It is how the ingestor claims a call by interval rather
+-- than by guessing which turn is current, and it is durable because the
+-- ingestor is another thread. One open row per session; a prompt written
+-- mid-turn waits as 'queued' and is promoted when that turn settles, with
+-- open_at set to the turn's ended_at so no two intervals can overlap.
+CREATE TABLE turn_prompt (
   open_id  TEXT PRIMARY KEY,
   session  TEXT NOT NULL,
   card     TEXT NOT NULL DEFAULT '',
-  open_at  INTEGER NOT NULL,
+  at       INTEGER NOT NULL,   -- when it was written
+  open_at  INTEGER,            -- when its turn began; NULL while queued
+  state    TEXT NOT NULL,      -- open | queued
   account  TEXT NOT NULL DEFAULT 'unknown',
   provider TEXT NOT NULL DEFAULT 'unknown'
 );
+CREATE UNIQUE INDEX turn_prompt_one_open ON turn_prompt(session) WHERE state = 'open';
 
 -- Which settled turns have been folded into tool facts. The settle signal is
 -- a `turn` row; a transcript has no `result` record to fold. NOT NULL on
@@ -2644,8 +2683,10 @@ ALTER TABLE turn ADD COLUMN open_at          INTEGER;
 ```
 
 Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
-`usage_fact(account, at)`, `tool_fact(at)`, `tool_fact(session)`, `tool_fact(server, at)`,
-`tool_pending(session)`, `allowance_fact(account, at)`, `machine_fact(at)`,
+`usage_fact(account, at)`, `tool_fact(at)`, `tool_fact(session)`, `tool_fact(server, at)`, `tool_fact(turn_id)`,
+`tool_pending(session)`, `tool_pending(turn_id)`, `turn(agent_session_id, ended_at)`,
+`turn(conversation_id, ended_at)`, `turn_prompt(session)`, `allowance_fact(account, at)`,
+`machine_fact(at)`,
 `usage_hour(hour)`, `tool_hour(hour)`, `host_build(host, from_at)`, `prompt_fact(at)`,
 `prompt_fact(kind, at)`, `prompt_fact(card)`, `prompt_hour(hour)`.
 
@@ -2657,7 +2698,8 @@ The `turn` columns are added by this rung rather than a rung of their own becaus
 for this subsystem's attribution rule and for nothing else. `model` and `provider` are taken
 as `Option` from the front end, and a row written by an older front end stays NULL, which the
 query layer reads as unknown rather than as Claude. `open_id` and `open_at` are **not**
-arguments: `record_turn` reads them off the `turn_open` row and writes both, so there is
+arguments: `record_turn` reads them off the closed `turn_prompt` row and writes both, so there
+is
 nothing for a caller to forget. `agent_session_id` is the join section 7.4 needs; a row
 written before this rung has none, and the backfill says so instead of guessing.
 
@@ -2829,6 +2871,14 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
 - **A turn opened by a relay is a turn like any other.** A prompt written by `deliver_blocks`
   rather than by `send_prompt` gets its own `open_id` and its own interval; two such turns in
   one session fold separately, and neither collapses onto the other's key.
+- **A prompt written during a turn queues and cannot overlap it.** The second prompt has
+  `state = 'queued'` and no `open_at`; when the first turn settles it is promoted with
+  `open_at = ended_at`. The two intervals touch and do not overlap, so no call matches both,
+  and a session can never hold two open rows.
+- **An open row cannot outlive its process.** A failed pipe write records nothing; a failed
+  `record_turn` deletes the row; a stream that closes with no `result` clears the session's
+  rows; and a launch prunes them all before any `--resume`. A surviving row would claim that
+  session's calls for ever, and the only symptom would be missing money.
 - **A lagging pass does not mis-claim.** A call recorded during turn N and read by a pass that
   runs while N+1 is open is attributed to N by its timestamp, and N+1's cost is untouched; a
   call from a background subagent that runs during N+1 stays with the turn that spawned it.
