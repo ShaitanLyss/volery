@@ -2322,16 +2322,16 @@ mistake: a presentation belongs to the surface, and **the host mode only chooses
 
 | mode in front | opens by default | because |
 |---|---|---|
-| wall | **the page** | on the wall you are glancing; a calm document is the right density |
-| chat view | **the room** | in chat you are reading, and the instrument is where the detail is |
+| wall | **the room** | it is the wall's own instrument, and the overview lives here |
+| chat view | **the page** | it is the document that belongs in a reading column |
 
-The inversion is deliberate. Each mode gets the presentation that matches its attention, and
-the one intuition would have picked is a keystroke away.
+The default is the native one. What matters is that it is only a default: **either
+presentation can be reached from either mode**, and the switch never changes the app mode.
 
 - **`v` swaps them**, and a small achromatic control beside the title does the same. The
   choice is remembered per mode (`skein.analytics.presentation.wall` and `.chat`, the
-  `localStorage` bargain `berth` strikes), so a wall left on the instrument stays there and
-  chat view is unaffected.
+  `localStorage` bargain `berth` strikes), so a wall switched to the page stays there and chat
+  view is unaffected.
 - **The view spec is untouched by it.** Span, filters and panels carry across, because both
   presentations read the same surface state; only the drawing changes. §9.2's spec has no
   presentation field on purpose: a report and a widget have no host mode to default from.
@@ -3381,7 +3381,7 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
 - **An unmeasured invalidation is null, not zero.** A probe-less wall and a free event are
   different readings; the page says which one it is looking at.
 - **The mode picks the default presentation, not the allowed one.** Opening analytics on the
-  wall lands on the page and in chat view on the room; `v` swaps either, the choice is
+  wall lands on the room and in chat view on the page; `v` swaps either, the choice is
   remembered per mode, and neither gesture changes the app mode.
 - **The swap keeps the question.** Span and filters survive it, and the room and the page
   produce the same numbers for one fixture, so presentation can never become a data change.
@@ -3511,12 +3511,12 @@ not re-opened by accident.
     to them, and an unmeasured event is null rather than zero. A churn episode is a run of
     writes, costed after its last write. The account move offers the estimate at the gesture,
     and the re-read mechanism is probed before any of it is drawn.
-18. **A presentation is not a mode.** The room and the page are two skins over one view, both
-    reachable from either mode, swapped with `v` without changing the app mode and remembered
-    per mode. The wall opens the page and chat view opens the room, deliberately: each mode
-    gets the density that matches its attention, and the other is one keystroke away. The
-    spec carries no presentation field, because a report and a widget have no mode to pick a
-    default from.
+18. **A presentation is not a mode.** The room and the page are two skins over one view, and
+    either can be reached from either mode. The default is the native one, the room on the
+    wall and the page in chat view, and `v` swaps without changing the app mode and is
+    remembered per mode. The point is that the mode does not decide; the skin is a choice.
+    The spec carries no presentation field, because a report and a widget have no mode to
+    pick a default from.
 
 ### 20.1 One left: how live is another machine
 
