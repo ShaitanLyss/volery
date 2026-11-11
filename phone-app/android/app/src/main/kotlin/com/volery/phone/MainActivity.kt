@@ -315,7 +315,7 @@ private fun HandsFreeHint(onSettings: () -> Unit) {
             .padding(horizontal = 13.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Glyph.Mic, tint = p.paperMute, size = 15.dp)
+        Icon(Glyph.Bird, tint = p.paperMute, size = 15.dp)
         Spacer(Modifier.width(10.dp))
         Text(said, style = Type.note(p), modifier = Modifier.weight(1f))
         Icon(Glyph.ChevronRight, tint = p.paperFaint, size = 16.dp)

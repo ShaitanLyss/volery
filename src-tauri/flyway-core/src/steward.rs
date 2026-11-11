@@ -91,6 +91,14 @@ pub enum StewardMsg {
     /// steps and the only thing that runs them. Answered `Stewarded` with the
     /// carry's `Outcome` — `{ "kind": "done" | "refused" | "stopped", … }`.
     Confirm { id: String },
+    /// A sentence the steward could not place as a Volery command, asked as a
+    /// general question instead. Answered on the wall against its **DeepSeek**
+    /// balance, not by a `claude` turn, because "what is the weather" is not
+    /// work any of this wall's cards should be paid for. The answer is the same
+    /// `Stewarded` envelope with `{ "kind": "general", "text": … }`, so a reader
+    /// needs no second shape; an older wall passes the unknown word over
+    /// (`frame::take`) and the phone says it could not answer.
+    General { id: String, text: String },
     /// The answer. `answer` is the whole of what `steward.ts::understand`
     /// decided — `{ "kind": "plan", "plan": { "steps": …, "reads": …,
     /// "needs": … } }` most often, else `ask`, `question`, `decline` or
@@ -189,6 +197,8 @@ mod tests {
         assert_eq!(ask, serde_json::from_value(serde_json::to_value(&ask).unwrap()).unwrap());
         let confirm = StewardMsg::Confirm { id: "r".into() };
         assert_eq!(confirm, serde_json::from_value(serde_json::to_value(&confirm).unwrap()).unwrap());
+        let general = StewardMsg::General { id: "r".into(), text: "what is the weather".into() };
+        assert_eq!(general, serde_json::from_value(serde_json::to_value(&general).unwrap()).unwrap());
         let plan = StewardMsg::Stewarded {
             id: "r".into(),
             answer: Some(json!({ "kind": "plan", "plan": { "steps": [], "reads": "nothing", "needs": "nothing" } })),
@@ -229,6 +239,8 @@ mod tests {
         };
         let plan = said(Some(json!({ "kind": "plan", "plan": { "reads": "open a card in orchard" } })), None);
         assert_eq!(answer_in([&plan], "r", "lab").unwrap()["kind"], "plan");
+        let general = said(Some(json!({ "kind": "general", "text": "it is raining in paris" })), None);
+        assert_eq!(answer_in([&general], "r", "lab").unwrap()["text"], "it is raining in paris");
         assert_eq!(answer_in([&said(None, Some("no\u{7} such wall"))], "r", "lab"), Err("no such wall".into()));
         assert_eq!(answer_in([&said(None, None)], "r", "lab"), Err("lab answered with nothing".into()));
         assert!(answer_in([&plan], "other", "lab").unwrap_err().contains("lab did not answer"));

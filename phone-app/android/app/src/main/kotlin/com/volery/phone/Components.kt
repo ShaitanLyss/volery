@@ -786,7 +786,8 @@ fun VoiceRail(
                     ),
             )
             Icon(
-                Glyph.Mic,
+                /* Wings open while the ears are: the pose is the status. */
+                if (listening) Glyph.BirdFlying else Glyph.Bird,
                 tint = if (listening) p.work else p.paperDim,
                 size = 25.dp,
             )

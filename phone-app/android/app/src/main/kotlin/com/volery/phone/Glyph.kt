@@ -30,9 +30,15 @@ import androidx.compose.ui.unit.dp
  *
  * Coordinates are the SVGs' own (`<symbol viewBox="0 0 16 16">`), scaled once
  * by the canvas size. Keep them there.
+ *
+ * Two exceptions, both birds: [`Glyph.Bird`] is Lucide's `bird`
+ * (`lucide-static` v1.71.0, ISC licence, https://lucide.dev) and
+ * [`Glyph.BirdFlying`] is IconPark's `swallow` (Apache-2.0,
+ * https://iconpark.oceanengine.com), scaled from their own boxes into this one.
+ * Their notices travel in the app's assets; see `assets/icons-license.txt`.
  */
 enum class Glyph {
-    Dial, Gear, Back, More, Mic, Keyboard, Bell, ChevronRight, ChevronLeft,
+    Dial, Gear, Back, More, Bird, BirdFlying, Keyboard, Bell, ChevronRight, ChevronLeft,
     Share, Copy, File, Picture, Check, Lock, Queue, Up, Stop, Plan, Terminal,
     Folder, Circle,
 }
@@ -102,19 +108,52 @@ private fun DrawScope.drawGlyph(g: Glyph, color: Color, u: Float, stroke: Stroke
             oval(8f, 8f, 0.75f, style = null)
             oval(12.4f, 8f, 0.75f, style = null)
         }
-        Glyph.Mic -> {
-            /* A studio microphone on a stand, not the capsule-and-cradle every
-               system keyboard uses: the capsule in its yoke, the post and the
-               base. It is the rail's whole gesture, so the silhouette is worth
-               the strokes; the grille is one line because at 14 dp two more
-               merge into a smudge. */
-            rr(5.6f, 1.5f, 4.8f, 6.0f, 2.4f)
-            line(6.2f, 3.5f, 9.8f, 3.5f)
-            line(4.5f, 6.2f, 5.6f, 8.8f)
-            line(11.5f, 6.2f, 10.4f, 8.8f)
-            line(5.6f, 8.8f, 10.4f, 8.8f)
-            line(8f, 8.8f, 8f, 12.4f)
-            line(4.9f, 13.2f, 11.1f, 13.2f)
+        Glyph.Bird -> {
+            /* Lucide's `bird`, parsed rather than transcribed: its arcs are
+               SVG `a` commands, and the vector parser Compose already has is
+               the correct reading of them. Each path is parsed on its own,
+               because a relative `m` at the start of a later path is relative
+               to that path's own origin and not to where the previous one
+               ended. The 24-unit result is scaled into this file's 16. */
+            /* Into this file's 16 units *and* into pixels: the parser's
+               coordinates are the SVG's own, and every other glyph multiplies
+               its coordinates by `u` as it draws. */
+            val scale = (16f / 24f) * u
+            listOf(
+                "M16 7h.01",
+                "M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20",
+                "m20 7 2 .5-2 .5",
+                "M10 18v3",
+                "M14 17.75V21",
+                "M7 18a6 6 0 0 0 3.84-10.61",
+            ).forEach { d ->
+                val path = androidx.compose.ui.graphics.vector.PathParser().parsePathString(d).toPath()
+                path.transform(androidx.compose.ui.graphics.Matrix().apply { scale(scale, scale) })
+                drawPath(path, color, style = stroke)
+            }
+        }
+        Glyph.BirdFlying -> {
+            /* IconPark's `swallow` (Apache-2.0, https://iconpark.oceanengine.com),
+               a bird in flight with swept, open wings and a forked tail. It is
+               the open-winged bird whose hand suits this file: 48 units with a
+               4-unit stroke, the same 1:12 ratio as Lucide's 24/2, so it reads
+               as the same pen. Scaled into 16; both paths stroked, including
+               the one the source fills as the wing, so nothing here is solid.
+               The notice travels in `assets/icons-license.txt`. */
+            val scale = (16f / 48f) * u
+            listOf(
+                "M8.99902 33.3135L24.0339 6.94269C24.958 4.9809 26.6267 4 29.0402 4C32.6603 4 " +
+                    "35.0172 8.98626 35.0172 8.98626C35.0172 8.98626 36.3445 9.18401 38.999 9.57953" +
+                    "C34.9888 9.64514 32.6699 10.452 32.0424 12C31.1012 14.3221 34.4983 16.7308 " +
+                    "35.0172 20.0039C35.5361 23.2769 33.4663 28.8051 28.4882 31.567C25.1694 33.4083 " +
+                    "21.0262 33.8859 16.0583 33L9.95844 44",
+                "M18.9424 27.978C21.5213 23.3284 23.2169 20.3429 24.0293 19.0215C25.2478 17.0394 " +
+                    "30.2745 17.637 28.4685 22.5843C27.2645 25.8824 24.0891 27.6803 18.9424 27.978Z",
+            ).forEach { d ->
+                val path = androidx.compose.ui.graphics.vector.PathParser().parsePathString(d).toPath()
+                path.transform(androidx.compose.ui.graphics.Matrix().apply { scale(scale, scale) })
+                drawPath(path, color, style = stroke)
+            }
         }
         Glyph.Keyboard -> {
             rr(2.2f, 4.2f, 11.6f, 7.6f, 1.8f)

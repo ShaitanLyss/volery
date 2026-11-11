@@ -27,8 +27,8 @@ android {
         applicationId = "com.volery.phone"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
 
         buildConfigField("String", "PHONE_KEY", quoted(local.getProperty("phone.key", "")))
         // Empty is the honest default: the walk starts at the flyway's

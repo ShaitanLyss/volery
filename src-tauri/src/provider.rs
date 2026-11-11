@@ -440,6 +440,106 @@ fn fetch_balance(p: &'static Provider) -> Result<Balance, String> {
     }
 }
 
+/// A one-shot spoken answer from DeepSeek, for a sentence the steward could
+/// not place as a Volery command.
+///
+/// **Why the wall and not the phone.** The key is in this machine's vault
+/// (`creds.rs`), read at the moment of asking and never handed to another
+/// device; a phone that held its own copy would be a second secret to keep
+/// current and a second balance to watch. The phone asks over the steward wire
+/// (`steward::StewardMsg::General`), and this is what the wall runs.
+///
+/// **`deepseek-flash`, thinking on at low effort.** `deepseek-flash` is the
+/// everyday model; `output_config.effort` is DeepSeek's own depth control, and
+/// `thinking.budget_tokens` is documented but ignored, so low effort is the
+/// only honest "think a little" here. Read from DeepSeek's Anthropic-compatible
+/// API documentation, 2026-11-11.
+///
+/// The answer is capped because it is spoken aloud: a paragraph read by a phone
+/// is a minute of somebody's walk. It is scrubbed like every other text that
+/// reaches a card or a phone (`crate::clean`).
+pub fn answer_question(text: &str) -> Result<String, String> {
+    const MODEL: &str = "deepseek-flash";
+    const URL: &str = "https://api.deepseek.com/anthropic/v1/messages";
+    const SYSTEM: &str = "You are Volery's voice on the user's phone. Answer in one to three \
+        short sentences of plain spoken prose, with no markdown, no lists, no headings and no \
+        code. You cannot run anything on the user's machines: if the request is an action, say \
+        briefly that it has to be asked of a card on their wall.";
+    /// The most a spoken answer may be. A minute of speech is already long for
+    /// a walk; past this the phone is reading a page.
+    const ANSWER_MOST: usize = 1_200;
+
+    let p = named("deepseek").ok_or("deepseek is not a provider this build knows")?;
+    let key = crate::creds::token(p.key)
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "no {} API key is stored, so this wall cannot answer general questions — add one \
+                 in the keyring (space then o)",
+                p.name
+            )
+        })?;
+    let body = serde_json::json!({
+        "model": MODEL,
+        "max_tokens": 600,
+        "thinking": { "type": "enabled" },
+        "output_config": { "effort": "low" },
+        "system": SYSTEM,
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": text }] }],
+        "stream": false,
+    });
+    let res = crate::forge::agent()
+        .post(URL)
+        .set("x-api-key", &key)
+        .set("content-type", "application/json")
+        .send_string(&body.to_string());
+    match res {
+        Ok(res) => {
+            let v: serde_json::Value = res
+                .into_json()
+                .map_err(|e| format!("unreadable answer from {}: {e}", p.name))?;
+            let mut said = spoken(&v)
+                .ok_or_else(|| format!("{} answered with no words", p.name))?;
+            if said.chars().count() > ANSWER_MOST {
+                said = said.chars().take(ANSWER_MOST - 1).collect::<String>() + "…";
+            }
+            Ok(said)
+        }
+        Err(ureq::Error::Status(code, res)) => Err(format!(
+            "{} answered {code}{}",
+            p.name,
+            crate::creds::trailing_anthropic(res.into_string().unwrap_or_default())
+        )),
+        Err(e) => Err(format!("could not reach {}: {e}", p.name)),
+    }
+}
+
+/// The words out of a Messages answer: every `text` block, in order, scrubbed.
+/// Thinking blocks and tool blocks are not speech and are skipped. `None` when
+/// there is no text at all, which is a refusal or a truncated thinking-only
+/// turn and not something to read aloud.
+fn spoken(v: &serde_json::Value) -> Option<String> {
+    let blocks = v.get("content")?.as_array()?;
+    let mut parts = Vec::new();
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) != Some("text") {
+            continue;
+        }
+        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+            let clean = crate::clean::scrub(t).trim().to_string();
+            if !clean.is_empty() {
+                parts.push(clean);
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
 /// The balance as one sentence, for the `allowance` tool. Network failure is
 /// said rather than hidden: a card asking what it can afford is owed the
 /// reason it was not told.
@@ -529,6 +629,22 @@ pub fn budget_refusal(app: &AppHandle, card: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An answer is its text blocks, scrubbed, and never the thinking that
+    /// preceded them: a phone reads the words, not the reasoning, and an
+    /// impossible character must not ride into a spoken line.
+    #[test]
+    fn an_answer_is_its_text_blocks_and_never_its_thinking() {
+        let v = serde_json::json!({ "content": [
+            { "type": "thinking", "thinking": "the user wants the weather" },
+            { "type": "text", "text": "it is raining\u{0} in paris" },
+            { "type": "tool_use", "name": "x" },
+            { "type": "text", "text": " bring a coat" },
+        ] });
+        assert_eq!(spoken(&v).as_deref(), Some("it is raining in paris\nbring a coat"));
+        assert!(spoken(&serde_json::json!({ "content": [{ "type": "thinking", "thinking": "x" }] })).is_none());
+        assert!(spoken(&serde_json::json!({})).is_none());
+    }
 
     #[test]
     fn a_provider_label_is_found_and_an_account_is_not() {

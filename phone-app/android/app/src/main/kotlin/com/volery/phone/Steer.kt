@@ -170,10 +170,47 @@ class Steer(private val voice: VoiceController) {
      *  thread. */
     private fun run(text: String) {
         heard = text
+        val host = Config.host
         status = "…"
         executor.execute {
-            val result = call { NativeBridge.steward(Config.host, text) }
-            handler.post { onSteward(result) }
+            val result = call { NativeBridge.steward(host, text) }
+            handler.post { onSteward(result, host, text) }
+        }
+    }
+
+    /** The steward could not place the sentence as a Volery command, so the
+     *  wall's DeepSeek balance answers it. This is the weather, the capital of
+     *  Peru, a definition: not work a card should be paid for, and not
+     *  something the phone can answer itself.
+     *
+     *  The wall is the one holding the key (`provider::answer_question`), so
+     *  this is one more exchange over the flyway and no secret on the phone. */
+    private fun answerGenerally(host: String, text: String) {
+        status = "…"
+        executor.execute {
+            val result = NativeBridge.generalOf(host, text)
+            handler.post {
+                when (result) {
+                    is NativeBridge.Envelope.Error -> {
+                        /* A wall from before this word passes the frame over
+                           and says nothing; "it did not answer" is true but
+                           reads as a fault. Say the old line instead. */
+                        val line = if (result.message.contains("did not answer")) "not understood" else result.message
+                        status = line
+                        Speaker.speak(line)
+                    }
+                    is NativeBridge.Envelope.Ok -> {
+                        val said = result.payload.optString("text").trim()
+                        if (said.isEmpty()) {
+                            status = "nothing came back"
+                            Speaker.speak("nothing came back")
+                        } else {
+                            status = said
+                            Speaker.speak(said, needsFocus = true)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -293,7 +330,7 @@ class Steer(private val voice: VoiceController) {
         }
     }
 
-    private fun onSteward(envelope: NativeBridge.Envelope) {
+    private fun onSteward(envelope: NativeBridge.Envelope, host: String, asked: String) {
         when (envelope) {
             is NativeBridge.Envelope.Error -> {
                 status = envelope.message
@@ -327,20 +364,12 @@ class Steer(private val voice: VoiceController) {
                         status = question
                         Speaker.speak(question)
                     }
-                    "question" -> {
-                        val line = "that is a question rather than an instruction, and nothing here answers one yet"
-                        status = line
-                        Speaker.speak(line)
-                    }
-                    "decline", "unusable" -> {
-                        val why = answer.optString("why").ifEmpty { "not understood" }
-                        status = why
-                        Speaker.speak(why)
-                    }
-                    else -> {
-                        status = "not understood"
-                        Speaker.speak("not understood")
-                    }
+                    /* Not a Volery command: a question, a sentence it could
+                       not place, or a reply it calls unusable. The wall
+                       answers it from DeepSeek, and the phone reads that
+                       out. */
+                    "question", "decline", "unusable", "not understood" -> answerGenerally(host, asked)
+                    else -> answerGenerally(host, asked)
                 }
             }
         }

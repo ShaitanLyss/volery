@@ -272,6 +272,26 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_answer<'caller>(
         .resolve::<LogErrorAndDefault>()
 }
 
+/// `general(host, text)` → `{"ok": {"text": …}}` or `{"err": …}`.
+///
+/// A sentence the steward could not place, answered by the wall from its
+/// DeepSeek balance: one exchange, nothing kept. The phone speaks the reply.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_general<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    host: JString<'caller>,
+    text: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let host = read(env, &host);
+            let text = read(env, &text);
+            to_jstring(env, general(&host, &text))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
 /// `prompts(cards)` → `{"ok": {"prompts": […]}}` or `{"err": …}`.
 ///
 /// Everything a wall is waiting on a person for, read off the `cards` envelope
@@ -401,6 +421,12 @@ fn answer(host: &str, card: &str, ask_id: &str, text: &str) -> Result<Value, Str
     let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
     rt().block_on(held.answer(host, card, ask_id, text))?;
     Ok(json!(true))
+}
+
+fn general(host: &str, text: &str) -> Result<Value, String> {
+    let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
+    let said = rt().block_on(held.general(host, text))?;
+    Ok(json!({ "text": said }))
 }
 
 fn prompts(cards: &str) -> Result<Value, String> {

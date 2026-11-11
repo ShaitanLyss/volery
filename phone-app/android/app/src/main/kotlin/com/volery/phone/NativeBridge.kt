@@ -54,6 +54,16 @@ object NativeBridge {
     /** The reply a sheet of picks composes, in the shape an agent reads. */
     external fun composeAnswers(headers: String, picks: String): String
 
+    /** A sentence the steward could not place, answered by the wall from its
+     *  DeepSeek balance. One exchange, nothing kept. */
+    external fun general(host: String, text: String): String
+
+    fun generalOf(host: String, text: String): Envelope = try {
+        parse(general(host, text))
+    } catch (e: UnsatisfiedLinkError) {
+        Envelope.Error("the phone's bridge is out of date — rebuild libphone_ffi.so")
+    }
+
     /** [prompts] with the bridge's own failures caught. An artifact built
      *  before this call reads as "nothing is waiting", which is the one wrong
      *  answer that cannot strand a card — the wall's digest still shows its

@@ -547,6 +547,12 @@ private fun About() {
             "the phone hears and speaks; every plan is judged, and confirmed, on a wall.",
             style = Type.note(p, p.paperMute),
         )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "the birds are lucide's and iconpark's, under their open licences " +
+                "(assets/icons-license.txt).",
+            style = Type.meta(p, p.paperFaint, 11f),
+        )
     }
 }
 

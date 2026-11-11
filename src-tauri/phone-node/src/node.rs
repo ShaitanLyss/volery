@@ -387,6 +387,52 @@ impl Node {
         Ok((id, answer))
     }
 
+    /// A sentence the steward could not place as a Volery command, asked as a
+    /// general question. The wall answers from its own DeepSeek balance
+    /// (`provider::answer_question`), so the key never comes to this phone and
+    /// the answer costs flash rather than a `claude` turn.
+    ///
+    /// Same exchange as `plan` and a different word in it: one turn, answered
+    /// on the stream it was asked on, nothing kept. The wall gates it on its
+    /// take-work switch, because it spends money.
+    pub async fn general(&self, host: &str, text: &str) -> Result<String, String> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("nothing was said".into());
+        }
+        if text.chars().count() > steward::TRANSCRIPT_MOST {
+            return Err(format!(
+                "that sentence is longer than the {} characters a question may be",
+                steward::TRANSCRIPT_MOST
+            ));
+        }
+        let peer = self.wire.peer(host)?;
+        let id = fresh_id();
+        let m = StewardMsg::General { id: id.clone(), text };
+        let mut out = self.greeting();
+        out.push(Frame::Steward(m));
+        let back = self
+            .wire
+            .exchange_within(peer, out, true, steward::WITHIN)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        let answers = back.iter().filter_map(|f| match f {
+            Frame::Steward(m) => Some(m),
+            _ => None,
+        });
+        let answer = steward::answer_in(answers, &id, host)?;
+        if answer.get("kind").and_then(serde_json::Value::as_str) != Some("general") {
+            return Err(format!("{host} answered with something that was not a general answer"));
+        }
+        answer
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("{host} answered with no words"))
+    }
+
     /// Confirm the plan the wall returned for `id` and have it carried out.
     /// The phone has already spoken the plan's `reads` and heard a yes; it
     /// sends only the id — the wall is the only thing that ever held the steps,

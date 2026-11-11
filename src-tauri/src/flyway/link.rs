@@ -962,7 +962,12 @@ impl Link {
            the steward spends a `claude` turn, so it is answered for a named
            wall only. */
         let (stewards, rest): (Vec<Frame>, Vec<Frame>) = rest.into_iter().partition(|f| {
-            matches!(f, Frame::Steward(StewardMsg::Steward { .. } | StewardMsg::Confirm { .. }))
+            matches!(
+                f,
+                Frame::Steward(
+                    StewardMsg::Steward { .. } | StewardMsg::Confirm { .. } | StewardMsg::General { .. }
+                )
+            )
         });
         /* Which wall asked, before `answer` consumes the frames: an act is
            done for a named wall or not at all. */
@@ -1000,6 +1005,11 @@ impl Link {
                     }
                     Frame::Steward(StewardMsg::Confirm { id }) => {
                         if let Some(m) = self.steward_confirm_here(id, from.as_deref()).await {
+                            out.push(Frame::Steward(m));
+                        }
+                    }
+                    Frame::Steward(StewardMsg::General { id, text }) => {
+                        if let Some(m) = self.general_here(id, text, from.as_deref()).await {
                             out.push(Frame::Steward(m));
                         }
                     }
@@ -2317,6 +2327,51 @@ impl Link {
             Ok(Ok(Ok(answer))) => said(steward::fit(answer), None),
             Ok(Ok(Err(why))) => said(None, Some(why)),
             Ok(Err(_)) | Err(_) => said(None, Some(format!("{} did not answer in time — say it again", self.me))),
+        }
+    }
+
+    /// Answer a sentence the steward could not place as a Volery command, from
+    /// this wall's DeepSeek balance.
+    ///
+    /// Gated exactly like `steward_here`, because it spends money: the switch,
+    /// the named asker, and a wall that is actually reachable. It does **not**
+    /// go to the front end — there is no `claude` turn and no plan, just an
+    /// HTTP call — so it is answered here, off the main thread, and bounded by
+    /// the provider call's own timeouts. The key never leaves this machine;
+    /// the phone asked for words and gets words.
+    async fn general_here(self: &Arc<Self>, id: String, text: String, from: Option<&str>) -> Option<StewardMsg> {
+        if !act::is_id(&id) {
+            return None;
+        }
+        let said = |answer: Option<Value>, why: Option<String>| {
+            Some(StewardMsg::Stewarded { id: id.clone(), answer, why })
+        };
+        let text: String =
+            crate::clean::scrub(text.trim()).chars().take(steward::TRANSCRIPT_MOST).collect();
+        if text.is_empty() {
+            return said(None, Some("nothing was said".into()));
+        }
+        let Some(host) = from else {
+            return said(None, Some(format!(
+                "{} could not tell which wall asked — it may not have heard from yours yet; try again in a minute",
+                self.me
+            )));
+        };
+        let accepting =
+            self.store().and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c))).unwrap_or(false);
+        if !accepting {
+            return said(None, Some(format!(
+                "{} is not taking work from other walls — switch that on in the flyway panel on {host}, or ask another wall",
+                self.me
+            )));
+        }
+        match crate::off_main(move || crate::provider::answer_question(&text)).await {
+            Ok(Ok(answer)) => said(
+                steward::fit(serde_json::json!({ "kind": "general", "text": answer })),
+                None,
+            ),
+            Ok(Err(why)) => said(None, Some(why)),
+            Err(why) => said(None, Some(why)),
         }
     }
 

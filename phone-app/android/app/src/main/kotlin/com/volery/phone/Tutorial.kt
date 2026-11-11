@@ -121,9 +121,10 @@ private val SLIDES = listOf(
     Slide(
         kicker = "command",
         title = "and you can speak first",
-        body = "hold the orb and say what you want. the wall turns the sentence into a plan and says it " +
+        body = "hold the bird and say what you want. the wall turns a command into a plan and says it " +
             "back; you say yes and it runs there, never here. the gate is the safety line, and the " +
-            "phone only ever relays.",
+            "phone only ever relays. a question that is not a command, like the weather, is " +
+            "answered straight away by deepseek, so it costs no claude turn.",
     ),
 )
 
@@ -461,7 +462,7 @@ private fun SceneEars() {
                     .border(1.5.dp, p.work.copy(alpha = 0.55f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Glyph.Mic, tint = p.paper, size = 30.dp)
+                Icon(Glyph.BirdFlying, tint = p.paper, size = 30.dp)
             }
         }
         /* The question, spoken, above right. */

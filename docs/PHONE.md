@@ -116,6 +116,31 @@ off**, or **hands-free needs the microphone**, with one tap to the screen that
 fixes it. Settings has a **try it** button once it is on, which speaks a line
 and opens the ears after it.
 
+### A question is not a command (2026-11-11)
+
+The steward turns a sentence into a plan, and it declines anything that is not
+a Volery command. "what's the weather" used to be answered with "not
+understood". Now the phone asks the wall a second question, and the wall answers
+it from its own **DeepSeek** balance: `deepseek-flash`, thinking on at low
+effort (`output_config.effort: "low"`). No card, no plan, no Claude turn, and
+the key never leaves the wall.
+
+- **The wire is the steward's.** One more word in the same exchange
+  (`steward::StewardMsg::General`), answered on the stream it was asked on and
+  never gossiped. The answer rides the same envelope as a plan with
+  `{ "kind": "general", "text": … }`, so the phone reads one shape.
+- **The key is read on the wall** (`creds.rs`, the `deepseek` service) at the
+  moment of asking; the phone holds no provider secret and no provider balance.
+  A wall with no key says so, and the phone reads that out.
+- **It costs flash, not a subscription window.** The wall gates it on "take
+  work from other walls", like the steward, because it spends money.
+- **The answer is for the ear, not the page.** It is asked in plain spoken
+  prose, capped at 1,200 characters, scrubbed like every other text, and read
+  out with audio focus so the music ducks. The status line shows it too.
+- **Both ends need this build.** An older wall passes the unknown word over and
+  says nothing; the phone recognises "did not answer" for that word and falls
+  back to "not understood" rather than reporting a fault.
+
 ### The introduction
 
 First launch opens six slides over the roster: what the wall is, how the phone
@@ -194,6 +219,7 @@ Three loops, all thin on the phone:
 | **narration** | walls change, the phone folds the deltas into spoken lines | the digest, `ask_user` questions, notices — all of which already cross |
 | **command** | you speak → a wall parses → act | `steward.rs`, `act.rs`, the confirm gate |
 | **question** | a card's question is read aloud, you answer, it crosses back | `Ask::answers` already travels |
+| **general** | a sentence that is not a command is asked of the wall and answered by DeepSeek flash | `steward::General`, `provider::answer_question` |
 
 ## What the phone is, concretely
 

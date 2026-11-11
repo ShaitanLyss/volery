@@ -131,7 +131,7 @@ fun ConfirmGate(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Glyph.Mic, tint = p.work, size = 15.dp)
+            Icon(Glyph.Bird, tint = p.work, size = 15.dp)
             Spacer(Modifier.width(8.dp))
             Text("say “yes” — or press.", style = Type.note(p))
         }
