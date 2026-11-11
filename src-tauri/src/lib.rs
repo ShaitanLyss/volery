@@ -1137,6 +1137,7 @@ pub fn run() {
             workflow::workflow_progress,
             usage::read_usage,
             analytics::analytics_pass,
+            analytics::analytics_window,
             limits::read_limits,
             limits::release_limits,
             azdo::azdo_runs,

@@ -1643,6 +1643,311 @@ pub async fn analytics_pass(app: AppHandle) -> Result<Report, String> {
     crate::off_main(move || pass(&app)).await?
 }
 
+/* ── the read the room makes (§11) ──────────────────────────────────────── */
+
+/// The widest span the fine tier answers a room's chart from.
+///
+/// §9.3 puts the boundary at the fine tier's whole retention, which is right
+/// for a query layer that can afford to ask. The room draws at most two hundred
+/// points, so a week of five-minute rows is two thousand rows of JSON carried
+/// over the IPC for sixteen of them to reach the screen. Forty-eight hours is
+/// the point where the fine tier still costs less than the hourly one answers
+/// with too little: a day of five-minute points is 288 rows, and the hourly
+/// rollup cannot see an hour's shape at all.
+pub const FINE_WINDOW_MS: i64 = 48 * 60 * 60 * 1000;
+
+/// What one answer may carry, and the reason both bounds exist: a span is data
+/// the front end asks for, so a hand-written request, a clock jump or a wall
+/// with more history than this one must be **refused with a reason** rather
+/// than answered in part. A silently truncated window is a chart that says the
+/// month cost less than it did.
+pub const ROW_CAP: usize = 60_000;
+pub const BYTE_CAP: usize = 12 * 1024 * 1024;
+
+/// One `usage_fact` row, as `analytics.ts::Fact` reads it. The five-minute
+/// grain carries the session and the agent, which the hourly rollup does not.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FineRow {
+    pub at: i64,
+    pub host: String,
+    pub session: String,
+    pub agent: String,
+    pub parent_agent: String,
+    pub depth: i64,
+    pub model: String,
+    pub effort: String,
+    pub cli: String,
+    pub source: String,
+    pub account: String,
+    pub account_identity: String,
+    pub provider: String,
+    pub project: String,
+    pub provenance: String,
+    pub in_tok: i64,
+    pub out_tok: i64,
+    pub cache_read: i64,
+    pub write_5m: i64,
+    pub write_1h: i64,
+    pub requests: i64,
+    pub usd_reported: f64,
+}
+
+/// One `usage_hour` row, as `analytics.ts::HourFact` reads it. `hour` rather
+/// than `at` is the discriminator the query layer folds on.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourRow {
+    pub hour: i64,
+    pub host: String,
+    pub account: String,
+    pub provider: String,
+    pub model: String,
+    pub effort: String,
+    pub cli: String,
+    pub source: String,
+    pub project: String,
+    pub provenance: String,
+    pub in_tok: i64,
+    pub out_tok: i64,
+    pub cache_read: i64,
+    pub write_5m: i64,
+    pub write_1h: i64,
+    pub requests: i64,
+    pub usd_reported: f64,
+}
+
+/// The two shapes in one column, untagged, so the front end reads the same
+/// `UsageRow` union it folds everywhere else and tells the tiers apart by
+/// `"hour" in row` / `"at" in row`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum Row {
+    Fine(FineRow),
+    Hour(HourRow),
+}
+
+/// One window of facts, and the four readings a face needs beside them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Window {
+    /// `fine` or `hourly`, named so the face can say which tier answered
+    /// (§9.1: a refusal names its tier, and so does an answer).
+    pub tier: &'static str,
+    pub since: i64,
+    pub until: i64,
+    pub rows: Vec<Row>,
+    /// Cards whose session overlaps the window (`analytics_session.card_id`).
+    /// Facts carry a session, not a card, and the hourly tier carries neither,
+    /// so this is read off the session table at any span.
+    pub cards: i64,
+    /// The earliest instant either tier holds, or `None` when nothing has ever
+    /// been recorded. This is what lets the empty state tell "the collector has
+    /// not run yet" from "nothing happened in this window".
+    pub first: Option<i64>,
+    /// Requests recorded across the whole store, so an empty window can say how
+    /// much there is elsewhere. Read from the hourly tier, which outlives the
+    /// fine one and holds every request either tier saw.
+    pub recorded: i64,
+}
+
+const FINE_SQL: &str = "SELECT at, host, session, agent, parent_agent, depth, model, effort, cli,
+                               source, account, account_identity, provider, project, provenance,
+                               in_tok, out_tok, cache_read, write_5m, write_1h, requests,
+                               usd_reported
+                          FROM usage_fact
+                         WHERE at >= ?1 AND at < ?2
+                         ORDER BY at";
+
+const HOUR_SQL: &str = "SELECT hour, host, account, provider, model, effort, cli, source,
+                               project, provenance, in_tok, out_tok, cache_read, write_5m,
+                               write_1h, requests, usd_reported
+                          FROM usage_hour
+                         WHERE hour >= ?1 AND hour < ?2
+                         ORDER BY hour";
+
+fn over_cap(tier: &str) -> String {
+    format!(
+        "this window needs more than {ROW_CAP} rows from the {tier} tier; ask for a shorter span"
+    )
+}
+
+/// Read one window. The command is a thin shell around this so the refusals and
+/// the two tiers can be tested against a store in memory.
+pub(crate) fn query_window(
+    conn: &Connection,
+    since: i64,
+    until: i64,
+    fine: bool,
+) -> Result<Window, String> {
+    if until <= since {
+        return Err("the window is empty: it ends before it starts".to_string());
+    }
+    if fine && until - since > FINE_WINDOW_MS {
+        return Err(format!(
+            "a window of {}h is wider than the fine tier's {}h; read it hourly instead",
+            (until - since) / HOUR_MS,
+            FINE_WINDOW_MS / HOUR_MS
+        ));
+    }
+
+    let tier = if fine { "fine" } else { "hourly" };
+    let mut rows: Vec<Row> = Vec::new();
+
+    if fine {
+        let mut stmt = conn.prepare(FINE_SQL).map_err(|e| format!("analytics: read facts: {e}"))?;
+        let mut got = stmt
+            .query(params![since, until])
+            .map_err(|e| format!("analytics: read facts: {e}"))?;
+        while let Some(r) = got.next().map_err(|e| format!("analytics: read facts: {e}"))? {
+            /* One row past the cap is proof there is a row past the cap, and it
+               is checked before the push rather than after the loop, which is
+               the difference between refusing and truncating. */
+            if rows.len() == ROW_CAP {
+                return Err(over_cap(tier));
+            }
+            rows.push(Row::Fine(FineRow {
+                at: r.get(0).map_err(|e| e.to_string())?,
+                host: r.get(1).map_err(|e| e.to_string())?,
+                session: r.get(2).map_err(|e| e.to_string())?,
+                agent: r.get(3).map_err(|e| e.to_string())?,
+                parent_agent: r.get(4).map_err(|e| e.to_string())?,
+                depth: r.get(5).map_err(|e| e.to_string())?,
+                model: r.get(6).map_err(|e| e.to_string())?,
+                effort: r.get(7).map_err(|e| e.to_string())?,
+                cli: r.get(8).map_err(|e| e.to_string())?,
+                source: r.get(9).map_err(|e| e.to_string())?,
+                account: r.get(10).map_err(|e| e.to_string())?,
+                account_identity: r.get(11).map_err(|e| e.to_string())?,
+                provider: r.get(12).map_err(|e| e.to_string())?,
+                project: r.get(13).map_err(|e| e.to_string())?,
+                provenance: r.get(14).map_err(|e| e.to_string())?,
+                in_tok: r.get(15).map_err(|e| e.to_string())?,
+                out_tok: r.get(16).map_err(|e| e.to_string())?,
+                cache_read: r.get(17).map_err(|e| e.to_string())?,
+                write_5m: r.get(18).map_err(|e| e.to_string())?,
+                write_1h: r.get(19).map_err(|e| e.to_string())?,
+                requests: r.get(20).map_err(|e| e.to_string())?,
+                usd_reported: r.get(21).map_err(|e| e.to_string())?,
+            }));
+        }
+    } else {
+        let mut stmt = conn.prepare(HOUR_SQL).map_err(|e| format!("analytics: read hours: {e}"))?;
+        let mut got = stmt
+            .query(params![since, until])
+            .map_err(|e| format!("analytics: read hours: {e}"))?;
+        while let Some(r) = got.next().map_err(|e| format!("analytics: read hours: {e}"))? {
+            if rows.len() == ROW_CAP {
+                return Err(over_cap(tier));
+            }
+            rows.push(Row::Hour(HourRow {
+                hour: r.get(0).map_err(|e| e.to_string())?,
+                host: r.get(1).map_err(|e| e.to_string())?,
+                account: r.get(2).map_err(|e| e.to_string())?,
+                provider: r.get(3).map_err(|e| e.to_string())?,
+                model: r.get(4).map_err(|e| e.to_string())?,
+                effort: r.get(5).map_err(|e| e.to_string())?,
+                cli: r.get(6).map_err(|e| e.to_string())?,
+                source: r.get(7).map_err(|e| e.to_string())?,
+                project: r.get(8).map_err(|e| e.to_string())?,
+                provenance: r.get(9).map_err(|e| e.to_string())?,
+                in_tok: r.get(10).map_err(|e| e.to_string())?,
+                out_tok: r.get(11).map_err(|e| e.to_string())?,
+                cache_read: r.get(12).map_err(|e| e.to_string())?,
+                write_5m: r.get(13).map_err(|e| e.to_string())?,
+                write_1h: r.get(14).map_err(|e| e.to_string())?,
+                requests: r.get(15).map_err(|e| e.to_string())?,
+                usd_reported: r.get(16).map_err(|e| e.to_string())?,
+            }));
+        }
+    }
+
+    /* The three readings that are not rows. `MIN` is answered by the index on
+       each tier's own clock, and the sum is answered by the hourly tier's
+       primary key, so none of them scans a table. */
+    let (first_at, first_hour, recorded): (Option<i64>, Option<i64>, i64) = conn
+        .query_row(
+            "SELECT (SELECT MIN(at)   FROM usage_fact),
+                    (SELECT MIN(hour) FROM usage_hour),
+                    (SELECT COALESCE(SUM(requests), 0) FROM usage_hour)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| format!("analytics: read the store's span: {e}"))?;
+    let first = match (first_at, first_hour) {
+        (Some(a), Some(h)) => Some(a.min(h)),
+        (a, h) => a.or(h),
+    };
+
+    /* A session counts while it overlaps the window, and one with no `ended_at`
+       is still open: `until` stands in for its end, which is the same rule the
+       wall draws a live card by.
+
+       Only a session with a card is a card. A terminal session has no card row
+       and counting it here would put a number under a word that does not mean
+       it. */
+    let cards: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM analytics_session
+              WHERE card_id IS NOT NULL
+                AND started_at < ?2
+                AND COALESCE(ended_at, ?2) >= ?1",
+            params![since, until],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("analytics: count cards: {e}"))?;
+
+    let window = Window {
+        tier,
+        since,
+        until,
+        rows,
+        cards,
+        first,
+        recorded,
+    };
+
+    /* The byte cap is measured on the answer itself rather than estimated from
+       the row count, because what a row costs is the project's name and the
+       session id. The row cap above is what keeps this measurement's own
+       allocation bounded. */
+    let bytes = serde_json::to_vec(&window)
+        .map_err(|e| format!("analytics: measure the answer: {e}"))?
+        .len();
+    if bytes > BYTE_CAP {
+        return Err(format!(
+            "this window's answer is {:.1} MB, past the {} MB cap; ask for a shorter span",
+            bytes as f64 / 1e6,
+            BYTE_CAP / 1_000_000
+        ));
+    }
+
+    Ok(window)
+}
+
+/// Read one window for the room (§11). `fine` is the caller's tier decision,
+/// made in `analyticsroom.ts::windowTier` and enforced here as well: the wire is
+/// not a place to trust.
+///
+/// The lock is taken and released inside the blocking pool. A month of hourly
+/// rows on a busy wall is tens of thousands of rows, and doing that inline on
+/// the main thread would stop every card painting for as long as the scan took
+/// (`off_main`).
+#[tauri::command]
+pub async fn analytics_window(
+    app: AppHandle,
+    since: i64,
+    until: i64,
+    fine: bool,
+) -> Result<Window, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        query_window(&conn, since, until, fine)
+    })
+    .await?
+}
+
 /* ── the collector ───────────────────────────────────────────────────────── */
 
 struct Beat {
@@ -1899,6 +2204,127 @@ mod tests {
         /* Six requests in one minute are one fact row and one hour row. */
         assert_eq!(facts.2, 1);
         assert_eq!(hours.2, 1);
+    }
+
+    /* ── the room's read ─────────────────────────────────────────────────── */
+
+    #[test]
+    fn an_empty_window_and_an_unrecorded_store_are_different_readings() {
+        let conn = db();
+        let now = now_ms();
+        let empty = query_window(&conn, now - 3_600_000, now, true).unwrap();
+        assert_eq!(empty.tier, "fine");
+        assert!(empty.rows.is_empty());
+        assert_eq!(empty.cards, 0);
+        /* The whole store is empty, which is what the face says *recording
+           starts within a minute* for. It is not a zero spend. */
+        assert_eq!(empty.first, None);
+        assert_eq!(empty.recorded, 0);
+
+        let conns = Mutex::new(db());
+        let line = request(now_ms() - 60_000, "claude-opus-5-5", 1000);
+        write(&conns, "here", &batch(&[line]), now_ms()).unwrap();
+        let conn = conns.lock().unwrap();
+        let now = now_ms();
+        let window = query_window(&conn, now - 3_600_000, now, true).unwrap();
+        assert_eq!(window.rows.len(), 1, "one fine row inside the hour");
+        assert!(window.first.is_some(), "and the store now knows when it began");
+        assert_eq!(window.recorded, 1, "one request recorded");
+
+        /* An hour earlier holds nothing, and says so without claiming the store
+           is empty. */
+        let quiet = query_window(&conn, now - 7_200_000, now - 3_600_000, true).unwrap();
+        assert!(quiet.rows.is_empty());
+        assert!(quiet.first.is_some());
+        assert_eq!(quiet.recorded, 1);
+    }
+
+    #[test]
+    fn the_fine_tier_is_refused_past_its_own_window_and_the_hourly_tier_answers_it() {
+        let conns = Mutex::new(db());
+        let line = request(now_ms() - 60_000, "claude-opus-5-5", 1000);
+        write(&conns, "here", &batch(&[line]), now_ms()).unwrap();
+        let conn = conns.lock().unwrap();
+        let now = now_ms();
+
+        let refused = query_window(&conn, now - FINE_WINDOW_MS - 1, now, true).unwrap_err();
+        assert!(refused.contains("fine tier"), "{refused}");
+
+        /* The same span read hourly is answered, names its tier, and carries
+           the rollup row the request landed in. */
+        let wide = query_window(&conn, now - 7 * 24 * 3_600_000, now, false).unwrap();
+        assert_eq!(wide.tier, "hourly");
+        assert_eq!(wide.rows.len(), 1);
+        assert_eq!(wide.recorded, 1);
+    }
+
+    #[test]
+    fn a_window_that_ends_before_it_starts_is_refused() {
+        let conn = db();
+        let now = now_ms();
+        assert!(query_window(&conn, now, now, true).is_err());
+        assert!(query_window(&conn, now, now - 1_000, false).is_err());
+    }
+
+    #[test]
+    fn a_card_counts_while_its_session_overlaps_the_window() {
+        let conn = db();
+        let now = now_ms();
+        let hour = 3_600_000;
+        /* A card that ran inside the window, a card that ended before it, one
+           still open from earlier, and a terminal session with no card at all. */
+        conn.execute(
+            "INSERT INTO analytics_session (session, host, card_id, started_at, ended_at)
+             VALUES ('in', 'here', 'c1', ?1, ?2)",
+            params![now - 2 * hour, now - hour],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO analytics_session (session, host, card_id, started_at, ended_at)
+             VALUES ('gone', 'here', 'c2', ?1, ?2)",
+            params![now - 9 * hour, now - 8 * hour],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO analytics_session (session, host, card_id, started_at, ended_at)
+             VALUES ('open', 'here', 'c3', ?1, NULL)",
+            params![now - 3 * hour],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO analytics_session (session, host, card_id, started_at, ended_at)
+             VALUES ('terminal', 'here', NULL, ?1, ?2)",
+            params![now - 2 * hour, now - hour],
+        )
+        .unwrap();
+
+        let cards = query_window(&conn, now - hour, now, true).unwrap().cards;
+        assert_eq!(cards, 2, "the open card and the one that ran inside it");
+    }
+
+    #[test]
+    fn a_window_past_the_row_cap_is_refused_rather_than_truncated() {
+        let conn = db();
+        let now = now_ms();
+        let since = now - 3_600_000;
+        {
+            conn.execute_batch("BEGIN").unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO usage_fact
+                       (at, host, session, model, source, account, provider, project, requests)
+                     VALUES (?1, 'here', 's', 'm', 'card', 'a', 'anthropic', 'p', 1)",
+                )
+                .unwrap();
+            for i in 0..=(ROW_CAP as i64) {
+                stmt.execute(params![since + i]).unwrap();
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+
+        let refused = query_window(&conn, since, now, true).unwrap_err();
+        assert!(refused.contains("more than"), "{refused}");
+        assert!(refused.contains(&ROW_CAP.to_string()), "{refused}");
     }
 
     #[test]

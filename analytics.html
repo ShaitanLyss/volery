@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Volery analytics (preview)</title>
+  </head>
+  <body>
+    <!-- A dev-only entry point for the analytics room, so it can be looked at in
+         a browser with no wall behind it. `vite build` takes `index.html` only,
+         so this page is not in any bundle; `vite dev` serves it. `?empty=1` and
+         `?quiet=1` reach the two empty states. -->
+    <div id="app"></div>
+    <script type="module" src="/src/analytics-preview.ts"></script>
+  </body>
+</html>

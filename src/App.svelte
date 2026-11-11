@@ -125,6 +125,7 @@
   import Keyring from "./lib/Keyring.svelte";
   import Flyway from "./lib/Flyway.svelte";
   import Showcase from "./lib/Showcase.svelte";
+  import Analytics from "./lib/Analytics.svelte";
   import Icon from "./lib/Icon.svelte";
   import Annals from "./lib/Annals.svelte";
   import Unfinished from "./lib/Unfinished.svelte";
@@ -705,6 +706,7 @@
       else if (verb.what === "accounts") showAccounts = !showAccounts;
       else if (verb.what === "integrations") showKeyring = !showKeyring;
       else if (verb.what === "showcase") showTour = true;
+      else if (verb.what === "analytics") showAnalytics = true;
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -1829,6 +1831,10 @@
   /* The tour. An overlay with no store behind it, so it costs nothing to
      leave in the tree and works on a wall with no cards. */
   let showTour = $state(false);
+  /* The analytics room (`docs/ANALYTICS.md` §11), `space b d`. An overlay of
+     its own rather than a reading sheet: a KPI row, a chart and an inspector
+     do not fit the 980x680 box a sheet holds. */
+  let showAnalytics = $state(false);
   /* The sink's two gestures, which had no keyboard path at all before — the
      Basin is a widget, so reading the pile meant hanging one on the wall and
      adding to it meant finding that widget first. See `leader.ts`. */
@@ -3784,6 +3790,7 @@
       menu ||
       showImport ||
       showTour ||
+      showAnalytics ||
       showThemes ||
       showAccounts ||
       showKeyring ||
@@ -3865,7 +3872,7 @@
     if (e.key === "Escape") {
       /* Stops a turn, and goes no further: it never deselects, which would
          empty the view (§5.6). Anything open over the view answers its own. */
-      if (menu || showImport || showTour || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding || sheetOf)
+      if (menu || showImport || showTour || showAnalytics || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding || sheetOf)
         return true;
       if (card && card.can("stop") === "yes") void card.do("stop");
       return true;
@@ -4412,6 +4419,7 @@
         menu ||
         showImport ||
         showTour ||
+        showAnalytics ||
         showThemes ||
         showAccounts ||
         showKeyring ||
@@ -5922,6 +5930,9 @@
   {/if}
   {#if showTour}
     <Showcase onclose={() => (showTour = false)} />
+  {/if}
+  {#if showAnalytics}
+    <Analytics onclose={() => (showAnalytics = false)} />
   {/if}
   {#if showSink}
     <Sieve

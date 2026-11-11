@@ -113,7 +113,10 @@ export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance" | "ack" 
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" | "accounts" | "integrations" | "showcase" }
+  | {
+      kind: "open";
+      what: "timelines" | "pile" | "flyway" | "themes" | "accounts" | "integrations" | "showcase" | "analytics";
+    }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
@@ -421,6 +424,12 @@ export const CHORDS: readonly Chord[] = [
   { keys: "rv", label: "float this screen over the conversation / stop", verb: { kind: "screen", act: "float" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
+  /* `d` for the data. It sits in the `b` family because that is the family of
+     things you go and read, and it is written here rather than coming from a
+     widget's `sheet` letter because analytics is a room you enter, not a
+     reading you hang on the glass (`docs/ANALYTICS.md` §11). It is the one row
+     in this family that is not a widget. */
+  { keys: "bd", label: "analytics", verb: { kind: "open", what: "analytics" } },
   ...readings(),
 ];
 
@@ -437,7 +446,14 @@ export const CHORDS: readonly Chord[] = [
  *  (`widgets.ts`), so a reading that can stand in a sheet says so where it is
  *  declared, and its chord, its palette row and its which-key line follow.
  *  `bb` is the burn rate, the one doubled letter, because the burn's `b` was
- *  the only letter that word could have. */
+ *  the only letter that word could have.
+ *
+ *  The one row written by hand is `bd`, the analytics room: it is a reading in
+ *  the sense of the family — somewhere you go to look at something — but it is
+ *  a whole room rather than a widget a sheet can hold, so it has no `sheet`
+ *  letter to be declared with (`docs/ANALYTICS.md` §11). `test/leader.test.ts`
+ *  holds the two halves apart: every sheeted widget is still a `b` chord, and
+ *  `bd` is the only `b` chord that is not a widget. */
 function readings(): Chord[] {
   return WIDGETS.filter((w) => w.sheet).map((w) => ({
     keys: `b${w.sheet}`,

@@ -233,15 +233,22 @@ describe("away mode has two spellings of one verb", () => {
 
 describe("the readings", () => {
   /* `b` is not written in the table: each row is a widget's `sheet` letter,
-     so a reading that can stand in a sheet is a chord by being declared one. */
-  test("every widget with a sheet letter is a b chord that opens it, and nothing else is", () => {
+     so a reading that can stand in a sheet is a chord by being declared one.
+     The one hand-written row is `bd`, the analytics room: a reading in the
+     family's sense (somewhere you go to look at something) that is a whole
+     room rather than a widget, so it has no sheet letter to be declared with
+     (`docs/ANALYTICS.md` §11). */
+  test("every widget with a sheet letter is a b chord that opens it, and the room is the only other", () => {
     const sheeted = WIDGETS.filter((w) => w.sheet);
     expect(sheeted.length).toBeGreaterThan(0);
     for (const w of sheeted) {
       expect(chord("b", w.sheet!)).toMatchObject({ kind: "fire", verb: { kind: "reading", widget: w.kind } });
     }
-    expect(CHORDS.filter((c) => c.keys.startsWith("b")).length).toBe(sheeted.length);
+    const family = CHORDS.filter((c) => c.keys.startsWith("b"));
+    expect(family.filter((c) => c.keys !== "bd").length).toBe(sheeted.length);
     expect([...READINGS].sort()).toEqual(sheeted.map((w) => w.kind).sort());
+
+    expect(chord("b", "d")).toMatchObject({ kind: "fire", verb: { kind: "open", what: "analytics" } });
   });
 
   test("pipelines is space b p, and it opens in either view", () => {
@@ -262,6 +269,7 @@ describe("the which-key hint", () => {
       { keys: "ba", label: "asana board" },
       { keys: "bb", label: "burn rate" },
       { keys: "bc", label: "register" },
+      { keys: "bd", label: "analytics" },
       { keys: "bg", label: "gates" },
       { keys: "bh", label: "asana health" },
       { keys: "bm", label: "performance" },
