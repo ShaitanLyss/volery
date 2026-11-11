@@ -461,7 +461,7 @@ private fun SceneEars() {
                     .border(1.5.dp, p.work.copy(alpha = 0.55f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Glyph.Mic, tint = p.paper, size = 24.dp)
+                Icon(Glyph.Mic, tint = p.paper, size = 30.dp)
             }
         }
         /* The question, spoken, above right. */

@@ -108,13 +108,13 @@ private fun DrawScope.drawGlyph(g: Glyph, color: Color, u: Float, stroke: Stroke
                base. It is the rail's whole gesture, so the silhouette is worth
                the strokes; the grille is one line because at 14 dp two more
                merge into a smudge. */
-            rr(6.1f, 1.8f, 3.8f, 5.4f, 1.9f)
-            line(6.6f, 3.6f, 9.4f, 3.6f)
-            line(5.1f, 6.0f, 5.9f, 8.6f)
-            line(10.9f, 6.0f, 10.1f, 8.6f)
-            line(5.9f, 8.6f, 10.1f, 8.6f)
-            line(8f, 8.6f, 8f, 12.6f)
-            line(5.7f, 13.2f, 10.3f, 13.2f)
+            rr(5.6f, 1.5f, 4.8f, 6.0f, 2.4f)
+            line(6.2f, 3.5f, 9.8f, 3.5f)
+            line(4.5f, 6.2f, 5.6f, 8.8f)
+            line(11.5f, 6.2f, 10.4f, 8.8f)
+            line(5.6f, 8.8f, 10.4f, 8.8f)
+            line(8f, 8.8f, 8f, 12.4f)
+            line(4.9f, 13.2f, 11.1f, 13.2f)
         }
         Glyph.Keyboard -> {
             rr(2.2f, 4.2f, 11.6f, 7.6f, 1.8f)

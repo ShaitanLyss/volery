@@ -788,7 +788,7 @@ fun VoiceRail(
             Icon(
                 Glyph.Mic,
                 tint = if (listening) p.work else p.paperDim,
-                size = 19.dp,
+                size = 25.dp,
             )
         }
         Column(Modifier.weight(1f)) {
