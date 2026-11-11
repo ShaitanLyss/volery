@@ -122,10 +122,12 @@ improve the attribution of a week that is already stored. Section 5 has the arit
 
 ### 3.1 Grain
 
-`usage_fact` is one row per **five-minute bucket, session, agent, model, effort and CLI
-version**, carrying the five token kinds and a request count. Five minutes is `usage.rs`'s
-existing bucket and is fine enough for every window anybody reads: the trailing edge of a
-rolling window moves by at most one bucket.
+`usage_fact` is one row per **five-minute bucket, session, agent, parent agent, depth, model,
+effort, CLI version, source, account, provider, project and provenance**, carrying the five
+token kinds and a request count. Five minutes is `usage.rs`'s existing bucket and is fine
+enough for every window anybody reads: the trailing edge of a rolling window moves by at most
+one bucket. The full key is written once, in section 17, and the block below is that key
+rather than a second statement of it.
 
 A session is the unit of attribution. Subagents get their own `agent` id under the same
 session, which is how their spend stays attached to the card that caused it without being
@@ -133,11 +135,12 @@ confused with the card's own turns.
 
 ```sql
 usage_fact(
-  at, host, session, agent, model, effort, cli,
-  source, account, provider, project, provenance,
-  in_tok, out_tok, cache_read, write_5m, write_1h, requests
+  at, host, session, agent, parent_agent, depth, model, effort, cli,
+  source, account, account_identity, provider, project, provenance,
+  in_tok, out_tok, cache_read, write_5m, write_1h, requests, usd_reported
 )
-PRIMARY KEY (at, host, session, agent, model, effort, cli, source, account, provider)
+PRIMARY KEY (at, host, session, agent, parent_agent, depth, model, effort, cli,
+             source, account, provider, project, provenance)
 ```
 
 `source`, `account`, `provider` and `project` are denormalized onto the fact rather than held
@@ -151,24 +154,24 @@ did this card cost" sums the facts rather than trusting a single label.
 Two columns that sound alike are not: **`source` is `card | terminal | unknown`** (who ran
 it), and **`provenance` is `transcript | turn`** (where the row came from). Both are in the
 key, so a backfilled `turn` day and a transcript fact for the same bucket cannot collide and
-the query can prefer the finer one.
-
-`provenance` is `transcript`, `turn` or `rollup`. It is what lets a backfilled `turn` day sit
-beside transcript facts without being mistaken for them, and what lets a query prefer the
-finer source for a day that has both.
+the query can prefer the finer one. There is no `rollup` provenance: a rollup is an
+aggregation of facts that already say where they came from, and giving it a third value
+would describe the same row twice.
 
 ### 3.2 The session dimension
 
 ```sql
 analytics_session(
   session, host, project, source,
-  card_id, started_at, ended_at, cli_min, cli_max,
+  card_id, parent_card, opened_by, branch,
+  started_at, ended_at, cli_min, cli_max,
   account_first, account_last, provider_first, provider_last,
   turns, endings_json
 )
 ```
 
-This is the per-card and per-terminal row: which Volery card it was (if any), where it ran,
+Section 17 has the same table as it is built; this block names the columns the prose below
+reads. This is the per-card and per-terminal row: which Volery card it was (if any), where it ran,
 when it started and ended, which CLI versions it spanned, and how its turns ended. It is
 written when a session is first seen and updated as more is learned. It is what makes
 "cost per card" and "performance vs cost" possible without joining a million facts.
@@ -294,7 +297,14 @@ sum of 24 of them.
 
 Rollups are stored, not computed on every query, because a three-year view over fine facts is
 millions of rows and a stored rollup is tens of thousands. The rollup writer is part of
-ingest, not a cron: a pass that writes a fine fact also adds to the current hour and day rows.
+ingest, not a cron: a pass that writes a fine fact also adds to the current hour row. The daily
+tier is derived from hours rather than stored, because a stored day would be the same sum with
+a second timezone in it, and the table's only job is the year view.
+**The hourly row carries the fact's `provenance` and has it in its key**, because otherwise a
+backfilled `turn` day and the transcript facts covering the same hours add into one row, and
+the preference for the finer source, which section 7.4 defines for the fine tier, would stop
+holding the moment the fine rows aged out at ninety days and left the double-count behind in
+the tier that outlives them.
 
 ### 3.7 Tool and server facts, because how the work was done is also the bill
 
@@ -341,13 +351,17 @@ tool_fact(
   itself is never stored**. A tool result can be a file, a screenshot or a token; the analytics
   store keeps `42,318` and not the bytes. That is the line between analytics and conversation
   content, and it is drawn in the schema, not in a policy.
-- **`turn_usd` is apportioned across the turn's calls, not copied onto every row.** The turn's
-  cost is divided by its calls, and each row carries `turn_usd × calls_in_row / calls_in_turn`,
-  so a sum over the turn equals the turn. Copying the whole turn onto each tool row would
-  multiply it by the number of tools, and dividing it by each tool's own calls would give that
-  tool the whole turn. The per-call figure is `turn_usd / calls`, labelled *apportioned*: a
-  division of a measured number, not a guess at a hidden one. The inspector says which of the
-  two it is, always.
+- **`turn_usd` is apportioned across the turn's calls, and the apportionment is why the rows
+  are written at the turn's end.** The turn's cost is divided by its calls, and each row
+  carries `turn_usd × calls_in_row / calls_in_turn`, so a sum over the turn equals the turn.
+  Copying the whole turn onto each tool row would multiply it by the number of tools, and
+  dividing it by each tool's own calls would give that tool the whole turn. The divisor is
+  not known while the calls are still landing, so a `tool_fact` is not written when each
+  result arrives: the pending rows accumulate, and the turn's `result` writes the whole
+  turn's tool facts in one pass, with the cost and the call count both in hand. That also
+  keeps `tool_fact` append-only, which is what the union merge in section 8.1 rests on. The
+  per-call figure is `turn_usd / calls`, labelled *apportioned*: a division of a measured
+  number, not a guess at a hidden one. The inspector says which of the two it is, always.
 - **Skills and agents are tool calls, and a second signal.** An explicit `Skill` call carries
   the skill name in its input; an `Agent`/`Task` call carries the subagent type. Separately,
   every assistant record carries `attributionAgent` and `attributionPlugin`, which name the kit
@@ -373,29 +387,59 @@ And a call and its result are not one record: the result can arrive in a later p
 different five-minute bucket, or, for `Agent`, `Monitor`, `Workflow` and a background `Bash`,
 never as work at all but as a receipt that returns immediately (`turns.md`). So a **mutable
 `tool_pending` row keyed by `tool_use_id`** (never by bucket) is written with the call, and the
-result updates it with `ms_total`, `errors` and `out_bytes`; the immutable `tool_fact` row is
-written when the result lands, or when a bounded wait expires as `no-result`. A receipt is
-marked `async` and its latency is the receipt's, not the work's, and the face says so. Without
-that row, a slow background tool reads as a fast one, which is the opposite of the truth.
+result updates it with `ms_total`, `errors`, `out_bytes`, and for an `Agent`/`Task` call the
+`child_agent` the result carries beside the `requested_model` the call's input carried. The
+immutable `tool_fact` rows are written together at the turn's `result`, from the pending rows,
+which is the one moment the turn's cost and its call count are both known (see `turn_usd`
+above); a
+pending row whose result never arrived is written then as `no-result`, and a turn that dies
+without a `result` writes nothing, since there is no cost to apportion. A receipt is marked
+`async` and its latency is the receipt's, not the work's, and the face says so. Without that
+row, a slow background tool reads as a fast one, which is the opposite of the truth.
+
+**What the call's input actually carries, measured over 373 `Agent`/`Task` calls on this
+machine:** `description` (373), `prompt` (373), `subagent_type` (368), `run_in_background`
+(300), and `model` on **7**. No call carries an `effort` or `thinking` key at all. So the
+requested model is a reading worth keeping and is usually `unknown`, and the requested effort
+does not exist as a field: the effort a subagent actually ran at comes off its own assistant
+records, per request, which is the stronger fact anyway. The schemas say `requested_model`
+and no `requested_effort`, rather than a column that would be empty forever.
 
 ### 3.8 Prompt facts: the form, a redacted body, and a vault
 
 The transcripts carry every human prompt, including the ones typed into a terminal, and they
 carry a great deal that is not a prompt. Measured over five days on this machine, with the
-filter the codebase already uses:
+filter the codebase already uses. Each record falls in exactly one class, decided in the order
+`prompt_of` rejects them, so the column sums to the total:
 
 ```text
-user records            28,879
-  tool results          27,222   (a tool's output, not a person)
-  human prompts            825
-  task notifications       360   (<task-notification>)
-  subagent turns           299   (isSidechain)
-  system reminders         214   (isMeta)
-  stop notes                21   ([Request interrupted by user...)
-  compaction summaries      21   (isCompactSummary)
+user records            29,268
+  tool results          19,694   (a tool's output, not a person)
+  subagent turns         7,858   (isSidechain)
+  human prompts            832
+  task notifications       362   (<task-notification>)
+  oversize                 341   (over 256 KB, never parsed)
+  system reminders         111   (isMeta)
+  injected commands         27   (<local-command-*>, the caveat sentence)
+  compaction summaries      23   (isCompactSummary)
+  stop notes                19   ([Request interrupted by user...)
+  no text                    1   (a user record carrying neither)
 ```
 
-**The filter is `sessions.rs::prompt_of`, reused, not re-derived.** That function already
+**The order is what makes it a partition rather than seven overlapping counts.** The flags are
+asked first, so a tool result inside a subagent is counted as a subagent turn and not twice;
+the 256 KB gate comes before the parse, so an oversized record is `oversize` before it can be
+anything else. Counting each marker independently gave 28,962 against a total of 28,879, which
+is what a set of overlapping predicates looks like when it is read as a breakdown.
+
+**The filter is `sessions.rs::prompt_of`'s rejection rule, shared rather than re-derived.**
+One shape change is owed first, because `prompt_of` ends by flattening the prompt onto one
+line (`split_whitespace().join(" ")`) for the titling grid, and that is exactly the newlines
+and fences the form counts. So the function is split in two: a fold that decides whether the
+record is somebody speaking and returns the text **unflattened**, and `prompt_of` on top of it
+as flatten-and-clip for a title. The ingestor calls the fold. Nothing about the rejection
+logic changes, and a second copy of the marker list is what this arrangement exists to
+prevent. That function already
 rejects `isMeta`, `isSidechain`, `isCompactSummary`, the eight injected markers
 (`<local-command-caveat>`, `<command-name>`, `<command-message>`, `<command-args>`,
 `<local-command-stdout>`, `<task-notification>`, the local-command caveat sentence, and
@@ -408,10 +452,10 @@ unbounded parse in the walk.
 
 **Deduplicate by `(host, prompt_id)`, keeping the first occurrence.** A repeated id carries a
 different timestamp, so `at` cannot be the key; the stop note also reuses the prompt's id, and
-`prompt_of` excludes it before dedupe. In the five-day window there are 825 prompts and 825
-distinct ids, so a duplicate is rare, but a replay can produce one and the key is the honest
-one. The row's `at` is the first time it was said, and `seen_count` says how many records
-carried it.
+`prompt_of` excludes it before dedupe. In the five-day window there are 832 prompts and 832
+distinct ids, so this window holds no duplicate at all; a replay can still produce one, which
+is why the key exists rather than because one was seen. The row's `at` is the first time it
+was said, and `seen_count` says how many records carried it.
 
 A prompt's content is a string or text blocks; image blocks are counted and never stored.
 
@@ -447,9 +491,12 @@ subsystem does not copy and cannot delete. The copy analytics keeps is **redacte
 - **The key is memory-only.** Unlocking derives the key-encryption key, unwraps the data key,
   and keeps it in a `Secret` that is zeroized on lock, quit or a fifteen-minute idle. If the
   vault is locked when a prompt is ingested, the form is recorded, the body is marked `locked`,
-  and the row keeps a **local-only locator** (`source_path`, `source_off`, never synced, cleared
-  the moment it is sealed) so the `seal pending` pass can seek straight to the line and seal it
-  when you unlock. A prompt whose transcript is already gone keeps its form and stays `locked`.
+  and a **local-only locator** is kept in a table of its own, `prompt_locator(host, prompt_id,
+  path, off)`, so the `seal pending` pass can seek straight to the line and seal it when you
+  unlock. It is a separate table rather than two columns on `prompt_fact` because `prompt_fact`
+  is what the archive serializer writes, and a path a serializer never sees is a path it
+  cannot carry. A locator is deleted the moment its body is sealed. A prompt whose transcript
+  is already gone keeps its form and stays `locked`.
 - **A forgotten passphrase is a lost archive.** There is no recovery, by construction. `reset
   vault` deletes the wrapped key and every sealed body, emits a tombstone for each, keeps the
   form counts, and asks twice.
@@ -468,11 +515,12 @@ may travel too, because a peer cannot read it without the passphrase.** That is 
 "everything travels" that is actually true: the ciphertext is a small opaque blob, so a wall
 can hold the archive without being able to read it.
 
-- **A per-peer switch, off by default,** decides whether this wall replicates its sealed bodies
-  to a peer (`prompt_grant`). The peer stores the ciphertext; the read gate is the passphrase,
-  not the switch. The switch is policy for a lab or a colleague's wall, not a cryptographic
-  boundary: a key holder can already read the raw transcript through the recall path
-  (`seeing.rs`), and the design says so rather than implying a guarantee it cannot make.
+- **A per-peer switch, off by default,** decides whether this wall will serve its sealed bodies
+  to a peer (`prompt_grant`). The peer asks, day by day, and stores the ciphertext; the read
+  gate is the passphrase, not the switch. The switch is policy for a lab or a colleague's wall,
+  not a cryptographic boundary: a key holder can already read the raw transcript through the
+  recall path (`seeing.rs`), and the design says so rather than implying a guarantee it cannot
+  make.
 - **The vault record syncs, the passphrase never does.** A new machine receives the wrapped
   data key, salt and nonce from a peer (or from a small export file), and the same passphrase
   unwraps it. That is what makes a fleet-wide archive readable from any wall. **A key pair is
@@ -490,9 +538,9 @@ can hold the archive without being able to read it.
   in `Facts::can` is refused before the request. The digest and count make a truncated day
   visible: a partial answer is refused or paged with a cursor, never stored as if whole.
 - **A delete is a durable tombstone, not a message.** `prompt_tombstone(owner_host, prompt_id,
-  at, reason, acked)` is an outbox retained until every grantee acknowledges; it is replicated
-  on greeting and applied by a peer that was offline, and `reset vault` emits one per body it
-  deletes. A deleted body is `body_state='deleted'`, not `none`, so a deletion is
+  at, reason, acked)` is an outbox retained until every grantee acknowledges; it is pushed when
+  a peer connects and when one is written, so a peer that was offline applies it on its return,
+  and `reset vault` emits one per body it deletes. A deleted body is `body_state='deleted'`, not `none`, so a deletion is
   distinguishable from a prompt analytics never captured. A peer that received a *relayed*
   copy, or one no longer on the grant list, is outside what a delete can reach; the face says
   so rather than claiming a deletion that cannot be delivered.
@@ -508,7 +556,10 @@ display only and held to the Rust enum by `test/prompt.test.ts`, the pattern
 `test/afar.test.ts` uses. A manual `kind_override` is local and is a reading, not training
 data. **An override updates the `prompt_hour` row in the same transaction**: the old kind's
 counts go down, the new kind's go up, so the mix, the redirect rate and the nudge rate follow
-the correction rather than going on counting the automatic answer.
+the correction rather than going on counting the automatic answer. Which hourly row that is
+comes off the fact, which is why `prompt_fact` carries `hour`, `account` and `provider` beside
+its own fields: without them the fine row names no rollup row to move the counts in, and the
+correction would stop at the trace.
 
 #### Retention, which is not ninety days for the things you keep
 
@@ -581,10 +632,13 @@ terminal session as `unknown` even when the parent had an owner.
 `<account uuid>:<organization uuid>` and `turn.account_label` yields a label, and the fact has
 to choose. It carries the **label** in `account`, because that is the key the allowance windows
 and section 5.2's denominator use, and the identity in `account_identity` when the transcript
-named one. `accounts.rs::identity` maps the pair to a label; an identity this wall has never
-registered, or whose label has not been learned, is `account = unknown` with the identity kept,
-and it lands in the residual. The two namespaces are never mixed in one column, and a query
-groups by the label.
+named one. The label is a lookup this design has to add, `accounts::label_for(identity)`
+running `SELECT label FROM account WHERE identity = ?`; `accounts.rs` has `identity` as a
+field on the account row and no such mapping today, so naming one that already existed would
+have sent an implementer looking for a function that is not there. An identity this wall has
+never registered, or whose label has not been learned, is `account = unknown` with the identity
+kept, and it lands in the residual. The two namespaces are never mixed in one column, and a
+query groups by the label.
 
 ### 4.1 A conversation is not one funding
 
@@ -722,7 +776,7 @@ the spend takes. So the attribution has three levels, not two:
 ```text
 card (conversation, account, provider)
   └── turn (account_label, usd, ending)
-        └── agent (agentId, requested model/effort, parent, depth)
+        └── agent (agentId, requested model, parent, depth)
               └── request (billed model, effort, tokens)
 ```
 
@@ -731,21 +785,31 @@ card (conversation, account, provider)
   card-spawned agent, 2 for one it spawned, and so on. `model` and `effort` are per record, so a
   subagent on Sonnet at high effort beside a card on Opus at max is two rows and two costs, not
   one blended number.
-- **`analytics_agent` is one row per subagent.** It keeps the **requested** model and effort
-  (read from the `Agent`/`Task` tool's input), the actual ones live in the usage facts, the
+- **`analytics_agent` is one row per subagent.** It keeps the **requested** model where the
+  call named one, the actual model and effort as they came off the subagent's own records, the
   type, the parent, the depth, the start and end, the turns and the cost. A difference between
-  requested and actual is a fallback, and the face can say so.
-- **The `Agent` tool call carries `child_agent`, `requested_model` and `requested_effort`** on
-  `tool_fact`, so the fan-out and the intent are visible beside what it actually cost.
+  requested and actual is a fallback, and the face can say so. **There is no requested
+  effort**, because the call has no such field: over 373 `Agent`/`Task` calls on this machine
+  the input keys are `description`, `prompt`, `subagent_type`, `run_in_background` and `model`
+  (on 7), and never `effort` or `thinking`. A requested model is therefore present on about
+  two calls in a hundred and `unknown` on the rest, which is a reading and not a fallback; the
+  effort the subagent actually ran at is on every request and is the stronger fact anyway.
+- **The `Agent` tool call carries `child_agent` and `requested_model`** on `tool_fact`, so the
+  fan-out and the intent are visible beside what it actually cost. The child's id arrives in
+  the call's *result*, so it is staged on `tool_pending` until the turn's facts are written.
 - **Account and provider are inherited, and that is a fact rather than an approximation.** A
   subagent is a turn inside the card's own process: the same credential store, the same base
   URL, the same provider. It cannot switch funding. A card opened with `spawn` is a **session of
   its own** with its own account and provider, linked by `spawned`/`flyway_child`, not an agent
   under this one. So a subagent's `account`/`provider` are the parent interval's, and the card's
   per-agent cost sum is the card's total.
-- **A depth the record cannot prove is `0` (unknown), not 1.** The parent link comes from the
-  `Agent` result's agent id or the subagent file's `parentUuid`; where neither is present, the
-  agent is drawn as a root with an unknown parent rather than guessed into the card.
+- **A depth the record cannot prove is `0` (unknown), not 1.** The parent link is the
+  `Agent`/`Task` call's result, whose `agentId` is the child (the same id the receipt's
+  `task-id` names), paired with the `agentId` of the request that made the call. **It is
+  never `parentUuid`**: that field is the message chain *inside* one file, so the first record
+  of a subagent file has it null and every later one points at an earlier record in the same
+  file, and no amount of reading it produces an agent. Where the call has no result, the agent
+  is drawn as a root with an unknown parent rather than guessed into the card.
 - **The agent view is a fine-tier reading.** `usage_hour` and `tool_hour` do not carry
   `agent`, `session` or `card`, because a three-year rollup keyed by subagent is a rollup of
   every subagent ever run. Agent-level and per-agent-tree questions stop at 90 days, and the
@@ -1019,22 +1083,32 @@ ships hourly rollups to peers and keeps them on disk here. So:
   the allowance residual is what says so. That is the one case no amount of syncing can fix,
   and it is drawn rather than hidden.
 
-**What crosses is analytics, never conversation content.** No prompt text, no tool arguments,
-no tool results, no file contents, no paths beyond a project name. The rows are counts,
-dimensions, costs and sizes. `tool_fact` keeps `out_bytes` and never the bytes, and the
-session row keeps a project name and never the working directory. This is a rule the schema
-enforces: there is no column a conversation could fit in.
+**What crosses by default is analytics, never conversation content.** No prompt text, no tool
+arguments, no tool results, no file contents, no paths beyond a project name. The rows are
+counts, dimensions, costs and sizes. `tool_fact` keeps `out_bytes` and never the bytes, the
+session row keeps a project name and never the working directory, and neither `usage_hour` nor
+`tool_hour` has a column a conversation could fit in. The one exception is deliberate and
+narrow: the **sealed prompt archive** of section 3.8, which crosses only to a peer you name on
+the grant list, and only as ciphertext that peer cannot open without the passphrase. It is
+still the only text that leaves this machine, so a reader who needs the short version should
+hear it as *counts by default; sealed bodies to named peers*, not as *nothing but counts ever
+crosses*. The distinction is drawn in the schema too: the replicate-by-default tables have no
+text column at all, and the archive's only text column is `body_sealed`.
 
 ### 7.4 Backfill from what Volery already stored
 
 `turn` rows survive from before this feature and carry per-card cost, tokens, account and
 ending. They are not the same grain as a transcript fact, but they are better than a hole. A
-one-time backfill writes a **daily aggregate per card** with `provenance: "turn"`, so:
+one-time backfill writes an **hourly aggregate per card** with `provenance = 'turn'` into
+`usage_hour` (a turn row carries a start and a cost, not a five-minute distribution, so the
+hour is the finest grain it can honestly claim), so:
 
 - old history is visible,
-- it is visibly coarser than the transcript facts beside it,
-- it never double-counts a day that transcript facts also cover, because the query layer
-  prefers transcript facts for a (session, day) and drops the turn-only row.
+- it is visibly coarser than the transcript facts beside it, at every tier,
+- it never double-counts an hour that transcript facts also cover, because both hourly rows
+  exist and the query layer prefers the transcript one. That preference survives the fine
+  tier's 90-day drop, which is why `provenance` is in `usage_hour`'s key and not only in
+  `usage_fact`'s.
 
 `turn.usd` is the CLI's own figure, so this backfill has `usd_reported` and no `usd_modeled`.
 That is honest and it is labelled. For a `@deepseek` or `@credits` turn, this is also the
@@ -1047,9 +1121,12 @@ That is honest and it is labelled. For a `@deepseek` or `@credits` turn, this is
 mapped to its session from the store alone. So the backfill is explicit about what it knows:
 
 - a conversation that has never been cleared maps every turn to its one session;
-- a conversation that has been cleared writes the backfilled day with `session = ''`,
-  `source = 'turn'` and the card id, and the query layer treats it as card-level history with
-  no session; it is never joined to a transcript fact;
+- a conversation that has been cleared cannot be mapped to one session, so its hourly row is
+  written with `provenance = 'turn'` and `source = 'card'`, and its per-card identity survives
+  only in the fine tier (a fact at the hour's start with the synthetic session
+  `turn:<conversation_id>`). Beyond ninety days it is project-and-account history with no
+  card, which is the same tier boundary every card-level question hits, and the face says so;
+  it is never joined to a transcript fact;
 - going forward, `turn.agent_session_id` is recorded at settle (the same schema rung as
   `turn.model` and `turn.provider`), so the join is exact for every new row.
 
@@ -1074,9 +1151,10 @@ would have been machinery without a problem.
 
 **Usage facts are append-only; a tool fact is written once, from a mutable pending row.** The
 one thing that is updated is `tool_pending`, keyed by `tool_use_id`, while a call waits for its
-result. That row never leaves the wall, and a tool fact is still written once, when the result
-lands. The distinction is worth keeping in the prose because "append-only" is what makes the
-union merge safe, and a mutable fact would undo it.
+result. That row never leaves the wall, and a tool fact is still written exactly once, at the
+turn's end, when the cost it is apportioned against is known. The distinction is worth keeping
+in the prose because "append-only" is what makes the union merge safe, and a mutable fact
+would undo it.
 
 ### 8.2 What travels, and when
 
@@ -1084,12 +1162,31 @@ union merge safe, and a mutable fact would undo it.
 Facts::can        gains  "analytics", "prompts"
 Facts::build      already says the Volery version
 Facts             gains  now: Option<Now>          -- the live reading, below
-frame "analytics"      { hosts: [{ host, days: [{ day, digest }] }] }
-frame "analytics_day"  { host, day, rows }         -- one day of hourly rows, on request
-frame "analytics_pull" { host, day }               -- fine facts for one day
-frame "analytics_fine" { host, day, rows }
-frame "prompt_archive" { host, vaults, rows, digest, count } -- sealed bodies, approved peers
+frame "analytics"        { hosts: [{ host, days: [{ day, digest }] }] }
+frame "analytics_day"    { host, day, rows, sessions }        -- hourly rows + their sessions
+frame "analytics_pull"   { host, day }                        -- fine facts for one day
+frame "analytics_fine"   { host, day, rows, sessions, agents }
+frame "prompt_manifest"  { owner, days: [{ day, rows, bytes, digest }] }
+frame "prompt_tombstones" { owner, rows: [{ prompt_id, at, reason }] }
+frame "prompt_tombstones_ack" { owner, prompt_ids }
+frame "prompt_archive"   { host, vaults, rows, digest, count } -- sealed bodies, approved peers
 ```
+
+- **A day's rows are useless without its dimensions, so they travel together.** `card` and
+  `branch` are resolved through `analytics_session`, and a tree is resolved through
+  `analytics_agent`; neither table is a fact, and neither was in any frame, so a remote fine
+  row could not be joined to the card or the agent that made it. Both frames now carry the
+  sidecars for the sessions and agents they name. They are per-session rows rather than
+  per-bucket, so a day is a few hundred at most.
+- **The prompt manifest is how a returning peer learns what it lacks**, and the tombstone
+  outbox is how it learns what it must delete. Both are asked for rather than broadcast: the
+  manifest is sent when a peer connects and again when an owner's prompt days change, paged by
+  day with a cursor so a three-year archive is never one frame; a peer with no tombstone for an
+  owner asks for the outbox, and one that has just forgotten pushes it. Neither rides the
+  thirty-second greeting, which is re-sent forever and times the whole exchange out. The
+  answer to a push is `prompt_tombstones_ack` naming the ids applied, which is what clears
+  `prompt_tombstone.acked` and what lets the face name the peers that acknowledged. Re-applying
+  is a no-op, the rule the union merge follows everywhere else.
 
 - **The manifest is keyed by the owner, not by the sender.** A wall that has merged A's and B's
   rollups must be able to say "I have A's Tuesday and B's Tuesday", so the frame carries a list
@@ -2054,18 +2151,18 @@ CREATE TABLE analytics_session (
   PRIMARY KEY (session, host)
 );
 
--- One row per subagent, so a tree can be read as a tree. The requested values
--- come from the Agent tool's input; the actual ones are in usage_fact, and a
--- difference between them is a fallback worth seeing.
+-- One row per subagent, so a tree can be read as a tree. The requested model
+-- comes from the Agent call's input (7 of 373 calls carried one); the actual
+-- model and effort are in usage_fact, and a difference is a fallback worth
+-- seeing. There is no requested_effort column because no call carries one.
 CREATE TABLE analytics_agent (
   agent_id        TEXT NOT NULL,
   session         TEXT NOT NULL,
   host            TEXT NOT NULL,
   parent_agent    TEXT NOT NULL DEFAULT '',   -- '' when the card spawned it
-  depth           INTEGER NOT NULL DEFAULT 1,
+  depth           INTEGER NOT NULL DEFAULT 0, -- 0 = the record proves no parent
   kind            TEXT NOT NULL DEFAULT 'subagent', -- subagent | task | workflow
-  requested_model TEXT NOT NULL DEFAULT '',
-  requested_effort TEXT NOT NULL DEFAULT '',
+  requested_model TEXT NOT NULL DEFAULT '',   -- '' = the call named none
   started_at      INTEGER NOT NULL,
   ended_at        INTEGER,
   turns           INTEGER NOT NULL DEFAULT 0,
@@ -2088,8 +2185,7 @@ CREATE TABLE tool_fact (
   tool      TEXT NOT NULL,
   target    TEXT NOT NULL DEFAULT '',      -- subagent type or skill name
   child_agent TEXT NOT NULL DEFAULT '',    -- the agent an Agent/Task call opened
-  requested_model TEXT NOT NULL DEFAULT '',
-  requested_effort TEXT NOT NULL DEFAULT '',
+  requested_model TEXT NOT NULL DEFAULT '',-- the model the call's input named
   calls     INTEGER NOT NULL DEFAULT 0,
   errors    INTEGER NOT NULL DEFAULT 0,
   ms_total  INTEGER NOT NULL DEFAULT 0,
@@ -2101,7 +2197,8 @@ CREATE TABLE tool_fact (
 );
 
 -- A call in flight: mutable, local, never synced. The result lands later and
--- resolves this row; the immutable tool_fact is written when it does.
+-- resolves this row; the turn's result then writes the immutable tool_fact
+-- rows from it. child_agent arrives with the result, so it is staged here.
 CREATE TABLE tool_pending (
   tool_use_id TEXT PRIMARY KEY,
   at          INTEGER NOT NULL,
@@ -2112,6 +2209,8 @@ CREATE TABLE tool_pending (
   server      TEXT NOT NULL DEFAULT '',
   tool        TEXT NOT NULL,
   target      TEXT NOT NULL DEFAULT '',
+  child_agent TEXT NOT NULL DEFAULT '',
+  requested_model TEXT NOT NULL DEFAULT '',
   async       INTEGER NOT NULL DEFAULT 0,
   resolved_at INTEGER
 );
@@ -2187,9 +2286,10 @@ CREATE TABLE usage_hour (
   cli      TEXT NOT NULL DEFAULT '',
   source   TEXT NOT NULL,
   project  TEXT NOT NULL,
+  provenance TEXT NOT NULL DEFAULT 'transcript',  -- transcript | turn
   in_tok, out_tok, cache_read, write_5m, write_1h, requests INTEGER NOT NULL DEFAULT 0,
   usd_reported REAL NOT NULL DEFAULT 0,
-  PRIMARY KEY (hour, host, account, provider, model, effort, cli, source, project)
+  PRIMARY KEY (hour, host, account, provider, model, effort, cli, source, project, provenance)
 );
 
 -- The tool half of the hourly tier. The latency buckets are what let a month
@@ -2288,11 +2388,14 @@ CREATE TABLE prompt_fact (
   host          TEXT NOT NULL,
   prompt_id     TEXT NOT NULL,
   at            INTEGER NOT NULL,   -- first occurrence
+  hour          INTEGER NOT NULL,   -- the rollup row this fact counts in
   seen_count    INTEGER NOT NULL DEFAULT 1,
   session       TEXT NOT NULL,
   card          TEXT NOT NULL DEFAULT '',
   project       TEXT NOT NULL DEFAULT '',
   source        TEXT NOT NULL DEFAULT 'unknown',
+  account       TEXT NOT NULL DEFAULT 'unknown',  -- the interval's, as on usage_fact
+  provider      TEXT NOT NULL DEFAULT 'unknown',
   vault_id      TEXT NOT NULL DEFAULT '',
   kind          TEXT NOT NULL DEFAULT 'other',
   kind_override TEXT,
@@ -2308,8 +2411,16 @@ CREATE TABLE prompt_fact (
   body_state    TEXT NOT NULL DEFAULT 'none', -- sealed | locked | withheld | deleted | none
   body_truncated INTEGER NOT NULL DEFAULT 0,
   body_sealed   BLOB,                          -- nonce(12) || ciphertext || tag
-  source_path   TEXT,                          -- local only, while locked
-  source_off    INTEGER,                       -- local only, while locked
+  PRIMARY KEY (host, prompt_id)
+);
+
+-- Where a body that was ingested while locked can be found again. A table of
+-- its own, and local-only, so the archive serializer has no path to carry.
+CREATE TABLE prompt_locator (
+  host      TEXT NOT NULL,
+  prompt_id TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  off       INTEGER NOT NULL,
   PRIMARY KEY (host, prompt_id)
 );
 
@@ -2332,7 +2443,9 @@ CREATE TABLE prompt_hour (
   redactions INTEGER NOT NULL DEFAULT 0,
   withheld   INTEGER NOT NULL DEFAULT 0,
   -- A median cannot come from sums; these buckets are what a year of prompt
-  -- length can honestly answer.
+  -- length can honestly answer. The bands are exclusive and exhaustive:
+  -- 0-15, 16-63, 64-255, 256-1023, 1024+. They sum to `prompts`, and a test
+  -- asserts it, so a band added without its neighbour subtracted is caught.
   words_under_16 INTEGER NOT NULL DEFAULT 0,
   words_under_64 INTEGER NOT NULL DEFAULT 0,
   words_under_256 INTEGER NOT NULL DEFAULT 0,
@@ -2499,16 +2612,24 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   says so; an exact p95 is a 90-day reading.
 - **The manifest names the owner.** A wall holding two owners' days says both, and a peer asks
   for `(owner, day)`; a corrected day replaces the old one by digest.
+- **A remote card and agent resolve.** A fine day pulled from a peer joins its rows to the
+  `analytics_session` and `analytics_agent` sidecars carried in the same answer, so `card`,
+  `branch` and the agent tree are populated for another wall's data rather than silently
+  empty.
+- **A prompt day a peer lacks is asked for by digest.** The `prompt_manifest` names each day's
+  rows, bytes and digest; a mismatch refuses the archive whole; a tombstone pushed to a
+  returning peer is applied and acknowledged by id, and re-applying changes nothing.
 - **A deleted saved view leaves a drawn widget standing.** The widget keeps its last resolved
   snapshot, says the view is gone, and the first edit becomes an inline spec.
 - **An anonymized report carries no host, branch or filter value.** The model and the embedded
   view spec are both scrubbed.
 - **A partial residual is labelled.** A host that sent samples but no facts makes the residual
   *partial*, and the headline says so instead of inventing residual.
-- **A prompt is one row, not a tool result.** A five-day fixture with 28,879 `user` records
-  yields 825 human prompts; 27,222 tool results, 360 task notifications, 299 sidechain turns,
-  214 system reminders, 21 stop notes and 21 compaction summaries are excluded, and a repeated
-  `promptId` counts once.
+- **A prompt is one row, not a tool result.** A five-day fixture with 29,268 `user` records
+  yields 832 human prompts, and the excluded classes partition the rest: 19,694 tool results,
+  7,858 sidechain turns, 362 task notifications, 341 oversized records, 111 system reminders,
+  27 injected commands, 23 compaction summaries, 19 stop notes and 1 record with no text. The
+  classes sum to the total, and a repeated `promptId` counts once.
 - **Redaction takes out the corpus, and the raw is absent.** Every fake secret in the corpus is
   replaced; the stored row and a serialized flyway frame contain no raw prompt; a withheld
   body keeps its form counts.
@@ -2525,27 +2646,42 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   survives a restart of the wall that forgot, and `reset vault` emits one per body.
 - **Two identical bodies seal to different blobs.** The same text under the same key produces
   two different ciphertexts because the nonce is fresh, and a one-byte tamper fails to open.
-- **A locked body is sealed when the vault unlocks.** The `source_path`/`source_off` locator
-  seeks to the line and seals it; a prompt whose transcript is gone stays `locked` with its
-  form intact.
+- **A locked body is sealed when the vault unlocks.** The `prompt_locator` row seeks to the
+  line and seals it, and is deleted once the body is sealed; a prompt whose transcript is gone
+  stays `locked` with its form intact. A serialized archive frame carries no locator, because
+  the locator is not on `prompt_fact` and no serializer reads that table.
 - **Two vaults are both readable.** A wall that receives a second `prompt_vault` keeps both,
   and a body names the vault that seals it; neither key is overwritten.
-- **The prompt filter is `prompt_of`.** A fixture with a stop note, a task notification, a
-  compaction summary and a prompt carrying a `<system-reminder>` yields one prompt; the
-  five-day scan yields 825 prompts out of 28,879 user records.
+- **The prompt filter is `prompt_of`'s fold.** A fixture with a stop note, a task
+  notification, a compaction summary and a prompt carrying a `<system-reminder>` yields one
+  prompt; the five-day scan yields 832 prompts out of 29,268 user records, and the classes
+  partition; a fenced prompt reaches the form with its lines and fences intact, which the
+  flattened title path would have destroyed.
 - **A repeated prompt id keeps the first.** A prompt written twice at two timestamps produces
   one row at the first `at` with `seen_count = 2`, and a stop note sharing the id does not
   replace it.
 - **A subagent is its own agent.** A subagent on Sonnet at high effort inside an Opus card
-  produces its own usage rows, its own `analytics_agent` row with the requested model and
-  effort, and its cost adds to the card without being folded into it; a nested subagent is
-  depth 2 and a parent the record cannot prove is depth 0.
+  produces its own usage rows, its own `analytics_agent` row, and its cost adds to the card
+  without being folded into it. The row's `requested_model` is the call's `model` when it
+  named one and empty otherwise; the high effort is read off the subagent's own records,
+  because no call carries an effort. A nested subagent is depth 2, resolved from the parent
+  call's result `agentId`, and a parent the record cannot prove is depth 0. A `parentUuid`
+  from the subagent file is never used as an agent link.
 - **`project`, `source` and `provenance` are in the key.** Two projects in one bucket, or a
   transcript fact and a `turn` backfill for one day, produce two rows rather than a collision.
 - **A tool row's `turn_usd` sums to the turn.** Two tools in one turn carry shares that add up
-  to the turn's cost, not two copies of it.
+  to the turn's cost, not two copies of it, and both rows are written by the turn's `result`
+  rather than when each result landed. A `tool_pending` row whose result never arrived is
+  written as `no-result`.
+- **An `Agent` result reaches its tool fact.** The child id and the requested model arrive
+  after the call, and the fact written at the turn's end carries both; the pending row holds
+  them in between.
+- **A year of hourly totals does not double-count a backfill.** `usage_hour` separates
+  `transcript` from `turn` in its key and the query prefers the transcript row, so a day
+  covered by both reads once, including after the fine rows have aged out.
 - **A year's median is labelled.** A prompt-length median over months comes from the word
-  buckets and says so; an exact median is a 90-day reading.
+  buckets and says so; an exact median is a 90-day reading. The five buckets are exclusive and
+  sum to `prompts`.
 - **An identity becomes a label or unknown.** A registered `uuid:org` maps to its label; an
   unregistered one is `unknown` with the identity kept, and lands in the residual.
 - **A direct account move does not relabel a running turn.** A `/account` while a turn is in
@@ -2573,10 +2709,12 @@ are the ones behind the figures, and the first should become a committed `tools/
 before phase 1 rather than staying a scratch script:
 
 - **the transcript scans** (prompt filter, tool counts, `session-owner` coverage, provider
-  models, duplicate `promptId`s) were one-off Node scans over `~/.claude/projects` on
-  2026-11-11, reading no prompt text out and writing nothing. They are the evidence for 28,879
-  user records, 825 prompts, 355 subagent files with no owner, and the five provider-probe
-  transcripts.
+  models, duplicate `promptId`s, `Agent`/`Task` input keys) were one-off Node scans over
+  `~/.claude/projects` on 2026-11-11, reading no prompt text out and writing nothing. They are
+  the evidence for 29,268 user records, 832 prompts, 355 subagent files with no owner, the
+  input keys of 373 `Agent`/`Task` calls, and the five provider-probe transcripts. The
+  partition was re-measured once the review pointed out that the earlier figures were
+  independent counts of overlapping markers rather than a breakdown.
 - **the palette** was checked with the dataviz skill's `validate_palette.js` against the app's
   surface `#1e1a18` on 2026-11-11; the output is quoted in section 10.1.
 - **the tool counts** are one five-day scan, not a running probe; they are a shape, not a
@@ -2599,8 +2737,10 @@ not re-opened by accident.
 1. **Recording** is always on, with a switch that defaults to on. The ingest pass is a local
    incremental read with no network; the **flyway sync is a separate operation** and it is
    what makes a reopened wall remember what its peers consumed while they were on. Merged
-   rollups are stored on every wall, so a peer going dark does not erase its history.
-   Analytics only; no conversation content crosses or is stored.
+   rollups are stored on every wall, so a peer going dark does not erase its history. Analytics
+   only by default: no conversation content crosses or is stored. The one exception is decision
+   11's sealed prompt archive, which crosses only to a peer named on the grant list and only as
+   ciphertext that peer cannot read without the passphrase.
 2. **Fine usage facts** are 90 days at five minutes, hourly for three years. The fine tier is
    tens of megabytes at the rate measured here. **Prompt bodies are not on that clock**: they
    are sealed, kept until deleted, and a favourite is exempt, per section 3.8.
@@ -2635,10 +2775,13 @@ not re-opened by accident.
     `NULL` is unknown; the rate query takes the latest `from_at`, and a one-clock model prices
     every hour. Each has a test in section 19.
 13. **A subagent is its own agent.** Its model and effort are recorded per request, its parent
-    and depth are kept, and `analytics_agent` holds the requested model and effort beside the
-    actual; account and provider are inherited from the card, because a subagent runs in the
-    card's process and cannot switch funding. A card opened with `spawn` is a separate session,
-    not an agent. Agent-level questions stop at the 90-day tier.
+    and depth are kept, and `analytics_agent` holds the requested model where a call named one
+    beside the actual; account and provider are inherited from the card, because a subagent
+    runs in the card's process and cannot switch funding. **There is no requested effort,
+    because the `Agent` call has no such field** (measured over 373 calls); the effort the
+    subagent actually ran at is on every request and is the reading that matters. A card
+    opened with `spawn` is a separate session, not an agent. Agent-level questions stop at the
+    90-day tier.
 
 ### 20.1 One left: how live is another machine
 
