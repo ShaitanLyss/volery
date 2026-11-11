@@ -153,7 +153,7 @@ export type Territory = { name: string; x: number; y: number; w: number; h: numb
 export const PLANE_W = 900;
 export const PLANE_H = 372;
 export const SHOW_CARD_W = 168;
-export const SHOW_CARD_H = 74;
+export const SHOW_CARD_H = 80;
 
 export const WALL_TERRITORIES: readonly Territory[] = [
   { name: "portfolio", x: 34, y: 46, w: 350, h: 286 },
@@ -836,9 +836,9 @@ export const NEXT: readonly NextItem[] = [
   {
     title: "models on azure",
     body:
-      "A card already rides whichever Anthropic-compatible endpoint its provider points at, which is how DeepSeek works today. Azure OpenAI and Azure AI Foundry are the same shape: per-card provider and model, billed to the organisation, with the Claude allowance no longer the ceiling.",
-    when: "available today",
-    tone: "now",
+      "A card already rides whichever Anthropic-compatible endpoint its provider points at, which is how DeepSeek works today. An Azure-hosted model is the next row in that table: per-card provider and model, billed to the organisation, with the Claude allowance no longer the ceiling. It needs an endpoint that speaks the same API, or an adapter if it does not.",
+    when: "next",
+    tone: "next",
   },
   {
     title: "more surfaces",

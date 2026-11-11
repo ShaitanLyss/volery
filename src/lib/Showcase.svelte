@@ -38,13 +38,18 @@
 
   const chapter = $derived(CHAPTERS[at] ?? CHAPTERS[0]);
 
-  $effect(() => {
-    root?.focus();
-  });
-
+  /* One effect owns the keyboard, and it runs on every chapter, including the
+   * first. A chapter that took the focus itself would lose it when the next
+   * one unmounts it, leaving focus on `body` and every tour key dead, which is
+   * exactly what the UI review found. So a chapter marks the element its keys
+   * belong to with `data-tour-focus`, and the shell hands it back after the
+   * keyboard owns the new one. No chapter focuses itself. */
   $effect(() => {
     void at;
-    if (scroller) scroller.scrollTop = 0;
+    if (!scroller) return;
+    scroller.scrollTop = 0;
+    const inside = scroller.querySelector<HTMLElement>("[data-tour-focus]");
+    (inside ?? root)?.focus({ preventScroll: true });
   });
 
   function go(n: number) {
@@ -182,7 +187,10 @@
         </div>
       {/key}
 
-      <div class="nav">
+    </div>
+
+    <div class="nav">
+      <div class="navin">
         <button type="button" class="ghost" onclick={() => (at = previousChapter(at))}>
           <span aria-hidden="true">&larr;</span>{at === 0 ? "the end" : CHAPTERS[previousChapter(at)].title}
         </button>
@@ -421,13 +429,24 @@
       transform: translateY(7px);
     }
   }
+  /* The chapter's own bar stays at the foot of the window. Six of nine
+     chapters are taller than 800px, and a next button below the fold is a
+     next button a presenter has to find while a room waits. */
   .nav {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    margin: 26px -52px -56px;
+    padding: 13px 52px 15px;
+    border-top: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
+    background: linear-gradient(180deg, transparent, var(--well) 34%), var(--well);
+  }
+  .navin {
+    max-width: 980px;
+    margin: 0 auto;
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-top: 30px;
-    padding-top: 16px;
-    border-top: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
   }
   .ghost,
   .primary {
@@ -483,10 +502,12 @@
     .railfoot {
       display: none;
     }
+    /* Wrapped rather than scrolled sideways: four chapters hidden behind a
+       scrollbar is four chapters nobody knows are there. */
     .chapters {
       display: flex;
+      flex-wrap: wrap;
       gap: 4px;
-      overflow-x: auto;
       padding-bottom: 6px;
     }
     .ch {
@@ -505,6 +526,10 @@
     }
     .headline {
       font-size: 30px;
+    }
+    .nav {
+      margin: 22px -20px -40px;
+      padding: 11px 20px 13px;
     }
     .ghost {
       display: none;

@@ -107,14 +107,23 @@
     color: var(--paper-faint);
     white-space: nowrap;
   }
+  /* Volery's column stays on screen when the table is wider than the window.
+     It is the column the chapter is about, and at 800px it used to sit off the
+     right edge with nothing saying so. Opaque, or the cells scrolling under it
+     would show through. */
   .matrix th.vol {
+    right: 0;
+    z-index: 3;
     background: linear-gradient(180deg, color-mix(in oklab, var(--st-work) 12%, var(--surface)), var(--surface));
   }
   .matrix th.vol .nm {
     color: var(--st-work);
   }
   .matrix td.vol {
-    background: color-mix(in oklab, var(--st-work) 5%, transparent);
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: color-mix(in oklab, var(--st-work) 5%, var(--surface));
   }
   .rowlab {
     font-weight: 400;
@@ -132,7 +141,7 @@
     background: color-mix(in oklab, var(--raised) 42%, transparent);
   }
   tbody tr.lit td.vol {
-    background: color-mix(in oklab, var(--st-work) 10%, transparent);
+    background: color-mix(in oklab, var(--st-work) 10%, var(--raised));
   }
   .cell {
     display: flex;

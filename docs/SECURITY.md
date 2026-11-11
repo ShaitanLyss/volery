@@ -368,6 +368,11 @@ Concretely, the first release:
 The second release adds the device key and member approval, and makes the TOTP one factor of
 two.
 
+Where it lands: `flyway/key.rs::join` and `start` (the secret's home and the join gate),
+`flyway/here.rs` (the accepting switch and what a wall announces), and `flyway/link.rs` for
+the verbs that cross. The join frame gains a versioned field, and an older wall refuses it by
+version rather than ignoring it, so a mixed flyway fails loudly and in the safe direction.
+
 ### What to test
 
 - A join with a valid phrase and a wrong code is refused, and says why.
@@ -422,6 +427,10 @@ and it makes the "move my wall to a new laptop" story explicit.
 Do **Option 1 and Option 2 together**, in that order. Option 1 gives a test and an honest
 error message; Option 2 gives the binding by construction. Skip Option 3 until there is a
 reason to pay for it.
+
+Where it lands: `vault.rs::store_at` and `read_at`, so every service goes through one place.
+A read of an untagged blob wraps it and writes it back, which is the migration. `creds.rs` and
+`integrations.ts` do not change, because a service id still names a target.
 
 Also cover the **Claude account stores**. `accounts.rs` keeps one credential store per
 account under a directory selected by `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `signin.rs`

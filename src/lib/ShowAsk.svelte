@@ -25,9 +25,8 @@
   const options = $derived(stage === "second" ? ASK_SECOND.options : ASK.options);
   const onQuestion = $derived(stage === "first" || stage === "second");
 
-  $effect(() => {
-    root?.focus();
-  });
+  /* The shell focuses this, through `data-tour-focus`. It used to focus
+     itself, which won on a direct load and took the tour's own keys away. */
 
   function pick(answer: string) {
     if (stage === "first") {
@@ -69,7 +68,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="askwrap" role="group" aria-label="a question from an agent" tabindex="-1" bind:this={root} onkeydown={key}>
+<div class="askwrap" role="group" aria-label="a question from an agent" tabindex="-1" data-tour-focus bind:this={root} onkeydown={key}>
   <div class="who">
     <span class="proj">portfolio</span>
     <span class="title">Split the billing migration</span>

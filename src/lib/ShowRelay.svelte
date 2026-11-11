@@ -113,7 +113,7 @@
     {/if}
   </div>
 
-  <div class="verbs" role="group" aria-label="what a card can do">
+  <div class="verbs" role="group" aria-label="what a card can do" tabindex="-1" data-tour-focus>
     {#each VERBS as v (v.id)}
       <button type="button" class="verb" class:on={act === v.id} onclick={() => choose(v.id)}>
         <span class="vlab">{v.label}</span>

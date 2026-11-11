@@ -31,7 +31,7 @@
 </script>
 
 <div class="desk">
-  <div class="rows" role="listbox" aria-label="the rest of the desk" tabindex="0"
+  <div class="rows" role="listbox" aria-label="the rest of the desk" tabindex="0" data-tour-focus
     onkeydown={(e) => {
       const i = DESK.findIndex((d) => d.id === at);
       if (e.key === "ArrowDown" || e.key === "j") {

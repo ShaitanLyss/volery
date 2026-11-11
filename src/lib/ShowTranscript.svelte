@@ -44,7 +44,7 @@
 
       <div class="md prose"><Markdown blocks={before} nav={false} /></div>
 
-      <button class="run" type="button" aria-expanded={open} onclick={() => (open = !open)}>
+      <button class="run" type="button" data-tour-focus aria-expanded={open} onclick={() => (open = !open)}>
         <span class="chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
         <span class="word">{summary}</span>
         <span class="last">{CARD_RUN[CARD_RUN.length - 1].tool} · {CARD_RUN[CARD_RUN.length - 1].subject}</span>

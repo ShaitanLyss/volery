@@ -61,7 +61,7 @@
     </div>
 
     <div class="controls">
-      <button type="button" class="switch" class:on={stolen} role="switch" aria-checked={stolen} onclick={() => (stolen = !stolen)}>
+      <button type="button" class="switch" data-tour-focus class:on={stolen} role="switch" aria-checked={stolen} onclick={() => (stolen = !stolen)}>
         <span class="knob" aria-hidden="true"></span>
         <span class="sword">steal the wall key</span>
       </button>

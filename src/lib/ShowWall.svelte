@@ -32,6 +32,11 @@
   let panY = $state(0);
   let fitted = false;
   let dragging = $state(false);
+  /** Whether the press has travelled far enough to be a drag. Until it has,
+   *  the pointer is not captured, because capturing on `pointerdown` retargets
+   *  the eventual click to the viewport and swallows every card's own click.
+   *  That is the bug `Canvas.groundDown` exists to stop, and it bit here. */
+  let captured = false;
   let moved = false;
   let fromX = 0;
   let fromY = 0;
@@ -104,19 +109,24 @@
   function down(e: PointerEvent) {
     if (e.button !== 0) return;
     dragging = true;
+    captured = false;
     moved = false;
     fromX = e.clientX;
     fromY = e.clientY;
     panFromX = panX;
     panFromY = panY;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   function move(e: PointerEvent) {
     if (!dragging) return;
     const dx = e.clientX - fromX;
     const dy = e.clientY - fromY;
-    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    if (!captured) {
+      if (Math.abs(dx) + Math.abs(dy) <= 4) return;
+      captured = true;
+      moved = true;
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    }
     panX = panFromX + dx;
     panY = panFromY + dy;
     clampPan();
@@ -124,6 +134,8 @@
 
   function up(e: PointerEvent) {
     dragging = false;
+    if (!captured) return;
+    captured = false;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {
@@ -183,6 +195,8 @@
       class="viewport"
       bind:this={viewport}
       role="application"
+      tabindex="-1"
+      data-tour-focus
       aria-label="a demonstration wall. drag to pan, wheel to zoom, click a card."
       onpointerdown={down}
       onpointermove={move}
