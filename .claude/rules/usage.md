@@ -611,9 +611,13 @@ the `turn` table rather than the transcripts, and its window is the **local day*
   as `chat.md`'s "unknown falls to `project`": both directions are wrong, and this is the one
   whose symptom is visible in the data rather than absent from it.
 
-- **No index on `turn.ended_at`.** One row per settled turn, summed as a turn settles and
-  once when the day rolls; an index would cost a migration to save a fraction of a
-  millisecond.
+- **The `turn` indexes are for the analytics interval, not for the day's sum.**
+  `migrate_v61` creates `turn_by_session(agent_session_id, ended_at)` and
+  `turn_by_conversation(conversation_id, ended_at)` because a turn is a row from its open and
+  the analytics layer claims a call by the interval it occupied. The sum itself still walks
+  rows once as a turn settles and once when the day rolls, and pays no index beyond those.
+  **A row exists before it has an end**, so every sum over `turn` carries
+  `ended_at IS NOT NULL`; `MAX(ended_at)` needs nothing, because a NULL is ignored.
 - **`snapshot.spendSince` is reported beside `spend`**, because a day's total and a session's
   are the same lone number from outside and only the cutoff says which window this one is.
 

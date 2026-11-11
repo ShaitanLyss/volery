@@ -836,10 +836,11 @@ The worked example the acceptance tests replay:
 The conversation's current row says `@deepseek` for all of it. The facts say otherwise, per
 interval, which is the whole point.
 
-`turn.model` and `turn.provider` are appended by the analytics rung rather than by a second
-rung of their own, and `record_turn` takes them as `Option` with a fallback to the card's
-current values. A Tauri argument the front end forgets must not fail the whole command, which
-is the `lastTier` lesson and the reason `kind` is optional too.
+`turn.model` is read off the conversation by `open_turn`, and `turn.provider` is left NULL and
+derived from `account_label` (§4.1), so neither travels as an argument and there is nothing for
+a front end to forget. `kind` and `account_label` stay optional on `record_turn` for the
+`lastTier` reason: they are facts only the front end has, and a required one would lose the
+whole row rather than a label.
 
 ### 4.2 What each record already carries
 
@@ -2336,15 +2337,16 @@ measured or reasoned basis.
 
 ## 17. Schema
 
-One new schema rung (the store is at v60), with the tables above, and the rung stamps its own
-version in the same transaction. **The SQL below is the shape each table has, not a script to
-paste.** Every added column goes through `add_column`, every index is `CREATE INDEX IF NOT
-EXISTS`, and every table is `CREATE TABLE IF NOT EXISTS`, because a rung that is ever re-run
-must not fail on its own second pass; that is the v9 lockout in `CLAUDE.md`, and a bare
-`ALTER`/`CREATE INDEX` in an illustrative block is exactly how it gets copied in.
+**Two rungs, because the turn had to come first.** `migrate_v61` rebuilds `turn` (§4) and
+`migrate_v62` creates the tables below; each stamps its own version in the same transaction.
+**The SQL below is the shape each table has, not a script to paste.** Every added column goes
+through `add_column`, every index is `CREATE INDEX IF NOT EXISTS`, and every table is
+`CREATE TABLE IF NOT EXISTS`, because a rung that is ever re-run must not fail on its own
+second pass; that is the v9 lockout in `CLAUDE.md`, and a bare `ALTER`/`CREATE INDEX` in an
+illustrative block is exactly how it gets copied in.
 
 ```sql
--- v61: analytics
+-- v62: the analytics facts (v61 rebuilt `turn`; see §4)
 CREATE TABLE analytics_session (
   session        TEXT NOT NULL,
   host           TEXT NOT NULL,
