@@ -344,8 +344,10 @@ tool_fact(
 
 **The grain is the turn, not the five-minute bucket**, because the apportionment is exact only
 if every row belongs to one turn and one cost. A turn writes one row per tool it used, at the
-turn's `ended_at`; a call no turn claims keeps the bucket grain with `turn_id = ''`. Section
-17 has the same table as it is built.
+turn's `ended_at`; a call no turn claims keeps the bucket grain with `turn_id = ''`. A long
+turn's calls therefore land in the hour it ended, which is deliberate: the turn is one bill,
+and spreading it over the hours it ran would invent a distribution the cost does not carry.
+Section 17 has the same table as it is built.
 
 - **`ms_total` is measured**, not estimated: the result record and the call record are joined
   on `tool_use_id`, and the difference of their timestamps is the wall-clock wait. A call with
@@ -369,36 +371,68 @@ turn's `ended_at`; a call no turn claims keeps the bucket grain with `turn_id = 
   labelled *apportioned*: a division of a measured number, not a guess at a hidden one. The
   inspector says which of the two it is, always.
 
-- **A turn has an id before it has a row.** `send_prompt` mints `turn.open_id` at the open, the
-  same call that records the label, and `record_turn` writes it onto the settled row. The id is
-  therefore available to the ingestor while the turn is still running, which is the whole of
-  how a call is claimed by the right turn without waiting for the row to exist.
+- **A turn has an id before it has a row, and it is minted where every prompt is written.**
+  `deliver_blocks` is the one door into a child's stdin: your send reaches it through
+  `send_prompt`, and so do the rousing queue, a relay, an inbox drain, a `wake_me` and the
+  CLI's own task notifications. A turn opened by any of those has no `send_prompt` anywhere
+  near it, which is why the id is minted there rather than in the front end's send. The open is
+  written durably, `turn_open(open_id, session, card, open_at, account, provider)`, because the
+  ingestor is a different thread and must be able to read it. It is written on the `Sent`
+  answer alone: a prompt the renewal hold took opened no turn, and neither did one the spending
+  cap refused. `record_turn` reads that row itself and writes `open_id`, `open_at` and
+  `ended_at` onto the `turn`, then deletes it. **No new argument travels to the front end**,
+  which is deliberate: an optional `openId` a caller can forget is the `lastTier` failure
+  exactly, and its symptom would be a turn whose tools are all no-turn.
 
 - **The settle signal is Volery's own `record_turn`, not anything in the transcript.** This is
   the part the first draft got wrong, and the measurement is blunt: across **466 transcript
   files on this machine, `"type":"result"` appears in none of them.** A `result` is a stdout
   event the live stream carries; the transcript records `assistant`, `user`, `attachment`,
   `api-request` and the rest, and it never marks where a turn ended. So the analytics pass
-  cannot listen for one. What it folds instead is a `turn` row it has not consumed yet: the
-  front end's `record_turn` writes that row at the `result`, and it carries `ended_at`, `usd`,
-  `account_label`, `open_id` and, once the schema rung lands, `agent_session_id`. **A call is
-  claimed by the turn that was open when it was written**, which is `turn.open_id` stamped onto
-  `tool_pending.turn_id` by the pass. When the turn settles, its pending rows are folded after
-  a short grace, so a result that lands just after `ended_at` is still included; the fold
-  writes `tool_fact` with that `turn_id` and the apportioned share, and records it in
-  `analytics_fold(turn_id PRIMARY KEY, at)`, so the same turn is never folded twice. A result
-  arriving after its turn has folded is written by the sweep as a no-turn row: the turn still
-  sums to exactly its reported cost, and the call's latency is still recorded rather than
-  silently lost. One writer, in Rust, reading two tables the app already keeps.
+  cannot listen for one. What it folds instead is a `turn` row it has not consumed yet.
+
+- **A call is claimed by its own timestamp against the turn's interval, never by "whatever is
+  open now".** The pass runs on a clock and can be a prompt behind, so asking which turn is
+  currently open would stamp turn N's tail with turn N+1's id and apportion it N+1's cost.
+  The interval is the one section 4 already reconstructs, `[open_at, ended_at)`, and every
+  call in it is that turn's. A subagent's call is claimed by the turn its **spawning call**
+  fell in, not by the turn running when the subagent happened to act: that is the only rule
+  that keeps a background agent's work out of the card's next turn. Where the spawn cannot be
+  resolved, the call falls back to its own timestamp, and a call whose interval names no turn
+  is no-turn.
+
+- **The fold is one transaction, and it clears what it consumed.** A turn is folded once its
+  `ended_at` is a short grace old, which is what lets a result landing just after the turn's
+  end be written rather than swept. The pass then writes its `tool_fact` rows, inserts
+  `analytics_fold(turn_id NOT NULL PRIMARY KEY, at)`, and **deletes the `tool_pending` rows it
+  folded**, all in one transaction, and it folds every eligible turn before it sweeps. Without the
+  delete, every settled turn's calls would later satisfy the sweep and be written a second
+  time as no-turn rows: the same call counted twice, on the ordinary path, before any crash is
+  involved. The fact's own key makes a re-run harmless (`INSERT … ON CONFLICT DO NOTHING`), so
+  a crash between the write and the marker costs one re-read and changes nothing, and
+  `tool_hour` is incremented only for the rows that actually inserted. Exactly-once rests on
+  the fact key; the marker is what stops a pointless re-read.
+
+- **An unresolved call is written once, as `no-result`, and stays that way.** A pending row
+  whose result has not arrived when its turn folds is written with its `calls` and no time,
+  and deleted with the rest. A result landing after that finds no pending row and is dropped:
+  the row keeps `no-result`. The alternative, writing the late result as a no-turn row, would
+  put one call in two rows, and `tool_fact` has no `tool_use_id` to match them by. Losing a
+  late latency is the smaller loss and it is bounded by the grace.
 
 - **A call can belong to no turn, and it is kept rather than dropped.** A terminal session has
   no `turn` row at all, a card killed mid-turn never produced one, and a background agent's
-  calls can finish after its card's. So the same pass sweeps any `tool_pending` row older than
-  a bounded wait that no open turn claims and writes it with `turn_id = ''` and
-  `turn_usd = 0`, labelled *no-turn*. Its calls, errors, latency and bytes survive; only the
-  money is absent, which is the right way round for a table whose second job is to name a slow
-  server. Without that arm the page would lose exactly the dead and background turns it exists
-  to explain.
+  calls can finish after its card's. The sweep writes a pending row once its `turn_id` is
+  neither open (a row in `turn_open`) nor folded (`analytics_fold`), and it is older than a
+  bounded wait, with `turn_id = ''` and `turn_usd = 0`, labelled *no-turn*. **An open row is
+  cleared by whoever ends the turn**: `record_turn` deletes it once the `turn` row carries its
+  `open_id` and `open_at`, and the reader thread deletes it when the stream closes with no
+  `result`, which is what makes a killed card's calls sweepable rather than stuck behind a
+  claim nobody will ever settle. **Age alone is not the test**: a twenty-minute tool call inside
+  a live turn is old and claimed, and testing age would write it twice. Its calls, errors, latency and bytes survive; only the money is
+  absent, which is the right way round for a table whose second job is to name a slow server.
+  The denominator is the turn's own rows, so a no-turn row is outside it by construction and
+  the turn still sums to exactly its reported cost.
 - **Skills and agents are tool calls, and a second signal.** An explicit `Skill` call carries
   the skill name in its input; an `Agent`/`Task` call carries the subagent type. Separately,
   every assistant record carries `attributionAgent` and `attributionPlugin`, which name the kit
@@ -570,15 +604,19 @@ can hold the archive without being able to read it.
   can hold several; the reader unlocks each with the same passphrase (or one passphrase per
   vault, listed), and a new body uses the active vault. Whichever record arrived first never
   overwrites the other, because discarding a data key makes its bodies unreadable forever.
-- **The archive is its own frame, paged and verifiable.** `prompt_archive { owner, vaults,
-  rows, sessions, page, pages, digest, page_digest, count }` carries the sealed rows, the vault
-  records and the session sidecar a prompt's card and branch resolve through. A day too large
-  for one exchange is served in `pages`, each with its own `page_digest`, and the day's `digest`
-  covers the pages concatenated in prompt-id order. **The receiver stores nothing until every
-  page is present and both checks pass**, so a missing or tampered page leaves the day absent
-  rather than half-stored; the face then says the day is incomplete and offers the pull again.
-  It is never gossiped and never in a greeting; a wall that does not announce `prompts` in
-  `Facts::can` is refused before the request.
+- **The archive is its own frame, paged and verifiable.** A peer asks with `prompt_archive_ask
+  { owner, day, page }` and gets `prompt_archive { owner, vaults, rows, sessions, page, pages,
+  digest, page_digest, count }`: the sealed rows, the vault records and the session sidecar a
+  prompt's card and branch resolve through, **repeated on every page** so no page is a special
+  case. Each page carries its own `page_digest`, and the day's `digest` covers the pages
+  concatenated in prompt-id order. **The receiver stores nothing until every page is present
+  and both checks pass**: pages are held in memory, and a crash drops them rather than leaving
+  a partial day on disk. A missing or tampered page leaves the day absent, and the face says
+  the day is incomplete and offers the pull again. **Only a settled UTC day is served**, never
+  the one being written: a day that is still growing would have page 1 and page 2 drawn from
+  two different days, and no digest could reconcile them. The manifest therefore lists only
+  days before the current one. It is never gossiped and never in a greeting; a wall that does
+  not announce `prompts` in `Facts::can` is refused before the request.
 - **A delete is a durable tombstone, not a message.** `prompt_tombstone(owner_host, prompt_id,
   at, reason, acked)` is an outbox retained until every grantee acknowledges; it is pushed when
   a peer connects and when one is written, so a peer that was offline applies it on its return,
@@ -732,20 +770,25 @@ and it is the same reconstruction `usage.ts::blocks` already does for the five-h
 result lands.** A reactive 429 swap settles the turn before it moves the card, so reading the
 conversation row at settle is safe on that path; a direct `/account` or `put it on…` is not,
 because it changes `conv.accountLabel` first and the aborted result can be ingested after. So
-`send_prompt` records the label at the open and `record_turn` writes that to
-`turn.account_label`; the conversation row is never the source for a turn that has already
-begun. A turn with no recorded open (a row from before this rung) is `unknown`, and the
-interval falls back to the session owner.
+`deliver_blocks` records the label at the open, in the same `turn_open` row that carries the
+id, and `record_turn` writes it to `turn.account_label`. The label is asked of the store rather
+than passed down, the `kind_of`/`worktree_of` pattern, because the relay, the wake and the
+inbox drain all reach this door without any front end to supply one; the conversation row is
+never read again for a turn that has already begun. A turn with no recorded open (a row from
+before this rung) is `unknown`, and the interval falls back to the session owner.
 
 **And nothing is written for a turn that has not settled.** The ingest runs on a clock, so a
 request inside a turn still in flight would be dated before the row that names its funding
 exists, and it would take the session owner or the previous label silently and permanently.
 So the pass holds that session's tail until its `turn` row lands, the same row that supplies
-the cost, and a prompt inside the open turn waits with it. The price is that the fine tier
-lags a long turn by that turn's length; the live readings are the card's own transcript fold,
-which never waits for any of this. A turn whose row never lands, because the card was killed,
-is written on a later pass as `unknown` and lands in the residual. That is a measurement of
-what cannot be known, not a guess at it.
+the cost, and a prompt inside the open turn waits with it. **The hold is on the analytics facts
+only**: `usage.rs`'s existing bucket totals, which the allowance widget and the day's figure
+read, go on absorbing every record as they arrive exactly as they do today. Only the apportioned
+facts, which cannot exist without a turn's cost, wait. The price is that the fine tier lags a
+long turn by that turn's length, and the live readings are the card's own transcript fold, which
+never waits for any of this. A turn whose row never lands, because the card was killed, is
+written on a later pass as `unknown` and lands in the residual. That is a measurement of what
+cannot be known, not a guess at it.
 
 The worked example the acceptance tests replay:
 
@@ -1178,8 +1221,9 @@ mapped to its session from the store alone. So the backfill is explicit about wh
 - a conversation that has never been cleared maps every turn to its one session, and its fine
   fact carries that session, so the card question answers for the whole ninety days;
 - a conversation that has been cleared cannot be mapped to one session, so its fine fact
-  carries the synthetic session `turn:<conversation_id>` and the card id resolves through
-  `analytics_session`; its hourly row carries only `provenance = 'turn'` and
+  carries the synthetic session `turn:<conversation_id>` and an `analytics_session` row is
+  written with that key and the card id, which is what the card dimension joins through; its
+  hourly row carries only `provenance = 'turn'` and
   `source = 'card'`, because the hourly tier has no session or card column. Beyond ninety days
   it is project-and-account history with no card, and the face says so;
 - going forward, `turn.agent_session_id` is recorded at settle (the same schema rung as
@@ -1226,6 +1270,7 @@ frame "prompt_manifest"       { owner, days: [{ day, rows, bytes, digest }] }
 frame "prompt_tombstones_ask" { owner }                        -- ask for the outbox
 frame "prompt_tombstones"     { owner, rows: [{ prompt_id, at, reason }] }
 frame "prompt_tombstones_ack" { owner, prompt_ids }
+frame "prompt_archive_ask"    { owner, day, page }             -- one page, one request
 frame "prompt_archive"        { owner, vaults, rows, sessions, page, pages, digest, page_digest, count }
 ```
 
@@ -2268,10 +2313,25 @@ CREATE TABLE tool_fact (
   PRIMARY KEY (turn_id, at, host, session, agent, kind, server, tool, target, child_agent)
 );
 
+-- The turn that is open for a session right now, written by deliver_blocks
+-- (the one door into a child's stdin) before the prompt reaches the pipe. It
+-- is how the ingestor claims a call by interval rather than by guessing which
+-- turn is current, and it is durable because the ingestor is another thread.
+CREATE TABLE turn_open (
+  open_id  TEXT PRIMARY KEY,
+  session  TEXT NOT NULL,
+  card     TEXT NOT NULL DEFAULT '',
+  open_at  INTEGER NOT NULL,
+  account  TEXT NOT NULL DEFAULT 'unknown',
+  provider TEXT NOT NULL DEFAULT 'unknown'
+);
+
 -- Which settled turns have been folded into tool facts. The settle signal is
--- a `turn` row; a transcript has no `result` record to fold.
+-- a `turn` row; a transcript has no `result` record to fold. NOT NULL on
+-- purpose: SQLite's PRIMARY KEY does not imply it, and a NULL key would let
+-- the same turn fold again on every pass.
 CREATE TABLE analytics_fold (
-  turn_id TEXT PRIMARY KEY,
+  turn_id TEXT NOT NULL PRIMARY KEY,
   at      INTEGER NOT NULL
 );
 
@@ -2281,7 +2341,7 @@ CREATE TABLE analytics_fold (
 -- staged here.
 CREATE TABLE tool_pending (
   tool_use_id TEXT PRIMARY KEY,
-  turn_id     TEXT NOT NULL DEFAULT '',   -- the turn open when it was written
+  turn_id     TEXT NOT NULL DEFAULT '',   -- the turn whose interval contains it
   at          INTEGER NOT NULL,
   host        TEXT NOT NULL,
   session     TEXT NOT NULL,
@@ -2580,6 +2640,7 @@ ALTER TABLE turn ADD COLUMN model            TEXT;
 ALTER TABLE turn ADD COLUMN provider         TEXT;
 ALTER TABLE turn ADD COLUMN agent_session_id TEXT;
 ALTER TABLE turn ADD COLUMN open_id          TEXT;
+ALTER TABLE turn ADD COLUMN open_at          INTEGER;
 ```
 
 Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
@@ -2593,10 +2654,12 @@ reason `widget` has one: the shape belongs to the front end, and a renamed form 
 rather than need a migration.
 
 The `turn` columns are added by this rung rather than a rung of their own because they exist
-for this subsystem's attribution rule and for nothing else. `record_turn` takes them as
-`Option`, and a row written by an older front end stays NULL, which the query layer reads as
-unknown rather than as Claude. `agent_session_id` is the join section 7.4 needs; a row written
-before this rung has none, and the backfill says so instead of guessing.
+for this subsystem's attribution rule and for nothing else. `model` and `provider` are taken
+as `Option` from the front end, and a row written by an older front end stays NULL, which the
+query layer reads as unknown rather than as Claude. `open_id` and `open_at` are **not**
+arguments: `record_turn` reads them off the `turn_open` row and writes both, so there is
+nothing for a caller to forget. `agent_session_id` is the join section 7.4 needs; a row
+written before this rung has none, and the backfill says so instead of guessing.
 
 ---
 
@@ -2761,8 +2824,18 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
 - **The settle signal is a `turn` row.** A fixture whose transcript has no `result` record,
   folded once its `turn` row exists, produces the tool facts; the same transcript with no
   `turn` row produces none until the sweep, which writes them with `turn_id = ''` and
-  `turn_usd = 0`. A turn folded twice by a re-run produces no second set, because
-  `analytics_fold` holds its id.
+  `turn_usd = 0`. A turn folded twice by a re-run produces no second set, because the fact key
+  and `analytics_fold` both refuse it.
+- **A turn opened by a relay is a turn like any other.** A prompt written by `deliver_blocks`
+  rather than by `send_prompt` gets its own `open_id` and its own interval; two such turns in
+  one session fold separately, and neither collapses onto the other's key.
+- **A lagging pass does not mis-claim.** A call recorded during turn N and read by a pass that
+  runs while N+1 is open is attributed to N by its timestamp, and N+1's cost is untouched; a
+  call from a background subagent that runs during N+1 stays with the turn that spawned it.
+- **A folded turn's pending rows are gone.** After a turn folds, the next pass writes nothing
+  for its calls: the pending rows were deleted in the same transaction, so the sweep has
+  nothing to re-write and the call is counted once. A twenty-minute call inside a live turn is
+  never swept, because it is claimed and the sweep tests the claim rather than the age.
 - **A dead turn keeps its tool readings.** A card killed mid-turn writes no `turn` row, and
   its calls still appear with their latency, errors and bytes and a zero cost; the page names
   them *no-turn* rather than showing a fast, free tool.
