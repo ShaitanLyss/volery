@@ -130,13 +130,17 @@ private fun VoleryPhone(seedGate: Boolean = false) {
     var openId by rememberSaveable { mutableStateOf("") }
     var typing by remember { mutableStateOf(false) }
     var projectFilter by rememberSaveable { mutableStateOf("") }
-    var selectedHost by rememberSaveable { mutableStateOf(Config.host) }
+    /* The wall being read is Config's, not a copy of it: a walk that opens on
+       another wall writes it from the service, and every screen and every
+       spoken sentence follows without a second place to keep in step. */
+    val selectedHost = Config.host
 
-    // Dial on open when a key is already configured — the phone joins the
-    // flyway the moment you open it.
+    // Dial on open when a key is already configured. The phone joins the
+    // flyway the moment you open it, walking the walls it last saw if the one
+    // it was pointed at is off.
     LaunchedEffect(Unit) {
         if (Config.key.isNotEmpty()) {
-            NodeService.dial(context, Config.host, Config.key, Config.name)
+            NodeService.dial(context, Config.host, Config.rememberedJson(), Config.key, Config.name)
         }
     }
 
@@ -213,15 +217,16 @@ private fun VoleryPhone(seedGate: Boolean = false) {
                         host = selectedHost,
                         projectFilter = projectFilter,
                         onHost = { host ->
-                            selectedHost = host
                             Config.host = host
-                            Config.persist()
+                            Config.persistWalls()
                             NodeService.sight(context, host)
                         },
                         onProject = { projectFilter = it },
                         onOpen = { openId = it.id },
                         onSettings = { context.open(Intent(context, SettingsActivity::class.java)) },
-                        onDial = { NodeService.dial(context, selectedHost, Config.key, Config.name) },
+                        onDial = {
+                            NodeService.dial(context, Config.host, Config.rememberedJson(), Config.key, Config.name)
+                        },
                     )
                 }
             }
@@ -262,7 +267,7 @@ private fun RosterScreen(
             .windowInsetsPadding(WindowInsets.statusBars)
             .windowInsetsPadding(WindowInsets.navigationBars),
     ) {
-        RosterHead(onDial = onDial, onSettings = onSettings)
+        RosterHead(onDial = onDial)
         Walls(sighting = sighting, selected = host, working = working, onHost = onHost)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
@@ -295,7 +300,7 @@ private fun RosterScreen(
 }
 
 @Composable
-private fun RosterHead(onDial: () -> Unit, onSettings: () -> Unit) {
+private fun RosterHead(onDial: () -> Unit) {
     val p = LocalPalette.current
     Row(
         Modifier
@@ -309,7 +314,6 @@ private fun RosterHead(onDial: () -> Unit, onSettings: () -> Unit) {
         Text("volery", style = Type.display(p, 20f, p.paper))
         Spacer(Modifier.weight(1f))
         IconBtn(Glyph.Dial, "dial again", onDial)
-        IconBtn(Glyph.Gear, "settings", onSettings)
     }
 }
 
@@ -571,7 +575,7 @@ private fun Me(onSettings: () -> Unit) {
                 Spacer(Modifier.height(1.dp))
                 Text(
                     if (sighting != null) {
-                        "${sighting.cards?.host ?: Config.host} · on the flyway"
+                        "${sighting.host.ifEmpty { Config.host }} · on the flyway"
                     } else {
                         "not on the flyway yet"
                     },
@@ -865,13 +869,20 @@ private fun Waiting(card: CardDigest, ears: Ears) {
  *  `repeatOnLifecycle(RESUMED)` is the gate: the block runs once on every
  *  return to the front (so a reopen narrates what changed while away, against
  *  the persisted digest) and then on a modest cadence, and it is cancelled the
- *  moment the screen stops being shown. `off` gates it entirely. */
+ *  moment the screen stops being shown.
+ *
+ *  **`chatty = off` silences, it does not stop the poll.** The poll is also the
+ *  only thing that walks to another wall when the one the phone was on goes
+ *  off; gating it on a speech setting left `Ears` and `Steer` addressing a dead
+ *  laptop until somebody pressed dial. What is said, and whether a question
+ *  opens the ears, is gated in `sightAndNarrate` instead. */
 @Composable
 private fun NarrationLoop(context: Context, host: String, chatty: String, mode: String, steer: Steer, onNeedsYou: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(host, chatty, mode) {
-        if (chatty == "off") return@LaunchedEffect
-        Speaker.init(context)
+        /* The walk runs at every level, but a phone set to say nothing does not
+           bind a speech engine it will never use. */
+        if (chatty != "off") Speaker.init(context)
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             try {
                 narrateOnce(context, host, chatty, steer, onNeedsYou)
@@ -895,7 +906,7 @@ private fun NarrationLoop(context: Context, host: String, chatty: String, mode: 
  *  are out of the air. */
 private suspend fun narrateOnce(context: Context, host: String, chatty: String, steer: Steer, onNeedsYou: () -> Unit) {
     val prev = withContext(Dispatchers.IO) { NarrationStore.load(context) }
-    val turn = sightAndNarrate(host, prev, chatty) ?: return
+    val turn = sightAndNarrate(host, Config.rememberedJson(), prev, chatty) ?: return
     if (turn.lines.isNotEmpty()) {
         Log.i("PhoneNarration", "spoke ${turn.lines.size} line(s): ${turn.lines.joinToString(" · ") { it.text }}")
     }

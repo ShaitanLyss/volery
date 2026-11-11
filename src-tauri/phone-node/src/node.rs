@@ -1,5 +1,5 @@
-//! A node on the flyway that is not a wall: dials one wall and reads what it
-//! says.
+//! A node on the flyway that is not a wall: dials the walls it knows and reads
+//! what the first one says.
 //!
 //! `docs/PHONE.md` M2a. A wall is the whole of the flyway — a store, a front
 //! end, a `claude` child per card, the roster and the asks. A phone is none of
@@ -35,20 +35,68 @@
 //! So the node's whole job is bind, dial, say the greeting, read the answer —
 //! and, for a picture or file a card produced, read that too. It keeps no
 //! store, emits nothing, spawns nothing, and accepts no dials. The surface is
-//! three calls — `start`, `sight`, `fetch` — all async and returning through
-//! the handle, which is the shape M2b's JNI bridge drives.
+//! `start` and then the one-shot exchanges — `sight`, `sight_any`, `fetch`,
+//! `plan`, `confirm`, `answer` — all async and returning through the handle,
+//! which is the shape M2b's JNI bridge drives.
+//!
+//! ### Which wall
+//!
+//! `sight` dials one wall. `sight_any` walks: the wall the phone was pointed
+//! at, then the ones its last sighting showed, then every name the flyway's
+//! directory holds. A phone that only ever dialled one wall left the flyway
+//! without saying so whenever that laptop was shut, while the rest of the
+//! flyway stayed up, which is the exact shape of the complaint that put the
+//! walk here.
+//!
+//! **The directory is read and never written.** A name on it is an invitation
+//! to dial, and this node answers no dials; listing itself would put every wall
+//! on the flyway on a schedule of calls that can only fail. It arrives at the
+//! roster when it dials, which is the half that matters. The desktop's
+//! `directory::wanted` is a wall's; a node has nothing to add.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flyway_core::cards::CardsMsg;
+use flyway_core::clip;
+use flyway_core::directory;
 use flyway_core::fleet::{Act, Announcement, Ask, Facts, FleetMsg, Heard, Origin, Territory};
 use flyway_core::frame::Frame;
 use flyway_core::seal::WallKey;
 use flyway_core::seeing::{self, SeeMsg, Sight};
 use flyway_core::session::Msg;
 use flyway_core::steward::{self, StewardMsg};
-use flyway_core::wire::{carrying_within, Wire};
+use flyway_core::wire::{carrying_within, Wire, EXCHANGE_WITHIN};
+
+/// How long every wall after the first gets in a walk. Shorter than the wire's
+/// own bound because a walk may have several to try, and still well past a real
+/// exchange: a few round trips over a relay, with a hole punch at the front.
+const TRY_WITHIN: Duration = Duration::from_secs(10);
+
+/// How many walls the walk tries from what it already knows (the chosen one
+/// included) before it asks the directory. The rest of the budget is spent
+/// after the read, and [`remainder`] keeps one of those attempts for a name the
+/// directory holds: a roster of six dead laptops otherwise consumes every
+/// attempt and the one source of walls this phone has never met is never
+/// dialled, which is the failure the walk exists to fix, reached through a
+/// longer list.
+const MOST_KNOWN: usize = 3;
+
+/// The most walls one walk dials, the chosen one included. A cap is what stops
+/// a directory that has collected names of laptops sold last year from
+/// becoming a dial that never ends.
+const MOST_DOORS: usize = 6;
+
+/// How long a failed directory read is kept before it is tried again. A phone
+/// off the flyway polls every fifteen seconds, and one relay GET per poll is a
+/// radio cost nobody asked for; a minute still recovers from a hiccup promptly.
+const LISTED_AGAIN: Duration = Duration::from_secs(60);
+
+/// The directory as this node last read it, held until `until`.
+struct Listed {
+    until: Option<std::time::Instant>,
+    names: BTreeSet<String>,
+}
 
 /// A bound phone node: on the flyway, but with no cards, no store and no wall.
 ///
@@ -58,11 +106,17 @@ use flyway_core::wire::{carrying_within, Wire};
 pub struct Node {
     name: String,
     wire: Wire,
+    listed: std::sync::Mutex<Listed>,
 }
 
 /// What one dial of a wall returned, as a phone reads it.
 #[derive(Debug, Clone)]
 pub struct Sighting {
+    /// The wall that answered. Not always the one asked: `sight_any` walks,
+    /// and every later call (a fetch, a prompt, a `see`) has to name this
+    /// wall, so the answer carries it rather than leaving the caller to
+    /// remember which door opened.
+    pub host: String,
     /// Every wall the peer knows, this node included once it has announced.
     /// `fleet::Heard` is the wire's own shape — a wall's announcement with its
     /// age — not a second vocabulary.
@@ -122,7 +176,7 @@ impl Node {
     /// key and the node's name exactly as a wall derives its own.
     pub async fn start(key: WallKey, name: String) -> Result<Self, String> {
         let wire = Wire::start(key, &name).await?;
-        Ok(Self { name, wire })
+        Ok(Self { name, wire, listed: std::sync::Mutex::new(Listed { until: None, names: BTreeSet::new() }) })
     }
 
     /// This node's name — the name its identity is derived from, and the one a
@@ -140,7 +194,96 @@ impl Node {
     pub async fn sight(&self, host: &str) -> Result<Sighting, String> {
         let peer = self.wire.peer(host)?;
         let back = self.wire.exchange(peer, self.greeting(), true).await.map_err(|f| f.to_string())?;
-        Ok(Sighting::read(back))
+        Ok(Sighting::read(host, back))
+    }
+
+    /// Dial the first wall that answers: `chosen`, then the walls last seen
+    /// working, then every name the flyway's directory holds. The answer names
+    /// the wall that opened, and the caller should address that one from then
+    /// on.
+    ///
+    /// A phone has no one wall it can rely on. The laptop it was last pointed
+    /// at may be off while the flyway is still up on others, and a node that
+    /// keeps dialling that one wall is a node that has left the flyway without
+    /// saying so. The directory is read only after the walls this phone already
+    /// knows have had their attempts, so a wall that answers costs exactly what
+    /// a `sight` costs.
+    pub async fn sight_any(&self, chosen: &str, remembered: &[String]) -> Result<Sighting, String> {
+        let mut last = String::new();
+        let mut tried: BTreeSet<String> = BTreeSet::new();
+        let known = doors(&self.name, chosen, remembered, &BTreeSet::new());
+
+        for (i, host) in known.iter().take(MOST_KNOWN).enumerate() {
+            tried.insert(host.to_lowercase());
+            /* The wall the phone was pointed at keeps the wire's own bound. The
+               walk is not a reason to give the primary door a shorter one, and
+               a cross-network first connection has taken the full twenty on
+               this fleet before. The rest are the fallback and are cheaper. */
+            let within = if i == 0 { EXCHANGE_WITHIN } else { TRY_WITHIN };
+            match self.sight_within(host, within).await {
+                Ok(found) => return Ok(found),
+                Err(e) => last = e,
+            }
+        }
+
+        /* The one place a wall this phone has never met can come from. Read
+           after the known ones because it is an HTTP round trip, and the
+           ordinary dial must not wait on the relay. What is left of the budget
+           is ordered by `remainder`, which keeps an attempt for a directory
+           name so a long remembered list cannot spend all of it first. */
+        if tried.len() < MOST_DOORS {
+            let listed = self.listed().await;
+            let listed_only = doors(&self.name, "", &[], &listed);
+            for host in remainder(&known, &listed_only, &tried) {
+                tried.insert(host.to_lowercase());
+                match self.sight_within(&host, TRY_WITHIN).await {
+                    Ok(found) => return Ok(found),
+                    Err(e) => last = e,
+                }
+            }
+        }
+
+        Err(if last.is_empty() {
+            "no wall to dial: this phone has met none and the directory is empty".to_string()
+        } else {
+            format!("no wall answered: {last}")
+        })
+    }
+
+    /// The flyway's directory, read at most once per `directory::EVERY` when it
+    /// answers and once per [`LISTED_AGAIN`] when it does not. A phone off the
+    /// flyway walks on every poll; without a floor, every one of those would be
+    /// a pkarr relay GET on a phone's radio, and the desktop bounds the same
+    /// read to five minutes.
+    async fn listed(&self) -> BTreeSet<String> {
+        if let Ok(l) = self.listed.lock() {
+            if l.until.is_some_and(|until| std::time::Instant::now() < until) {
+                return l.names.clone();
+            }
+        }
+        let read = self.wire.directory_read().await;
+        let (names, keep) = match read {
+            directory::Read::Unreadable => (BTreeSet::new(), LISTED_AGAIN),
+            other => (directory::names(&other), directory::EVERY),
+        };
+        if let Ok(mut l) = self.listed.lock() {
+            l.until = Some(std::time::Instant::now() + keep);
+            l.names = names.clone();
+        }
+        names
+    }
+
+    /// One wall, bounded. The error names the wall, since a walk reports the
+    /// last failure and a bare "could not reach that wall" would leave the
+    /// app unable to say which one.
+    async fn sight_within(&self, host: &str, within: Duration) -> Result<Sighting, String> {
+        let peer = self.wire.peer(host).map_err(|e| format!("{host}: {e}"))?;
+        let back = self
+            .wire
+            .exchange_within(peer, self.greeting(), true, within)
+            .await
+            .map_err(|e| format!("{host}: {e}"))?;
+        Ok(Sighting::read(host, back))
     }
 
     /// Fetch a picture or file a card on the wall produced. `host` is the
@@ -357,7 +500,7 @@ impl Sighting {
     /// Fold a wall's answer into what a phone reads. The wall may send its
     /// roster in two frames — what it just learned and what the greeter lacked —
     /// so a later version wins per host.
-    fn read(frames: Vec<Frame>) -> Self {
+    fn read(host: &str, frames: Vec<Frame>) -> Self {
         let mut roster: Vec<Heard> = Vec::new();
         let mut cards = None;
         for f in frames {
@@ -379,8 +522,92 @@ impl Sighting {
                 _ => {}
             }
         }
-        Sighting { roster, cards }
+        Sighting { host: host.to_string(), roster, cards }
     }
+}
+
+/// The walls a walk tries, in order: `chosen`, then the ones last seen, then
+/// every name the directory holds. The node itself is dropped, as is any repeat
+/// (names are compared the way the rest of the flyway compares them, without
+/// case) and anything a name could not be — a record is another machine's
+/// writing, and every text this node stores goes through `clip` first.
+///
+/// **`chosen` is not clipped.** It is this phone's own setting, typed by the
+/// person holding it, not another machine's writing; cutting it to forty
+/// characters would derive a different identity and dial a wall that exists
+/// under neither spelling, while a chip tap dials the same name whole. A name
+/// longer than a wall's own forty can only be a typo, and a typo should fail
+/// visibly rather than be silently turned into a second name.
+///
+/// No cap here: `sight_any` stops after [`MOST_DOORS`] attempts, and the list
+/// has to stay whole so a directory name can still be reached after the
+/// remembered ones have failed.
+pub fn doors(me: &str, chosen: &str, remembered: &[String], listed: &BTreeSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let chosen = chosen.trim();
+    /* `clean` keeps newlines on purpose (a paragraph break is a real character
+       in prose), and `directory::decode` refuses them in a name for the same
+       reason this does: a roster host is written into a preferences list,
+       where a line break would become two walls. */
+    if !chosen.is_empty() && !chosen.contains(['\n', '\r']) && !chosen.eq_ignore_ascii_case(me) {
+        out.push(chosen.to_string());
+    }
+    for name in remembered.iter().map(String::as_str).chain(listed.iter().map(String::as_str)) {
+        let name = clip::keep(name.trim(), directory::NAME_MOST).kept;
+        if name.is_empty() || name.contains(['\n', '\r']) || name.eq_ignore_ascii_case(me) {
+            continue;
+        }
+        if out.iter().any(|h| h.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// The rest of a walk, in the order it will be tried, after `tried` walls have
+/// failed: the known names not yet tried, then the directory's, bounded by what
+/// is left of [`MOST_DOORS`].
+///
+/// **One attempt is kept back for a directory name when there is one**, and
+/// only then. That reserve is the whole point: a remembered roster can be
+/// longer than the budget, and without it a phone whose laptop is off spends
+/// every attempt on dead names from its last sighting and never dials the live
+/// wall the directory is naming. When the directory is empty or could not be
+/// read, the reserve is not taken and every remaining attempt goes to known
+/// walls, because there is nothing better to spend it on.
+pub fn remainder(known: &[String], listed: &[String], tried: &BTreeSet<String>) -> Vec<String> {
+    let left = MOST_DOORS.saturating_sub(tried.len());
+    /* A listed name needs a reserved attempt only when the known pass cannot
+       reach it in the budget it already has. The directory usually names the
+       walls the roster was learned from, so reserving for every listed name
+       would take an attempt away from an untried known wall and then skip the
+       listed one as a duplicate — one attempt of six wasted, and a known wall
+       left undialled. A listed name beyond that reach still reserves. */
+    let untried: Vec<&String> = known.iter().filter(|h| !tried.contains(&h.to_lowercase())).collect();
+    let reachable = |h: &String| untried.iter().take(left).any(|k| k.eq_ignore_ascii_case(h));
+    let reserve = usize::from(listed.iter().any(|h| !tried.contains(&h.to_lowercase()) && !reachable(h)));
+    let known_left = left.saturating_sub(reserve);
+    let mut out: Vec<String> = Vec::new();
+    for host in known {
+        if out.len() >= known_left {
+            break;
+        }
+        if tried.contains(&host.to_lowercase()) || out.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            continue;
+        }
+        out.push(host.clone());
+    }
+    for host in listed {
+        if tried.len() + out.len() >= MOST_DOORS {
+            break;
+        }
+        if tried.contains(&host.to_lowercase()) || out.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            continue;
+        }
+        out.push(host.clone());
+    }
+    out
 }
 
 /// A picture crosses whole in one frame, and the desktop caps one at 3 MB
@@ -446,6 +673,88 @@ mod tests {
         }
     }
 
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A walk asks the wall the phone was pointed at first, then the ones the
+    /// last sighting showed, then the directory — the only place a wall this
+    /// phone has never met can come from.
+    #[test]
+    fn a_walk_tries_the_chosen_wall_then_the_ones_last_seen_then_the_directory() {
+        let listed = names(&["annex", "workshop"]);
+        let remembered = vec!["desk".to_string()];
+        assert_eq!(doors("phone", "desk", &remembered, &listed), vec!["desk", "annex", "workshop"]);
+    }
+
+    /// The node drops itself, repeats in another case, names that are only
+    /// space, and anything with a line break in it, since a name taken off a
+    /// roster is another machine's writing and is about to be stored.
+    #[test]
+    fn a_walk_drops_this_node_its_repeats_and_what_a_name_cannot_be() {
+        let listed = names(&["PHONE", "desk", "", "a\nb"]);
+        let remembered = vec!["Phone".to_string(), "desk".to_string(), "   ".to_string()];
+        assert_eq!(doors("phone", "DESK", &remembered, &listed), vec!["DESK"]);
+    }
+
+    /// A name another machine wrote is capped the way the directory caps one, so
+    /// a roster entry cannot become a key derivation on a megabyte of text.
+    #[test]
+    fn a_walk_caps_a_long_name_from_another_machine() {
+        let long = "a".repeat(400);
+        let listed = BTreeSet::from([long.clone()]);
+        let out = doors("phone", "desk", &[], &listed);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "desk");
+        assert_eq!(out[1].chars().count(), directory::NAME_MOST);
+        assert!(long.starts_with(&out[1]), "the cap keeps the front of the name");
+    }
+
+    /// The chosen wall is this phone's own setting, so it is dialled as typed:
+    /// clipping it would derive a different identity from the one a chip tap
+    /// uses for the same wall.
+    #[test]
+    fn a_walk_keeps_the_chosen_name_whole() {
+        let long = "a".repeat(400);
+        let out = doors("phone", &long, &[], &BTreeSet::new());
+        assert_eq!(out, vec![long]);
+    }
+
+    /// A stale roster longer than the budget must not spend every attempt
+    /// before the directory is dialled. With the first three known walls
+    /// already failed, the last three attempts are two more known and then the
+    /// directory's name.
+    #[test]
+    fn a_long_roster_leaves_the_last_attempt_for_the_directory() {
+        let remembered: Vec<String> = ["desk", "w2", "w3", "w4", "w5", "w6"].iter().map(|s| s.to_string()).collect();
+        let known = doors("phone", "desk", &remembered, &BTreeSet::new());
+        let listed = doors("phone", "", &[], &BTreeSet::from(["annex".to_string()]));
+        let tried: BTreeSet<String> = ["desk", "w2", "w3"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(remainder(&known, &listed, &tried), vec!["w4", "w5", "annex"]);
+    }
+
+    /// A directory name the known pass will dial anyway must not take an
+    /// attempt away from a known wall: the directory usually lists the walls
+    /// the roster came from, so this is the common shape, not a corner.
+    #[test]
+    fn a_listed_name_the_known_pass_will_dial_takes_no_attempt() {
+        let remembered: Vec<String> = ["desk", "w2", "w3", "w4", "w5", "w6"].iter().map(|s| s.to_string()).collect();
+        let known = doors("phone", "desk", &remembered, &BTreeSet::new());
+        let listed = doors("phone", "", &[], &BTreeSet::from(["w5".to_string()]));
+        let tried: BTreeSet<String> = ["desk", "w2", "w3"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(remainder(&known, &listed, &tried), vec!["w4", "w5", "w6"]);
+    }
+
+    /// With no directory names there is nothing to reserve, so every attempt
+    /// left goes to the walls this phone already knows.
+    #[test]
+    fn a_walk_with_no_directory_names_spends_every_attempt_on_what_it_knows() {
+        let remembered: Vec<String> = ["desk", "w2", "w3", "w4", "w5", "w6"].iter().map(|s| s.to_string()).collect();
+        let known = doors("phone", "desk", &remembered, &BTreeSet::new());
+        let tried: BTreeSet<String> = ["desk", "w2", "w3"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(remainder(&known, &[], &tried), vec!["w4", "w5", "w6"]);
+    }
+
     /// The wall answers a greeting with two roster frames — what it just learned
     /// (the node) and what the greeter lacked (itself) — and a phone folds them
     /// into one entry per host, later version winning.
@@ -456,7 +765,8 @@ mod tests {
             Frame::Fleet(FleetMsg::Roster { walls: vec![heard("phone", 100), heard("desk", 500)], greeting: false }),
             Frame::Cards(CardsMsg::Cards { host: "desk".into(), version: 7, age_ms: 0, snapshot: json!({ "v": 1 }) }),
         ];
-        let s = Sighting::read(frames);
+        let s = Sighting::read("desk", frames);
+        assert_eq!(s.host, "desk", "the answer names the wall that opened");
         assert_eq!(s.roster.len(), 2, "one entry per host, not one per frame");
         assert_eq!(s.roster.iter().find(|e| e.wall.host == "phone").unwrap().wall.version, 100);
         assert_eq!(s.roster.iter().find(|e| e.wall.host == "desk").unwrap().wall.version, 500);
@@ -467,7 +777,7 @@ mod tests {
     /// that as `None` rather than an empty digest — the same guard the wire has.
     #[test]
     fn no_cards_frame_is_no_digest() {
-        let s = Sighting::read(vec![Frame::Sink(Msg::Hello { host: "desk".into(), watermark: BTreeMap::new() })]);
+        let s = Sighting::read("desk", vec![Frame::Sink(Msg::Hello { host: "desk".into(), watermark: BTreeMap::new() })]);
         assert!(s.cards.is_none());
         assert!(s.roster.is_empty());
     }

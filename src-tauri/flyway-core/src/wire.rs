@@ -108,7 +108,7 @@ pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 /// without a bound of our own a sleeping laptop holds its slot in a tick for
 /// however long a relay takes to say so. Twenty seconds is far past a real
 /// exchange (a few round trips and a few frames) and well inside a tick.
-const EXCHANGE_WITHIN: Duration = Duration::from_secs(20);
+pub const EXCHANGE_WITHIN: Duration = Duration::from_secs(20);
 
 /// How long an exchange carrying `bytes` may take: the ordinary twenty seconds,
 /// plus a second for every 128 KB — about a megabit a second, the floor of a

@@ -108,6 +108,14 @@ pub fn diff(prev: Option<&Digest>, curr: &Digest, chatty: Chatty) -> Narration {
     let Some(prev) = prev else {
         return Narration::default();
     };
+    /* A digest is one wall's, and card ids are UUIDs. Folding a new wall's
+       digest against the last wall's would call every card on it newly opened
+       and raise `needsYou`, so a wall switch would read out a wall of dormant
+       cards and open the microphone. A dial that lands on another wall is a
+       first sighting. */
+    if !prev.host.is_empty() && !curr.host.is_empty() && prev.host != curr.host {
+        return Narration::default();
+    }
 
     let prev_cards = read_cards(&prev.snapshot);
     let curr_cards = read_cards(&curr.snapshot);
@@ -418,6 +426,22 @@ mod tests {
     /// The kinds a `diff` returned, in order.
     fn kinds(prev: Option<&Digest>, curr: &Digest, chatty: Chatty) -> Vec<Kind> {
         diff(prev, curr, chatty).lines.into_iter().map(|l| l.kind).collect()
+    }
+
+    /// A digest from another wall is a first sighting, not a wall of cards
+    /// opening at once. The baseline survives a walk that lands elsewhere, so
+    /// the host has to be part of what "the same wall" means.
+    #[test]
+    fn a_different_wall_is_silence_not_a_wall_of_new_cards() {
+        let prev = digest(1, &[card("a", "caravan", false, true, None, 0, &[])]);
+        let mut curr = digest(
+            2,
+            &[card("b", "orchard", false, true, None, 0, &[]), card("c", "hold", false, true, None, 0, &[])],
+        );
+        curr.host = "annex".into();
+        let n = diff(Some(&prev), &curr, Chatty::Murmur);
+        assert!(n.lines.is_empty(), "every card on a new wall would read as opened");
+        assert!(!n.needs_you, "a wall switch is not something that needs her");
     }
 
     #[test]

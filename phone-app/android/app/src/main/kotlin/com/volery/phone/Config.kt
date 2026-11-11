@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.json.JSONArray
 
 /**
  * The fields settings edits and the screens read, seeded from `BuildConfig`
@@ -25,6 +26,12 @@ object Config {
     var host by mutableStateOf(BuildConfig.PHONE_HOST)
     var key by mutableStateOf(BuildConfig.PHONE_KEY)
     var name by mutableStateOf(BuildConfig.PHONE_NAME)
+
+    /** The walls the last sighting showed, in the order the answering wall
+     *  listed them. Kept because the wall in [host] may be off while the
+     *  flyway is still up: the node walks these before it asks the flyway's
+     *  directory, which is the only place a wall never met can come from. */
+    var remembered by mutableStateOf<List<String>>(emptyList())
 
     /** How much the phone says: "off", "needs" or "murmur" — the same three
      *  words phone-ffi's `narrate` takes. */
@@ -61,7 +68,11 @@ object Config {
         music = sp.getString("music", music) ?: music
         host = sp.getString("host", host) ?: host
         name = sp.getString("name", name) ?: name
+        remembered = readWalls(sp.getString("remembered", null))
     }
+
+    /** The walls last seen, as the JSON array `sightAny` takes. */
+    fun rememberedJson(): String = JSONArray(remembered).toString()
 
     /** Write the preferences back. A key phrase never reaches this. */
     fun persist() {
@@ -73,6 +84,32 @@ object Config {
             ?.putString("music", music)
             ?.putString("host", host)
             ?.putString("name", name)
+            ?.putString("remembered", rememberedJson())
             ?.apply()
+    }
+
+    /** Write only the two fields a sighting owns. [persist] writes every field,
+     *  so a sighting landing on the service's thread at the same moment as a
+     *  setting was changed would put the old value back; this cannot. */
+    fun persistWalls() {
+        prefs?.edit()
+            ?.putString("host", host)
+            ?.putString("remembered", rememberedJson())
+            ?.apply()
+    }
+
+    /** A stored list that cannot be read is no list, never a crash: the phone
+     *  still has the wall in [host], and a walk from one name is what it did
+     *  before there was a list. */
+    private fun readWalls(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                (arr.opt(i) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 }

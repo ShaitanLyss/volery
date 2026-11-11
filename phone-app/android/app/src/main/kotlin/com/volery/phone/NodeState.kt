@@ -22,4 +22,13 @@ object NodeState {
         this.sighting = sighting
         this.error = error
     }
+
+    /** A sighting landed. A poll passes `settle = false`: it must update what
+     *  the page draws without clearing a dial's working indicator, which
+     *  belongs to the dial that set it. */
+    fun landed(sighting: Sighting, settle: Boolean) {
+        this.sighting = sighting
+        error = null
+        if (settle) working = false
+    }
 }

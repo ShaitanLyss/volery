@@ -77,8 +77,9 @@ const CHUNK: usize = 250;
 /// What the relay accepts for the DNS packet, from `iroh-dns`.
 const PACKET_MOST: usize = 1000;
 
-/// The longest name kept, as `here::learn_walls` caps one.
-const NAME_MOST: usize = 40;
+/// The longest name kept, as `here::learn_walls` caps one. Public because the
+/// phone clips a name it took off a roster the same way before storing it.
+pub const NAME_MOST: usize = 40;
 
 /// The directory's signing secret, the same on every wall holding this key.
 /// Derived under a salt of its own, so it has no fixed relationship to the

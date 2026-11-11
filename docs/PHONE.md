@@ -17,6 +17,29 @@ has native ears (on-device speech recognition) and a native mouth (speech synthe
 the phone's recogniser is a different class from the desktop's, and the desktop voice has
 never worked on this network (see `docs/VOICE.md`, sink `4caa13ed`).
 
+### How it finds a wall (2026-11-11)
+
+A phone used to hold one wall name and dial only that. When the laptop
+it named was shut, the phone dropped off the flyway even though the other
+laptops were still meshed with each other: it had one name to dial, and no
+memory of the rest. `Node::sight_any` now walks three lists in order — the wall
+it was pointed at, the walls its last sighting showed (the app persists them),
+then every name the flyway's directory holds — and returns the wall that
+opened, which becomes the address every later call uses. The directory read is
+one small HTTP request, made only after the known walls have had their
+attempts, so the ordinary dial pays nothing for it. The walk reserves room for
+the directory on purpose: a roster of dead laptops must not consume every
+attempt and leave the phone unable to ask the one place a wall it has never met
+can come from. **The phone reads the directory and never writes it:** a name
+there is an invitation to dial, and this node answers no dials. It reached the
+roster by dialling, which is the half that matters.
+
+Proved on the Pixel on 2026-11-11 against the real flyway: with the configured
+host set to a name that is not a wall and the remembered list emptied, the
+phone found the flyway through the directory and drew AU-LT-285's cards. With
+the host still dead and the learned roster in place, it dialled the remembered
+wall instead; the same roster came back and was written down again.
+
 ## The decisions, as made with Lyss
 
 | question | answer |

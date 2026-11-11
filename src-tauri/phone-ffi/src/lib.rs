@@ -1,8 +1,8 @@
 //! The JNI bridge between the phone app (Kotlin) and the phone node.
 //!
-//! `docs/PHONE.md` M2b, M3. The node's surface is three async calls —
-//! `Node::start(key, name)`, `Node::sight(host)` and
-//! `Node::fetch(host, card, want)` — plus one pure fold, `narrate`, which runs
+//! `docs/PHONE.md` M2b, M3. The node's surface is `Node::start(key, name)` and
+//! the one-shot exchanges — `sight`, `sight_any`, `fetch`, `plan`, `confirm`,
+//! `answer` — plus one pure fold, `narrate`, which runs
 //! `phone_node::diff` over two digests and needs no node and no network. This
 //! crate is the cdylib the Android app links. It holds one node in a
 //! process-wide slot, drives the async calls on a held tokio runtime, and
@@ -107,7 +107,8 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_start<'caller>(
         .resolve::<LogErrorAndDefault>()
 }
 
-/// `sight(host)` → `{"ok": {"roster": […], "cards": {…}}}` or `{"err": …}`.
+/// `sight(host)` → `{"ok": {"host": …, "roster": […], "cards": {…}}}` or
+/// `{"err": …}`.
 #[no_mangle]
 pub extern "system" fn Java_com_volery_phone_NativeBridge_sight<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
@@ -118,6 +119,27 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_sight<'caller>(
         .with_env(|env| {
             let host = read(env, &host);
             to_jstring(env, sight(&host))
+        })
+        .resolve::<LogErrorAndDefault>()
+}
+
+/// `sightAny(host, remembered)` → the same envelope as `sight`, whose `host`
+/// is whichever wall answered. `remembered` is a JSON array of wall names the
+/// phone last saw. The walk is `Node::sight_any`: the chosen wall, then those
+/// names, then the flyway's directory, so a phone whose laptop is off still
+/// finds the flyway on another one.
+#[no_mangle]
+pub extern "system" fn Java_com_volery_phone_NativeBridge_sightAny<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _this: JObject<'caller>,
+    host: JString<'caller>,
+    remembered: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| {
+            let host = read(env, &host);
+            let remembered = read(env, &remembered);
+            to_jstring(env, sight_any(&host, &remembered))
         })
         .resolve::<LogErrorAndDefault>()
 }
@@ -267,6 +289,22 @@ fn sight(host: &str) -> Result<Value, String> {
     Ok(sight_value(s))
 }
 
+/// The remembered list crosses as JSON, so a wall called `a,b` is one name and
+/// a malformed list is refused by name rather than silently read as empty.
+fn sight_any(host: &str, remembered: &str) -> Result<Value, String> {
+    let remembered = remembered_list(remembered)?;
+    let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
+    let s = rt().block_on(held.sight_any(host, &remembered))?;
+    Ok(sight_value(s))
+}
+
+fn remembered_list(json: &str) -> Result<Vec<String>, String> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(json).map_err(|e| format!("unreadable wall list: {e}"))
+}
+
 fn fetch(host: &str, card: &str, kind: &str, kept: &str, path: &str) -> Result<Value, String> {
     let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
     let want = match kind {
@@ -316,6 +354,8 @@ fn fetch_value(f: phone_node::Fetched) -> Value {
 /// trimmed to what a phone screen draws — the host, load and build — and the
 /// snapshot is passed through whole, still opaque, because its shape is the
 /// wall's front end's to decide and the phone must not grow a second taxonomy.
+/// `host` is the wall that answered, which after a walk may not be the one
+/// asked; every later call has to address it.
 fn sight_value(s: phone_node::Sighting) -> Value {
     let roster: Vec<Value> = s
         .roster
@@ -340,7 +380,7 @@ fn sight_value(s: phone_node::Sighting) -> Value {
             "snapshot": d.snapshot,
         })
     });
-    json!({ "roster": roster, "cards": cards })
+    json!({ "host": s.host, "roster": roster, "cards": cards })
 }
 
 /// The pure fold behind `narrate`: parse the two digests and a chatty level,
@@ -442,6 +482,7 @@ mod tests {
     #[test]
     fn a_sighting_folds_into_the_shape_the_app_reads() {
         let s = Sighting {
+            host: "lab-m2.queerisfreedom".into(),
             roster: vec![heard("phone"), heard("lab-m2.queerisfreedom")],
             cards: Some(Digest {
                 host: "lab-m2.queerisfreedom".into(),
@@ -451,6 +492,7 @@ mod tests {
             }),
         };
         let v = sight_value(s);
+        assert_eq!(v["host"], "lab-m2.queerisfreedom", "the answer says which wall opened");
         assert_eq!(v["roster"].as_array().unwrap().len(), 2);
         assert_eq!(v["roster"][0]["host"], "phone");
         assert_eq!(v["cards"]["host"], "lab-m2.queerisfreedom");
@@ -462,8 +504,9 @@ mod tests {
     /// "no cards".
     #[test]
     fn no_cards_frame_is_null_in_the_envelope() {
-        let s = Sighting { roster: vec![heard("phone")], cards: None };
+        let s = Sighting { host: "desk".into(), roster: vec![heard("phone")], cards: None };
         let v = sight_value(s);
+        assert_eq!(v["host"], "desk");
         assert!(v["cards"].is_null());
     }
 
@@ -563,6 +606,19 @@ mod tests {
     fn an_unknown_chatty_level_is_refused() {
         let err = narrate("", &cards(1, json!([])), "loud").unwrap_err();
         assert!(err.contains("chatty"), "the error names what was wrong: {err}");
+    }
+
+    /// The walls the app kept cross as a JSON array. Empty is no walls; a
+    /// malformed list is refused by name rather than quietly becoming "none",
+    /// which would leave a phone walking from one host when it had several.
+    #[test]
+    fn the_remembered_list_is_json_and_a_bad_one_is_refused() {
+        assert_eq!(remembered_list("").unwrap(), Vec::<String>::new());
+        assert_eq!(remembered_list("  ").unwrap(), Vec::<String>::new());
+        assert_eq!(remembered_list(r#"["a","B"]"#).unwrap(), vec!["a".to_string(), "B".to_string()]);
+        let bad = remembered_list("[a,b]").unwrap_err();
+        assert!(bad.contains("wall list"), "the error names what was wrong: {bad}");
+        assert!(remembered_list(r#"["a",3]"#).is_err(), "a name is a string, not a number");
     }
 
     /// A digest with no snapshot reads as `null`, not a crash — the same lenient

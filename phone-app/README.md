@@ -35,12 +35,26 @@ Two steps — the native `.so`, then the APK. Both need the Android toolchain
 
 ```bash
 cd src-tauri/phone-ffi
-export NDK="/c/Users/flori/AppData/Local/Android/android-ndk-r26d"
+export NDK="$HOME/Android/Sdk/ndk/27.1.12297006"   # $ANDROID_HOME/ndk/<version>
 export BIN="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$BIN/aarch64-linux-android24-clang.cmd"
 export CC_aarch64_linux_android="$BIN/aarch64-linux-android24-clang.cmd"
 export CXX_aarch64_linux_android="$BIN/aarch64-linux-android24-clang++.cmd"
 export AR_aarch64_linux_android="$BIN/llvm-ar.exe"
+# On a machine with no MSVC, mingw or Cygwin, the host build scripts and proc
+# macros are gnu artifacts and still need a linker. The gnu toolchain ships
+# rust-lld and mingw's import libraries, but rustc still spawns `dlltool` by
+# name — the NDK's llvm-dlltool is a drop-in once it is on PATH as dlltool.exe.
+mkdir -p ../../.build-tools
+cp "$BIN/llvm-dlltool.exe" ../../.build-tools/dlltool.exe
+export PATH="$PWD/../../.build-tools:$PATH"
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=rust-lld
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-C linker-flavor=gnu-lld -C link-self-contained=yes"
+# Through this network's TLS-inspecting proxy, cargo's schannel revocation
+# check fails on every crates.io download. Persisted as a user environment
+# variable on this machine; `git config --global http.schannelCheckRevoke
+# false` is the same switch for git.
+export CARGO_HTTP_CHECK_REVOKE=false
 # A member of src-tauri's workspace, so target/ is the shared one — no
 # CARGO_TARGET_DIR override needed, and the .so lands in ../target.
 cargo build --target aarch64-linux-android
@@ -50,6 +64,11 @@ mkdir -p ../../phone-app/android/app/src/main/jniLibs/arm64-v8a
   -o ../../phone-app/android/app/src/main/jniLibs/arm64-v8a/libphone_ffi.so \
   ../target/aarch64-linux-android/debug/libphone_ffi.so
 ```
+
+The `.cargo/config.toml` beside the crate sets `max-page-size=16384`; a `.so`
+whose LOAD segments are at `0x1000` was linked before that flag reached the
+linker, and Android 15 will warn about it. `llvm-readelf -l` on the stripped
+file should show `0x4000`.
 
 ### 2. Build the APK
 
@@ -119,9 +138,17 @@ That is the one thing the phone does that the desktop never did.
 ## Status
 
 The APK builds, installs, and the node binds on-device (the platform-verifier
-init works). The on-device dial from the phone to a desktop wall across two
-networks is the open question — see `docs/PHONE.md`'s "on-device dial" errand.
-On this machine the phone was on cellular and the desktop behind NordVPN, so
-the dial timed out at the wire's 20s bound; the same code dials the lab wall
-from the desktop itself and reads the roster (phone's own entry included) plus
-the cards digest.
+init works). The cross-network dial is closed: the phone dials the real wall
+over the relay and reads its roster and cards digest; `docs/PHONE.md` has what
+the two phone-side causes were.
+
+**Finding a wall (2026-11-11).** The app no longer depends on the one wall in
+`local.properties`. `sightAny` walks the configured host, the walls the last
+sighting showed (persisted beside the host) and finally the flyway's directory,
+leaving room in the attempt budget so a stale roster cannot starve the directory
+read, so shutting the laptop the phone was pointed at leaves it on the flyway
+through another. Proved on the Pixel against the real flyway: a dead configured host
+with no remembered list found AU-LT-285 through the directory, and a dead host
+with the learned roster went straight to the remembered wall. A tap on a wall
+that is off keeps the page on the wall it is really reading, rather than leaving
+every later call addressed to the dead one.

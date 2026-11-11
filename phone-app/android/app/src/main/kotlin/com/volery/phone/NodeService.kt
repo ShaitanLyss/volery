@@ -40,7 +40,8 @@ class NodeService : Service() {
         }
         val key = intent?.getStringExtra(EXTRA_KEY) ?: BuildConfig.PHONE_KEY
         val name = intent?.getStringExtra(EXTRA_NAME) ?: BuildConfig.PHONE_NAME
-        dial(host, key, name)
+        val remembered = intent?.getStringExtra(EXTRA_REMEMBERED) ?: "[]"
+        dial(host, remembered, key, name)
         return START_NOT_STICKY
     }
 
@@ -56,18 +57,26 @@ class NodeService : Service() {
             when (val sight = NativeBridge.parse(NativeBridge.sight(host))) {
                 is NativeBridge.Envelope.Error -> {
                     Log.w(TAG, "sight failed: ${sight.message}")
+                    /* The page goes on drawing the sighting it has, so the
+                       wall it draws from must go on being the wall that
+                       answers. Bounded to a tap: if a walk has already moved
+                       the address somewhere else, that answer is newer than
+                       this failure. */
+                    restoreShownWall(ifCurrent = host)
                     NodeState.update(false, NodeState.sighting, sight.message)
                 }
-                is NativeBridge.Envelope.Ok -> {
-                    NodeState.update(false, parseSighting(sight.payload), null)
-                }
+                is NativeBridge.Envelope.Ok -> landed(parseSighting(sight.payload))
             }
         }
     }
 
-    private fun dial(host: String, key: String, name: String) {
+    private fun dial(host: String, remembered: String, key: String, name: String) {
         Log.i(TAG, "dial: host=$host name=$name")
-        NodeState.update(working = true, sighting = null, error = null)
+        /* The page keeps what it has while a dial runs. At launch there is
+           nothing yet, but a redial from the error screen has the last
+           sighting on it, and blanking the page to ask again is a worse
+           answer than showing it while the retry is under way. */
+        NodeState.update(working = true, sighting = NodeState.sighting, error = null)
         executor.execute {
             try {
                 // The one thing Android needs that the desktop never did: the
@@ -75,30 +84,37 @@ class NodeService : Service() {
                 val init = NativeBridge.parse(NativeBridge.initPlatformVerifier(applicationContext))
                 if (init is NativeBridge.Envelope.Error) {
                     Log.w(TAG, "verifier init failed: ${init.message}")
-                    NodeState.update(false, null, init.message)
+                    restoreShownWall()
+                    NodeState.update(false, NodeState.sighting, init.message)
                     return@execute
                 }
                 val started = NativeBridge.parse(NativeBridge.start(key, name))
                 if (started is NativeBridge.Envelope.Error) {
                     Log.w(TAG, "start failed: ${started.message}")
-                    NodeState.update(false, null, started.message)
+                    restoreShownWall()
+                    NodeState.update(false, NodeState.sighting, started.message)
                     return@execute
                 }
                 Log.i(TAG, "node started as $name, dialing $host")
-                when (val sight = NativeBridge.parse(NativeBridge.sight(host))) {
+                /* `sightAny`, not `sight`: the wall named here may be off
+                   while the flyway is still up on others, and the answer
+                   names whichever one opened. */
+                when (val sight = NativeBridge.walk(host, remembered)) {
                     is NativeBridge.Envelope.Error -> {
                         Log.w(TAG, "sight failed: ${sight.message}")
-                        NodeState.update(false, null, sight.message)
+                        restoreShownWall()
+                        NodeState.update(false, NodeState.sighting, sight.message)
                     }
                     is NativeBridge.Envelope.Ok -> {
                         val sighting = parseSighting(sight.payload)
                         Log.i(TAG, "dial result: ${sight.payload.toString(2)}")
-                        NodeState.update(false, sighting, null)
+                        landed(sighting)
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "the node threw", e)
-                NodeState.update(false, null, e.message ?: "the node threw")
+                restoreShownWall()
+                NodeState.update(false, NodeState.sighting, e.message ?: "the node threw")
             }
         }
     }
@@ -127,6 +143,7 @@ class NodeService : Service() {
         const val EXTRA_HOST = "host"
         const val EXTRA_KEY = "key"
         const val EXTRA_NAME = "name"
+        const val EXTRA_REMEMBERED = "remembered"
         const val EXTRA_ONLY_SIGHT = "only_sight"
 
         /** Read another wall with the node already up — the roster's chips. */
@@ -138,13 +155,71 @@ class NodeService : Service() {
             else context.startService(intent)
         }
 
-        fun dial(context: Context, host: String, key: String, name: String) {
+        fun dial(context: Context, host: String, remembered: String, key: String, name: String) {
             val intent = Intent(context, NodeService::class.java)
                 .putExtra(EXTRA_HOST, host)
+                .putExtra(EXTRA_REMEMBERED, remembered)
                 .putExtra(EXTRA_KEY, key)
                 .putExtra(EXTRA_NAME, name)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
             else context.startService(intent)
+        }
+    }
+}
+
+/** Guards the pair below: a sighting lands from the service executor and from
+ *  the narration loop's IO thread, and the address and the roster it sent must
+ *  be written together or a walk and a tap can interleave half of each. */
+private val landing = Any()
+
+/**
+ * The answer is now what this phone knows. The wall that opened is the one
+ * every other call addresses — `Ears` sends a transcript to [Config.host],
+ * `Steer` confirms a plan there, the viewer fetches there — and the roster it
+ * sent is the list a later walk tries before it asks the directory.
+ *
+ * Written from the service rather than from a screen because the service
+ * outlives every screen: a walk that switches walls while the app is in the
+ * background must move the address with it, or a spoken sentence would go to
+ * the laptop that is off.
+ *
+ * `settles` is false for a narration poll. A poll refreshes what the page
+ * draws, but the working indicator belongs to a dial still walking; a poll
+ * landing first must not clear it.
+ */
+internal fun landed(sighting: Sighting, settles: Boolean = true) {
+    synchronized(landing) {
+        var changed = false
+        if (sighting.host.isNotEmpty() && sighting.host != Config.host) {
+            Config.host = sighting.host
+            changed = true
+        }
+        val walls = sighting.roster
+            .map { it.host }
+            .filter { it.isNotBlank() && it != Config.name }
+            .distinct()
+        if (walls != Config.remembered) {
+            Config.remembered = walls
+            changed = true
+        }
+        if (changed) Config.persistWalls()
+        /* The page's own sighting is part of the landing, not the caller's to
+           remember: a narration poll that switches walls must move the roster
+           and the address together, or the page keeps drawing one wall while
+           every later call names another. */
+        NodeState.landed(sighting, settle = settles)
+    }
+}
+
+/** Put the address back on the wall the page is drawing, after a dial that
+ *  proved nothing. `ifCurrent` bounds it to a tap: if a walk has already moved
+ *  the address somewhere else, that answer is newer than this failure. */
+private fun restoreShownWall(ifCurrent: String? = null) {
+    synchronized(landing) {
+        val shown = NodeState.sighting?.host
+        if (!shown.isNullOrEmpty() && shown != Config.host && (ifCurrent == null || Config.host == ifCurrent)) {
+            Config.host = shown
+            Config.persistWalls()
         }
     }
 }

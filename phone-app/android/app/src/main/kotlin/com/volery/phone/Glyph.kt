@@ -77,16 +77,20 @@ private fun DrawScope.drawGlyph(g: Glyph, color: Color, u: Float, stroke: Stroke
             line(13.4f, 5.8f, 10.2f, 5.8f)
         }
         Glyph.Gear -> {
-            oval(8f, 8f, 2.1f)
-            val spokes = listOf(
-                8f to 1.9f, 8f to 12.4f, 14.1f to 8f, 3.6f to 8f,
-                12.3f to 3.7f, 4.9f to 11.1f, 12.3f to 12.3f, 4.9f to 4.9f,
-            )
-            spokes.forEach { (x, y) ->
-                val dx = (x - 8f) * 0.28f
-                val dy = (y - 8f) * 0.28f
-                line(8f + dx, 8f + dy, x, y)
-            }
+            /* A cog, not a sun: a body with a hole in it and eight teeth on the
+               rim. The first cut was a small circle with eight spokes radiating
+               out of it, which is the shape of Claude's mark and read as one
+               sitting in the chrome. */
+            oval(8f, 8f, 3.4f)
+            oval(8f, 8f, 1.15f)
+            line(11.7f, 8f, 13.6f, 8f)
+            line(10.6f, 10.6f, 12f, 12f)
+            line(8f, 11.7f, 8f, 13.6f)
+            line(5.4f, 10.6f, 4f, 12f)
+            line(4.3f, 8f, 2.4f, 8f)
+            line(5.4f, 5.4f, 4f, 4f)
+            line(8f, 4.3f, 8f, 2.4f)
+            line(10.6f, 5.4f, 12f, 4f)
         }
         Glyph.Back -> {
             line(13f, 8f, 3.4f, 8f)

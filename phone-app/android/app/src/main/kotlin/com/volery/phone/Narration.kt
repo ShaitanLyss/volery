@@ -47,13 +47,35 @@ internal const val NARRATION_CADENCE_MS = 15_000L
  *  return what to say and what to persist. Null only when there is no digest
  *  to hold onto — the wall unreachable, no `cards` yet, or a fold that failed —
  *  so a reachable wall with nothing new still advances the baseline. */
-internal suspend fun sightAndNarrate(host: String, prev: String?, chatty: String): NarrationTurn? =
+internal suspend fun sightAndNarrate(
+    host: String,
+    remembered: String,
+    prev: String?,
+    chatty: String,
+): NarrationTurn? =
     withContext(Dispatchers.IO) {
-        val cards = when (val envelope = NativeBridge.parse(NativeBridge.sight(host))) {
+        /* `sightAny`, the same walk the launch dial makes: a poll is where a
+           wall going off is felt first, and the loop must move to one that is
+           up rather than fail every fifteen seconds until someone opens the
+           settings screen. `landed` writes the wall that opened, so the loop's
+           key changes and the next poll goes straight there. */
+        val payload = when (val envelope = NativeBridge.walk(host, remembered)) {
             is NativeBridge.Envelope.Error -> return@withContext null
-            is NativeBridge.Envelope.Ok -> envelope.payload.optJSONObject("cards") ?: return@withContext null
+            is NativeBridge.Envelope.Ok -> envelope.payload
         }
+        /* A poll refreshes the page but does not settle a dial's indicator:
+           that one is the dial's to clear when its own walk returns. */
+        landed(parseSighting(payload), settles = false)
+        val cards = payload.optJSONObject("cards") ?: return@withContext null
         val curr = cards.toString()
+        /* The walk above ran whatever the voice setting is, because it is also
+           how the phone moves to a wall that is up. `off` only stops the
+           speaking: no lines, and no question opening the ears unspoken. The
+           baseline still advances, so turning the voice back on does not read
+           out everything that happened while it was quiet. */
+        if (chatty == "off") {
+            return@withContext NarrationTurn(lines = emptyList(), curr = curr, needsYou = false)
+        }
         val n = when (val narr = NativeBridge.parse(NativeBridge.narrate(prev.orEmpty(), curr, chatty))) {
             is NativeBridge.Envelope.Error -> return@withContext null
             is NativeBridge.Envelope.Ok -> parseNarration(narr.payload)

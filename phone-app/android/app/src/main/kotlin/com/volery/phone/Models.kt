@@ -53,6 +53,9 @@ data class CardsSnapshot(
 )
 
 data class Sighting(
+    /** The wall that answered, which after a walk may not be the one asked.
+     *  Every later call (a fetch, a spoken plan, an answer) addresses it. */
+    val host: String,
     val roster: List<RosterRow>,
     val cards: CardsSnapshot?,
 )
@@ -98,7 +101,7 @@ fun parseSighting(ok: JSONObject): Sighting {
             cards = (0 until cardsArr.length()).mapNotNull { i -> readCard(cardsArr.optJSONObject(i)) },
         )
     }
-    return Sighting(roster = roster, cards = cards)
+    return Sighting(host = ok.optString("host"), roster = roster, cards = cards)
 }
 
 private fun readCard(c: JSONObject?): CardDigest? {

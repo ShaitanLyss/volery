@@ -129,12 +129,12 @@ private fun SettingsContent(onBack: () -> Unit) {
             )
             "host" -> FieldSheet(
                 title = "steward wall",
-                label = "the wall's address",
+                label = "the wall to try first",
                 value = Config.host,
                 mono = true,
                 onKeep = {
                     Config.host = it
-                    Config.persist()
+                    Config.persistWalls()
                 },
                 onDismiss = { sheet = null },
             )
