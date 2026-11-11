@@ -42,6 +42,13 @@ object Config {
     var key by mutableStateOf("")
     var name by mutableStateOf(BuildConfig.PHONE_NAME)
 
+    /** The wall's device id, when the invite carried one (`phrase·host·id`).
+     *  Public, so it lives in the ordinary preferences beside the wall names:
+     *  it names a machine, it is not a secret, and the enrolment flow needs it
+     *  to dial a wall it has never met. Empty is an invite from a wall that
+     *  does not carry one yet. */
+    var device by mutableStateOf("")
+
     /** Read the kept phrase before anything dials. Both the activity and the
      *  service call it: the service can be started by the OS with no activity
      *  in front of it, and a dial with an empty key fails silently. */
@@ -53,13 +60,12 @@ object Config {
      *  the wall's own shape (`phrase · host`) also fills [preferred], because
      *  the wall that handed you the invite is the one you meant to reach. */
     fun keepKey(context: Context, typed: String) {
-        val (phrase, wall) = inviteOf(typed)
+        val (phrase, wall, wallDevice) = inviteOf(typed)
         key = phrase
         if (phrase.isEmpty()) Kept.forget(context) else Kept.put(context, phrase)
-        if (!wall.isNullOrEmpty()) {
-            preferred = wall
-            persist()
-        }
+        if (!wall.isNullOrEmpty()) preferred = wall
+        if (!wallDevice.isNullOrEmpty()) device = wallDevice
+        if (!wall.isNullOrEmpty() || !wallDevice.isNullOrEmpty()) persist()
     }
 
     /** The walls the last sighting showed, in the order the answering wall
@@ -112,6 +118,7 @@ object Config {
          * A phone from before the preference existed keeps its wall as the
          * first fallback through `host`, which is where it belongs. */
         preferred = sp.getString("preferred", preferred) ?: preferred
+        device = sp.getString("device", device) ?: device
         host = sp.getString("host", preferred) ?: preferred
         name = sp.getString("name", name) ?: name
         tutorialSeen = sp.getBoolean("tutorialSeen", tutorialSeen)
@@ -146,6 +153,7 @@ object Config {
             ?.putString("music", music)
             ?.putString("host", host)
             ?.putString("preferred", preferred)
+            ?.putString("device", device)
             ?.putString("name", name)
             ?.putBoolean("tutorialSeen", tutorialSeen)
             ?.putString("remembered", wallsJson())
@@ -192,20 +200,27 @@ object Config {
 
 /**
  * An invite, as a wall hands one over: the phrase, a middle dot, the wall's
- * name (`key.rs::join` joins them and splits on the same character). Typing
- * only the phrase is the ordinary case; pasting the whole line is the reason
- * this exists, and it is also how [Config.preferred] gets filled without a
- * second field — the wall that gave you the invite is the one you meant.
+ * name, and (since device membership) a second dot and the wall's device id.
+ * `key.rs::join` joins the first two and splits on the same character.
  *
- * Pure, so the two shapes are a thing to read rather than to discover by
- * pasting; the dot is the only separator, because the phrase has spaces in it
- * and a dash-dash spelling would collide with its own punctuation.
+ * Typing only the phrase is the ordinary case; pasting the whole line is the
+ * reason this exists, and it is also how [Config.preferred] gets filled without
+ * a second field — the wall that gave you the invite is the one you meant. The
+ * device id is kept for the day the wall refuses strangers: it is what a phone
+ * dials a wall it has never met by, and dropping it here would make an invite
+ * that arrived in the new shape an invite that works until the enrolment lands.
+ *
+ * Pure, so the shapes are a thing to read rather than to discover by pasting;
+ * the dot is the only separator, because the phrase has spaces in it and a
+ * dash-dash spelling would collide with its own punctuation.
  */
-fun inviteOf(typed: String): Pair<String, String?> {
+fun inviteOf(typed: String): Triple<String, String?, String?> {
     val text = typed.trim()
-    val at = text.indexOf('·')
-    if (at < 0) return text to null
-    val phrase = text.substring(0, at).trim()
-    val wall = text.substring(at + 1).trim().ifEmpty { null }
-    return phrase to wall
+    val parts = text.split('·')
+    val phrase = parts.getOrNull(0)?.trim().orEmpty()
+    return Triple(
+        phrase,
+        parts.getOrNull(1)?.trim()?.ifEmpty { null },
+        parts.getOrNull(2)?.trim()?.ifEmpty { null },
+    )
 }
