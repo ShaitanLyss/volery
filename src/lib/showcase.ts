@@ -47,8 +47,8 @@ export const CHAPTERS: readonly Chapter[] = [
     id: "why",
     title: "why volery exists",
     head: "Nine agents do not fit in nine tabs.",
-    lede: "Claude Code is good at one task. The trouble starts when you have nine of them running.",
-    do: "step through the three states.",
+    lede: "Claude Code is good at one task. The trouble starts with nine of them running, and comes back on the morning you would otherwise spend rebuilding yesterday.",
+    do: "step through the four states.",
   },
   {
     id: "wall",
@@ -69,7 +69,7 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "when an agent asks",
     head: "An agent that needs an answer stops, and says so.",
     lede: "A question parks the turn. Answering it resumes the same turn; if you are away, it is filed for the morning instead of timing out.",
-    do: "pick an option.",
+    do: "pick an option, then choose a design.",
   },
   {
     id: "relay",
@@ -83,7 +83,7 @@ export const CHAPTERS: readonly Chapter[] = [
     title: "spreading the work",
     head: "Five workers, four models, two machines.",
     lede: "A coordinator can open each card on the model, the effort, the account and the machine that piece deserves. The wall routes the work; you set the budget.",
-    do: "click a worker to see what its assignment buys.",
+    do: "click a worker to see what its assignment buys, then a ruling.",
   },
   {
     id: "desk",
@@ -349,6 +349,33 @@ export const SLEEP_SAID =
 export const USAGE_SAID =
   "The accounts panel shows each window's reset, what is left and today's spend. The title bar carries the burn rate, and analytics reads token consumption per card, account and project. The design is finalised; implementation is under way.";
 
+/** The coordinator, which is the workflow the knobs above exist to serve. */
+export type Ruling = { verb: "build" | "ask" | "decline" | "fold"; line: string };
+
+export const COORDINATE = {
+  title: "the coordinator",
+  lede: "One card holds the pile: a feedback round, a review with twelve notes, a ticket whose description lists nine asks. It rules on each item and opens a worker for the ones worth building, so you are not the router.",
+  rulings: [
+    {
+      verb: "build",
+      line: "one worker, in its own worktree, holding the piece and the constraints. The coordinator reviews the diff and writes no code itself.",
+    },
+    {
+      verb: "ask",
+      line: "a question back to you, only where the call is not a card's to make. The rest it decides, and says why in the worker's brief.",
+    },
+    {
+      verb: "decline",
+      line: "with the reason attached, so the same item is not filed again next week by somebody who did not see the answer.",
+    },
+    {
+      verb: "fold",
+      line: "into another item it belongs with, rather than a second worker editing the same file as the first.",
+    },
+  ] as readonly Ruling[],
+  gate: "One commit gate. Workers finish, the coordinator reads each diff, and nothing lands until it says so.",
+};
+
 /* ── the transcript ─────────────────────────────────────────────────────── */
 
 /** What the terminal shows. Not a real JSONL dump (that would be unreadable in
@@ -486,6 +513,48 @@ export const ASK_REVIEW = "Two decisions, one reply. Nothing is sent until the l
 
 export const ASK_FILED =
   "Filed until you are back. The card stays parked, and the question is waiting in the pile with the answers you had already given.";
+
+/* ── a question that shows designs ──────────────────────────────────────── */
+
+export type DesignId = "rail" | "dot" | "band";
+
+export type DesignOption = {
+  id: DesignId;
+  label: string;
+  /** The cost of this one, which is what a preview cannot say by itself. */
+  detail: string;
+};
+
+/** The previews are drawn by the component in the wall's own tokens rather
+ *  than captured, for the reason the whole tour is: a screenshot of a card
+ *  goes stale the first time a token moves. In the real panel these panels
+ *  are composed HTML, laid out side by side at full size, and choosing one
+ *  answers the question. */
+export const DESIGN_ASK = {
+  asked: "Three ways to show a card's state. Which one?",
+  why: "State is the only colour on the wall, so it has to read at the smallest zoom and in chat view. Each panel is the same two cards drawn a different way.",
+  options: [
+    {
+      id: "rail",
+      label: "a rail down the edge",
+      detail: "Reads from across the room and stays clear of the title. Costs a few pixels of width on every card.",
+    },
+    {
+      id: "dot",
+      label: "a dot beside the state word",
+      detail: "The quietest of the three. On a resting card the dot and the word say the same thing twice.",
+    },
+    {
+      id: "band",
+      label: "a band across the top",
+      detail: "The strongest at the back of a room, and the one that competes most with the card's border.",
+    },
+  ] as readonly DesignOption[],
+  chosen:
+    "the rail. I'll carry it through the card, the widget frame and chat view's rows, and check the smallest zoom before anything else.",
+  also:
+    "An option can also carry a file that already exists: a screenshot, a PDF, a mockup exported from Figma. It opens beside the designs in the viewer, and choosing from there is still the answer.",
+};
 
 /* ── the desk ───────────────────────────────────────────────────────────── */
 
@@ -1082,9 +1151,10 @@ export const NEXT: readonly NextItem[] = [
 
 /* ── the opening demo ───────────────────────────────────────────────────── */
 
-/** What a terminal does to nine conversations, said in three beats. Each beat
+/** What a terminal does to nine conversations, said in four beats. Each beat
  *  is a state the opening demo can be clicked through, so the claim is shown
- *  once and then left alone. */
+ *  once and then left alone. The fourth is the morning after: the wall is the
+ *  one part of this that survives a closed laptop. */
 export const TABS_STORY: readonly { title: string; body: string }[] = [
   {
     title: "nine tabs",
@@ -1100,5 +1170,10 @@ export const TABS_STORY: readonly { title: string; body: string }[] = [
     title: "the wall",
     body:
       "The same nine processes, laid out and coloured by state. Anything amber needs you. Anything celadon is moving. You can see that from across the room, and you can still open any of them.",
+  },
+  {
+    title: "closed, then opened",
+    body:
+      "There is no restore step. Each card resumes the session it was in, the dev servers start again with the wall, and a question that was waiting on Friday is waiting on Monday. What used to be the first hour of the day costs a launch.",
   },
 ] as const;

@@ -11,6 +11,8 @@ import {
   CARD_PROSE_AFTER,
   CARD_RUN,
   CHAPTERS,
+  COORDINATE,
+  DESIGN_ASK,
   DESK,
   COMPARE,
   COMPARE_NOTE,
@@ -215,6 +217,42 @@ describe("the question", () => {
   test("the question carries the reasoning, not only the choice", () => {
     expect(ASK.why.trim().length).toBeGreaterThan(60);
   });
+
+  test("a question can show three designs, and each one says what it costs", () => {
+    expect(DESIGN_ASK.options.length).toBe(3);
+    const ids = DESIGN_ASK.options.map((o) => o.id);
+    expect(new Set(ids).size).toBe(3);
+    for (const o of DESIGN_ASK.options) {
+      expect(o.label.trim().length).toBeGreaterThan(3);
+      expect(o.detail.trim().length).toBeGreaterThan(20);
+    }
+    /* The sentence the chosen design is answered with, and the other half of
+       the feature: a file that already exists travels the same path. */
+    expect(DESIGN_ASK.chosen.length).toBeGreaterThan(40);
+    expect(DESIGN_ASK.also).toContain("file");
+  });
+});
+
+describe("the four beats of the opening", () => {
+  test("the wall survives a closed laptop, which is the fourth beat", () => {
+    expect(TABS_STORY.length).toBe(4);
+    const last = TABS_STORY[TABS_STORY.length - 1];
+    expect(last.title).toBe("closed, then opened");
+    /* The three things the user named as getting their time back. */
+    expect(last.body).toContain("resumes");
+    expect(last.body).toContain("dev servers");
+  });
+});
+
+describe("the coordinator", () => {
+  test("every ruling says what it does, and all four are distinct", () => {
+    const verbs = COORDINATE.rulings.map((r) => r.verb);
+    expect(new Set(verbs).size).toBe(4);
+    for (const r of COORDINATE.rulings) {
+      expect(r.line.trim().length).toBeGreaterThan(40);
+    }
+    expect(COORDINATE.gate).toContain("commit");
+  });
 });
 
 describe("the comparison", () => {
@@ -334,6 +372,8 @@ describe("the copy is the house's", () => {
       CARD_PROSE_AFTER,
       CARD_RUN,
       ASK,
+      DESIGN_ASK,
+      COORDINATE,
       COMPARE,
       COMPARE_NOTE,
       SECURITY_FACTS,

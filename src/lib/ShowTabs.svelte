@@ -19,12 +19,22 @@
 
   const STATES = ["work", "ask", "work", "rest", "fail", "work", "rest", "idle", "work"] as const;
 
+  /* The fourth beat is the morning after, and every row is a different kind
+     of thing that survived. A resumed session, a question still parked, and a
+     dev server that came back with the wall — the three answers to "what did
+     I lose when I closed the lid". */
+  const RESTORED = [
+    { name: "billing split", what: "resumed its session, 41 turns kept" },
+    { name: "vendor summary", what: "still waiting on your answer" },
+    { name: "water shader", what: "its dev server came back on :5173" },
+  ];
+
   let beat = $state(0);
   const story = $derived(TABS_STORY[beat]);
 </script>
 
 <div class="tabsdemo">
-  <div class="switchrow" role="group" aria-label="the story in three states">
+  <div class="switchrow" role="group" aria-label="the story in four states">
     {#each TABS_STORY as s, i (s.title)}
       <button type="button" class="step" class:on={beat === i} onclick={() => (beat = i)}>
         <span class="num">{i + 1}</span>{s.title}
@@ -55,7 +65,7 @@
           {/each}
         </div>
       {/if}
-    {:else}
+    {:else if beat === 2}
       <div class="wallgrid">
         {#each TABS as t, i (t)}
           <div class="wcard" data-st={STATES[i]}>
@@ -63,6 +73,29 @@
             <span class="wfoot"><i></i>{STATES[i] === "ask" ? "waiting on you" : STATES[i] === "work" ? "working" : STATES[i] === "rest" ? "at rest" : STATES[i] === "fail" ? "failed" : "dormant"}</span>
           </div>
         {/each}
+      </div>
+    {:else}
+      <div class="returned">
+        <div class="rhead">
+          <span class="rlabel">closed friday 18:04</span>
+          <span class="rarrow" aria-hidden="true">&rarr;</span>
+          <span class="rlabel live">opened monday 09:12</span>
+        </div>
+        <div class="rlist">
+          {#each RESTORED as r, i (r.name)}
+            <div class="rrow" data-kind={i}>
+              <span class="rname">{r.name}</span>
+              <span class="rwhat">{r.what}</span>
+            </div>
+          {/each}
+        </div>
+        <div class="rservers">
+          <span class="slabel">dev servers</span>
+          <span class="srv">portfolio :5173</span>
+          <span class="srv">api :3001</span>
+          <span class="srv">docs :4321</span>
+          <span class="rup"><i></i>back up</span>
+        </div>
       </div>
     {/if}
   </div>
@@ -295,6 +328,94 @@
   }
   .wcard[data-st="fail"] .wfoot i {
     background: var(--st-fail);
+  }
+  .returned {
+    padding: 14px;
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    min-height: 250px;
+  }
+  .rhead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: var(--paper-faint);
+  }
+  .rlabel.live {
+    color: var(--paper-mute);
+  }
+  .rarrow {
+    color: var(--rule);
+  }
+  .rlist {
+    display: grid;
+    gap: 5px;
+  }
+  .rrow {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border: 1px solid color-mix(in oklab, var(--edge) 70%, transparent);
+    background: color-mix(in oklab, var(--surface) 80%, transparent);
+  }
+  .rrow[data-kind="1"] {
+    border-color: color-mix(in oklab, var(--st-ask) 40%, var(--edge));
+  }
+  .rname {
+    flex: none;
+    width: 110px;
+    font-size: 11px;
+    color: var(--paper-dim);
+  }
+  .rwhat {
+    font-size: 10.5px;
+    color: var(--paper-mute);
+  }
+  .rrow[data-kind="1"] .rwhat {
+    color: color-mix(in oklab, var(--st-ask) 70%, var(--paper-mute));
+  }
+  .rservers {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border: 1px dashed color-mix(in oklab, var(--edge) 75%, transparent);
+  }
+  .slabel {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--paper-faint);
+  }
+  .srv {
+    font: 10px var(--util);
+    color: var(--paper-mute);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--raised);
+    border: 1px solid var(--edge);
+  }
+  .rup {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9.5px;
+    color: var(--st-work);
+  }
+  .rup i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--st-work);
+    box-shadow: 0 0 6px var(--st-work);
   }
   .caption {
     display: grid;

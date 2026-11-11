@@ -12,14 +12,17 @@
     ASSIGNMENTS,
     ASSIGNMENT_SUMMARY,
     BOOST_SAID,
+    COORDINATE,
     SLEEP_SAID,
     USAGE_SAID,
   } from "./showcase";
 
   let picked = $state(ASSIGNMENTS[1].id);
   let boost = $state(false);
+  let ruling = $state<"build" | "ask" | "decline" | "fold">("build");
 
   const chosen = $derived(ASSIGNMENTS.find((a) => a.id === picked) ?? ASSIGNMENTS[0]);
+  const said = $derived(COORDINATE.rulings.find((r) => r.verb === ruling) ?? COORDINATE.rulings[0]);
 
   const FACTS = [
     { key: "model", at: "model" },
@@ -65,6 +68,31 @@
       {/each}
     </dl>
     <p class="dwhy">{chosen.why}</p>
+  </div>
+
+  <!-- The workflow the knobs above exist to serve. A pile of items, one card
+       ruling on each, one gate where the work lands. -->
+  <div class="coordinate">
+    <div class="chead">
+      <span class="ctitle">{COORDINATE.title}</span>
+      <span class="chint">what happens to each item in the pile</span>
+    </div>
+    <p class="clede">{COORDINATE.lede}</p>
+    <div class="rules" role="group" aria-label="what the coordinator does with an item">
+      {#each COORDINATE.rulings as r (r.verb)}
+        <button
+          type="button"
+          class="rule"
+          class:on={ruling === r.verb}
+          aria-pressed={ruling === r.verb}
+          onclick={() => (ruling = r.verb)}
+        >
+          {r.verb}
+        </button>
+      {/each}
+    </div>
+    <p class="rline" aria-live="polite">{said.line}</p>
+    <p class="gate"><span class="gmark" aria-hidden="true"></span>{COORDINATE.gate}</p>
   </div>
 
   <div class="notes">
@@ -261,6 +289,88 @@
     font: 12px/1.55 var(--body);
     color: var(--paper-mute);
     max-width: 80ch;
+  }
+  .coordinate {
+    display: grid;
+    gap: 7px;
+    padding: 12px 14px 11px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in oklab, var(--edge) 75%, transparent);
+    background:
+      linear-gradient(180deg, color-mix(in oklab, var(--raised) 40%, transparent), transparent);
+  }
+  .chead {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ctitle {
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--paper);
+  }
+  .chint {
+    font-size: 10px;
+    color: var(--paper-faint);
+  }
+  .clede {
+    margin: 0;
+    font: 12px/1.55 var(--body);
+    color: var(--paper-mute);
+    max-width: 84ch;
+  }
+  .rules {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding-top: 2px;
+  }
+  .rule {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 6px;
+    border: 1px solid color-mix(in oklab, var(--edge) 80%, transparent);
+    background: transparent;
+    color: var(--paper-mute);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .rule:hover,
+  .rule:focus-visible {
+    color: var(--paper-dim);
+    border-color: color-mix(in oklab, var(--edge) 45%, var(--paper) 20%);
+  }
+  .rule.on {
+    color: var(--paper);
+    border-color: color-mix(in oklab, var(--paper) 40%, var(--edge));
+    background: color-mix(in oklab, var(--raised) 60%, transparent);
+  }
+  .rline {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--paper-dim);
+    max-width: 84ch;
+  }
+  .gate {
+    display: flex;
+    gap: 8px;
+    margin: 0;
+    padding-top: 4px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--paper-faint);
+  }
+  .gmark {
+    flex: none;
+    align-self: center;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    border: 1px solid var(--paper-faint);
   }
   .notes {
     display: grid;

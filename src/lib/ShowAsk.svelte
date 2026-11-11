@@ -11,13 +11,14 @@
   import CtxRing from "./CtxRing.svelte";
   import Markdown from "./Markdown.svelte";
   import { parseMarkdown } from "./markdown";
-  import { ASK, ASK_FILED, ASK_REVIEW, ASK_SECOND } from "./showcase";
+  import { ASK, ASK_FILED, ASK_REVIEW, ASK_SECOND, DESIGN_ASK, type DesignId } from "./showcase";
 
   type Stage = "first" | "second" | "review" | "resumed" | "filed";
 
   let stage = $state<Stage>("first");
   let one = $state<string | null>(null);
   let two = $state<string | null>(null);
+  let design = $state<DesignId | null>(null);
   let root = $state<HTMLElement>();
 
   const why = $derived(parseMarkdown(stage === "second" ? ASK_SECOND.why : ASK.why));
@@ -149,6 +150,63 @@
       </div>
     {/if}
   </div>
+</div>
+
+<!-- The other half of the ask tool: an option that shows rather than
+     describes. In the real panel this is a gallery over the whole window,
+     three composed designs side by side at full size, and choosing one is
+     the answer. The three pictures here are drawn in the wall's own tokens,
+     because that is what the real previews are given as well. -->
+<div class="gallery" role="group" aria-label="a question that shows three designs" data-picked={design}>
+  <div class="ghead">
+    <span class="proj">portfolio</span>
+    <span class="gtitle">{DESIGN_ASK.asked}</span>
+    <span class="gstate">{design ? "answered" : "waiting on you"}</span>
+  </div>
+  <p class="gwhy">{DESIGN_ASK.why}</p>
+
+  <div class="panels">
+    {#each DESIGN_ASK.options as d, i (d.id)}
+      <button
+        type="button"
+        class="panel"
+        class:on={design === d.id}
+        aria-pressed={design === d.id}
+        onclick={() => (design = d.id)}
+      >
+        <span class="shot" aria-hidden="true">
+          <span class="mini" data-design={d.id} data-st="work">
+            <span class="mrail"></span>
+            <span class="mband"></span>
+            <span class="mname">billing split</span>
+            <span class="mfoot"><i class="mst"></i>working</span>
+          </span>
+          <span class="mini rest" data-design={d.id} data-st="rest">
+            <span class="mrail"></span>
+            <span class="mband"></span>
+            <span class="mname">release notes</span>
+            <span class="mfoot"><i class="mst"></i>at rest</span>
+          </span>
+        </span>
+        <span class="plabel">{d.label}</span>
+        <span class="pdet">{d.detail}</span>
+        {#if design === d.id}<span class="chosen" aria-hidden="true">✓ chosen</span>{/if}
+      </button>
+    {/each}
+  </div>
+
+  {#if design}
+    <div class="gdone">
+      <span class="tick" aria-hidden="true">✓</span>
+      <span>{DESIGN_ASK.chosen}</span>
+    </div>
+  {:else}
+    <div class="under">
+      <span class="hint">click a design to answer with it</span>
+      <span class="hint dim">in the real gallery, a panel is full size</span>
+    </div>
+  {/if}
+  <p class="galso">{DESIGN_ASK.also}</p>
 </div>
 
 <style>
@@ -409,5 +467,217 @@
   }
   .fold {
     color: var(--paper-faint);
+  }
+
+  /* The gallery: the same amber as the panel above, because it is the same
+     conversation still parked. Three previews across, which is the one thing
+     a design question needs and a dock panel cannot do. */
+  .gallery {
+    max-width: 900px;
+    margin-top: 16px;
+    padding: 13px 15px 12px;
+    display: grid;
+    gap: 10px;
+    border-radius: 14px;
+    border: 1px solid color-mix(in oklab, var(--st-ask) 34%, var(--edge));
+    background: var(--surface);
+  }
+  .gallery[data-picked] {
+    border-color: color-mix(in oklab, var(--st-work) 34%, var(--edge));
+  }
+  .ghead {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+  .gtitle {
+    font-size: 13px;
+    color: var(--paper);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .gstate {
+    margin-left: auto;
+    flex: none;
+    font-size: 10.5px;
+    color: var(--st-ask);
+  }
+  .gallery[data-picked] .gstate {
+    color: var(--st-work);
+  }
+  .gwhy {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--paper-mute);
+    max-width: 78ch;
+  }
+  .panels {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .panel {
+    position: relative;
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+    text-align: left;
+    font: inherit;
+    border-radius: 10px;
+    border: 1px solid color-mix(in oklab, var(--edge) 80%, transparent);
+    background: color-mix(in oklab, var(--well) 45%, transparent);
+    cursor: pointer;
+    transition:
+      border-color var(--dur-quick, 160ms) var(--ease-out, ease-out),
+      background var(--dur-quick, 160ms) var(--ease-out, ease-out);
+  }
+  .panel:hover,
+  .panel:focus-visible {
+    border-color: color-mix(in oklab, var(--st-ask) 55%, var(--edge));
+  }
+  .panel.on {
+    border-color: color-mix(in oklab, var(--st-work) 62%, var(--edge));
+    background: color-mix(in oklab, var(--st-work) 6%, var(--well));
+  }
+  .shot {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 6px;
+    padding: 8px;
+    height: 128px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in oklab, var(--edge) 70%, transparent);
+    background: var(--ink);
+  }
+  .mini {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 6px 9px 6px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--edge);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .mini.rest {
+    background: var(--ink);
+    border-style: dashed;
+  }
+  .mname {
+    font-size: 9.5px;
+    color: var(--paper-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini.rest .mname {
+    color: var(--paper-mute);
+  }
+  .mfoot {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 7.5px;
+    color: var(--paper-mute);
+  }
+  .mst {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--st-work);
+    flex: none;
+  }
+  .mini.rest .mst {
+    background: var(--st-rest);
+  }
+  /* Exactly one treatment is drawn per panel, so a panel is a comparison
+     rather than three cards wearing every idea at once. */
+  .mrail,
+  .mband,
+  .mst {
+    display: none;
+  }
+  .mini[data-design="rail"] .mrail {
+    display: block;
+    position: absolute;
+    left: 3px;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--st-work);
+  }
+  .mini.rest[data-design="rail"] .mrail {
+    background: var(--st-rest);
+    opacity: 0.6;
+  }
+  .mini[data-design="band"] .mband {
+    display: block;
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    top: 0;
+    height: 3px;
+    border-radius: 0 0 2px 2px;
+    background: var(--st-work);
+  }
+  .mini.rest[data-design="band"] .mband {
+    background: var(--st-rest);
+    opacity: 0.6;
+  }
+  .mini[data-design="dot"] .mst {
+    display: block;
+  }
+  .plabel {
+    font-size: 12px;
+    color: var(--paper);
+  }
+  .pdet {
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: var(--paper-mute);
+  }
+  .chosen {
+    position: absolute;
+    top: 13px;
+    right: 13px;
+    font-size: 9px;
+    letter-spacing: 0.03em;
+    color: var(--st-work);
+    background: color-mix(in oklab, var(--ink) 82%, transparent);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid color-mix(in oklab, var(--st-work) 45%, var(--edge));
+  }
+  .gdone {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--paper-dim);
+  }
+  .gdone .tick {
+    flex: none;
+  }
+  .hint.dim {
+    margin-left: auto;
+    color: var(--paper-faint);
+  }
+  .galso {
+    margin: 0;
+    padding-top: 2px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--paper-faint);
+    max-width: 82ch;
+  }
+  @media (max-width: 760px) {
+    .panels {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
