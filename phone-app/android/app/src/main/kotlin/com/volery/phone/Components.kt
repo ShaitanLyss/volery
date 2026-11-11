@@ -708,10 +708,21 @@ fun VoiceRail(
     // dialog nobody asked for is exactly what a quiet app does not do. A
     // granted permission primes the next hold rather than starting one, since
     // the finger that pressed has already been let go of by the dialog.
+    val context = androidx.compose.ui.platform.LocalContext.current
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) voice.stop() else voice.fail("the ears need the microphone")
+        if (granted) {
+            voice.stop()
+            /* Every grant path widens the running service's type, not only
+               the one in settings: this orb is where the microphone is
+               usually asked for, and a service left as data alone refuses
+               the ears with the screen off even though the permission is
+               now held. */
+            NodeService.promote(context)
+        } else {
+            voice.fail("the ears need the microphone")
+        }
     }
     val title = when {
         listening -> "listening…"
