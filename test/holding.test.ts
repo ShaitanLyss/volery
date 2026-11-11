@@ -238,6 +238,18 @@ describe("a message waiting for the turn to finish", () => {
     expect(src).toContain("queuedCaption(heldLines.length, conv.working)");
   });
 
+  /* The receipt is about the sending, but it sits in the column, so it takes
+     the register of the words above it. Chat view's `--you-align` is the
+     right-hand bubble (`ChatView.svelte`), and a brief is not yours — an own
+     line's caption at the right edge under words that take the column applied
+     the room's direction to something the room does not consider yours. */
+  test("a receipt follows its line's register, not the person's", () => {
+    const src = readFileSync("src/lib/Thread.svelte", "utf8");
+    /* Both receipts — the CLI's queue and this wall's hold. */
+    expect(src.match(/class:own=\{!!line\.own\}/g)?.length).toBe(2);
+    expect(src).toContain(".receipt.queued:not(.own)");
+  });
+
   /* The line's own record of how it was sent, on both sides. `echoResumed` is
      the one that caught the first cut out: a line queued behind a turn keeps
      its mark, and when the queue is released at the turn's end it is going

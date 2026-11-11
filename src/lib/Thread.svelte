@@ -562,7 +562,7 @@
          supervisor's turn mark is the only thing that knows, and asking it here
          would be a round trip per send. -->
     {#if line.kind === "you" && line.awaited && line.behindTurn && conv.working && line.state !== "held" && line.state !== "failed"}
-      <div class="receipt queued" aria-live="polite">
+      <div class="receipt queued" class:own={!!line.own} aria-live="polite">
         queued — it goes when this turn finishes
         {#if card.can("stop") === "yes"}
           <button
@@ -583,7 +583,7 @@
     {#if line.kind === "you" && line.state === "held" && queuedBehindTurn && line.heldKey}
       {@const item = card.queued(line.heldKey)}
       {#if item}
-        <div class="receipt queued" aria-live="polite">
+        <div class="receipt queued" class:own={!!line.own} aria-live="polite">
           <!-- The turn's own words are only true while a turn is running. A
                queue that outlived its turn — the card was stood down, or its
                process died mid-turn — is released by the next event or the
@@ -1394,10 +1394,18 @@
     margin-top: calc(-0.15rem * var(--read, 1));
     user-select: none;
   }
+  /* The receipt takes the line's register, not the person's. In chat view
+     `--you-align` is the right-hand bubble, and a queued *brief* (Skein's own
+     words, a spawn held for an allowance) was set at the right edge under words
+     that take the whole column — the room's direction applied to something the
+     room does not consider yours. `own` is set on the receipt itself because it
+     is a sibling of the line, so the line's class cannot reach it. */
   .receipt.queued {
     display: flex;
     gap: 0.6em;
     align-items: baseline;
+  }
+  .receipt.queued:not(.own) {
     align-self: var(--you-align, auto);
   }
   .receipt .now,
