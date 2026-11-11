@@ -306,6 +306,32 @@ pub struct Seat {
     pub copied: bool,
 }
 
+/// The label this machine files an account identity under, or `None`.
+///
+/// `docs/ANALYTICS.md` §4 needs it: a transcript's `session-owner` record names
+/// `<account uuid>:<organization uuid>`, the identity a registry row is stamped
+/// with, and a fact has to carry the **label** because that is the key the
+/// allowance windows are read by. The two namespaces are never mixed in one
+/// column, so this is the one conversion between them and a registered account
+/// is the only thing that has one.
+///
+/// `None` for an identity this wall has never registered — §4's "an identity
+/// this wall has not registered, or whose label has not been learned". The fact
+/// keeps the identity and calls the account `unknown`, which is what puts it in
+/// the residual rather than in somebody else's subscription.
+pub(crate) fn label_for(conn: &rusqlite::Connection, identity: &str) -> Option<String> {
+    let identity = identity.trim();
+    if identity.is_empty() {
+        return None;
+    }
+    conn.query_row(
+        "SELECT label FROM account WHERE identity = ?1",
+        [identity],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// Every registered account, in the order work falls through them. Degrades to
 /// empty for [`usable_labels`]' reason. `spawn.rs` answers a card naming the
 /// account a child should start on from this, and `limits.rs`'s `accounts` tool

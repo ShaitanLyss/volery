@@ -1,6 +1,11 @@
 mod actions;
 mod admit;
 mod amqp;
+/* The usage ingest: one walk of the transcripts, two sinks (`docs/ANALYTICS.md`
+   §7.1). Started by `open_wall`, stopped by the exit handler, and forced on
+   demand by the `analytics_pass` command. Public so a probe or a test can reach
+   `pass`; nothing outside this crate calls it today. */
+pub mod analytics;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
@@ -688,6 +693,12 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        after a delay, the trees no close ever retired. See `worktree.md`. */
     worktree::set_owner(&app.config().identifier);
     store::sweep_worktree_groups(app.handle().clone());
+    /* The analytics collector: this machine's transcripts folded into facts,
+       every sixty seconds. Started here rather than with a widget because the
+       ledger's own beat only runs while one is attached, and recording cannot
+       depend on somebody looking. Its first pass waits one beat, so a launch is
+       never competing with a backfill. See `analytics.rs`. */
+    analytics::start(app.handle());
     /* Whether the main thread is answering — the one reading no event can
        give. It waits out the launch itself before its first look. */
     watchdog::start(app.handle().clone());
@@ -1124,6 +1135,7 @@ pub fn run() {
             reap::reap_survey,
             workflow::workflow_progress,
             usage::read_usage,
+            analytics::analytics_pass,
             limits::read_limits,
             limits::release_limits,
             azdo::azdo_runs,
@@ -1260,6 +1272,11 @@ pub fn run() {
                    back saying so rather than pretending it finished. */
                 let running = app.state::<Supervisor>().shutdown();
                 app.state::<Servers>().shutdown();
+                /* The ingest's sixty-second timer: woken and told to stop, so a
+                   wall on its way down does not open one more pass over the
+                   transcripts. The thread is an ordinary one of this process
+                   besides, so a crash takes it with the wall. */
+                analytics::stop();
                 /* And the shell, which is the one process here a person was
                    driving by hand — so it can be holding anything at all. */
                 app.state::<Shells>().shutdown();

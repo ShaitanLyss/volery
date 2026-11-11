@@ -74,12 +74,134 @@ struct Index {
 }
 
 #[derive(Default, Clone, Copy)]
-struct Totals {
-    input: i64,
-    output: i64,
-    cache_read: i64,
-    write_5m: i64,
-    write_1h: i64,
+pub(crate) struct Totals {
+    pub(crate) input: i64,
+    pub(crate) output: i64,
+    pub(crate) cache_read: i64,
+    pub(crate) write_5m: i64,
+    pub(crate) write_1h: i64,
+}
+
+/// One request, as the transcript wrote it, parsed once for both readers.
+///
+/// There is **one walker** (`docs/ANALYTICS.md` §7.1) and this is what makes
+/// that literal rather than a promise: the ledger's fold and the analytics
+/// sink are handed the same parse, so no line is ever read twice and no line is
+/// visible to one of them and not the other. The fields past `tokens` are
+/// analytics' alone; the ledger ignores them, which costs a struct that is a
+/// little wider than `absorb` was.
+#[derive(Clone)]
+pub(crate) struct Record {
+    /// `message.id` + `requestId` — the pair that identifies one request,
+    /// however many content blocks it was written out as.
+    pub(crate) key: String,
+    pub(crate) at: i64,
+    pub(crate) model: String,
+    pub(crate) tokens: Totals,
+    pub(crate) session: String,
+    /// The subagent id the record carries, or `''` for the card's own thread.
+    pub(crate) agent: String,
+    pub(crate) effort: String,
+    /// The CLI version that made the request (`2.1.319`).
+    pub(crate) cli: String,
+    /// The working directory's last segment, never the path (§7.3).
+    pub(crate) project: String,
+    /// `sdk-cli` for a `--print` card, `cli` for an interactive terminal.
+    pub(crate) entrypoint: String,
+}
+
+/// The cheap gate, the parse, and nothing about whether anybody wants the
+/// record: `absorb_record` applies the ledger's window and its dedup, and the
+/// analytics sink applies its own. Splitting it here is what lets one parse
+/// feed both.
+pub(crate) fn read_record(line: &str) -> Option<Record> {
+    /* The cheap gate first. Most lines in a transcript are prompts, tool calls,
+       tool results and Claude Code's own bookkeeping records, none of which
+       carry usage — and parsing them properly is most of what a pass costs. */
+    if !line.contains("\"type\":\"assistant\"") {
+        return None;
+    }
+    let rec = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if rec.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+        return None;
+    }
+    let msg = rec.get("message")?;
+    let usage = msg.get("usage")?;
+
+    let at = rec
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(epoch_ms)?;
+
+    /* Synthetic messages are Claude Code talking to itself — an API error
+       rendered as an assistant turn — and they carry a zeroed usage under a
+       model name no price list has. Left in they would be a model row on the
+       widget that never costs anything, and a fact under a model no query layer
+       can name. */
+    let model = msg.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    if model.is_empty() || model.starts_with('<') {
+        return None;
+    }
+
+    /* One request, however many content blocks it was written out as. The
+       record's own `uuid` is the fallback rather than a reason to skip: a line
+       with no `message.id` is a shape we have not seen, and counting it once is
+       a better failure than dropping it. */
+    let id = msg
+        .get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| rec.get("uuid").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let req = rec.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
+    let key = format!("{id}|{req}");
+
+    let creation = usage.get("cache_creation");
+    let write_5m = int(creation.and_then(|c| c.get("ephemeral_5m_input_tokens")));
+    let write_1h = int(creation.and_then(|c| c.get("ephemeral_1h_input_tokens")));
+    let created = int(usage.get("cache_creation_input_tokens"));
+    /* The two TTLs are 1.25x and 2x input, a factor of 1.6 apart. A record with
+       no breakdown is charged at the cheaper of the two rather than dropped:
+       under-reporting a cost is a smaller lie than losing the tokens. */
+    let (w5, w1) = if write_5m + write_1h > 0 {
+        (write_5m, write_1h)
+    } else {
+        (created, 0)
+    };
+
+    let text = |k: &str| {
+        rec.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let cwd = text("cwd");
+
+    Some(Record {
+        key,
+        at,
+        model: model.to_string(),
+        tokens: Totals {
+            input: int(usage.get("input_tokens")),
+            output: int(usage.get("output_tokens")),
+            cache_read: int(usage.get("cache_read_input_tokens")),
+            write_5m: w5,
+            write_1h: w1,
+        },
+        session: text("sessionId"),
+        agent: text("agentId"),
+        effort: text("effort"),
+        cli: text("version"),
+        /* Both separators, rather than `Path::file_name`: a transcript's `cwd`
+           is a Windows path even when it is read on a machine that does not
+           think backslashes separate anything. */
+        project: cwd
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or("")
+            .to_string(),
+        entrypoint: text("entrypoint"),
+    })
 }
 
 #[derive(Serialize)]
@@ -104,13 +226,13 @@ pub struct Scan {
     /// Files this pass actually opened, and requests it newly folded in. Both
     /// are reported because a wall that has been quiet and a wall whose reader
     /// is broken produce the same unchanged numbers otherwise.
-    read: usize,
+    pub(crate) read: usize,
     added: i64,
     /// The oldest moment anything here covers.
     since: i64,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -189,85 +311,48 @@ fn int(v: Option<&serde_json::Value>) -> i64 {
     v.and_then(|v| v.as_i64()).unwrap_or(0).max(0)
 }
 
+/// Fold one parsed request into the ledger, if it is inside the window and
+/// nobody has counted it yet. Returns whether anything was added.
+///
+/// The order of the three gates is the ledger's and is load-bearing: the window
+/// drops a record **before** it is remembered, so a record too old to count
+/// never fills the dedup set (`anything_older_than_the_window_is_dropped_before
+/// _it_is_remembered`). The parse moved out from under this when the analytics
+/// sink arrived; what it decides did not.
+fn absorb_record(index: &mut Index, rec: &Record, cutoff: i64) -> bool {
+    if rec.at < cutoff {
+        return false;
+    }
+    if index.seen.contains_key(&rec.key) {
+        return false;
+    }
+
+    let bucket = rec.at - rec.at.rem_euclid(BUCKET_MS);
+    let t = index.totals.entry((bucket, rec.model.clone())).or_default();
+    t.input += rec.tokens.input;
+    t.output += rec.tokens.output;
+    t.cache_read += rec.tokens.cache_read;
+    t.write_5m += rec.tokens.write_5m;
+    t.write_1h += rec.tokens.write_1h;
+
+    index.seen.insert(rec.key.clone(), bucket);
+    true
+}
+
 /// Fold one transcript line in, if it is a request nobody has counted yet.
 /// Returns whether anything was added.
+///
+/// The ledger's own entry, kept as a line-in/answer-out function because that
+/// is what its tests are written against, and untouched by this phase on
+/// purpose: the pass parses once and hands the same `Record` to both readers,
+/// so this is the wrapper the tests already call rather than the body they now
+/// exercise through it.
+#[cfg(test)]
 fn absorb(index: &mut Index, line: &str, cutoff: i64) -> bool {
-    /* The cheap gate first. Most lines in a transcript are prompts, tool calls,
-       tool results and Claude Code's own bookkeeping records, none of which
-       carry usage — and parsing them properly is most of what a pass costs. */
-    if !line.contains("\"type\":\"assistant\"") {
-        return false;
+    match read_record(line) {
+        Some(rec) => absorb_record(index, &rec, cutoff),
+        None => false,
     }
-    let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else {
-        return false;
-    };
-    if rec.get("type").and_then(|v| v.as_str()) != Some("assistant") {
-        return false;
-    }
-    let Some(msg) = rec.get("message") else {
-        return false;
-    };
-    let Some(usage) = msg.get("usage") else {
-        return false;
-    };
-
-    let Some(at) = rec.get("timestamp").and_then(|v| v.as_str()).and_then(epoch_ms) else {
-        return false;
-    };
-    if at < cutoff {
-        return false;
-    }
-
-    /* Synthetic messages are Claude Code talking to itself — an API error
-       rendered as an assistant turn — and they carry a zeroed usage under a
-       model name no price list has. Left in they would be a model row on the
-       widget that never costs anything. */
-    let model = msg.get("model").and_then(|v| v.as_str()).unwrap_or("");
-    if model.is_empty() || model.starts_with('<') {
-        return false;
-    }
-
-    /* One request, however many content blocks it was written out as. The
-       record's own `uuid` is the fallback rather than a reason to skip: a line
-       with no `message.id` is a shape we have not seen, and counting it once is
-       a better failure than dropping it. */
-    let id = msg
-        .get("id")
-        .and_then(|v| v.as_str())
-        .or_else(|| rec.get("uuid").and_then(|v| v.as_str()))
-        .unwrap_or("");
-    let req = rec.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
-    let key = format!("{id}|{req}");
-    if index.seen.contains_key(&key) {
-        return false;
-    }
-
-    let bucket = at - at.rem_euclid(BUCKET_MS);
-    let creation = usage.get("cache_creation");
-    let write_5m = int(creation.and_then(|c| c.get("ephemeral_5m_input_tokens")));
-    let write_1h = int(creation.and_then(|c| c.get("ephemeral_1h_input_tokens")));
-    let created = int(usage.get("cache_creation_input_tokens"));
-
-    let t = index
-        .totals
-        .entry((bucket, model.to_string()))
-        .or_default();
-    t.input += int(usage.get("input_tokens"));
-    t.output += int(usage.get("output_tokens"));
-    t.cache_read += int(usage.get("cache_read_input_tokens"));
-    if write_5m + write_1h > 0 {
-        t.write_5m += write_5m;
-        t.write_1h += write_1h;
-    } else {
-        /* No breakdown written — an older CLI, or a shape we have not seen.
-           The total is still true, so it is charged at the cheaper of the two
-           rather than dropped: under-reporting a cost is a smaller lie than
-           losing the tokens entirely. */
-        t.write_5m += created;
-    }
-
-    index.seen.insert(key, bucket);
-    true
 }
 
 /// How deep the walk goes. `<slug>/<session>/subagents/<file>` is three levels
@@ -334,11 +419,29 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 /// main thread that was the wall freezing at the moment it was being painted.
 #[tauri::command]
 pub async fn read_usage(app: AppHandle) -> Result<Scan, String> {
-    crate::off_main(move || scan_with(&app, &app.state::<Usage>())).await?
+    crate::off_main(move || scan_with(&app, &app.state::<Usage>(), None)).await?
+}
+
+/// The analytics collector's way in: the same walk, with a sink attached.
+///
+/// `docs/ANALYTICS.md` §7.1 is why this is a parameter rather than a second
+/// reader. Two walkers would be two offset tables and a class of bug where one
+/// sees a request the other does not; this is one walk, one parse per line, and
+/// two readers each applying their own window and their own dedup.
+pub(crate) fn scan_with_sink(
+    app: &AppHandle,
+    state: &Usage,
+    reading: &mut crate::analytics::Reading,
+) -> Result<Scan, String> {
+    scan_with(app, state, Some(reading))
 }
 
 /// The scan itself, apart from the command that carries it.
-fn scan_with(app: &AppHandle, state: &Usage) -> Result<Scan, String> {
+fn scan_with(
+    app: &AppHandle,
+    state: &Usage,
+    mut reading: Option<&mut crate::analytics::Reading>,
+) -> Result<Scan, String> {
     let home = app
         .path()
         .home_dir()
@@ -358,33 +461,85 @@ fn scan_with(app: &AppHandle, state: &Usage) -> Result<Scan, String> {
             continue;
         };
         let len = meta.len();
+        /* The last write, as a number. The ledger reads it to decide whether a
+           file it has never opened can hold anything; the sink reads it to
+           decide whether a file was replaced rather than appended to. */
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
         alive.push(path.clone());
+        if let Some(r) = reading.as_deref_mut() {
+            r.alive(&path);
+        }
 
         let known = index.files.get(&path).copied();
-        /* A file we have never opened whose last write predates the window
-           cannot hold anything we want. This is what keeps the first pass to
-           the week's traffic rather than to every session ever recorded. */
-        if known.is_none() {
-            let stale = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
-                .map(|d| (d.as_millis() as i64) < cutoff)
-                .unwrap_or(false);
-            if stale || len > MAX_FILE {
-                index.files.insert(path, len);
-                continue;
+        /* Does the analytics sink want this file, and from where? `None` when
+           there is no sink at all. It answers 0 for a file it has never seen
+           inside its own window, and its own offset — or zero, for a file
+           replaced under it — for one it has. */
+        let (wants_analytics, analytic_from) = match reading.as_deref() {
+            Some(r) => r.reach(&path, len, mtime),
+            None => (false, None),
+        };
+        /* A file the ledger has never opened whose last write predates the
+           window cannot hold anything *the ledger* wants. This is what keeps
+           the first pass to the week's traffic rather than to every session
+           ever recorded. The sink gets its own say first: a file eight to
+           ninety days old is one analytics still wants and the ledger does
+           not. */
+        let stale = known.is_none() && mtime < cutoff;
+        if stale && !wants_analytics {
+            index.files.insert(path, len);
+            continue;
+        }
+        /* A first read is bounded in what it will take in one go; a file we
+           already hold an offset into is bounded by that offset and is read as
+           it always was. */
+        if len > MAX_FILE && known.is_none() {
+            index.files.insert(path.clone(), len);
+            if let Some(r) = reading.as_deref_mut() {
+                if wants_analytics {
+                    r.refused(&path, len, mtime);
+                }
             }
+            continue;
         }
 
         /* A shorter file than we left is one that was replaced rather than
            appended to, so the offset we hold means nothing. Re-reading it is
-           safe because dedup is by request, not by position. */
-        let mut off = known.unwrap_or(0);
-        if off > len {
-            off = 0;
+           safe because dedup is by request, not by position.
+           **The start is the earliest position any reader that wants this file
+           holds**, and each reader is asked before the minimum is taken. A file
+           the ledger has given up on and analytics has not — eight to ninety
+           days old, which is the whole first backfill — must start at zero, and
+           folding the two into one `if` is how that file would have been
+           skipped instead. */
+        let mut off = len;
+        if !stale {
+            /* The ledger's own position, or zero for a file that shrank under
+               it. **Not `known.unwrap_or(0)` alone**: an offset past the end is
+               a file replaced by a shorter one, and taking the minimum of a
+               value above `len` would have let `off > len` here and then left
+               the file unread, which is the truncation this branch exists to
+               catch. The sink has its own answer to the same question
+               (`resume_at`) and the earlier of the two wins. */
+            off = off.min(known.filter(|k| *k <= len).unwrap_or(0));
+        }
+        if wants_analytics {
+            off = off.min(analytic_from.unwrap_or(0));
         }
         if off == len {
+            /* Nothing new for either. The sink still learns the file's shape,
+               so a replacement that shortened it to the same length is caught
+               by the mtime next time rather than never. */
+            if let Some(r) = reading.as_deref_mut() {
+                if wants_analytics {
+                    r.skipped(&path, off, mtime, len);
+                }
+            }
             continue;
         }
 
@@ -395,6 +550,7 @@ fn scan_with(app: &AppHandle, state: &Usage) -> Result<Scan, String> {
             continue;
         }
         read += 1;
+        let from = off;
 
         let mut r = BufReader::new(&mut f);
         let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
@@ -414,15 +570,36 @@ fn scan_with(app: &AppHandle, state: &Usage) -> Result<Scan, String> {
             /* Only a line that ended is a line: the last write may still be in
                flight, and consuming half a record would lose it for good. */
             let text = String::from_utf8_lossy(&line);
-            if absorb(&mut index, &text, cutoff) {
-                added += 1;
+            match read_record(&text) {
+                Some(rec) => {
+                    if absorb_record(&mut index, &rec, cutoff) {
+                        added += 1;
+                    }
+                    if let Some(sink) = reading.as_deref_mut() {
+                        sink.request(&rec);
+                    }
+                }
+                /* Everything that is not a request: the two records analytics
+                   needs from elsewhere in the file — the session's owner and
+                   the agent that a subagent was launched as. Both are rare
+                   enough to be worth a substring before a parse. */
+                None => {
+                    if let Some(sink) = reading.as_deref_mut() {
+                        sink.other(&text);
+                    }
+                }
             }
             line.clear();
         }
         /* Whatever is left has no newline yet, so it stays unread — `off` was
            advanced only over the bytes that were consumed. */
         off -= line.len() as u64;
-        index.files.insert(path, off);
+        index.files.insert(path.clone(), off);
+        if let Some(sink) = reading.as_deref_mut() {
+            if wants_analytics {
+                sink.consumed(&path, off, mtime, len, off - from);
+            }
+        }
     }
 
     /* Forget files that have gone, or a long-running studio accumulates an
