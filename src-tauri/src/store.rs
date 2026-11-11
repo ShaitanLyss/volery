@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 63;
+const SCHEMA_VERSION: i64 = 64;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -443,6 +443,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (61, migrate_v61),
     (62, migrate_v62),
     (63, migrate_v63),
+    (64, migrate_v64),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3574,6 +3575,110 @@ fn migrate_v63(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v63: {e}"))
+}
+
+/// The prompt facts: the form of what was asked, and where a body that was not
+/// sealed can be found again (`docs/ANALYTICS.md` §17, §3.8).
+///
+/// **`prompt_fact` has no body column in this lane and every row says
+/// `body_state = 'none'`.** The body is phase 5b, behind the vault, and the
+/// column is created now because the table is the archive serializer's row and
+/// reshaping it later would mean migrating a table that carries a sealed blob.
+/// Nothing here writes one, and the ingest drops the text after the redactor
+/// has counted what it would have taken.
+///
+/// **`prompt_locator` exists and is empty.** It is a table of its own rather
+/// than two columns on the fact for the reason §3.8 gives: `prompt_fact` is what
+/// a peer receives, and a local path a serializer never reads is a path it
+/// cannot carry. Creating it now costs nothing and settles where it goes.
+///
+/// **The vault tables are deliberately not here.** `prompt_vault`,
+/// `prompt_grant`, `prompt_favourite`, `prompt_tombstone` and
+/// `prompt_day_digest` are the vault's and the flyway's, and a rung is cheaper
+/// to add than a schema is to unpick: creating them before anything writes one
+/// would be five tables asserting a design that has not been built.
+///
+/// `hour` is on the fact beside `account` and `provider` because §3.8's kind
+/// correction moves counts *in the rollup*: without the fine row naming its own
+/// hourly row, an override would stop at the trace.
+///
+/// `prompt_hour`'s five word bands are the only honest way a year of prompts can
+/// answer a median-shaped question, since a sum cannot. They are exclusive and
+/// exhaustive and `prompt::word_band` is the one place that decides which.
+fn migrate_v64(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompt_fact (
+            host           TEXT NOT NULL,
+            prompt_id      TEXT NOT NULL,
+            at             INTEGER NOT NULL,
+            hour           INTEGER NOT NULL,
+            seen_count     INTEGER NOT NULL DEFAULT 1,
+            session        TEXT NOT NULL,
+            card           TEXT NOT NULL DEFAULT '',
+            project        TEXT NOT NULL DEFAULT '',
+            source         TEXT NOT NULL DEFAULT 'unknown',
+            account        TEXT NOT NULL DEFAULT 'unknown',
+            provider       TEXT NOT NULL DEFAULT 'unknown',
+            vault_id       TEXT NOT NULL DEFAULT '',
+            kind           TEXT NOT NULL DEFAULT 'other',
+            kind_override  TEXT,
+            chars          INTEGER NOT NULL DEFAULT 0,
+            words          INTEGER NOT NULL DEFAULT 0,
+            lines          INTEGER NOT NULL DEFAULT 0,
+            fences         INTEGER NOT NULL DEFAULT 0,
+            code_lines     INTEGER NOT NULL DEFAULT 0,
+            images         INTEGER NOT NULL DEFAULT 0,
+            questions      INTEGER NOT NULL DEFAULT 0,
+            redactions     INTEGER NOT NULL DEFAULT 0,
+            withheld       INTEGER NOT NULL DEFAULT 0,
+            body_state     TEXT NOT NULL DEFAULT 'none',
+            body_truncated INTEGER NOT NULL DEFAULT 0,
+            body_sealed    BLOB,
+            PRIMARY KEY (host, prompt_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_locator (
+            host      TEXT NOT NULL,
+            prompt_id TEXT NOT NULL,
+            path      TEXT NOT NULL,
+            off       INTEGER NOT NULL,
+            PRIMARY KEY (host, prompt_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_hour (
+            hour             INTEGER NOT NULL,
+            host             TEXT NOT NULL,
+            account          TEXT NOT NULL,
+            provider         TEXT NOT NULL,
+            project          TEXT NOT NULL,
+            source           TEXT NOT NULL,
+            kind             TEXT NOT NULL,
+            prompts          INTEGER NOT NULL DEFAULT 0,
+            chars            INTEGER NOT NULL DEFAULT 0,
+            words            INTEGER NOT NULL DEFAULT 0,
+            lines            INTEGER NOT NULL DEFAULT 0,
+            code_lines       INTEGER NOT NULL DEFAULT 0,
+            questions        INTEGER NOT NULL DEFAULT 0,
+            fences           INTEGER NOT NULL DEFAULT 0,
+            images           INTEGER NOT NULL DEFAULT 0,
+            redactions       INTEGER NOT NULL DEFAULT 0,
+            withheld         INTEGER NOT NULL DEFAULT 0,
+            words_under_16   INTEGER NOT NULL DEFAULT 0,
+            words_under_64   INTEGER NOT NULL DEFAULT 0,
+            words_under_256  INTEGER NOT NULL DEFAULT 0,
+            words_under_1024 INTEGER NOT NULL DEFAULT 0,
+            words_over_1024  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour, host, account, provider, project, source, kind)
+        );
+
+        CREATE INDEX IF NOT EXISTS prompt_fact_by_at    ON prompt_fact(at);
+        CREATE INDEX IF NOT EXISTS prompt_fact_by_kind  ON prompt_fact(kind, at);
+        CREATE INDEX IF NOT EXISTS prompt_fact_by_card  ON prompt_fact(card);
+        CREATE INDEX IF NOT EXISTS prompt_hour_by_hour  ON prompt_hour(hour);
+        "#,
+    )
+    .map_err(|e| format!("migrate v64: {e}"))
 }
 
 /* ── saved views ───────────────────────────────────────────────────────────*/

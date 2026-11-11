@@ -34,8 +34,11 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+use crate::prompt::{self, Form};
+use crate::redact;
+use crate::sessions::{self, Folded};
 use crate::store::Store;
-use crate::usage::{now_ms, Record};
+use crate::usage::{epoch_ms, now_ms, Record};
 
 /// §3.1's grain. The same five minutes the ledger cuts, so the two readings can
 /// be compared bucket for bucket.
@@ -114,6 +117,30 @@ struct FileMark {
     mark: Mark,
 }
 
+/// One prompt, as the walk sees it: its form, its kind, and nothing it said.
+///
+/// **The text does not reach this struct.** `Reading::prompt` classifies and
+/// redacts while the line is still the only copy, then drops it, so no prompt
+/// body is ever held past the statement that read it and the write path has
+/// never had one. What crosses to the write is four numbers, a kind and a name.
+/// The body itself is phase 5b's, behind the vault, and this lane records the
+/// form and the count of what a redaction would have taken.
+#[derive(Clone)]
+pub(crate) struct Prompt {
+    pub(crate) id: String,
+    /// The first occurrence's stamp. A replay carries a different one and the
+    /// first is what the row keeps (§3.8).
+    pub(crate) at: i64,
+    pub(crate) session: String,
+    /// The working directory's last segment, never the path (§7.3).
+    pub(crate) project: String,
+    pub(crate) entrypoint: String,
+    pub(crate) kind: &'static str,
+    pub(crate) form: Form,
+    pub(crate) redactions: usize,
+    pub(crate) withheld: bool,
+}
+
 /// One pass's worth of readings, filled by the walk and written afterwards.
 ///
 /// The batch is why the store lock is not held across file IO: the walk appends
@@ -125,6 +152,18 @@ pub(crate) struct Batch {
     /// Requests already taken this pass — a file replaced mid-pass can offer
     /// the same request twice, and the DB check cannot see the first one yet.
     keys: HashSet<String>,
+    /// Prompts taken this pass, already shaped and already stripped of their
+    /// text. See `Prompt`.
+    prompts: Vec<Prompt>,
+    /// Prompt ids **and their stamps** taken this pass, for the same
+    /// replaced-file reason as `keys`.
+    ///
+    /// The pair rather than the id alone: two records carrying one id at two
+    /// times are a genuine replay (§3.8 says a repeat carries a different
+    /// stamp) and `seen_count` is what counts it. Keying on the id would drop
+    /// the second before the writer could, and only a byte-identical re-read
+    /// should be dropped here.
+    prompt_ids: HashSet<(String, i64)>,
     /// Session → `accountUuid:organizationUuid`, from any file of the session
     /// that carries a `session-owner` record (§4).
     owners: HashMap<String, String>,
@@ -252,6 +291,83 @@ impl Reading {
                 .parents
                 .insert((session.to_string(), child.to_string()), parent.to_string());
         }
+    }
+
+    /// One `user` record, if it is somebody speaking.
+    ///
+    /// The third reader on the walk (`docs/ANALYTICS.md` §7.1, §3.8), and it is
+    /// deliberately built on `sessions::fold` rather than on a filter of its
+    /// own: that function already rejects the eight injected markers, the three
+    /// flags and a tool result, and a second copy of that list is what would
+    /// have shipped a stop note, a task notification and a compaction summary
+    /// as human prompts.
+    ///
+    /// **The text dies here.** The form and the kind are read off it, the
+    /// redactor counts what it would take, and the string is dropped before the
+    /// batch is touched. Nothing downstream can log a body because nothing
+    /// downstream has one.
+    pub(crate) fn prompt(&mut self, line: &str) {
+        let Folded::Prompt {
+            text,
+            images,
+            record,
+        } = sessions::fold(line)
+        else {
+            return;
+        };
+        let pick = |k: &str| record.get(k).and_then(|v| v.as_str()).unwrap_or("").trim();
+        let Some(at) = record
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(epoch_ms)
+        else {
+            return;
+        };
+        if at < self.cutoff {
+            return;
+        }
+        let session = pick("sessionId");
+        /* A prompt with no session cannot be attributed to anything, the same
+           rule `request` applies. */
+        if session.is_empty() {
+            return;
+        }
+        /* `promptId` is on every user record measured on this machine (4,120 of
+           4,120 across the first sixty transcripts). The `uuid` fallback keeps
+           a shape we have not seen from being dropped silently, and a record
+           with neither is the one thing here that is skipped. */
+        let id = match pick("promptId") {
+            "" => pick("uuid"),
+            id => id,
+        };
+        if id.is_empty() {
+            return;
+        }
+        if !self.batch.prompt_ids.insert((id.to_string(), at)) {
+            return;
+        }
+
+        let form = prompt::form(&text, images);
+        let kind = prompt::kind(&text);
+        /* **Before the text goes, and never bypassed.** The classifier and the
+           form read the raw text; this reads the same text and keeps only its
+           verdict. A row that says `redactions = 0` without this line having run
+           would be a row claiming a prompt was clean. */
+        let redacted = redact::redact(&text);
+        self.batch.prompts.push(Prompt {
+            id: id.to_string(),
+            at,
+            session: session.to_string(),
+            /* Both separators: a transcript's `cwd` is a Windows path even when
+               it is read on a machine that does not think backslashes separate
+               anything. Same rule as `read_record`, and never the path. */
+            project: pick("cwd").rsplit(['\\', '/']).next().unwrap_or("").to_string(),
+            entrypoint: pick("entrypoint").to_string(),
+            kind: kind.as_str(),
+            form,
+            redactions: redacted.redactions,
+            withheld: redacted.withheld,
+        });
     }
 
     /// A transcript too large to read on a first pass, marked as consumed and
@@ -643,8 +759,14 @@ struct Counts {
     requests: i64,
     /// Requests the transcript offered that were already counted.
     duplicates: i64,
+    /// Prompts written: the ones `(host, prompt_id)` had not seen.
+    prompts: i64,
+    /// Prompts offered under an id the store already had, whose `seen_count`
+    /// was what moved. §3.8's replays.
+    prompt_duplicates: i64,
     facts: i64,
     hours: i64,
+    prompt_hours: i64,
     sessions: i64,
     bytes: u64,
 }
@@ -659,8 +781,11 @@ impl Counts {
     fn add(&mut self, other: Counts) {
         self.requests += other.requests;
         self.duplicates += other.duplicates;
+        self.prompts += other.prompts;
+        self.prompt_duplicates += other.prompt_duplicates;
         self.facts += other.facts;
         self.hours += other.hours;
+        self.prompt_hours += other.prompt_hours;
         self.sessions += other.sessions;
     }
 }
@@ -686,6 +811,13 @@ pub struct Report {
     pub facts: i64,
     /// Hour rows, counted the same way.
     pub hours: i64,
+    /// Prompt facts written, and prompts already in the store whose
+    /// `seen_count` moved instead (§3.8's replay). Apart, because a reader that
+    /// fell back to `at` would count a replay as a new prompt.
+    pub prompts: i64,
+    pub prompt_duplicates: i64,
+    /// Prompt hour rows, counted like `hours`.
+    pub prompt_hours: i64,
     /// Session rows, counted the same way.
     pub sessions: i64,
     pub refused: i64,
@@ -1049,6 +1181,292 @@ fn write_chunk(
     Ok(counts)
 }
 
+/// The key of one `prompt_hour` row. Its grain is §17's, and it is *wider* than
+/// `usage_hour`'s in one place: `kind` is a dimension here, so the mix, the
+/// redirect rate and the nudge rate can be read off the rollup rather than by
+/// walking three years of fine rows.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PromptHourKey {
+    hour: i64,
+    account: String,
+    provider: String,
+    project: String,
+    source: String,
+    kind: String,
+}
+
+/// Everything §17's `prompt_hour` adds up, in one place so the insert and the
+/// conflict arm cannot disagree about the list.
+#[derive(Default, Clone, Copy)]
+struct PromptSums {
+    prompts: i64,
+    chars: i64,
+    words: i64,
+    lines: i64,
+    code_lines: i64,
+    questions: i64,
+    fences: i64,
+    images: i64,
+    redactions: i64,
+    withheld: i64,
+    /// The five word bands, in `prompt::word_band`'s order.
+    bands: [i64; 5],
+}
+
+impl PromptSums {
+    fn add(&mut self, p: &Prompt) {
+        self.prompts += 1;
+        self.chars += p.form.chars as i64;
+        self.words += p.form.words as i64;
+        self.lines += p.form.lines as i64;
+        self.code_lines += p.form.code_lines as i64;
+        self.questions += p.form.questions as i64;
+        self.fences += p.form.fences as i64;
+        self.images += p.form.images as i64;
+        self.redactions += p.redactions as i64;
+        self.withheld += i64::from(p.withheld);
+        self.bands[prompt::word_band(p.form.words)] += 1;
+    }
+}
+
+/// Fold one chunk of prompts into the store, in **one transaction** (§7.2).
+///
+/// Two things are worth reading before changing any of it:
+///
+/// - **The dedupe is the fact row's own key.** `(host, prompt_id)` is the
+///   primary key, so "have I seen this prompt" is a lookup rather than a second
+///   table, and a repeat only moves `seen_count`. The first `at` is kept,
+///   because the row's hour is computed from it and moving the stamp under a
+///   rolled count would leave the hour row naming an hour the fact no longer
+///   sits in.
+/// - **A re-read is not a repeat, and the stamp is what tells them apart.** The
+///   file offsets advance only in `write_tail`, so every pass that dies after a
+///   chunk (or a second `analytics_pass` overlapping the collector's long first
+///   backfill) reads the same lines again. Bumping `seen_count` on "the row
+///   exists" would have counted those, and the column means how many records
+///   carried the id. §3.8 gives the discriminator: a replay carries a
+///   *different* stamp, so the bump is guarded on `at <> ?`. A repeat with the
+///   same stamp as the first is indistinguishable from a re-read and is not
+///   counted, which is the direction that cannot inflate the number.
+/// - **Nothing here has a body.** `Prompt` carries the form, the kind and the
+///   redaction counts; the text was dropped in `Reading::prompt`. Every row this
+///   writes says `body_state = 'none'` and writes no blob, and a test asserts
+///   that rather than leaving it to a reader's memory.
+fn write_prompts(
+    conn: &mut Connection,
+    host: &str,
+    prompts: &[Prompt],
+    session_owners: &HashMap<String, String>,
+    prior: &Prior,
+) -> Result<Counts, String> {
+    let mut counts = Counts::default();
+    if prompts.is_empty() {
+        return Ok(counts);
+    }
+    let tx = conn.transaction().map_err(|e| format!("analytics: prompt begin: {e}"))?;
+
+    /* 1. The ladder, per session, exactly as the usage facts resolve it: the
+          turn covering the prompt, then the session's owner, then unknown.
+          A prompt is dated by when it was said, which is inside the turn it
+          opened, so the first rung is the answer with no second rule. */
+    let mut by_session: HashMap<String, Vec<&Prompt>> = HashMap::new();
+    for p in prompts {
+        by_session.entry(p.session.clone()).or_default().push(p);
+    }
+    let mut sessions: Vec<(String, Vec<&Prompt>)> = by_session.into_iter().collect();
+    sessions.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut resolved: Vec<(Prompt, String, String, String, String, String)> = Vec::new();
+    for (session, mut group) in sessions {
+        group.sort_by_key(|p| p.at);
+        let first = group.first().map(|p| p.at).unwrap_or(0);
+        let last = group.last().map(|p| p.at).unwrap_or(0);
+        let spans = spans_for(&tx, &session, first, last)?;
+        let owners = session_owners
+            .get(&session)
+            .cloned()
+            .filter(|i| !i.is_empty())
+            .or_else(|| prior.identity.get(&session).cloned().flatten());
+        let card = card_for(&tx, &session);
+        let distinct: HashSet<&str> = spans
+            .iter()
+            .map(|s| s.identity.as_str())
+            .chain(owners.as_deref())
+            .filter(|i| !i.is_empty())
+            .collect();
+        let mut labels: HashMap<String, String> = HashMap::new();
+        for id in distinct {
+            if let Some(label) = crate::accounts::label_for(&tx, id) {
+                labels.insert(id.to_string(), label);
+            }
+        }
+        for p in group {
+            let funding = funding_at(
+                &spans,
+                p.at,
+                owners.as_deref(),
+                &labels,
+                card.as_ref().map(|c| c.label.as_str()),
+            );
+            let project = card
+                .as_ref()
+                .map(|c| c.project.clone())
+                .filter(|x| !x.is_empty())
+                .unwrap_or_else(|| p.project.clone());
+            resolved.push((
+                p.clone(),
+                card.as_ref().map(|c| c.id.clone()).unwrap_or_default(),
+                project,
+                source_of(&p.entrypoint, card.is_some()).to_string(),
+                funding.account,
+                funding.provider,
+            ));
+        }
+    }
+
+    /* 2. New or seen, and the two writes each of them owes. */
+    let mut hours: HashMap<PromptHourKey, PromptSums> = HashMap::new();
+    {
+        let mut known = tx
+            .prepare("SELECT 1 FROM prompt_fact WHERE host = ?1 AND prompt_id = ?2")
+            .map_err(|e| format!("analytics: prompt seen: {e}"))?;
+        let mut bump = tx
+            .prepare(
+                "UPDATE prompt_fact SET seen_count = seen_count + 1
+                  WHERE host = ?1 AND prompt_id = ?2 AND at <> ?3",
+            )
+            .map_err(|e| format!("analytics: prompt seen: {e}"))?;
+        let mut insert = tx
+            .prepare(
+                "INSERT INTO prompt_fact
+                   (host, prompt_id, at, hour, seen_count, session, card, project, source,
+                    account, provider, vault_id, kind, kind_override, chars, words, lines,
+                    fences, code_lines, images, questions, redactions, withheld,
+                    body_state, body_truncated, body_sealed)
+                 VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8,?9,?10,'',?11,NULL,?12,?13,?14,?15,?16,?17,?18,?19,?20,'none',0,NULL)",
+            )
+            .map_err(|e| format!("analytics: prompt fact: {e}"))?;
+
+        for (p, card, project, source, account, provider) in &resolved {
+            let seen = known
+                .exists(params![host, &p.id])
+                .map_err(|e| format!("analytics: prompt seen: {e}"))?;
+            if seen {
+                /* Zero rows means the store already had this id at this very
+                   stamp, which is a re-read of bytes rather than a record
+                   offered twice. */
+                let counted = bump
+                    .execute(params![host, &p.id, p.at])
+                    .map_err(|e| format!("analytics: prompt seen: {e}"))?;
+                if counted > 0 {
+                    counts.prompt_duplicates += 1;
+                }
+                continue;
+            }
+            let hour = hour_of(p.at);
+            insert
+                .execute(params![
+                    host,
+                    p.id,
+                    p.at,
+                    hour,
+                    p.session,
+                    card,
+                    project,
+                    source,
+                    account,
+                    provider,
+                    p.kind,
+                    p.form.chars as i64,
+                    p.form.words as i64,
+                    p.form.lines as i64,
+                    p.form.fences as i64,
+                    p.form.code_lines as i64,
+                    p.form.images as i64,
+                    p.form.questions as i64,
+                    p.redactions as i64,
+                    i64::from(p.withheld),
+                ])
+                .map_err(|e| format!("analytics: prompt fact: {e}"))?;
+            counts.prompts += 1;
+            hours
+                .entry(PromptHourKey {
+                    hour,
+                    account: account.clone(),
+                    provider: provider.clone(),
+                    project: project.clone(),
+                    source: source.clone(),
+                    kind: p.kind.to_string(),
+                })
+                .or_default()
+                .add(p);
+        }
+    }
+
+    /* 3. The rollup, in the same transaction, so a correction can never find it
+          a bucket behind the fact it rolls. */
+    {
+        let mut sql = tx
+            .prepare(
+                "INSERT INTO prompt_hour
+                   (hour, host, account, provider, project, source, kind, prompts, chars, words,
+                    lines, code_lines, questions, fences, images, redactions, withheld,
+                    words_under_16, words_under_64, words_under_256, words_under_1024,
+                    words_over_1024)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+                 ON CONFLICT(hour, host, account, provider, project, source, kind)
+                 DO UPDATE SET
+                   prompts = prompts + excluded.prompts,
+                   chars = chars + excluded.chars,
+                   words = words + excluded.words,
+                   lines = lines + excluded.lines,
+                   code_lines = code_lines + excluded.code_lines,
+                   questions = questions + excluded.questions,
+                   fences = fences + excluded.fences,
+                   images = images + excluded.images,
+                   redactions = redactions + excluded.redactions,
+                   withheld = withheld + excluded.withheld,
+                   words_under_16 = words_under_16 + excluded.words_under_16,
+                   words_under_64 = words_under_64 + excluded.words_under_64,
+                   words_under_256 = words_under_256 + excluded.words_under_256,
+                   words_under_1024 = words_under_1024 + excluded.words_under_1024,
+                   words_over_1024 = words_over_1024 + excluded.words_over_1024",
+            )
+            .map_err(|e| format!("analytics: prompt hour: {e}"))?;
+        for (k, s) in &hours {
+            sql.execute(params![
+                k.hour,
+                host,
+                k.account,
+                k.provider,
+                k.project,
+                k.source,
+                k.kind,
+                s.prompts,
+                s.chars,
+                s.words,
+                s.lines,
+                s.code_lines,
+                s.questions,
+                s.fences,
+                s.images,
+                s.redactions,
+                s.withheld,
+                s.bands[0],
+                s.bands[1],
+                s.bands[2],
+                s.bands[3],
+                s.bands[4],
+            ])
+            .map_err(|e| format!("analytics: prompt hour: {e}"))?;
+        }
+    }
+    counts.prompt_hours = hours.len() as i64;
+
+    tx.commit().map_err(|e| format!("analytics: prompt commit: {e}"))?;
+    Ok(counts)
+}
+
 /// The marks and the retention deletes: **the end of the pass, in one small
 /// transaction**.
 ///
@@ -1170,6 +1588,14 @@ fn flush(
                 agents.push((rec.session.clone(), rec.agent.clone()));
             }
         }
+        /* A session with prompts in it and no requests still needs its owner
+           looked up, or the prompt facts fall to `unknown` for want of a query
+           nobody made. */
+        for p in &batch.prompts {
+            if seen_sessions.insert(&p.session) && !batch.owners.contains_key(&p.session) {
+                sessions.push(p.session.clone());
+            }
+        }
     }
     let prior = {
         let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
@@ -1194,6 +1620,18 @@ fn flush(
                 &prior,
                 now,
             )?
+        };
+        counts.add(written);
+    }
+    /* The prompt facts, under the same discipline and their own chunk size: one
+       transaction each, the offsets still advancing only in `write_tail`. A pass
+       that dies between two of these leaves rows whose `seen_count` is what the
+       next pass finds, which is the idempotence `usage_seen` gives the other
+       half. */
+    for part in batch.prompts.chunks(chunk.max(1)) {
+        let written = {
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            write_prompts(&mut conn, host, part, &batch.owners, &prior)?
         };
         counts.add(written);
     }
@@ -1626,6 +2064,9 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
         duplicates: counts.duplicates,
         facts: counts.facts,
         hours: counts.hours,
+        prompts: counts.prompts,
+        prompt_duplicates: counts.prompt_duplicates,
+        prompt_hours: counts.prompt_hours,
         sessions: counts.sessions,
         refused,
         ms: began.elapsed().as_millis() as u64,
@@ -1984,6 +2425,141 @@ pub async fn analytics_window(
         let store = app.state::<Store>();
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
         query_window(&conn, since, until, fine)
+    })
+    .await?
+}
+
+/* ── the prompt facts a trace reads (§3.8, phase 5a) ────────────────────── */
+
+/// One `prompt_fact` row, **without its body**.
+///
+/// No `bodySealed` and no text, ever, at any version of this struct: the trace
+/// that draws these has no use for a ciphertext it cannot open, and a field that
+/// exists is a field somebody will fill in from the wrong place. The body is
+/// phase 5b's, behind the vault, and it will arrive through a call of its own
+/// once there is a key to unseal it with.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptRow {
+    pub host: String,
+    pub prompt_id: String,
+    pub at: i64,
+    pub hour: i64,
+    pub seen_count: i64,
+    pub session: String,
+    pub card: String,
+    pub project: String,
+    pub source: String,
+    pub account: String,
+    pub provider: String,
+    pub vault_id: String,
+    pub kind: String,
+    pub kind_override: Option<String>,
+    pub chars: i64,
+    pub words: i64,
+    pub lines: i64,
+    pub fences: i64,
+    pub code_lines: i64,
+    pub images: i64,
+    pub questions: i64,
+    pub redactions: i64,
+    pub withheld: i64,
+    /// `none` for every row this lane writes. `locked`, `sealed`, `withheld`
+    /// and `deleted` are states phase 5b and the vault put a row into.
+    pub body_state: String,
+    pub body_truncated: i64,
+}
+
+/// How many rows one day's trace may ask for.
+///
+/// A day of prompts is a few hundred: the five-day window §3.8 measured had
+/// 832. Ten thousand is a bound on a malformed request rather than a budget any
+/// real day meets, and past it the answer is a refusal that names the number,
+/// the same bargain `analytics_window` strikes one table over.
+pub const PROMPT_ROW_CAP: usize = 10_000;
+
+/// The prompts said in `[from, to)`, oldest first.
+///
+/// **The window is the caller's.** A day is a timezone and Rust does not know
+/// where midnight is (`usage.md`'s argument for `spend_since`), so the front end
+/// passes its own bounds; a local day is 23 or 25 hours twice a year, and only
+/// the front end can compute that. The trace lane decides whether it wants a
+/// local day, a UTC one, or something else entirely.
+pub fn prompt_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<PromptRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT host, prompt_id, at, hour, seen_count, session, card, project, source,
+                    account, provider, vault_id, kind, kind_override, chars, words, lines,
+                    fences, code_lines, images, questions, redactions, withheld,
+                    body_state, body_truncated
+               FROM prompt_fact
+              WHERE at >= ?1 AND at < ?2
+              ORDER BY at, prompt_id
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: prompts: {e}"))?;
+    let rows = stmt
+        .query_map(
+            params![from, to, PROMPT_ROW_CAP as i64 + 1],
+            |r| {
+                Ok(PromptRow {
+                    host: r.get(0)?,
+                    prompt_id: r.get(1)?,
+                    at: r.get(2)?,
+                    hour: r.get(3)?,
+                    seen_count: r.get(4)?,
+                    session: r.get(5)?,
+                    card: r.get(6)?,
+                    project: r.get(7)?,
+                    source: r.get(8)?,
+                    account: r.get(9)?,
+                    provider: r.get(10)?,
+                    vault_id: r.get(11)?,
+                    kind: r.get(12)?,
+                    kind_override: r.get(13)?,
+                    chars: r.get(14)?,
+                    words: r.get(15)?,
+                    lines: r.get(16)?,
+                    fences: r.get(17)?,
+                    code_lines: r.get(18)?,
+                    images: r.get(19)?,
+                    questions: r.get(20)?,
+                    redactions: r.get(21)?,
+                    withheld: r.get(22)?,
+                    body_state: r.get(23)?,
+                    body_truncated: r.get(24)?,
+                })
+            },
+        )
+        .map_err(|e| format!("analytics: prompts: {e}"))?;
+    let out: Vec<PromptRow> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: prompts: {e}"))?;
+    if out.len() > PROMPT_ROW_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {PROMPT_ROW_CAP} prompts, so it is refused \
+             rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(out)
+}
+
+/// The prompt facts of one window, for the trace phase 5b and the hall draw.
+///
+/// Off the main thread, like every other reading here: a day's rows are small
+/// but the query takes the store's mutex, and the main thread is the one that
+/// paints.
+#[tauri::command]
+pub async fn prompt_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<PromptRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        prompt_rows(&conn, from, to)
     })
     .await?
 }
@@ -3064,5 +3640,418 @@ mod tests {
             )
             .unwrap();
         assert_eq!(totals, (4, 4, 400), "and both chunks' requests are in it");
+    }
+
+    /* ── prompt facts (§3.8, phase 5a) ───────────────────────────────────── */
+
+    /// A `user` record as the CLI writes one, with the text escaped by the JSON
+    /// writer rather than by hand: a fixture that escapes its own prompt is a
+    /// fixture that tests the escaping as well.
+    fn prompt_line(id: &str, at: i64, session: &str, said: &str) -> String {
+        format!(
+            r#"{{"type":"user","promptId":"{id}","sessionId":"{session}","timestamp":"{}",
+                "entrypoint":"sdk-cli","cwd":"C:\\workbench\\volery",
+                "message":{{"content":{}}}}}"#,
+            stamp(at),
+            serde_json::to_string(said).unwrap(),
+        )
+    }
+
+    fn prompt_batch(lines: &[String], cutoff: i64) -> Batch {
+        let mut reading = Reading::new(HashMap::new(), cutoff);
+        for line in lines {
+            reading.prompt(line);
+        }
+        reading.into_batch()
+    }
+
+    /// Every value in every table, rendered as text. The blunt instrument the
+    /// next test needs: "this sentence is nowhere in the store" cannot be
+    /// asserted column by column without listing the columns a later lane will
+    /// add, which is exactly what such an assertion must not depend on.
+    fn every_value(conn: &Connection) -> String {
+        use rusqlite::types::ValueRef;
+        let mut out = String::new();
+        let tables: Vec<String> = {
+            let Ok(mut stmt) = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            else {
+                return out;
+            };
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.filter_map(Result::ok).collect()
+        };
+        for t in tables {
+            let Ok(mut stmt) = conn.prepare(&format!("SELECT * FROM \"{t}\"")) else {
+                continue;
+            };
+            let cols = stmt.column_count();
+            let Ok(mut rows) = stmt.query([]) else { continue };
+            while let Ok(Some(row)) = rows.next() {
+                for i in 0..cols {
+                    let Ok(v) = row.get_ref(i) else { continue };
+                    if let ValueRef::Text(b) | ValueRef::Blob(b) = v {
+                        out.push_str(&String::from_utf8_lossy(b));
+                    }
+                    out.push('\u{1f}');
+                }
+            }
+        }
+        out
+    }
+
+    /// **The hard rule of this lane.** The form and the counts are kept, the
+    /// body is not, and the redaction count is what says a secret was in there.
+    ///
+    /// The prompt below carries a fake key on purpose: the assertion is not
+    /// only that the text is absent (the ingest drops every text), but that the
+    /// redactor *ran* and said so, because a row claiming `redactions = 0` is a
+    /// row claiming a prompt was clean.
+    #[test]
+    fn a_prompt_row_carries_counts_and_no_body() {
+        let now = 1_786_601_268_000;
+        let said = "the deploy key is sk-live-9fK2mQ7tR4vX1zL8nB6wY3pA and it is wrong";
+        let conns = Mutex::new(db());
+        let counts = write(
+            &conns,
+            "home",
+            &prompt_batch(&[prompt_line("p1", now, "s1", said)], 0),
+            now + 1_000,
+        )
+        .unwrap();
+        assert_eq!(counts.prompts, 1);
+
+        let conn = conns.lock().unwrap();
+        let (state, sealed, truncated, redactions, words): (
+            String,
+            Option<Vec<u8>>,
+            i64,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT body_state, body_sealed, body_truncated, redactions, words
+                   FROM prompt_fact WHERE prompt_id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "none");
+        assert!(sealed.is_none(), "a body reached the row in a lane that keeps none");
+        assert_eq!(truncated, 0);
+        assert_eq!(redactions, 1, "the redactor did not run, or did not count");
+        assert_eq!(words, 9, "the words were counted off the raw text");
+
+        /* And the sentence itself is in no table at all. */
+        let everything = every_value(&conn);
+        assert!(
+            !everything.contains("deploy key"),
+            "the prompt's own words reached the store"
+        );
+        assert!(
+            !everything.contains("9fK2mQ7tR4vX1zL8nB6wY3pA"),
+            "the secret reached the store"
+        );
+    }
+
+    /// §3.8's replay rule: an id seen twice is one row at the **first** stamp,
+    /// with `seen_count` carrying the repeat, and the hourly rollup counts it
+    /// once. A row that moved its `at` to the replay's would leave the hour it
+    /// counted in naming a time the fact no longer sits at.
+    #[test]
+    fn a_repeated_prompt_keeps_the_first_at_and_counts_the_replay() {
+        let first = 1_786_601_268_000;
+        let conns = Mutex::new(db());
+        write(
+            &conns,
+            "home",
+            &prompt_batch(&[prompt_line("p1", first, "s1", "continue")], 0),
+            first + 1_000,
+        )
+        .unwrap();
+        let again = write(
+            &conns,
+            "home",
+            &prompt_batch(&[prompt_line("p1", first + 60_000, "s1", "continue")], 0),
+            first + 61_000,
+        )
+        .unwrap();
+        assert_eq!(again.prompts, 0, "the replay wrote no second fact");
+        assert_eq!(again.prompt_duplicates, 1);
+
+        let conn = conns.lock().unwrap();
+        let (rows, seen, at): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(seen_count), MIN(at) FROM prompt_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(seen, 2);
+        assert_eq!(at, first, "the row kept the first time it was said");
+
+        let prompts: i64 = conn
+            .query_row("SELECT SUM(prompts) FROM prompt_hour", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(prompts, 1, "a replay must not be counted twice in the rollup");
+    }
+
+    /// And the other side of that rule: **a re-read of the same bytes is not a
+    /// replay.** The offsets advance only in `write_tail`, so a pass that dies
+    /// after a chunk reads the same lines again, and the column means how many
+    /// records carried the id rather than how many times this wall looked.
+    #[test]
+    fn a_re_read_of_the_same_bytes_does_not_bump_seen_count() {
+        let at = 1_786_601_268_000;
+        let conns = Mutex::new(db());
+        let line = prompt_line("p1", at, "s1", "continue");
+        write(&conns, "home", &prompt_batch(&[line.clone()], 0), at + 1_000).unwrap();
+        let again =
+            write(&conns, "home", &prompt_batch(&[line], 0), at + 2_000).unwrap();
+        assert_eq!(again.prompts, 0, "the re-read wrote no second fact");
+        assert_eq!(
+            again.prompt_duplicates, 0,
+            "a re-read was counted as a record offered twice"
+        );
+
+        let conn = conns.lock().unwrap();
+        let (rows, seen): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(seen_count) FROM prompt_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, seen), (1, 1), "one record, seen once");
+    }
+
+    /// A replay inside **one** pass, which is the case the batch's own dedupe
+    /// would otherwise drop: two records, one id, two stamps, and the first
+    /// stamp is the row's.
+    #[test]
+    fn a_replay_inside_one_batch_bumps_seen_count() {
+        let at = 1_786_601_268_000;
+        let conns = Mutex::new(db());
+        let counts = write(
+            &conns,
+            "home",
+            &prompt_batch(
+                &[
+                    prompt_line("p1", at, "s1", "continue"),
+                    prompt_line("p1", at + 30_000, "s2", "continue"),
+                ],
+                0,
+            ),
+            at + 60_000,
+        )
+        .unwrap();
+        assert_eq!(counts.prompts, 1);
+        assert_eq!(counts.prompt_duplicates, 1);
+
+        let conn = conns.lock().unwrap();
+        let (seen, first): (i64, i64) = conn
+            .query_row("SELECT seen_count, at FROM prompt_fact", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((seen, first), (2, at));
+    }
+
+    /// The rollup is the sum of its facts, the five word bands are exclusive and
+    /// exhaustive, and a prompt with a fence keeps the lines and fences the fold
+    /// went to the trouble of not flattening.
+    #[test]
+    fn the_prompt_hour_is_the_sum_of_its_facts() {
+        let at = 1_786_601_268_000;
+        let conns = Mutex::new(db());
+        let lines = vec![
+            prompt_line("p1", at, "s1", "add the redact module beside the ingest"),
+            prompt_line(
+                "p2",
+                at + 60_000,
+                "s1",
+                "draw a box:\n```rust\nfn main() {}\nfn b() {}\n```\nwhy is it wrong?",
+            ),
+        ];
+        write(&conns, "home", &prompt_batch(&lines, 0), at + 120_000).unwrap();
+
+        let conn = conns.lock().unwrap();
+        let facts: (i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(words), SUM(chars), SUM(lines), SUM(fences), SUM(code_lines)
+                   FROM prompt_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(facts.3, 1, "one fenced block");
+        assert_eq!(facts.4, 2, "two lines of code inside it");
+
+        let hour: (i64, i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(prompts), SUM(words), SUM(chars), SUM(fences),
+                        SUM(code_lines)
+                   FROM prompt_hour",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        /* **Two rows, and that is the key rather than a bug.** `prompt_hour` is
+           keyed on the kind as well, and these two fixtures classify apart (one
+           opens with an imperative, the other ends in a question mark), which is
+           the dimension existing for exactly the reading it enables: the mix.
+           Every sum below is over rows, so it does not care how they were cut. */
+        assert_eq!(hour.0, 2, "two kinds are two rows");
+        assert_eq!(
+            (hour.1, hour.2, hour.3, hour.4, hour.5),
+            (2, facts.0, facts.1, facts.3, facts.4),
+            "the rollup is the sum of its facts"
+        );
+
+        let bands: (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(words_under_16 + words_under_64 + words_under_256 +
+                            words_under_1024 + words_over_1024), SUM(prompts)
+                   FROM prompt_hour",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(bands.0, bands.1, "the five bands must sum to the prompt count");
+        /* And per row, which is the assertion a third band added without its
+           neighbour changed would fail. */
+        let ragged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM prompt_hour
+                  WHERE words_under_16 + words_under_64 + words_under_256 +
+                        words_under_1024 + words_over_1024 <> prompts",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ragged, 0, "a row whose bands do not sum to its prompts");
+    }
+
+    /// A prompt is dated by when it was said, which is inside the turn it
+    /// opened, so §4's ladder answers on its first rung with no second rule for
+    /// prompts to remember.
+    #[test]
+    fn a_prompt_is_funded_by_the_turn_it_opened() {
+        use rusqlite::params;
+        let at = 1_786_601_268_000;
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+            conn.execute(
+                "INSERT INTO turn
+                   (conversation_id, opened_at, ended_at, status_tier, account_label,
+                    account_identity, agent_session_id)
+                 VALUES ('c', ?1, ?2, 'working', 'work', 'acct:org', 's1')",
+                params![at - 1_000, at + 600_000],
+            )
+            .unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        }
+        write(
+            &conns,
+            "home",
+            &prompt_batch(&[prompt_line("p1", at, "s1", "add a thing")], 0),
+            at + 1_000,
+        )
+        .unwrap();
+
+        let conn = conns.lock().unwrap();
+        let (account, provider, source, project): (String, String, String, String) = conn
+            .query_row(
+                "SELECT account, provider, source, project FROM prompt_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(account, "work");
+        assert_eq!(provider, "claude");
+        assert_eq!(source, "unknown", "an sdk-cli session with no card behind it");
+        assert_eq!(project, "volery", "the working directory's last segment");
+    }
+
+    /// The prompt half of the chunking's property: the tables may not depend on
+    /// how the batch was cut, and a prompt id that spans two transactions must
+    /// still be one row counted in one hour.
+    #[test]
+    fn a_chunked_prompt_batch_writes_the_same_rows_as_one_transaction() {
+        let at = 1_786_601_268_000;
+        let lines: Vec<String> = (0..4)
+            .map(|i| prompt_line(&format!("p{i}"), at + i * 1_000, "s1", "add a thing"))
+            .collect();
+        let now = at + 120_000;
+
+        let one = Mutex::new(db());
+        flush(&one, "home", &prompt_batch(&lines, 0), now, 4096, None).unwrap();
+        let many = Mutex::new(db());
+        flush(&many, "home", &prompt_batch(&lines, 0), now, 1, None).unwrap();
+
+        let dump = |conn: &Connection| -> Vec<Vec<String>> {
+            vec![
+                dump(
+                    conn,
+                    "SELECT host, prompt_id, at, hour, seen_count, session, source, account,
+                            provider, kind, chars, words, lines, fences, code_lines, images,
+                            questions, redactions, withheld, body_state
+                       FROM prompt_fact ORDER BY prompt_id",
+                    20,
+                ),
+                dump(
+                    conn,
+                    "SELECT hour, host, account, provider, project, source, kind, prompts, chars,
+                            words, lines, code_lines, questions, fences, images, redactions,
+                            withheld, words_under_16, words_under_64, words_under_256,
+                            words_under_1024, words_over_1024
+                       FROM prompt_hour",
+                    22,
+                ),
+            ]
+        };
+        assert_eq!(
+            dump(&one.lock().unwrap()),
+            dump(&many.lock().unwrap()),
+            "four chunks wrote the same rows as one transaction"
+        );
+        assert_eq!(dump(&many.lock().unwrap())[0].len(), 4, "four facts");
+    }
+
+    /// A window is a range the caller names, and a range that ends before it
+    /// starts is refused rather than answered empty: the same rule
+    /// `analytics_window` keeps one table over.
+    #[test]
+    fn a_prompt_window_is_read_and_a_backwards_one_is_refused() {
+        let conn = db();
+        let at = 1_786_601_268_000;
+        assert!(prompt_rows(&conn, at, at).is_err());
+        assert!(prompt_rows(&conn, at, at - 1).is_err());
+
+        let conns = Mutex::new(conn);
+        write(
+            &conns,
+            "home",
+            &prompt_batch(&[prompt_line("p1", at, "s1", "continue")], 0),
+            at + 1_000,
+        )
+        .unwrap();
+        let conn = conns.lock().unwrap();
+        let rows = prompt_rows(&conn, at - 1, at + 1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].prompt_id, "p1");
+        assert_eq!(rows[0].body_state, "none");
+        assert!(prompt_rows(&conn, at + 1, at + 2).unwrap().is_empty());
     }
 }

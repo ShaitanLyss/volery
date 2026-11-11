@@ -6,6 +6,13 @@ mod amqp;
    demand by the `analytics_pass` command. Public so a probe or a test can reach
    `pass`; nothing outside this crate calls it today. */
 pub mod analytics;
+/* What an ingested prompt *is*, as a kind and a form, and the redactor that
+   says what a body would have lost before this lane drops it. Both are pure and
+   dependency-free so `tools/lift-prompt.ts` and `tools/lift-redact.ts` can run
+   their corpora on a machine that cannot link the crate; see
+   `.claude/rules/build.md`. */
+pub mod prompt;
+pub mod redact;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
@@ -1142,6 +1149,7 @@ pub fn run() {
             analytics::analytics_save_view,
             analytics::analytics_rename_view,
             analytics::analytics_delete_view,
+            analytics::prompt_facts,
             limits::read_limits,
             limits::release_limits,
             azdo::azdo_runs,

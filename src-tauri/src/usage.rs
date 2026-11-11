@@ -581,11 +581,15 @@ fn scan_with(
                 }
                 /* Everything that is not a request: the two records analytics
                    needs from elsewhere in the file — the session's owner and
-                   the agent that a subagent was launched as. Both are rare
-                   enough to be worth a substring before a parse. */
+                   the agent that a subagent was launched as, and, since phase
+                   5a, the one thing in the file a person actually said. Both of
+                   the first two are rare enough to be worth a substring before
+                   a parse, and the prompt reader is gated the same way inside
+                   `sessions::fold`. */
                 None => {
                     if let Some(sink) = reading.as_deref_mut() {
                         sink.other(&text);
+                        sink.prompt(&text);
                     }
                 }
             }

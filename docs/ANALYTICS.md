@@ -548,13 +548,24 @@ subsystem does not copy and cannot delete. The copy analytics keeps is **redacte
 - **Redaction first, over-redact.** Private-key blocks, known token prefixes (`sk-`, `ghp_`,
   `github_pat_`, `xox…`, `AKIA`, JWTs, `Bearer`), key/value assignments, connection strings,
   URLs with userinfo, emails, GUIDs, commit SHAs and 7+ hex tokens, IPs, MACs, phone-shaped
-  numbers, absolute paths, and long base64/hex runs. Fenced code is replaced whole with
+  numbers, absolute paths **that name a home directory** (the extension kept), and long
+  base64/hex runs. Fenced code is replaced whole with
   `<code omitted: N lines>`; the fence and language stay. A prefix is anchored at a word
   boundary with a minimum body length, so `task-` and `risk-` survive; a **false-positive corpus**
   asserts that an ordinary design brief comes through unchanged, beside the fake-secret corpus
   that asserts every pattern is taken out. A backstop takes any remaining high-entropy token,
   and withholds the whole body if there are more than eight. Both corpora run on every
-  `cargo test`.
+  `cargo test`, and by `tools/lift-redact.ts` on a machine that cannot link the crate.
+
+  **"Absolute paths" was narrowed to a home directory after it was written**, and that is the
+  one place this list changed. A design brief is mostly paths, and a body with
+  `src/lib/analytics.ts` and `C:\workbench\volery\src-tauri` taken out of it is a body nobody
+  can follow: the false-positive corpus asserts they come through. What names a person is the
+  directory they live in, so `C:\Users\<n>\…`, `/home/<n>/…`, `/Users/<n>/…` and `~/…` are what
+  goes, and the extension stays because `.rs` and `.png` are the part that says what the thing
+  was. The key/value rule learned the same lesson in the other direction: `DB_PASSWORD=…` must
+  go, so the key name is matched at a *segment* boundary and not only a word boundary, while
+  `tokenizer` survives because no `:` or `=` follows it.
 - **Then sealed with a key only you hold.** A 32-byte data key is generated once and sealed
   with a key derived from your passphrase (Argon2id, 64 MiB, three passes, one lane). Each body
   is sealed with **ChaCha20-Poly1305 (`ring`), a fresh random 12-byte nonce**, and the blob is
