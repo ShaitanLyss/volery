@@ -1690,6 +1690,14 @@ hourly rollups; longer than a year sums those hours into days at query time, sin
 tier is derived rather than stored. The query layer chooses the tier; the caller never has to
 know which one answered.
 
+**And a reader that draws at most 200 points may choose an earlier boundary, because the
+cost of the finer tier is rows off the disk rather than detail on the screen.** A week of
+five-minute facts is 2,016 rows to draw sixteen of them, so the room reads fine facts up to 48
+hours and the hourly rollups past it. That is the room's own rule in `analyticsroom.ts`, not a
+change to `tierFor`: a saved view or a widget that names its own grain still gets this
+section's answer, and a spec that asks for five-minute detail over a week still gets the data
+it asked for, priced as the rows it is.
+
 ### 9.4 Derived measures
 
 - **`usd_modeled`**: tokens priced through `rate` at the fact's own timestamp.
@@ -1978,16 +1986,20 @@ Chat view is a second presentation of the same wall, so analytics gets a second 
 rather than a second implementation. The query layer, the view spec, the anonymizer and the
 report model are shared; only the drawing changes.
 
-Two surfaces, and they are the same distinction the widget already draws:
+Three surfaces, and they are the same distinction the widget already draws:
 
-- **The page** is the document presentation, and §11.15 says which mode opens it by default.
-  It opens from the sidebar's `analytics` row, from the palette, and from `space n n` while
-  chat view is in front. The sidebar stays; the reading column gets a wider figure plate than
-  `--cv-measure` for charts, and returns to the measure for prose.
-- **The sheet** is the glance. `analytics` carries a `sheet` letter in `widgets.ts`, so
-  `space b d` opens the same face in `ReadingSheet.svelte` over either view, with the
-  widget's own knobs. `d` for data, because `a` is Asana and `n` is the billboard; the letter
-  is free, and `test/leader.test.ts` holds the family unique.
+- **The room** is the instrument, and `space b d` opens it from either mode without changing
+  the mode (§11.15). From chat view it mounts over the reading column rather than over the
+  wall; closing it returns the column's scroll and focus. `d` for data, because `a` is Asana
+  and `n` is the billboard; the letter is free, and `test/leader.test.ts` holds the family
+  unique.
+- **The page** is the document presentation, the default in chat view. It opens from the
+  sidebar's `analytics` row, from the palette, and from `space n n` while chat view is in
+  front. The sidebar stays; the reading column gets a wider figure plate than `--cv-measure`
+  for charts, and returns to the measure for prose.
+- **The sheet** is the glance, and it waits for the widget kind (phase 6): a `sheet` letter in
+  `widgets.ts` and a face in `ReadingSheet.svelte`, over either mode, with the widget's own
+  knobs. It is the third and smallest presentation, not the same thing as the room.
 
 **The page is editorial, not instrumental.** The room is a panel you operate; the page is a
 document you read. The differences are all in the skin, never in the marks, and §11.15 makes
@@ -2339,8 +2351,9 @@ presentation can be reached from either mode**, and the switch never changes the
   the chat column's scroll and focus, are exactly where you left them. Switching presentation
   never changes the app mode, and changing the app mode never changes the presentation you
   chose.
-- **The sheet stays the third and smallest presentation.** `space b d` opens the glance over
-  either mode, with the widget's own knobs; it is not part of the `v` swap.
+- **The sheet is the third and smallest presentation**, and it waits for the widget kind
+  (phase 6). `space b d` is the room today; when the glance exists it gets a letter of its own
+  rather than sharing the room's, because they are different surfaces and not a `v` swap.
 - **The numbers must agree across the swap.** `test/analyticsroom.test.ts` renders the room's
   series and the page's figures from one fixture and asserts they are the same values, so a
   skin change cannot quietly become a data change.
