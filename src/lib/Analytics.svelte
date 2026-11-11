@@ -46,7 +46,8 @@
   import AnalyticsWorkPage from "./AnalyticsWorkPage.svelte";
   import AnalyticsViews from "./AnalyticsViews.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
-  import { readWorkWindow } from "./analyticsworkread.svelte";
+  import { dropWatch, readWatches, readWorkWindow } from "./analyticsworkread.svelte";
+  import type { SpendWatch } from "./spend";
   import { prompts as realPrompts } from "./promptsread.svelte";
   import {
     presentation,
@@ -99,6 +100,8 @@
     mode = view.current,
     as,
     asTab,
+    watches = readWatches,
+    unwatch = dropWatch,
   }: {
     /** The command, or a fixture. Absent means the real one. */
     read?: WindowReader;
@@ -106,6 +109,10 @@
     prompts?: PromptReader;
     /** The work read, or a fixture. Absent means the three commands. */
     work?: WorkReader;
+    /** The watches one card set on itself, or a fixture. Absent means the
+     *  command; the browser preview has no wall to ask. */
+    watches?: (card: string) => Promise<SpendWatch[]>;
+    unwatch?: (card: string, id: number) => Promise<boolean>;
     /** Conversation id → what the wall calls it, for the work tab's rows. A
      *  card that has since closed keeps its short id, which is all the store
      *  still has. */
@@ -836,6 +843,8 @@
             spanSaid={workSpanSaid}
             measure={workMeasure}
             onmeasure={(m) => (workMeasure = m)}
+            {watches}
+            {unwatch}
           />
         </div>
       {:else}

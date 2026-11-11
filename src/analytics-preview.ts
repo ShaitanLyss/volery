@@ -15,6 +15,7 @@ import "./lib/tokens.css";
 import Analytics from "./lib/Analytics.svelte";
 import {
   fixturePromptReader,
+  fixtureWatches,
   fixtureWindow,
   fixtureWorkReader,
   type FixtureMode,
@@ -56,5 +57,6 @@ mount(Analytics, {
     onclose: () => location.reload(),
     read: async (span: string, now: number): Promise<AnalyticsWindow> =>
       fixtureWindow(windowRequest(span, now), mode),
+    ...fixtureWatches(),
   },
 });

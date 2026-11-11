@@ -1214,9 +1214,20 @@ pub fn handle(
            request — the half of "what can I afford" that is in the card's own
            hands, and the line that names `compact` (`compact.rs`). */
         ALLOWANCE_TOOL => Some(format!(
-            "{}\n\n{}",
+            "{}\n\n{}\n\n{}",
             do_allowance(app, caller),
-            crate::compact::context_answer(app, caller)
+            crate::compact::context_answer(app, caller),
+            /* `servers`' argument for `server_log`, one file over: this is the
+               tool every card already has in front of it, so its *answer* is
+               where the deferred tool that answers the other half of the same
+               question gets named — in full, as a tool result, which costs
+               nothing per turn. §11.13. */
+            "For what *this card itself* has spent — its own turns, its subagents and the turn \
+             it is in — call `mcp__skein__spend` with verb `read`. To warn yourself at a number, \
+             `mcp__skein__spend_watch` with verb `watch` (`usd 10 session`); it writes a row and \
+             a notice, and it never stops anything. That is a different question from the \
+             account's allowance above, and it is the one to ask before deciding how much work \
+             to fan out."
         )),
         ACCOUNTS_TOOL => Some(do_accounts(app, caller)),
         _ => None,

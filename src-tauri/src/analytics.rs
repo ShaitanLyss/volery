@@ -3144,7 +3144,7 @@ fn measure_excess(
               ORDER BY at DESC LIMIT ?4",
         )
         .map_err(|e| format!("analytics: attribute: {e}"))?;
-    let mut recent: Vec<(f64, f64)> = stmt
+    let recent: Vec<(f64, f64)> = stmt
         .query_map(params![session, host, at, MEDIAN_REQUESTS as i64], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -4798,6 +4798,197 @@ fn read_marks(conn: &Connection) -> Result<HashMap<PathBuf, Mark>, String> {
         .map_err(|e| format!("analytics: read offsets: {e}"))
 }
 
+/* ── catching up one card, for `spend read` ────────────────────────────────*/
+
+/// How much of a card's own transcript one catch-up may read.
+///
+/// **A bound on a first read, not on the ordinary one.** The mark in
+/// `usage_file` makes every later catch-up incremental, so this only bites on a
+/// file the collector has never seen, a card restored on a fresh store, or a
+/// session long enough to have outrun one pass. Eight megabytes is roughly what
+/// a very long card writes in a day. **The read walks forward from the mark and
+/// stops at the bound; it never takes the end of the file**, because the mark
+/// this call advances is the collector's and a tail-biased read would skip the
+/// bytes in between for good. A capped answer covers the window since the last
+/// read, says so, and the collector consumes the rest on its next beat.
+const CATCH_UP_BYTES: u64 = 8 * 1024 * 1024;
+/// A subagent's file is a slice of one turn, so it gets its own, smaller bound.
+const CATCH_UP_AGENT_BYTES: u64 = 2 * 1024 * 1024;
+
+/// What one bounded catch-up did, for the answer's `as_of` and `live_turn`.
+pub(crate) struct Caught {
+    pub bytes: u64,
+    pub requests: i64,
+    /// The file had more past the bound, so the figure covers the window since
+    /// the last read rather than everything to now.
+    pub capped: bool,
+}
+
+/// Read what is new in this card's own transcript, and write it.
+///
+/// **The pass runs on a minute; a card asking mid-turn deserves the turn it is
+/// in.** This is the same reader and the same writer the collector uses ,
+/// `Reading`, `read_record`, `flush`, pointed at one card's files instead of
+/// every transcript on the machine. Nothing here is a second parser, and the
+/// marks it advances are the collector's own, so the next pass finds the work
+/// already done rather than reading it twice.
+///
+/// The scope is one card's session: its own transcript, plus the subagent files
+/// the CLI files one directory below it. Nothing else on disk is opened, so the
+/// cost is bounded by how much this card has written since the last pass rather
+/// than by how much the wall has ever written.
+pub(crate) fn catch_up(app: &AppHandle, conversation_id: &str) -> Result<Caught, String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+
+    let store = app.state::<Store>();
+    let (dir, session) = {
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        crate::store::session_of(&conn, conversation_id)
+            .ok_or_else(|| format!("no card {conversation_id}"))?
+    };
+    let Some(session) = session.filter(|s| !s.is_empty()) else {
+        /* A card that has never taken a turn has no transcript to catch up.
+           Nothing is stale about that answer: there is nothing to be stale. */
+        return Ok(Caught { bytes: 0, requests: 0, capped: false });
+    };
+    let main = crate::supervisor::transcript_path(app, &dir, &session)?;
+    /* The subagent files, one directory below the session's own. A missing
+       directory is the ordinary case for a card that has run no agents. */
+    let mut paths: Vec<(PathBuf, u64)> = vec![(main.clone(), CATCH_UP_BYTES)];
+    if let Some(parent) = main.parent() {
+        let dir = parent.join(&session).join("subagents");
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                    paths.push((p, CATCH_UP_AGENT_BYTES));
+                }
+            }
+        }
+    }
+
+    /* The marks for these files only, read and released before any file is
+       opened, the rule the whole pass keeps. */
+    let marks: HashMap<PathBuf, Mark> = {
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT offset, mtime, size FROM usage_file WHERE path = ?1")
+            .map_err(|e| format!("analytics: catch up: {e}"))?;
+        let mut marks = HashMap::new();
+        for (path, _) in &paths {
+            let key = path.to_string_lossy().to_string();
+            if let Ok(Some((offset, mtime, size))) = stmt
+                .query_row([&key], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                })
+                .optional()
+            {
+                marks.insert(
+                    path.clone(),
+                    Mark { offset: offset as u64, mtime, size: size as u64 },
+                );
+            }
+        }
+        marks
+    };
+
+    let now = now_ms();
+    let mut reading = Reading::new(marks, now - FINE_KEEP_MS).with_vault(
+        &crate::flyway::key::host_name(),
+        app.state::<crate::promptvault::PromptVault>().inner().clone(),
+    );
+    let mut caught = Caught { bytes: 0, requests: 0, capped: false };
+
+    for (path, cap) in paths {
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let len = meta.len();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        /* **Deliberately not `alive`.** `write_tail` prunes every mark absent
+           from that set, and this walk has seen only this card's files, so
+           saying "alive" here would delete the offset of every other transcript
+           on the machine and make the next full pass re-read ninety days of
+           them. An empty `alive` is what the tail's own guard reads as "this
+           walk did not survey the tree", and the marks it does write are the
+           ones this call advanced. */
+        let (wanted, from) = reading.reach(&path, len, mtime);
+        if !wanted {
+            continue;
+        }
+        let start = from.unwrap_or(0).min(len);
+        if start == len {
+            reading.skipped(&path, start, mtime, len);
+            continue;
+        }
+        /* **Forward from the mark, never biased to the tail.** Reading the last
+           eight megabytes of a longer file is fresher and leaves a hole: this
+           call advances the *collector's* mark to the end, and nothing ever
+           comes back for the bytes it skipped. A bounded read that walks forward
+           may answer an older window on the first call after a fresh store, and
+           the collector consumes the rest within its minute, a lag the answer
+           says out loud, which is the smaller lie than a permanent hole. */
+        caught.capped |= len - start > cap;
+        let Ok(mut f) = File::open(&path) else { continue };
+        if f.seek(SeekFrom::Start(start)).is_err() {
+            continue;
+        }
+
+        let mut r = BufReader::with_capacity(64 * 1024, Read::take(&mut f, cap));
+        let mut off = start;
+        loop {
+            let mut line: Vec<u8> = Vec::new();
+            match r.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(n) => {
+                    /* **Only a line that ended is a line.** A write still in
+                       flight is left for the next pass, and it is left
+                       unparsed, not merely uncounted: a truncated record is
+                       still JSON-shaped enough for the prompt reader to store
+                       half a body under a locator nobody can complete. `off`
+                       stops at the byte it began on, which is what makes the
+                       next read resume there. */
+                    if line.last() != Some(&b'\n') {
+                        break;
+                    }
+                    off += n as u64;
+                    line.pop();
+                    let text = String::from_utf8_lossy(&line);
+                    match crate::usage::read_record(&text) {
+                        Some(rec) => {
+                            reading.request(&rec);
+                            reading.tools(&text);
+                            caught.requests += 1;
+                        }
+                        None => {
+                            reading.other(&text);
+                            reading.tools(&text);
+                            /* The line's start, for a prompt locator. */
+                            reading.prompt(&path, off - n as u64, &text);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        caught.bytes += off - start;
+        reading.consumed(&path, off, mtime, len, off - start);
+    }
+
+    let batch = reading.into_batch();
+    let host = crate::flyway::key::host_name();
+    flush(&store.0, &host, &batch, now, CHUNK_REQUESTS, None)?;
+    /* The marks have moved past these bytes, so the collector will never offer
+       this session in a batch of its own. The next ingest's breach pass is told
+       about it here, so a watch crossed by this reading still fires. */
+    crate::spend::note_caught(&session);
+    Ok(caught)
+}
+
 /// One pass: read the transcripts, write what is new.
 ///
 /// The collector is the ordinary caller; `analytics_pass` is the same function
@@ -4825,11 +5016,28 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
     let batch = reading.into_batch();
     let refused = batch.refused;
 
+    /* Which cards this pass put facts under, so the watch pass is bounded to
+       them rather than re-evaluating every watch on the wall on every beat. */
+    let touched: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        batch
+            .requests
+            .iter()
+            .filter(|r| seen.insert(r.session.as_str()))
+            .map(|r| r.session.clone())
+            .collect()
+    };
+
     /* A command arriving mid-pass waits for one chunk rather than for the whole
        backfill — the difference between the 34 ms worst case measured for
        `CHUNK_REQUESTS` and a single transaction over every request on the
        machine. `flush` is where the per-chunk lock lives. */
     let mut counts = flush(&store.0, &host, &batch, now, CHUNK_REQUESTS, None)?;
+
+    /* §11.13's breach pass, riding the ingest rather than a clock of its own: a
+       card's own threshold is decided on the same facts the pass just wrote.
+       It writes a notice and a mark and never stops, pauses or slows anything. */
+    crate::spend::evaluate(&store.0, app, &touched)?;
 
     /* The fold comes after the offsets have advanced on purpose: a call and its
        result are both durable before any turn is allowed to consume them, so a

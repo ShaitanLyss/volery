@@ -15,6 +15,7 @@
  */
 
 import type { AnalyticsWindow, WindowRequest } from "./analyticsroom";
+import type { SpendWatch } from "./spend";
 import type { Fact, HourFact, UsageRow } from "./analytics";
 import type {
   CardSpendRow,
@@ -633,6 +634,48 @@ export function fixtureWork(req: WindowRequest, mode: FixtureMode = "normal"): W
  *  does, with no Tauri behind it. */
 export function fixtureWorkReader(mode: FixtureMode = "normal"): WorkReader {
   return async (from, to) => fixtureWork({ since: from, until: to, fine: true }, mode);
+}
+
+/** The watches the preview's selected card carries, so the block beside its
+ *  spend can be looked at without a wall. Two rows and a working delete; the
+ *  ids are the ones a real `spend_watch` row would have. */
+export function fixtureWatches(): {
+  watches: (card: string) => Promise<SpendWatch[]>;
+  unwatch: (card: string, id: number) => Promise<boolean>;
+} {
+  const now = Date.now();
+  let rows: SpendWatch[] = [
+    {
+      id: 1,
+      conversationId: "",
+      measure: "usd",
+      period: "session",
+      atValue: 10,
+      scope: "self",
+      createdAt: now - 3_600_000,
+      firedFor: "session:s-1",
+      firedAt: now - 1_800_000,
+    },
+    {
+      id: 2,
+      conversationId: "",
+      measure: "tokens",
+      period: "day",
+      atValue: 2_000_000,
+      scope: "self+children",
+      createdAt: now - 600_000,
+      firedFor: null,
+      firedAt: null,
+    },
+  ];
+  return {
+    watches: async (card) => rows.map((w) => ({ ...w, conversationId: card })),
+    unwatch: async (_card, id) => {
+      const before = rows.length;
+      rows = rows.filter((w) => w.id !== id);
+      return rows.length < before;
+    },
+  };
 }
 
 export function fixturePromptReader(mode: FixtureMode = "normal", vaultMode: VaultMode = "locked"): PromptReader {

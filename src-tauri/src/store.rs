@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 67;
+const SCHEMA_VERSION: i64 = 68;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -447,6 +447,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (65, migrate_v65),
     (66, migrate_v66),
     (67, migrate_v67),
+    (68, migrate_v68),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3896,13 +3897,16 @@ fn migrate_v66(conn: &Connection) -> Result<(), String> {
 /// invalidates the cache of the card that moved and no tree's worth of cards.
 ///
 /// **`tokens`, `in_tokens` and `usd` are one attribution's three parts.** Rust
-/// records the excess in the two buckets a retired prefix can land in and never
-/// prices anything (`usage.rs`'s rule, and `analytics.rs` deliberately has no
-/// rate table): the front end prices them through `usage.ts` at the event's own
+/// records the excess in the two buckets a retired prefix can land in and does
+/// not price it (`usage.rs`'s rule, and `analytics.rs` deliberately has no rate
+/// table): the front end prices them through `usage.ts` at the event's own
 /// model and instant, which is the arithmetic every other dollar on this wall
 /// already goes through. `usd` is kept for a writer that genuinely knows
 /// dollars; a row written by the ingest has `usd = 0`, and the query layer says
-/// *unmeasured* only when no attributed row exists at all.
+/// *unmeasured* only when no attributed row exists at all. The one reader of a
+/// price inside this process is `spend.rs`, which must compare a card's own
+/// dollar threshold during the ingest that enforces it — both halves read
+/// `pricing.json`, and §20 decision 20 has the argument.
 fn migrate_v67(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
@@ -3961,6 +3965,50 @@ fn migrate_v67(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v67: {e}"))
+}
+
+/// A threshold a card set on its own spend (`docs/ANALYTICS.md` §11.13, §17).
+///
+/// **The table is §17's, exactly**, because the doc is the contract a second
+/// reader arrives from, and the two indexes are the two questions asked of it:
+/// the tool lists a card's own watches, and the ingest asks every watch whose
+/// card just wrote facts.
+///
+/// `ON DELETE CASCADE` is declared and does run: `Store::open` turns
+/// `foreign_keys` on before either window exists, and the deletion test beside
+/// this rung proves it rather than trusting the pragma. The cascade is what
+/// keeps a forgotten card from leaving a watch that can never fire and can
+/// never be listed — a row nothing owns.
+///
+/// `analytics_session` gains `card_id` as an index because that is how a
+/// card's own facts are found: `usage_fact` carries a session and not a card,
+/// and `spend read` must never scan every session on the wall to resolve the
+/// join. The rung is named for the watch because that is what it adds for a
+/// person, and this index is what makes the feature's first rule ("bounded to
+/// that card's facts") true rather than a promise.
+fn migrate_v68(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS spend_watch (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            measure         TEXT NOT NULL,   -- usd | tokens | allowance_points
+            period          TEXT NOT NULL,   -- session | day | turn | window
+            at_value        REAL NOT NULL,
+            scope           TEXT NOT NULL DEFAULT 'self',  -- self | self+children
+            created_at      INTEGER NOT NULL,
+            fired_for       TEXT,            -- the period instance it last fired for
+            fired_at        INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS spend_watch_by_conversation
+            ON spend_watch(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS analytics_session_by_card
+            ON analytics_session(card_id);
+        "#,
+    )
+    .map_err(|e| format!("migrate v68: {e}"))
 }
 
 /* ── saved views ───────────────────────────────────────────────────────────*/
@@ -6784,6 +6832,116 @@ pub fn session_of(conn: &Connection, id: &str) -> Option<(String, Option<String>
 /// from Rust with a guessed midnight.
 pub fn spend_over(conn: &Connection, since: i64) -> f64 {
     spend_row(conn, since).unwrap_or(0.0)
+}
+
+/* ── the watches a card sets on itself ─────────────────────────────────────*/
+
+/// One threshold a card set on its own spend (`docs/ANALYTICS.md` §11.13).
+///
+/// `fired_for` is the period **instance** rather than a flag, because a
+/// rolling period restarts with no clock: the day rolls, the session clears, a
+/// new turn opens, the allowance window resets — and the instance key changes
+/// with it. Keeping the key is what makes "once per instance" a comparison
+/// instead of a timestamp nobody can interpret later.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendWatch {
+    pub id: i64,
+    pub conversation_id: String,
+    pub measure: String,
+    pub period: String,
+    pub at_value: f64,
+    pub scope: String,
+    pub created_at: i64,
+    pub fired_for: Option<String>,
+    pub fired_at: Option<i64>,
+}
+
+const WATCH_COLUMNS: &str =
+    "id, conversation_id, measure, period, at_value, scope, created_at, fired_for, fired_at";
+
+fn watch_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SpendWatch> {
+    Ok(SpendWatch {
+        id: r.get(0)?,
+        conversation_id: r.get(1)?,
+        measure: r.get(2)?,
+        period: r.get(3)?,
+        at_value: r.get(4)?,
+        scope: r.get(5)?,
+        created_at: r.get(6)?,
+        fired_for: r.get(7)?,
+        fired_at: r.get(8)?,
+    })
+}
+
+/// The watches on one card, oldest first — the order the card made them in,
+/// which is the order its page draws them in.
+pub fn watches_of(conn: &Connection, conversation_id: &str) -> Result<Vec<SpendWatch>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {WATCH_COLUMNS} FROM spend_watch WHERE conversation_id = ?1 ORDER BY id"
+        ))
+        .map_err(|e| format!("store: watches: {e}"))?;
+    let rows = stmt
+        .query_map([conversation_id], watch_row)
+        .map_err(|e| format!("store: watches: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("store: watches: {e}"))
+}
+
+/* There is deliberately no wall-wide listing. The ingest's breach pass asks
+   `watches_of` for each card whose facts it just wrote, so a read across every
+   watch on the wall would be a second, unreachable way to answer the same
+   question — and one that would grow with the wall rather than with the work. */
+
+/// Add one, answering its id. The conversation is the caller's own by
+/// construction — `spend.rs` passes the id its MCP request arrived under.
+pub fn add_watch(conn: &Connection, w: &SpendWatch) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO spend_watch
+           (conversation_id, measure, period, at_value, scope, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![w.conversation_id, w.measure, w.period, w.at_value, w.scope, w.created_at],
+    )
+    .map_err(|e| format!("store: watch: {e}"))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Remove one **from this card only**. The conversation id is in the `WHERE`
+/// rather than checked beforehand, so a card naming another card's watch id
+/// deletes nothing instead of being told the row exists.
+pub fn drop_watch(conn: &Connection, conversation_id: &str, id: i64) -> Result<bool, String> {
+    let gone = conn
+        .execute(
+            "DELETE FROM spend_watch WHERE id = ?1 AND conversation_id = ?2",
+            params![id, conversation_id],
+        )
+        .map_err(|e| format!("store: watch: {e}"))?;
+    Ok(gone > 0)
+}
+
+/// Stamp a breach, and only on the instance it was evaluated for.
+///
+/// The `fired_for IS NOT ?3` guard is the once-per-instance rule in the
+/// statement rather than around it: two ingests that race over one period must
+/// not write two notices, and a caller that reads the row, decides, and then
+/// writes is a read-check-write with a gap in the middle. Answers whether this
+/// call is the one that marked it.
+pub fn mark_watch_fired(
+    conn: &Connection,
+    conversation_id: &str,
+    id: i64,
+    instance: &str,
+    at: i64,
+) -> Result<bool, String> {
+    let marked = conn
+        .execute(
+            "UPDATE spend_watch SET fired_for = ?3, fired_at = ?4
+              WHERE id = ?1 AND conversation_id = ?2 AND (fired_for IS NULL OR fired_for <> ?3)",
+            params![id, conversation_id, instance, at],
+        )
+        .map_err(|e| format!("store: watch: {e}"))?;
+    Ok(marked > 0)
 }
 
 /// Written from day one and read by almost nobody — see the module note.
@@ -16027,6 +16185,109 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM invalidate_walk", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(marked, 1, "the backfill's mark survives a reopen");
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    /// §11.13's watch table, the two indexes the tool reads it by, the cascade
+    /// that takes a watch with its card, and the rung's own idempotence — every
+    /// other rung here has that test because the v9 lockout is what a missing
+    /// one costs.
+    #[test]
+    fn v68_adds_the_watch_table_and_its_indexes_and_can_run_twice() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for (_, step) in STEPS.iter().take(67) {
+            step(&conn).unwrap();
+        }
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, agent_session_id, project_id, cwd, born_at)
+             VALUES ('c1', 's1', 'p1', 'C:/x', 0)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v68(&conn).unwrap();
+        migrate_v68(&conn).expect("a rung of CREATE IF NOT EXISTS must be safe to re-run");
+
+        for index in ["spend_watch_by_conversation", "analytics_session_by_card"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{index} was not created");
+        }
+
+        let id = add_watch(
+            &conn,
+            &SpendWatch {
+                id: 0,
+                conversation_id: "c1".into(),
+                measure: "usd".into(),
+                period: "session".into(),
+                at_value: 10.0,
+                scope: "self".into(),
+                created_at: 1,
+                fired_for: None,
+                fired_at: None,
+            },
+        )
+        .unwrap();
+        assert!(id > 0);
+        assert_eq!(watches_of(&conn, "c1").unwrap().len(), 1);
+        assert!(watches_of(&conn, "c2").unwrap().is_empty(), "a card sees only its own");
+
+        /* The once-per-instance mark, scoped to the card and refusing a second
+           write for the instance it is already on. */
+        assert!(mark_watch_fired(&conn, "c1", id, "session:s1", 20).unwrap());
+        assert!(!mark_watch_fired(&conn, "c1", id, "session:s1", 21).unwrap());
+        assert!(!mark_watch_fired(&conn, "c2", id, "session:s1", 21).unwrap(), "another card cannot mark it");
+        assert!(mark_watch_fired(&conn, "c1", id, "day:2026-11-13", 22).unwrap(), "a rolled period fires again");
+
+        assert!(!drop_watch(&conn, "c2", id).unwrap(), "another card cannot remove it");
+        assert_eq!(watches_of(&conn, "c1").unwrap().len(), 1);
+
+        conn.execute("DELETE FROM conversation WHERE id = 'c1'", []).unwrap();
+        assert!(
+            watches_of(&conn, "c1").unwrap().is_empty(),
+            "the cascade takes a forgotten card's watch with it"
+        );
+    }
+
+    /// A watch set against a real file, reopened by the next launch: the rung
+    /// and the stamp are one transaction, and this is the launch that would
+    /// find out if they were not.
+    #[test]
+    fn v68_leaves_a_file_the_next_launch_can_open() {
+        let path = std::env::temp_dir().join(format!("skein-v68-{}.db", uuid_v4()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (_, step) in STEPS.iter().take(67) {
+                step(&conn).unwrap();
+            }
+            migrate_v68(&conn).unwrap();
+        }
+        {
+            let conn = Connection::open(&path).unwrap();
+            migrate(&conn).expect("a file this build wrote must open again");
+            let version: i64 = conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('spend_watch')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 9, "the nine columns §17 publishes");
         }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));

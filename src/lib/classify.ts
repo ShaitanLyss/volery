@@ -206,6 +206,15 @@ export const SKEIN_SUBSCRIBE_TOOL = "mcp__skein__subscribe";
 export const SKEIN_SUBSCRIPTIONS_TOOL = "mcp__skein__subscriptions";
 export const SKEIN_UNSUBSCRIBE_TOOL = "mcp__skein__unsubscribe";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
+/** What this card itself has spent, and the warning it set on itself
+ *  (`spend.rs`, §11.13). Beside `allowance` because they answer one question at
+ *  two scopes — the account's windows and the card's own rows — and a reader
+ *  looking for one would otherwise find the other and take it for this. */
+export const SKEIN_SPEND_TOOL = "mcp__skein__spend";
+/** The write half of the same feature: a threshold a card sets on itself. A
+ *  second tool because only a read may carry `readOnlyHint`, which is what a
+ *  planning card relies on (`spend.rs`). */
+export const SKEIN_SPEND_WATCH_TOOL = "mcp__skein__spend_watch";
 /** A card asking to be compacted, or to be renewed on a fresh session from a
  *  note it writes (`compact.rs`, `renew.rs`). Both are queued behind the turn
  *  that calls them, so the line says what was asked for, not that it happened. */
@@ -809,6 +818,16 @@ export function describeTool(name: string, input: any, nameOf: (address: string)
       return input?.all === true ? "stopped its subscriptions" : "stopped a subscription";
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
+    /* The one tool on this server a card uses to read *itself*. The verb is the
+       line, because reading and setting a warning are different acts and the
+       second one is the only write the tool can make. */
+    case SKEIN_SPEND_TOOL:
+      return input?.verb === "list" ? "listed its spend watches" : "read its own spend";
+    case SKEIN_SPEND_WATCH_TOOL: {
+      if (input?.verb === "unwatch") return "removed a spend watch";
+      const at = typeof input?.at === "number" ? input.at : null;
+      return at === null ? "set a spend watch" : `set a spend watch at ${at}`;
+    }
     case SKEIN_COMPACT_TOOL:
       return "asked to be compacted after this turn";
     case SKEIN_RENEW_TOOL:

@@ -33,6 +33,7 @@
   } from "./analyticswork";
   import { seriesColor } from "./analytics";
   import { count, money } from "./usage";
+  import { watchSaid, type SpendWatch } from "./spend";
 
   let {
     model,
@@ -41,6 +42,8 @@
     spanSaid,
     measure,
     onmeasure,
+    watches,
+    unwatch,
   }: {
     model: WorkModel;
     from: number;
@@ -48,6 +51,8 @@
     spanSaid: string;
     measure: ScatterMeasure;
     onmeasure: (m: ScatterMeasure) => void;
+    watches: (card: string) => Promise<SpendWatch[]>;
+    unwatch: (card: string, id: number) => Promise<boolean>;
   } = $props();
 
   const INK = seriesColor(0);
@@ -160,8 +165,63 @@
     return { plotW, plotH, xOf, yOf, dots, xTicks, yTicks };
   });
 
-  function activate(card: string | null) {
-    active = card;
+  /** Hover reads a card; a click or Enter **picks** it, and a pick is what the
+   *  watches block hangs from. A block hung on the hover would vanish the moment
+   *  the pointer left the dot, which is before a delete button on it can be
+   *  reached. */
+  function activate(card: string | null, pick = false) {
+    if (pick) {
+      picked = card;
+      active = card;
+      return;
+    }
+    /* Once a card is picked, the readout stays on it: a block naming one card
+       above a readout naming another is two answers to "which card". */
+    active = picked ?? card;
+  }
+
+  /* ── the watches the picked card set on itself ─────────────────────────── */
+
+  let picked = $state<string | null>(null);
+  let watched = $state<SpendWatch[] | null>(null);
+  let watchFault = $state<string | null>(null);
+
+  $effect(() => {
+    const card = picked;
+    if (!card) {
+      watched = null;
+      watchFault = null;
+      return;
+    }
+    let live = true;
+    watched = null;
+    watchFault = null;
+    watches(card).then(
+      (rows) => {
+        if (live) watched = rows;
+      },
+      (e) => {
+        if (live) watchFault = String(e);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  });
+
+  async function removeWatch(id: number) {
+    const card = picked;
+    if (!card) return;
+    try {
+      await unwatch(card, id);
+      const rows = await watches(card);
+      /* Both calls are round trips, and the dot can be re-picked while they are
+         in flight. Writing the old card's rows now would label one card's
+         watches with another's name. */
+      if (picked === card) watched = rows;
+    } catch (e) {
+      if (picked === card) watchFault = String(e);
+    }
   }
 
   function pointLabel(p: { label: string; cost: number; y: number; noArtifact: boolean }): string {
@@ -329,7 +389,7 @@
     <div class="aw-kpis" role="group" aria-label="what the window bought">
       <div class="aw-kpi">
         <span class="aw-klabel">cost</span>
-        <span class="aw-kvalue">{model.kpis.cost === null ? "—" : money(model.kpis.cost)}</span>
+        <span class="aw-kvalue">{model.kpis.cost === null ? "," : money(model.kpis.cost)}</span>
         <span class="aw-knote">
           {model.kpis.cost === null
             ? model.kpis.unpriced > 0
@@ -376,7 +436,7 @@
       </div>
       <div class="aw-kpi">
         <span class="aw-klabel">leading project</span>
-        <span class="aw-kvalue">{model.kpis.leading?.project ?? "—"}</span>
+        <span class="aw-kvalue">{model.kpis.leading?.project ?? ","}</span>
         <span class="aw-knote">
           {model.kpis.leading?.share != null
             ? `${Math.round(model.kpis.leading.share)}% of artifacts`
@@ -459,8 +519,8 @@
             {#each panelRows as row (row.at)}
               <tr>
                 <th scope="row">{new Date(row.at).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</th>
-                <td class="aw-num">{row.cost === null ? "—" : money(row.cost)}</td>
-                <td class="aw-num">{row.artifacts === null ? "—" : count(row.artifacts)}</td>
+                <td class="aw-num">{row.cost === null ? "," : money(row.cost)}</td>
+                <td class="aw-num">{row.artifacts === null ? "," : count(row.artifacts)}</td>
               </tr>
             {/each}
           </tbody>
@@ -517,17 +577,17 @@
               stroke={INK}
               stroke-width={d.noArtifact ? 1.5 : 0}
               onfocus={() => activate(d.card)}
-              onblur={() => activate(null)}
+              onblur={() => activate(picked)}
               onpointerenter={() => activate(d.card)}
-              onpointerleave={() => activate(null)}
-              onclick={() => activate(d.card)}
+              onpointerleave={() => activate(picked)}
+              onclick={() => activate(d.card, true)}
               onkeydown={(e) => {
                 /* A `button` role on an SVG element gets no synthetic click, so
                    Enter and Space are wired by hand rather than announced and
                    inert. */
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
-                  activate(d.card);
+                  activate(d.card, true);
                 }
               }}
             />
@@ -538,15 +598,67 @@
       <p class="aw-readout">
         {#if activeCard}
           <strong>{activeCard.label}</strong>
-          {activeCard.cost === null ? "cost —" : money(activeCard.cost)}
+          {activeCard.cost === null ? "cost ," : money(activeCard.cost)}
           · {count(activeCard.merged)} merged
           · {count(activeCard.commits)} commits
           · {signed(activeCard.net)} net
           {#if activeCard.noArtifact}<span class="aw-none">no artifact</span>{/if}
         {:else}
-          hover a dot or walk the table to read a card; a hollow dot is a card with no artifact.
+          hover a dot or walk the table to read a card; click one (or Enter on it) to keep it and
+          read the thresholds it set on itself. a hollow dot is a card with no artifact.
         {/if}
       </p>
+
+      <!-- The thresholds the picked card set on itself (§11.13).
+           **These are the card's, not the wall's**: the row is per conversation,
+           written by the card's own `spend_watch`, and there is deliberately no
+           editor here beyond delete, the tool is where a watch is made.
+           When the card page §11.10 describes is built it should reuse this
+           block rather than draw a second shape for the same row. -->
+      {#if picked}
+        <div class="aw-watches" role="group" aria-label="watches this card set on itself">
+          <div class="aw-watchhead">
+            <strong>{nameOf.get(picked) ?? picked}</strong>
+            <span class="aw-sub">thresholds it set on itself</span>
+            <button
+              type="button"
+              class="aw-watchclose"
+              title="close (the dot stays selected until another is picked)"
+              aria-label="close the watches"
+              onclick={() => {
+                picked = null;
+                active = null;
+              }}>×</button
+            >
+          </div>
+          {#if watchFault}
+            <p class="aw-hint">the watches could not be read, {watchFault}</p>
+          {:else if watched === null}
+            <p class="aw-hint">reading…</p>
+          {:else if watched.length === 0}
+            <p class="aw-hint">
+              no threshold set. a card sets one on itself with <code>spend_watch watch usd 10 session</code>,
+              which is the only place it can be made.
+            </p>
+          {:else}
+            <ul class="aw-watchlist">
+              {#each watched as w (w.id)}
+                <li>
+                  <span class="aw-watchsaid">{watchSaid(w, Date.now())}</span>
+                  <span class="aw-watchwhen">{w.measure} · {w.period}</span>
+                  <button
+                    type="button"
+                    class="aw-watchdrop"
+                    title="remove this watch (watch #{w.id})"
+                    onclick={() => removeWatch(w.id)}>delete</button
+                  >
+                </li>
+              {/each}
+            </ul>
+            <p class="aw-hint">a watch never stops, pauses or slows a turn. it rings once per period.</p>
+          {/if}
+        </div>
+      {/if}
       {#if model.scatter.omitted > 0}
         <p class="aw-hint">
           {count(model.scatter.omitted)} {model.scatter.omitted === 1 ? "card has" : "cards have"} no spend
@@ -688,7 +800,7 @@
                   <td>{ep.branch || "unnamed"}</td>
                   <td class="aw-num">{count(Math.round(ep.minutes))}</td>
                   <td>{ep.closedBy === "cap" ? "the cap" : ep.closedBy.replace("_", " ")}</td>
-                  <td class="aw-num">{episodeUsd(ep) === null ? "—" : money(episodeUsd(ep) ?? 0)}</td>
+                  <td class="aw-num">{episodeUsd(ep) === null ? "," : money(episodeUsd(ep) ?? 0)}</td>
                 </tr>
               {:else}
                 <tr><td colspan="5">no conflict was recorded in this window.</td></tr>
@@ -716,7 +828,7 @@
                   <td>{episodeLabel(e)}</td>
                   <td>{new Date(e.end).toLocaleString("en-GB")}</td>
                   <td>{e.writes > 1 ? `churn, ${count(e.writes)} writes` : "one write"}</td>
-                  <td class="aw-num">{e.measured ? count(e.payers.length) : "—"}</td>
+                  <td class="aw-num">{e.measured ? count(e.payers.length) : ","}</td>
                   <td class="aw-num">{e.measured ? money(e.usd ?? 0) : "unmeasured"}</td>
                 </tr>
               {:else}
@@ -1043,6 +1155,90 @@
     border-radius: 999px;
     font-size: 9px;
     color: var(--paper-mute);
+  }
+
+  /* ── the picked card's own watches ────────────────────────────────────── */
+  /* The one surface a watch is read on. Achromatic, like the rest of this tab:
+     the colour a threshold earns is status, and status is the card's tier, not
+     a number in a settings list. */
+  .aw-watches {
+    margin-top: 8px;
+    padding: 8px 10px 9px;
+    border: 1px solid color-mix(in oklab, var(--edge) 78%, var(--paper) 6%);
+    border-radius: var(--cv-r-m, 9px);
+    background: color-mix(in oklab, var(--raised) 92%, var(--paper) 3%);
+    font-family: var(--cv-ui, var(--util));
+    font-size: 10.5px;
+    color: var(--paper-mute);
+  }
+  .aw-watchhead {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .aw-watchhead strong {
+    color: var(--paper);
+    font-weight: 600;
+  }
+  .aw-watchhead .aw-sub {
+    font-size: 10px;
+    color: var(--paper-faint);
+  }
+  .aw-watchclose {
+    margin-left: auto;
+    border: 0;
+    background: none;
+    color: var(--paper-faint);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 2px;
+  }
+  .aw-watchclose:hover,
+  .aw-watchclose:focus-visible {
+    color: var(--paper);
+  }
+  .aw-watchlist {
+    list-style: none;
+    margin: 7px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .aw-watchlist li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .aw-watchsaid {
+    color: var(--paper);
+    font-variant-numeric: tabular-nums;
+  }
+  .aw-watchwhen {
+    font-size: 9.5px;
+    color: var(--paper-faint);
+  }
+  .aw-watchdrop {
+    margin-left: auto;
+    padding: 1px 7px;
+    border: 1px solid var(--edge);
+    border-radius: 999px;
+    background: none;
+    color: var(--paper-mute);
+    font-family: inherit;
+    font-size: 9.5px;
+    cursor: pointer;
+  }
+  .aw-watchdrop:hover,
+  .aw-watchdrop:focus-visible {
+    color: var(--paper);
+    border-color: color-mix(in oklab, var(--edge) 60%, var(--paper) 30%);
+  }
+  .aw-watches code {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--paper);
   }
 
   /* ── the table section ─────────────────────────────────────────────────── */

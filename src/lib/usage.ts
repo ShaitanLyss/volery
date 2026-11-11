@@ -27,6 +27,18 @@
  * That is the one thing this widget cannot know, and the reason it reports what
  * has been spent rather than a percentage of an allowance. */
 
+/* **The price table and its clock are data, in `pricing.json` beside this
+ * file.** They used to be a literal here, which was right while this module was
+ * the only reader. The card-facing `spend` tool broke that: a `usd` watch is
+ * enforced during ingest, inside the Rust process, and a breach cannot be
+ * decided anywhere but there. So the table moved to one JSON file that both
+ * `usage.ts` and `src-tauri/src/spend.rs` read — the Rust half through
+ * `include_str!` — which makes the two dollars the same dollars by
+ * construction rather than by a test that could be misread. The reading and the
+ * guessing stay here: `rateFor`'s three rungs and `rateAt`'s clock rule are
+ * this file's, and `spend.rs` mirrors them with the same data. */
+import pricing from "./pricing.json";
+
 export type Slice = {
   /** The bucket's start, epoch ms. */
   at: number;
@@ -72,9 +84,12 @@ export type Rate = {
   offPeak?: { input: number; output: number; cacheRead?: number };
 };
 
-const CACHE_READ = 0.1;
-const WRITE_5M = 1.25;
-const WRITE_1H = 2;
+/** Exported because `analytics.ts` and `spend.rs` price the five token kinds
+ *  apart, and a multiplier repeated in three files is three places to be wrong
+ *  about the same bill. The three live in `pricing.json` with the rates. */
+export const CACHE_READ = pricing.multipliers.cacheRead;
+export const WRITE_5M = pricing.multipliers.write5m;
+export const WRITE_1H = pricing.multipliers.write1h;
 
 /** Rates as published 2026-08-14, Sonnet 5 corrected 2026-09-30.
  *
@@ -94,53 +109,16 @@ const WRITE_1H = 2;
  *  is worth: **a table that encodes a future is a table with an expiry date on
  *  it, and nothing here can tell when one has passed.** The rate is what is
  *  charged today; a scheduled change is something to re-read the docs about on
- *  the day, not to pre-empt a month early. */
-export const RATES: Record<string, Rate> = {
-  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.025 },
-  "claude-mythos-5-1": { input: 10, output: 50, cacheRead: 0.025 },
-  "claude-fable-5": { input: 10, output: 50 },
-  "claude-mythos-5": { input: 10, output: 50 },
-  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.05 },
-  "claude-opus-5": { input: 5, output: 25 },
-  "claude-opus-4-8": { input: 5, output: 25 },
-  "claude-opus-4-7": { input: 5, output: 25 },
-  "claude-opus-4-6": { input: 5, output: 25 },
-  "claude-opus-4-5": { input: 5, output: 25 },
-  "claude-opus-4-1": { input: 15, output: 75 },
-  "claude-opus-4": { input: 15, output: 75 },
-  /* 0.05x, like Opus 5.5: the pricing docs' footnote 2, read 2026-10-16 — "Cache
-     hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at
-     0.05x the base input price" ($0.10/MTok here). The entry carried no override,
-     so every Sonnet 5.5 cache read was priced at the standard 0.1x, double. */
-  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.05 },
-  "claude-sonnet-5": { input: 2, output: 10 },
-  "claude-sonnet-4-6": { input: 3, output: 15 },
-  "claude-sonnet-4-5": { input: 3, output: 15 },
-  "claude-sonnet-4": { input: 3, output: 15 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
-  "claude-haiku-3-5": { input: 0.8, output: 4 },
-  /* DeepSeek, read 2026-11-04. Two models, both 1M, and **two prices each**:
-     DeepSeek's off-peak rates are half its peak ones, and peak is 01:00-04:00
-     and 06:00-10:00 UTC on weekdays. The figures here are the peak ones, which
-     is what `rateFor` means when it is asked without a clock; `rateAt` halves
-     them outside those hours. Cache *hits* are a separate published rate rather
-     than a fraction of input, and the two ratios work out at 0.02x (flash) and
-     0.0333x (pro), which is why they are spelled rather than left to
-     `CACHE_READ`'s 0.1x — the same mistake worth 5x on every cached flash
-     token that `claude-haiku`'s row has no way to show. */
-  "deepseek-flash": {
-    input: 0.3,
-    output: 1.2,
-    cacheRead: 0.02,
-    offPeak: { input: 0.15, output: 0.6, cacheRead: 0.02 },
-  },
-  "deepseek-v4-pro": {
-    input: 1.32,
-    output: 3.96,
-    cacheRead: 0.033333,
-    offPeak: { input: 0.66, output: 1.98, cacheRead: 0.033333 },
-  },
-};
+ *  the day, not to pre-empt a month early.
+ *
+ *  Two rows carry a note that the table cannot: Sonnet 5.5's `cacheRead` is
+ *  0.05 rather than the standard 0.1, from the pricing docs' footnote 2 read
+ *  2026-10-16 ("Cache hits and refreshes on Claude Opus 5.5 and Claude Sonnet
+ *  5.5 are priced at 0.05x the base input price"); and DeepSeek bills two
+ *  prices per model, the peak one here and `offPeak` at half, chosen by
+ *  `rateAt` from the windows in `pricing.json`. The values live in that file;
+ *  these are the reasons they are what they are. */
+export const RATES: Record<string, Rate> = pricing.models as Record<string, Rate>;
 
 /** The newest member of each family, which is what an unknown one is guessed as.
  *
@@ -149,15 +127,10 @@ export const RATES: Record<string, Rate> = {
  *  *previous* generation, so `claude-opus-9` priced at Opus 5's $5/$25. Rates
  *  fall across a family's life — opus has gone $15/$75 → $5/$25 → $4/$20 — so
  *  the newest release is the better predictor of the next one, and it is the
- *  only member whose cache-read multiplier is likely to carry forward too. */
-const NEWEST: Record<string, string> = {
-  fable: "claude-fable-5-1",
-  mythos: "claude-fable-5-1",
-  opus: "claude-opus-5-5",
-  sonnet: "claude-sonnet-5-5",
-  haiku: "claude-haiku-4-5",
-  deepseek: "deepseek-flash",
-};
+ *  only member whose cache-read multiplier is likely to carry forward too.
+ *  It is in `pricing.json` for the same reason the rates are: `spend.rs` makes
+ *  the same guess, and two guesses from one map cannot come apart. */
+const NEWEST: Record<string, string> = pricing.families;
 
 /** What one model costs, or null when nothing here can say.
  *
@@ -212,10 +185,9 @@ export function rateFor(model: string): Rate | null {
  *  what a turn cost. */
 export function deepseekPeak(at: number): boolean {
   const d = new Date(at);
-  const day = d.getUTCDay();
-  if (day === 0 || day === 6) return false;
+  if (!pricing.peak.days.includes(d.getUTCDay())) return false;
   const h = d.getUTCHours();
-  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+  return pricing.peak.windows.some(([from, to]) => h >= from && h < to);
 }
 
 /** What a model costs at a moment, which is `rateFor` everywhere except a

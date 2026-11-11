@@ -2272,14 +2272,21 @@ and **what did I say I would care about**. Today `allowance` answers the account
 the wall's last day, which is a general reading; a card cannot see its own turns, its own
 subagents, or the cost of the turn it is in.
 
-One MCP tool, `spend`, in its own file beside `limits.rs`, with four verbs:
+One file beside `limits.rs`, and **four verbs across two tools**:
 
 ```text
 spend read                    -- what this card has used
-spend watch <measure> <at>    -- warn me when this card passes it
-spend unwatch <id>
 spend list                    -- the watches on this card, and whether they have fired
+spend_watch watch <measure> <at> [period] [scope]
+spend_watch unwatch <id>
 ```
+
+The split is not tidiness. Claude Code refuses an MCP tool to a planning card
+unless it declares `readOnlyHint`, and a planning card deciding what it can afford is exactly
+who the reading is for — while `watch` writes a row and, on breach, a notice in the person's
+queue, which is the one thing that hint may not cover (`ask.rs` asserts both directions). One
+tool cannot be both, so the reading and the listing are one and the setting is the other. A
+card finds the second through the first's own description and through `allowance`'s answer.
 
 **What `read` answers**, all of it measured from this card's own rows and none of it another
 card's unless asked:
@@ -2291,15 +2298,15 @@ card's unless asked:
 | `lifetime` | every session this card has had | a card that cleared has several |
 | `turn` | the open turn, if one is running | partial by construction |
 | `by_model`, `by_subagent` | the facts, grouped | a subagent's share is its own depth, not folded |
-| `turns`, `requests`, `cache_hit_share` | the facts | the shape behind the number |
+| `requests`, `cache_hit_share` | the facts | the shape behind the number |
 | `context_tokens` | the conversation fold | what every request re-reads |
 | `next_turn_usd` | modelled | labelled, from context × the model's rates |
 | `children` | spawn lineage, opt-in | cards it opened are separate sessions and are not its own |
 
 - **It catches up first, and that is what makes it a reading rather than a report.** The pass
   runs on a minute; a card asking mid-turn deserves the turn it is in. So `read` runs the
-  ingest for its own session over the tail since the last offset, bounded to the current file
-  and a few megabytes, and then answers. It costs one local read and no API turn. The answer
+  ingest for its own session over what is new since the last offset, walking forward so no
+  byte is skipped, bounded to the current file and a few megabytes, and then answers. It costs one local read and no API turn. The answer
   carries `as_of` and `live_turn`, so a card can tell a caught-up figure from a stale one.
 - **`children` is opt-in, and the sum is explicit.** A spawned card is a session of its own
   (§4.4); including it silently would answer a different question from the one asked. The
@@ -2309,7 +2316,7 @@ card's unless asked:
   attributed delta this card's facts account for, which is the number a card can act on when it
   is deciding whether to fan out.
 
-**A watch is a bookmark, not a brake.** `spend watch usd 10 session` is a card saying *tell me
+**A watch is a bookmark, not a brake.** `spend_watch watch usd 10 session` is a card saying *tell me
 when I pass ten dollars in this session*; it is stored per conversation and never synced.
 
 - **On breach, three things happen and none of them stops anything.** A `notice` row is
@@ -2987,7 +2994,9 @@ CREATE TABLE invalidate_fact (
                                          -- switch: cards working at the instant
   -- The attributed excess, in the two buckets a retired prefix can land in.
   -- Each is measured against that bucket's own median and priced at its own
-  -- rate by the front end; Rust never prices (usage.rs's rule).
+  -- rate by the front end; Rust never prices (usage.rs's rule). The one
+  -- exception is the card-facing `spend` tool, which must decide a dollar
+  -- threshold inside the ingest that enforces it — §11.13, §20 decision 20.
   tokens     INTEGER NOT NULL DEFAULT 0, -- cache-write excess, 1.25x input
   in_tokens  INTEGER NOT NULL DEFAULT 0, -- fresh-input excess, 1x input
   usd        REAL NOT NULL DEFAULT 0,    -- a writer that knows dollars; 0 from the ingest
@@ -3598,7 +3607,7 @@ not re-opened by accident.
     that sum turns.
 15. **A card is a reader of its own analytics, and may set its own warning.** `spend read`
     answers this card's facts, including its subagents and excluding the cards it spawned
-    unless asked, and catches up the running turn first. `spend watch` is a threshold on one
+    unless asked, and catches up the running turn first. `spend_watch watch` is a threshold on one
     measure for one period, stored per card and never synced. A breach writes one notice for
     the person and every later read says so; it never stops a turn. The default is no watch,
     because a wall-wide number is wrong for most cards, and the coordinator's brief is where
@@ -3637,6 +3646,40 @@ not re-opened by accident.
     and was woken. The longer wait needs one claim rule, **a re-read belongs to the latest
     event on that tree before the paying request**, or two writes hours apart would both
     count the same resume. `tools/probe-invalidate.ts` is the measurement and stays runnable.
+
+20. **A dollar threshold a card sets on itself is priced in Rust, and nothing else is.**
+    `usage.rs`'s rule — the front end turns tokens into dollars, and Rust prices nothing —
+    stays true of every fact and every page, and it was narrowed for one tool rather than
+    repealed. `spend_watch watch usd 10 session` is enforced during the ingest, inside the Rust
+    process (§11.13, item 5), so the comparison has to exist where the enforcement does: an
+    agent that asked to be warned in dollars cannot be answered in tokens, and a breach
+    deferred to a front end nobody has open is a watch that fires never. The alternative was
+    to drop the `usd` measure, which would have made the feature's own example impossible.
+
+    What holds the exception to one table is not a test over two literals. The price table,
+    its three cache multipliers, the peak windows and the family guesses moved out of
+    `usage.ts` into `pricing.json` beside it, and `spend.rs` reads the same file through
+    `include_str!`. Data cannot drift from itself. The judgement that is still two
+    implementations — `rateFor`'s three rungs, `rateAt`'s clock rule, and the five-term sum —
+    is executed against the front end by `tools/lift-spend.ts`: every model at an instant
+    inside DeepSeek's peak, outside it and on a Saturday, all 168 hours of a week through the
+    peak clock, and the ids that tell the three rungs apart. **The clock rule is part of the
+    table rather than of either implementation** for exactly this reason; a mirror that
+    skipped it would price every DeepSeek card at double all night, and on this wall that is
+    every card that is not a Claude one. An id matching no rung is `unpriced` and said out
+    loud rather than priced at zero, in both halves.
+
+    **It also records the four verbs being split across two tools.** §11.13 first said one
+    tool; plan mode changed the shape, because `readOnlyHint` is a promise Claude Code acts on
+    and `watch` writes a row. The reading stays `spend`, the setting is `spend_watch`, and
+    `ask.rs`'s two-direction test is what stops the next verb being added to the wrong side.
+
+    The same entry records the one reading that answers `null`: `share_of_window` needs
+    both halves of an allowance window (§5.2), and this build keeps no allowance samples at
+    all (`allowance_fact` is §3.3 and has no rung), so there is no delta to share. The answer
+    says why and `spend.rs::share_of_window` is the single function the allowance lane fills
+    in; a share guessed from a card's own dollars would be a different number wearing the
+    same name.
 
 ### 20.1 One left: how live is another machine
 

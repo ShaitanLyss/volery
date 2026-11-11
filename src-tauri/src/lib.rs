@@ -76,6 +76,7 @@ mod later;
 mod lend;
 mod nvim;
 mod limits;
+mod spend;
 mod load;
 mod machine;
 mod screen;
@@ -1178,6 +1179,8 @@ pub fn run() {
             store::overlap_pairs,
             limits::read_limits,
             limits::release_limits,
+            spend::spend_watches,
+            spend::spend_unwatch,
             azdo::azdo_runs,
             azdo::azdo_reviews,
             azdo::release_azdo,

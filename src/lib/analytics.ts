@@ -31,7 +31,17 @@
  * measure asked of the wrong family reads as empty rather than as a wrong zero.
  */
 
-import { HOUR, MINUTE, count, money, rateAt, type Rate } from "./usage";
+import {
+  CACHE_READ,
+  HOUR,
+  MINUTE,
+  WRITE_1H,
+  WRITE_5M,
+  count,
+  money,
+  rateAt,
+  type Rate,
+} from "./usage";
 import { pct } from "./limits";
 
 export { money, pct };
@@ -594,13 +604,11 @@ export type ModelRate = Rate & {
  *  caller with it passes it in here rather than this module reading the DB. */
 export type RateResolver = (model: string, at: number) => ModelRate | null;
 
-/* The same multipliers `usage.ts::priceOf` applies. They are repeated rather
- * than imported because `priceOf` takes the two cache-write TTLs as one
- * `cacheWrite`, and a fact carries them apart. `test/analytics.test.ts` holds
- * the cache-read multiplier against `priceOf` so the two cannot quietly drift. */
-const CACHE_READ = 0.1;
-const WRITE_5M = 1.25;
-const WRITE_1H = 2;
+/* The same multipliers `usage.ts::priceOf` applies, imported rather than
+ * repeated. They were three constants here because `priceOf` takes the two
+ * cache-write TTLs as one `cacheWrite` and a fact carries them apart; the
+ * repetition is what `pricing.json` exists to end, and this file reads the one
+ * table beside the module that owns it. */
 
 /** A funding sentinel is not an account: `@deepseek` and `@credits` are money
  *  from somewhere else, and they never touch the subscription's denominator

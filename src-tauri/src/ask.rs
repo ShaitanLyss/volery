@@ -1882,6 +1882,15 @@ fn always(mut schema: Value) -> Value {
 /// verdict (`load.rs`). A planning card is exactly the card that should be able
 /// to ask whether the machine is saturated before it plans a fan-out of checks.
 ///
+/// **`spend` writes analytics facts, and that is the third shape.** `read`
+/// catches up this card's own transcript tail before answering (§11.13), which
+/// writes `usage_fact` rows — and the write is bookkeeping about the reading,
+/// driven by facts already on this card's disk rather than by the caller's
+/// intent, which is `board`'s argument one table over. What it must not do is
+/// act on the person: the breach pass that can write a notice lives on the
+/// ingest, and `watch` — the verb that sets a threshold — is on `spend_watch`,
+/// which carries no annotation at all.
+///
 /// **`walls`, and `recall` with `host`, reach another machine and still pass.**
 /// `walls` reads this wall's own copy of the roster and snapshots and asks
 /// nothing of anybody. A remote `recall` is a request on the wire, and what it
@@ -2193,6 +2202,32 @@ pub(crate) fn roster() -> Vec<Value> {
             "which claude accounts or subscriptions are on this wall, list account \
              labels, which account am I on, which one has room, pick an account \
              for a new card, priority tiers, is another account usable",
+        ),
+        /* Deferred, and it is the newest of the family `servers` argued for:
+           the tool is a free read whose *answer* names its siblings, and the
+           loaded tier is at its ceiling. `allowance` is the one already in
+           front of every card, and its answer names `mcp__skein__spend` in
+           full beside the account's figures — a tool result, free per turn —
+           so the card that has just read what it can afford is told where its
+           own spend is. The hint carries the question, because a card reaching
+           here is holding "am I over budget", not the verb `read`. */
+        found_by(
+            reads_only(crate::spend::schema()),
+            "how much have I spent, what has this cost me, am I over budget, my own token \
+             usage, what did this turn cost, my subagents' cost, how much of the window is \
+             mine, what watches have I set",
+        ),
+        /* The write half of the same feature, and **not read-only**: it writes a
+           row and, on breach, a notice in the user's queue, so a planning card
+           may not call it (`a_planning_card_may_read_and_may_not_write` asserts
+           both directions). Deferred with its own hint because a card reaching
+           for it is holding the sentence it was given — "warn me when I pass
+           ten dollars" — not the word `watch`. */
+        found_by(
+            crate::spend::watch_schema(),
+            "warn me when I pass $10, set a budget on myself, alert me when this session \
+             costs too much, stop me overspending, a threshold on my own spend, remove or \
+             change the warning I set on myself",
         ),
         /* Deferred: `allowance`'s answer ends with this card's context size and
            names this tool in full beside it — `servers`' argument for its two
@@ -3844,6 +3879,12 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 crate::chronicle::handle(&app, &conversation_id, &tool, &args)
                             })
                             .or_else(|| crate::limits::handle(&app, &conversation_id, &tool, &args))
+                            /* This card's own spend, and the watch it can set on
+                               itself (§11.13). Beside `allowance` because the two
+                               answer the same question at two scopes, and a card
+                               that reached one and not the other would read the
+                               account's figures as its own. */
+                            .or_else(|| crate::spend::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::compact::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::renew::handle(&app, &conversation_id, &tool, &args))
                             /* A census of the process table, so not free in
@@ -4462,10 +4503,12 @@ mod tests {
     #[test]
     fn a_planning_card_may_read_and_may_not_write() {
         /* No tool here changes this wall *because it was called*. `board` and
-           `sink` do sweep expired rows on the read path, and `ask_user` spends
-           the user's attention; both are argued at `reads_only`, and the rule
-           for the next one is stated there. */
-        const READS: [&str; 22] = [
+           `sink` do sweep expired rows on the read path, `spend` catches up its
+           own transcript tail, and `ask_user` spends the user's attention; all
+           are argued at `reads_only`, and the rule for the next one is stated
+           there. A tool that writes on its caller's behalf is not on this list
+           at all — `spend_watch` is the newest of those. */
+        const READS: [&str; 23] = [
             "ask_user",
             "load",
             "board",
@@ -4473,6 +4516,11 @@ mod tests {
             "sink_read",
             "list",
             "allowance",
+            /* The card's own spend — the reading, not the watch. A planning
+               card working out what it can afford is exactly who this is for,
+               and the verbs that write are on `spend_watch`, which carries no
+               annotation (`spend.rs`). */
+            "spend",
             "accounts",
             "servers",
             "chronicle",

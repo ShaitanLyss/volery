@@ -326,6 +326,11 @@ windows = { version = "0.61", features = [
     "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
+    # The local calendar a spend watch is measured on: `GetLocalTime`'s date is
+    # the wall's day, and `TzSpecificLocalTimeToSystemTime` is what turns its
+    # midnight into an instant without doing offset arithmetic that is wrong
+    # twice a year. `spend.rs` has the argument.
+    "Win32_System_Time",
     "Win32_System_Threading",
     # What a wall that died of an exception was holding when it went: the
     # observer reads the peak working set off the process object, which outlives

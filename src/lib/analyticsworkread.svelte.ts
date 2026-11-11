@@ -20,6 +20,7 @@ import {
   type InvalidateRow,
   type WorkBundle,
 } from "./analyticswork";
+import { asWatch, type SpendWatch } from "./spend";
 
 export async function readWorkWindow(from: number, to: number): Promise<WorkBundle> {
   const [rows, series, invalidations] = await Promise.all([
@@ -53,4 +54,23 @@ export async function readWorkWindow(from: number, to: number): Promise<WorkBund
     overlapsUnread,
     invalidationsUnread,
   };
+}
+
+/** The watches one card set on itself, for the block beside its per-card spend.
+ *
+ * Deliberately its own command and its own call rather than part of the work
+ * window: a watch is one card's row, it changes when the card or its person
+ * changes it rather than when the span does, and reading it must not re-read a
+ * week of facts. */
+export async function readWatches(card: string): Promise<SpendWatch[]> {
+  const raw = await invoke<unknown>("spend_watches", { conversationId: card });
+  return Array.isArray(raw)
+    ? raw.map(asWatch).filter((w): w is SpendWatch => w !== null)
+    : [];
+}
+
+/** Take one down from the page. The command refuses an id that is not this
+ *  card's, so the page cannot delete another card's watch. */
+export async function dropWatch(card: string, id: number): Promise<boolean> {
+  return invoke<boolean>("spend_unwatch", { conversationId: card, id });
 }
