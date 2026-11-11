@@ -15,6 +15,10 @@ export default defineConfig({
        Windows has locked for execution is an EBUSY that takes the whole dev
        server down, and with it every wall loading from this port. Nothing in a
        scratch directory is ever source. */
-    watch: { ignored: ["**/src-tauri/**", "**/.scratch*/**"] },
+    /* The Android build writes `.so` files into `phone-app/.../build`, and a
+       file the build is linking is locked. Watching it throws EBUSY and takes
+       the whole dev server down, which is the same failure the scratch
+       directories already caused. Nothing there is source. */
+    watch: { ignored: ["**/src-tauri/**", "**/.scratch*/**", "**/phone-app/**/build/**"] },
   },
 });
