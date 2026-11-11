@@ -589,7 +589,13 @@ fn scan_with(
                 None => {
                     if let Some(sink) = reading.as_deref_mut() {
                         sink.other(&text);
-                        sink.prompt(&text);
+                        /* The byte offset of this line's *start*, which is what
+                           a locator records: `off` has already counted this
+                           line and its newline, so it gives both back. A line
+                           a vault refuses to seal is found again from here
+                           without reading the whole file. */
+                        let start = off - 1 - line.len() as u64;
+                        sink.prompt(&path, start, &text);
                     }
                 }
             }

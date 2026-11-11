@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 64;
+const SCHEMA_VERSION: i64 = 65;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -444,6 +444,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (62, migrate_v62),
     (63, migrate_v63),
     (64, migrate_v64),
+    (65, migrate_v65),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3580,17 +3581,16 @@ fn migrate_v63(conn: &Connection) -> Result<(), String> {
 /// The prompt facts: the form of what was asked, and where a body that was not
 /// sealed can be found again (`docs/ANALYTICS.md` §17, §3.8).
 ///
-/// **`prompt_fact` has no body column in this lane and every row says
-/// `body_state = 'none'`.** The body is phase 5b, behind the vault, and the
-/// column is created now because the table is the archive serializer's row and
-/// reshaping it later would mean migrating a table that carries a sealed blob.
-/// Nothing here writes one, and the ingest drops the text after the redactor
-/// has counted what it would have taken.
+/// **The body columns are created here and filled by phase 5b.** v64 landed
+/// them before there was a key to seal with, so `body_state` had one value,
+/// `none`. Since v65 the ingest writes `sealed` under an open vault, `locked`
+/// plus a locator when there is no key, `withheld` where the redactor refused
+/// the text, and `deleted` for a body a forget removed. `none` remains the
+/// state of everything recorded before there was a vault at all.
 ///
-/// **`prompt_locator` exists and is empty.** It is a table of its own rather
-/// than two columns on the fact for the reason §3.8 gives: `prompt_fact` is what
-/// a peer receives, and a local path a serializer never reads is a path it
-/// cannot carry. Creating it now costs nothing and settles where it goes.
+/// **`prompt_locator` is a table of its own** rather than two columns on the
+/// fact for the reason §3.8 gives: `prompt_fact` is what a peer receives, and a
+/// local path a serializer never reads is a path it cannot carry.
 ///
 /// **The vault tables are deliberately not here.** `prompt_vault`,
 /// `prompt_grant`, `prompt_favourite`, `prompt_tombstone` and
@@ -3679,6 +3679,93 @@ fn migrate_v64(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v64: {e}"))
+}
+
+/// The prompt vault (§3.8, §17; phase 5b).
+///
+/// Five tables and no ALTER, because `prompt_fact` already carries everything a
+/// body needs — v64 gave it `vault_id`, `body_state`, `body_truncated` and
+/// `body_sealed` before there was anything to put in them.
+///
+/// - **`prompt_vault` is keyed by `vault_id`, never a single row.** Two walls may
+///   each have made one before they met, and a record that arrives and is
+///   already held is never overwritten: discarding a data key makes its bodies
+///   unreadable for ever.
+/// - **`prompt_tombstone` is an outbox**, not a message. A peer that was offline
+///   during a forget applies it on its return; `acked` names the peers that
+///   have.
+/// - **`prompt_favourite`** is a title, tags and a *sealed* note, so a favourite
+///   outlives every prune and the hall needs no second copy of the body.
+/// - **`prompt_day_digest`** is the archive's completeness check, the same
+///   bargain `usage_day_digest` strikes one table over: a count and a digest make
+///   a truncated day visible instead of stored as whole.
+///
+/// The grants and the day digests are written by the flyway archive in phase 8;
+/// the tables land here so that phase adds no rung of its own.
+fn migrate_v65(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompt_vault (
+            vault_id    TEXT PRIMARY KEY,
+            salt        BLOB NOT NULL,
+            nonce       BLOB NOT NULL,
+            wrapped_key BLOB NOT NULL,
+            kdf         TEXT NOT NULL,
+            created_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_tombstone (
+            owner_host TEXT NOT NULL,
+            prompt_id  TEXT NOT NULL,
+            at         INTEGER NOT NULL,
+            reason     TEXT NOT NULL DEFAULT '',
+            acked      TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (owner_host, prompt_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_grant (
+            host      TEXT PRIMARY KEY,
+            allowed   INTEGER NOT NULL DEFAULT 0,
+            since     INTEGER NOT NULL,
+            last_read INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_favourite (
+            host        TEXT NOT NULL,
+            prompt_id   TEXT NOT NULL,
+            vault_id    TEXT NOT NULL DEFAULT '',
+            title       TEXT NOT NULL DEFAULT '',
+            note_sealed BLOB,
+            tags        TEXT NOT NULL DEFAULT '[]',
+            created_at  INTEGER NOT NULL,
+            PRIMARY KEY (host, prompt_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS prompt_day_digest (
+            host   TEXT NOT NULL,
+            day    TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            rows   INTEGER NOT NULL,
+            bytes  INTEGER NOT NULL,
+            PRIMARY KEY (host, day)
+        );
+
+        -- **When this wall last forgot or reset**, one row, so an ingest that
+        -- was already walking when the gesture ran cannot write the bodies it
+        -- sealed a moment earlier back into the table. The Ingest seals during
+        -- the walk and writes afterwards; without this stamp the two overlap
+        -- into "delete every body" leaving bodies behind. A prompt said before
+        -- the stamp is written `locked` with a locator rather than `sealed`, so
+        -- nothing is lost that the gesture did not already discard.
+        CREATE TABLE IF NOT EXISTS prompt_forget (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS prompt_fact_by_state ON prompt_fact(body_state);
+        "#,
+    )
+    .map_err(|e| format!("migrate v65: {e}"))
 }
 
 /* ── saved views ───────────────────────────────────────────────────────────*/

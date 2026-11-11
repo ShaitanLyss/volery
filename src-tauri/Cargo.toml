@@ -124,6 +124,18 @@ rustls-native-certs = "0.7"
 # which is a Linux-only path, and nothing here wants an alloc-free build. Kept narrow so
 # that what this depends on is legible rather than inherited.
 ring = { version = "0.17", default-features = false }
+# The prompt vault's key derivation (`docs/ANALYTICS.md` §3.8, `promptvault.rs`).
+# Only `Argon2::hash_password_into` is used, so the `password-hash` and
+# `getrandom` halves of the default set are switched off: they would pull a PHC
+# string parser and a second RNG into a build whose salt comes from `ring`. What
+# stays on is `alloc`, which `hash_password_into` needs for the 64 MiB it fills,
+# and `zeroize`, which is what makes that memory go back as zeroes instead of as
+# a passphrase-shaped residue in a freed page.
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+# And the derived key and the data key, dropped by `Drop` rather than by luck.
+# Already in the graph through the flyway's crypto; direct because `Zeroizing`
+# is what this module's memory discipline is written in.
+zeroize = "1.9"
 rmpv = "1"
 # Being the player rather than driving one — see `.claude/rules/spotify.md`,
 # which carries the whole argument including the terms-of-service position.

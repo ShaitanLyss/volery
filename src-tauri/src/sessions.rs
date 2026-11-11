@@ -335,7 +335,7 @@ const WALL: [(&str, Why); 8] = [
 /// The longest `user` record worth parsing. A tool result is a `user` record
 /// too, and the big ones are megabytes; nothing worth naming a conversation
 /// after is this long, and this is the one unbounded parse in the walk.
-const MAX_PROMPT_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_PROMPT_BYTES: usize = 256 * 1024;
 
 /// The heal's mark, which is **appended** and so cannot be an opening test.
 ///

@@ -120,11 +120,11 @@ struct FileMark {
 /// One prompt, as the walk sees it: its form, its kind, and nothing it said.
 ///
 /// **The text does not reach this struct.** `Reading::prompt` classifies and
-/// redacts while the line is still the only copy, then drops it, so no prompt
-/// body is ever held past the statement that read it and the write path has
-/// never had one. What crosses to the write is four numbers, a kind and a name.
-/// The body itself is phase 5b's, behind the vault, and this lane records the
-/// form and the count of what a redaction would have taken.
+/// redacts while the line is still the only copy, seals what may be kept, and
+/// drops the string, so no prompt body is ever held past the statement that read
+/// it. What crosses to the write is the form, its counts, and a
+/// `crate::promptvault::Body` — ciphertext, or a note of where the text can be
+/// found again.
 #[derive(Clone)]
 pub(crate) struct Prompt {
     pub(crate) id: String,
@@ -139,6 +139,9 @@ pub(crate) struct Prompt {
     pub(crate) form: Form,
     pub(crate) redactions: usize,
     pub(crate) withheld: bool,
+    /// What phase 5b decided about this prompt's words: sealed under the active
+    /// vault, withheld, or locked with a locator pointing at the line.
+    pub(crate) body: crate::promptvault::Body,
 }
 
 /// One pass's worth of readings, filled by the walk and written afterwards.
@@ -185,6 +188,15 @@ pub(crate) struct Batch {
 pub(crate) struct Reading {
     marks: HashMap<PathBuf, Mark>,
     cutoff: i64,
+    /// The host this wall is, which is part of a body's associated data. Empty
+    /// in the suites that build a `Reading` by hand and care only about the
+    /// fold, which is why it is a field rather than a parameter threaded
+    /// through every test.
+    host: String,
+    /// The prompt vault, when this process has one. Absent means every body is
+    /// ingested `locked` with a locator, which is exactly what a wall with no
+    /// vault gets anyway.
+    vault: Option<crate::promptvault::PromptVault>,
     batch: Batch,
 }
 
@@ -193,8 +205,25 @@ impl Reading {
         Reading {
             marks,
             cutoff,
+            host: String::new(),
+            vault: None,
             batch: Batch::default(),
         }
+    }
+
+    /// The vault this pass seals under, and the host a body's binding names.
+    ///
+    /// Set by `pass` and by nothing else: the walk is the only caller that has
+    /// both, and a suite that leaves it off gets the locked path, which is the
+    /// honest default for a walk that has no key.
+    pub(crate) fn with_vault(
+        mut self,
+        host: &str,
+        vault: crate::promptvault::PromptVault,
+    ) -> Self {
+        self.host = host.to_string();
+        self.vault = Some(vault);
+        self
     }
 
     pub(crate) fn into_batch(self) -> Batch {
@@ -303,10 +332,14 @@ impl Reading {
     /// as human prompts.
     ///
     /// **The text dies here.** The form and the kind are read off it, the
-    /// redactor counts what it would take, and the string is dropped before the
-    /// batch is touched. Nothing downstream can log a body because nothing
-    /// downstream has one.
-    pub(crate) fn prompt(&mut self, line: &str) {
+    /// redactor counts what it would take and supplies the redacted text the
+    /// vault seals, and the string is dropped before the batch is touched.
+    /// Nothing downstream can log a body because nothing downstream has one.
+    ///
+    /// `path` and `off` are where this line starts in its transcript, which is
+    /// what a locator records when the vault is locked: the seam that lets
+    /// `seal pending` find the words later without a second walk of every file.
+    pub(crate) fn prompt(&mut self, path: &Path, off: u64, line: &str) {
         let Folded::Prompt {
             text,
             images,
@@ -354,6 +387,20 @@ impl Reading {
            verdict. A row that says `redactions = 0` without this line having run
            would be a row claiming a prompt was clean. */
         let redacted = redact::redact(&text);
+        /* Sealed here, while the redacted text is the only copy and the raw one
+           is already out of scope. `decide` is the only thing that may see it,
+           and what it hands back is either ciphertext or the place the text
+           still lives. */
+        let body = crate::promptvault::decide(
+            self.vault.as_ref(),
+            &self.host,
+            session,
+            id,
+            at,
+            &redacted,
+            &path.to_string_lossy(),
+            off,
+        );
         self.batch.prompts.push(Prompt {
             id: id.to_string(),
             at,
@@ -367,6 +414,7 @@ impl Reading {
             form,
             redactions: redacted.redactions,
             withheld: redacted.withheld,
+            body,
         });
     }
 
@@ -1248,10 +1296,13 @@ impl PromptSums {
 ///   *different* stamp, so the bump is guarded on `at <> ?`. A repeat with the
 ///   same stamp as the first is indistinguishable from a re-read and is not
 ///   counted, which is the direction that cannot inflate the number.
-/// - **Nothing here has a body.** `Prompt` carries the form, the kind and the
-///   redaction counts; the text was dropped in `Reading::prompt`. Every row this
-///   writes says `body_state = 'none'` and writes no blob, and a test asserts
-///   that rather than leaving it to a reader's memory.
+/// - **A body is written only where the vault sealed one.** `Prompt` carries a
+///   [`crate::promptvault::Body`]: ciphertext for a wall with an unlocked vault,
+///   `withheld` where the redactor refused to keep anything, and otherwise
+///   `locked` plus one `prompt_locator` row pointing at the transcript line.
+///   The locator is a table of its own on purpose — `prompt_fact` is what the
+///   archive serializer writes, and a path a serializer never sees is a path it
+///   cannot carry (§3.8).
 fn write_prompts(
     conn: &mut Connection,
     host: &str,
@@ -1343,9 +1394,38 @@ fn write_prompts(
                     account, provider, vault_id, kind, kind_override, chars, words, lines,
                     fences, code_lines, images, questions, redactions, withheld,
                     body_state, body_truncated, body_sealed)
-                 VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8,?9,?10,'',?11,NULL,?12,?13,?14,?15,?16,?17,?18,?19,?20,'none',0,NULL)",
+                 VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
             )
             .map_err(|e| format!("analytics: prompt fact: {e}"))?;
+        /* One locator per locked body, and it is `OR REPLACE` because a file
+           replaced under a re-read can offer the same prompt twice inside one
+           pass, where the fact check above cannot see the first write yet. */
+        let mut locate = tx
+            .prepare(
+                "INSERT OR REPLACE INTO prompt_locator (host, prompt_id, path, off)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|e| format!("analytics: prompt locator: {e}"))?;
+        /* **The two facts that can make a body unstorable, asked inside the
+           transaction that is about to store it.**
+           A walk seals a body as it reads the line and writes it a minute later,
+           so a `forget prompts` or a `reset vault` in between is a gesture that
+           catches nothing: the delete commits, then the seal lands behind it.
+           The stamp is what the gesture leaves, and a prompt said at or before
+           it goes in `locked` with a locator rather than `sealed`. The vault
+           record is the reset half: a body naming a vault row that has been
+           deleted can never be opened by anything, and `locked` is recoverable
+           where a dead blob is not. */
+        let forgotten: i64 = tx
+            .query_row(
+                "SELECT COALESCE((SELECT at FROM prompt_forget WHERE id = 1), 0)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("analytics: prompt forget stamp: {e}"))?;
+        let mut vault_known = tx
+            .prepare("SELECT 1 FROM prompt_vault WHERE vault_id = ?1")
+            .map_err(|e| format!("analytics: prompt vault: {e}"))?;
 
         for (p, card, project, source, account, provider) in &resolved {
             let seen = known
@@ -1364,6 +1444,40 @@ fn write_prompts(
                 continue;
             }
             let hour = hour_of(p.at);
+            /* The state this row is written in, which is the ingest's decision
+               unless a gesture said otherwise since. **The stamp is compared
+               against when this body was captured**, on this machine's clock,
+               not against the prompt's own `at` — that is the transcript's
+               writer's clock and a session copied from a machine that ran fast
+               would otherwise slip past a forget. */
+            let mut state = p.body.state;
+            let mut vault_id = p.body.vault_id.as_str();
+            let mut sealed = p.body.sealed.as_deref();
+            let mut truncated = p.body.truncated;
+            if matches!(state, "sealed" | "locked") && p.body.captured_at <= forgotten {
+                /* The gesture happened after this body was captured, so the
+                   gesture wins: the form is kept, the body is not, and there is
+                   no locator, because a locator is exactly what `seal pending`
+                   would use to put it back. `deleted` says the archive does not
+                   hold it, which is true and deliberate. */
+                state = "deleted";
+                vault_id = "";
+                sealed = None;
+                truncated = false;
+            } else if state == "sealed" {
+                /* A body whose vault record is gone can never be opened by
+                   anything. `locked` is recoverable under a new vault; a dead
+                   blob is not. */
+                let store_has_vault = vault_known
+                    .exists(params![vault_id])
+                    .map_err(|e| format!("analytics: prompt vault: {e}"))?;
+                if !store_has_vault {
+                    state = "locked";
+                    vault_id = "";
+                    sealed = None;
+                    truncated = false;
+                }
+            }
             insert
                 .execute(params![
                     host,
@@ -1376,6 +1490,7 @@ fn write_prompts(
                     source,
                     account,
                     provider,
+                    vault_id,
                     p.kind,
                     p.form.chars as i64,
                     p.form.words as i64,
@@ -1386,8 +1501,18 @@ fn write_prompts(
                     p.form.questions as i64,
                     p.redactions as i64,
                     i64::from(p.withheld),
+                    state,
+                    i64::from(truncated),
+                    sealed,
                 ])
                 .map_err(|e| format!("analytics: prompt fact: {e}"))?;
+            if state == "locked" {
+                if let Some((path, off)) = &p.body.locator {
+                    locate
+                        .execute(params![host, p.id, path, *off as i64])
+                        .map_err(|e| format!("analytics: prompt locator: {e}"))?;
+                }
+            }
             counts.prompts += 1;
             hours
                 .entry(PromptHourKey {
@@ -2045,7 +2170,12 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
         read_marks(&conn)?
     };
-    let mut reading = Reading::new(marks, now - FINE_KEEP_MS);
+    /* The vault is a handle to memory, not a lock on the store: a pass that is
+       reading a thousand lines asks it for the key once per prompt, and the
+       answer is `None` the moment it locks or expires, which is the ingest
+       falling back to a locator rather than a pass failing. */
+    let mut reading = Reading::new(marks, now - FINE_KEEP_MS)
+        .with_vault(&host, app.state::<crate::promptvault::PromptVault>().inner().clone());
 
     let scan = crate::usage::scan_with_sink(app, &app.state::<crate::usage::Usage>(), &mut reading)?;
     let batch = reading.into_batch();
@@ -2464,8 +2594,10 @@ pub struct PromptRow {
     pub questions: i64,
     pub redactions: i64,
     pub withheld: i64,
-    /// `none` for every row this lane writes. `locked`, `sealed`, `withheld`
-    /// and `deleted` are states phase 5b and the vault put a row into.
+    /// `sealed` under an open vault, `locked` when there was no key (the text is
+    /// still in its transcript), `withheld` where the redactor refused it,
+    /// `deleted` where a forget removed it, and `none` for a row recorded
+    /// before phase 5b existed.
     pub body_state: String,
     pub body_truncated: i64,
 }
@@ -3657,10 +3789,30 @@ mod tests {
         )
     }
 
+    /// A batch built the way the walk builds one, against a transcript path
+    /// that does not exist. That is deliberate: with no vault every body is
+    /// `locked` and what this writes is a locator, and a locator may point at a
+    /// file that has since gone — the shape §3.8 says must keep its form.
     fn prompt_batch(lines: &[String], cutoff: i64) -> Batch {
         let mut reading = Reading::new(HashMap::new(), cutoff);
+        let path = std::path::PathBuf::from("C:\\t\\s.jsonl");
+        let mut off = 0u64;
         for line in lines {
-            reading.prompt(line);
+            reading.prompt(&path, off, line);
+            off += line.len() as u64 + 1;
+        }
+        reading.into_batch()
+    }
+
+    /// The same batch, with a vault that is open, so the ingest seals.
+    fn prompt_batch_sealed(lines: &[String], vault: &crate::promptvault::PromptVault) -> Batch {
+        let mut reading =
+            Reading::new(HashMap::new(), 0).with_vault("home", vault.clone());
+        let path = std::path::PathBuf::from("C:\\t\\s.jsonl");
+        let mut off = 0u64;
+        for line in lines {
+            reading.prompt(&path, off, line);
+            off += line.len() as u64 + 1;
         }
         reading.into_batch()
     }
@@ -3699,15 +3851,16 @@ mod tests {
         out
     }
 
-    /// **The hard rule of this lane.** The form and the counts are kept, the
-    /// body is not, and the redaction count is what says a secret was in there.
+    /// **The hard rule of this lane, on a wall with no key.** The form and the
+    /// counts are kept, no body is written, and the line is remembered by a
+    /// locator so it can be sealed once there is a vault.
     ///
     /// The prompt below carries a fake key on purpose: the assertion is not
-    /// only that the text is absent (the ingest drops every text), but that the
-    /// redactor *ran* and said so, because a row claiming `redactions = 0` is a
-    /// row claiming a prompt was clean.
+    /// only that the text is absent, but that the redactor *ran* and said so,
+    /// because a row claiming `redactions = 0` is a row claiming a prompt was
+    /// clean.
     #[test]
-    fn a_prompt_row_carries_counts_and_no_body() {
+    fn a_locked_prompt_row_carries_its_counts_and_a_locator() {
         let now = 1_786_601_268_000;
         let said = "the deploy key is sk-live-9fK2mQ7tR4vX1zL8nB6wY3pA and it is wrong";
         let conns = Mutex::new(db());
@@ -3735,11 +3888,20 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
-        assert_eq!(state, "none");
-        assert!(sealed.is_none(), "a body reached the row in a lane that keeps none");
+        assert_eq!(state, "locked", "a wall with no key wrote something else");
+        assert!(sealed.is_none(), "a body reached a row that had no key to seal it");
         assert_eq!(truncated, 0);
         assert_eq!(redactions, 1, "the redactor did not run, or did not count");
         assert_eq!(words, 9, "the words were counted off the raw text");
+        let (path, off): (String, i64) = conn
+            .query_row(
+                "SELECT path, off FROM prompt_locator WHERE prompt_id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "C:\\t\\s.jsonl");
+        assert_eq!(off, 0);
 
         /* And the sentence itself is in no table at all. */
         let everything = every_value(&conn);
@@ -3751,6 +3913,147 @@ mod tests {
             !everything.contains("9fK2mQ7tR4vX1zL8nB6wY3pA"),
             "the secret reached the store"
         );
+    }
+
+    /// **The same row with a key in hand**: the redacted body is sealed, the
+    /// row names the vault that sealed it, and there is no locator because
+    /// there is nothing left to find. The words are in no table, and what opens
+    /// is the redacted text rather than the secret.
+    #[test]
+    fn an_unlocked_ingest_seals_the_redacted_body() {
+        let now = 1_786_601_268_000;
+        let said = "the deploy key is sk-live-9fK2mQ7tR4vX1zL8nB6wY3pA and it is wrong";
+        let vault = crate::promptvault::PromptVault::default();
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            crate::promptvault::create(&conn, "correct horse battery".into(), &vault).unwrap();
+        }
+        let counts = write(
+            &conns,
+            "home",
+            &prompt_batch_sealed(&[prompt_line("p1", now, "s1", said)], &vault),
+            now + 1_000,
+        )
+        .unwrap();
+        assert_eq!(counts.prompts, 1);
+
+        let conn = conns.lock().unwrap();
+        let (state, vault_id, blob): (String, String, Vec<u8>) = conn
+            .query_row(
+                "SELECT body_state, vault_id, body_sealed
+                   FROM prompt_fact WHERE prompt_id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "sealed");
+        assert!(!vault_id.is_empty(), "a sealed body names no vault");
+        let locators: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompt_locator", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(locators, 0, "a sealed body wrote a locator");
+
+        let text = vault
+            .open_body(&vault_id, "home", "s1", "p1", now, &blob)
+            .unwrap();
+        assert!(
+            !text.contains("9fK2mQ7tR4vX1zL8nB6wY3pA"),
+            "the secret was sealed alongside the prompt"
+        );
+        assert!(
+            text.contains("deploy key"),
+            "the ordinary words were lost with the secret: {}",
+            &*text
+        );
+        drop(conn);
+
+        let everything = every_value(&conns.lock().unwrap());
+        assert!(
+            !everything.contains("deploy key"),
+            "the prompt's own words reached a table unsealed"
+        );
+    }
+
+    /// **A gesture that lands between the seal and the write wins.**
+    ///
+    /// The walk seals a prompt as it reads the line and writes the batch a
+    /// moment later, so `forget prompts` and `reset vault` can commit in
+    /// between. The row is then written `deleted`: the form is kept, the body is
+    /// not, there is no locator, and the gesture means what it said. `locked`
+    /// would be the wrong answer even though it is recoverable, because a
+    /// locator is exactly what `seal pending` would use to put the body back.
+    #[test]
+    fn a_body_sealed_before_a_forget_is_written_deleted() {
+        let now = 1_786_601_268_000;
+        let vault = crate::promptvault::PromptVault::default();
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            crate::promptvault::create(&conn, "correct horse battery".into(), &vault).unwrap();
+        }
+        /* Sealed while the vault was open: this is the body the race is about. */
+        let batch = prompt_batch_sealed(&[prompt_line("p1", now, "s1", "add a thing")], &vault);
+        let sealed_at_ingest = batch.prompts[0].body.state;
+        assert_eq!(sealed_at_ingest, "sealed", "the fixture did not seal");
+
+        {
+            let conn = conns.lock().unwrap();
+            crate::promptvault::forget(&conn).unwrap();
+        }
+        write(&conns, "home", &batch, now + 1_000).unwrap();
+
+        let conn = conns.lock().unwrap();
+        let (state, blob): (String, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT body_state, body_sealed FROM prompt_fact WHERE prompt_id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "deleted", "a body landed behind the forget");
+        assert!(blob.is_none());
+        let locators: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompt_locator", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(locators, 0, "a locator would let seal pending put the body back");
+        let stamp: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompt_forget", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stamp, 1, "the forget left no stamp for a running pass to read");
+    }
+
+    /// The other half of the window: a reset deletes the vault record, so a body
+    /// sealed a moment earlier names a key nobody has. It is the same stamp, so
+    /// the same answer.
+    #[test]
+    fn a_body_sealed_before_a_reset_is_written_deleted() {
+        let now = 1_786_601_268_000;
+        let vault = crate::promptvault::PromptVault::default();
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            crate::promptvault::create(&conn, "correct horse battery".into(), &vault).unwrap();
+        }
+        let batch = prompt_batch_sealed(&[prompt_line("p1", now, "s1", "add a thing")], &vault);
+        {
+            let conn = conns.lock().unwrap();
+            crate::promptvault::reset(&conn, &vault, true).unwrap();
+        }
+        write(&conns, "home", &batch, now + 1_000).unwrap();
+
+        let conn = conns.lock().unwrap();
+        let (state, vault_id, blob): (String, String, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT body_state, vault_id, body_sealed
+                   FROM prompt_fact WHERE prompt_id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "deleted", "a body landed naming a vault that no longer exists");
+        assert!(vault_id.is_empty());
+        assert!(blob.is_none());
     }
 
     /// §3.8's replay rule: an id seen twice is one row at the **first** stamp,
@@ -4051,7 +4354,7 @@ mod tests {
         let rows = prompt_rows(&conn, at - 1, at + 1).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].prompt_id, "p1");
-        assert_eq!(rows[0].body_state, "none");
+        assert_eq!(rows[0].body_state, "locked");
         assert!(prompt_rows(&conn, at + 1, at + 2).unwrap().is_empty());
     }
 }

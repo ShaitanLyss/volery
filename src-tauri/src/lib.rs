@@ -12,6 +12,11 @@ pub mod analytics;
    their corpora on a machine that cannot link the crate; see
    `.claude/rules/build.md`. */
 pub mod prompt;
+/* The prompt vault: phase 5b's key, the sealed bodies it opens, and the
+   `forget`/`reset` gestures. Its own module rather than part of `analytics`
+   because the crypto and the memory discipline are the design here, and
+   `vault.rs` was already the Windows Credential Manager. */
+mod promptvault;
 pub mod redact;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
@@ -754,6 +759,9 @@ pub fn run() {
         /* The chain marks and the rate limit, and nothing that survives a quit
            — a card holding an inbox holds it in the `relay` table, not here. */
         .manage(Relays::default())
+        /* The prompt vault's in-memory half: empty until a passphrase opens
+           something, and the only place a data key ever lives. */
+        .manage(promptvault::PromptVault::default())
         .manage(Control::default())
         /* Sign-ins in flight. Nothing to release: a session ends when its child
            does, and the reader threads hold an AppHandle rather than a
@@ -1144,6 +1152,15 @@ pub fn run() {
             workflow::workflow_progress,
             usage::read_usage,
             analytics::analytics_pass,
+            promptvault::create_vault,
+            promptvault::unlock_vault,
+            promptvault::lock_vault,
+            promptvault::vault_state,
+            promptvault::seal_pending,
+            promptvault::forget_prompts,
+            promptvault::reset_vault,
+            promptvault::override_prompt_kind,
+            promptvault::prompt_body,
             analytics::analytics_window,
             analytics::analytics_views,
             analytics::analytics_save_view,
@@ -1291,6 +1308,12 @@ pub fn run() {
                    transcripts. The thread is an ordinary one of this process
                    besides, so a crash takes it with the wall. */
                 analytics::stop();
+                /* And the prompt vault's key, which is the one thing here that
+                   is worth something to somebody who is not this process. The
+                   idle watcher would take it in a quarter of an hour anyway;
+                   this is the same drop, now, and `Zeroizing` is what makes it
+                   a write over the bytes rather than a freed page. */
+                app.state::<promptvault::PromptVault>().lock();
                 /* And the shell, which is the one process here a person was
                    driving by hand — so it can be holding anything at all. */
                 app.state::<Shells>().shutdown();
