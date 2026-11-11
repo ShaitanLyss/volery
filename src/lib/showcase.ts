@@ -347,7 +347,39 @@ export const SLEEP_SAID =
   "An idle card puts its process down after three hours, and wakes in five to seven seconds. Inside the hour the prompt cache still answers, so a nap costs no tokens.";
 
 export const USAGE_SAID =
-  "The accounts panel shows each window's reset, what is left and today's spend. The title bar carries the burn rate, and analytics reads token consumption per card, account and project. The design is finalised; implementation is under way.";
+  "The accounts panel shows each window's reset, what is left and today's spend. The title bar carries the burn rate for the account in use. The room at the foot of this chapter is where all of it is read together.";
+
+/** Analytics, at the stage its card says to claim it: the recorder is real and
+ *  running, nothing draws it yet. The picture is that card's design artifact
+ *  and the copy says so, because a mockup shown in an app reads as the app. */
+export const ANALYTICS = {
+  label: "in build · recording now",
+  lede:
+    "The recorder is real. Every Claude Code turn on this machine is written to a usage store with its tokens, cost, model, account and project, per request and rolled up hourly. Nothing draws it yet. This is the room it is being built for.",
+  figure: "the analytics room as designed, opened on the wall with space b d and in chat view as a page of its own.",
+  caveat:
+    "A design artifact, not a screenshot of this build. The charts are not drawn yet, and no number in the picture is a measurement.",
+  points: [
+    {
+      title: "where the money went",
+      line: "spend and tokens over time, split by card, project, model, account and provider, with a card's own page and its cost per settled turn.",
+    },
+    {
+      title: "attribution at the interval",
+      line: "a card that swaps account mid-life is split per interval, and a subagent on another model is its own line rather than folded into its parent.",
+    },
+    {
+      title: "tools as well as tokens",
+      line: "which MCP server is slow, which one fails, and which project it taxes.",
+    },
+    {
+      title: "the allowance as a plan",
+      line: "the weekly windows across accounts, what is left, when each resets, and optional pacing that holds new work back before the wall runs out mid-afternoon.",
+    },
+  ] as readonly { title: string; line: string }[],
+  after:
+    "Across machines over the flyway, so a laptop's spend counts against the same allowance, and one anonymized HTML report a manager can open without Volery. Both are designed, not built.",
+};
 
 /** The coordinator, which is the workflow the knobs above exist to serve. */
 export type Ruling = { verb: "build" | "ask" | "decline" | "fold"; line: string };

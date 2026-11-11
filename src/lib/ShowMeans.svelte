@@ -7,8 +7,10 @@
    * point is not that the knobs exist. It is that the coordinator chooses them
    * per piece, in the same call that writes the briefs.
    */
+  import room from "./assets/analytics-room.png";
   import {
     ADMISSION_SAID,
+    ANALYTICS,
     ASSIGNMENTS,
     ASSIGNMENT_SUMMARY,
     BOOST_SAID,
@@ -118,9 +120,38 @@
       <p>{SLEEP_SAID}</p>
     </div>
     <div class="note">
-      <span class="ntitle">usage and analytics</span>
+      <span class="ntitle">the allowance</span>
       <p>{USAGE_SAID}</p>
     </div>
+  </div>
+
+  <!-- The reading that ties the chapter together, at the stage its card says
+       to claim it: the recorder is real and running, the interface is not. -->
+  <div class="analytics">
+    <div class="ahead">
+      <span class="atitle">analytics</span>
+      <span class="achip">{ANALYTICS.label}</span>
+    </div>
+    <p class="alede">{ANALYTICS.lede}</p>
+    <div class="agrid">
+      <figure class="shot">
+        <img
+          src={room}
+          alt="A design of the analytics room: weekly allowance at 61%, spend today, fleet burn, a week charted against the plan, cost by model, burn by hour, cards against cost, and one card's audit with its changes."
+        />
+        <figcaption>{ANALYTICS.figure}</figcaption>
+      </figure>
+      <div class="apoints">
+        {#each ANALYTICS.points as p (p.title)}
+          <div class="apoint">
+            <span class="apt">{p.title}</span>
+            <span class="apl">{p.line}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+    <p class="acaveat">{ANALYTICS.caveat}</p>
+    <p class="aafter">{ANALYTICS.after}</p>
   </div>
 </div>
 
@@ -371,6 +402,104 @@
     height: 7px;
     border-radius: 2px;
     border: 1px solid var(--paper-faint);
+  }
+  .analytics {
+    display: grid;
+    gap: 9px;
+    padding: 12px 14px 12px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in oklab, var(--edge) 75%, transparent);
+    background: var(--ink);
+  }
+  .ahead {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .atitle {
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--paper);
+  }
+  .achip {
+    font-size: 9.5px;
+    letter-spacing: 0.03em;
+    color: var(--paper-mute);
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--edge);
+    background: var(--raised);
+  }
+  .alede {
+    margin: 0;
+    font: 12px/1.55 var(--body);
+    color: var(--paper-mute);
+    max-width: 88ch;
+  }
+  .agrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .shot {
+    margin: 0;
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
+    border: 1px solid color-mix(in oklab, var(--edge) 80%, transparent);
+  }
+  .shot figcaption {
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: var(--paper-faint);
+  }
+  .apoints {
+    display: grid;
+    gap: 7px;
+  }
+  .apoint {
+    display: grid;
+    gap: 1px;
+    padding: 7px 9px;
+    border-radius: 7px;
+    border: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
+    background: color-mix(in oklab, var(--surface) 55%, transparent);
+  }
+  .apt {
+    font-size: 10.5px;
+    color: var(--paper-dim);
+  }
+  .apl {
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: var(--paper-mute);
+  }
+  .acaveat {
+    margin: 0;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--paper-faint);
+  }
+  .aafter {
+    margin: 0;
+    padding-top: 4px;
+    border-top: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--paper-mute);
+  }
+  @media (max-width: 820px) {
+    .agrid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   .notes {
     display: grid;

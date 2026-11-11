@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 import {
   ADMISSION_SAID,
+  ANALYTICS,
   ASK,
   ASSIGNMENTS,
   ASSIGNMENT_SUMMARY,
@@ -244,6 +245,31 @@ describe("the four beats of the opening", () => {
   });
 });
 
+describe("analytics, at the stage its card allows", () => {
+  test("the label claims the recorder and not the interface", () => {
+    expect(ANALYTICS.label).toBe("in build · recording now");
+    /* The one claim that must never drift: a mockup shown inside the app
+       reads as the app unless the copy says otherwise. */
+    expect(ANALYTICS.caveat).toContain("not a screenshot");
+    expect(ANALYTICS.caveat).toContain("not drawn yet");
+  });
+
+  test("the four things a manager would ask about are there", () => {
+    expect(ANALYTICS.points.length).toBe(4);
+    const text = ANALYTICS.points.map((p) => `${p.title} ${p.line}`).join(" ").toLowerCase();
+    expect(text).toContain("account");
+    expect(text).toContain("provider");
+    expect(text).toContain("mcp");
+    expect(text).toContain("window");
+  });
+
+  test("cross-machine and the report are named as designed, not built", () => {
+    expect(ANALYTICS.after).toContain("flyway");
+    expect(ANALYTICS.after).toContain("report");
+    expect(ANALYTICS.after).toContain("not built");
+  });
+});
+
 describe("the coordinator", () => {
   test("every ruling says what it does, and all four are distinct", () => {
     const verbs = COORDINATE.rulings.map((r) => r.verb);
@@ -372,6 +398,7 @@ describe("the copy is the house's", () => {
       CARD_PROSE_AFTER,
       CARD_RUN,
       ASK,
+      ANALYTICS,
       DESIGN_ASK,
       COORDINATE,
       COMPARE,
