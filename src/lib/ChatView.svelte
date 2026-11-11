@@ -106,6 +106,7 @@
     onpalette,
     onshowwall,
     onread,
+    onanalytics,
     extras,
     band,
   }: {
@@ -154,6 +155,11 @@
     /** A project page's *show it on the wall*. */
     onshowwall: (name: string) => void;
     onread?: (next: number) => void;
+    /** The analytics page (`docs/ANALYTICS.md` §11.8): chat view's default
+     *  presentation of the numbers, opened from the sidebar row, the palette
+     *  and `space n n`. App opens the overlay; this view only says it was
+     *  asked for. */
+    onanalytics?: () => void;
     /** What the window's own title bar carries in either view — the update
      *  offer, the control chip — drawn in this one's. */
     extras?: Snippet;
@@ -516,6 +522,14 @@
   let width = $state(typeof window === "undefined" ? 1280 : window.innerWidth);
   const narrow = $derived(width < 900);
   let drawer = $state(false);
+  /** The numbers, from the sidebar. **The drawer is left standing**: the
+   *  overlay covers it, and §11.15 asks that closing returns the host as it
+   *  was — a drawer shut on the way in is one that cannot be handed back, and
+   *  the row the focus came from is removed with it, so the focus restore on
+   *  close has nowhere to go. App owns the overlay; this view only asks. */
+  function openAnalytics() {
+    onanalytics?.();
+  }
   const needing = $derived(gs.find((g) => g.key === "needs")?.rows.length ?? 0);
   $effect(() => {
     if (!narrow) drawer = false;
@@ -888,6 +902,7 @@
         {piles}
         pileOn={pile?.kind ?? null}
         onpile={(k) => openPile(k)}
+        onanalytics={onanalytics ? openAnalytics : undefined}
         onaccount={providerCard ? undefined : () => (pop = !pop)}
       />
     </div>
@@ -908,6 +923,7 @@
         {piles}
         pileOn={pile?.kind ?? null}
         onpile={(k) => openPile(k)}
+        onanalytics={onanalytics ? openAnalytics : undefined}
         onaccount={providerCard ? undefined : () => (pop = !pop)}
     />
   {/if}

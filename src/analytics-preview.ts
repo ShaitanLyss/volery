@@ -19,9 +19,16 @@ import { windowRequest, type AnalyticsWindow } from "./lib/analyticsroom";
 const asked = new URLSearchParams(location.search);
 const mode: FixtureMode = asked.has("empty") ? "empty" : asked.has("quiet") ? "quiet" : "normal";
 
+/* `?page=1` opens the document presentation, `?room=1` the instrument; without
+   either, the remembered choice for the wall — and `v` swaps them here exactly
+   as it does in the app, which is how the swap is looked at without a wall. */
+const as = asked.has("page") ? "page" : asked.has("room") ? "room" : undefined;
+
 mount(Analytics, {
   target: document.getElementById("app")!,
   props: {
+    as,
+    mode: "wall",
     onclose: () => location.reload(),
     read: async (span: string, now: number): Promise<AnalyticsWindow> =>
       fixtureWindow(windowRequest(span, now), mode),

@@ -1988,6 +1988,88 @@ pub async fn analytics_window(
     .await?
 }
 
+/* ── saved views (§11.6) ─────────────────────────────────────────────────── */
+
+/// One row of the library, as the surface reads it. The spec travels as the
+/// string it is stored as: the front end normalises it (`analytics.ts`'s
+/// `normalizeView`), and Rust has no vocabulary for a measure or a split.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewRow {
+    pub id: String,
+    pub name: String,
+    pub config_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<crate::store::SavedViewRow> for ViewRow {
+    fn from(r: crate::store::SavedViewRow) -> Self {
+        ViewRow {
+            id: r.id,
+            name: r.name,
+            config_json: r.config_json,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+/// The library, newest change first. Off the main thread for `analytics_window`'s
+/// reason: it takes the store's mutex, and a command that blocks holding it on
+/// the dispatching thread stops every card painting.
+#[tauri::command]
+pub async fn analytics_views(app: AppHandle) -> Result<Vec<ViewRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        Ok(crate::store::analytics_views(&conn).into_iter().map(ViewRow::from).collect())
+    })
+    .await?
+}
+
+/// Save the surface's current question under a name. A new id every time: the
+/// menu saves, and saving twice is two views, which is the honest reading of a
+/// gesture that named it twice.
+#[tauri::command]
+pub async fn analytics_save_view(
+    app: AppHandle,
+    name: String,
+    config_json: String,
+) -> Result<ViewRow, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let id = crate::store::uuid_v4();
+        crate::store::save_analytics_view(&conn, &id, &name, &config_json).map(ViewRow::from)
+    })
+    .await?
+}
+
+/// Rename in place. `false` means no view holds that id, which the surface says
+/// rather than drawing a row that is not there.
+#[tauri::command]
+pub async fn analytics_rename_view(app: AppHandle, id: String, name: String) -> Result<bool, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        crate::store::rename_analytics_view(&conn, &id, &name)
+    })
+    .await?
+}
+
+/// Delete one. `false` is "there was nothing to delete", and a second press is
+/// allowed to say that rather than fail.
+#[tauri::command]
+pub async fn analytics_delete_view(app: AppHandle, id: String) -> Result<bool, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        crate::store::delete_analytics_view(&conn, &id)
+    })
+    .await?
+}
+
 /* ── the collector ───────────────────────────────────────────────────────── */
 
 struct Beat {

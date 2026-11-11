@@ -126,6 +126,7 @@
   import Flyway from "./lib/Flyway.svelte";
   import Showcase from "./lib/Showcase.svelte";
   import Analytics from "./lib/Analytics.svelte";
+  import type { Presentation } from "./lib/analyticpage";
   import Icon from "./lib/Icon.svelte";
   import Annals from "./lib/Annals.svelte";
   import Unfinished from "./lib/Unfinished.svelte";
@@ -706,7 +707,8 @@
       else if (verb.what === "accounts") showAccounts = !showAccounts;
       else if (verb.what === "integrations") showKeyring = !showKeyring;
       else if (verb.what === "showcase") showTour = true;
-      else if (verb.what === "analytics") showAnalytics = true;
+      else if (verb.what === "analytics") openAnalytics("room");
+      else if (verb.what === "analyticspage") openAnalytics("page");
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -1831,10 +1833,19 @@
   /* The tour. An overlay with no store behind it, so it costs nothing to
      leave in the tree and works on a wall with no cards. */
   let showTour = $state(false);
-  /* The analytics room (`docs/ANALYTICS.md` §11), `space b d`. An overlay of
-     its own rather than a reading sheet: a KPI row, a chart and an inspector
-     do not fit the 980x680 box a sheet holds. */
+  /* The analytics surface (`docs/ANALYTICS.md` §11), `space b d` for the room
+     and `space n n` for the page. One overlay over either view, because the
+     host mode only picks the *default* presentation and `v` swaps them inside
+     (§11.15). An overlay of its own rather than a reading sheet: a KPI row, a
+     chart and an inspector do not fit the 980x680 box a sheet holds. */
   let showAnalytics = $state(false);
+  /* Which drawing was asked for as it opened. Undefined means "whichever this
+     mode remembers", which is what the sidebar row and a plain open mean. */
+  let analyticsAs = $state<Presentation | undefined>(undefined);
+  function openAnalytics(as?: Presentation) {
+    analyticsAs = as;
+    showAnalytics = true;
+  }
   /* The sink's two gestures, which had no keyboard path at all before — the
      Basin is a widget, so reading the pile meant hanging one on the wall and
      adding to it meant finding that widget first. See `leader.ts`. */
@@ -5944,7 +5955,13 @@
     <Showcase onclose={() => (showTour = false)} />
   {/if}
   {#if showAnalytics}
-    <Analytics onclose={() => (showAnalytics = false)} />
+    <Analytics
+      as={analyticsAs}
+      onclose={() => {
+        showAnalytics = false;
+        analyticsAs = undefined;
+      }}
+    />
   {/if}
   {#if showSink}
     <Sieve
@@ -6194,6 +6211,7 @@
       {actions}
       {ledger}
       onnew={newConversation}
+      onanalytics={() => openAnalytics()}
       onpalette={runEntry}
       onshowwall={(name) => void showOnWall(name)}
       onaccount={() => (showAccounts = true)}

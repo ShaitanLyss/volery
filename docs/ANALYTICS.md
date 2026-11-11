@@ -1997,6 +1997,10 @@ Three surfaces, and they are the same distinction the widget already draws:
   sidebar's `analytics` row, from the palette, and from `space n n` while chat view is in
   front. The sidebar stays; the reading column gets a wider figure plate than `--cv-measure`
   for charts, and returns to the measure for prose.
+  **Built as a full-surface overlay over either host** (§11.15's rule, and phase four's
+  cut): the plate is the page's own 64rem and the prose its 44rem, and a reading column that
+  widened for a figure would have to narrow again for the paragraph under it. The sidebar row
+  is still the door, and closing returns the column's scroll and focus untouched.
 - **The sheet** is the glance, and it waits for the widget kind (phase 6): a `sheet` letter in
   `widgets.ts` and a face in `ReadingSheet.svelte`, over either mode, with the widget's own
   knobs. It is the third and smallest presentation, not the same thing as the room.

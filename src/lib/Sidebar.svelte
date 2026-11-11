@@ -34,6 +34,7 @@
     piles = [],
     pileOn = null,
     onpile,
+    onanalytics,
     onaccount,
   }: {
     groups: Group[];
@@ -61,6 +62,10 @@
     /** Which of them is the page up, if either. */
     pileOn?: "sink" | "board" | null;
     onpile?: (kind: "sink" | "board") => void;
+    /** The analytics page (`docs/ANALYTICS.md` §11.8) — chat view's default
+     *  drawing of the numbers, which is why the row lives here rather than on
+     *  the wall's own chrome. */
+    onanalytics?: () => void;
     onaccount?: () => void;
   } = $props();
 
@@ -369,7 +374,7 @@
 {/snippet}
 
 {#snippet kept()}
-  {#if piles.length && onpile}
+  {#if (piles.length && onpile) || onanalytics}
     <section class="group" aria-label="across the wall">
       <h2>across the wall</h2>
       <ul>
@@ -380,7 +385,7 @@
               class="row folder"
               class:on={pileOn === p.kind}
               aria-current={pileOn === p.kind ? "true" : undefined}
-              onclick={() => onpile(p.kind)}
+              onclick={() => onpile?.(p.kind)}
               title={p.kind === "sink" ? "the sink — what cards noticed and did not stop for" : "the billboard — standing notices about work in progress"}
             >
               <Icon name={p.kind === "sink" ? "list" : "pin"} small />
@@ -389,6 +394,19 @@
             </button>
           </li>
         {/each}
+        {#if onanalytics}
+          <li>
+            <button
+              type="button"
+              class="row folder"
+              onclick={() => onanalytics?.()}
+              title="the numbers: analytics read as a document (space then n n)"
+            >
+              <Icon name="pulse" small />
+              <span class="t">analytics</span>
+            </button>
+          </li>
+        {/if}
       </ul>
     </section>
   {/if}

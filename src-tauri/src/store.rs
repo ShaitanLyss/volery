@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 62;
+const SCHEMA_VERSION: i64 = 63;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -442,6 +442,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (60, migrate_v60),
     (61, migrate_v61),
     (62, migrate_v62),
+    (63, migrate_v63),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3545,6 +3546,149 @@ fn migrate_v62(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v62: {e}"))
+}
+
+/// Saved analytics views (`docs/ANALYTICS.md` §11.6, §17).
+///
+/// **`config_json` is opaque here, deliberately.** Span, measure, split and
+/// filters are the front end's vocabulary, normalised by `analytics.ts` on
+/// every read; Rust stores bytes and has no opinion about them, which is the
+/// `widget.config_json` bargain. What Rust *is* the authority on is the name
+/// and the two clocks, because the library is where a view is renamed and
+/// "which did I touch last" is what its order is read by.
+///
+/// One table and no foreign keys: a view points at nothing, and a widget that
+/// names one is phase six's problem.
+fn migrate_v63(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS analytics_view (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            created_at  INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS analytics_view_by_updated ON analytics_view(updated_at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v63: {e}"))
+}
+
+/* ── saved views ───────────────────────────────────────────────────────────*/
+
+/// A view's name is the library's identity for it, so it is capped here as
+/// well as in the field: 120 characters is `analytics.ts::MAX_NAME`, and the
+/// two must not drift.
+pub const MAX_VIEW_NAME: usize = 120;
+
+/// A spec is a few hundred bytes. This is a guard against a client writing
+/// something unbounded into an opaque column, not a budget any real view meets.
+pub const MAX_VIEW_JSON: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedViewRow {
+    pub id: String,
+    pub name: String,
+    pub config_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Every saved view, newest change first. A read that fails answers an empty
+/// library rather than a fault: the surface is a document, and a wall whose
+/// views cannot be listed should still open.
+pub fn analytics_views(conn: &Connection) -> Vec<SavedViewRow> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, name, config_json, created_at, updated_at
+         FROM analytics_view ORDER BY updated_at DESC, name ASC",
+    ) else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(SavedViewRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            config_json: r.get(2)?,
+            created_at: r.get(3)?,
+            updated_at: r.get(4)?,
+        })
+    });
+    match rows {
+        Ok(it) => it.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Save a spec under a name, and answer the row as stored.
+///
+/// An upsert on the id, so a later cut can save over a view without a second
+/// write path; today every save mints a new id and the conflict arm is what
+/// makes that safe to change.
+pub fn save_analytics_view(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    config_json: &str,
+) -> Result<SavedViewRow, String> {
+    let name = crate::clip::keep(name.trim(), MAX_VIEW_NAME).kept;
+    if name.is_empty() {
+        return Err("a saved view needs a name".into());
+    }
+    /* **Refused, not cut.** A spec cut at the cap is still valid JSON at the
+       front end's `JSON.parse` often enough to be stored as a *different*
+       view, and `normalizeView` then draws it without a word — the one failure
+       `.claude/rules/clipping.md` says must refuse rather than truncate when no
+       marker can put the rest back. No real spec comes near this. */
+    if config_json.chars().count() > MAX_VIEW_JSON {
+        return Err(format!(
+            "that view's spec is {} characters, past the {MAX_VIEW_JSON} a saved view holds",
+            config_json.chars().count()
+        ));
+    }
+    let config_json = crate::clip::keep(config_json, MAX_VIEW_JSON).kept;
+    let at = now();
+    conn.execute(
+        "INSERT INTO analytics_view (id, name, config_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT(id) DO UPDATE SET name = ?2, config_json = ?3, updated_at = ?4",
+        params![id, name, config_json, at],
+    )
+    .map_err(|e| format!("save the view: {e}"))?;
+    Ok(SavedViewRow {
+        id: id.to_string(),
+        name,
+        config_json,
+        created_at: at,
+        updated_at: at,
+    })
+}
+
+/// Rename without touching the spec. `false` when no row holds that id, so the
+/// caller can say the view is gone rather than pretend it renamed something.
+pub fn rename_analytics_view(conn: &Connection, id: &str, name: &str) -> Result<bool, String> {
+    let name = crate::clip::keep(name.trim(), MAX_VIEW_NAME).kept;
+    if name.is_empty() {
+        return Err("a saved view needs a name".into());
+    }
+    let changed = conn
+        .execute(
+            "UPDATE analytics_view SET name = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, name, now()],
+        )
+        .map_err(|e| format!("rename the view: {e}"))?;
+    Ok(changed > 0)
+}
+
+/// Delete one. `false` when there was nothing to delete — the second press of
+/// a delete, or a view another wall's copy already took — and that is an
+/// answer, not a fault.
+pub fn delete_analytics_view(conn: &Connection, id: &str) -> Result<bool, String> {
+    let changed = conn
+        .execute("DELETE FROM analytics_view WHERE id = ?1", params![id])
+        .map_err(|e| format!("delete the view: {e}"))?;
+    Ok(changed > 0)
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -12152,6 +12296,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tables, 10, "a second pass must not drop or duplicate anything");
+    }
+
+    /// §17's five columns and nothing else: the spec is opaque, so a column for
+    /// span or measure would be Rust pretending to a vocabulary it deliberately
+    /// does not have.
+    #[test]
+    fn v63_creates_analytics_view_with_the_five_columns_and_none_of_its_own() {
+        let conn = Connection::open_in_memory().unwrap();
+        for (_, step) in STEPS.iter().take(62) {
+            step(&conn).unwrap();
+        }
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'analytics_view'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 0, "the table must not exist before this rung");
+
+        migrate_v63(&conn).unwrap();
+        migrate_v63(&conn).expect("CREATE IF NOT EXISTS must be safe to re-run");
+
+        let mut stmt = conn.prepare("PRAGMA table_info(analytics_view)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            cols,
+            vec!["id", "name", "config_json", "created_at", "updated_at"],
+            "the five §17 names, in order, and no span or measure beside them"
+        );
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'analytics_view_by_updated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1, "the library is ordered by when it changed");
+    }
+
+    /// The whole of the library's behaviour, against a real table: a save is
+    /// listed, a rename moves the name and the clock without touching the spec,
+    /// a delete removes it, and a write that cannot be a view is refused rather
+    /// than stored nameless.
+    #[test]
+    fn saved_views_list_rename_and_delete_and_refuse_a_nameless_save() {
+        let conn = Connection::open_in_memory().unwrap();
+        for (_, step) in STEPS.iter() {
+            step(&conn).unwrap();
+        }
+
+        let a = save_analytics_view(&conn, "a", "weekly allowance", r#"{"v":1}"#).unwrap();
+        assert_eq!(a.name, "weekly allowance");
+        assert_eq!(a.created_at, a.updated_at);
+        let b = save_analytics_view(&conn, "b", "cost by model", r#"{"v":1,"span":"30d"}"#).unwrap();
+        assert_eq!(b.name, "cost by model");
+
+        let listed = analytics_views(&conn);
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|v| v.id == "a" && v.config_json == r#"{"v":1}"#));
+
+        /* A name is trimmed, and the spec is not: the one is an identity, the
+           other is data this side does not understand. */
+        let trimmed = save_analytics_view(&conn, "c", "  padded  ", r#"{"v":1}"#).unwrap();
+        assert_eq!(trimmed.name, "padded");
+        assert!(save_analytics_view(&conn, "d", "   ", r#"{"v":1}"#).is_err());
+        assert_eq!(analytics_views(&conn).len(), 3, "a refused save writes nothing");
+
+        /* A spec past the cap is refused rather than cut: a truncated one is
+           still parseable often enough to become a different view. */
+        let huge = "x".repeat(MAX_VIEW_JSON + 1);
+        assert!(save_analytics_view(&conn, "e", "huge", &huge).is_err());
+        assert!(!analytics_views(&conn).iter().any(|v| v.id == "e"));
+
+        assert!(rename_analytics_view(&conn, "a", "the week").unwrap());
+        let renamed = analytics_views(&conn)
+            .into_iter()
+            .find(|v| v.id == "a")
+            .expect("still listed");
+        assert_eq!(renamed.name, "the week");
+        assert_eq!(renamed.config_json, r#"{"v":1}"#, "a rename does not touch the spec");
+        assert!(renamed.updated_at >= renamed.created_at);
+        assert!(!rename_analytics_view(&conn, "nope", "x").unwrap(), "a missing view is false, not an error");
+
+        assert!(delete_analytics_view(&conn, "b").unwrap());
+        assert!(!delete_analytics_view(&conn, "b").unwrap(), "the second delete is false");
+        assert_eq!(analytics_views(&conn).len(), 2);
     }
 
     /// The one thing in the tiers feature that cannot be got wrong. Every

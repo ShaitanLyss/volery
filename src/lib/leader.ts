@@ -115,7 +115,16 @@ export type Verb =
   | { kind: "toy"; toy: ShelfId }
   | {
       kind: "open";
-      what: "timelines" | "pile" | "flyway" | "themes" | "accounts" | "integrations" | "showcase" | "analytics";
+      what:
+        | "timelines"
+        | "pile"
+        | "flyway"
+        | "themes"
+        | "accounts"
+        | "integrations"
+        | "showcase"
+        | "analytics"
+        | "analyticspage";
     }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
@@ -430,6 +439,13 @@ export const CHORDS: readonly Chord[] = [
      reading you hang on the glass (`docs/ANALYTICS.md` §11). It is the one row
      in this family that is not a widget. */
   { keys: "bd", label: "analytics", verb: { kind: "open", what: "analytics" } },
+  /* `n` is the numbers family (`docs/ANALYTICS.md` §11.5), and its one member
+     today is `nn`: the same view read as a document. A letter of its own
+     rather than a second reading under `b`, because the room and the page are
+     one subject drawn two ways and `v` already swaps them once you are inside
+     (§11.15) — the chord is the way in when you want the page from the wall,
+     which has no other door to it. */
+  { keys: "nn", label: "analytics as a document", verb: { kind: "open", what: "analyticspage" } },
   ...readings(),
 ];
 

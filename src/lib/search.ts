@@ -215,6 +215,7 @@ const OPEN_GLYPH: Record<Extract<ChordVerb, { kind: "open" }>["what"], IconName>
   integrations: "key",
   showcase: "bird",
   analytics: "wave",
+  analyticspage: "file",
 };
 const READING_GLYPH: Partial<Record<Extract<ChordVerb, { kind: "reading" }>["widget"], IconName>> = {
   pipelines: "pipe",

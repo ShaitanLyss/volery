@@ -1,85 +1,101 @@
 <script lang="ts">
-  /* The analytics room: the first face on the facts `analytics.rs` records.
+  /* The analytics surface: one shell over two presentations (§11, §11.8,
+   * §11.15).
    *
-   * A full-screen overlay rather than a panel (§11): a KPI row, a chart and an
+   * A full-screen overlay rather than a panel: a KPI row, a chart and an
    * inspector do not fit a conversation's column, and the wall has nowhere to
-   * put a document. It opens from `<space>bd`, stays over whichever view is in
-   * front, and the wall shows around its edges.
+   * put a document. It opens from `<space>bd` (the room), `<space>nn` (the
+   * page), chat view's sidebar row, and the palette, and it stays over
+   * whichever view is in front.
    *
-   * Everything it *decides* is in `analyticsroom.ts` and tested there: which
-   * tier answers, how a window becomes series, where the gaps are, what a
-   * bucket is called, what a null prints. This file is geometry, keyboard and
-   * paint.
+   * **The shell owns the question and the read; the presentations own only the
+   * drawing.** Span, measure, split and filter live in `analyticsview.svelte.ts`
+   * so both presentations read them and swapping carries them across. The
+   * window is read here once, folded into series here once, and the same
+   * `RoomSeries[]` is handed to whichever face is in front — which is what
+   * makes the numbers agree across the swap by construction (§11.15).
    *
    * **It reads, it does not poll.** One read on open, one whenever the span
    * changes, one more after the collector's minute has gone by (a single
    * one-shot timer, not an interval), and one if you ask with `r`. On close the
    * component unmounts, which clears the timer; a read still in flight lands on
    * a dead component and is dropped by the generation counter rather than
-   * writing into the next opening.
+   * writing into the next opening. The filter does not cost a read: it cuts the
+   * rows already here, which is the cheaper and the more honest of the two
+   * (a re-read would answer the same window with the same rows).
    *
-   * **Colour is identity and it comes from the query layer.** Every series
-   * colour is `analytics.ts::seriesColor`, handed out in its fixed order; the
-   * chrome stays achromatic and the fold past the fifth is a text token.
-   *
-   * Keyboard: `[` `]` step the span, `m` the measure, `g` the split, `t` the
-   * table, `r` reads again, `f` goes to the filters, arrows or `h j k l` walk
-   * the buckets, Home and End go to the ends, Escape leaves.
+   * Keyboard: `v` swaps the presentation, `[` `]` step the span, `m` the
+   * measure, `g` the split, `f` goes to the controls, `r` reads again, `s`
+   * saves a view, `l` opens the library, Escape leaves. The room's own keys —
+   * `t` for its table, the arrows or `j`/`k` to walk buckets, Home and End —
+   * are handed to it, because they are about that drawing; the page's arrows
+   * scroll the document. The keys left to the surface are the surface's in
+   * both drawings, so a span changes the same way in either.
    */
-  import { onMount } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import Icon from "./Icon.svelte";
+  import AnalyticsRoom from "./AnalyticsRoom.svelte";
+  import AnalyticsPage from "./AnalyticsPage.svelte";
+  import AnalyticsViews from "./AnalyticsViews.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
-  import { surface } from "./analyticsview.svelte";
+  import {
+    presentation,
+    openPresentation,
+    setPresentation,
+    surface,
+    swapPresentation,
+    adoptSurface,
+  } from "./analyticsview.svelte";
   import {
     ROOM_MEASURES,
     ROOM_SPLITS,
     SPANS,
-    bucketLabel,
     emptinessOf,
-    kpisOf,
-    measureText,
-    nearestAt,
-    niceAxis,
-    readingsOf,
     roomBucket,
-    shareText,
-    splitSeries,
-    spreadLabels,
-    stepAt,
-    tickLabel,
-    runsOfTimes,
-    tickText,
     tierSaid,
-    timesOf,
     windowTier,
     type AnalyticsWindow,
-    type RoomSeries,
-    type RoomSplit,
     type SlotBook,
+    type RoomSplit,
     type WindowReader,
   } from "./analyticsroom";
-  import { bucketOf, spanMsOf } from "./analytics";
+  import { pageModel, surfaceOfView, type HostMode, type Presentation } from "./analyticpage";
+  import { spanMsOf, type ViewSpec } from "./analytics";
   import { count } from "./usage";
+  import { view } from "./view.svelte";
 
   let {
     read,
     onclose,
+    mode = view.current,
+    as,
   }: {
     /** The command, or a fixture. Absent means the real one. */
     read?: WindowReader;
     onclose: () => void;
+    /** Which host is underneath: it only picks the *default* presentation,
+     *  and never changes when `v` swaps them (§11.15). */
+    mode?: HostMode;
+    /** An explicit presentation asked for as it opened — `space b d` is the
+     *  room, `space n n` the page. Absent means the remembered one for the
+     *  mode, which is what the sidebar row and a plain open mean. */
+    as?: Presentation;
   } = $props();
+
+  /* The remembered choice, read once, before the first frame — an effect would
+     paint the room and then flip to the page. An explicit request is a choice
+     too, so it is remembered against the mode it was made in. */
+  untrack(() => {
+    openPresentation(mode);
+    if (as) setPresentation(as);
+  });
 
   /* ── what is being asked ─────────────────────────────────────────────── */
 
-  /* Span, measure and split are the surface's, not this drawing's (§11.15):
-     the page will read the same three, and a swap between presentations carries
-     them because this one does not own them. Everything below — the window that
-     came back, the selection, the table toggle — is this drawing's alone. */
   const span = $derived(surface.span);
   const measure = $derived(surface.measure);
   const split = $derived(surface.split);
-  let table = $state(false);
+  const showing = $derived(presentation.current);
 
   /* Colours by identity rather than by rank, so changing the span does not
      repaint the survivors (§10.1). The book is per split dimension: a project's
@@ -96,13 +112,10 @@
   let busy = $state(true);
   let readAt = $state<number | null>(null);
 
-  let selected = $state<number | null>(null);
-  let hovered = $state<number | null>(null);
-
   let root = $state<HTMLElement>();
-  let filters = $state<HTMLElement>();
-  let scroller = $state<HTMLElement>();
-  let box = $state({ w: 860, h: 300 });
+  let controls = $state<HTMLElement>();
+  let room = $state<ReturnType<typeof AnalyticsRoom> | undefined>();
+  let page = $state<ReturnType<typeof AnalyticsPage> | undefined>();
 
   /* A closure rather than the prop itself: a prop read outside one captures
      its initial value, which is exactly the bug a fixture that swapped its
@@ -134,37 +147,81 @@
 
   /* One read on open and one per span change. Nothing else re-reads, and the
      effect has no other dependency because the reader's own arguments are the
-     span alone.
-     The selection is cleared here and only here: a new axis does not have the
-     old bucket in it. The once-a-minute refresh does *not* clear it, which is
-     the difference between a room you left reading a bucket and one that drops
-     your place under you. */
+     span alone. The selection a presentation holds is its own: the room clears
+     its own when the span changes, because the bucket it remembers is not in
+     the new axis, and this effect does not touch it so the 65-second refresh
+     cannot drop your place. */
   $effect(() => {
     void span;
-    selected = null;
-    hovered = null;
     void readNow();
   });
 
-  /* The collector writes once a minute, so an untouched room goes stale by at
-     most that much. This is one refresh, not a poll, and `onMount` is how that
-     is structural rather than argued: a mount hook runs exactly once and never
-     again, where an effect is a thing that may re-run. `onMount`'s cleanup runs
-     when the room closes, so a room you left before the minute costs nothing
-     and one left open costs one read. */
+  /* The collector writes once a minute, so an untouched surface goes stale by
+     at most that much. This is one refresh, not a poll, and `onMount` is how
+     that is structural rather than argued: a mount hook runs exactly once and
+     never again, where an effect is a thing that may re-run. `onMount`'s
+     cleanup runs when the surface closes, so one left before the minute costs
+     nothing and one left open costs one read. */
   onMount(() => {
     const t = setTimeout(() => void readNow(), 65_000);
     return () => clearTimeout(t);
   });
 
-  /* Focus comes in on open, stays in while the room is up, and goes back where
-     it was on close.
-     **Staying in is not tidiness.** The room is `aria-modal`, and the wall and
-     the dock behind it are still in the tab order — `inert` covers the wall but
-     the dock is a component of its own. A tab that reached the draft would let
-     a letter be typed into a field behind an opaque overlay, which is invisible
-     and survives closing. So a focus that lands outside is pulled back, and the
-     flag keeps the pull-back from fighting the restore on the way out. */
+  /* ── what it means, once ─────────────────────────────────────────────── */
+
+  const spanMs = $derived(spanMsOf(span) ?? 7 * 24 * 3_600_000);
+  const tier = $derived(windowTier(spanMs));
+  const bucket = $derived(roomBucket(spanMs, tier));
+
+  const model = $derived.by(() => {
+    if (!loaded) return null;
+    if (bookFor !== split) {
+      book = new Map();
+      bookFor = split;
+    }
+    return pageModel({
+      window: loaded,
+      filter: surface.filter,
+      measure,
+      split,
+      bucket,
+      span,
+      book,
+    });
+  });
+
+  const empty = $derived(loaded ? emptinessOf(loaded) : null);
+
+  const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
+  const measureSaid = $derived(ROOM_MEASURES.find((m) => m.key === measure)?.said ?? measure);
+  const splitSaid = $derived(split ? `by ${split}` : "no split");
+
+  /* ── the library (§11.6) ─────────────────────────────────────────────── */
+
+  let views = $state<"save" | "list" | null>(null);
+
+  function openView(spec: ViewSpec) {
+    adoptSurface(surfaceOfView(spec));
+    views = null;
+    void tick().then(() => root?.focus());
+  }
+
+  function closeViews() {
+    views = null;
+    void tick().then(() => root?.focus());
+  }
+
+  /* ── focus ───────────────────────────────────────────────────────────── */
+
+  /* Focus comes in on open, stays in while the surface is up, and goes back
+     where it was on close.
+     **Staying in is not tidiness.** The surface is `aria-modal`, and the wall
+     and the dock behind it are still in the tab order — `inert` covers the wall
+     but the dock is a component of its own. A tab that reached the draft would
+     let a letter be typed into a field behind an opaque overlay, which is
+     invisible and survives closing. So a focus that lands outside is pulled
+     back, and the flag keeps the pull-back from fighting the restore on the way
+     out. */
   const cameFrom = typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null);
   let closing = false;
 
@@ -175,8 +232,6 @@
 
   onMount(() => {
     root?.focus();
-    /* A focus that moves *to* something else fires `focusin`, which is the Tab
-       case. */
     const hold = (e: FocusEvent) => {
       if (closing || !root || root.contains(e.target as Node)) return;
       root.focus();
@@ -189,160 +244,18 @@
   });
 
   /* A focus that *disappears* fires no `focusin` at all: removing the focused
-     element hands focus to `body` and Chromium tells nobody. That is the path
-     that matters here — `t` takes the plot away, and the plot's button is where
-     the pointer had just put the focus — so it is answered where the thing that
-     removed it is known, after the DOM has caught up. */
+     element hands focus to `body` and Chromium tells nobody. The room answers
+     its own table toggle; this is the same rule for anything the shell removes
+     under a focused element — the library closing, and the presentation
+     swapping out from under a control. */
   $effect(() => {
-    void table;
+    void views;
+    void showing;
     void loaded;
     holdFocus();
   });
 
   $effect(() => () => cameFrom?.focus?.());
-
-  /* ── what it means ───────────────────────────────────────────────────── */
-
-  const spanMs = $derived(spanMsOf(span) ?? 7 * 24 * 3_600_000);
-  const tier = $derived(windowTier(spanMs));
-  const bucket = $derived(roomBucket(spanMs, tier));
-  const rows = $derived(loaded?.rows ?? []);
-  const list = $derived.by(() => {
-    if (bookFor !== split) {
-      book = new Map();
-      bookFor = split;
-    }
-    return splitSeries(rows, measure, bucket, split, book);
-  });
-  const times = $derived(timesOf(list));
-  const readings = $derived(readingsOf(list));
-  const kpis = $derived(kpisOf(rows, loaded?.cards ?? 0));
-  const empty = $derived(loaded ? emptinessOf(loaded) : null);
-
-  const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
-  const measureSaid = $derived(ROOM_MEASURES.find((m) => m.key === measure)?.said ?? measure);
-  const splitSaid = $derived(split ? `by ${split}` : "no split");
-
-  /* ── geometry ────────────────────────────────────────────────────────── */
-
-  const PAD = { l: 58, t: 14, b: 26 };
-  const labelled = $derived(list.length >= 4 && !table);
-  const padR = $derived(labelled ? 122 : 16);
-  const plotW = $derived(Math.max(20, box.w - PAD.l - padR));
-  const plotH = $derived(Math.max(20, box.h - PAD.t - PAD.b));
-  const from = $derived(loaded?.since ?? 0);
-  const to = $derived(loaded?.until ?? 1);
-  const width = $derived(Math.max(1, to - from));
-
-  const highest = $derived.by(() => {
-    let top = 0;
-    for (const r of readings.values()) if (r.total > top) top = r.total;
-    return top;
-  });
-  const axis = $derived(niceAxis(highest));
-
-  const xOf = (at: number) => PAD.l + ((at - from) / width) * plotW;
-  const yOf = (v: number) => (axis.top > 0 ? PAD.t + plotH - (v / axis.top) * plotH : PAD.t + plotH);
-
-  /* The value each series carries at each axis instant, and the running total
-     up to and including it. One table for the bands, the tooltip and the
-     inspector, so a stack cannot disagree with its own legend. */
-  const valueAt = $derived.by(() => list.map((s) => new Map(s.points.map((p) => [p.at, p.value]))));
-  const cum = $derived.by(() => {
-    const out: Map<number, number>[] = [];
-    let below = new Map<number, number>();
-    for (let si = 0; si < list.length; si += 1) {
-      const here = new Map<number, number>();
-      for (const t of times) here.set(t, (below.get(t) ?? 0) + (valueAt[si].get(t) ?? 0));
-      out.push(here);
-      below = here;
-    }
-    return out;
-  });
-
-  /* A run is a stretch of adjacent recorded buckets. The break is where the
-     line stops, which is what makes a quiet hour a gap rather than a dip. The
-     rule itself is `analyticsroom.ts::runsOfTimes`, tested there, because it is
-     the one the module's header promises and a second copy here would be a rule
-     that gets fixed once. */
-  const timeRuns = $derived(runsOfTimes(times, bucket));
-
-  const bands = $derived.by(() =>
-    timeRuns.map((run) => ({
-      run,
-      series: list.map((s, si) => {
-        const top = run.map((t) => yOf(cum[si].get(t) ?? 0));
-        const bottom = run.map((t) => (si === 0 ? yOf(0) : yOf(cum[si - 1].get(t) ?? 0)));
-        const xs = run.map((t) => xOf(t));
-        let area = `M ${xs[0].toFixed(1)} ${top[0].toFixed(1)}`;
-        for (let i = 1; i < run.length; i += 1) area += ` L ${xs[i].toFixed(1)} ${top[i].toFixed(1)}`;
-        for (let i = run.length - 1; i >= 0; i -= 1) area += ` L ${xs[i].toFixed(1)} ${bottom[i].toFixed(1)}`;
-        area += " Z";
-        let line = `M ${xs[0].toFixed(1)} ${top[0].toFixed(1)}`;
-        for (let i = 1; i < run.length; i += 1) line += ` L ${xs[i].toFixed(1)} ${top[i].toFixed(1)}`;
-        return { color: s.color, area: run.length > 1 ? area : "", line: run.length > 1 ? line : "", dot: run.length === 1 ? { x: xs[0], y: top[0] } : null };
-      }),
-    })),
-  );
-
-  /* Direct labels live in a right-hand gutter, one per series, at the height
-     its band reaches when that series was last recorded. §10.3 makes them
-     mandatory at four series, which is where the palette starts to sit close
-     enough together that a legend alone asks you to match colours. */
-  const labels = $derived.by(() => {
-    if (!labelled) return [];
-    const wanted: { label: string; color: string; y: number }[] = [];
-    list.forEach((s, si) => {
-      const last = s.points[s.points.length - 1];
-      if (!last) return;
-      const top = yOf(cum[si].get(last.at) ?? 0);
-      const bottom = si === 0 ? yOf(0) : yOf(cum[si - 1].get(last.at) ?? 0);
-      wanted.push({ label: s.label, color: s.color, y: (top + bottom) / 2 });
-    });
-    return spreadLabels(wanted, 13, PAD.t + 5, PAD.t + plotH - 2);
-  });
-
-  const active = $derived(hovered ?? selected);
-  const activeReading = $derived(active !== null ? (readings.get(active) ?? null) : null);
-
-  /* The tooltip is HTML rather than SVG text so its prose wraps and its colours
-     are tokens. It is kept inside the box it belongs to rather than following
-     the pointer, which would make it flicker under the hand. */
-  const tip = $derived.by(() => {
-    if (table || hovered === null || !loaded) return null;
-    const reading = readings.get(hovered);
-    if (!reading) return null;
-    const wide = 232;
-    return {
-      left: Math.min(Math.max(6, xOf(hovered) + 12), Math.max(6, box.w - wide - 6)),
-      reading,
-      label: bucketLabel(hovered, bucket),
-    };
-  });
-
-  /* Five labels, snapped to the rung they name. An evenly spaced instant lands
-     at 20:23 because the window starts when it is opened; a bucket boundary is
-     the reading, and it is what the point above the label was drawn from. */
-  const xTicks = $derived.by(() => {
-    if (!loaded) return [] as { x: number; text: string }[];
-    const n = 5;
-    const out: { x: number; text: string }[] = [];
-    for (let i = 0; i < n; i += 1) {
-      const at = bucketOf(from + ((to - from) * i) / (n - 1), bucket);
-      out.push({ x: Math.min(PAD.l + plotW, Math.max(PAD.l, xOf(at))), text: tickLabel(at, bucket) });
-    }
-    return out;
-  });
-
-  /* Svelte keys an `each` by identity and throws on a duplicate in production as
-     well as in development. A series' own `key` is its split value, and that is
-     not unique in two reaches: a dimension value can literally be named `other`
-     beside the fold, and two distinct values can both render as `unnamed`. The
-     slot is unique by construction — five of them plus the fold — so that is
-     what the markup keys on. */
-  function seriesKey(s: RoomSeries): string {
-    return s.slot === null ? "fold" : `s${s.slot}`;
-  }
 
   /* ── verbs ───────────────────────────────────────────────────────────── */
 
@@ -362,66 +275,8 @@
     surface.split = ROOM_SPLITS[(i + 1) % ROOM_SPLITS.length].key;
   }
 
-  function move(delta: number) {
-    selected = stepAt(times, hovered ?? selected, delta);
-    hovered = null;
-  }
-
-  function key(e: KeyboardEvent) {
-    if (e.defaultPrevented) {
-      e.stopPropagation();
-      return;
-    }
-    /* A chord with a modifier is not this room's (alt+I, ctrl+shift+M): it goes
-       on to the window, as it does from the reading sheet. */
-    if (e.ctrlKey || e.altKey || e.metaKey) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      onclose();
-      return;
-    }
-    /* Everything else is the room's while it is up, including the letters the
-       wall would otherwise take into the composer. */
-    e.stopPropagation();
-    if (e.key === "[") {
-      e.preventDefault();
-      stepSpan(-1);
-    } else if (e.key === "]") {
-      e.preventDefault();
-      stepSpan(1);
-    } else if (e.key === "m") {
-      e.preventDefault();
-      cycleMeasure();
-    } else if (e.key === "g") {
-      e.preventDefault();
-      cycleSplit();
-    } else if (e.key === "t") {
-      e.preventDefault();
-      table = !table;
-    } else if (e.key === "r") {
-      e.preventDefault();
-      void readNow();
-    } else if (e.key === "f") {
-      e.preventDefault();
-      filters?.querySelector<HTMLButtonElement>("button")?.focus();
-    } else if (e.key === "ArrowLeft" || e.key === "h") {
-      e.preventDefault();
-      move(-1);
-    } else if (e.key === "ArrowRight" || e.key === "l") {
-      e.preventDefault();
-      move(1);
-    } else if (e.key === "ArrowDown" || e.key === "j") {
-      e.preventDefault();
-      move(1);
-    } else if (e.key === "ArrowUp" || e.key === "k") {
-      e.preventDefault();
-      move(-1);
-    } else if (e.key === "Home" || e.key === "End") {
-      e.preventDefault();
-      selected = times.length ? times[e.key === "Home" ? 0 : times.length - 1] : null;
-      hovered = null;
-    }
+  function swap() {
+    swapPresentation();
   }
 
   /* Arrow keys inside a segmented control move the choice, which is what a
@@ -436,30 +291,109 @@
     (e.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>("button")[n]?.focus();
   }
 
-  function measured(el: HTMLElement) {
-    const ro = new ResizeObserver(() => (box = { w: el.clientWidth, h: el.clientHeight }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }
+  function key(e: KeyboardEvent) {
+    if (e.defaultPrevented) {
+      e.stopPropagation();
+      return;
+    }
+    /* A chord with a modifier is not this surface's (alt+I, ctrl+shift+M): it
+       goes on to the window, as it does from the reading sheet. */
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-  /* Walk the table with the selection, so the row you are reading is the row
-     you can see. */
-  $effect(() => {
-    if (!table || selected === null) return;
-    void times;
-    scroller?.querySelector('.an-tr.on')?.scrollIntoView({ block: "nearest" });
-  });
+    /* The library owns the keys while it is up, including Escape — and a
+       field inside it is typing, so letters must reach it rather than being
+       taken by the surface behind. */
+    if (views) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeViews();
+      }
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
 
-  function pick(at: number | null) {
-    selected = at;
-    hovered = null;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onclose();
+      return;
+    }
+    /* Everything else is the surface's while it is up, including the letters
+       the wall would otherwise take into the composer. */
+    e.stopPropagation();
+    if (e.key === "v") {
+      e.preventDefault();
+      swap();
+    } else if (e.key === "[") {
+      e.preventDefault();
+      stepSpan(-1);
+    } else if (e.key === "]") {
+      e.preventDefault();
+      stepSpan(1);
+    } else if (e.key === "m") {
+      e.preventDefault();
+      cycleMeasure();
+    } else if (e.key === "g") {
+      e.preventDefault();
+      cycleSplit();
+    } else if (e.key === "r") {
+      e.preventDefault();
+      void readNow();
+    } else if (e.key === "f") {
+      e.preventDefault();
+      controls?.querySelector<HTMLButtonElement>("button")?.focus();
+    } else if (e.key === "s") {
+      e.preventDefault();
+      views = "save";
+    } else if (e.key === "l") {
+      e.preventDefault();
+      views = "list";
+    } else if (showing === "room") {
+      if (e.key === "t") {
+        e.preventDefault();
+        room?.toggleTable();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        room?.move(e.key === "ArrowLeft" ? -1 : 1);
+      } else if (e.key === "ArrowDown" || e.key === "j" || e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        room?.move(e.key === "ArrowUp" || e.key === "k" ? -1 : 1);
+      } else if (e.key === "Home" || e.key === "End") {
+        e.preventDefault();
+        room?.toEnd(e.key === "End");
+      }
+    } else {
+      /* The page is read, not walked: the arrows move through the document and
+         never through a bucket. */
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        page?.scrollBy(64);
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        page?.scrollBy(-64);
+      } else if (e.key === "PageDown") {
+        e.preventDefault();
+        page?.turnPage(1);
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        page?.turnPage(-1);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        page?.goTo("top");
+      } else if (e.key === "End") {
+        e.preventDefault();
+        page?.goTo("bottom");
+      }
+    }
   }
 </script>
 
 <svelte:window
   onkeydown={(e) => {
     /* Focus can fall to the body when a read re-renders a focused control
-       away; the room still owns the keys, as the reading sheet's does. */
+       away; the surface still owns the keys, as the reading sheet's does. */
     if (!root?.contains(e.target as Node)) key(e);
   }}
 />
@@ -468,6 +402,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="an-room"
+    class:reading={showing === "page"}
     role="dialog"
     aria-modal="true"
     aria-labelledby="an-head"
@@ -484,14 +419,30 @@
           {#if loaded && loaded.rows.length > 0}· {count(loaded.rows.length)} rows{/if}
         </p>
       </div>
+      <!-- The swap, achromatic and small, beside the title: it says where you
+           are going rather than where you are, because that is the thing you
+           can act on. `v` does the same from anywhere in the surface. -->
+      <button
+        type="button"
+        class="an-btn an-pres"
+        title={showing === "room" ? "read it as a document (v)" : "back to the instrument (v)"}
+        onclick={swap}
+      >
+        <Icon name={showing === "room" ? "file" : "wave"} small />
+        {showing === "room" ? "page" : "room"}
+        <kbd>v</kbd>
+      </button>
       <span class="an-grow"></span>
       <span class="an-keys">space b d</span>
+      <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
+        <Icon name="pin" small />views
+      </button>
       <button type="button" class="an-btn an-close" title="close (esc)" aria-label="close" onclick={onclose}>
         <Icon name="x" small />
       </button>
     </header>
 
-    <div class="an-filters" bind:this={filters} role="group" aria-label="what to read">
+    <div class="an-filters" bind:this={controls} role="group" aria-label="what to read">
       <span class="an-label">span</span>
       <div
         class="an-seg"
@@ -556,15 +507,6 @@
 
       <span class="an-grow"></span>
 
-      <button
-        type="button"
-        class="an-btn"
-        class:on={table}
-        aria-pressed={table}
-        title="the same numbers as a table (t)"
-        onclick={() => (table = !table)}
-        ><Icon name={table ? "wave" : "list"} small />{table ? "chart" : "table"}</button
-      >
       <button type="button" class="an-btn" title="read the window again (r)" onclick={() => void readNow()}>
         <Icon name="clock" small />read again
       </button>
@@ -575,7 +517,7 @@
         <p class="an-fail">could not read the window</p>
         <p class="an-note">{failed}</p>
       </div>
-    {:else if !loaded}
+    {:else if !loaded || !model}
       <div class="an-body an-message">
         <p class="an-note">{busy ? "reading…" : "no answer yet"}</p>
       </div>
@@ -584,194 +526,45 @@
         <p class="an-empty">{empty.title}</p>
         <p class="an-note">{empty.note}</p>
       </div>
+    {:else if showing === "room"}
+      <AnalyticsRoom
+        bind:this={room}
+        window={loaded}
+        series={model.series}
+        kpis={model.kpis}
+        measure={measure}
+        split={split}
+        {span}
+        title={`${spanSaid} · ${measureSaid}${split ? ` · ${splitSaid}` : ""}`}
+        bucket={bucket}
+      />
     {:else}
-      <div class="an-strip" aria-label="in this window">
-        {#each [
-          { key: "spend", label: "spend", value: measureText("usd_modeled", kpis.spend), note: kpis.unpriced > 0 ? `${count(kpis.unpriced)} rows unpriced` : "modeled", off: kpis.spend === null },
-          { key: "tokens", label: "tokens", value: kpis.tokens === null ? "—" : count(kpis.tokens), note: "in, out and cache", off: kpis.tokens === null },
-          { key: "requests", label: "requests", value: count(kpis.requests), note: "in this window", off: false },
-          { key: "cache", label: "cache read", value: shareText(kpis.cacheShare), note: "of all tokens", off: kpis.cacheShare === null },
-          { key: "cards", label: "cards", value: count(kpis.cards), note: "active in this window", off: false },
-          { key: "project", label: "leading project", value: kpis.leading?.project ?? "—", note: kpis.leading ? `${shareText(kpis.leading.share)} of tokens` : "no project yet", off: !kpis.leading },
-          { key: "allowance", label: "allowance", value: "not recorded yet", note: "not in this schema yet", off: true },
-        ] as tile (tile.key)}
-          <div class="an-tile" class:off={tile.off}>
-            <span class="an-tile-label">{tile.label}</span>
-            <span class="an-tile-value">{tile.value}</span>
-            <span class="an-tile-note">{tile.note}</span>
-          </div>
-        {/each}
+      <div class="an-page">
+        <AnalyticsPage
+          bind:this={page}
+          window={loaded}
+          series={model.series}
+          measure={measure}
+          split={split}
+          spanSaid={spanSaid}
+          bucket={bucket}
+          figure={model.figure}
+          story={model.story}
+        />
       </div>
+    {/if}
 
-      <div class="an-main">
-        <section class="an-canvas" aria-label={table ? "the window as a table" : "the window over time"}>
-          <div class="an-chart-head">
-            <span class="an-title">{spanSaid} · {measureSaid}{split ? ` · ${splitSaid}` : ""}</span>
-            <span class="an-grow"></span>
-            {#if list.length >= 2}
-              <span class="an-legend">
-                {#each list as s (seriesKey(s))}
-                  <span class="an-key">
-                    <span class="an-dot" style:background={s.color}></span>
-                    {s.label}{#if labelled}&nbsp;{/if}
-                    <!-- A group whose rows the measure could not answer has no
-                         points and no total: a dash, never the $0 that would
-                         read as free. -->
-                    <span class="an-key-value">{measureText(measure, s.points.length ? s.total : null)}</span>
-                  </span>
-                {/each}
-              </span>
-            {/if}
-          </div>
+    {#if readAt && !empty}
+      <p class="an-read">read at {new Date(readAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</p>
+    {/if}
 
-          {#if table}
-            <div class="an-table-wrap" bind:this={scroller}>
-              <table class="an-table">
-                <thead>
-                  <tr>
-                    <th scope="col">bucket</th>
-                    {#each list as s (seriesKey(s))}
-                      <th scope="col" class="an-num">{s.label || "value"}</th>
-                    {/each}
-                    <th scope="col" class="an-num">total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each times as t (t)}
-                    {@const reading = readings.get(t)}
-                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                    <tr class="an-tr" class:on={active === t} onpointerenter={() => (hovered = t)} onpointerdown={() => pick(t)}>
-                      <th scope="row">{bucketLabel(t, bucket)}</th>
-                      {#each list as s, si (seriesKey(s))}
-                        <td class="an-num">{measureText(measure, valueAt[si]?.get(t) ?? null)}</td>
-                      {/each}
-                      <td class="an-num">{measureText(measure, reading?.total ?? null)}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          {:else}
-            <div class="an-plot" {@attach measured}>
-              <svg class="an-svg" viewBox={`0 0 ${box.w} ${box.h}`} width={box.w} height={box.h} role="presentation">
-                {#each axis.ticks as v (v)}
-                  <line class="an-grid" x1={PAD.l} x2={PAD.l + plotW} y1={yOf(v)} y2={yOf(v)} />
-                  {#if v !== 0}
-                    <!-- The gridline at zero stays; its *number* does not. An
-                         area chart's baseline is the axis line it is filled
-                         to, so the figure is the one label an axis can do
-                         without — and it is the one that lands in the bottom
-                         left corner, 13px above the first x label and 8px
-                         left of it, where `$0` and `12 oct` at 10px read as a
-                         single broken label (`$0` is what looks like a
-                         truncated `30`). The lowest printed tick still fixes
-                         the scale. -->
-                    <text class="an-axis" x={PAD.l - 8} y={yOf(v) + 3.5} text-anchor="end">{tickText(measure, v)}</text>
-                  {/if}
-                {/each}
-
-                {#each bands as band (band.run[0])}
-                  {#each band.series as s, si (si)}
-                    {#if s.area}
-                      <path d={s.area} fill={s.color} fill-opacity="0.2" stroke="none" />
-                      <path d={s.line} fill="none" stroke={s.color} stroke-width="1.6" stroke-linejoin="round" />
-                    {:else if s.dot}
-                      <circle cx={s.dot.x} cy={s.dot.y} r="2.6" fill={s.color} />
-                    {/if}
-                  {/each}
-                {/each}
-
-                {#each xTicks as tick, i (i)}
-                  <text class="an-axis" x={tick.x} y={PAD.t + plotH + 17} text-anchor={i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle"}>
-                    {tick.text}
-                  </text>
-                {/each}
-
-                {#if active !== null}
-                  <line class="an-cross" x1={xOf(active)} x2={xOf(active)} y1={PAD.t} y2={PAD.t + plotH} />
-                  {#each list as s, si (seriesKey(s))}
-                    {@const reading = readings.get(active)}
-                    {#if reading?.parts.some((p) => p.key === s.key)}
-                      <circle cx={xOf(active)} cy={yOf(cum[si].get(active) ?? 0)} r="3.4" fill={s.color} stroke="var(--surface)" stroke-width="1.5" />
-                    {/if}
-                  {/each}
-                {/if}
-
-                {#each labels as l, i (i)}
-                  <circle cx={PAD.l + plotW + 9} cy={l.y} r="3" fill={l.color} />
-                  <text class="an-direct" x={PAD.l + plotW + 17} y={l.y + 3.5}>{l.label}</text>
-                {/each}
-              </svg>
-
-              {#if tip}
-                <div class="an-tip" style:left={`${tip.left}px`}>
-                  <p class="an-tip-when">{tip.label}</p>
-                  <p class="an-tip-value">{measureText(measure, tip.reading.total)}</p>
-                  {#if tip.reading.parts.length > 1}
-                    <table class="an-tip-parts">
-                      <tbody>
-                        {#each tip.reading.parts as part, i (i)}
-                          <tr>
-                            <td><span class="an-dot" style:background={part.color}></span>{part.label}</td>
-                            <td class="an-num">{measureText(measure, part.value)}</td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
-                  {/if}
-                </div>
-              {/if}
-
-              <button
-                type="button"
-                class="an-hit"
-                aria-label="walk the buckets"
-                onpointermove={(e) => {
-                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  const t = from + ((e.clientX - rect.left - PAD.l) / Math.max(1, plotW)) * width;
-                  hovered = nearestAt(times, t);
-                }}
-                onpointerleave={() => (hovered = null)}
-                onpointerdown={() => (selected = hovered)}
-                onfocus={() => (hovered = hovered ?? selected ?? times[times.length - 1] ?? null)}
-              ></button>
-            </div>
-          {/if}
-        </section>
-
-        <aside class="an-inspect" aria-label="the selected bucket">
-          <h3>inspector</h3>
-          {#if activeReading && active !== null}
-            <p class="an-inspect-when">{bucketLabel(active, bucket)}</p>
-            <p class="an-inspect-value">{measureText(measure, activeReading.total)}</p>
-            {#if activeReading.parts.length > 1}
-              <ul class="an-inspect-parts">
-                {#each activeReading.parts as part, i (i)}
-                  <li>
-                    <span class="an-dot" style:background={part.color}></span>
-                    <span class="an-inspect-name">{part.label}</span>
-                    <span class="an-num">{measureText(measure, part.value)}</span>
-                    <span class="an-inspect-share">{shareText(activeReading.total > 0 ? (part.value / activeReading.total) * 100 : null)}</span>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-            <dl class="an-prov">
-              <dt>measure</dt>
-              <dd>{measureSaid}</dd>
-              <dt>source</dt>
-              <dd>{tierSaid(loaded?.tier ?? tier)}</dd>
-              <dt>bucket</dt>
-              <dd>{bucket} · {count(times.length)} recorded</dd>
-            </dl>
-          {:else}
-            <p class="an-note">hover or click a bucket to read it here</p>
-          {/if}
-          {#if readAt}
-            <p class="an-read">read at {new Date(readAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</p>
-          {/if}
-        </aside>
-      </div>
+    {#if views}
+      <AnalyticsViews
+        mode={views}
+        surface={surface}
+        onclose={closeViews}
+        onopen={openView}
+      />
     {/if}
   </div>
 </div>
@@ -790,6 +583,7 @@
     animation: an-fade var(--dur-quick, 160ms) var(--ease-out, ease-out) both;
   }
   .an-room {
+    position: relative;
     width: min(1400px, 92cqw);
     height: min(920px, 92cqh);
     display: flex;
@@ -803,6 +597,15 @@
     overflow: hidden;
     outline: none;
     animation: an-rise var(--dur-scene, 360ms) var(--ease-out, ease-out) both;
+  }
+  /* The page's ground replaces the room's panel, and the room's footer note
+     goes with it: a document does not have a "read at" line under the fold. */
+  .an-room.reading {
+    background: var(--cv-ground, var(--well));
+    border-color: color-mix(in oklab, var(--edge) 55%, transparent);
+  }
+  .an-room.reading .an-read {
+    display: none;
   }
   @keyframes an-fade {
     from {
@@ -878,10 +681,21 @@
     border-radius: 7px;
     cursor: pointer;
   }
-  .an-btn:hover,
-  .an-btn.on {
+  .an-btn:hover {
     color: var(--paper);
     background: color-mix(in oklab, var(--paper) 7%, transparent);
+  }
+  .an-btn kbd {
+    margin-left: 3px;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--paper-faint);
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    padding: 0 4px;
+  }
+  .an-pres {
+    margin-left: 4px;
   }
   .an-close {
     border-color: transparent;
@@ -926,52 +740,6 @@
     color: var(--paper);
   }
 
-  /* ── the strip ────────────────────────────────────────────────────────── */
-
-  .an-strip {
-    flex: none;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
-    gap: 1px;
-    background: var(--cv-hair, var(--edge));
-    border-bottom: 1px solid var(--cv-hair, var(--edge));
-  }
-  .an-tile {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 9px 12px 10px;
-    background: var(--raised);
-    min-width: 0;
-  }
-  .an-tile-label {
-    font-size: 10px;
-    text-transform: lowercase;
-    color: var(--paper-faint);
-  }
-  .an-tile-value {
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--paper);
-    font-variant-numeric: tabular-nums;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .an-tile-note {
-    font-size: 10.5px;
-    color: var(--paper-mute);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* A tile that cannot be measured says so rather than showing a zero. */
-  .an-tile.off .an-tile-value {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--paper-faint);
-  }
-
   /* ── the body ─────────────────────────────────────────────────────────── */
 
   .an-body {
@@ -1003,264 +771,16 @@
     color: var(--paper-mute);
     max-width: 46ch;
   }
-
-  .an-main {
+  .an-page {
     flex: 1;
     min-height: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 252px;
-  }
-
-  .an-canvas {
-    min-width: 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    padding: 10px 12px 6px;
-  }
-  .an-chart-head {
-    flex: none;
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 0 4px 6px;
-  }
-  .an-title {
-    font-size: 12px;
-    color: var(--paper-dim);
-  }
-  .an-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    font-size: 11px;
-    color: var(--paper-mute);
-  }
-  .an-key {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    white-space: nowrap;
-  }
-  .an-key-value {
-    color: var(--paper-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  .an-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
-    flex: none;
-  }
-
-  .an-plot {
     position: relative;
-    flex: 1;
-    min-height: 0;
-  }
-  .an-svg {
-    display: block;
-    width: 100%;
-    height: 100%;
-    overflow: visible;
-  }
-  .an-grid {
-    stroke: var(--edge);
-    stroke-width: 1;
-  }
-  .an-axis {
-    fill: var(--paper-faint);
-    font-size: 10px;
-    font-family: var(--cv-ui, var(--util));
-    font-variant-numeric: tabular-nums;
-  }
-  .an-direct {
-    fill: var(--paper-dim);
-    font-size: 10px;
-    font-family: var(--cv-ui, var(--util));
-  }
-  .an-cross {
-    stroke: var(--paper-mute);
-    stroke-width: 1;
-    stroke-dasharray: 3 3;
-    pointer-events: none;
-  }
-  /* The pointer target is one button over the plot so the whole area is
-     reachable, and so it can take focus for the keyboard path. */
-  .an-hit {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    border: 0;
-    background: transparent;
-    cursor: crosshair;
-    outline: none;
-  }
-  .an-hit:focus-visible {
-    outline: 1px solid var(--paper-mute);
-    outline-offset: -1px;
-    border-radius: 6px;
-  }
-
-  .an-tip {
-    position: absolute;
-    top: 8px;
-    min-width: 150px;
-    max-width: 232px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--edge);
-    background: var(--surface);
-    box-shadow: 0 12px 28px -18px var(--shade);
-    pointer-events: none;
-  }
-  .an-tip-when {
-    margin: 0;
-    font-size: 10.5px;
-    color: var(--paper-faint);
-  }
-  .an-tip-value {
-    margin: 1px 0 4px;
-    font-size: 14px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .an-tip-parts {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 11px;
-    color: var(--paper-dim);
-  }
-  .an-tip-parts td {
-    padding: 1px 0;
-  }
-  .an-tip-parts td:first-child {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding-right: 12px;
-  }
-  .an-tip-parts .an-num {
-    text-align: right;
-  }
-
-  /* ── the table, which is the chart's honest twin ──────────────────────── */
-
-  .an-table-wrap {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    border: 1px solid var(--cv-hair, var(--edge));
-    border-radius: 8px;
-  }
-  .an-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-  }
-  .an-table th,
-  .an-table td {
-    padding: 5px 10px;
-    text-align: left;
-    border-bottom: 1px solid var(--cv-hair, var(--edge));
-    white-space: nowrap;
-  }
-  .an-table thead th {
-    position: sticky;
-    top: 0;
-    background: var(--raised);
-    color: var(--paper-faint);
-    font-weight: 500;
-    font-size: 10.5px;
-    z-index: 1;
-  }
-  .an-table tbody th {
-    font-weight: 400;
-    color: var(--paper-dim);
-  }
-  .an-table .an-num {
-    text-align: right;
-    color: var(--paper);
-  }
-  .an-tr.on {
-    background: color-mix(in oklab, var(--paper) 7%, transparent);
-  }
-
-  /* ── the inspector ────────────────────────────────────────────────────── */
-
-  .an-inspect {
-    min-height: 0;
-    overflow: auto;
-    padding: 12px 14px;
-    border-left: 1px solid var(--cv-hair, var(--edge));
-    background: color-mix(in oklab, var(--paper) 2%, transparent);
-  }
-  .an-inspect h3 {
-    margin: 0 0 8px;
-    font-size: 10px;
-    font-weight: 500;
-    text-transform: lowercase;
-    letter-spacing: 0.04em;
-    color: var(--paper-faint);
-  }
-  .an-inspect-when {
-    margin: 0;
-    font-size: 11px;
-    color: var(--paper-mute);
-  }
-  .an-inspect-value {
-    margin: 2px 0 10px;
-    font-size: 22px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .an-inspect-parts {
-    list-style: none;
-    margin: 0 0 12px;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    font-size: 11.5px;
-  }
-  .an-inspect-parts li {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-  .an-inspect-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--paper-dim);
-  }
-  .an-inspect-share {
-    width: 38px;
-    text-align: right;
-    color: var(--paper-faint);
-  }
-  .an-prov {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 3px 10px;
-    margin: 0;
-    font-size: 10.5px;
-  }
-  .an-prov dt {
-    color: var(--paper-faint);
-  }
-  .an-prov dd {
-    margin: 0;
-    color: var(--paper-mute);
   }
   .an-read {
-    margin: 14px 0 0;
+    position: absolute;
+    right: 16px;
+    bottom: 10px;
+    margin: 0;
     font-size: 10px;
     color: var(--paper-faint);
   }
