@@ -1023,6 +1023,7 @@ pub fn run() {
             renew::renew_conversation,
             renew::renewals_pending,
             store::open_turn,
+            supervisor::abandon_turn,
             store::record_turn,
             store::spend_since,
             store::record_file_touch,

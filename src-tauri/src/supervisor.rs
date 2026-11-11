@@ -1817,6 +1817,12 @@ fn spawn_now(
                boundaryless one carrying the money. Reset when the next turn
                opens, so a stream that dies in turn 2 is still closed. */
             let mut saw_result = false;
+            /* The last `result` this stream carried, which is the durable way to
+               tell the turn that is open now from the one whose settle is still
+               on its way. A turn always opens after the previous turn's result,
+               so a row that opened before the last one is never the lost turn
+               this thread is closing. */
+            let mut last_result_at: Option<i64> = None;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
@@ -1846,6 +1852,7 @@ fn spawn_now(
                                     saw_result = false;
                                 } else {
                                     saw_result = true;
+                                    last_result_at = Some(crate::store::now());
                                 }
                                 persist_turn(&app, &id, open);
                             }
@@ -1892,6 +1899,14 @@ fn spawn_now(
                Unless the app is the one ending the stream, which is the whole
                case the mark exists for: killing every child is how quitting
                works, and a clear here would undo the flag on the way out. */
+            /* The stream's own end, taken before anything below waits on a
+               lock. It is the bound the lost-turn close needs: a row can only
+               belong to this stream if it opened before the stream ended, and
+               a successor's row cannot. Event time will not do — `open_turn`
+               runs on the front end after it folds the event that starts the
+               turn, and folding is batched, so a turn killed before it spoke
+               has an `opened_at` later than the last event this thread saw. */
+            let ended = crate::store::now();
             turn.store(false, Ordering::Relaxed);
             forget_browser(&id);
             /* **And the turn's row, which is a different question from the
@@ -1927,12 +1942,16 @@ fn spawn_now(
                  to it. A wall closed mid-turn comes back with the loss named as
                  an interval rather than only as a flag. */
             let going = app.state::<Supervisor>().going_away();
+            /* Before the close, so a `result` still in the batch reaches the
+               front end first and its `record_turn` is not racing a decision
+               made on the row it is about to write. */
+            events.flush();
             if !saw_result {
                 let lost_at = match last_seen {
                     Some(at) if !going => at,
-                    _ => crate::store::now(),
+                    _ => ended,
                 };
-                settle_lost_turn(&app, &id, lost_at);
+                settle_lost_turn(&app, &id, lost_at, last_result_at.unwrap_or(0), ended);
             }
             if !going {
                 persist_turn(&app, &id, false);
@@ -2228,14 +2247,39 @@ fn persist_awake(app: &AppHandle, id: &str, generation: u64, awake: bool) {
 /// the wall a turn. `store::close_lost_turn` does nothing at all when every row
 /// for this card is already settled, which is the ordinary case — a turn that
 /// ended on a `result` was closed by `record_turn` from the front end.
-fn settle_lost_turn(app: &AppHandle, id: &str, at: i64) {
+fn settle_lost_turn(app: &AppHandle, id: &str, at: i64, after: i64, bound: i64) {
     if let Some(store) = app.try_state::<crate::store::Store>() {
         if let Ok(conn) = store.0.lock() {
-            if let Err(e) = crate::store::close_lost_turn(&conn, id, at) {
+            if let Err(e) = crate::store::close_lost_turn(&conn, id, at, after, bound) {
                 log::warn!("supervisor: {e}");
             }
         }
     }
+}
+
+/// Give back a turn the front end opened and then found was never one.
+///
+/// `#beginTurn` opens the row on the gesture, before the prompt is routed. A
+/// prompt held for an account, a send that failed, a round kept for a renewal
+/// and an interrupt that found nothing running all decide the turn never
+/// happened, and each of them sets `working` false with no `result` in sight.
+/// The row has to go the same way, or `turn_one_open` makes the next open a
+/// no-op and the turn that finally runs is dated from the moment you typed,
+/// on the account in force then.
+///
+/// **A turn the process is actually holding refuses the close**, and that check
+/// is the whole reason this is a command rather than a statement the front end
+/// calls directly: a relay's or a wake's turn can be open with nothing spoken
+/// yet, and `#beginTurn`'s guard cannot tell it from the gesture's. `turn_open`
+/// is the process's own mark, so it can.
+#[tauri::command]
+pub fn abandon_turn(app: AppHandle, conversation_id: String) -> Result<(), String> {
+    if turn_open(&app, &conversation_id) == Some(true) {
+        return Ok(());
+    }
+    let store = app.state::<crate::store::Store>();
+    let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+    crate::store::abandon_turn_row(&conn, &conversation_id)
 }
 
 /// Write the turn mark through to the card's row.

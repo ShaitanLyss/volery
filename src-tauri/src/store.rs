@@ -5788,14 +5788,42 @@ fn record_turn_row(
 /// row before the old reader thread gets here. Closing by id alone would shut a
 /// turn that never stopped; a turn that began after the last event this thread
 /// heard cannot be the one it was serving, so it is left running.
-pub fn close_lost_turn(conn: &Connection, conversation_id: &str, at: i64) -> Result<(), String> {
+pub fn close_lost_turn(
+    conn: &Connection,
+    conversation_id: &str,
+    at: i64,
+    after: i64,
+    bound: i64,
+) -> Result<(), String> {
     conn.execute(
         "UPDATE turn SET ended_at = MAX(opened_at, ?2), status_tier = 'fail', usd = 0
-          WHERE conversation_id = ?1 AND ended_at IS NULL AND opened_at <= ?2",
-        params![conversation_id, at],
+          WHERE conversation_id = ?1 AND ended_at IS NULL
+            AND opened_at > ?3 AND opened_at <= ?4",
+        params![conversation_id, at, after, bound],
     )
     .map(|_| ())
     .map_err(|e| format!("close lost turn in {conversation_id}: {e}"))
+}
+
+/// Give back a turn this window opened and then found was never one: a prompt
+/// held for an account, a send that failed, a round kept for a renewal, an
+/// interrupt that said nothing was running.
+///
+/// **The row `open_turn` wrote has to be closed, or the next turn inherits it.**
+/// `open_turn` runs on the gesture, before the prompt is routed, so a prompt
+/// that never left leaves a row open with the moment you typed as its start and
+/// the account in force then. `turn_one_open` then makes the next open a no-op,
+/// so the turn that finally runs is dated hours earlier, on the wrong funding,
+/// and every request in between is attributed to it. A zero-length failed row is
+/// the honest record: nothing was spent and nothing was measured.
+pub fn abandon_turn_row(conn: &Connection, conversation_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE turn SET ended_at = opened_at, status_tier = 'fail', usd = 0
+          WHERE conversation_id = ?1 AND ended_at IS NULL",
+        params![conversation_id],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("abandon turn in {conversation_id}: {e}"))
 }
 
 /// Close every row still open, at launch.
@@ -11753,15 +11781,23 @@ mod tests {
         )
         .unwrap();
 
-        /* A reader that outlived its child: an instant before this turn opened
-           cannot be the turn it was serving. */
-        close_lost_turn(&conn, "c1", 900).unwrap();
+        /* A reader that outlived its child: a row opened after this stream
+           ended belongs to a successor, so the stream bound excludes it. */
+        close_lost_turn(&conn, "c1", 900, 0, 800).unwrap();
         let open: Option<i64> = conn
             .query_row("SELECT ended_at FROM turn", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(open, None, "a turn that began after the last event is left running");
+        assert_eq!(open, None, "a turn that began after the stream ended is left running");
 
-        close_lost_turn(&conn, "c1", 1500).unwrap();
+        /* And a row that opened before the last `result` this stream saw is the
+           settled turn whose `record_turn` may still be on its way. */
+        close_lost_turn(&conn, "c1", 900, 1100, 1600).unwrap();
+        let open: Option<i64> = conn
+            .query_row("SELECT ended_at FROM turn", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(open, None, "a row that predates the last result is not the lost one");
+
+        close_lost_turn(&conn, "c1", 1500, 0, 1600).unwrap();
         let (ended, tier, usd): (Option<i64>, Option<String>, f64) = conn
             .query_row("SELECT ended_at, status_tier, usd FROM turn", [], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -11770,6 +11806,42 @@ mod tests {
         assert_eq!(ended, Some(1500), "the span is what was seen of it");
         assert_eq!(tier.as_deref(), Some("fail"));
         assert_eq!(usd, 0.0, "nothing was reported against it, so it cost nothing");
+    }
+
+    /// A turn the wall gives back closes at no length, and closing one that was
+    /// never opened is a no-op rather than an error.
+    #[test]
+    fn an_abandoned_turn_closes_where_it_opened_and_nothing_else() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card_with_funding(&conn, "c1");
+        let opened = open_turn_row(&conn, "c1").unwrap();
+
+        abandon_turn_row(&conn, "c1").unwrap();
+
+        let (ended, tier, usd): (Option<i64>, Option<String>, f64) = conn
+            .query_row(
+                "SELECT ended_at, status_tier, usd FROM turn WHERE id = ?1",
+                params![opened],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        let opened_at: i64 = conn
+            .query_row(
+                "SELECT opened_at FROM turn WHERE id = ?1",
+                params![opened],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ended, Some(opened_at), "a turn that never happened spans no time");
+        assert_eq!(tier.as_deref(), Some("fail"));
+        assert_eq!(usd, 0.0);
+
+        /* A second call, and a card with no row at all, both change nothing. */
+        abandon_turn_row(&conn, "c1").unwrap();
+        abandon_turn_row(&conn, "nobody").unwrap();
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM turn", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
     }
 
     /// Phase 1's own promise (`docs/ANALYTICS.md` §18): the day's figure and the

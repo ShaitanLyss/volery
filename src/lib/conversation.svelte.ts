@@ -2492,6 +2492,7 @@ export class Conversation {
     if (!giveTurn) return;
     if (!this.streaming && this.#turnText.length === 0) {
       this.#openedBySend = false;
+      this.#abandonTurn();
       this.working = false;
       this.restingSince ??= Date.now();
     }
@@ -2524,6 +2525,7 @@ export class Conversation {
   keptForRenewal() {
     if (!turnStands("held", this.#openedBySend)) {
       this.#openedBySend = false;
+      this.#abandonTurn();
       this.working = false;
       this.restingSince ??= Date.now();
     }
@@ -2542,6 +2544,7 @@ export class Conversation {
    *  the life of the process. */
   nothingWasRunning() {
     this.#openedBySend = false;
+    this.#abandonTurn();
     this.working = false;
     this.restingSince ??= Date.now();
     this.activity = this.busy ? this.#jobsLine() : "at rest";
@@ -2715,6 +2718,7 @@ export class Conversation {
        Guarding on `working` rather than on `streaming` is the honest test: a
        turn that has not spoken yet is still a turn. */
     if (!this.working && !this.streaming && this.#turnText.length === 0) {
+      this.#abandonTurn();
       this.working = false;
       this.restingSince ??= Date.now();
     }
@@ -2800,6 +2804,7 @@ export class Conversation {
        already spoken, in which case a failed send is a second prompt into a
        card that is genuinely busy and `working` is still the truth. */
     if (!this.streaming && this.#turnText.length === 0) {
+      this.#abandonTurn();
       this.working = false;
       this.restingSince ??= Date.now();
     }
@@ -2863,6 +2868,24 @@ export class Conversation {
     line.text = text;
     line.note = cap;
     line.state = failed ? "failed" : undefined;
+  }
+
+  /** Give back the turn row `#beginTurn` opened, for a prompt that never became
+   *  a turn: held for an account, refused by the send, kept for a renewal, or
+   *  contradicted by the process saying it had nothing running.
+   *
+   *  **The row has to go with the drawing.** `open_turn` runs on the gesture,
+   *  before the prompt is routed, and `turn_one_open` makes the next open a
+   *  no-op — so a row left behind dates the turn that finally runs from the
+   *  moment you typed, on the account you were on then, and every request in
+   *  between is attributed to it. Rust refuses the close while the process is
+   *  holding a turn of its own, which is what keeps a relay's unspoken turn
+   *  safe from a gesture's cleanup.
+   *
+   *  Fire-and-forget, like the open: a row that does not close costs the
+   *  analytics layer a span, never the turn. */
+  #abandonTurn() {
+    void invoke("abandon_turn", { conversationId: this.id }).catch(() => {});
   }
 
   #beginTurn() {
