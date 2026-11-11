@@ -5,8 +5,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -32,9 +32,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +49,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 
 /**
  * The six slides a first launch opens on, and the same six from settings.
@@ -132,9 +132,25 @@ private val SLIDES = listOf(
 private fun Tutorial(onDone: () -> Unit) {
     val p = LocalPalette.current
     val motion = LocalMotion.current
-    var step by rememberSaveable { mutableIntStateOf(0) }
+    /* A pager, because the first thing anybody tries on a screen of slides is
+       a swipe, and a deck that answers only its two buttons reads as a deck
+       that is stuck. It also settles an argument the cross-fade was having
+       with itself: the scene and its words now travel as one movement instead
+       of two animations saying the same thing twice. */
+    val pager = rememberPagerState(pageCount = { SLIDES.size })
+    val scope = rememberCoroutineScope()
+    val step = pager.currentPage
     val last = step == SLIDES.size - 1
-    val slide = SLIDES[step]
+
+    fun go(to: Int) {
+        val at = to.coerceIn(0, SLIDES.size - 1)
+        scope.launch {
+            /* `still` means still: a phone set not to move jumps rather than
+               slides, and the swipe itself is still the phone's to make. */
+            if (motion == MotionLevel.STILL) pager.scrollToPage(at)
+            else pager.animateScrollToPage(at)
+        }
+    }
 
     Ground(poolTier = if (step == 2) "working" else null) {
         Column(
@@ -169,78 +185,90 @@ private fun Tutorial(onDone: () -> Unit) {
                 }
             }
 
-            /* The scene changes with the slide; the words cross-fade under it,
-               because a slide whose illustration cuts while its title slides is
-               two animations saying one thing twice. */
-            Crossfade(
-                targetState = step,
-                animationSpec = tween(motion.duration(Motion.stage)),
+            HorizontalPager(
+                state = pager,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                label = "slide",
-            ) { at ->
-                Column(Modifier.fillMaxSize()) {
-                    Stage(pool = when (at) {
-                        2 -> p.work
-                        3 -> p.ask
-                        else -> null
-                    }) {
-                        when (at) {
-                            0 -> SceneWall()
-                            1 -> SceneFlyway()
-                            2 -> SceneEars()
-                            3 -> ScenePrompts()
-                            4 -> SceneContext()
-                            else -> ScenePlan()
-                        }
-                    }
-                    Spacer(Modifier.height(24.dp))
-                    Text(
-                        "${when (at) { 0 -> "one" ; 1 -> "two" ; 2 -> "three" ; 3 -> "four" ; 4 -> "five" ; else -> "six" }} · ${SLIDES[at].kicker}",
-                        style = Type.group(p, if (at == 3) p.ask else p.paperMute).copy(letterSpacing = 0.5.sp),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(SLIDES[at].title, style = Type.display(p, 29f, p.paper))
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        SLIDES[at].body,
-                        style = Type.prose(p).copy(fontSize = 15.sp, lineHeight = 23.sp),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(18.dp))
-                }
-            }
+                key = { it },
+            ) { at -> SlidePage(at) }
 
             /* The controls stand still while the slides move: a button that
                travels with every page is a button you have to chase. */
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 SLIDES.indices.forEach { i ->
+                    /* The dot is the target as well as the reading. It was six
+                       pixels wide and impossible to hit, which made the only
+                       way through the deck the two buttons at the end of the
+                       row. */
                     Box(
                         Modifier
-                            .size(width = if (i == step) 20.dp else 6.dp, height = 6.dp)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(if (i == step) p.paper else p.paper.copy(alpha = 0.20f)),
-                    )
+                            .size(width = 30.dp, height = 40.dp)
+                            .clip(CircleShape)
+                            .then(pressable({ go(i) }, CircleShape, tint = p.paper.copy(alpha = 0.10f))),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(width = if (i == step) 20.dp else 6.dp, height = 6.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (i == step) p.paper else p.paper.copy(alpha = 0.20f)),
+                        )
+                    }
                 }
                 Spacer(Modifier.weight(1f))
                 if (step > 0) {
                     ActionButton(
                         "back",
-                        onClick = { step-- },
+                        onClick = { go(step - 1) },
                         height = 48.dp,
                     )
                 }
                 ActionButton(
                     if (last) "start using it" else "next",
-                    onClick = { if (last) onDone() else step++ },
+                    onClick = { if (last) onDone() else go(step + 1) },
                     primary = true,
                     height = 48.dp,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SlidePage(at: Int) {
+    val p = LocalPalette.current
+    Column(Modifier.fillMaxSize()) {
+        Stage(pool = when (at) {
+            2 -> p.work
+            3 -> p.ask
+            else -> null
+        }) {
+            when (at) {
+                0 -> SceneWall()
+                1 -> SceneFlyway()
+                2 -> SceneEars()
+                3 -> ScenePrompts()
+                4 -> SceneContext()
+                else -> ScenePlan()
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "${when (at) { 0 -> "one" ; 1 -> "two" ; 2 -> "three" ; 3 -> "four" ; 4 -> "five" ; else -> "six" }} · ${SLIDES[at].kicker}",
+            style = Type.group(p, if (at == 3) p.ask else p.paperMute).copy(letterSpacing = 0.5.sp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(SLIDES[at].title, style = Type.display(p, 29f, p.paper))
+        Spacer(Modifier.height(10.dp))
+        Text(
+            SLIDES[at].body,
+            style = Type.prose(p).copy(fontSize = 15.sp, lineHeight = 23.sp),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(18.dp))
     }
 }
 
