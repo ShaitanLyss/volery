@@ -1099,6 +1099,20 @@ export function kpisOf(rows: readonly WorkRow[], cards: readonly CardWork[], coo
  *  scale. */
 export const CHURN_GAP_MS = 10 * MINUTE;
 
+/** How long attribution waits for a paying card's next request.
+ *
+ *  **Mirrors `analytics.rs::ATTRIBUTE_WAIT_MS`, which is the lookback.** The
+ *  excess is paid at a card's next *start*, so a card roused hours after the
+ *  write is the ordinary case rather than an edge; the copy that says
+ *  *unmeasured* has to name this bound and must not hardcode a shorter one. */
+export const ATTRIBUTE_WAIT_MS = 6 * HOUR;
+
+/** That bound in words, so no surface writes the number twice. */
+export function attributeWaitSaid(): string {
+  const hours = Math.round(ATTRIBUTE_WAIT_MS / HOUR);
+  return hours === 1 ? "an hour" : `${hours} hours`;
+}
+
 /** The kinds that are a write to a governing file, and so can churn. */
 export const WRITE_KINDS: readonly string[] = ["instructions", "rule"];
 /** The kinds that are a move of the funding a cache is keyed by. */
@@ -1263,6 +1277,11 @@ export function invalidationOf(
       prior.path = row.ref;
       prior.writes += 1;
       prior.author = row.card;
+      /* **The largest count any write in the run saw**, not the opener's: a card
+         that starts five minutes into the run is counted by the later write's
+         window and not the first one's. It is still not the union of sessions
+         across a long run, because the rows carry counts rather than names. */
+      prior.affected = Math.max(prior.affected, row.affected);
       continue;
     }
     const episode: InvalidateEpisode = {

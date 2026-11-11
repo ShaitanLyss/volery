@@ -12,7 +12,9 @@ import {
   asWorkSeries,
   bandsOf,
   barsOf,
+  ATTRIBUTE_WAIT_MS,
   attributedUsd,
+  attributeWaitSaid,
   cacheWriteUsd,
   cardWorkOf,
   conflictEpisodes,
@@ -976,5 +978,12 @@ describe("the by-tree reading, and the rows a bad command answer dropped", () =>
     expect(INVALIDATE_ADVICE).not.toContain("—");
     expect(INVALIDATE_ADVICE).toContain(".claude/rules/");
     expect(INVALIDATE_ADVICE).toContain("new cards");
+  });
+
+  test("the unmeasured copy names the wait it mirrors, once", () => {
+    /* Mirrors `analytics.rs::ATTRIBUTE_WAIT_MS`, which is the lookback. Both
+       skins read this helper, so neither can hardcode a stale shorter bound. */
+    expect(ATTRIBUTE_WAIT_MS).toBe(6 * HOUR);
+    expect(attributeWaitSaid()).toBe("6 hours");
   });
 });

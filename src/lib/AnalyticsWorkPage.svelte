@@ -14,7 +14,14 @@
   import AnalyticsWorkTable from "./AnalyticsWorkTable.svelte";
   import { niceAxis } from "./analyticsroom";
   import { seriesColor } from "./analytics";
-  import { episodeLabel, scatterTicks, signed, type ScatterMeasure, type WorkModel } from "./analyticswork";
+  import {
+    attributeWaitSaid,
+    episodeLabel,
+    scatterTicks,
+    signed,
+    type ScatterMeasure,
+    type WorkModel,
+  } from "./analyticswork";
   import { count, money } from "./usage";
 
   let {
@@ -233,7 +240,7 @@
             </tbody>
           </table>
           <p class="awk-hint">
-            unmeasured is not zero: no paying card took a request within thirty minutes of the last write, so there is no excess to divide.
+            unmeasured is not zero: no paying card took a request within {attributeWaitSaid()} of the last write, so there is no excess to divide.
           </p>
         </section>
       {/if}

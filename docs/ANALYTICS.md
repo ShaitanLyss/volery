@@ -765,6 +765,14 @@ avoidable cost there is, and it is invisible today: the card that caused it look
   median and priced at its own rate: `tokens` for a cache write, `in_tokens` for fresh input.
   A probe that only looked for the first would have reported every real invalidation on this
   machine as free.
+- **The wait for that request is the lookback, not a turn's span.** Because the excess is paid
+  at a card's next *start*, a card at rest is the ordinary payer and it may be roused hours
+  later; a thirty-minute bound left the commonest case on a quiet wall unmeasured for ever.
+  Attribution re-derives the payer set on every pass, so a card joins it when its session row
+  grows to cover the event. The one rule the longer wait needs: **a re-read belongs to the
+  latest event on that tree before the paying request**, or two writes hours apart would both
+  claim one resume. It is the churn sentence one timescale out, and it is why the earlier
+  write's excess is measured at zero rather than counted twice.
 - **A churn episode is a run of writes, not a write.** Three edits to `CLAUDE.md` in ten
   minutes is one episode, and its cost is the excess after the *last* write, because the
   earlier ones were overwritten before anybody read them. The episode is what the page draws
@@ -3624,8 +3632,11 @@ not re-opened by accident.
     **start**, not its next turn, and on this CLI it lands in fresh input rather than in the
     cache-write bucket. `invalidate_fact` therefore carries both, each against its own median
     and priced at its own rate; measuring only the cache write would have read every real
-    invalidation here as free. `tools/probe-invalidate.ts` is the measurement and stays
-    runnable.
+    invalidation here as free. **The wait follows from the same finding**: it is the six-hour
+    lookback rather than thirty minutes, because the payer is usually a card that was at rest
+    and was woken. The longer wait needs one claim rule, **a re-read belongs to the latest
+    event on that tree before the paying request**, or two writes hours apart would both
+    count the same resume. `tools/probe-invalidate.ts` is the measurement and stays runnable.
 
 ### 20.1 One left: how live is another machine
 

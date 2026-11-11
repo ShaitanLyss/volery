@@ -21,6 +21,7 @@
   import {
     INVALIDATE_ADVICE,
     SCATTER_MEASURES,
+    attributeWaitSaid,
     episodeAuthor,
     episodeLabel,
     scatterTicks,
@@ -738,15 +739,27 @@
             <div><dt>when</dt><dd>{new Date(reread.start).toLocaleString("en-GB")}</dd></div>
             <div><dt>kind</dt><dd>{reread.kind}</dd></div>
             <div><dt>writes in the run</dt><dd>{count(reread.writes)}</dd></div>
-            <div><dt>cards working</dt><dd>{count(reread.affected)}</dd></div>
+            <div>
+              <!-- **Two meanings, named apart.** A switch's count is the cards
+                   mid-turn when it happened; a write's is the other card
+                   sessions in the tree whose interval overlaps the run. One
+                   label for both would state the wrong thing about one. -->
+              <dt>{reread.kind === "instructions" || reread.kind === "rule" ? "other cards in the tree" : "cards working"}</dt>
+              <dd>{count(reread.affected)}</dd>
+            </div>
             <div><dt>cost</dt><dd>{reread.measured ? money(reread.usd ?? 0) : "unmeasured"}</dd></div>
           </dl>
+          {#if reread.kind === "instructions" || reread.kind === "rule"}
+            <p class="aw-hint">
+              counted against the card sessions overlapping the ten minutes this run opened. a card that had not started yet is not counted, and a terminal is not a card.
+            </p>
+          {/if}
           {#if reread.payers.length > 0}
             <p class="aw-hint">
               paid by {#each reread.payers as p, i (p.session)}{i > 0 ? ", " : ""}{bandLabel(p.card)}{p.usd === null ? " (unpriced)" : ` (${money(p.usd)})`}{/each}.
             </p>
           {:else}
-            <p class="aw-hint">no card's next request was seen within thirty minutes of the last write, so the excess is unmeasured rather than zero.</p>
+            <p class="aw-hint">no card's next request was seen within {attributeWaitSaid()} of the last write, so the excess is unmeasured rather than zero.</p>
           {/if}
           <p class="aw-hint">{INVALIDATE_ADVICE}</p>
         </div>

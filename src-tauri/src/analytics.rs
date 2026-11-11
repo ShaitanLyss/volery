@@ -70,15 +70,21 @@ const BEAT_EVERY: Duration = Duration::from_secs(60);
 /// readings on the coordination strip are cut at one scale.
 pub(crate) const CHURN_GAP_MS: i64 = 10 * 60 * 1000;
 
-/// How long attribution waits for the paying card to take its next request, and
-/// how far back the fold re-reads events.
+/// How far back the fold re-reads events, and how long it waits for a payer's
+/// next request.
 ///
-/// **The wait is thirty minutes** (§3.9): a card with no request in that span
-/// leaves the event unmeasured rather than priced at nothing. **The lookback is
-/// six hours**, so an event is revisited many times while its payers' requests
-/// land and the median settles; an event that aged out unmeasured stays that
-/// way, which is the honest reading and not a hole.
-pub(crate) const ATTRIBUTE_WAIT_MS: i64 = 30 * 60 * 1000;
+/// **The wait is the lookback, not a shorter clock, because the excess is paid
+/// at a card's next start** (§20 decision 19). A card that was running makes its
+/// first request seconds after the event, so its answer is unchanged by this
+/// bound; the bound is what reaches a card that was at rest and is woken hours
+/// later, whose resume request *is* the re-read. Thirty minutes, as this first
+/// had it, left the commonest case on a quiet wall permanently unmeasured.
+///
+/// It is deliberately not longer than the lookback: an event that has aged out
+/// of the scan can never be revisited, so a wait past it would be a promise the
+/// fold cannot keep. The lookback is six hours, and a card roused inside it is
+/// measured on the pass that sees the request.
+pub(crate) const ATTRIBUTE_WAIT_MS: i64 = ATTRIBUTE_LOOKBACK_MS;
 const ATTRIBUTE_LOOKBACK_MS: i64 = 6 * 60 * 60 * 1000;
 
 /// How many requests before an event the median is taken over, and the fewest
@@ -3038,9 +3044,11 @@ fn write_writes(conn: &Connection, host: &str, writes: &[InstructionWrite]) -> R
             .unwrap_or_else(|| tree_of(&w.cwd));
         let card_id = card.as_ref().map(|c| c.id.clone()).unwrap_or_default();
         /* The episode this write opens, as far as it is knowable at the write:
-           ten minutes on from it. A later write extends the episode, and the
-           reading takes the episode's `affected` from its first row, whose
-           window contains the whole run. */
+           ten minutes on from it, counted against the sessions that exist now.
+           It is **not** the episode's final count. A card that starts partway
+           into a longer run is missed by this row and counted by the later write
+           whose window covers it, so the reading takes the largest count across
+           the run rather than trusting the opener. */
         let affected =
             sessions_sharing(conn, host, &tree, &w.session, w.at, w.at + CHURN_GAP_MS)?.len() as i64;
         written += sql
@@ -3108,19 +3116,19 @@ fn measure_excess(
     session: &str,
     host: &str,
     at: i64,
-) -> Result<Option<(String, i64, i64)>, String> {
-    let first: Option<(String, i64, i64, i64)> = conn
+) -> Result<Option<(String, i64, i64, i64)>, String> {
+    let first: Option<(i64, String, i64, i64, i64)> = conn
         .query_row(
-            "SELECT model, write_5m + write_1h, in_tok, requests FROM usage_fact
+            "SELECT at, model, write_5m + write_1h, in_tok, requests FROM usage_fact
               WHERE session = ?1 AND host = ?2 AND agent = '' AND requests > 0
                 AND at >= ?3 AND at <= ?4
               ORDER BY at ASC LIMIT 1",
             params![session, host, at, at + ATTRIBUTE_WAIT_MS],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()
         .map_err(|e| format!("analytics: attribute: {e}"))?;
-    let Some((model, write, input, requests)) = first else {
+    let Some((paid_at, model, write, input, requests)) = first else {
         /* No request within the wait: unmeasured, which is not the same as
            free and is why no row is written. */
         return Ok(None);
@@ -3173,7 +3181,32 @@ fn measure_excess(
         model,
         write_excess.max(0.0).round() as i64,
         input_excess.max(0.0).round() as i64,
+        paid_at,
     )))
+}
+
+/// Whether a later receipt on this tree stands at or before the paying request.
+///
+/// The claim rule for a write's excess: **a re-read belongs to the latest event
+/// on that tree before the paying request.** It matters only because the wait is
+/// hours; at thirty minutes no two events could share one request. It is a range
+/// read on `invalidate_fact_by_tree`.
+fn later_receipt(
+    conn: &Connection,
+    host: &str,
+    tree: &str,
+    after: i64,
+    upto: i64,
+) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM invalidate_fact
+          WHERE host = ?1 AND tree = ?2 AND provenance = 'receipt'
+            AND at > ?3 AND at <= ?4",
+        params![host, tree, after, upto],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .map_err(|e| format!("analytics: attribute: {e}"))
 }
 
 /// One event's attributed excess, written as a second row at the same key.
@@ -3203,6 +3236,13 @@ struct Event {
 /// Re-running is safe and intended: the same inputs write the same row, and an
 /// event revisited as its payers' requests land moves from unmeasured to
 /// measured without a second event.
+///
+/// **The payer set is not settled when the event lands, and that is the point
+/// of the re-run.** `sessions_sharing` is asked again on every pass, and a card
+/// that was at rest through the episode joins the set the moment its session row
+/// grows to cover the event — which happens when it is woken and takes its first
+/// request. That is also why the wait may be hours: the pass that first sees the
+/// woken card's request is the pass that attributes the excess to it.
 fn attribute(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Counts, String> {
     let mut counts = Counts::default();
     let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
@@ -3298,9 +3338,24 @@ fn attribute(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Counts, 
                         String::new()
                     }
                 });
-            let Some((model, tokens, in_tokens)) = measure_excess(&conn, &session, host, event.at)? else {
+            let Some((model, tokens, in_tokens, paid_at)) =
+                measure_excess(&conn, &session, host, event.at)?
+            else {
                 continue;
             };
+            /* **A re-read belongs to the latest event on that tree before the
+               paying request.** With a wait measured in hours, two instruction
+               writes on one tree can otherwise both find the same woken card's
+               first request and count one re-read twice. It is §3.9's churn
+               sentence one timescale out: an earlier write was overwritten (or,
+               here, superseded) before anybody read it. A switch needs no such
+               rule — it retires the cache key itself and its payer is the card
+               that moved. */
+            if (event.kind == "instructions" || event.kind == "rule")
+                && later_receipt(&conn, host, &event.tree, event.at, paid_at)?
+            {
+                continue;
+            }
             insert
                 .execute(params![
                     event.at,
@@ -9164,5 +9219,98 @@ mod tests {
             .unwrap();
         assert_eq!(row.0, 0, "no cache creation was reported");
         assert_eq!(row.1, 3_620, "3,800 input less a 180 median");
+    }
+
+    /// The commonest case on a quiet wall: the other cards are at rest, and the
+    /// cost is paid when one of them is woken hours later. A thirty-minute wait
+    /// left that unmeasured for ever.
+    #[test]
+    fn a_card_woken_hours_later_pays_the_excess() {
+        let conn = db();
+        seed(&conn, "s1");
+        seed(&conn, "s2");
+        let at = 1_786_601_268_000;
+        conn.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, started_at, ended_at)
+             VALUES ('s2', 'here', 'volery', 'card', 'card-s2', ?1, NULL)",
+            params![at - 3_600_000],
+        )
+        .unwrap();
+        for i in 0..6 {
+            write_row(&conn, "s2", at - 1_800_000 + i * 300_000, 0, 180, 1);
+        }
+        /* Two hours after the write, the card is roused and reads the file. */
+        write_row(&conn, "s2", at + 7_200_000, 0, 3_800, 1);
+        conn.execute(
+            "INSERT INTO invalidate_fact
+               (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (?1, 'here', 's1', 'card-s1', 'instructions', 'C:/x/CLAUDE.md', 'C:/x', 1, 'receipt')",
+            params![at],
+        )
+        .unwrap();
+        let conns = Mutex::new(conn);
+        let counts = attribute(&conns, "here", at + 10_800_000).unwrap();
+        assert_eq!(counts.attributed, 1, "the wake is the re-read");
+        let conn = conns.lock().unwrap();
+        let paid: (i64, i64) = conn
+            .query_row(
+                "SELECT at, in_tokens FROM invalidate_fact WHERE provenance = 'attributed'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(paid, (at, 3_620), "attributed at the event, priced from the wake");
+    }
+
+    /// With a wait measured in hours, two events on one tree can both find the
+    /// same woken card's request. The re-read belongs to the latest one, the
+    /// churn rule one timescale out.
+    #[test]
+    fn a_re_read_belongs_to_the_latest_event_on_the_tree() {
+        let conn = db();
+        seed(&conn, "s1");
+        seed(&conn, "s2");
+        let at = 1_786_601_268_000;
+        conn.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, started_at, ended_at)
+             VALUES ('s2', 'here', 'volery', 'card', 'card-s2', ?1, NULL)",
+            params![at - 3_600_000],
+        )
+        .unwrap();
+        for i in 0..6 {
+            write_row(&conn, "s2", at - 1_800_000 + i * 300_000, 0, 180, 1);
+        }
+        /* The card is roused once, five hours after the first write and one
+           hour after the second. */
+        write_row(&conn, "s2", at + 5 * 3_600_000, 0, 3_800, 1);
+        for (write_at, reference) in [
+            (at, "C:/x/CLAUDE.md"),
+            (at + 4 * 3_600_000, "C:/x/CLAUDE.md"),
+        ] {
+            conn.execute(
+                "INSERT INTO invalidate_fact
+                   (at, host, session, card, kind, ref, tree, affected, provenance)
+                 VALUES (?1, 'here', 's1', 'card-s1', 'instructions', ?2, 'C:/x', 1, 'receipt')",
+                params![write_at, reference],
+            )
+            .unwrap();
+        }
+        let conns = Mutex::new(conn);
+        attribute(&conns, "here", at + 5 * 3_600_000 + 1_800_000).unwrap();
+        let conn = conns.lock().unwrap();
+        let paid: Vec<i64> = conn
+            .prepare("SELECT at FROM invalidate_fact WHERE provenance = 'attributed'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            paid,
+            vec![at + 4 * 3_600_000],
+            "one re-read, claimed by the later write"
+        );
     }
 }
