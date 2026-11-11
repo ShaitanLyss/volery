@@ -113,7 +113,7 @@ export type DockChord = "next" | "reclaim" | "copy" | "drop" | "glance" | "ack" 
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" | "accounts" | "integrations" }
+  | { kind: "open"; what: "timelines" | "pile" | "flyway" | "themes" | "accounts" | "integrations" | "showcase" }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
@@ -191,6 +191,10 @@ export const CHORDS: readonly Chord[] = [
      whole of what a flyway is — starting, joining and leaving all happen in the
      one panel it opens. */
   { keys: "k", label: "flyway key", verb: { kind: "open", what: "flyway" } },
+  /* `h` for the tour: the question it answers is "how does this work", and
+     that is the letter people try. It is a place you go, on the accounts
+     panel's argument, and it is the one entry here that teaches the rest. */
+  { keys: "h", label: "how volery works: the tour", verb: { kind: "open", what: "showcase" } },
   /* `o` for the integrations panel — the tokens for services outside the
      machine and the event sources cards subscribe to. A place you go, on the accounts panel's
      argument; `o` for *outside*, which is what every row in it reaches, and

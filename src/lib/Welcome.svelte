@@ -13,7 +13,7 @@
   import Icon from "./Icon.svelte";
   import WindowControls from "./WindowControls.svelte";
 
-  let { onchoose }: { onchoose: (to: View) => void } = $props();
+  let { onchoose, ontour }: { onchoose: (to: View) => void; ontour?: () => void } = $props();
 
   let root = $state<HTMLElement>();
   let chatBtn = $state<HTMLButtonElement>();
@@ -35,9 +35,11 @@
       /* Taken here rather than left to the button's own activation, so it
          means the same whichever element the focus is really on: with neither
          chosen yet, Enter does nothing — nothing is pre-selected (§6.9). */
-      const on = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-way]")?.dataset.way;
+      const el = document.activeElement as HTMLElement | null;
+      const on = el?.closest<HTMLElement>("[data-way]")?.dataset.way;
       e.preventDefault();
-      if (on === "chat" || on === "wall") onchoose(on);
+      if (el?.closest("[data-tour]")) ontour?.();
+      else if (on === "chat" || on === "wall") onchoose(on);
     }
   }
 </script>
@@ -145,6 +147,12 @@
     <p class="foot2">
       <Icon name="wall" small />The switch lives in the title bar. <kbd>space</kbd><kbd>w</kbd><kbd>v</kbd> flips it from the keyboard.
     </p>
+
+    {#if ontour}
+      <button class="tour" type="button" data-tour onclick={ontour}>
+        or see what this is for first <span class="arr" aria-hidden="true">&rarr;</span>
+      </button>
+    {/if}
   </div>
 </div>
 
@@ -361,6 +369,42 @@
     align-items: center;
     flex-wrap: wrap;
     justify-content: center;
+  }
+  /* The tour, offered before a choice is made. It opens over this screen and
+     leaves it standing, so a person who takes it still lands back on the
+     question they came for. */
+  .tour {
+    margin-top: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--paper-mute);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .tour:hover,
+  .tour:focus-visible {
+    color: var(--paper);
+    background: color-mix(in oklab, var(--raised) 45%, transparent);
+  }
+  .arr {
+    color: var(--paper-faint);
+    transition: transform var(--dur-quick, 160ms) var(--ease-out, ease-out);
+  }
+  .tour:hover .arr {
+    transform: translateX(2px);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .arr,
+    .tour:hover .arr {
+      transition: none;
+      transform: none;
+    }
   }
 
   /* ── chat, in miniature ── */

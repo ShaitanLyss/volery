@@ -124,6 +124,8 @@
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
   import Flyway from "./lib/Flyway.svelte";
+  import Showcase from "./lib/Showcase.svelte";
+  import Icon from "./lib/Icon.svelte";
   import Annals from "./lib/Annals.svelte";
   import Unfinished from "./lib/Unfinished.svelte";
   import Exodus from "./lib/Exodus.svelte";
@@ -702,6 +704,7 @@
       else if (verb.what === "themes") showThemes = !showThemes;
       else if (verb.what === "accounts") showAccounts = !showAccounts;
       else if (verb.what === "integrations") showKeyring = !showKeyring;
+      else if (verb.what === "showcase") showTour = true;
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -1823,6 +1826,9 @@
      `chrome.test.ts` call it and renaming it buys nothing. */
   let showKeyring = $state(false);
   let showFlyway = $state(false);
+  /* The tour. An overlay with no store behind it, so it costs nothing to
+     leave in the tree and works on a wall with no cards. */
+  let showTour = $state(false);
   /* The sink's two gestures, which had no keyboard path at all before — the
      Basin is a widget, so reading the pile meant hanging one on the wall and
      adding to it meant finding that widget first. See `leader.ts`. */
@@ -3777,6 +3783,7 @@
     return !!(
       menu ||
       showImport ||
+      showTour ||
       showThemes ||
       showAccounts ||
       showKeyring ||
@@ -3858,7 +3865,7 @@
     if (e.key === "Escape") {
       /* Stops a turn, and goes no further: it never deselects, which would
          empty the view (§5.6). Anything open over the view answers its own. */
-      if (menu || showImport || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding || sheetOf)
+      if (menu || showImport || showTour || showThemes || showAccounts || showKeyring || showFlyway || showSink || refSheet || showDrop || showAnnals || unfinished || openRun || guiding || sheetOf)
         return true;
       if (card && card.can("stop") === "yes") void card.do("stop");
       return true;
@@ -4404,6 +4411,7 @@
       if (
         menu ||
         showImport ||
+        showTour ||
         showThemes ||
         showAccounts ||
         showKeyring ||
@@ -5156,6 +5164,7 @@
     "register",
     "timelines",
     "fit",
+    "tour",
     "servers",
     "shell",
     "pile",
@@ -5209,6 +5218,7 @@
     "boost",
     "read",
     "register",
+    "tour",
     "timelines",
     "servers",
     "shell",
@@ -5366,6 +5376,16 @@
   const barButtons = $derived(
     [
       { key: "fit", label: "fit", title: "Fit everything (Home)", press: () => canvas?.fitAll() },
+      /* The tour. Near the front because it is the one button a person who
+         has just installed this needs, and because it is the answer to the
+         question a colleague asks across a desk: what is this for. */
+      {
+        key: "tour",
+        label: "tour",
+        title: "A short tour of what Volery is, and why it exists (space then h)",
+        on: showTour,
+        press: () => (showTour = !showTour),
+      },
       /* The chronicle's way in from the chrome, and the only place the unseen
          count is drawn on a wall with no register hung.
          **The count is why this is in the bar at all.** Every other foldable
@@ -5673,6 +5693,19 @@
         >control :{control.endpoint.port}</span
       >
     {/if}
+    <!-- Chat view's title bar carries the tour as an icon, because it has no
+         room for a labelled button and no overflow menu to hide one in. The
+         wall draws the word instead, from `barButtons`. -->
+    {#if chat}
+      <button
+        class="touricon"
+        type="button"
+        title="A short tour of what Volery is, and why (space then h)"
+        aria-label="the tour"
+        aria-pressed={showTour}
+        onclick={() => (showTour = !showTour)}><Icon name="bird" /></button
+      >
+    {/if}
   {/snippet}
 
   <!-- Chat view's band: the fault line, which is the window's, at the head of
@@ -5886,6 +5919,9 @@
   {/if}
   {#if showFlyway}
     <Flyway onclose={() => (showFlyway = false)} />
+  {/if}
+  {#if showTour}
+    <Showcase onclose={() => (showTour = false)} />
   {/if}
   {#if showSink}
     <Sieve
@@ -6102,7 +6138,7 @@
        runs on past that edge, so a strip the wall's width was drawn over the
        newest lines of the transcript. -->
   {#if welcoming}
-    <Welcome onchoose={(to) => void welcomed(to)} />
+    <Welcome onchoose={(to) => void welcomed(to)} ontour={() => (showTour = true)} />
   {/if}
   {#if chat}
     <ChatView
@@ -6351,6 +6387,11 @@
         <p class="sub">
           Drop an image instead and it gets pinned up as reference.
         </p>
+        {#if skein.loaded}
+          <button class="tourlink" type="button" onclick={() => (showTour = true)}>
+            or take the tour first <span class="tourk"><kbd>space</kbd> <kbd>h</kbd></span>
+          </button>
+        {/if}
       </div>
     {/if}
 
@@ -6708,6 +6749,26 @@
     color: var(--paper);
     border-color: var(--paper-faint);
   }
+  /* The tour, as an icon in chat view's bar. Sized to the other icon buttons
+     there so the row keeps its rhythm, and achromatic like the rest. */
+  .touricon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--paper-mute);
+    cursor: pointer;
+  }
+  .touricon:hover {
+    color: var(--paper);
+    border-color: var(--edge);
+    background: color-mix(in oklab, var(--raised) 45%, transparent);
+  }
 
   /* The column between the title bar and the wall: the fault bar and the two
      drawers. A column itself, so what is in it stacks as it did when each was
@@ -6932,6 +6993,38 @@
     color: var(--paper-faint);
     margin-top: 0.5rem;
     line-height: 1.5;
+  }
+  /* The offer, on a wall with nothing on it. Quiet: it is a third line under
+     the two that say how to start, not a card or a dialog. */
+  .tourlink {
+    margin-top: 1.1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0.28rem 0.6rem;
+    border-radius: 5px;
+    border: 1px solid var(--edge);
+    background: none;
+    color: var(--paper-mute);
+    font-family: var(--util);
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  .tourlink:hover {
+    color: var(--paper);
+    border-color: var(--rule);
+  }
+  .tourk {
+    display: inline-flex;
+    gap: 3px;
+  }
+  .tourk kbd {
+    font-family: var(--util);
+    font-size: 0.68rem;
+    padding: 0 4px;
+    border-radius: 3px;
+    border: 1px solid var(--edge);
+    color: var(--paper-faint);
   }
 
 

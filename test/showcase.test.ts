@@ -1,0 +1,283 @@
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+
+import {
+  ASK,
+  CARD_PROSE,
+  CARD_PROSE_AFTER,
+  CARD_RUN,
+  CHAPTERS,
+  COMPARE,
+  COMPARE_NOTE,
+  NEXT,
+  PLANE_H,
+  PLANE_W,
+  SECURITY_FACTS,
+  SECURITY_HEADLINE,
+  SECURITY_PLANS,
+  SECURITY_STAGE,
+  SHOW_CARD_H,
+  SHOW_CARD_W,
+  STATUS_SAID,
+  TABS_STORY,
+  TERMINAL_LINES,
+  TOOLS,
+  WALL_CARDS,
+  WALL_TERRITORIES,
+  chapterIndex,
+  nextChapter,
+  previousChapter,
+  progress,
+  theftStory,
+} from "../src/lib/showcase";
+
+describe("the tour's chapters", () => {
+  test("there are nine of them and every id is reachable", () => {
+    expect(CHAPTERS.length).toBe(9);
+    expect(new Set(CHAPTERS.map((c) => c.id)).size).toBe(9);
+  });
+
+  test("every chapter has a title and a lede worth reading", () => {
+    for (const c of CHAPTERS) {
+      expect(c.title.trim().length).toBeGreaterThan(2);
+      expect(c.lede.trim().length).toBeGreaterThan(20);
+    }
+  });
+
+  test("the heading is a sentence rather than the rail's label again", () => {
+    for (const c of CHAPTERS) {
+      expect(c.head.trim().length).toBeGreaterThan(10);
+      expect(c.head).not.toBe(c.title);
+    }
+  });
+
+  test("index, next and previous agree with the array", () => {
+    expect(chapterIndex("why")).toBe(0);
+    expect(chapterIndex("next")).toBe(CHAPTERS.length - 1);
+    expect(nextChapter(0)).toBe(1);
+    expect(nextChapter(CHAPTERS.length - 1)).toBe(0);
+    expect(previousChapter(0)).toBe(CHAPTERS.length - 1);
+  });
+
+  test("progress runs from zero to one and never past either", () => {
+    expect(progress(0)).toBe(0);
+    expect(progress(CHAPTERS.length - 1)).toBe(1);
+    for (let i = 0; i < CHAPTERS.length; i++) {
+      expect(progress(i)).toBeGreaterThanOrEqual(0);
+      expect(progress(i)).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe("the demo wall", () => {
+  test("every card sits inside the plane", () => {
+    for (const c of WALL_CARDS) {
+      expect(c.x).toBeGreaterThanOrEqual(0);
+      expect(c.y).toBeGreaterThanOrEqual(0);
+      expect(c.x + SHOW_CARD_W).toBeLessThanOrEqual(PLANE_W);
+      expect(c.y + SHOW_CARD_H).toBeLessThanOrEqual(PLANE_H);
+    }
+  });
+
+  test("every card has a status the legend can explain", () => {
+    for (const c of WALL_CARDS) {
+      expect(STATUS_SAID[c.status]).toBeTruthy();
+    }
+  });
+
+  test("there is one card of every status on the wall", () => {
+    const seen = new Set(WALL_CARDS.map((c) => c.status));
+    for (const s of ["work", "ask", "rest", "fail", "idle"] as const) {
+      expect(seen.has(s)).toBe(true);
+    }
+  });
+
+  test("a territory contains at least one card, so none is decoration", () => {
+    for (const t of WALL_TERRITORIES) {
+      const inside = WALL_CARDS.filter(
+        (c) => c.x >= t.x && c.y >= t.y && c.x + SHOW_CARD_W <= t.x + t.w && c.y + SHOW_CARD_H <= t.y + t.h,
+      );
+      expect(inside.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("the transcript demo", () => {
+  test("the terminal side is the raw stream, not a tidy summary", () => {
+    expect(TERMINAL_LINES.length).toBeGreaterThan(10);
+    expect(TERMINAL_LINES.some((l) => l.includes(`"type":"tool_use"`))).toBe(true);
+    expect(TERMINAL_LINES.some((l) => l.includes(`"type":"result"`))).toBe(true);
+  });
+
+  test("the folded run carries a diff, because an edit drawn as prose is not one", () => {
+    const edit = CARD_RUN.find((c) => c.tool === "Edit");
+    expect(edit?.diff?.length).toBeGreaterThan(3);
+    expect(edit?.diff?.some((d) => d.sign === "+")).toBe(true);
+    expect(edit?.diff?.some((d) => d.sign === "-")).toBe(true);
+  });
+
+  test("both halves of the answer are present", () => {
+    expect(CARD_PROSE.trim().length).toBeGreaterThan(80);
+    expect(CARD_PROSE_AFTER.trim().length).toBeGreaterThan(40);
+    /* The prose is markdown because the panel renders markdown. */
+    expect(CARD_PROSE).toContain("**");
+  });
+});
+
+describe("the question", () => {
+  test("every option says what it costs", () => {
+    expect(ASK.options.length).toBe(3);
+    for (const o of ASK.options) {
+      expect(o.label.trim().length).toBeGreaterThan(3);
+      expect(o.detail.trim().length).toBeGreaterThan(20);
+    }
+  });
+
+  test("the question carries the reasoning, not only the choice", () => {
+    expect(ASK.why.trim().length).toBeGreaterThan(60);
+  });
+});
+
+describe("the comparison", () => {
+  test("every row has one cell per tool", () => {
+    for (const r of COMPARE) {
+      expect(r.cells.length).toBe(TOOLS.length);
+    }
+  });
+
+  test("every cell is a verdict with a reason", () => {
+    for (const r of COMPARE) {
+      for (const c of r.cells) {
+        expect(["yes", "partly", "no"]).toContain(c.v);
+        expect(c.said.trim().length).toBeGreaterThan(2);
+      }
+    }
+  });
+
+  test("the table can say no about Volery, or it is not a comparison", () => {
+    const volery = TOOLS.findIndex((t) => t.id === "volery");
+    const answers = COMPARE.map((r) => r.cells[volery]?.v);
+    expect(answers).toContain("partly");
+  });
+
+  test("the note names what the others are better at", () => {
+    expect(COMPARE_NOTE).toContain("terminal is faster");
+    expect(COMPARE_NOTE).toContain("better than Volery");
+  });
+});
+
+describe("security", () => {
+  test("both drafts exist, so hardening changes one constant and not the copy", () => {
+    expect(SECURITY_PLANS.current.length).toBe(4);
+    expect(SECURITY_PLANS.hardened.length).toBe(4);
+    expect(SECURITY_HEADLINE.current).not.toBe(SECURITY_HEADLINE.hardened);
+  });
+
+  test("the plans' status matches the stage they belong to", () => {
+    for (const p of SECURITY_PLANS.current) expect(p.status).toBe("planned");
+    for (const p of SECURITY_PLANS.hardened) expect(p.status).toBe("shipped");
+  });
+
+  test("the shipped stage still names a gap, or it is marketing", () => {
+    /* Even after hardening, a card with the repository in its hands is the
+       design and not a bug. The copy has to keep saying so. */
+    const hardened = SECURITY_PLANS.hardened.map((p) => p.body).join(" ");
+    expect(hardened).toContain("bypass");
+  });
+
+  test("every fact says something and carries a tone", () => {
+    for (const f of SECURITY_FACTS) {
+      expect(f.label.trim().length).toBeGreaterThan(2);
+      expect(f.value.trim().length).toBeGreaterThan(20);
+      expect(["ok", "warn", "gap"]).toContain(f.tone);
+    }
+    expect(SECURITY_FACTS.some((f) => f.tone === "gap")).toBe(true);
+  });
+
+  test("the stolen-key story is four distinct answers", () => {
+    const lines = new Set<string>();
+    for (const stage of ["current", "hardened"] as const) {
+      for (const stolen of [false, true]) {
+        for (const second of [false, true]) {
+          lines.add(theftStory(stage, stolen, second).body);
+        }
+      }
+    }
+    expect(lines.size).toBe(3);
+    expect(theftStory("current", true, false).title).toBe("the key is enough");
+    expect(theftStory("current", true, true).title).toBe("the key is not enough");
+    expect(theftStory("hardened", true, false).title).toBe("the key is not enough");
+  });
+});
+
+describe("what comes next", () => {
+  test("the three the user asked for are in it", () => {
+    const text = NEXT.map((n) => `${n.title} ${n.body}`).join(" ").toLowerCase();
+    expect(text).toContain("plugin");
+    expect(text).toContain("mcp");
+    expect(text).toContain("azure");
+    expect(text).toContain("allowance");
+  });
+});
+
+describe("the copy is the house's", () => {
+  /** Every string reachable from the module, walked rather than listed, so a
+   *  paragraph added tomorrow is covered without editing this test. */
+  function strings(v: unknown, out: string[] = []): string[] {
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) for (const x of v) strings(x, out);
+    else if (v && typeof v === "object") for (const x of Object.values(v)) strings(x, out);
+    return out;
+  }
+
+  const source = readFileSync("src/lib/showcase.ts", "utf8");
+
+  test("no em dash and no en dash anywhere a reader can see one", () => {
+    /* The user's rule, stated once and enforced here rather than remembered.
+       Code comments count too: the next person copies what they read. */
+    expect(source.includes("—")).toBe(false);
+    expect(source.includes("–")).toBe(false);
+  });
+
+  test("no antithesis formula and no 'not just' opener", () => {
+    const copy = strings({
+      CHAPTERS,
+      WALL_CARDS,
+      STATUS_SAID,
+      CARD_PROSE,
+      CARD_PROSE_AFTER,
+      CARD_RUN,
+      ASK,
+      COMPARE,
+      COMPARE_NOTE,
+      SECURITY_FACTS,
+      SECURITY_PLANS,
+      SECURITY_HEADLINE,
+      NEXT,
+      TABS_STORY,
+      TERMINAL_LINES,
+    }).join("\n");
+    expect(copy.toLowerCase()).not.toContain("not just");
+    expect(copy.toLowerCase()).not.toContain("it's not only");
+  });
+
+  test("the module reads nothing and spawns nothing", () => {
+    /* The tour must cost no allowance and work with no backend. An import of
+     *  the store or an invoke would make it fail on a plane. */
+    expect(source).not.toContain("@tauri-apps");
+    expect(source).not.toContain("invoke(");
+    expect(source).not.toContain("skein.svelte");
+  });
+
+  test("there is copy to check at all", () => {
+    /* A walk over an empty module would pass every assertion above. */
+    expect(strings({ CHAPTERS, WALL_CARDS, COMPARE }).length).toBeGreaterThan(40);
+  });
+});
+
+describe("the stage the chapter is actually in", () => {
+  test("the constant names one of the two drafts", () => {
+    expect(["current", "hardened"]).toContain(SECURITY_STAGE);
+    expect(SECURITY_PLANS[SECURITY_STAGE].length).toBe(4);
+  });
+});

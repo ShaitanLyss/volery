@@ -299,6 +299,7 @@ describe("the which-key hint", () => {
       { keys: "gg", label: "this grouping on the glass / back" },
       { keys: "gn", label: "another grouping here" },
       { keys: "gr", label: "rename this grouping" },
+      { keys: "h", label: "how volery works: the tour" },
       { keys: "ia", label: "I'm away / back" },
       { keys: "k", label: "flyway key" },
       { keys: "la", label: "archive the plan" },

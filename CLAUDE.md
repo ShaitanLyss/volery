@@ -77,7 +77,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # timeline, plates, span, notice, shadow, machine, handle, waiting,
                          # glance, tether, brightness, peeking, chatview, viewmode, composer,
                          # chattokens, starting, allowance, search, sheets, projectview, gist, filed,
-                         # sources, marks, whois, credits, boostmusic, boostfield,
+                         # sources, marks, whois, credits, boostmusic, boostfield, showcase,
                          # browsercdp, browserstall, browserframes, browserroots, freshen,
                          # cast
 bun test test/classify.test.ts                                        # one file
@@ -348,6 +348,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `cast.md` | screens on the wall, the webview half: a decoder that is a worker's so neither main thread touches a frame, newest-frame-or-nothing, the one holder and the one tile over every surface, the effect loop the first lab found, the first click that only focuses, Escape held as the way out, immersive as a borrowed surface, chat view's sheet, grid and vignettes, and the fake host that let it be built before the capture existed (`docs/SCREENS.md` is the contract) | `cast.ts`, `cast.worker.ts`, `cast.svelte.ts`, `Screen*.svelte`, `tools/castlab.ts` |
 | `kit.md` | the plugin every project card is spawned with: the `volery:coordinate` skill and the `red-team` and `verifier` agents, why `--plugin-dir` rather than the system prompt, what the skill leaves out because the wall already says it, and the one receipt that points at it | `kit.rs`, `src-tauri/kit/**` |
 | `load.md` | ten cards on one laptop: one `@playwright/mcp` for the wall, a project's stdio server shared across its cards, the reaper that stopped killing Git Bash work, telling a card the machine is saturated, and the 403 the CLI remembers by server name machine-wide | `load.rs`, `mcphost.rs`, `pool.rs` |
+| `showcase.md` | the tour: nine chapters over the wall, why it spends no allowance, which real components it may reuse, the copy rules and the two security drafts, the five ways in, and how to look at it on a machine with no MSVC | `showcase.ts`, `Showcase.svelte`, `Show*.svelte`, `showcase.html` |
 
 ## Architecture
 
