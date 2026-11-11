@@ -7759,7 +7759,13 @@ mod tests {
         assert!(work_rows(&conn, 10, 1).is_err(), "a backwards window is refused");
         assert_eq!(work_rows(&conn, 0, 200).unwrap().len(), 1);
         assert_eq!(tool_rows(&conn, 0, 200).unwrap().len(), 0);
-        let series = work_series_rows(&conn, 0, 200).unwrap();
+        /* The spend half is read over a window that holds the usage rows above:
+           30,000 and 40,000 are where they were put to keep them clear of the
+           work fact's own instant, and a window ending at 200 excludes both.
+           That is the test's fixture rather than the query's rule — a bounded
+           read answers with the rows inside its bound, which is the whole of
+           what the `at >= ?1 AND at < ?2` clause claims. */
+        let series = work_series_rows(&conn, 0, 50_000).unwrap();
         assert_eq!(series.hourly.len(), 1);
         assert_eq!(series.hourly[0].kind, "commit");
         assert_eq!(series.hourly[0].count, 1);
