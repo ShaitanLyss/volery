@@ -14,7 +14,9 @@ event stream into its own design — so a card knows the difference between thin
 running a tool, asking you a question and having crashed, and can say so in a colour and a
 line of prose rather than in scrollback.
 
-Released under the [MIT license](LICENSE).
+Released under the [AGPL-3.0-or-later](LICENSE). Open source projects can reuse it freely under
+that licence; a private or commercial application that embeds it needs a
+[commercial licence](COMMERCIAL.md).
 
 ## What it does
 

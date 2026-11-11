@@ -3,6 +3,7 @@ name = "phone-ffi"
 version = "0.1.0"
 description = "The JNI bridge between the Android phone app and the flyway node"
 authors = ["moonlyss"]
+license = "AGPL-3.0-or-later"
 edition = "2021"
 publish = false
 

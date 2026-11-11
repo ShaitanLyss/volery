@@ -3,6 +3,7 @@ name = "flyway-core"
 version = "0.1.0"
 description = "The flyway's pure core: the key, the frames, the vocabularies and the iroh transport, with nothing of the app in it"
 authors = ["moonlyss"]
+license = "AGPL-3.0-or-later"
 edition = "2021"
 publish = false
 
