@@ -7033,6 +7033,190 @@ pub async fn overlap_minutes(
     .await?
 }
 
+/// Two cards that shared a file, and when.
+///
+/// `overlap_minutes` answers one pair. The coordination strip needs every pair
+/// at once, and a strip that asked the one-pair command would be a scan of
+/// `file_touch` per pair: forty-five scans on a ten-card wall, each off the main
+/// thread but none of them free. So this is the same arithmetic over one scan.
+///
+/// **`spans` is what the strip can draw.** A count of minutes places nothing; a
+/// union of merged runs says where the pair overlapped, which is the whole of
+/// "overlap bands" (§3.9). Minutes and files keep the one-pair command's meaning
+/// exactly, because both run on the same normalisation and the same minute
+/// rule.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PairOverlap {
+    pub left: String,
+    pub right: String,
+    pub minutes: i64,
+    pub files: Vec<String>,
+    /// Merged runs of shared minutes, as `[start, end)` in milliseconds.
+    pub spans: Vec<[i64; 2]>,
+}
+
+/// A pair listing past this is a window that should be narrowed rather than
+/// drawn: a strip with two thousand bands is not a reading.
+pub const OVERLAP_PAIR_CAP: usize = 2_000;
+
+/// How many distinct card-path-minutes the listing may read.
+///
+/// **Not `OVERLAP_ROW_CAP`**, which is fifty thousand touches for *two cards*.
+/// This one scans a whole wall, and the work tab's widest span is ninety days:
+/// this machine's own wall measured ~5,900 touches a week, so ninety days is
+/// under a hundred thousand, and a busy wall needs the headroom. It is still a
+/// refusal rather than a truncation, but a refusal the reader catches and says
+/// so about, because the bars and episodes remain true without it.
+pub const OVERLAP_PAIR_ROW_CAP: usize = 250_000;
+
+/// Every pair of cards that touched a common file, from the touches themselves.
+///
+/// The pure half, so the arithmetic is testable without a database: `file_touch`
+/// has no pair column, and the ordering, the normalisation and the minute rule
+/// are exactly what could be got wrong.
+fn overlap_pairs_from_touches(rows: &[(String, String, i64)]) -> Vec<PairOverlap> {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    /* path → card → the minutes it was in that path. */
+    let mut per: HashMap<String, BTreeMap<String, BTreeSet<i64>>> = HashMap::new();
+    for (card, path, at) in rows {
+        if card.is_empty() {
+            continue;
+        }
+        per.entry(crate::board::normalize(path))
+            .or_default()
+            .entry(card.clone())
+            .or_default()
+            .insert(at.div_euclid(60_000));
+    }
+
+    /* (left, right) → its shared minutes and the files both were in. */
+    let mut pairs: BTreeMap<(String, String), (BTreeSet<i64>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for (path, cards) in per {
+        let list: Vec<(&String, &BTreeSet<i64>)> = cards.iter().collect();
+        if list.len() < 2 {
+            continue;
+        }
+        for i in 0..list.len() {
+            for j in (i + 1)..list.len() {
+                let (a, b) = if list[i].0 <= list[j].0 {
+                    (list[i], list[j])
+                } else {
+                    (list[j], list[i])
+                };
+                let entry = pairs
+                    .entry((a.0.clone(), b.0.clone()))
+                    .or_default();
+                for minute in a.1.intersection(b.1) {
+                    entry.0.insert(*minute);
+                }
+                /* A shared path counts whether or not the same minute was
+                   shared: that is the leading indicator, and `overlap_minutes`
+                   already reads it that way. */
+                entry.1.insert(path.clone());
+            }
+        }
+    }
+
+    pairs
+        .into_iter()
+        .map(|((left, right), (minutes, files))| {
+            let mut runs: Vec<[i64; 2]> = Vec::new();
+            let mut current: Option<[i64; 2]> = None;
+            for minute in minutes.iter().copied() {
+                let start = minute * 60_000;
+                match current {
+                    Some([s, e]) if e == start => current = Some([s, start + 60_000]),
+                    Some([s, e]) => {
+                        runs.push([s, e]);
+                        current = Some([start, start + 60_000]);
+                    }
+                    None => current = Some([start, start + 60_000]),
+                }
+            }
+            if let Some(run) = current {
+                runs.push(run);
+            }
+            PairOverlap {
+                left,
+                right,
+                minutes: minutes.len() as i64,
+                files: files.into_iter().collect(),
+                spans: runs,
+            }
+        })
+        .collect()
+}
+
+/// One scan of `file_touch`, every pair in it.
+pub fn overlap_pairs_between(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+) -> Result<Vec<PairOverlap>, String> {
+    if to <= from {
+        return Err(format!(
+            "an overlap window ending at {to} does not start after {from}"
+        ));
+    }
+    /* One row per card, path and minute rather than per touch: an editor that
+       saves five times inside a minute touched that file once as far as an
+       overlap is concerned. The grouping is what keeps a wide window inside the
+       cap; the pair arithmetic below is unchanged. */
+    let mut stmt = conn
+        .prepare(
+            "SELECT conversation_id, path, (at / 60000) * 60000 AS minute
+               FROM file_touch
+              WHERE at >= ?1 AND at < ?2
+              GROUP BY conversation_id, path, minute
+              ORDER BY minute
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("overlap pairs: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, OVERLAP_PAIR_ROW_CAP as i64 + 1], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("overlap pairs: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("overlap pairs: {e}"))?;
+    if rows.len() > OVERLAP_PAIR_ROW_CAP {
+        return Err(format!(
+            "overlap pairs: that window holds more than {OVERLAP_PAIR_ROW_CAP} card-path-minutes, \
+             so it is refused rather than truncated: ask for a narrower one"
+        ));
+    }
+    let pairs = overlap_pairs_from_touches(&rows);
+    if pairs.len() > OVERLAP_PAIR_CAP {
+        return Err(format!(
+            "overlap pairs: that window holds more than {OVERLAP_PAIR_CAP} overlapping pairs, so \
+             it is refused rather than drawn in part: ask for a narrower one"
+        ));
+    }
+    Ok(pairs)
+}
+
+/// Every pair of cards that shared a file over a window, with when they did.
+#[tauri::command]
+pub async fn overlap_pairs(
+    app: tauri::AppHandle,
+    from: i64,
+    to: i64,
+) -> Result<Vec<PairOverlap>, String> {
+    crate::off_main(move || {
+        use tauri::Manager;
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        overlap_pairs_between(&conn, from, to)
+    })
+    .await?
+}
+
 /// Which other open conversations have edited the same files as this one.
 /// The broadcast bar reads this to warn before a prompt fans out across a
 /// shared working tree.
@@ -15613,6 +15797,47 @@ mod tests {
         assert_eq!(o.files, vec!["c:/x/src/a.ts"]);
         assert!(overlap_between(&conn, "c1", "c2", 600_000, 1_000_000).unwrap().minutes == 0);
         assert!(overlap_between(&conn, "c1", "c2", 9, 1).is_err(), "a window that does not start");
+    }
+
+    /// The strip's listing is the same arithmetic as the one-pair reading, and
+    /// its spans are where a band can actually be drawn.
+    #[test]
+    fn overlap_pairs_lists_every_shared_file_and_where_it_was_shared() {
+        let t = |card: &str, path: &str, at: i64| (card.to_string(), path.to_string(), at);
+        let rows = vec![
+            t("c1", r"C:\x\src\one.ts", 120_000), // minute 2
+            t("c2", "c:/x/src/one.ts", 130_000),  // minute 2, same file
+            t("c1", r"C:\x\src\one.ts", 182_000), // minute 3
+            t("c2", "c:/x/src/one.ts", 185_000),  // minute 3
+            t("c3", r"C:\x\src\one.ts", 190_000), // minute 3, a third card
+            t("c1", r"C:\x\only-a.ts", 120_000),  // nobody else
+        ];
+        let pairs = overlap_pairs_from_touches(&rows);
+        assert_eq!(pairs.len(), 3, "one row per pair that shared a file");
+        let one = pairs.iter().find(|p| p.left == "c1" && p.right == "c2").unwrap();
+        assert_eq!(one.minutes, 2);
+        assert_eq!(one.files, vec!["c:/x/src/one.ts"]);
+        assert_eq!(one.spans, vec![[120_000, 240_000]], "two adjacent minutes are one band");
+        let three = pairs.iter().find(|p| p.left == "c1" && p.right == "c3").unwrap();
+        assert_eq!(three.minutes, 1);
+        assert_eq!(three.spans, vec![[180_000, 240_000]]);
+        assert!(pairs.iter().all(|p| p.right != "c1"), "pairs are ordered, not repeated");
+    }
+
+    /// A pair whose touches never landed in the same minute is a shared file
+    /// and not a shared moment: it is listed with no span, and the strip draws
+    /// no band for it.
+    #[test]
+    fn a_shared_file_in_different_minutes_is_not_a_band() {
+        let rows = vec![
+            ("c1".to_string(), "x/a.ts".to_string(), 0),
+            ("c2".to_string(), "x/a.ts".to_string(), 120_000),
+        ];
+        let pairs = overlap_pairs_from_touches(&rows);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].minutes, 0);
+        assert_eq!(pairs[0].spans, Vec::<[i64; 2]>::new());
+        assert_eq!(pairs[0].files, vec!["x/a.ts"]);
     }
 }
 

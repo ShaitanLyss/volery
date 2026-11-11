@@ -102,7 +102,8 @@ export function setPresentation(p: Presentation): void {
   remember(presentation.mode, p);
 }
 
-/** Which tab of the surface is in front: the money, or the words (§11.11).
+/** Which tab of the surface is in front: the money, the words, or cost against
+ *  output (§11.11, §11.14).
  *
  * One memory for both presentations and both host modes, unlike the
  * presentation itself. The presentation is per mode because the wall and chat

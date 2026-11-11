@@ -125,7 +125,8 @@ export type Verb =
         | "showcase"
         | "analytics"
         | "analyticspage"
-        | "analyticstrace";
+        | "analyticstrace"
+        | "analyticswork";
     }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
@@ -451,6 +452,11 @@ export const CHORDS: readonly Chord[] = [
      for. It opens the surface on that tab in whichever presentation the mode
      remembers, because `t` chooses a tab and not a skin; `v` still swaps. */
   { keys: "nt", label: "the prompt trace", verb: { kind: "open", what: "analyticstrace" } },
+  /* `nw`: what the money bought (§11.14), the third tab of the same surface.
+     A letter of its own rather than a fourth reading under `b`, for `nt`'s
+     reason: the tab decides what the surface is about, and the skin stays
+     whatever the mode remembers. */
+  { keys: "nw", label: "cost against output", verb: { kind: "open", what: "analyticswork" } },
   ...readings(),
 ];
 

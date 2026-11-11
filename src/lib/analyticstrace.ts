@@ -691,8 +691,9 @@ export function costLabel(f: Pick<FavouriteRow, "cost" | "turns">): string {
 
 /* ── the tab, remembered ────────────────────────────────────────────────── */
 
-/** The two tabs of one surface (§11.11): the money, and the words. */
-export type SurfaceTab = "spend" | "prompts";
+/** The tabs of one surface (§11.11, §11.14): the money, the words, and what
+ *  the money bought. */
+export type SurfaceTab = "spend" | "prompts" | "work";
 
 /** One key, not one per host mode. The presentation is per mode because the
  *  wall and chat view are different rooms (§11.15); the tab is one surface's own
@@ -701,7 +702,7 @@ export type SurfaceTab = "spend" | "prompts";
 export const TAB_STORE = "skein.analytics.tab";
 
 export function tabFor(raw: string | null): SurfaceTab {
-  return raw === "prompts" ? "prompts" : "spend";
+  return raw === "prompts" || raw === "work" ? raw : "spend";
 }
 
 export function otherTab(tab: SurfaceTab): SurfaceTab {

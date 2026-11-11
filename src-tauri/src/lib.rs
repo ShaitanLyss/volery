@@ -1174,6 +1174,7 @@ pub fn run() {
             analytics::work_facts,
             analytics::work_series,
             store::overlap_minutes,
+            store::overlap_pairs,
             limits::read_limits,
             limits::release_limits,
             azdo::azdo_runs,

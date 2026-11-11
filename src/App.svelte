@@ -711,6 +711,7 @@
       else if (verb.what === "analytics") openAnalytics("room");
       else if (verb.what === "analyticspage") openAnalytics("page");
       else if (verb.what === "analyticstrace") openAnalytics(undefined, "prompts");
+      else if (verb.what === "analyticswork") openAnalytics(undefined, "work");
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -5964,6 +5965,7 @@
     <Analytics
       as={analyticsAs}
       asTab={analyticsTab}
+      names={cardNames}
       onclose={() => {
         showAnalytics = false;
         analyticsAs = undefined;

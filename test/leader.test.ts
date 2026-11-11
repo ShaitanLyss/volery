@@ -326,6 +326,7 @@ describe("the which-key hint", () => {
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "nn", label: "analytics as a document" },
       { keys: "nt", label: "the prompt trace" },
+      { keys: "nw", label: "cost against output" },
       { keys: "o", label: "the integrations panel" },
       { keys: "p", label: "questions that piled up" },
       { keys: "ra", label: "every screen on the flyway" },

@@ -11,34 +11,42 @@
    * **The shell owns the question and the read; the presentations own only the
    * drawing.** Span, measure, split and filter live in `analyticsview.svelte.ts`
    * so both presentations read them and swapping carries them across. The
-   * window is read here once, folded into series here once, and the same
+   * spend window is read here once, folded into series here once, and the same
    * `RoomSeries[]` is handed to whichever face is in front — which is what
-   * makes the numbers agree across the swap by construction (§11.15).
+   * makes the numbers agree across the swap by construction (§11.15). The work
+   * tab reads its own window (three commands, `analyticsworkread.svelte.ts`)
+   * and is folded into one `WorkModel` here, for the same reason.
    *
    * **It reads, it does not poll.** One read on open, one whenever the span
    * changes, one more after the collector's minute has gone by (a single
-   * one-shot timer, not an interval), and one if you ask with `r`. On close the
-   * component unmounts, which clears the timer; a read still in flight lands on
-   * a dead component and is dropped by the generation counter rather than
-   * writing into the next opening. The filter does not cost a read: it cuts the
-   * rows already here, which is the cheaper and the more honest of the two
-   * (a re-read would answer the same window with the same rows).
+   * one-shot timer, not an interval), and one if you ask with `r`. The work
+   * tab adds one read per entry to it, and nothing while it is not in front.
+   * On close the component unmounts, which clears the timer; a read still in
+   * flight lands on a dead component and is dropped by the generation counter
+   * rather than writing into the next opening. The filter does not cost a read:
+   * it cuts the rows already here, which is the cheaper and the more honest of
+   * the two (a re-read would answer the same window with the same rows).
    *
-   * Keyboard: `v` swaps the presentation, `[` `]` step the span, `m` the
-   * measure, `g` the split, `f` goes to the controls, `r` reads again, `s`
-   * saves a view, `l` opens the library, Escape leaves. The room's own keys —
-   * `t` for its table, the arrows or `j`/`k` to walk buckets, Home and End —
-   * are handed to it, because they are about that drawing; the page's arrows
-   * scroll the document. The keys left to the surface are the surface's in
-   * both drawings, so a span changes the same way in either.
+   * Keyboard: `v` swaps the presentation, `[` `]` step the span, `f` goes to
+   * the controls, `r` reads again, `s` saves a view, `l` opens the library,
+   * `1` `2` `3` choose a tab, Escape leaves. The spend tab adds `m` for the
+   * measure and `g` for the split; the work tab adds `x` for its scatter
+   * measure. The room's own keys (`t` for its table, the arrows or `j`/`k` to
+   * walk buckets, Home and End) are handed to it, because they are about that
+   * drawing; the page's arrows scroll the document. The keys left to the
+   * surface are the surface's in both drawings, so a span changes the same way
+   * in either.
    */
   import { onMount, tick, untrack } from "svelte";
   import Icon from "./Icon.svelte";
   import AnalyticsRoom from "./AnalyticsRoom.svelte";
   import AnalyticsPage from "./AnalyticsPage.svelte";
   import AnalyticsPrompts from "./AnalyticsPrompts.svelte";
+  import AnalyticsWork from "./AnalyticsWork.svelte";
+  import AnalyticsWorkPage from "./AnalyticsWorkPage.svelte";
   import AnalyticsViews from "./AnalyticsViews.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
+  import { readWorkWindow } from "./analyticsworkread.svelte";
   import { prompts as realPrompts } from "./promptsread.svelte";
   import {
     presentation,
@@ -58,6 +66,7 @@
     emptinessOf,
     roomBucket,
     tierSaid,
+    windowRequest,
     windowTier,
     type AnalyticsWindow,
     type SlotBook,
@@ -65,6 +74,17 @@
     type WindowReader,
   } from "./analyticsroom";
   import { pageModel, surfaceOfView, type HostMode, type Presentation } from "./analyticpage";
+  import {
+    SCATTER_MEASURES,
+    WORK_SPANS,
+    scatterMeasureFor,
+    workModelOf,
+    workSpanFor,
+    type ScatterMeasure,
+    type WorkBundle,
+    type WorkModel,
+    type WorkReader,
+  } from "./analyticswork";
   import { spanMsOf, type ViewSpec } from "./analytics";
   import type { PromptReader, SurfaceTab } from "./analyticstrace";
   import { count } from "./usage";
@@ -73,6 +93,8 @@
   let {
     read,
     prompts,
+    work,
+    names,
     onclose,
     mode = view.current,
     as,
@@ -82,6 +104,12 @@
     read?: WindowReader;
     /** The prompt trace's reader, or a fixture. Absent means the commands. */
     prompts?: PromptReader;
+    /** The work read, or a fixture. Absent means the three commands. */
+    work?: WorkReader;
+    /** Conversation id → what the wall calls it, for the work tab's rows. A
+     *  card that has since closed keeps its short id, which is all the store
+     *  still has. */
+    names?: ReadonlyMap<string, string>;
     onclose: () => void;
     /** Which host is underneath: it only picks the *default* presentation,
      *  and never changes when `v` swaps them (§11.15). */
@@ -133,11 +161,26 @@
   let room = $state<ReturnType<typeof AnalyticsRoom> | undefined>();
   let page = $state<ReturnType<typeof AnalyticsPage> | undefined>();
   let promptsTab = $state<ReturnType<typeof AnalyticsPrompts> | undefined>();
+  let workTab = $state<ReturnType<typeof AnalyticsWork> | undefined>();
+  let workPage = $state<ReturnType<typeof AnalyticsWorkPage> | undefined>();
+
+  /* The work tab's own read. It is asked for only while that tab is in front:
+     the spend window is cheap enough to keep warm, three more queries over a
+     week of work facts are not, and a tab nobody is looking at owes nothing. */
+  let workLoaded = $state<WorkBundle | null>(null);
+  let workFailed = $state<string | null>(null);
+  let workBusy = $state(false);
+  let workReadAt = $state<number | null>(null);
+  let workFrom = $state(0);
+  let workTo = $state(0);
+  let workGen = 0;
+  let workMeasure = $state<ScatterMeasure>("merged");
 
   /* A closure rather than the prop itself: a prop read outside one captures
      its initial value, which is exactly the bug a fixture that swapped its
      reader at runtime would be impossible to see. */
   const reader: WindowReader = (span, now) => (read ?? readAnalyticsWindow)(span, now);
+  const workReader: WorkReader = (from, to) => (work ?? readWorkWindow)(from, to);
 
   /* The generation counter is what makes a slow read harmless: a span change
      while the last answer is still coming back must not land the old window on
@@ -162,15 +205,58 @@
     }
   }
 
+  async function readWork() {
+    const mine = ++workGen;
+    workBusy = true;
+    /* The work tab asks the longest window the fine tier can answer, never the
+       spend tab's year: `usage_fact` and `work_fact` stop at ninety days, and
+       a year of commits against ninety days of dollars is not a pair (§3.6). */
+    const req = windowRequest(workSpan, Date.now());
+    try {
+      const next = await workReader(req.since, req.until);
+      if (mine !== workGen) return;
+      workLoaded = next;
+      workFrom = req.since;
+      workTo = req.until;
+      workReadAt = Date.now();
+      workFailed = null;
+    } catch (e) {
+      if (mine !== workGen) return;
+      workFailed = e instanceof Error ? e.message : String(e);
+      workLoaded = null;
+    } finally {
+      if (mine === workGen) workBusy = false;
+    }
+  }
+
   /* One read on open and one per span change. Nothing else re-reads, and the
      effect has no other dependency because the reader's own arguments are the
      span alone. The selection a presentation holds is its own: the room clears
      its own when the span changes, because the bucket it remembers is not in
      the new axis, and this effect does not touch it so the 65-second refresh
-     cannot drop your place. */
+     cannot drop your place.
+     The tab is read untracked: switching tabs must not re-read the spend
+     window, but a span change while the work tab is up must refresh it too. */
   $effect(() => {
     void span;
     void readNow();
+    if (untrack(() => tab.current) === "work") void readWork();
+  });
+
+  /* Entering the work tab is its own read, because it was not loaded while the
+     money was in front. This is one read per entry, not a subscription. The
+     starting value is read untracked: a surface opened straight onto `space n w`
+     is already on the tab, and the span effect above has done that first read.
+     A span the work facts cannot answer (the spend tab's year) is narrowed
+     here, visibly, and the span effect performs the one read. */
+  let wasWork = untrack(() => tab.current === "work");
+  $effect(() => {
+    const on = tab.current === "work";
+    if (on && !wasWork) {
+      if (workSpan !== span) surface.span = workSpan;
+      else void readWork();
+    }
+    wasWork = on;
   });
 
   /* The collector writes once a minute, so an untouched surface goes stale by
@@ -183,6 +269,7 @@
     const t = setTimeout(() => {
       void readNow();
       if (tab.current === "prompts") void promptsTab?.reload();
+      if (tab.current === "work") void readWork();
     }, 65_000);
     return () => clearTimeout(t);
   });
@@ -192,6 +279,10 @@
   const spanMs = $derived(spanMsOf(span) ?? 7 * 24 * 3_600_000);
   const tier = $derived(windowTier(spanMs));
   const bucket = $derived(roomBucket(spanMs, tier));
+  /* The work tab's own window: the same shared span while it is answerable,
+     and the longest one that is when it is not. */
+  const workSpan = $derived(workSpanFor(span, spanMs));
+  const spanChoices = $derived(tabNow === "work" ? WORK_SPANS : SPANS);
 
   const model = $derived.by(() => {
     if (!loaded) return null;
@@ -212,7 +303,35 @@
 
   const empty = $derived(loaded ? emptinessOf(loaded) : null);
 
+  /* The work tab reads its own window and folds it once, here, so both skins
+     are handed the same value (§11.15). The "nothing recorded" state is the
+     spend read's own knowledge; without it the work tab still draws, it just
+     cannot tell a first minute from a quiet week. */
+  const workModel = $derived.by<WorkModel | null>(() => {
+    if (!workLoaded) return null;
+    return workModelOf({
+      rows: workLoaded.rows,
+      series: workLoaded.series,
+      overlaps: workLoaded.overlaps,
+      overlapsUnread: workLoaded.overlapsUnread,
+      names,
+      measure: workMeasure,
+      from: workFrom,
+      to: workTo,
+      span: workSpan,
+      scratch: {
+        /* `first` and `recorded` are only computed for an empty spend window;
+           on any other window they mean "not asked", not "nothing there". */
+        outsideKnown: loaded !== null && loaded.rows.length === 0,
+        never: loaded !== null && loaded.rows.length === 0 && loaded.first === null,
+        recorded: loaded !== null && loaded.rows.length === 0 ? loaded.recorded : 0,
+        first: loaded?.first ?? null,
+      },
+    });
+  });
+
   const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
+  const workSpanSaid = $derived(WORK_SPANS.find((s) => s.span === workSpan)?.said ?? workSpan);
   const measureSaid = $derived(ROOM_MEASURES.find((m) => m.key === measure)?.said ?? measure);
   const splitSaid = $derived(split ? `by ${split}` : "no split");
 
@@ -281,8 +400,9 @@
   /* ── verbs ───────────────────────────────────────────────────────────── */
 
   function stepSpan(delta: number) {
-    const i = SPANS.findIndex((s) => s.span === span);
-    const next = SPANS[Math.min(SPANS.length - 1, Math.max(0, (i === -1 ? 0 : i) + delta))];
+    const list = tab.current === "work" ? WORK_SPANS : SPANS;
+    const i = list.findIndex((s) => s.span === span);
+    const next = list[Math.min(list.length - 1, Math.max(0, (i === -1 ? 0 : i) + delta))];
     if (next) surface.span = next.span;
   }
 
@@ -337,6 +457,9 @@
        before it closes the surface, a field blurs rather than taking the whole
        tab away. It answers `true` only for a key it actually used. */
     if (tabNow === "prompts" && promptsTab?.key(e)) return;
+    /* The work tab's episode detail is closed by Escape before the surface is,
+       the same order the trace keeps. */
+    if (tabNow === "work" && workTab?.key(e)) return;
 
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
@@ -350,7 +473,8 @@
     /* Everything else is the surface's while it is up, including the letters
        the wall would otherwise take into the composer. */
     e.stopPropagation();
-    /* The tabs are on `1` and `2`, and are the surface's in either drawing. */
+    /* The tabs are on `1`, `2` and `3`, and are the surface's in either
+       drawing. */
     if (e.key === "1") {
       e.preventDefault();
       setTab("spend");
@@ -359,6 +483,11 @@
     if (e.key === "2") {
       e.preventDefault();
       setTab("prompts");
+      return;
+    }
+    if (e.key === "3") {
+      e.preventDefault();
+      setTab("work");
       return;
     }
     if (e.key === "v") {
@@ -372,6 +501,47 @@
       if (e.key === "r") {
         e.preventDefault();
         void promptsTab?.reload();
+      }
+      return;
+    }
+    /* The work tab keeps the span and the read, changes its scatter measure on
+       `x`, and walks its document with the arrows. Its measure and split are
+       the money tab's question, so `m` and `g` mean nothing here. */
+    if (tabNow === "work") {
+      const workDoc = showing === "room" ? workTab : workPage;
+      if (e.key === "[") {
+        e.preventDefault();
+        stepSpan(-1);
+      } else if (e.key === "]") {
+        e.preventDefault();
+        stepSpan(1);
+      } else if (e.key === "x") {
+        e.preventDefault();
+        workMeasure = workMeasure === "merged" ? "net" : "merged";
+      } else if (e.key === "r") {
+        e.preventDefault();
+        void readWork();
+      } else if (e.key === "f") {
+        e.preventDefault();
+        controls?.querySelector<HTMLButtonElement>("button")?.focus();
+      } else if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        workDoc?.scrollBy(64);
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        workDoc?.scrollBy(-64);
+      } else if (e.key === "PageDown") {
+        e.preventDefault();
+        workDoc?.turnPage(1);
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        workDoc?.turnPage(-1);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        workDoc?.goTo("top");
+      } else if (e.key === "End") {
+        e.preventDefault();
+        workDoc?.goTo("bottom");
       }
       return;
     }
@@ -466,21 +636,31 @@
         <p>
           {#if tabNow === "prompts"}
             prompt trace · form only · bodies sealed under the vault
+          {:else if tabNow === "work"}
+            {workSpanSaid} · artifacts and what they cost
+            {#if workLoaded && workLoaded.rows.length > 0}· {count(workLoaded.rows.length)} facts{/if}
           {:else}
             {spanSaid} · {tierSaid(loaded?.tier ?? tier)}
             {#if loaded && loaded.rows.length > 0}· {count(loaded.rows.length)} rows{/if}
           {/if}
         </p>
       </div>
-      <!-- One surface, two tabs (§11.11): the money and the words. The tab is a
-           choice of the surface's own and survives a presentation swap, which
-           draws the same tab in the other skin. -->
+      <!-- One surface, three tabs (§11.11, §11.14): the money, the words, and
+           cost against output. The tab is a choice of the surface's own and
+           survives a presentation swap, which draws the same tab in the other
+           skin. -->
       <div
         class="an-tabs"
         role="tablist"
         tabindex="-1"
         aria-label="which reading"
-        onkeydown={(e) => radioKeys(e, 2, tabNow === "spend" ? 0 : 1, (i) => setTab(i === 0 ? "spend" : "prompts"))}
+        onkeydown={(e) =>
+          radioKeys(
+            e,
+            3,
+            tabNow === "spend" ? 0 : tabNow === "prompts" ? 1 : 2,
+            (i) => setTab(i === 0 ? "spend" : i === 1 ? "prompts" : "work"),
+          )}
       >
         <button
           type="button"
@@ -498,6 +678,14 @@
           title="the prompt trace and the hall (2, or space n t)"
           onclick={() => setTab("prompts")}>prompts <kbd>2</kbd></button
         >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tabNow === "work"}
+          class:on={tabNow === "work"}
+          title="cost against output (3, or space n w)"
+          onclick={() => setTab("work")}>work <kbd>3</kbd></button
+        >
       </div>
       <!-- The swap, achromatic and small, beside the title: it says where you
            are going rather than where you are, because that is the thing you
@@ -513,7 +701,7 @@
         <kbd>v</kbd>
       </button>
       <span class="an-grow"></span>
-      <span class="an-keys">{tabNow === "prompts" ? "space n t" : "space b d"}</span>
+      <span class="an-keys">{tabNow === "prompts" ? "space n t" : tabNow === "work" ? "space n w" : "space b d"}</span>
       {#if tabNow === "spend"}
         <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
           <Icon name="pin" small />views
@@ -524,7 +712,7 @@
       </button>
     </header>
 
-    {#if tabNow === "spend"}
+    {#if tabNow === "spend" || tabNow === "work"}
     <div class="an-filters" bind:this={controls} role="group" aria-label="what to read">
       <span class="an-label">span</span>
       <div
@@ -532,9 +720,9 @@
         role="radiogroup"
         tabindex="-1"
         aria-label="span"
-        onkeydown={(e) => radioKeys(e, SPANS.length, SPANS.findIndex((s) => s.span === span), (i) => (surface.span = SPANS[i].span))}
+        onkeydown={(e) => radioKeys(e, spanChoices.length, spanChoices.findIndex((s) => s.span === span), (i) => (surface.span = spanChoices[i].span))}
       >
-        {#each SPANS as s (s.span)}
+        {#each spanChoices as s (s.span)}
           <button
             type="button"
             role="radio"
@@ -546,51 +734,79 @@
         {/each}
       </div>
 
-      <span class="an-label">measure</span>
-      <div
-        class="an-seg"
-        role="radiogroup"
-        tabindex="-1"
-        aria-label="measure"
-        onkeydown={(e) =>
-          radioKeys(e, ROOM_MEASURES.length, ROOM_MEASURES.findIndex((m) => m.key === measure), (i) => (surface.measure = ROOM_MEASURES[i].key))}
-      >
-        {#each ROOM_MEASURES as m (m.key)}
-          <button
-            type="button"
-            role="radio"
-            aria-checked={measure === m.key}
-            class:on={measure === m.key}
-            title={`${m.said} (m cycles it)`}
-            onclick={() => (surface.measure = m.key)}>{m.label}</button
-          >
-        {/each}
-      </div>
+      {#if tabNow === "spend"}
+        <span class="an-label">measure</span>
+        <div
+          class="an-seg"
+          role="radiogroup"
+          tabindex="-1"
+          aria-label="measure"
+          onkeydown={(e) =>
+            radioKeys(e, ROOM_MEASURES.length, ROOM_MEASURES.findIndex((m) => m.key === measure), (i) => (surface.measure = ROOM_MEASURES[i].key))}
+        >
+          {#each ROOM_MEASURES as m (m.key)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={measure === m.key}
+              class:on={measure === m.key}
+              title={`${m.said} (m cycles it)`}
+              onclick={() => (surface.measure = m.key)}>{m.label}</button
+            >
+          {/each}
+        </div>
 
-      <span class="an-label">split</span>
-      <div
-        class="an-seg"
-        role="radiogroup"
-        tabindex="-1"
-        aria-label="split"
-        onkeydown={(e) =>
-          radioKeys(e, ROOM_SPLITS.length, ROOM_SPLITS.findIndex((s) => s.key === split), (i) => (surface.split = ROOM_SPLITS[i].key))}
-      >
-        {#each ROOM_SPLITS as s (String(s.key))}
-          <button
-            type="button"
-            role="radio"
-            aria-checked={split === s.key}
-            class:on={split === s.key}
-            title={`split by ${s.label} (g cycles it)`}
-            onclick={() => (surface.split = s.key)}>{s.label}</button
-          >
-        {/each}
-      </div>
+        <span class="an-label">split</span>
+        <div
+          class="an-seg"
+          role="radiogroup"
+          tabindex="-1"
+          aria-label="split"
+          onkeydown={(e) =>
+            radioKeys(e, ROOM_SPLITS.length, ROOM_SPLITS.findIndex((s) => s.key === split), (i) => (surface.split = ROOM_SPLITS[i].key))}
+        >
+          {#each ROOM_SPLITS as s (String(s.key))}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={split === s.key}
+              class:on={split === s.key}
+              title={`split by ${s.label} (g cycles it)`}
+              onclick={() => (surface.split = s.key)}>{s.label}</button
+            >
+          {/each}
+        </div>
+      {:else}
+        <span class="an-label">against cost</span>
+        <div
+          class="an-seg"
+          role="radiogroup"
+          tabindex="-1"
+          aria-label="what the scatter plots against cost"
+          onkeydown={(e) =>
+            radioKeys(e, SCATTER_MEASURES.length, SCATTER_MEASURES.findIndex((m) => m.key === workMeasure), (i) => (workMeasure = SCATTER_MEASURES[i].key))}
+        >
+          {#each SCATTER_MEASURES as m (m.key)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={workMeasure === m.key}
+              class:on={workMeasure === m.key}
+              title={`${m.said} (x switches it)`}
+              onclick={() => (workMeasure = scatterMeasureFor(m.key))}>{m.label}</button
+            >
+          {/each}
+        </div>
+      {/if}
 
       <span class="an-grow"></span>
 
-      <button type="button" class="an-btn" title="read the window again (r)" onclick={() => void readNow()}>
+      <button
+        type="button"
+        class="an-btn"
+        title="read the window again (r)"
+        onclick={() => void (tabNow === "work" ? readWork() : readNow())}
+      >
         <Icon name="clock" small />read again
       </button>
     </div>
@@ -598,6 +814,40 @@
 
     {#if tabNow === "prompts"}
       <AnalyticsPrompts bind:this={promptsTab} reader={prompts ?? realPrompts} presentation={showing} />
+    {:else if tabNow === "work"}
+      {#if workFailed}
+        <div class="an-body an-message">
+          <p class="an-fail">could not read the work facts</p>
+          <p class="an-note">{workFailed}</p>
+        </div>
+      {:else if !workLoaded || !workModel}
+        <div class="an-body an-message">
+          <p class="an-note">{workBusy ? "reading…" : "no answer yet"}</p>
+        </div>
+      {:else if showing === "room"}
+        <div class="an-page">
+          <AnalyticsWork
+            bind:this={workTab}
+            model={workModel}
+            from={workFrom}
+            to={workTo}
+            spanSaid={workSpanSaid}
+            measure={workMeasure}
+            onmeasure={(m) => (workMeasure = m)}
+          />
+        </div>
+      {:else}
+        <div class="an-page">
+          <AnalyticsWorkPage
+            bind:this={workPage}
+            model={workModel}
+            from={workFrom}
+            to={workTo}
+            spanSaid={workSpanSaid}
+            measure={workMeasure}
+          />
+        </div>
+      {/if}
     {:else if failed}
       <div class="an-body an-message">
         <p class="an-fail">could not read the window</p>
@@ -640,7 +890,11 @@
       </div>
     {/if}
 
-    {#if readAt && !empty && tabNow === "spend"}
+    {#if tabNow === "work"}
+      {#if workReadAt && workModel && !workModel.empty}
+        <p class="an-read">read at {new Date(workReadAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</p>
+      {/if}
+    {:else if readAt && !empty && tabNow === "spend"}
       <p class="an-read">read at {new Date(readAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</p>
     {/if}
 
@@ -783,7 +1037,7 @@
   .an-pres {
     margin-left: 4px;
   }
-  /* The two tabs are a choice of the surface's own, so they sit beside the
+  /* The tabs are a choice of the surface's own, so they sit beside the
      title rather than in the filter row: they change what the whole overlay is
      about, not what one chart is asking. */
   .an-tabs {

@@ -16,6 +16,15 @@
 
 import type { AnalyticsWindow, WindowRequest } from "./analyticsroom";
 import type { Fact, HourFact, UsageRow } from "./analytics";
+import type {
+  CardSpendRow,
+  PairOverlap,
+  WorkBundle,
+  WorkHourRow,
+  WorkReader,
+  WorkRow,
+  WorkSessionRow,
+} from "./analyticswork";
 import {
   asVaultState,
   startOfDay,
@@ -291,6 +300,227 @@ function seedFavourites(rows: PromptRow[], now: number): FavouriteRow[] {
  * more characters — the same floor the real command enforces — and refuses a
  * short one with the command's own sentence, so the refusal path is visible too.
  */
+/* ── the work facts, made up ───────────────────────────────────────────────*/
+
+/** What the work tab draws, from a window of invented facts.
+ *
+ *  Deliberate holes, because a fixture with none never shows whether a face
+ *  draws a gap, a dash or a zero:
+ *
+ *  - **receipts and history together**, so a commit attributed from git is
+ *    visibly marked as such;
+ *  - **a conflict that a later commit closes** and **one nothing resolves**,
+ *    which is the thirty-minute cap;
+ *  - **an overlap pair**, placed inside both cards' sessions;
+ *  - **a card with spend and no artifact** (`design`), drawn as *no artifact*;
+ *  - **a card with commits and no merge** (`atlas`), whose `$ / merged` is a
+ *    dash rather than a zero.
+ *
+ *  Fractions of the requested window rather than fixed day offsets, so the
+ *  same fixture answers 24h and 90d. Deterministic for one request.
+ */
+export function fixtureWork(req: WindowRequest, mode: FixtureMode = "normal"): WorkBundle {
+  const since = req.since;
+  const until = req.until;
+  const span = Math.max(60_000, until - since);
+  const at = (f: number, minutes = 0) => Math.round(since + span * f) + minutes * MINUTE;
+
+  if (mode !== "normal") {
+    return {
+      rows: [],
+      series: { hourly: [], spend: [], sessions: [] },
+      overlaps: [],
+    };
+  }
+
+  const rows: WorkRow[] = [];
+  let ref = 0;
+  const work = (over: Partial<WorkRow> & Pick<WorkRow, "at" | "card" | "kind">): WorkRow => ({
+    host: "here",
+    session: `s-${over.card || "terminal"}`,
+    agent: "",
+    ref: `r${++ref}`,
+    branch: "main",
+    project: over.card || "terminal",
+    files: 0,
+    added: 0,
+    removed: 0,
+    conflictFiles: 0,
+    ms: 0,
+    provenance: "receipt",
+    ...over,
+  });
+
+  /** A run of commits across the window, with a recorded sha each. `gap` keeps
+   *  a stretch clear so a conflict's intended resolution really is the next
+   *  artifact on the branch, rather than whichever generated commit happens to
+   *  fall in the twelve minutes. */
+  function commits(
+    card: string,
+    count: number,
+    from: number,
+    to: number,
+    per: { files: number; added: number; removed: number },
+    history: number,
+    gap?: [number, number],
+  ) {
+    for (let i = 0; i < count; i += 1) {
+      const f = from + ((to - from) * (i + 0.5)) / count;
+      if (gap && f >= gap[0] && f <= gap[1]) continue;
+      rows.push(
+        work({
+          at: at(f),
+          card,
+          kind: "commit",
+          ref: `c${card}${i.toString(16)}`,
+          files: per.files,
+          added: per.added + ((i * 17) % 41),
+          removed: per.removed + ((i * 7) % 19),
+          provenance: i < history ? "history" : "receipt",
+        }),
+      );
+    }
+  }
+
+  /* volery: the busiest card, one conflict a commit closes. The generated
+     commits keep a thirteen-minute hole clear around it, in *time* rather than
+     in fractions, so the intended resolution is the next artifact at 24h and
+     at 7d alike. */
+  const conflictAt = 0.3;
+  commits("volery", 44, 0.02, 0.88, { files: 3, added: 61, removed: 12 }, 4, [
+    conflictAt,
+    conflictAt + (13 * MINUTE) / span,
+  ]);
+  for (let i = 0; i < 4; i += 1) {
+    rows.push(work({ at: at(0.2 + i * 0.16), card: "volery", kind: "pr_merge", ref: `#41${i}`, branch: "main", provenance: i === 0 ? "history" : "receipt", files: 0 }));
+  }
+  rows.push(work({ at: at(conflictAt), card: "volery", kind: "conflict", ref: "rebase", branch: "main", conflictFiles: 3, ms: 95_000 }));
+  /* The resolution, twelve minutes later: an episode of twelve minutes rather
+     than the ninety-five seconds the command was blocked. */
+  rows.push(work({ at: at(conflictAt, 12), card: "volery", kind: "commit", ref: "resolve1", branch: "main", files: 3, added: 22, removed: 8 }));
+
+  /* nova: more merges than volery per commit, and the leading project. */
+  commits("nova", 31, 0.04, 0.92, { files: 2, added: 84, removed: 6 }, 6);
+  for (let i = 0; i < 4; i += 1) {
+    rows.push(work({ at: at(0.12 + i * 0.2), card: "nova", kind: "pr_merge", ref: `#72${i}`, branch: "main", provenance: i === 0 ? "history" : "receipt" }));
+  }
+
+  /* rise: a conflict on a branch nothing resolves, so the cap is what ends it. */
+  commits("rise", 12, 0.44, 0.72, { files: 2, added: 58, removed: 5 }, 0);
+  for (let i = 0; i < 2; i += 1) {
+    rows.push(work({ at: at(0.5 + i * 0.16), card: "rise", kind: "pr_merge", ref: `#300${i}`, branch: "main" }));
+  }
+  rows.push(work({ at: at(0.62), card: "rise", kind: "conflict", ref: "cherry-pick", branch: "import", conflictFiles: 2, ms: 240_000 }));
+
+  /* atlas: a cleanup card. Commits and no merge (the null ratio), and more
+     lines removed than added, which is the negative net the table must say
+     with its sign rather than folding to zero. */
+  commits("atlas", 6, 0.58, 0.84, { files: 1, added: 12, removed: 70 }, 0);
+
+  /* The terminal: counted toward the project, never toward a card. */
+  commits("", 18, 0.08, 0.8, { files: 2, added: 53, removed: 3 }, 18);
+  rows.push(work({ at: at(0.36), card: "", kind: "merge", ref: "merge0", branch: "main", provenance: "history" }));
+  rows.push(work({ at: at(0.56), card: "", kind: "merge", ref: "merge1", branch: "main", provenance: "history" }));
+
+  const hourlyMap = new Map<string, WorkHourRow>();
+  for (const row of rows) {
+    if (row.kind === "conflict") continue;
+    const hour = Math.floor(row.at / HOUR) * HOUR;
+    const key = `${hour}|${row.project}|${row.branch}|${row.kind}`;
+    const one = hourlyMap.get(key) ?? {
+      hour,
+      host: "here",
+      project: row.project,
+      branch: row.branch,
+      kind: row.kind,
+      count: 0,
+      files: 0,
+      added: 0,
+      removed: 0,
+      conflictMs: 0,
+    };
+    one.count += 1;
+    one.files += row.files;
+    one.added += row.added;
+    one.removed += row.removed;
+    hourlyMap.set(key, one);
+  }
+
+  /* Sessions: two stretches for volery, and one for each other, placed so the
+     overlap pair below falls inside both. */
+  const sessions: WorkSessionRow[] = [
+    { session: "s-volery", host: "here", card: "volery", project: "volery", source: "card", startedAt: at(0.02), endedAt: at(0.08) },
+    { session: "s-volery", host: "here", card: "volery", project: "volery", source: "card", startedAt: at(0.26), endedAt: at(0.4) },
+    { session: "s-nova", host: "here", card: "nova", project: "nova", source: "card", startedAt: at(0.04), endedAt: at(0.12) },
+    { session: "s-rise", host: "here", card: "rise", project: "rise", source: "card", startedAt: at(0.28), endedAt: at(0.46) },
+    { session: "s-atlas", host: "here", card: "atlas", project: "atlas", source: "card", startedAt: at(0.58), endedAt: at(0.66) },
+    { session: "s-design", host: "here", card: "design", project: "nova", source: "card", startedAt: at(0.7), endedAt: at(0.78) },
+    { session: "s-terminal", host: "here", card: "", project: "volery", source: "terminal", startedAt: at(0.3), endedAt: at(0.38) },
+  ];
+
+  /* The tokens behind the dollars. Ten hours of volery at a plausible opus
+     context, fewer for the rest; the model is one the rate table knows, so the
+     cost is priced by the same arithmetic the spend tab uses. */
+  const spend: CardSpendRow[] = [];
+  const spendHours: [string, number][] = [
+    ["volery", 10],
+    ["nova", 7],
+    ["rise", 4],
+    ["atlas", 2],
+    ["design", 3],
+    ["", 3],
+  ];
+  for (const [card, hours] of spendHours) {
+    const session = sessions.find((s) => s.card === card);
+    for (let i = 0; i < hours; i += 1) {
+      spend.push({
+        card,
+        hour: Math.floor((session?.startedAt ?? since) / HOUR + i) * HOUR,
+        account: "lyss",
+        model: i % 3 === 2 ? "claude-sonnet-5-5" : "claude-opus-5-5",
+        provenance: "transcript",
+        inTok: 60_000,
+        outTok: 24_000,
+        cacheRead: 1_200_000,
+        write5m: 0,
+        write1h: 0,
+        requests: 8,
+        usdReported: 0,
+      });
+    }
+  }
+
+  /* Where the pair overlapped, inside both of their sessions. */
+  const overlaps: PairOverlap[] = [
+    {
+      left: "nova",
+      right: "volery",
+      minutes: 5,
+      files: ["c:/x/src/auth.ts"],
+      spans: [[at(0.045), at(0.045) + 5 * MINUTE]],
+    },
+    {
+      left: "rise",
+      right: "volery",
+      minutes: 14,
+      files: ["c:/x/src/import.ts", "c:/x/src/parse.ts"],
+      spans: [[at(0.3), at(0.3) + 9 * MINUTE], [at(0.31), at(0.31) + 5 * MINUTE]],
+    },
+  ];
+
+  return {
+    rows,
+    series: { hourly: [...hourlyMap.values()], spend, sessions },
+    overlaps,
+  };
+}
+
+/** The preview's work reader: `?tab=work` drives the same component the app
+ *  does, with no Tauri behind it. */
+export function fixtureWorkReader(mode: FixtureMode = "normal"): WorkReader {
+  return async (from, to) => fixtureWork({ since: from, until: to, fine: true }, mode);
+}
+
 export function fixturePromptReader(mode: FixtureMode = "normal", vaultMode: VaultMode = "locked"): PromptReader {
   const now = Date.now();
   let rows = mode === "normal" ? promptRowsFor(now) : [];

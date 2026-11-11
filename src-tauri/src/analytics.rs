@@ -4200,6 +4200,78 @@ fn attribute_commit(
     None
 }
 
+/// Give a receipt the line counts only git knows.
+///
+/// **A receipt names the sha and not the lines.** The CLI prints
+/// `[main 8adbaaa] subject`, from which the ingest can take the branch, the
+/// short sha and the subject, and `work_fact`'s `files`/`added`/`removed` are
+/// written as zero. History is the only writer that runs `--numstat`, and it
+/// used to skip the sha entirely because `history_known` found the receipt, so
+/// every commit a card made through its own `Bash` tool carried a structural
+/// zero. That is §9.1's missing row drawn as zero, on the measure the work page
+/// exists to show.
+///
+/// So history still suppresses its duplicate *row*, and it fills the receipt's
+/// counts on the way past. The receipt keeps its card and its provenance: the
+/// artifact is exact, and the lines are as exact as the sha. `work_hour` is
+/// moved by the same delta, in the receipt's own hour, because that is the
+/// bucket its count was rolled into.
+fn backfill_receipt_lines(conn: &Connection, commit: &HistCommit) -> Result<(), String> {
+    let row: Option<(i64, String, String, String, i64, i64, i64)> = conn
+        .query_row(
+            "SELECT at, project, branch, host, files, added, removed
+               FROM work_fact
+              WHERE kind = 'commit' AND provenance = 'receipt'
+                AND (ref = ?1 OR ?1 LIKE ref || '%')
+              LIMIT 1",
+            params![commit.sha],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| format!("analytics: history: {e}"))?;
+    let Some((at, project, branch, host, files, added, removed)) = row else {
+        return Ok(());
+    };
+    /* Already counted by a receipt writer that learns to read numstat, or by an
+       earlier pass: the counts are filled once. */
+    if files != 0 || added != 0 || removed != 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE work_fact SET files = ?2, added = ?3, removed = ?4
+          WHERE kind = 'commit' AND provenance = 'receipt'
+            AND (ref = ?1 OR ?1 LIKE ref || '%')",
+        params![commit.sha, commit.files, commit.added, commit.removed],
+    )
+    .map_err(|e| format!("analytics: history: {e}"))?;
+    conn.execute(
+        "UPDATE work_hour
+            SET files = files + ?4, added = added + ?5, removed = removed + ?6
+          WHERE hour = ?1 AND host = ?2 AND project = ?3 AND branch = ?7 AND kind = 'commit'",
+        params![
+            hour_of(at),
+            host,
+            project,
+            commit.files,
+            commit.added,
+            commit.removed,
+            branch
+        ],
+    )
+    .map_err(|e| format!("analytics: history: {e}"))?;
+    Ok(())
+}
+
 /// Write one tree's history, skipping what the store already holds.
 ///
 /// The branch is the tree's, so every candidate in it was working on that
@@ -4246,6 +4318,8 @@ fn write_history(
 
     for commit in commits {
         if history_known(&tx, &commit.sha)? {
+            /* The row exists; what a receipt cannot carry is the numstat. */
+            backfill_receipt_lines(&tx, commit)?;
             continue;
         }
         /* A merge commit's receipt has no sha to match on, so the branch and
@@ -5065,35 +5139,79 @@ pub struct WorkHourRow {
     pub conflict_ms: i64,
 }
 
-/// One card's artifacts over a window, kept apart by provenance.
+/// One card's tokens for one UTC hour, which is what lets the front end price a
+/// card's cost without shipping its facts.
+///
+/// **Pricing is a query-time read of the rate table**, so it lives in
+/// `analytics.ts::modeledUsd`, not here: a SQL `SUM` of dollars would be a
+/// second price table and would disagree with the spend page. What Rust can do
+/// is the join `usage_fact` has no column for — a fact carries a *session*, and
+/// `analytics_session.card_id` is what says whose session it was. Grouping by
+/// hour keeps the answer to cards x hours x models rather than one row per
+/// fact, and the hour is the grain a card-level aggregate can honestly claim
+/// (§7.4's argument for the turn backfill, the same one).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkCardRow {
-    /// `''` for a commit no card could be attributed.
+pub struct CardSpendRow {
+    /// `''` when no session row claims the fact, which is spend the card table
+    /// shows as uncarded rather than silently assigning.
     pub card: String,
-    pub kind: String,
+    pub hour: i64,
+    pub account: String,
+    pub model: String,
     pub provenance: String,
-    pub count: i64,
-    pub files: i64,
-    pub added: i64,
-    pub removed: i64,
-    pub conflicts: i64,
+    pub in_tok: i64,
+    pub out_tok: i64,
+    pub cache_read: i64,
+    pub write_5m: i64,
+    pub write_1h: i64,
+    pub requests: i64,
+    pub usd_reported: f64,
 }
 
-/// The rollup and the per-card totals, in one answer.
+/// A card's session, as the coordination strip draws its bar.
 ///
-/// **Two presentations of one table, not two measures**: the hour rows are what
-/// a year can afford to carry, and the card totals are what the scatter reads.
-/// The caller passes an hour-aligned window (a local day's bounds are not, and
-/// the hour row keeps its own UTC hour).
+/// The interval, not a duration: the strip needs where a card was working, and
+/// two sessions of one card are two stretches of the same bar. `ended_at` is
+/// `None` while a session is open, and the face draws it to the window's edge
+/// rather than inventing an end.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkSessionRow {
+    pub session: String,
+    pub host: String,
+    /// `''` for a terminal session, which has no card and is drawn as its own
+    /// row so its spend and commits are not attributed to anybody.
+    pub card: String,
+    pub project: String,
+    pub source: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+}
+
+/// The rollup and the two readings that share its window.
+///
+/// The hour rows are what a year can afford to carry. `spend` and `sessions`
+/// are what move the work page from a card's artifacts to its *cost against
+/// output*: the tokens to price and the intervals to place. They are part of
+/// the same answer because the page's table, scatter and coordination strip
+/// must not be three reads of one window that can disagree. The per-card
+/// artifact totals are folded in the front end from the facts themselves, which
+/// the page already has, so they are deliberately not a fourth copy here.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSeries {
     pub hourly: Vec<WorkHourRow>,
-    pub cards: Vec<WorkCardRow>,
+    pub spend: Vec<CardSpendRow>,
+    pub sessions: Vec<WorkSessionRow>,
 }
 
 pub const WORK_HOUR_CAP: usize = 50_000;
+/// Cards x hours x models, not facts: a busy week on a ten-card wall is a few
+/// thousand rows. The guard is for a malformed window, refused rather than
+/// truncated, the same bargain every other read here strikes.
+pub const WORK_SPEND_CAP: usize = 120_000;
+pub const WORK_SESSION_CAP: usize = 20_000;
 
 pub fn work_series_rows(conn: &Connection, from: i64, to: i64) -> Result<WorkSeries, String> {
     if to <= from {
@@ -5134,34 +5252,89 @@ pub fn work_series_rows(conn: &Connection, from: i64, to: i64) -> Result<WorkSer
              rather than truncated: ask for a narrower one"
         ));
     }
+    /* The card join, and it is a left join on purpose: a fact whose session has
+       no `analytics_session` row is still spend, it just cannot be attributed to
+       a card. `''` keeps it in the total and out of a card's column, which is
+       the same "counts toward the project, not a card" rule §3.9 states for an
+       unattributable commit. */
     let mut stmt = conn
         .prepare(
-            "SELECT card, kind, provenance, COUNT(*), COALESCE(SUM(files), 0),
-                    COALESCE(SUM(added), 0), COALESCE(SUM(removed), 0),
-                    COALESCE(SUM(conflict_files), 0)
-               FROM work_fact
-              WHERE at >= ?1 AND at < ?2
-              GROUP BY card, kind, provenance
-              ORDER BY card, kind, provenance",
+            "SELECT COALESCE(s.card_id, '') AS card, (f.at / 3600000) * 3600000 AS hour,
+                    f.account, f.model, f.provenance,
+                    COALESCE(SUM(f.in_tok), 0), COALESCE(SUM(f.out_tok), 0),
+                    COALESCE(SUM(f.cache_read), 0), COALESCE(SUM(f.write_5m), 0),
+                    COALESCE(SUM(f.write_1h), 0), COALESCE(SUM(f.requests), 0),
+                    COALESCE(SUM(f.usd_reported), 0)
+               FROM usage_fact f
+               LEFT JOIN analytics_session s
+                      ON s.session = f.session AND s.host = f.host
+              WHERE f.at >= ?1 AND f.at < ?2
+              GROUP BY card, hour, f.account, f.model, f.provenance
+              ORDER BY hour, card
+              LIMIT ?3",
         )
-        .map_err(|e| format!("analytics: work series: {e}"))?;
-    let cards = stmt
-        .query_map(params![from, to], |r| {
-            Ok(WorkCardRow {
+        .map_err(|e| format!("analytics: work spend: {e}"))?;
+    let spend = stmt
+        .query_map(params![from, to, WORK_SPEND_CAP as i64 + 1], |r| {
+            Ok(CardSpendRow {
                 card: r.get(0)?,
-                kind: r.get(1)?,
-                provenance: r.get(2)?,
-                count: r.get(3)?,
-                files: r.get(4)?,
-                added: r.get(5)?,
-                removed: r.get(6)?,
-                conflicts: r.get(7)?,
+                hour: r.get(1)?,
+                account: r.get(2)?,
+                model: r.get(3)?,
+                provenance: r.get(4)?,
+                in_tok: r.get(5)?,
+                out_tok: r.get(6)?,
+                cache_read: r.get(7)?,
+                write_5m: r.get(8)?,
+                write_1h: r.get(9)?,
+                requests: r.get(10)?,
+                usd_reported: r.get(11)?,
             })
         })
-        .map_err(|e| format!("analytics: work series: {e}"))?
+        .map_err(|e| format!("analytics: work spend: {e}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("analytics: work series: {e}"))?;
-    Ok(WorkSeries { hourly, cards })
+        .map_err(|e| format!("analytics: work spend: {e}"))?;
+    if spend.len() > WORK_SPEND_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {WORK_SPEND_CAP} card-hours, so it is \
+             refused rather than truncated: ask for a narrower one"
+        ));
+    }
+
+    /* A session that is still open has no end; the face draws it to the
+       window's edge, so `None` travels rather than a made-up instant. */
+    let mut stmt = conn
+        .prepare(
+            "SELECT session, host, COALESCE(card_id, ''), project, source, started_at, ended_at
+               FROM analytics_session
+              WHERE started_at < ?2 AND COALESCE(ended_at, ?2) > ?1
+              ORDER BY started_at
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: work sessions: {e}"))?;
+    let sessions = stmt
+        .query_map(params![from, to, WORK_SESSION_CAP as i64 + 1], |r| {
+            Ok(WorkSessionRow {
+                session: r.get(0)?,
+                host: r.get(1)?,
+                card: r.get(2)?,
+                project: r.get(3)?,
+                source: r.get(4)?,
+                started_at: r.get(5)?,
+                ended_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| format!("analytics: work sessions: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: work sessions: {e}"))?;
+    if sessions.len() > WORK_SESSION_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {WORK_SESSION_CAP} sessions, so it is \
+             refused rather than truncated: ask for a narrower one"
+        ));
+    }
+
+    Ok(WorkSeries { hourly, spend, sessions })
 }
 
 #[tauri::command]
@@ -7418,7 +7591,26 @@ mod tests {
         let wrote = write_history(&mut conn, "home", &root, &[commit]).unwrap();
         assert_eq!(wrote.history, 0, "the receipt already holds it");
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM work_fact", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 1, "one row, not a receipt and a history duplicate");
+        /* The receipt named the sha and not the lines; history is the only
+           writer that reads numstat, so it fills them in place. */
+        let (files, added, removed, provenance): (i64, i64, i64, String) = conn
+            .query_row(
+                "SELECT files, added, removed, provenance FROM work_fact",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((files, added, removed), (2, 10, 1));
+        assert_eq!(provenance, "receipt", "the artifact keeps its card and its provenance");
+        let (hfiles, hadded, hremoved): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT files, added, removed FROM work_hour WHERE kind = 'commit'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((hfiles, hadded, hremoved), (2, 10, 1), "the hourly rollup moves with it");
     }
 
     #[test]
@@ -7536,6 +7728,32 @@ mod tests {
                 [],
             )
             .unwrap();
+            /* The card join: a session row is what says whose money this was. */
+            conn.execute(
+                "INSERT INTO analytics_session
+                   (session, host, project, source, card_id, started_at, ended_at)
+                 VALUES ('s1', 'home', 'volery', 'card', 'card-s1', 0, 100)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_fact
+                   (at, host, session, model, source, account, provider, project,
+                    in_tok, out_tok, cache_read, requests)
+                 VALUES (30_000, 'home', 's1', 'claude-opus-5-5', 'card', 'lyss',
+                         'anthropic', 'volery', 1000, 200, 4000, 2)",
+                [],
+            )
+            .unwrap();
+            /* A fact no session claims stays spend and gets no card, which is
+               what stops it being quietly attributed to the one card present. */
+            conn.execute(
+                "INSERT INTO usage_fact (at, host, session, model, source, account, provider, project, requests)
+                 VALUES (40_000, 'home', 'elsewhere', 'claude-opus-5-5', 'terminal',
+                         'lyss', 'anthropic', 'volery', 1)",
+                [],
+            )
+            .unwrap();
         }
         let conn = conns.lock().unwrap();
         assert!(work_rows(&conn, 10, 1).is_err(), "a backwards window is refused");
@@ -7543,8 +7761,16 @@ mod tests {
         assert_eq!(tool_rows(&conn, 0, 200).unwrap().len(), 0);
         let series = work_series_rows(&conn, 0, 200).unwrap();
         assert_eq!(series.hourly.len(), 1);
-        assert_eq!(series.cards.len(), 1);
-        assert_eq!(series.cards[0].count, 1);
-        assert_eq!(series.cards[0].provenance, "receipt");
+        assert_eq!(series.hourly[0].kind, "commit");
+        assert_eq!(series.hourly[0].count, 1);
+        assert_eq!(series.sessions.len(), 1);
+        assert_eq!(series.sessions[0].card, "card-s1");
+        assert_eq!(series.spend.len(), 2, "one row per card and hour, not per fact");
+        let carded = series.spend.iter().find(|r| r.card == "card-s1").unwrap();
+        assert_eq!((carded.in_tok, carded.out_tok, carded.requests), (1000, 200, 2));
+        assert!(
+            series.spend.iter().any(|r| r.card.is_empty()),
+            "a fact no session claims is still spend, and is not given to a card"
+        );
     }
 }

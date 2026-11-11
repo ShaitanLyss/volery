@@ -13,7 +13,13 @@
 import { mount } from "svelte";
 import "./lib/tokens.css";
 import Analytics from "./lib/Analytics.svelte";
-import { fixturePromptReader, fixtureWindow, type FixtureMode, type VaultMode } from "./lib/analyticsfixture";
+import {
+  fixturePromptReader,
+  fixtureWindow,
+  fixtureWorkReader,
+  type FixtureMode,
+  type VaultMode,
+} from "./lib/analyticsfixture";
 import { windowRequest, type AnalyticsWindow } from "./lib/analyticsroom";
 
 const asked = new URLSearchParams(location.search);
@@ -28,7 +34,14 @@ const as = asked.has("page") ? "page" : asked.has("room") ? "room" : undefined;
    `?vault=locked` (the default) and `?vault=unlocked` choose the vault state
    the fixture starts in, which is what makes a locked body and an open one two
    page loads rather than two edits. */
-const tab = asked.get("tab") === "prompts" ? "prompts" : asked.get("tab") === "spend" ? "spend" : undefined;
+const tab =
+  asked.get("tab") === "prompts"
+    ? "prompts"
+    : asked.get("tab") === "work"
+      ? "work"
+      : asked.get("tab") === "spend"
+        ? "spend"
+        : undefined;
 const vault: VaultMode =
   asked.get("vault") === "none" ? "none" : asked.get("vault") === "unlocked" ? "unlocked" : "locked";
 
@@ -39,6 +52,7 @@ mount(Analytics, {
     asTab: tab,
     mode: "wall",
     prompts: fixturePromptReader(mode, vault),
+    work: fixtureWorkReader(mode),
     onclose: () => location.reload(),
     read: async (span: string, now: number): Promise<AnalyticsWindow> =>
       fixtureWindow(windowRequest(span, now), mode),
