@@ -2903,6 +2903,11 @@ CREATE TABLE tool_hour (
   PRIMARY KEY (hour, host, account, provider, project, kind, server, tool, target)
 );
 
+-- v66: the work tables (§3.9). The tool tables above are v62; v66 adds
+-- `tool_pending.errors` and `tool_pending.out_bytes`, a `tool_seen` memo keyed
+-- by `tool_use_id` (a re-read of a replaced transcript would otherwise stage a
+-- call a second time), and the four indexes the work queries need.
+--
 -- What the money bought (§3.9). A receipt from a card's own tool call is
 -- `provenance = 'receipt'`; a commit found in git history and attributed is
 -- `'history'`, and the two are never summed without saying so.
