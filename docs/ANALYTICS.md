@@ -148,6 +148,11 @@ history loses exactly the thing it exists to record. The session table carries t
 and *last* of each; the fact carries what was true for that bucket. A query that wants "what
 did this card cost" sums the facts rather than trusting a single label.
 
+Two columns that sound alike are not: **`source` is `card | terminal | unknown`** (who ran
+it), and **`provenance` is `transcript | turn`** (where the row came from). Both are in the
+key, so a backfilled `turn` day and a transcript fact for the same bucket cannot collide and
+the query can prefer the finer one.
+
 `provenance` is `transcript`, `turn` or `rollup`. It is what lets a backfilled `turn` day sit
 beside transcript facts without being mistaken for them, and what lets a query prefer the
 finer source for a day that has both.
@@ -185,9 +190,13 @@ allowance_fact(
 )
 ```
 
-`used` is a fraction, 0 to 1, not a percentage. The server reports a decimal and the whole
-system converts once, at the boundary. `source` is `poll`, `stream` (a `rate_limit_event` off
-a card's own request) or `peer` (a reading another wall took, arriving as an age).
+`used` is a **percentage, 0 to 100**, in the same unit `limits.rs::Window.used` and
+`limits.ts::Window.used` already carry. There is no conversion anywhere: the collector writes
+the source's number and the delta arithmetic in section 5 is in points. A fraction was the
+first draft and it was wrong in the most expensive way, because `27` written as a fraction is
+`2,700%` and every downstream figure inherits the factor. One unit, the source's, and a test
+asserts a sample at 27 reads 27. `source` is `poll`, `stream` (a `rate_limit_event` off a
+card's own request) or `peer` (a reading another wall took, arriving as an age).
 
 A sample is a *point*, not an interval. The curve between two points is reconstructed at
 query time and drawn as a step, because that is what is actually known.
@@ -227,16 +236,23 @@ PRIMARY KEY (model, clock, from_at)
 ```
 
 `clock` is `peak` or `off_peak`, because DeepSeek already bills two rates by time of day and a
-single row per model cannot express it. `to_at` is an exclusive upper bound, and
-`9223372036854775807` means "still in force" rather than `NULL`, because SQLite's `PRIMARY KEY`
-does not imply `NOT NULL` and a null in a key is a row that sorts nowhere.
+single row per model cannot express it. **A model with one clock has one row, used at every
+hour**; only a model with an `offPeak` entry in `usage.ts` gets two. Read literally, "the row
+whose clock matches the fact's time" would find no row for every Claude fact outside DeepSeek's
+peak, which is the whole day. The peak windows are DeepSeek's and they are **UTC**
+(`usage.ts::deepseekPeak`), not the fact's local time; the collector uses those same windows.
 
-`analytics.rs` seeds it from `RATES` today. A price change appends a row rather than editing
-one. A cost at time `t` is computed with the row whose window contains `t` and whose clock
-matches the fact's local time. When the published rates differ from what the CLI charged, both
-are kept: `usd_modeled` is the rate-history figure, `usd_reported` is what the CLI or the
-`turn` table said for that request. The face says which one it is showing, and the default is
-modeled with the date it was modeled from.
+`to_at` is written for display and is **not the join**. The query takes the row with the
+greatest `from_at <= t` for that `(model, clock)`, so a price change is a new row with a later
+`from_at` and a superseding row can never leave two rows matching one instant. `to_at` is
+`9223372036854775807` for "still in force" rather than `NULL`, because a null in a key sorts
+nowhere. When a row is superseded its `to_at` may be written to the new row's `from_at`, but
+the answer does not depend on it.
+
+`analytics.rs` seeds the table from `RATES` today. When the published rates differ from what
+the CLI charged, both are kept: `usd_modeled` is the rate-history figure, `usd_reported` is what
+the CLI or the `turn` table said for that request. The face says which one it is showing, and
+the default is modeled with the date it was modeled from.
 
 This is the systemic fix `usage.md` asked for: not a better constant, but a table that cannot
 be right about the future and wrong about the past at the same time.
@@ -261,6 +277,15 @@ Three retention tiers, each with a job:
 The hourly tier has two tables, because tools are a different grain from tokens: `usage_hour`
 and `tool_hour`. A month of "which MCP server is slow on the other laptop" is a question about
 the second, and folding it into the first would have meant a token row per tool call.
+
+**The hourly tier keeps the dimensions that survive three years, and no more.** `effort` and
+`cli` are carried; `card`, `session` and `agent` are not, because a three-year rollup keyed by
+session is a rollup of every conversation ever taken. So card-level questions stop at the fine
+tier's 90 days, and the face says which tier answered. `tool_hour` carries a compact latency
+histogram (`ms_under_50`, `_200`, `_1s`, `_5s`, `_over_5s`) instead of only `ms_total`, because
+a mean cannot produce a p95 and a p95 is the reading that names a slow server. A percentile
+over months is an estimate from those buckets, labelled as one; an exact p50/p95 is a 90-day
+reading.
 
 Hourly is the sync grain rather than daily because a day boundary is a timezone, and two
 machines in two timezones would disagree about which day an hour belongs to. UTC hours
@@ -316,9 +341,13 @@ tool_fact(
   itself is never stored**. A tool result can be a file, a screenshot or a token; the analytics
   store keeps `42,318` and not the bytes. That is the line between analytics and conversation
   content, and it is drawn in the schema, not in a policy.
-- **`turn_usd`** is the turn's reported or modeled cost, copied once, and the per-call figure is
-  `turn_usd / calls` in the query layer, labelled *apportioned*. It is a division of a measured
-  number, not a guess at a hidden one. The inspector says which of the two it is, always.
+- **`turn_usd` is apportioned across the turn's calls, not copied onto every row.** The turn's
+  cost is divided by its calls, and each row carries `turn_usd × calls_in_row / calls_in_turn`,
+  so a sum over the turn equals the turn. Copying the whole turn onto each tool row would
+  multiply it by the number of tools, and dividing it by each tool's own calls would give that
+  tool the whole turn. The per-call figure is `turn_usd / calls`, labelled *apportioned*: a
+  division of a measured number, not a guess at a hidden one. The inspector says which of the
+  two it is, always.
 - **Skills and agents are tool calls, and a second signal.** An explicit `Skill` call carries
   the skill name in its input; an `Agent`/`Task` call carries the subagent type. Separately,
   every assistant record carries `attributionAgent` and `attributionPlugin`, which name the kit
@@ -332,6 +361,169 @@ The same three fields answer the MCP-server question the brief implies: calls, e
 median latency **per server**, and which project and card each came through. A server that
 answers slowly and fails a third of the time is a tax on every card that touches it, and until
 now there was no way to see it.
+
+**Two things about the reader, and both are costs the first draft hid.** A `tool_use` is on an
+`assistant` record, but its result is a `user` record with a `tool_result` block, and
+`usage.rs`'s cheap gate deliberately skips every `user` record: those are the largest records
+in the file, and parsing them is most of what a full pass would cost. So the tool half needs a
+reader of its own, or a second branch in the same pass, and the per-pass cost in section 16 is
+the cost of the assistant half only until that is measured.
+
+And a call and its result are not one record: the result can arrive in a later pass, a
+different five-minute bucket, or, for `Agent`, `Monitor`, `Workflow` and a background `Bash`,
+never as work at all but as a receipt that returns immediately (`turns.md`). So a **mutable
+`tool_pending` row keyed by `tool_use_id`** (never by bucket) is written with the call, and the
+result updates it with `ms_total`, `errors` and `out_bytes`; the immutable `tool_fact` row is
+written when the result lands, or when a bounded wait expires as `no-result`. A receipt is
+marked `async` and its latency is the receipt's, not the work's, and the face says so. Without
+that row, a slow background tool reads as a fast one, which is the opposite of the truth.
+
+### 3.8 Prompt facts: the form, a redacted body, and a vault
+
+The transcripts carry every human prompt, including the ones typed into a terminal, and they
+carry a great deal that is not a prompt. Measured over five days on this machine, with the
+filter the codebase already uses:
+
+```text
+user records            28,879
+  tool results          27,222   (a tool's output, not a person)
+  human prompts            825
+  task notifications       360   (<task-notification>)
+  subagent turns           299   (isSidechain)
+  system reminders         214   (isMeta)
+  stop notes                21   ([Request interrupted by user...)
+  compaction summaries      21   (isCompactSummary)
+```
+
+**The filter is `sessions.rs::prompt_of`, reused, not re-derived.** That function already
+rejects `isMeta`, `isSidechain`, `isCompactSummary`, the eight injected markers
+(`<local-command-caveat>`, `<command-name>`, `<command-message>`, `<command-args>`,
+`<local-command-stdout>`, `<task-notification>`, the local-command caveat sentence, and
+`[Request interrupted by user`), strips a `<system-reminder>` out of a genuine prompt, and
+treats a tool result as no prompt at all because it carries no text block. Re-deriving that list
+would have shipped three bugs at once: a stop note, a task notification and a compaction
+summary each read as a human prompt, and the reminder's own text, which can name paths and file
+contents, stayed inside the stored body. It also caps the line at 256 KB, which is the one
+unbounded parse in the walk.
+
+**Deduplicate by `(host, prompt_id)`, keeping the first occurrence.** A repeated id carries a
+different timestamp, so `at` cannot be the key; the stop note also reuses the prompt's id, and
+`prompt_of` excludes it before dedupe. In the five-day window there are 825 prompts and 825
+distinct ids, so a duplicate is rare, but a replay can produce one and the key is the honest
+one. The row's `at` is the first time it was said, and `seen_count` says how many records
+carried it.
+
+A prompt's content is a string or text blocks; image blocks are counted and never stored.
+
+What is kept is the **form**: characters, words, lines, code fences, code lines, images,
+question marks, the kind, and the redaction counts. Length is measured *before* redaction, so
+taking out a key does not change the shape being read.
+
+#### The body, and the vault
+
+The raw prompt is never written by analytics. It stays in Claude Code's transcript, which this
+subsystem does not copy and cannot delete. The copy analytics keeps is **redacted, capped at
+8 KB, and sealed**:
+
+- **Redaction first, over-redact.** Private-key blocks, known token prefixes (`sk-`, `ghp_`,
+  `github_pat_`, `xox…`, `AKIA`, JWTs, `Bearer`), key/value assignments, connection strings,
+  URLs with userinfo, emails, GUIDs, commit SHAs and 7+ hex tokens, IPs, MACs, phone-shaped
+  numbers, absolute paths, and long base64/hex runs. Fenced code is replaced whole with
+  `<code omitted: N lines>`; the fence and language stay. A prefix is anchored at a word
+  boundary with a minimum body length, so `task-` and `risk-` survive; a **false-positive corpus**
+  asserts that an ordinary design brief comes through unchanged, beside the fake-secret corpus
+  that asserts every pattern is taken out. A backstop takes any remaining high-entropy token,
+  and withholds the whole body if there are more than eight. Both corpora run on every
+  `cargo test`.
+- **Then sealed with a key only you hold.** A 32-byte data key is generated once and sealed
+  with a key derived from your passphrase (Argon2id, 64 MiB, three passes, one lane). Each body
+  is sealed with **ChaCha20-Poly1305 (`ring`), a fresh random 12-byte nonce**, and the blob is
+  **`nonce(12) ‖ ciphertext ‖ tag`** in one column, so the reader needs no second field and no
+  implementer can quietly reuse a nonce. The associated data is
+  `(vault_id, host, session, prompt_id, first_at)`, so a ciphertext cannot be moved to another
+  row. The wrapped data key, its salt and its key-wrap nonce live in `prompt_vault`, keyed by
+  `vault_id`; **the passphrase does not live anywhere**. That is the password-protected zip: the
+  archive is on disk and on the flyway, and it is opaque until you unlock it.
+- **The key is memory-only.** Unlocking derives the key-encryption key, unwraps the data key,
+  and keeps it in a `Secret` that is zeroized on lock, quit or a fifteen-minute idle. If the
+  vault is locked when a prompt is ingested, the form is recorded, the body is marked `locked`,
+  and the row keeps a **local-only locator** (`source_path`, `source_off`, never synced, cleared
+  the moment it is sealed) so the `seal pending` pass can seek straight to the line and seal it
+  when you unlock. A prompt whose transcript is already gone keeps its form and stays `locked`.
+- **A forgotten passphrase is a lost archive.** There is no recovery, by construction. `reset
+  vault` deletes the wrapped key and every sealed body, emits a tombstone for each, keeps the
+  form counts, and asks twice.
+- **The threat model, stated with its one real limit.** The vault protects the **redacted
+  archive**: a copied SQLite file, a backup, a peer's disk. It does **not** protect the original
+  prompt, because the raw transcript is plaintext in `~/.claude/projects` on the same machine,
+  and a stolen laptop takes both. It does not protect a running, unlocked app, a keylogger, or a
+  process that can read this process's memory. A passphrase is required to be at least twelve
+  characters or generated by the app, because the wrapped key is offline-crackable if it is
+  weak and the record travels to peers.
+
+#### Across the flyway
+
+The counts travel freely: `prompt_hour` is the analytics and carries no text. **A sealed body
+may travel too, because a peer cannot read it without the passphrase.** That is the version of
+"everything travels" that is actually true: the ciphertext is a small opaque blob, so a wall
+can hold the archive without being able to read it.
+
+- **A per-peer switch, off by default,** decides whether this wall replicates its sealed bodies
+  to a peer (`prompt_grant`). The peer stores the ciphertext; the read gate is the passphrase,
+  not the switch. The switch is policy for a lab or a colleague's wall, not a cryptographic
+  boundary: a key holder can already read the raw transcript through the recall path
+  (`seeing.rs`), and the design says so rather than implying a guarantee it cannot make.
+- **The vault record syncs, the passphrase never does.** A new machine receives the wrapped
+  data key, salt and nonce from a peer (or from a small export file), and the same passphrase
+  unwraps it. That is what makes a fleet-wide archive readable from any wall. **A key pair is
+  not needed for one person**: the wrapped data key is the shared secret, and a teammate share,
+  if it ever matters, encrypts that data key to their public key rather than re-keying every
+  body.
+- **Two walls may each have made a vault, and neither may lose.** `prompt_vault` is keyed by
+  `vault_id`, not a single row, and every body names its vault (`prompt_fact.vault_id`). A wall
+  can hold several; the reader unlocks each with the same passphrase (or one passphrase per
+  vault, listed), and a new body uses the active vault. Whichever record arrived first never
+  overwrites the other, because discarding a data key makes its bodies unreadable forever.
+- **The archive is its own frame.** `prompt_archive { host, vaults, rows, digest, count }`
+  carries the sealed rows and the vault records to an approved peer, bounded by day and by
+  bytes. It is never gossiped and never in a greeting; a wall that does not announce `prompts`
+  in `Facts::can` is refused before the request. The digest and count make a truncated day
+  visible: a partial answer is refused or paged with a cursor, never stored as if whole.
+- **A delete is a durable tombstone, not a message.** `prompt_tombstone(owner_host, prompt_id,
+  at, reason, acked)` is an outbox retained until every grantee acknowledges; it is replicated
+  on greeting and applied by a peer that was offline, and `reset vault` emits one per body it
+  deletes. A deleted body is `body_state='deleted'`, not `none`, so a deletion is
+  distinguishable from a prompt analytics never captured. A peer that received a *relayed*
+  copy, or one no longer on the grant list, is outside what a delete can reach; the face says
+  so rather than claiming a deletion that cannot be delivered.
+- **A favourite outlives the prune** (`prompt_favourite`): a title, tags and a sealed note,
+  kept until you delete it. The body is the same sealed row, so the hall needs no second copy.
+
+#### The kind
+
+`design`, `redirect`, `nudge`, `task`, `question`, `issue`, `other`, decided deterministically
+in Rust (`prompt.rs`) because the ingestor is the only thing that sees the text. A model with
+one rate has one rate row; a prompt with one kind has one kind. The TypeScript vocabulary is
+display only and held to the Rust enum by `test/prompt.test.ts`, the pattern
+`test/afar.test.ts` uses. A manual `kind_override` is local and is a reading, not training
+data. **An override updates the `prompt_hour` row in the same transaction**: the old kind's
+counts go down, the new kind's go up, so the mix, the redirect rate and the nudge rate follow
+the correction rather than going on counting the automatic answer.
+
+#### Retention, which is not ninety days for the things you keep
+
+Form metrics and kinds live in the hourly rollup for three years, and the prompt archive is
+**not** on the fine tier's 90-day clock:
+
+- a sealed body is kept **until you delete it**, with a prune option (90 days, a year, forever
+  is the default), because the point is to see the work evolve;
+- a favourite is exempt from every prune;
+- `forget prompts` deletes bodies and leaves the counts; `forget everything` is a bigger,
+  separately confirmed gesture.
+
+A sealed body is about a kilobyte and the volume is a few hundred a day, so a year of archive
+is on the order of a hundred megabytes. That is the cost of the hall, and it is a disk cost,
+not a privacy one, because the disk holds ciphertext.
 
 ---
 
@@ -349,13 +541,15 @@ The order, applied to a request at time `t`:
    from `lyss` to `tx-team` at 15:40 attributes everything before that instant to `lyss` and
    everything after to `tx-team`. The conversation's current `account_label` is never applied to
    the whole transcript.
-2. **The nearest preceding `session-owner` record, for a terminal session or a request outside
+2. **The `session-owner` in force for that session, for a terminal session or a request outside
    any recorded turn.** The record carries `accountUuid` and `organizationUuid`, the exact
-   identity `accounts.rs` stores. Measured on this machine on 2026-11-11: present in 70 of 105
-   sessions, and written **repeatedly through a session** rather than once at its start (149
-   records in one 738-assistant file), which makes it a positional checkpoint. It carries no
-   timestamp, so it dates itself by its position in the file, and the owner in force is the last
-   one before the request.
+   identity `accounts.rs` stores. It is resolved **per session**, by reading the owner from any
+   file that carries that `sessionId`, not from the request's own file. That distinction is not
+   cosmetic: a subagent's transcript is a separate file with the parent's `sessionId` and **no
+   owner record of its own** (measured: 355 subagent files, 0 with a `session-owner`), and those
+   files carry 31% of this machine's assistant records. The owner repeats through the parent
+   file (149 records in one 738-assistant file) but carries no timestamp, so within the parent
+   it dates itself by position, and every file of the session inherits the owner in force there.
 3. **`unknown`.** A terminal session with no owner record, or a request the ladder cannot place,
    is not folded into the nearest account. It is unknown, and section 5's residual is what
    accounts for it.
@@ -364,7 +558,7 @@ The order, applied to a request at time `t`:
 flowchart TD
   R[a request at time t] --> T{turn row whose interval<br/>contains t?}
   T -->|yes| TL[turn.account_label,<br/>which also names the provider]
-  T -->|no| O{last session-owner record<br/>before this point in the file?}
+  T -->|no| O{the session has a session-owner<br/>in any of its files?}
   O -->|yes| OL[accountUuid:organizationUuid,<br/>provider unknown]
   O -->|no| U[unknown]
   TL --> F[fact at t]
@@ -373,29 +567,52 @@ flowchart TD
 ```
 
 Coverage measured on this machine: 70 of 105 sessions carry a `session-owner`. The gap is not
-random: the unowned sessions were `@deepseek` cards (no OAuth identity to name), chat cards,
-and a handful the CLI did not stamp. For a Volery card the turn row covers them; for a
-terminal session with no owner, `unknown` is the truth.
+one cause, and the first draft's explanation was too tidy. Of the 36 session files without an
+owner, **7 are among the 11 `@deepseek` cards, 1 is a chat card, 2 are provider probes, and
+about 26 are ordinary `sdk-cli` sessions** in `workbench`, `nova`, `eos`, `volery` and
+`asset_extraction`; 4 of the 11 `@deepseek` sessions do carry an owner. So the turn row covers
+the Volery cards among them, the probes are not conversations, and the ordinary sessions are
+`unknown` and residual. The honest reading is that the CLI does not stamp every session, and
+the design measures the gap rather than explaining it away. The per-session resolution is the fix
+for the first version's real gap: applying the owner per file left every subagent request in a
+terminal session as `unknown` even when the parent had an owner.
+
+**One namespace for the account key, because a UUID is not a label.** `session-owner` yields
+`<account uuid>:<organization uuid>` and `turn.account_label` yields a label, and the fact has
+to choose. It carries the **label** in `account`, because that is the key the allowance windows
+and section 5.2's denominator use, and the identity in `account_identity` when the transcript
+named one. `accounts.rs::identity` maps the pair to a label; an identity this wall has never
+registered, or whose label has not been learned, is `account = unknown` with the identity kept,
+and it lands in the residual. The two namespaces are never mixed in one column, and a query
+groups by the label.
 
 ### 4.1 A conversation is not one funding
 
 This has its own heading because the obvious implementation is wrong in a way that looks right.
 
-**What was measured.** A `@deepseek` card's transcript does not contain `deepseek-flash`
-anywhere. Its assistant records say `claude-opus-5-5` or `claude-sonnet-5-5`, and so do its
-`api-request` records, because `provider::cli_model` translates the provider model to a Claude
-alias at spawn and that alias is what the CLI sends. Across five `@deepseek` sessions on this
-machine the assistant models were Claude aliases in every case, while `conversation.model` held
-`deepseek-flash` or `deepseek-v4-pro`.
+**What was measured.** Across the **11** `@deepseek` conversations in the live store, every
+assistant record named a Claude alias (`claude-opus-5-5` or `claude-sonnet-5-5`) or
+`<synthetic>`, because `provider::cli_model` translates the provider model to a Claude alias at
+spawn and that alias is what the CLI sends. That is the record the tokens and the billing model
+live on.
+
+A separate `api-request` record can name a provider model: five transcripts on this machine
+carry `deepseek-flash` or `deepseek-v4-pro` in `params.model`. All five are provider probes,
+none is a conversation in the store, and **none carries a real assistant record**. So the field
+is a **hint**, not the authority: it names what was sent when the caller set it, and it is
+absent or a Claude alias on an ordinary card. The app-side turn row remains the source.
 
 So three rules follow, and each one is a correction to the obvious design:
 
 - **Provider is an app-side fact, not a transcript fact.** It comes from the same interval as
   the account: `@deepseek` in `turn.account_label` (or the conversation row, for a session with
-  no turn) means DeepSeek; `@credits` means an Anthropic API key; a registered label or NULL
-  means the Claude subscription. **A terminal session is `unknown`**, because nothing in the
-  file names its provider and the common case is not evidence. The face draws an unknown group
-  rather than folding it into Claude, and the allowance residual still accounts for its spend.
+  no turn) means DeepSeek; `@credits` means an Anthropic API key; a **registered label** means
+  the Claude subscription. **`NULL` is `unknown`**, not Claude: it is what every pre-v59 row
+  carries and what a front end that forgot the argument writes, and reading it as Claude would
+  silently shrink the residual. **A terminal session is `unknown`**, because nothing in the
+  file reliably names its provider and the common case is not evidence. The face draws an
+  unknown group rather than folding it into Claude, and the allowance residual still accounts
+  for its spend.
 - **A provider card's model cannot be recovered from its transcript.** The alias names the tier
   the CLI sent, not the provider's model. `turn.usd` was computed at settle with the real
   provider model (`priceOf` in `usage.ts`), so for a provider turn it is the authoritative
@@ -413,11 +630,16 @@ So three rules follow, and each one is a correction to the obvious design:
 **A turn has an end and no recorded start**, so its interval is reconstructed from the row
 before it: from the previous settled turn's `ended_at` (or the conversation's `born_at` for the
 first) to its own `ended_at`. That is sound because turns in one conversation are sequential,
-and it is the same reconstruction `usage.ts::blocks` already does for the five-hour window. A
-turn still in flight has no row and takes the conversation's **current** label, which is
-correct rather than a compromise: a swap ends the process before the next turn starts, so the
-turn currently running is on the account the card is on now. The moment it settles, the turn
-row pins its label and the reconstruction takes over.
+and it is the same reconstruction `usage.ts::blocks` already does for the five-hour window.
+
+**The label is the one in force when the turn opened, not the one the card wears when the
+result lands.** A reactive 429 swap settles the turn before it moves the card, so reading the
+conversation row at settle is safe on that path; a direct `/account` or `put it on…` is not,
+because it changes `conv.accountLabel` first and the aborted result can be ingested after. So
+`send_prompt` records the label at the open and `record_turn` writes that to
+`turn.account_label`; the conversation row is never the source for a turn that has already
+begun. A turn with no recorded open (a row from before this rung) is `unknown`, and the
+interval falls back to the session owner.
 
 The worked example the acceptance tests replay:
 
@@ -459,11 +681,13 @@ answerable retroactively rather than only from today:
 | `slug` | session title slug |
 
 Two fields that look like they answer the provider question and do not: `message.model` and
-`api-request.params.model`. Both are Claude aliases on a DeepSeek card. `requestedModel` is the
-same. There is no field in the transcript that names the upstream provider, which is why the
-app-side interval is the only honest source.
+`requestedModel` are the CLI's alias on a DeepSeek card. `api-request.params.model` is the
+third: in a card it is the alias, and in a provider probe it can be the provider id, but a
+probe is not a conversation and the record carries no usage. So no field is both present and
+authoritative for a card, which is why the app-side interval is the honest source and the
+`api-request` field is only a corroboration when it happens to name a provider.
 
-The CLI version distribution on this machine over three days was 2.1.312 through 2.1.322,
+The CLI version distribution on this machine over thirteen days was 2.1.312 through 2.1.322,
 which is exactly the axis "cost vs Claude Code version" needs. Before this subsystem there was
 no way to join it to a cost.
 
@@ -478,14 +702,58 @@ host_build(host, from_at, to_at, build, dev, os)
 
 written when the wall starts and again whenever the version changes, never once per day. A day
 with an update has two rows, which a single `host_day` row would have had to lie about. A fact
-joins by its own timestamp to the window that contains it. For time before this feature exists
-in the record, the value is `unknown`, and the query layer draws an unknown group rather than
-dropping the rows. This is the same honesty `gist.ts` enforces for a remote card: unknown is
-`null`, never zero.
+joins to the row with the **greatest `from_at <= t`**, the same rule as the rate table, so a
+version change within a day cannot leave two rows matching one instant; `to_at` is advisory.
+For time before this feature exists in the record, the value is `unknown`, and the query layer
+draws an unknown group rather than dropping the rows. This is the same honesty `gist.ts`
+enforces for a remote card: unknown is `null`, never zero.
 
 The window is UTC, for the reason section 3.6 gives about rollups: two machines in two
 timezones must not disagree about which interval a request belongs to. Display buckets are
 local, computed at query time from the viewer's own offset.
+
+### 4.4 A subagent is its own agent, not a fraction of its card
+
+The first draft carried `agent` on the fact and stopped there, which is not enough for the
+question you asked. A subagent can run at a different **model** and a different **thinking
+effort** from the card that spawned it, and a worktree full of subagents is the shape most of
+the spend takes. So the attribution has three levels, not two:
+
+```text
+card (conversation, account, provider)
+  └── turn (account_label, usd, ending)
+        └── agent (agentId, requested model/effort, parent, depth)
+              └── request (billed model, effort, tokens)
+```
+
+- **`usage_fact` carries `agent`, `parent_agent` and `depth`.** The agent id is the subagent's
+  own; `parent_agent` is the agent that spawned it (empty when the card did); `depth` is 1 for a
+  card-spawned agent, 2 for one it spawned, and so on. `model` and `effort` are per record, so a
+  subagent on Sonnet at high effort beside a card on Opus at max is two rows and two costs, not
+  one blended number.
+- **`analytics_agent` is one row per subagent.** It keeps the **requested** model and effort
+  (read from the `Agent`/`Task` tool's input), the actual ones live in the usage facts, the
+  type, the parent, the depth, the start and end, the turns and the cost. A difference between
+  requested and actual is a fallback, and the face can say so.
+- **The `Agent` tool call carries `child_agent`, `requested_model` and `requested_effort`** on
+  `tool_fact`, so the fan-out and the intent are visible beside what it actually cost.
+- **Account and provider are inherited, and that is a fact rather than an approximation.** A
+  subagent is a turn inside the card's own process: the same credential store, the same base
+  URL, the same provider. It cannot switch funding. A card opened with `spawn` is a **session of
+  its own** with its own account and provider, linked by `spawned`/`flyway_child`, not an agent
+  under this one. So a subagent's `account`/`provider` are the parent interval's, and the card's
+  per-agent cost sum is the card's total.
+- **A depth the record cannot prove is `0` (unknown), not 1.** The parent link comes from the
+  `Agent` result's agent id or the subagent file's `parentUuid`; where neither is present, the
+  agent is drawn as a root with an unknown parent rather than guessed into the card.
+- **The agent view is a fine-tier reading.** `usage_hour` and `tool_hour` do not carry
+  `agent`, `session` or `card`, because a three-year rollup keyed by subagent is a rollup of
+  every subagent ever run. Agent-level and per-agent-tree questions stop at 90 days, and the
+  face says so.
+- **Subagent transcripts are the files with no owner record of their own** (355 of them on this
+  machine), which is why section 4 resolves the owner per session rather than per file. Their
+  records carry `agentId`, `model`, `effort` and `version`, so the attribution below the session
+  needs nothing from the parent file.
 
 ---
 
@@ -505,9 +773,12 @@ gives us three properties no transcript can give:
 
 ### 5.1 Reconstructing the curve
 
-For each `(account, kind, scope)`, sort samples by time and group by `resets_at` (with a
-tolerance, because the server's microsecond reset stamp can wobble by a few hundred
-milliseconds). Each group is one window instance.
+For each `(account, kind, scope)`, sort samples by time and group by `resets_at`, with a
+tolerance of under a second for a stamp that moves between reads. The probes so far show a
+stable stamp, so the tolerance is a guard rather than a measured wobble. A sample whose
+`resets_at` is `NULL` is a scoped window nobody has touched: it is one instance for its
+`(account, kind, scope)`, it contributes no delta, and it is never carried across a sample
+with a real reset.
 
 Between two consecutive samples `i` and `i+1`:
 
@@ -531,10 +802,15 @@ does not have.
 ### 5.2 Attributing a delta to requests
 
 For each interval, gather every fact whose bucket overlaps `span` from every host on the
-flyway. Let `c_j` be the modeled cost of fact `j` in that interval. Then:
+flyway **that belongs to the same account**. The denominator is the account's own work, not the
+whole flyway's: a tx-team card on the same machine must not take points from lyss's delta, and
+`@deepseek` or `@credits` spend never touches the subscription at all. Those facts are excluded
+from a subscription window's delta and residual; they are priced and counted in their own
+currency. Facts whose account is `unknown` stay out of the denominator and remain residual.
+Let `c_j` be the modeled cost of fact `j` in that interval. Then:
 
 ```text
-share_j  = c_j / sum(c over the interval, all hosts)
+share_j  = c_j / sum(c over the interval, same account)
 points_j = delta * share_j
 ```
 
@@ -676,9 +952,18 @@ usage.rs::absorb(record) -> bucket totals (as today)
                            + analytics_seen key (for idempotence)
 ```
 
-A pass already called by the ledger's twenty-second beat is a pass the analytics collector
-reuses. Two walkers would mean two offset tables, two dedupe maps, and a class of bug where one
-of them sees a request the other does not.
+**The pass is the analytics collector's, not the ledger's.** The ledger's twenty-second beat
+only runs while a usage widget is attached (`ledger.svelte.ts::#tick` is guarded by `#watchers`,
+and `detach` stops the timer), so reusing it alone would mean "always on" recorded nothing on a
+wall with no usage widget, which is the common case. The collector starts the pass itself, at
+60 seconds and on a file event, and the ledger's beat is an additional caller when a widget is
+up. One `Usage` state, one `absorb`, two callers, and the cost of being on is stated in section
+16 rather than hidden behind a widget. Two walkers would be two offset tables and a class of
+bug where one sees a request the other does not, so it is still one reader.
+
+The same pass also needs a branch for `user` records, because a tool result is a `user` record
+and the current gate skips them. That branch is where `tool_pending` is filled and resolved;
+its cost is measured in phase 1, not assumed from the assistant-only pass.
 
 ### 7.2 Durability
 
@@ -692,7 +977,10 @@ usage_seen(key, at)   -- message.id | requestId, pruned to the fine window
 The offset makes a restart incremental. The `seen` table makes a re-read idempotent, which
 matters because a file replaced rather than appended to is re-read from zero, and without
 idempotence a shrink would double a bucket. The table is pruned on the same clock as the fine
-facts, so it stays bounded (roughly 450,000 rows over 90 days on this machine's rate).
+facts. It is one row per request, so on this machine's rate it is the larger of the two: roughly
+450,000 rows over 90 days. `usage_fact` is one row per bucket, session, agent and model, which
+is far fewer; the two numbers in the first draft were the same figure used for both, and they
+are not. Phase 1 measures each.
 
 Every pass writes its facts in **one transaction**. A crash leaves either the pass or not, not
 half a bucket, which is the lesson `migrate` and `set_mid_turn` both paid for: bookkeeping that
@@ -752,6 +1040,23 @@ one-time backfill writes a **daily aggregate per card** with `provenance: "turn"
 That is honest and it is labelled. For a `@deepseek` or `@credits` turn, this is also the
 *only* correct cost, per section 4.1.
 
+**The join is the thing the first draft never named.** A `turn` row is keyed by
+`conversation_id`; a transcript fact is keyed by the transcript's `sessionId`. The bridge is
+`conversation.agent_session_id`, which is the session in force *now*. After a `/clear` or a
+`/renew` one conversation has several sessions, and a turn row from before the clear cannot be
+mapped to its session from the store alone. So the backfill is explicit about what it knows:
+
+- a conversation that has never been cleared maps every turn to its one session;
+- a conversation that has been cleared writes the backfilled day with `session = ''`,
+  `source = 'turn'` and the card id, and the query layer treats it as card-level history with
+  no session; it is never joined to a transcript fact;
+- going forward, `turn.agent_session_id` is recorded at settle (the same schema rung as
+  `turn.model` and `turn.provider`), so the join is exact for every new row.
+
+That is more words than "join on the session", and it is the difference between a backfill that
+is right and one that quietly attributes an old conversation's money to the session that
+replaced it.
+
 ---
 
 ## 8. Across machines
@@ -767,23 +1072,38 @@ one merges *decisions* about one shared thing, so it needs stamps and tie-breaks
 *observations* of disjoint things, so it needs a key and nothing else. Using the CRDT here
 would have been machinery without a problem.
 
+**Usage facts are append-only; a tool fact is written once, from a mutable pending row.** The
+one thing that is updated is `tool_pending`, keyed by `tool_use_id`, while a call waits for its
+result. That row never leaves the wall, and a tool fact is still written once, when the result
+lands. The distinction is worth keeping in the prose because "append-only" is what makes the
+union merge safe, and a mutable fact would undo it.
+
 ### 8.2 What travels, and when
 
 ```text
-Facts::can        gains  "analytics"
+Facts::can        gains  "analytics", "prompts"
 Facts::build      already says the Volery version
-Facts             gains  analytics_from: i64       -- the oldest UTC hour this wall holds
 Facts             gains  now: Option<Now>          -- the live reading, below
-frame "analytics"      { host, days: [{ day, digest }] }
+frame "analytics"      { hosts: [{ host, days: [{ day, digest }] }] }
 frame "analytics_day"  { host, day, rows }         -- one day of hourly rows, on request
-frame "analytics_pull" { host, day }                -- fine facts for one day
+frame "analytics_pull" { host, day }               -- fine facts for one day
 frame "analytics_fine" { host, day, rows }
+frame "prompt_archive" { host, vaults, rows, digest, count } -- sealed bodies, approved peers
 ```
 
-- On a greeting, a wall says which UTC days it holds and a digest per day.
-- A peer that is missing a day asks for it with `analytics_day`.
-- The answer is bounded to one day, checked against the digest, and refused whole if it does
-  not match. Nothing partial is stored, the rule `tail.rs::fit` follows for a transcript.
+- **The manifest is keyed by the owner, not by the sender.** A wall that has merged A's and B's
+  rollups must be able to say "I have A's Tuesday and B's Tuesday", so the frame carries a list
+  of owner hosts, each with its own days. `Facts::analytics_from` is gone: once merged rows are
+  stored, "the oldest hour this wall holds" names no single host and is not worth a field.
+- A peer that is missing a day asks for it by `(owner, day)` with `analytics_day`. The answer is
+  bounded to one day, checked against the digest the owner published, and refused whole if it
+  does not match. Nothing partial is stored, the rule `tail.rs::fit` follows for a transcript.
+- **A peer may re-serve another owner's day; the digest is what makes that safe.** The digest is
+  over the owner's rows, so a relay can pass them on but cannot alter them without the digest
+  disagreeing. A day is written by its owner, and the owner is authoritative: a late row changes
+  the digest, the manifest carries the new one, and a peer holding the old day replaces it. The
+  digest is a correction mechanism, not a freeze, and the "refused whole" rule is about a frame
+  whose rows do not match its own digest.
 - Rows are capped and scrubbed on the way in (`crate::clean`), and every string is a dimension
   value with a length ceiling. A peer is trusted by the flyway key, but a different build's
   numbers still must not be able to put a bad value in a column this wall reads.
@@ -807,7 +1127,8 @@ struct Now {
 }
 ```
 
-Sized to a few dozen bytes, sent in every announcement, read only while an analytics view is
+Six machine numbers plus a timestamp and a count, a few hundred bytes as JSON and far less
+sealed, sent in every announcement, read only while an analytics view is
 open. A wall quiet past the fleet's 90 seconds contributes nothing, and is drawn as *not heard
 from*, never as zero. That is `elsewhere.md`'s rule and `rate.ts::fleetRate`'s, one measure
 wider.
@@ -815,16 +1136,28 @@ wider.
 **The roster announces every thirty seconds** (`ANNOUNCE_EVERY_MS`), and that is the floor for
 a cross-machine live view. A faster reading is affordable and is the decided direction: a
 `live` frame every two seconds while an analytics view is open, on **its own stream**, so a
-slow or stuck live exchange can never sit in front of a prompt, an answer or a close. The
-numbers are in section 20.1: at roughly 1 KB a frame, three walls at two seconds is about
-5 MB an hour, which is under half a percent of a 720p video and three orders of magnitude below
-anything that could matter on this link. What matters is not the bytes; it is that the live
-frames never share a stream with the work. The front end draws the age of each reading and
-never interpolates between two samples, so a missed frame is a small gap and not an invented
-line.
+slow or stuck live exchange can never sit in front of a prompt, an answer or a close.
 
-The live fleet view therefore costs **no requests at all**: it is the roster, which already
-travels, plus the allowance readings, which already travel as ages.
+The arithmetic, with one stated assumption: one frame is under 1 KB, each wall sends its own
+`Now` to each peer, and every exchange is a fresh dial (`link.rs`), so the counts are directed.
+A pair has two directed streams; three walls have six. At two seconds:
+
+| walls | directed streams | exchanges/min | bytes a minute | a working day (8h) |
+|---|---|---|---|---|
+| 2 | 2 | 60 | ~60 KB | ~29 MB |
+| 3 | 6 | 180 | ~180 KB | ~86 MB |
+| 5 | 20 | 600 | ~600 KB | ~288 MB |
+
+A 720p video is about 1.1 GB an hour, so five walls at two seconds is roughly a thirtieth of
+one, not a hundredth. **The bytes are not the risk; the dials are.** Thirty exchanges a minute
+per directed stream is thirty connections a minute, and that is the number to measure before
+the cadence is fixed. What matters for interaction is that the live frames never share a
+stream with the work, which the separate exchange gives by construction.
+
+The front end draws the age of each reading and never interpolates between two samples, so a
+missed frame is a small gap and not an invented line. **With no analytics view open the frames
+do not exist**, and the roster is the whole cost; the "no requests at all" claim was true of
+the first draft and is not true of the decided cadence.
 
 ### 8.4 Fine history on demand
 
@@ -871,6 +1204,12 @@ Pure TypeScript, in `analytics.ts` and friends, tested directly.
 `card` and `branch` are resolved through `analytics_session`, not carried on every fact, so a
 filter on either costs one join and no extra columns. `session`, `agent` and `model` are on the
 fact because they are the grain.
+
+**Not every dimension reaches every tier.** `session`, `agent` and `card` are fine-tier
+readings: a three-year rollup keyed by session is a rollup of every conversation ever taken.
+`effort`, `cli`, `account`, `provider`, `model`, `project` and `source` are in the hourly
+rollup. A spec that asks for a session split over a year is refused with the tier named, not
+silently answered from the coarse rows.
 
 Every measure carries its unit, its provenance (`measured`, `modeled`, `attributed`,
 `reported`), and whether it is additive across buckets. `p95` is not additive; a spec that asks
@@ -1211,8 +1550,9 @@ Two surfaces, and they are the same distinction the widget already draws:
   from `space n n` while chat view is in front. The sidebar stays; the reading column gets a
   wider figure plate than `--cv-measure` for charts, and returns to the measure for prose.
 - **The sheet** is the glance. `analytics` carries a `sheet` letter in `widgets.ts`, so
-  `space b a` opens the same face in `ReadingSheet.svelte` over either view, with the
-  widget's own knobs. That is the existing `b` family, and it costs one letter.
+  `space b d` opens the same face in `ReadingSheet.svelte` over either view, with the
+  widget's own knobs. `d` for data, because `a` is Asana and `n` is the billboard; the letter
+  is free, and `test/leader.test.ts` holds the family unique.
 
 **The chat page is editorial, not instrumental.** The wall's version is a panel you operate;
 this is a document you read. The differences are all in the skin, never in the marks:
@@ -1365,6 +1705,61 @@ two meet at the same boundary the machine series uses: live ring, stored rows, a
 handover. A tools view with no card working shows the stored history and says the live edge is
 quiet, rather than an empty table.
 
+### 11.11 The prompt trace
+
+A page in both views, reached from the analytics room's `prompts` tab, from `space n t` (`t`
+for trace; `p` is already the pin), and from a card's `prompts…` row. It is the page the vault exists for, and it says the vault's
+state at the top rather than letting a locked archive look empty.
+
+- **The strip**: prompts today and this week, median and p90 length, redirect rate, nudge rate,
+  redaction rate, withheld count. Each is a form reading; none needs the body. Over the fine
+  window the percentiles are exact; over years they are estimated from the `prompt_hour` word
+  buckets and labelled as estimates, because a sum cannot produce a median.
+- **The kind mix over time**, a stacked area or bar by kind. This is the "how do I work" chart:
+  a week of design briefs reads differently from a week of nudges and redirects.
+- **Length by kind**, a ranked distribution rather than a box plot, because the reader is
+  comparing six named groups and a ranked bar compares them better than a box.
+- **The trace**: time, card, origin, kind, length, redactions, and the redacted body in a detail
+  pane. Local rows read from this wall's store; a row from another wall is drawn from the
+  synced counts, and its body is readable only if that wall replicated it and the vault is
+  unlocked. Filterable by kind, project and card; a full-text index is deliberately absent.
+- **A correction**, not training: the kind cell can be set by hand (`kind_override`), and the
+  correction is local and visible.
+- **The live prompt** of a card is not a fact; it is already in the card's own transcript fold.
+  The trace reads the store, the card reads its own lines.
+
+With the vault locked the page still draws every count, and each row says `locked` where the
+body would be. Unlocking is one field and one gesture, and locking again is another.
+
+### 11.12 The hall of fame
+
+The reason the body is kept beyond 90 days: the prompts that shaped the work are worth reading
+again. A hall entry is a favourite, and it is a row of its own:
+
+```text
++ hall ----------------------------------------------------------------+
+| agent audit is never one prompt            [favourite] design · 2026-11-10 |
+| [nova] [orchestration] [allowance]                                    |
+| "design the analytics so a card that swaps account ..."  (sealed)     |
+| opened 9 cards · 42 turns · closed clean                              |
+| note: the four currents idea came from this one.                      |
++----------------------------------------------------------------------+
+```
+
+- **A favourite is a marker, not a copy.** `prompt_favourite` holds the title, the tags, a
+  sealed note and the pointer; the body is the same sealed prompt row. Nothing is duplicated,
+  and a deleted prompt takes its hall entry with it.
+- **The gallery** filters by tag, project, kind and year, and sorts by date or by the card's
+  cost. It is the long view: a year of prompts, the ones that mattered, and the notes on why.
+- **The note is sealed too**, because "why this one mattered" is as likely to name a client as
+  the prompt is. The title and tags are plaintext so the gallery can be indexed; they are short
+  and you wrote them for a label.
+- **The evolution view** sits beside it: prompts per month, the kind mix, median length and the
+  projects they touched, over years. That is the hourly rollup, not the archive; it survives
+  even if every body is deleted.
+- **A report may include the hall** only with the explicit opt-in, because a report is a
+  plaintext export. Default off, and the warning says what the file will contain.
+
 ---
 
 ## 12. The widget
@@ -1384,9 +1779,15 @@ until somebody edits one and wonders why another moved.
 
 The widget draws through the same `WidgetFace` arm as every other kind, and the same
 `normalizeWidget` degrades a spec from a newer build. A widget that cannot draw its spec is
-left off the wall rather than guessed at, the existing rule. A widget whose saved view was
-deleted keeps its last drawn spec and says the view is gone, rather than blanking, which is
-the recoverable failure of the two.
+left off the wall rather than guessed at, the existing rule.
+
+A shared widget holds an id, so "keeps its last drawn spec" needs a snapshot to be true. It has
+one: the widget stores the **resolved spec** on its last successful read, beside the id. When
+the saved view is deleted it keeps drawing the snapshot and says the view is gone; the first
+edit from the widget turns the snapshot into an inline spec, which is the `this widget only`
+state and is honest about what just happened. A widget that has never drawn, on a launch where
+the view is already gone, is left off the wall, which is the existing rule and the only case
+where there is no spec to draw.
 
 **Attaching is one gesture.** From the overlay, `pin` puts the current view on the wall at the
 focused card's side, or at the pointer. From a widget, `open in analytics` opens the overlay
@@ -1448,14 +1849,23 @@ Two build-order traps, both from `build.md`:
 
 ### 13.3 Anonymize
 
-A report for a manager or a team does not need account emails or project paths. The export
-offers:
+A report for a manager or a team does not need account emails, hostnames, branch names or
+project paths. The export offers:
 
 - **labels anonymized** to *account A, B, C* in a stable order, with the real labels in a
   private appendix only if the author opts in;
+- **hosts anonymized** to *machine A, B, C*, because a hostname is an inventory of somebody's
+  machines;
 - **projects reduced to names**, never paths, and optionally renamed;
+- **branches reduced to `<branch>`** or dropped, because a branch name can name a client;
+- **tool, server and skill names folded** to `tool A`, `server A`, `skill A`, because
+  `mcp__acme_crm__…` is a client name in a tool id;
+- **cards reduced to `card A`**, because a card title is free text somebody typed;
 - **dollar figures** replaced by allowance points, or by an index, if the author does not want
-  to publish a bill.
+  to publish a bill;
+- **the embedded view spec's filter values anonymized too**, not only the rows it selected: a
+  `filter: { account: ["lyss"] }` in the JSON is as readable as a label on a chart, and the
+  first cut anonymized the model while leaving the spec alone.
 
 The anonymization is applied to the model before it is embedded, not in the renderer, so a
 rendered file cannot be un-anonymized by opening the console.
@@ -1513,9 +1923,17 @@ spent.
 is preventing work", and a pace is not a window: adding it there would make the waterfall think
 an account is spent and move cards to another account, which is the opposite of what pacing
 wants. The pace belongs to the **wall's admission gate** (`admit::queued` / `held_for`), which
-already has a wall-global reason and a release path. The dock says *paced until the week
-resets* to distinguish it from *no account has room*, and the reset is the weekly window's
-`resets_at`, which the allowance reading already carries.
+already has a wall-global reason.
+
+**And it needs a release path of its own, because the gate's existing one is account-driven.**
+`admit` releases a held prompt when an account finds room; a pace hold has no account to find
+room, so it would sit until something unrelated moved. The pace release is the wall's own tick:
+the projection is recomputed from the latest allowance samples once a second while anything is
+held, and the hold is released when the projection falls back under the threshold, when the
+weekly `resets_at` passes, or when the person raises the plan or turns it off. The hold carries
+`reason: pace` and `until: min(next recompute, resets_at)`, and the same one-minute sweep that
+covers a blocker with no named reset covers it. The dock says *paced until the week resets* to
+distinguish it from *no account has room*.
 
 **It must never stop a turn in flight.** A paused turn loses the context it just paid to
 build, and the whole point of pacing is to spend less, not to spend badly.
@@ -1562,6 +1980,8 @@ Every one of these is a bug the subsystem must not have, and each is cheap to st
 | an anonymized report that still carries a path | anonymize the model, not the rendering |
 | stamp a card's current account across its whole transcript | attribute per request interval; the conversation row carries first and last only |
 | infer a provider from a model id | read the funding sentinel at that interval; a provider card's transcript says Claude |
+| compute a residual from a host that sent samples but no facts | require the same host set on both sides, or label the residual *partial* and keep it out of the headline |
+| let an account's cards take points from another account's delta | the denominator is the account's own work; `@deepseek` and `@credits` never enter a subscription delta |
 
 ---
 
@@ -1570,16 +1990,19 @@ Every one of these is a bug the subsystem must not have, and each is cheap to st
 The point of stating these is that each one is checkable from outside, and each has a
 measured or reasoned basis.
 
-- **Ingest**: one incremental pass over appended bytes. On this machine that is ~5,000 requests
-  a day, a few hundred kilobytes. A pass writes one transaction and does no network. The
-  first-ever pass is the deep backfill section 7.3 describes, and every pass after it is
-  bounded by the fine window's mtime cutoff, the same rule `usage.rs` already uses to skip 399
-  of 507 files.
-- **Storage**: 90 days of fine facts is roughly 450,000 rows and tens of megabytes on this
-  machine's rate, because the grain is a bucket-session-model row and not a row per request.
-  Three years of hourly rollups is on the order of 100,000 rows. Both numbers are stated so the
-  first measurement can challenge them; if the fine tier is heavier than expected, it drops to
-  30 days and the hourly tier already holds everything older.
+- **Ingest**: one incremental pass over appended bytes. On this machine the assistant half is
+  ~5,000 requests a day, a few hundred kilobytes. **The tool half is not in that figure**: a
+  `tool_result` is a `user` record and is often the largest record in a file, so the tool
+  branch parses the bytes the current assistant-only gate skips. That cost is measured in phase
+  1 before the cadence is fixed; if it is heavy, the tool pass runs on a longer beat than the
+  usage pass and the two are reported apart. A pass writes one transaction and does no network.
+  The first-ever pass is the deep backfill section 7.3 describes.
+- **Storage**: the two tables were given one number in the first draft and they are not one
+  table. `usage_seen` is one row per request, roughly 450,000 rows over 90 days on this
+  machine's rate. `usage_fact` is one row per bucket, session, agent and model, which is far
+  fewer. Three years of hourly rollups is on the order of 100,000 rows. Each is measured in
+  phase 1 rather than asserted here; if the fine tier is heavier than expected, it drops to 30
+  days and the hourly tier already holds everything older.
 - **Query**: a week at 5-minute buckets is ~2,000 rows per series, which is a single indexed
   scan. A year at hourly is ~9,000. The query layer is O(rows), not O(rows x buckets), because
   it buckets in one pass.
@@ -1594,9 +2017,12 @@ measured or reasoned basis.
 
 ## 17. Schema
 
-One new schema rung (the store is at v60), with the tables above. All additive, all through
-`add_column` or `CREATE TABLE` in a numbered `migrate_vN`, and the rung stamps its own version
-in the same transaction.
+One new schema rung (the store is at v60), with the tables above, and the rung stamps its own
+version in the same transaction. **The SQL below is the shape each table has, not a script to
+paste.** Every added column goes through `add_column`, every index is `CREATE INDEX IF NOT
+EXISTS`, and every table is `CREATE TABLE IF NOT EXISTS`, because a rung that is ever re-run
+must not fail on its own second pass; that is the v9 lockout in `CLAUDE.md`, and a bare
+`ALTER`/`CREATE INDEX` in an illustrative block is exactly how it gets copied in.
 
 ```sql
 -- v61: analytics
@@ -1608,7 +2034,10 @@ CREATE TABLE analytics_session (
   card_id        TEXT,
   parent_card    TEXT,
   opened_by      TEXT NOT NULL DEFAULT 'unknown',   -- person | agent | unknown
-  worktree       TEXT,
+  -- No worktree path: it is a filesystem path and this table is synced. The
+  -- machine fact carries a count, which is the reading; the path stays in
+  -- `conversation.worktree` on the wall that made it.
+  branch         TEXT NOT NULL DEFAULT '',
   started_at     INTEGER NOT NULL,
   ended_at       INTEGER,
   cli_min        TEXT,
@@ -1625,6 +2054,27 @@ CREATE TABLE analytics_session (
   PRIMARY KEY (session, host)
 );
 
+-- One row per subagent, so a tree can be read as a tree. The requested values
+-- come from the Agent tool's input; the actual ones are in usage_fact, and a
+-- difference between them is a fallback worth seeing.
+CREATE TABLE analytics_agent (
+  agent_id        TEXT NOT NULL,
+  session         TEXT NOT NULL,
+  host            TEXT NOT NULL,
+  parent_agent    TEXT NOT NULL DEFAULT '',   -- '' when the card spawned it
+  depth           INTEGER NOT NULL DEFAULT 1,
+  kind            TEXT NOT NULL DEFAULT 'subagent', -- subagent | task | workflow
+  requested_model TEXT NOT NULL DEFAULT '',
+  requested_effort TEXT NOT NULL DEFAULT '',
+  started_at      INTEGER NOT NULL,
+  ended_at        INTEGER,
+  turns           INTEGER NOT NULL DEFAULT 0,
+  cost_usd        REAL NOT NULL DEFAULT 0,
+  account         TEXT NOT NULL DEFAULT 'unknown',
+  provider        TEXT NOT NULL DEFAULT 'unknown',
+  PRIMARY KEY (agent_id, session, host)
+);
+
 -- One row per five-minute bucket, session, agent, tool and target. The payload
 -- is reduced to counts and sizes here and never stored: `out_bytes` is a
 -- measurement of a result, not the result.
@@ -1636,28 +2086,52 @@ CREATE TABLE tool_fact (
   kind      TEXT NOT NULL,                 -- builtin | mcp | skill | agent
   server    TEXT NOT NULL DEFAULT '',
   tool      TEXT NOT NULL,
-  target    TEXT NOT NULL DEFAULT '',
+  target    TEXT NOT NULL DEFAULT '',      -- subagent type or skill name
+  child_agent TEXT NOT NULL DEFAULT '',    -- the agent an Agent/Task call opened
+  requested_model TEXT NOT NULL DEFAULT '',
+  requested_effort TEXT NOT NULL DEFAULT '',
   calls     INTEGER NOT NULL DEFAULT 0,
   errors    INTEGER NOT NULL DEFAULT 0,
   ms_total  INTEGER NOT NULL DEFAULT 0,
   out_bytes INTEGER NOT NULL DEFAULT 0,
+  -- The turn's cost apportioned across the turn's calls: every row's share
+  -- sums to the turn, unlike a copy of the whole turn on each row.
   turn_usd  REAL NOT NULL DEFAULT 0,
-  PRIMARY KEY (at, host, session, agent, kind, server, tool, target)
+  PRIMARY KEY (at, host, session, agent, kind, server, tool, target, child_agent)
+);
+
+-- A call in flight: mutable, local, never synced. The result lands later and
+-- resolves this row; the immutable tool_fact is written when it does.
+CREATE TABLE tool_pending (
+  tool_use_id TEXT PRIMARY KEY,
+  at          INTEGER NOT NULL,
+  host        TEXT NOT NULL,
+  session     TEXT NOT NULL,
+  agent       TEXT NOT NULL DEFAULT '',
+  kind        TEXT NOT NULL,
+  server      TEXT NOT NULL DEFAULT '',
+  tool        TEXT NOT NULL,
+  target      TEXT NOT NULL DEFAULT '',
+  async       INTEGER NOT NULL DEFAULT 0,
+  resolved_at INTEGER
 );
 
 CREATE TABLE usage_fact (
   at          INTEGER NOT NULL,
   host        TEXT NOT NULL,
   session     TEXT NOT NULL,
-  agent       TEXT NOT NULL DEFAULT '',
+  agent       TEXT NOT NULL DEFAULT '',   -- the subagent id, '' for the card
+  parent_agent TEXT NOT NULL DEFAULT '',  -- the agent that spawned it
+  depth       INTEGER NOT NULL DEFAULT 0,
   model       TEXT NOT NULL,
   effort      TEXT NOT NULL DEFAULT '',
   cli         TEXT NOT NULL DEFAULT '',
-  source      TEXT NOT NULL,
-  account     TEXT NOT NULL,
+  source      TEXT NOT NULL,              -- card | terminal | unknown
+  account     TEXT NOT NULL,              -- the label, or 'unknown'
+  account_identity TEXT NOT NULL DEFAULT '', -- uuid:org, when the transcript named it
   provider    TEXT NOT NULL,
   project     TEXT NOT NULL,
-  provenance  TEXT NOT NULL DEFAULT 'transcript',
+  provenance  TEXT NOT NULL DEFAULT 'transcript', -- transcript | turn
   in_tok      INTEGER NOT NULL DEFAULT 0,
   out_tok     INTEGER NOT NULL DEFAULT 0,
   cache_read  INTEGER NOT NULL DEFAULT 0,
@@ -1665,7 +2139,8 @@ CREATE TABLE usage_fact (
   write_1h    INTEGER NOT NULL DEFAULT 0,
   requests    INTEGER NOT NULL DEFAULT 0,
   usd_reported REAL NOT NULL DEFAULT 0,
-  PRIMARY KEY (at, host, session, agent, model, effort, cli, source, account, provider)
+  PRIMARY KEY (at, host, session, agent, parent_agent, depth, model, effort, cli,
+               source, account, provider, project, provenance)
 );
 
 CREATE TABLE allowance_fact (
@@ -1708,29 +2183,38 @@ CREATE TABLE usage_hour (
   account  TEXT NOT NULL,
   provider TEXT NOT NULL,
   model    TEXT NOT NULL,
+  effort   TEXT NOT NULL DEFAULT '',
+  cli      TEXT NOT NULL DEFAULT '',
   source   TEXT NOT NULL,
   project  TEXT NOT NULL,
   in_tok, out_tok, cache_read, write_5m, write_1h, requests INTEGER NOT NULL DEFAULT 0,
   usd_reported REAL NOT NULL DEFAULT 0,
-  PRIMARY KEY (hour, host, account, provider, model, source, project)
+  PRIMARY KEY (hour, host, account, provider, model, effort, cli, source, project)
 );
 
--- The tool half of the hourly tier: the same day, counted by server and tool.
+-- The tool half of the hourly tier. The latency buckets are what let a month
+-- answer a p95; ms_total alone is a mean and cannot.
 CREATE TABLE tool_hour (
-  hour      INTEGER NOT NULL,   -- UTC hour start, epoch ms
-  host      TEXT NOT NULL,
-  account   TEXT NOT NULL,
-  provider  TEXT NOT NULL,
-  project   TEXT NOT NULL,
-  kind      TEXT NOT NULL,
-  server    TEXT NOT NULL DEFAULT '',
-  tool      TEXT NOT NULL,
-  target    TEXT NOT NULL DEFAULT '',
-  calls     INTEGER NOT NULL DEFAULT 0,
-  errors    INTEGER NOT NULL DEFAULT 0,
-  ms_total  INTEGER NOT NULL DEFAULT 0,
-  out_bytes INTEGER NOT NULL DEFAULT 0,
-  turn_usd  REAL NOT NULL DEFAULT 0,
+  hour       INTEGER NOT NULL,   -- UTC hour start, epoch ms
+  host       TEXT NOT NULL,
+  account    TEXT NOT NULL,
+  provider   TEXT NOT NULL,
+  project    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  server     TEXT NOT NULL DEFAULT '',
+  tool       TEXT NOT NULL,
+  target     TEXT NOT NULL DEFAULT '',
+  calls      INTEGER NOT NULL DEFAULT 0,
+  errors     INTEGER NOT NULL DEFAULT 0,
+  receipts   INTEGER NOT NULL DEFAULT 0,   -- async receipts, latency not the work
+  ms_total   INTEGER NOT NULL DEFAULT 0,
+  ms_under_50 INTEGER NOT NULL DEFAULT 0,
+  ms_under_200 INTEGER NOT NULL DEFAULT 0,
+  ms_under_1s  INTEGER NOT NULL DEFAULT 0,
+  ms_under_5s  INTEGER NOT NULL DEFAULT 0,
+  ms_over_5s   INTEGER NOT NULL DEFAULT 0,
+  out_bytes  INTEGER NOT NULL DEFAULT 0,
+  turn_usd   REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (hour, host, account, provider, project, kind, server, tool, target)
 );
 
@@ -1748,7 +2232,7 @@ CREATE TABLE rate (
   model      TEXT NOT NULL,
   clock      TEXT NOT NULL DEFAULT 'peak',   -- 'peak' or 'off_peak'
   from_at    INTEGER NOT NULL,
-  to_at      INTEGER NOT NULL,               -- exclusive; i64::MAX means "in force"
+  to_at      INTEGER NOT NULL,               -- advisory; the query takes the latest from_at
   input      REAL NOT NULL,
   output     REAL NOT NULL,
   cache_read REAL NOT NULL,
@@ -1788,26 +2272,136 @@ CREATE TABLE analytics_view (
   updated_at  INTEGER NOT NULL
 );
 
--- The two columns section 4.1 needs going forward. Optional on the command,
+-- The prompt vault: a data key sealed with a passphrase-derived key. The
+-- passphrase is never stored; without it the bodies are ciphertext. Keyed by
+-- vault_id because two walls may each have made one and neither may lose.
+CREATE TABLE prompt_vault (
+  vault_id    TEXT PRIMARY KEY,
+  salt        BLOB NOT NULL,
+  nonce       BLOB NOT NULL,
+  wrapped_key BLOB NOT NULL,
+  kdf         TEXT NOT NULL,        -- argon2id parameters, versioned
+  created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE prompt_fact (
+  host          TEXT NOT NULL,
+  prompt_id     TEXT NOT NULL,
+  at            INTEGER NOT NULL,   -- first occurrence
+  seen_count    INTEGER NOT NULL DEFAULT 1,
+  session       TEXT NOT NULL,
+  card          TEXT NOT NULL DEFAULT '',
+  project       TEXT NOT NULL DEFAULT '',
+  source        TEXT NOT NULL DEFAULT 'unknown',
+  vault_id      TEXT NOT NULL DEFAULT '',
+  kind          TEXT NOT NULL DEFAULT 'other',
+  kind_override TEXT,
+  chars         INTEGER NOT NULL DEFAULT 0,
+  words         INTEGER NOT NULL DEFAULT 0,
+  lines         INTEGER NOT NULL DEFAULT 0,
+  fences        INTEGER NOT NULL DEFAULT 0,
+  code_lines    INTEGER NOT NULL DEFAULT 0,
+  images        INTEGER NOT NULL DEFAULT 0,
+  questions     INTEGER NOT NULL DEFAULT 0,
+  redactions    INTEGER NOT NULL DEFAULT 0,
+  withheld      INTEGER NOT NULL DEFAULT 0,
+  body_state    TEXT NOT NULL DEFAULT 'none', -- sealed | locked | withheld | deleted | none
+  body_truncated INTEGER NOT NULL DEFAULT 0,
+  body_sealed   BLOB,                          -- nonce(12) || ciphertext || tag
+  source_path   TEXT,                          -- local only, while locked
+  source_off    INTEGER,                       -- local only, while locked
+  PRIMARY KEY (host, prompt_id)
+);
+
+CREATE TABLE prompt_hour (
+  hour       INTEGER NOT NULL,
+  host       TEXT NOT NULL,
+  account    TEXT NOT NULL,
+  provider   TEXT NOT NULL,
+  project    TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  prompts    INTEGER NOT NULL DEFAULT 0,
+  chars      INTEGER NOT NULL DEFAULT 0,
+  words      INTEGER NOT NULL DEFAULT 0,
+  lines      INTEGER NOT NULL DEFAULT 0,
+  code_lines INTEGER NOT NULL DEFAULT 0,
+  questions  INTEGER NOT NULL DEFAULT 0,
+  fences     INTEGER NOT NULL DEFAULT 0,
+  images     INTEGER NOT NULL DEFAULT 0,
+  redactions INTEGER NOT NULL DEFAULT 0,
+  withheld   INTEGER NOT NULL DEFAULT 0,
+  -- A median cannot come from sums; these buckets are what a year of prompt
+  -- length can honestly answer.
+  words_under_16 INTEGER NOT NULL DEFAULT 0,
+  words_under_64 INTEGER NOT NULL DEFAULT 0,
+  words_under_256 INTEGER NOT NULL DEFAULT 0,
+  words_under_1024 INTEGER NOT NULL DEFAULT 0,
+  words_over_1024 INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, host, account, provider, project, source, kind)
+);
+
+CREATE TABLE prompt_tombstone (
+  owner_host TEXT NOT NULL,
+  prompt_id  TEXT NOT NULL,
+  at         INTEGER NOT NULL,
+  reason     TEXT NOT NULL DEFAULT '',
+  acked      TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (owner_host, prompt_id)
+);
+
+CREATE TABLE prompt_grant (
+  host      TEXT PRIMARY KEY,
+  allowed   INTEGER NOT NULL DEFAULT 0,
+  since     INTEGER NOT NULL,
+  last_read INTEGER
+);
+
+CREATE TABLE prompt_favourite (
+  host        TEXT NOT NULL,
+  prompt_id   TEXT NOT NULL,
+  vault_id    TEXT NOT NULL DEFAULT '',
+  title       TEXT NOT NULL DEFAULT '',
+  note_sealed BLOB,                 -- nonce(12) || ciphertext || tag
+  tags        TEXT NOT NULL DEFAULT '[]',
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (host, prompt_id)
+);
+
+-- The prompt archive's completeness check, beside usage_day_digest. A count
+-- and a digest make a truncated day visible instead of stored as whole.
+CREATE TABLE prompt_day_digest (
+  host   TEXT NOT NULL,
+  day    TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  rows   INTEGER NOT NULL,
+  bytes  INTEGER NOT NULL,
+  PRIMARY KEY (host, day)
+);
+
+-- The columns section 4.1 and 7.4 need going forward. Optional on the command,
 -- so a front end that forgets them cannot lose a turn row (the `lastTier`
 -- lesson); an old row keeps NULL, which reads as unknown.
-ALTER TABLE turn ADD COLUMN model    TEXT;
-ALTER TABLE turn ADD COLUMN provider TEXT;
+ALTER TABLE turn ADD COLUMN model            TEXT;
+ALTER TABLE turn ADD COLUMN provider         TEXT;
+ALTER TABLE turn ADD COLUMN agent_session_id TEXT;
 ```
 
 Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
 `usage_fact(account, at)`, `tool_fact(at)`, `tool_fact(session)`, `tool_fact(server, at)`,
-`allowance_fact(account, at)`, `machine_fact(at)`, `usage_hour(hour)`, `tool_hour(hour)`,
-`host_build(host, from_at)`.
+`tool_pending(session)`, `allowance_fact(account, at)`, `machine_fact(at)`,
+`usage_hour(hour)`, `tool_hour(hour)`, `host_build(host, from_at)`, `prompt_fact(at)`,
+`prompt_fact(kind, at)`, `prompt_fact(card)`, `prompt_hour(hour)`.
 
 The view table is a `CREATE TABLE IF NOT EXISTS` and a `config_json` column for the same
 reason `widget` has one: the shape belongs to the front end, and a renamed form must degrade
 rather than need a migration.
 
 The `turn` columns are added by this rung rather than a rung of their own because they exist
-for this subsystem's attribution rule and for nothing else. `record_turn` takes both as
+for this subsystem's attribution rule and for nothing else. `record_turn` takes them as
 `Option`, and a row written by an older front end stays NULL, which the query layer reads as
-unknown rather than as Claude.
+unknown rather than as Claude. `agent_session_id` is the join section 7.4 needs; a row written
+before this rung has none, and the backfill says so instead of guessing.
 
 ---
 
@@ -1815,23 +2409,27 @@ unknown rather than as Claude.
 
 Each phase is useful on its own and commits on its own.
 
-1. **Facts and ingest.** Schema, the sink in `usage.rs`, durable offsets, the `seen` table,
-   the rate history, the deep first backfill, and a control-surface op to read raw facts. No
-   UI. This is the half that cannot be added later, because the transcripts it reads are on a
-   deletion clock.
+1. **Facts and ingest, including prompts and the vault.** Schema, the sink in `usage.rs`, the
+   `user`-record branch for tool results, durable offsets, the `seen` table, the rate history,
+   the prompt redactor and `prompt.rs`, the vault and `seal pending`, the deep first backfill,
+   and a control-surface op to read raw facts. No UI. This is the half that cannot be added
+   later, because the transcripts it reads are on a deletion clock.
 2. **The query layer.** Dimensions, measures, buckets, the view spec, the residual arithmetic,
-   all pure and tested. This is where the arguments live, so it is worth having before a
-   pixel is drawn.
+   the prompt kind vocabulary, all pure and tested. This is where the arguments live, so it is
+   worth having before a pixel is drawn.
 3. **The overlay, minimal.** KPI strip, one area chart, one filter row, the inspector, the
    table view, the keyboard. Enough to answer the weekly question.
-4. **Widgets and saved views.** The `analytics` kind, pin and open, size intents.
-5. **Machine facts.** CPU, memory, disk, network, cards, worktrees; GPU behind its own probe.
-6. **Flyway history and the live fleet.** Hourly rollups, the manifest, the day pull, `Now`,
-   and the two-second `live` frame on its own stream.
-7. **Reports.** The second entry, the asset, the exporter, anonymization.
-8. **Pacing.** The plan curve, the measures, the advice, the opt-in holds.
-9. **The persistent live channel**, when the live tool feed exists to justify it. Specified in
-   section 20.1, deliberately not before.
+4. **The prompt trace and the hall.** The page, the kind correction, favourites, tags, the
+   evolution view, and the vault's lock/unlock field.
+5. **Widgets and saved views.** The `analytics` kind, pin and open, size intents.
+6. **Machine facts.** CPU, memory, disk, network, cards, worktrees; GPU behind its own probe.
+7. **Flyway history and the live fleet.** Hourly rollups, the manifest keyed by owner, the day
+   pull, `Now`, the two-second `live` frame, and the sealed prompt archive with its per-peer
+   switch and tombstones.
+8. **Reports.** The second entry, the asset, the exporter, anonymization; the hall opt-in.
+9. **Pacing.** The plan curve, the measures, the advice, the opt-in holds.
+10. **The persistent live channel**, when the live tool feed exists to justify it. Specified in
+    section 20.1, deliberately not before.
 
 The order is chosen so that phase 1 starts recording before anything can make the record
 incomplete, and phase 8 is allowed to be wrong for a while without costing history.
@@ -1883,6 +2481,79 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   *not heard from* label, and the sum excludes it.
 - **The merge is a union.** Two walls exchange the same day twice and the row count is
   unchanged.
+- **A subagent inherits its session's owner.** A fixture with a parent file carrying a
+  `session-owner` and a subagent file carrying only the `sessionId` attributes the subagent's
+  requests to that owner, not to `unknown`.
+- **The allowance sample is a percentage.** A sample at 27 reads 27, and the residual over a
+  42-point week is 42, not 4,200.
+- **`NULL` is not Claude.** A `turn` row with a NULL `account_label` attributes to `unknown`,
+  and the residual grows; it is never counted as the subscription.
+- **A one-clock model prices every hour.** A Claude fact at 03:00 UTC prices from the single
+  row; a DeepSeek fact at a peak and an off-peak hour prices from the two.
+- **A superseding rate row wins.** Two rows with different `from_at` and one instant return the
+  later row, never an ambiguous join.
+- **A late tool result resolves its pending row.** A `tool_use` in one pass and its
+  `tool_result` in a later one produce one fact with latency and an error flag; an `Agent` or
+  background receipt is labelled `async` and its latency is not counted as work.
+- **A month-long percentile is labelled.** A p95 over months comes from the hourly buckets and
+  says so; an exact p95 is a 90-day reading.
+- **The manifest names the owner.** A wall holding two owners' days says both, and a peer asks
+  for `(owner, day)`; a corrected day replaces the old one by digest.
+- **A deleted saved view leaves a drawn widget standing.** The widget keeps its last resolved
+  snapshot, says the view is gone, and the first edit becomes an inline spec.
+- **An anonymized report carries no host, branch or filter value.** The model and the embedded
+  view spec are both scrubbed.
+- **A partial residual is labelled.** A host that sent samples but no facts makes the residual
+  *partial*, and the headline says so instead of inventing residual.
+- **A prompt is one row, not a tool result.** A five-day fixture with 28,879 `user` records
+  yields 825 human prompts; 27,222 tool results, 360 task notifications, 299 sidechain turns,
+  214 system reminders, 21 stop notes and 21 compaction summaries are excluded, and a repeated
+  `promptId` counts once.
+- **Redaction takes out the corpus, and the raw is absent.** Every fake secret in the corpus is
+  replaced; the stored row and a serialized flyway frame contain no raw prompt; a withheld
+  body keeps its form counts.
+- **A locked vault loses no form and no future body.** A prompt ingested while locked is
+  recorded `locked`; unlocking re-reads the transcript and seals it; a prompt whose transcript
+  is gone stays `locked`.
+- **A sealed body is unreadable on a peer.** The ciphertext crosses; without the passphrase the
+  peer's trace says `locked`; with it, the body reads. A wrong passphrase fails and leaves the
+  vault sealed.
+- **A favourite outlives the prune, and `forget` does not.** A favourite survives a prune and a
+  `forget prompts` removes its body and its hall entry; the counts remain.
+- **A tombstone reaches a returning peer.** A peer offline during a forget deletes its sealed
+  copy when it comes back, and the face names the peers that acknowledged. The tombstone
+  survives a restart of the wall that forgot, and `reset vault` emits one per body.
+- **Two identical bodies seal to different blobs.** The same text under the same key produces
+  two different ciphertexts because the nonce is fresh, and a one-byte tamper fails to open.
+- **A locked body is sealed when the vault unlocks.** The `source_path`/`source_off` locator
+  seeks to the line and seals it; a prompt whose transcript is gone stays `locked` with its
+  form intact.
+- **Two vaults are both readable.** A wall that receives a second `prompt_vault` keeps both,
+  and a body names the vault that seals it; neither key is overwritten.
+- **The prompt filter is `prompt_of`.** A fixture with a stop note, a task notification, a
+  compaction summary and a prompt carrying a `<system-reminder>` yields one prompt; the
+  five-day scan yields 825 prompts out of 28,879 user records.
+- **A repeated prompt id keeps the first.** A prompt written twice at two timestamps produces
+  one row at the first `at` with `seen_count = 2`, and a stop note sharing the id does not
+  replace it.
+- **A subagent is its own agent.** A subagent on Sonnet at high effort inside an Opus card
+  produces its own usage rows, its own `analytics_agent` row with the requested model and
+  effort, and its cost adds to the card without being folded into it; a nested subagent is
+  depth 2 and a parent the record cannot prove is depth 0.
+- **`project`, `source` and `provenance` are in the key.** Two projects in one bucket, or a
+  transcript fact and a `turn` backfill for one day, produce two rows rather than a collision.
+- **A tool row's `turn_usd` sums to the turn.** Two tools in one turn carry shares that add up
+  to the turn's cost, not two copies of it.
+- **A year's median is labelled.** A prompt-length median over months comes from the word
+  buckets and says so; an exact median is a 90-day reading.
+- **An identity becomes a label or unknown.** A registered `uuid:org` maps to its label; an
+  unregistered one is `unknown` with the identity kept, and lands in the residual.
+- **A direct account move does not relabel a running turn.** A `/account` while a turn is in
+  flight leaves the turn row on the label recorded at its open.
+- **A version change within a day joins the latest build.** `host_build` takes the greatest
+  `from_at <= t`, so two rows cannot match one instant.
+- **A corrected kind reaches the rollup.** A `kind_override` moves the counts from the old
+  kind to the new one in the same transaction.
 - **The palette is validated.** The categorical order passes the six checks on
   `--surface #1e1a18`, and the first three pass `--pairs all`.
 - **Every chart has a table.** A wall test opens the table from the keyboard and reads the
@@ -1890,8 +2561,33 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
 - **The widget and the overlay agree.** One view spec, two surfaces, one number.
 - **A report is self-contained.** It opens from a copied file with the network off, draws
   every panel, and carries no path and no token when anonymized.
-- **Motion is bounded.** With the overlay closed, the CPU cost of the analytics collector is
-  the sampler's, and nothing redraws.
+- **Motion is bounded, and the collector is not the sampler.** With the overlay closed nothing
+  redraws, but the collector still owns its 60-second transcript pass and the machine series;
+  the test measures that pass's cost and states it, rather than calling it the sampler's. The
+  meter's sampler is zero when no widget is attached, and the two are reported apart.
+
+### 19.1 The probes behind the numbers
+
+The document says "measured" in a few places, and the standard here is to name the probe. These
+are the ones behind the figures, and the first should become a committed `tools/probe-*.ts`
+before phase 1 rather than staying a scratch script:
+
+- **the transcript scans** (prompt filter, tool counts, `session-owner` coverage, provider
+  models, duplicate `promptId`s) were one-off Node scans over `~/.claude/projects` on
+  2026-11-11, reading no prompt text out and writing nothing. They are the evidence for 28,879
+  user records, 825 prompts, 355 subagent files with no owner, and the five provider-probe
+  transcripts.
+- **the palette** was checked with the dataviz skill's `validate_palette.js` against the app's
+  surface `#1e1a18` on 2026-11-11; the output is quoted in section 10.1.
+- **the tool counts** are one five-day scan, not a running probe; they are a shape, not a
+  budget.
+- **the bandwidth table** is arithmetic from one stated assumption (under 1 KB a frame, 2s,
+  directed streams, a dial per exchange), not a measurement; the dials are what phase 7
+  measures.
+
+A number that matters to a decision and has no probe beside it is a number to re-measure before
+it is trusted, which is the same rule `usage.md` learned when a confident, detailed note had
+never been tested against the thing it described.
 
 ---
 
@@ -1905,8 +2601,9 @@ not re-opened by accident.
    what makes a reopened wall remember what its peers consumed while they were on. Merged
    rollups are stored on every wall, so a peer going dark does not erase its history.
    Analytics only; no conversation content crosses or is stored.
-2. **Fine history** is 90 days at five minutes, hourly for three years. The fine tier is tens
-   of megabytes at the rate measured here.
+2. **Fine usage facts** are 90 days at five minutes, hourly for three years. The fine tier is
+   tens of megabytes at the rate measured here. **Prompt bodies are not on that clock**: they
+   are sealed, kept until deleted, and a favourite is exempt, per section 3.8.
 3. **The residual is shown by default**, with a line saying what it means. It is the honest
    answer to the cross-machine question and it is not a number to bury.
 4. **Dollars and allowance points are both kept**, with the lead measure chosen by funding:
@@ -1924,6 +2621,24 @@ not re-opened by accident.
     dedicated visual pass can add one later. Two generated attempts were rejected rather than
     shipped, which is the right outcome for a mark that would otherwise be the first thing a
     person sees.
+11. **Prompt bodies are kept, sealed, and can travel.** The prompt trace and the hall need the
+    words, not only the counts, so the body is redacted, sealed with a passphrase-derived key
+    that is never stored, and kept until deleted. The counts sync freely; a sealed body may
+    replicate to an approved peer because a peer cannot read it without the passphrase. A
+    favourite is a marker on the same row, not a second copy, and a delete is a durable
+    tombstone that reaches a returning peer. Each body has its own nonce; a wall that receives
+    a second vault keeps both; a locked body keeps a local-only locator so it can be sealed
+    later.
+12. **The review's high findings are fixed, not argued with.** The owner is resolved per
+    session across its files (355 subagent files carry no owner of their own); the provider
+    claim is narrowed to what the store and the probes support; `used` is a percentage;
+    `NULL` is unknown; the rate query takes the latest `from_at`, and a one-clock model prices
+    every hour. Each has a test in section 19.
+13. **A subagent is its own agent.** Its model and effort are recorded per request, its parent
+    and depth are kept, and `analytics_agent` holds the requested model and effort beside the
+    actual; account and provider are inherited from the card, because a subagent runs in the
+    card's process and cannot switch funding. A card opened with `spawn` is a separate session,
+    not an agent. Agent-level questions stop at the 90-day tier.
 
 ### 20.1 One left: how live is another machine
 
@@ -1935,7 +2650,7 @@ needs a faster signal than that.
 | option | what it costs | how fresh another wall reads | what it is good for |
 |---|---|---|---|
 | **A. piggyback on the roster** | nothing new; ~40 bytes on an announcement that already goes out | up to 30s old | the fleet strip, history, anything that moves in minutes |
-| **B. a 2s `live` exchange on its own stream, while a view is open** | 30 exchanges/min per pair, under 1 KB a frame; about 5 MB an hour for three walls; isolated from the prompt stream | 2s | a fleet graph that visibly moves |
+| **B. a 2s `live` exchange on its own stream, while a view is open** | 30 exchanges/min per directed stream, under 1 KB a frame; about 10.8 MB an hour for three walls; isolated from the prompt stream | 2s | a fleet graph that visibly moves |
 | **C. pull once when the view opens, then the roster** | one round trip per peer per open | fresh at the moment you look, then up to 30s | the common gesture: open, look, close |
 | **D. a persistent stream from each peer** | a long-lived connection per pair and a new failure mode; the flyway is request/response, not pub/sub | continuous | nothing this design needs |
 
@@ -1950,18 +2665,18 @@ retried, and the roster is the backstop. Closing the view ends the frames on the
 machine numbers, a card count and a worktree count, sealed: under a kilobyte with the frame and
 the seal. At two seconds:
 
-| walls (full mesh) | exchanges a minute | bytes a minute | a working day (8h) | a day (24h) |
+| walls (full mesh) | directed streams | exchanges a minute | bytes a minute | a working day (8h) |
 |---|---|---|---|---|
-| 2 (one pair) | 60 | ~60 KB | ~29 MB | ~86 MB |
-| 3 (three pairs) | 180 | ~180 KB | ~86 MB | ~260 MB |
-| 5 (ten pairs) | 600 | ~600 KB | ~288 MB | ~864 MB |
+| 2 | 2 | 60 | ~60 KB | ~29 MB |
+| 3 | 6 | 180 | ~180 KB | ~86 MB |
+| 5 | 20 | 600 | ~600 KB | ~288 MB |
 
 For scale, a 720p video is about 1.1 GB an hour; even five walls at two seconds is roughly a
-hundredth of one. **The bytes are not the risk, and the round trips are only a risk if they
-share a stream with the work.** Hence the separate stream and the no-retry rule. The other
-real cost is waking an idle machine: the frames only exist while an analytics view is open, so
-a wall with nobody looking pays nothing at all, and the local sampler's own ring is the only
-thing running.
+thirtieth of one, not a hundredth. **The bytes are not the risk; thirty dials a minute per
+stream is.** The isolation is what keeps the dials from touching the prompt path: a live
+exchange of its own, abandoned rather than retried. The other real cost is waking an idle
+machine: the frames only exist while an analytics view is open, so a wall with nobody looking
+pays nothing at all, and the local sampler's own ring is the only thing running.
 
 The face shows the age of each reading. It never interpolates between two samples, because a
 line drawn through two two-second points and a line drawn through two thirty-second points
