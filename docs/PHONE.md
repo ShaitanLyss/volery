@@ -280,7 +280,8 @@ Three loops, all thin on the phone:
 | **narration** | walls change, the phone folds the deltas into spoken lines | the digest, `ask_user` questions, notices — all of which already cross |
 | **command** | you speak → a wall parses → act | `steward.rs`, `act.rs`, the confirm gate |
 | **question** | a card's question is read aloud, you answer, it crosses back | `Ask::answers` already travels |
-| **general** | a sentence that is not a command is asked of the wall and answered by DeepSeek flash | `steward::General`, `provider::answer_question` |
+| **front desk** | a sentence that is not a command is handed to the wall's own card, which asks a follow-up and then opens a conversation | `steward::General`, `assistant`, `ask_user` |
+| **general** | the fallback for a wall with no project: one question, one spoken answer, no memory | `provider::answer_question` |
 
 ## What the phone is, concretely
 

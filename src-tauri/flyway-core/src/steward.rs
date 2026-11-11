@@ -91,11 +91,18 @@ pub enum StewardMsg {
     /// steps and the only thing that runs them. Answered `Stewarded` with the
     /// carry's `Outcome` — `{ "kind": "done" | "refused" | "stopped", … }`.
     Confirm { id: String },
-    /// A sentence the steward could not place as a Volery command, asked as a
-    /// general question instead. Answered on the wall against its **DeepSeek**
-    /// balance, not by a `claude` turn, because "what is the weather" is not
-    /// work any of this wall's cards should be paid for. The answer is the same
-    /// `Stewarded` envelope with `{ "kind": "general", "text": … }`, so a reader
+    /// A sentence the steward could not place as a Volery command, handed to
+    /// the wall to deal with as it can.
+    ///
+    /// **Two kinds of answer come back through it**, and the phone has to tell
+    /// them apart. `{ "kind": "talk", "card": …, "fresh": … }` is the wall
+    /// passing the sentence to its **front desk card** (`assistant`), which
+    /// holds the conversation and whose words arrive later as a question of
+    /// that card — nothing is spoken from this envelope at all. `{ "kind":
+    /// "general", "text": … }` is the older one-shot answer from the wall's
+    /// **DeepSeek** balance, kept for a wall with no project to put a card in.
+    ///
+    /// Both ride the `Stewarded` envelope every other answer does, so a reader
     /// needs no second shape; an older wall passes the unknown word over
     /// (`frame::take`) and the phone says it could not answer.
     General { id: String, text: String },

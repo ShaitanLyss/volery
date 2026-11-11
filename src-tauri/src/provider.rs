@@ -488,8 +488,36 @@ const VOICE: &str = "You are Volery's voice on the user's phone. Volery puts eve
     no headings, no code and no em dashes. If you are asked something about Volery that is \
     not covered here, say plainly that you are not sure rather than inventing an answer.";
 
+/// The DeepSeek key this wall would spend, or a sentence naming what to do
+/// about it.
+///
+/// Two callers ask the same question for different reasons: `answer_question`
+/// needs the key, and `assistant::said` needs to know **before it opens a front
+/// desk** whether one could ever answer. Without that second ask, a wall with
+/// no key answers the phone `talk`, the card fails to open where nobody is
+/// looking, and the phone says nothing at all — the one failure on this path
+/// that is silent rather than spoken.
+pub fn deepseek_key() -> Result<String, String> {
+    let p = named("deepseek").ok_or("deepseek is not a provider this build knows")?;
+    crate::creds::token(p.key)
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "no {} API key is stored, so this wall cannot answer general questions — add one \
+                 in the keyring (space then o)",
+                p.name
+            )
+        })
+}
+
 /// A one-shot spoken answer from DeepSeek, for a sentence the steward could
 /// not place as a Volery command.
+///
+/// **This is the fallback now.** A wall with a project hands such a sentence to
+/// its front desk card instead (`assistant::said`), which can ask a follow-up
+/// and open a conversation. What is left here is the wall that has no project
+/// to put a front desk in, and which would otherwise have nothing to say at all.
 ///
 /// **Why the wall and not the phone.** The key is in this machine's vault
 /// (`creds.rs`), read at the moment of asking and never handed to another
@@ -513,17 +541,8 @@ pub fn answer_question(text: &str) -> Result<String, String> {
     /// a walk; past this the phone is reading a page.
     const ANSWER_MOST: usize = 1_200;
 
+    let key = deepseek_key()?;
     let p = named("deepseek").ok_or("deepseek is not a provider this build knows")?;
-    let key = crate::creds::token(p.key)
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "no {} API key is stored, so this wall cannot answer general questions — add one \
-                 in the keyring (space then o)",
-                p.name
-            )
-        })?;
     let body = serde_json::json!({
         "model": MODEL,
         "max_tokens": 600,

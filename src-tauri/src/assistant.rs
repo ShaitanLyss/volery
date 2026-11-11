@@ -88,11 +88,11 @@ pub fn pick_home(roots: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// The card the phone talks to, if this wall still has one.
-fn find(app: &AppHandle) -> Option<String> {
-    let store = app.try_state::<crate::store::Store>()?;
-    let conn = store.0.lock().ok()?;
-    let id = crate::flyway::here::setting(&conn, SETTING)?;
+/// The card the phone talks to, if this wall still has one. Asked with the
+/// store lock already held, so `said` can decide and write in one critical
+/// section: two sentences arriving at once must not mint two cards.
+fn find(conn: &rusqlite::Connection) -> Option<String> {
+    let id = crate::flyway::here::setting(conn, SETTING)?;
     let open: bool = conn
         .query_row(
             "SELECT closed_at IS NULL FROM conversation WHERE id = ?1",
@@ -104,10 +104,21 @@ fn find(app: &AppHandle) -> Option<String> {
 }
 
 /// The roots of every project on this wall, in the order they were added.
+///
+/// **The chat home is not one of them**, and getting that wrong is a sandbox
+/// inversion rather than an untidy choice: a chat card lives in the app's own
+/// data folder, one directory above the live database, and a *project* card
+/// founded there would carry `--dangerously-skip-permissions` and `spawn` in
+/// the one territory built on every card there being harmless (`chat.md`). So a
+/// root whose folder is `chat` under the app's data directory is skipped, and a
+/// wall with nothing else has no front desk.
 fn roots(app: &AppHandle) -> Result<Vec<String>, String> {
     let store = app
         .try_state::<crate::store::Store>()
         .ok_or_else(|| "the store is unavailable".to_string())?;
+    /* Canonical, because that is the spelling `ensure_project` stores a root
+    under — the same reason `chat_home` answers with it. */
+    let chat = crate::store::canonical_root(&store.1.join("chat").to_string_lossy());
     let conn = store
         .0
         .lock()
@@ -119,34 +130,42 @@ fn roots(app: &AppHandle) -> Result<Vec<String>, String> {
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
+        .filter(|root| !std::path::Path::new(root).eq(std::path::Path::new(&chat)))
         .collect();
     Ok(rows)
 }
 
 /// Say something to the front desk, opening it first if this wall has none.
 ///
-/// Answers the card's id and whether it is being opened now, which is the whole
-/// of what the phone needs to draw while it waits: a fresh front desk takes a
-/// spawn and a first turn before it can ask anything.
+/// Answers the card's id and whether it is being opened now, which is what the
+/// phone draws while it waits: a fresh front desk takes a spawn and a first turn
+/// before it can ask anything.
+///
+/// **The payload carries `cwd` and `brief` whether or not the card exists**, and
+/// that is what makes the front end's single rule safe: it has the card, so it
+/// sends; it does not, so it opens one. The first version sent an empty string
+/// for both in the found case, and the window between the row being written and
+/// the card reaching `#byId` then opened a *second* card at `cwd: ""` — which
+/// creates a nameless project at the root of the filesystem. A whole payload, or
+/// none.
+///
+/// **The key is checked before anything is opened.** A wall with no DeepSeek key
+/// would otherwise answer `talk`, fail to open the card where nobody is looking,
+/// and leave the phone silent for ever. This way the sentence falls through to
+/// `answer_question`, which reports the missing key in words.
 pub fn said(app: &AppHandle, text: &str) -> Result<(String, bool), String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("nothing was said".into());
     }
-    if let Some(id) = find(app) {
-        let _ = app.emit(
-            "voice:say",
-            json!({ "id": id, "text": text, "cwd": "", "title": TITLE, "brief": "" }),
-        );
-        return Ok((id, false));
-    }
-    /* Not stored yet, so a window that never opens this card leaves nothing
-    behind but an id that `find` will refuse next time — see the header. */
+    crate::provider::deepseek_key()?;
     let cwd = pick_home(&roots(app)?).ok_or_else(|| {
         "this wall has no project, so there is nowhere to put a front desk".to_string()
     })?;
-    let id = crate::store::uuid_v4();
-    {
+    /* One critical section for decide-and-write. Two sentences arriving at once
+       on two devices would otherwise both find nothing and both mint an id,
+       opening two front desks that each park their own questions. */
+    let (id, fresh) = {
         let store = app
             .try_state::<crate::store::Store>()
             .ok_or_else(|| "the store is unavailable".to_string())?;
@@ -154,22 +173,24 @@ pub fn said(app: &AppHandle, text: &str) -> Result<(String, bool), String> {
             .0
             .lock()
             .map_err(|_| "the store is wedged".to_string())?;
-        crate::flyway::here::set_setting(&conn, SETTING, &id)?;
-    }
-    crate::chronicle::note(
-        app,
-        None,
-        "volery",
-        "note",
-        "the phone's front desk was opened",
-        &format!("in {cwd}. the card the phone talks to when a sentence is not a command"),
-    );
+        match find(&conn) {
+            Some(id) => (id, false),
+            /* Not stored yet, so a window that never opens this card leaves
+               nothing behind but an id that `find` will refuse next time — see
+               the header. */
+            None => {
+                let id = crate::store::uuid_v4();
+                crate::flyway::here::set_setting(&conn, SETTING, &id)?;
+                (id, true)
+            }
+        }
+    };
     app.emit(
         "voice:say",
         json!({ "id": id, "text": text, "cwd": cwd, "title": TITLE, "brief": BRIEF }),
     )
     .map_err(|e| e.to_string())?;
-    Ok((id, true))
+    Ok((id, fresh))
 }
 
 #[cfg(test)]

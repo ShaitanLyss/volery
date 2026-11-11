@@ -571,6 +571,11 @@ export class Skein {
   /** Wakes in flight, by card id — see `#spawn`. One attempt per card, shared
    *  by everybody who asks for it while it is running. */
   #waking = new Map<string, Promise<"spawned" | "already" | "failed">>();
+  /** Front desk opens in flight, by card id. The row is written before the card
+   *  reaches `#byId`, so two sentences arriving inside that window would both
+   *  find no card and both open one — the second at the `cwd` the wall sent,
+   *  which is not its own. One open per id, waited on rather than repeated. */
+  #voiceOpening = new Map<string, Promise<void>>();
   /** Heals waiting to fire, by conversation id. Held rather than fired and
    *  forgotten because a timer that outlives this Skein is the same leak
    *  `detach` exists for — in dev that is every file save, and what it would
@@ -1294,18 +1299,30 @@ export class Skein {
         "voice:say",
         (e) => {
           const { id, cwd, text, title, brief } = e.payload;
-          const card = this.#byId.get(id);
           void (async () => {
-            /* Not `own`: these are her words, spoken into the card, and the
-               transcript draws them as hers. `own` is for prompts the wall
-               writes on an agent's behalf. */
-            if (card) await this.send(card, text);
-            else
+            /* One open per id, waited on rather than repeated: the wall writes
+               the row before the card reaches `#byId`, so a second sentence in
+               that window finds `find` answering and this map empty — which is
+               the state that opened a second card. */
+            const opening = this.#voiceOpening.get(id);
+            if (opening) await opening;
+            const card = this.#byId.get(id);
+            if (card) {
+              /* Not `own`: these are her words, spoken into the card, and the
+                 transcript draws them as hers. */
+              await this.send(card, text);
+              return;
+            }
+            const start = (async () => {
+              /* The brief is the wall's words, so it goes in as the card's
+                 opening prompt (folded as a hand-over, which is what it is).
+                 Her sentence follows as a send of its own, or the first thing
+                 she ever said to it would be drawn inside Skein's brief. */
               await this.openSpawned(
                 id,
                 cwd,
                 null,
-                `${brief}\n\n${text}`,
+                brief,
                 title,
                 "deepseek",
                 "flash",
@@ -1313,6 +1330,16 @@ export class Skein {
                 null,
                 null,
               );
+            })();
+            this.#voiceOpening.set(id, start);
+            try {
+              await start;
+            } finally {
+              this.#voiceOpening.delete(id);
+            }
+            const opened = this.#byId.get(id);
+            if (opened) await this.send(opened, text);
+            else console.error("voice:say", "the front desk did not open");
           })();
         },
       ),

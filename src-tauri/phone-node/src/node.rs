@@ -387,15 +387,22 @@ impl Node {
         Ok((id, answer))
     }
 
-    /// A sentence the steward could not place as a Volery command, asked as a
-    /// general question. The wall answers from its own DeepSeek balance
-    /// (`provider::answer_question`), so the key never comes to this phone and
-    /// the answer costs flash rather than a `claude` turn.
+    /// A sentence the steward could not place as a Volery command.
+    ///
+    /// **Two answers come back through this word**, and the phone must speak
+    /// only one of them. `general` is the wall answering on the spot from its
+    /// own balance (`provider::answer_question`, the fallback for a wall with
+    /// no project). `talk` is the wall handing the sentence to its front desk
+    /// card (`assistant`): the card's words arrive later as a parked question
+    /// of that card, which the prompt reader draws and the narrator reads, so
+    /// the phone says nothing here. Refusing an unknown kind is what kept the
+    /// second one from ever arriving — it surfaced as spoken nonsense, because
+    /// the error travels the same envelope an answer does.
     ///
     /// Same exchange as `plan` and a different word in it: one turn, answered
     /// on the stream it was asked on, nothing kept. The wall gates it on its
-    /// take-work switch, because it spends money.
-    pub async fn general(&self, host: &str, text: &str) -> Result<String, String> {
+    /// take-work switch, because it may start a card that spends money.
+    pub async fn general(&self, host: &str, text: &str) -> Result<serde_json::Value, String> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err("nothing was said".into());
@@ -421,16 +428,10 @@ impl Node {
             _ => None,
         });
         let answer = steward::answer_in(answers, &id, host)?;
-        if answer.get("kind").and_then(serde_json::Value::as_str) != Some("general") {
-            return Err(format!("{host} answered with something that was not a general answer"));
+        match answer.get("kind").and_then(serde_json::Value::as_str) {
+            Some("general") | Some("talk") => Ok(answer),
+            _ => Err(format!("{host} answered with something that was not an answer")),
         }
-        answer
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| format!("{host} answered with no words"))
     }
 
     /// Confirm the plan the wall returned for `id` and have it carried out.

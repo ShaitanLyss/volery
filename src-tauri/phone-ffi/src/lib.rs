@@ -272,10 +272,12 @@ pub extern "system" fn Java_com_volery_phone_NativeBridge_answer<'caller>(
         .resolve::<LogErrorAndDefault>()
 }
 
-/// `general(host, text)` → `{"ok": {"text": …}}` or `{"err": …}`.
+/// `general(host, text)` → `{"ok": {"kind": …}}` or `{"err": …}`.
 ///
-/// A sentence the steward could not place, answered by the wall from its
-/// DeepSeek balance: one exchange, nothing kept. The phone speaks the reply.
+/// A sentence the steward could not place, in one exchange and nothing kept.
+/// `kind` says what came back: `general` carries `text` for the phone to speak,
+/// `talk` names the front desk `card` the wall handed the sentence to, whose
+/// words arrive separately as that card's question.
 #[no_mangle]
 pub extern "system" fn Java_com_volery_phone_NativeBridge_general<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
@@ -425,8 +427,12 @@ fn answer(host: &str, card: &str, ask_id: &str, text: &str) -> Result<Value, Str
 
 fn general(host: &str, text: &str) -> Result<Value, String> {
     let held = node().lock().unwrap().clone().ok_or("not started — call start first")?;
-    let said = rt().block_on(held.general(host, text))?;
-    Ok(json!({ "text": said }))
+    /* The wall's answer whole, not only its words: it is either an answer to
+       speak (`kind: "general"`) or a hand-off to its front desk (`kind: "talk"`,
+       whose words arrive later as that card's question). Choosing between them
+       is the phone's, and flattening to `text` here would make the second one
+       indistinguishable from an empty answer. */
+    rt().block_on(held.general(host, text))
 }
 
 fn prompts(cards: &str) -> Result<Value, String> {
