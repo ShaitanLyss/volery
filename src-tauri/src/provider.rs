@@ -463,17 +463,30 @@ fn fetch_balance(p: &'static Provider) -> Result<Balance, String> {
 /// one: asked how many cards a wall holds, the grounded voice answered "I'm
 /// not sure, the introduction I have does not say" rather than inventing a
 /// number somebody would act on.
+///
+/// **A request for work has two ways to be answered wrongly, and both were
+/// found by asking.** "create a simulation in python" was answered with advice
+/// and no way to act on it, so the prompt now carries the form a spoken
+/// command takes (name the card or the project in the sentence). And once it
+/// did, "tell the auth card to write a pendulum simulation" came back
+/// *"Sending this to the auth card"* — a promise nothing on this path can
+/// keep, since the voice is one question and one answer with no memory of the
+/// next sentence. Hence the explicit "never say you have done those things or
+/// that you will". **A voice that claims an act is worse than one that refuses
+/// it**, because the person waits for a reply that is never coming.
 const VOICE: &str = "You are Volery's voice on the user's phone. Volery puts every \
     running Claude Code conversation on one wall, and each conversation is a card. This \
     phone is a node on that wall: it shows the cards, reads aloud whatever is waiting on the \
-    user, takes their answer in their own words and sends it to the card that asked, and \
-    answers ordinary questions on its own. Hands-free and the spoken guide live in settings, \
-    where the row how to use volery replays the introduction. You cannot run programs, open \
-    apps, or change anything on the user's computers; work like that has to be asked of a card \
-    on the wall. Answer in one to three short sentences of plain spoken prose, with no \
-    markdown, no lists, no headings, no code and no em dashes. If you are asked something \
-    about Volery that is not covered here, say plainly that you are not sure rather than \
-    inventing an answer.";
+    user, hands their answer in their own words back to the card that asked, and answers \
+    ordinary questions on its own. Hands-free and the spoken guide live in settings, where \
+    the row how to use volery replays the introduction. You cannot run programs, open apps, \
+    or change anything on the user's computers; work like that has to be asked of a card on \
+    the wall, as one spoken command that names the card or the project, like tell the auth \
+    card to write it. Your only power is to answer in words: you cannot open a card, start \
+    work or pass a request along, so never say you have done those things or that you will. \
+    Answer in one to three short sentences of plain spoken prose, with no markdown, no lists, \
+    no headings, no code and no em dashes. If you are asked something about Volery that is \
+    not covered here, say plainly that you are not sure rather than inventing an answer.";
 
 /// A one-shot spoken answer from DeepSeek, for a sentence the steward could
 /// not place as a Volery command.
@@ -677,13 +690,20 @@ mod tests {
         assert!(spoken(&serde_json::json!({})).is_none());
     }
 
-    /// The three facts without which the voice describes a generic assistant
-    /// instead of this app, which is what it did on 2026-11-11 before they
-    /// were here. Held against a rewrite of the prose rather than the prose
-    /// itself, since the wording is not what makes it true.
+    /// The facts without which the voice describes a generic assistant
+    /// instead of this app (which it did on 2026-11-11), and the line that
+    /// stops it claiming an act it cannot perform (which it did the same day,
+    /// in answer to "tell the auth card to write a pendulum simulation").
+    /// Held against a rewrite of the prose rather than the prose itself,
+    /// since the wording is not what makes any of it true.
     #[test]
     fn the_voice_is_told_what_it_is_speaking_for() {
-        for fact in ["Volery", "card", "cannot run programs"] {
+        for fact in [
+            "Volery",
+            "card",
+            "cannot run programs",
+            "never say you have done those things",
+        ] {
             assert!(VOICE.contains(fact), "the voice's prompt lost {fact:?}");
         }
     }

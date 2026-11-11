@@ -144,6 +144,13 @@ the key never leaves the wall.
   you do for me", `deepseek-flash` described a generic assistant and named none
   of it. The prompt also says to admit it is not sure about Volery rather than
   invent, because a spoken number is one somebody acts on.
+- **A request for work is answered with the way to ask, and never with a claim
+  to have acted.** Asked "create a simulation in python", the voice says it
+  cannot write or run anything and that the way to ask is one spoken command
+  naming the card or the project. Asked "tell the auth card to write a pendulum
+  simulation" it says the phrasing is right and that it cannot pass the request
+  along, because the voice is one question and one answer with no memory of the
+  next sentence, and a promise to relay is a promise nothing can keep.
 - **Both ends need this build.** An older wall passes the unknown word over and
   says nothing; the phone recognises "did not answer" for that word and falls
   back to "not understood" rather than reporting a fault.
