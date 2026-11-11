@@ -12,7 +12,9 @@
  * The bucket and hour boundaries, the ladder's four arms, the provider
  * sentinel, a subagent's depth, a replaced file's resume offset, the session
  * merge's first-and-last rules, the version comparison, and the two records
- * the sink reads from outside the assistant lines. All of it pure.
+ * the sink reads from outside the assistant lines. Since phase 6a it also runs
+ * the tool classifier, a result's size and error bit, the four receipt shapes
+ * and the history log's numstat. All of it pure.
  *
  * **Not covered: anything that opens a database.** `a_request_is_folded_once…`
  * and `the_hour_is_the_sum_of_its_facts` need `store::migrate` and rusqlite,
@@ -58,6 +60,27 @@ const ANALYTICS_ITEMS: string[] = [
      come in with the sink that fills it. */
   "struct Prompt",
   "struct Batch",
+  /* The tool and work reader (§3.7, §3.9; phase 6a). `Batch` holds these and
+     `Reading::tools` fills them, so the shapes come in with the sink. */
+  "struct ToolCall",
+  "struct ToolResult",
+  "struct Receipt",
+  "struct ToolShape",
+  "fn classify_tool",
+  "fn parse_tool_use",
+  "fn content_size",
+  "struct ParsedResult",
+  "fn parse_tool_result",
+  "struct ParsedReceipt",
+  "fn parse_receipts",
+  "fn dedupe_receipts",
+  "fn is_hex",
+  "fn bracket_commit",
+  "fn conflict_paths",
+  "fn pr_link",
+  "fn quoted_after",
+  "struct HistCommit",
+  "fn parse_numstat_log",
   "struct Reading",
   "impl Reading",
   "struct Span",
@@ -107,6 +130,15 @@ const TESTS: string[] = [
   "the_spawning_call_names_the_child_and_its_parent",
   "a_session_owner_is_read_once_and_kept",
   "a_file_is_only_consumed_to_its_last_newline",
+  /* Phase 6a's pure half: the tool classifier, the result's size and error
+     bit, the four receipt shapes, and the history log's numstat. The fold and
+     the sweep need a database and stay CI's. */
+  "a_tool_name_is_reduced_to_the_dimensions_the_fact_has",
+  "a_result_keeps_its_size_and_never_its_content",
+  "a_commit_receipt_parses_branch_and_sha",
+  "a_pr_receipt_names_its_number",
+  "a_conflict_names_its_paths",
+  "a_history_commit_carries_its_numstat_and_parents",
 ];
 
 type Src = { lines: string[]; testsAt: number; where: string };
@@ -179,6 +211,49 @@ function sessionsModule(): string {
   return ["pub mod sessions {", ...items.map((i) => find(src, i)), "}"].join("\n\n");
 }
 
+/** The prompt vault, **stubbed, and it says so**.
+ *
+ *  `Prompt` and `Reading` name `crate::promptvault::Body`, `PromptVault` and
+ *  `decide`, and the real module needs the store and a key — so it cannot be
+ *  lifted onto a machine with no rusqlite, which is the whole reason this file
+ *  exists. Nothing here asserts anything about a body: the stub answers
+ *  `locked` with a locator, which is exactly what a wall with no vault gets.
+ *  A copy of the real `decide` would be a second implementation that could
+ *  drift and be believed; a stub this small cannot be mistaken for one. */
+function promptvaultModule(): string {
+  return `pub mod promptvault {
+    #[derive(Clone)]
+    pub(crate) struct Body {
+        pub(crate) state: &'static str,
+        pub(crate) vault_id: String,
+        pub(crate) sealed: Option<Vec<u8>>,
+        pub(crate) truncated: bool,
+        pub(crate) locator: Option<(String, u64)>,
+        pub(crate) captured_at: i64,
+    }
+    pub struct PromptVault;
+    pub(crate) fn decide(
+        _vault: Option<&PromptVault>,
+        _host: &str,
+        _session: &str,
+        _prompt_id: &str,
+        _first_at: i64,
+        _redacted: &crate::redact::Redacted,
+        path: &str,
+        off: u64,
+    ) -> Body {
+        Body {
+            state: "locked",
+            vault_id: String::new(),
+            sealed: None,
+            truncated: false,
+            locator: Some((path.to_string(), off)),
+            captured_at: 0,
+        }
+    }
+}`;
+}
+
 const analytics = open(ANALYTICS);
 const usage = open(USAGE);
 
@@ -194,6 +269,7 @@ const body = [
   creditsModule(),
   providerModule(),
   sessionsModule(),
+  promptvaultModule(),
   "use sessions::Folded;",
   ["pub mod usage {", ...USAGE_ITEMS.map((i) => find(usage, i)), "}"].join("\n\n"),
   "use usage::{epoch_ms, Record};",
@@ -205,6 +281,11 @@ const body = [
      again here — a copy of it would be a second parser drifting from the one
      `usage.rs` exports. */
   findTest(analytics, "record"),
+  /* The timestamp fixtures the phase 6a parser tests read their lines from. */
+  findTest(analytics, "stamp"),
+  findTest(analytics, "civil_from_days"),
+  findTest(analytics, "call_line"),
+  findTest(analytics, "result_line"),
   ...TESTS.map((t) => findTest(analytics, t)),
   "}",
 ].join("\n\n");

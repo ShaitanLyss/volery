@@ -22,9 +22,13 @@
 //!   command wait on that mutex, so holding it for a file parse — or for the
 //!   deep pass's ninety thousand requests — would stop the wall.
 //!
-//! What a fact is, is §3.1's grain and §4's attribution ladder. What is
-//! deliberately absent: tool facts, prompt facts, vault, allowances, machine
-//! facts. Those are other phases and other tables.
+//! What a fact is, is §3.1's grain and §4's attribution ladder. Since phase 6a
+//! the same walk also feeds **the tool half** (§3.7: a mutable `tool_pending`
+//! row per call, folded into `tool_fact` and `tool_hour` once its turn has a
+//! cost) and **the work half** (§3.9: a receipt read off a shell result, and a
+//! bounded local `git log` attributed by branch, turn interval and file touch).
+//! What is deliberately absent: the prompt vault's workings, allowances and
+//! machine facts. Those are other phases and other tables.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -144,6 +148,61 @@ pub(crate) struct Prompt {
     pub(crate) body: crate::promptvault::Body,
 }
 
+/// One `tool_use` block, as the call record wrote it (§3.7).
+///
+/// **The input's text does not reach this struct.** What is kept is the shape:
+/// which tool, which server, the subagent type or skill name, the model the
+/// call asked for, and whether the result will be a receipt rather than work.
+/// A shell command is the largest part of an input and nothing here reads it.
+#[derive(Clone, Debug)]
+pub(crate) struct ToolCall {
+    pub(crate) id: String,
+    pub(crate) at: i64,
+    pub(crate) session: String,
+    /// The agent that made the call, or `''` for the card's own thread.
+    pub(crate) agent: String,
+    /// `builtin | mcp | skill | agent`.
+    pub(crate) kind: &'static str,
+    pub(crate) server: String,
+    pub(crate) tool: String,
+    pub(crate) target: String,
+    pub(crate) requested_model: String,
+    /// The result is a receipt that returns before the work does (`turns.md`),
+    /// so its latency measures the receipt and the face must say so.
+    pub(crate) async_: bool,
+}
+
+/// One `tool_result` block, or the receipt a `toolUseResult` carried (§3.7).
+#[derive(Clone, Debug)]
+pub(crate) struct ToolResult {
+    pub(crate) id: String,
+    pub(crate) at: i64,
+    pub(crate) errors: i64,
+    /// The size of what came back, never what came back.
+    pub(crate) out_bytes: i64,
+    /// The agent an `Agent`/`Task` call opened, from the result's `agentId`.
+    pub(crate) child_agent: String,
+}
+
+/// One artifact or coordination event, read off a tool result (§3.9).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Receipt {
+    pub(crate) session: String,
+    /// The call this result answers, so `ms` can be measured off its row.
+    pub(crate) tool_use_id: String,
+    pub(crate) at: i64,
+    /// The working directory's last segment, for a session with no card row.
+    pub(crate) project: String,
+    /// The `gitBranch` the record carried, which is the branch the tree had
+    /// checked out when the result was written.
+    pub(crate) branch: String,
+    pub(crate) kind: &'static str,
+    /// The sha, PR number, branch or worktree key.
+    pub(crate) reference: String,
+    /// How many distinct paths a conflict named.
+    pub(crate) conflict_files: i64,
+}
+
 /// One pass's worth of readings, filled by the walk and written afterwards.
 ///
 /// The batch is why the store lock is not held across file IO: the walk appends
@@ -167,6 +226,18 @@ pub(crate) struct Batch {
     /// the second before the writer could, and only a byte-identical re-read
     /// should be dropped here.
     prompt_ids: HashSet<(String, i64)>,
+    /// `tool_use` blocks seen this pass, by `tool_use_id`.
+    calls: Vec<ToolCall>,
+    /// Results seen this pass. A result may resolve a call an earlier pass
+    /// wrote, which is the whole reason `tool_pending` is mutable.
+    results: Vec<ToolResult>,
+    /// Work receipts parsed off a result: a commit, a push, a conflict. These
+    /// are facts of their own and are written in the same pass (§3.9).
+    receipts: Vec<Receipt>,
+    /// Tool-use ids already taken this pass, for the replaced-file reason
+    /// `keys` and `prompt_ids` exist.
+    call_ids: HashSet<String>,
+    result_ids: HashSet<String>,
     /// Session → `accountUuid:organizationUuid`, from any file of the session
     /// that carries a `session-owner` record (§4).
     owners: HashMap<String, String>,
@@ -319,6 +390,48 @@ impl Reading {
             self.batch
                 .parents
                 .insert((session.to_string(), child.to_string()), parent.to_string());
+        }
+    }
+
+    /// The tool half of the walk (§3.7).
+    ///
+    /// **A `tool_use` is on an `assistant` record and its result is on a
+    /// `user` one**, which is why this is a reader of its own rather than part
+    /// of `request`: `usage::read_record` deliberately refuses every `user`
+    /// record, since those are the largest records in a file. This is the
+    /// second branch in the same pass §3.7 asks for, and it is called for both
+    /// arms of the walk's match — an assistant record carrying a tool call also
+    /// carries `usage`, so it never reaches the `other` arm.
+    ///
+    /// Nothing here keeps an input's text or a result's content: a call is
+    /// reduced to its name and shape, and a result to its size, its error bit
+    /// and the agent id it names.
+    pub(crate) fn tools(&mut self, line: &str) {
+        if line.contains("\"tool_use\"") {
+            for call in parse_tool_use(line) {
+                if call.at < self.cutoff || call.session.is_empty() {
+                    continue;
+                }
+                if !self.batch.call_ids.insert(call.id.clone()) {
+                    continue;
+                }
+                self.batch.calls.push(call);
+            }
+        } else if line.contains("\"tool_result\"") {
+            for parsed in parse_tool_result(line) {
+                if parsed.result.at < self.cutoff {
+                    continue;
+                }
+                for receipt in parsed.receipts {
+                    if receipt.at < self.cutoff {
+                        continue;
+                    }
+                    self.batch.receipts.push(receipt);
+                }
+                if self.batch.result_ids.insert(parsed.result.id.clone()) {
+                    self.batch.results.push(parsed.result);
+                }
+            }
         }
     }
 
@@ -679,6 +792,611 @@ pub(crate) fn bucket_of(at: i64) -> i64 {
     at - at.rem_euclid(BUCKET_MS)
 }
 
+/* ── the tool reader and the receipt parser, pure (§3.7, §3.9) ──────────── */
+
+/// What one tool call is, as `tool_fact` names it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToolShape {
+    pub(crate) kind: &'static str,
+    pub(crate) server: String,
+    pub(crate) tool: String,
+    pub(crate) target: String,
+    pub(crate) requested_model: String,
+    /// The result returns before the work does, so its latency is the
+    /// receipt's and the face must say so.
+    pub(crate) receipt: bool,
+}
+
+/// `builtin`, `mcp`, `skill` or `agent`, and the dimensions that follow from
+/// the name alone.
+///
+/// **An MCP name is `mcp__<server>__<tool>`**, so the server is a dimension
+/// without a second record. A built-in has no server and says `builtin` rather
+/// than inventing one. `Skill` carries the skill name and `Agent`/`Task` the
+/// subagent type in their inputs; the requested model is the input's `model`,
+/// which on this machine only 7 of 373 agent calls carried — hence `unknown`
+/// rather than a guess.
+///
+/// **A receipt is an `Agent`, `Monitor`, `Workflow` or a background `Bash`**
+/// (§3.7, `turns.md`). A foreground `Agent` call is not one: its result is the
+/// subagent's answer, and calling that latency a receipt would make real work
+/// look free.
+pub(crate) fn classify_tool(name: &str, input: Option<&serde_json::Value>) -> ToolShape {
+    let text = |k: &str| {
+        input
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let background = input
+        .and_then(|v| v.get("run_in_background"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if let Some(rest) = name.strip_prefix("mcp__") {
+        let (server, tool) = match rest.split_once("__") {
+            Some((server, tool)) => (server, tool),
+            None => ("", rest),
+        };
+        return ToolShape {
+            kind: "mcp",
+            server: server.to_string(),
+            tool: tool.to_string(),
+            target: String::new(),
+            requested_model: String::new(),
+            receipt: false,
+        };
+    }
+    if name == "Skill" {
+        return ToolShape {
+            kind: "skill",
+            server: String::new(),
+            tool: name.to_string(),
+            target: text("skill"),
+            requested_model: String::new(),
+            receipt: false,
+        };
+    }
+    if name == "Agent" || name == "Task" {
+        return ToolShape {
+            kind: "agent",
+            server: String::new(),
+            tool: name.to_string(),
+            target: text("subagent_type"),
+            requested_model: text("model"),
+            receipt: background,
+        };
+    }
+    ToolShape {
+        kind: "builtin",
+        server: String::new(),
+        tool: name.to_string(),
+        target: String::new(),
+        requested_model: String::new(),
+        receipt: background || name == "Monitor" || name == "Workflow",
+    }
+}
+
+/// A `tool_use` record's timestamp, session and agent, and its calls.
+///
+/// **Several blocks on one record are several calls.** The CLI writes a
+/// parallel batch into one assistant message, and folding them into one row
+/// would hide that a turn called two tools at once.
+pub(crate) fn parse_tool_use(line: &str) -> Vec<ToolCall> {
+    if !line.contains("\"type\":\"assistant\"") {
+        return Vec::new();
+    }
+    let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    if rec.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+        return Vec::new();
+    }
+    let Some(at) = rec
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(epoch_ms)
+    else {
+        return Vec::new();
+    };
+    let session = rec.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let agent = rec.get("agentId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let Some(blocks) = rec
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for block in blocks {
+        if block.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+            continue;
+        }
+        let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if id.is_empty() || name.is_empty() {
+            continue;
+        }
+        let shape = classify_tool(name, block.get("input"));
+        out.push(ToolCall {
+            id: id.to_string(),
+            at,
+            session: session.clone(),
+            agent: agent.clone(),
+            kind: shape.kind,
+            server: shape.server,
+            tool: shape.tool,
+            target: shape.target,
+            requested_model: shape.requested_model,
+            async_: shape.receipt,
+        });
+    }
+    out
+}
+
+/// The size of a result's content, summed over the blocks it came in.
+///
+/// **The content itself is dropped one line later.** A tool result can be a
+/// file, a screenshot or a token; the store keeps `42,318` and never the bytes,
+/// and that line is drawn here rather than in a policy.
+pub(crate) fn content_size(content: &serde_json::Value) -> i64 {
+    match content {
+        serde_json::Value::String(s) => s.len() as i64,
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|block| match block.get("text").and_then(|v| v.as_str()) {
+                Some(text) => text.len() as i64,
+                /* An image or an unknown block has no text to measure; its
+                   serialized size is the closest honest reading and still
+                   stores no content. */
+                None => serde_json::to_string(block).map(|s| s.len() as i64).unwrap_or(0),
+            })
+            .sum(),
+        serde_json::Value::Null => 0,
+        other => serde_json::to_string(other).map(|s| s.len() as i64).unwrap_or(0),
+    }
+}
+
+/// The result of one `user` record, and the receipts it carried.
+pub(crate) struct ParsedResult {
+    pub(crate) result: ToolResult,
+    pub(crate) receipts: Vec<Receipt>,
+}
+
+/// A `tool_result` record, reduced to what a fact needs (§3.7).
+///
+/// **The result's text is read here and never kept.** It is scanned for the
+/// receipt patterns §3.9 names, and what crosses to the write is the kind, the
+/// sha or branch, and a count of conflicted paths.
+pub(crate) fn parse_tool_result(line: &str) -> Vec<ParsedResult> {
+    if !line.contains("\"type\":\"user\"") {
+        return Vec::new();
+    }
+    let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    if rec.get("type").and_then(|v| v.as_str()) != Some("user") {
+        return Vec::new();
+    }
+    let Some(at) = rec.get("timestamp").and_then(|v| v.as_str()).and_then(epoch_ms) else {
+        return Vec::new();
+    };
+    let session = rec.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let Some(blocks) = rec
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return Vec::new();
+    };
+
+    /* The agent an `Agent`/`Task` call opened. **The result's `agentId`, never
+       `parentUuid`**: the latter is the message chain inside one file (§4.4).
+       It is a property of the record rather than of a block, so it goes on the
+       first result; a record holding two results is a shape this walk has not
+       seen (2,843 results, none of them), and guessing which block owns it
+       would be worse than leaving the second without one. */
+    let child_agent = rec
+        .pointer("/toolUseResult/agentId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    /* A receipt is only read off a shell-shaped result. `toolUseResult` is the
+       CLI's own summary of what the call did, and a `Read` of a document that
+       happens to contain `[main abc1234]` has none — so gating on it is what
+       stops the analytics inventing a commit out of prose. */
+    let summary = rec.get("toolUseResult");
+    let shell = summary.is_some_and(|s| {
+        s.get("stdout").is_some() || s.get("gitOperation").is_some() || s.get("stderr").is_some()
+    });
+    let cwd = rec.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+    let project = cwd.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+    let branch = rec.get("gitBranch").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+
+    let mut out = Vec::new();
+    for (n, block) in blocks.iter().enumerate() {
+        if block.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let errors = if block.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+            1
+        } else {
+            0
+        };
+        let mut out_bytes = 0i64;
+        let mut text = String::new();
+        if let Some(content) = block.get("content") {
+            out_bytes = content_size(content);
+            match content {
+                serde_json::Value::String(s) => {
+                    text.push_str(s);
+                    text.push('\n');
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                            text.push_str(t);
+                            text.push('\n');
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let receipts = if shell {
+            parse_receipts(&text, summary.and_then(|s| s.get("gitOperation")))
+                .into_iter()
+                .map(|r| Receipt {
+                    session: session.clone(),
+                    tool_use_id: id.clone(),
+                    at,
+                    project: project.clone(),
+                    branch: branch.clone(),
+                    kind: r.kind,
+                    reference: r.reference,
+                    conflict_files: r.conflict_files,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        out.push(ParsedResult {
+            result: ToolResult {
+                id,
+                at,
+                errors,
+                out_bytes,
+                child_agent: if n == 0 { child_agent.clone() } else { String::new() },
+            },
+            receipts,
+        });
+    }
+    out
+}
+
+/// One receipt before it is given a session.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ParsedReceipt {
+    pub(crate) kind: &'static str,
+    pub(crate) reference: String,
+    pub(crate) conflict_files: i64,
+}
+
+/// The artifacts a shell result names (§3.9).
+///
+/// **The receipt is exact and it comes off the CLI's own output**, which is the
+/// whole reason the work half needs no guess: `git commit` prints
+/// `[main 8adbaaa] subject`, the CLI's `toolUseResult` names the same sha and
+/// branch structurally, a push names its branch, and a conflicted integration
+/// prints one `CONFLICT` line per path. The `gitOperation` object is read
+/// first because it is the shape the CLI committed to; the printed lines are
+/// the fallback for a build whose summary is absent.
+///
+/// No text is kept beyond the reference. The subject, the command and the diff
+/// are dropped here.
+pub(crate) fn parse_receipts(
+    text: &str,
+    git_op: Option<&serde_json::Value>,
+) -> Vec<ParsedReceipt> {
+    let mut out: Vec<ParsedReceipt> = Vec::new();
+
+    if let Some(op) = git_op {
+        if let Some(commit) = op.get("commit") {
+            let sha = commit.get("sha").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if !sha.is_empty() {
+                out.push(ParsedReceipt {
+                    kind: "commit",
+                    reference: sha.to_string(),
+                    conflict_files: 0,
+                });
+            }
+        }
+        if let Some(push) = op.get("push") {
+            let branch = push.get("branch").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if !branch.is_empty() {
+                out.push(ParsedReceipt {
+                    kind: "push",
+                    reference: branch.to_string(),
+                    conflict_files: 0,
+                });
+            }
+        }
+        if let Some(branch) = op.get("branch") {
+            let action = branch.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let name = branch.get("ref").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let kind = match action {
+                "merged" => Some("merge"),
+                "rebased" => Some("rebase"),
+                _ => None,
+            };
+            if let (Some(kind), false) = (kind, name.is_empty()) {
+                out.push(ParsedReceipt {
+                    kind,
+                    reference: name.to_string(),
+                    conflict_files: 0,
+                });
+            }
+        }
+    }
+
+    /* The printed commit line, for a build that carried no `gitOperation`.
+       The branch printed beside the sha is where the commit landed, not a
+       branch anybody made, so it is not a receipt of its own — the commit
+       row's own `branch` carries it, off the record's `gitBranch`. */
+    if !out.iter().any(|r| r.kind == "commit") {
+        if let Some((_branch, sha)) = bracket_commit(text) {
+            out.push(ParsedReceipt {
+                kind: "commit",
+                reference: sha,
+                conflict_files: 0,
+            });
+        }
+    }
+
+    let conflicts = conflict_paths(text);
+    if !conflicts.is_empty() {
+        out.push(ParsedReceipt {
+            kind: "conflict",
+            reference: String::new(),
+            conflict_files: conflicts.len() as i64,
+        });
+    }
+
+    if let Some((number, merged)) = pr_link(text) {
+        out.push(ParsedReceipt {
+            kind: if merged { "pr_merge" } else { "pr_open" },
+            reference: number,
+            conflict_files: 0,
+        });
+    }
+
+    if let Some(name) = quoted_after(text, "Preparing worktree (new branch '") {
+        out.push(ParsedReceipt {
+            kind: "worktree",
+            reference: name,
+            conflict_files: 0,
+        });
+    } else if let Some(name) = quoted_after(text, "Switched to a new branch '") {
+        out.push(ParsedReceipt {
+            kind: "branch",
+            reference: name,
+            conflict_files: 0,
+        });
+    }
+
+    dedupe_receipts(out)
+}
+
+/// One row per kind and reference. A commit prints the same sha in the summary
+/// and the line, and the fact table must not count it twice.
+fn dedupe_receipts(rows: Vec<ParsedReceipt>) -> Vec<ParsedReceipt> {
+    let mut out: Vec<ParsedReceipt> = Vec::new();
+    for row in rows {
+        if out
+            .iter()
+            .any(|r| r.kind == row.kind && r.reference == row.reference)
+        {
+            continue;
+        }
+        out.push(row);
+    }
+    out
+}
+
+fn is_hex(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `[main 8adbaaa] subject` → the branch and the short sha.
+fn bracket_commit(text: &str) -> Option<(String, String)> {
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix('[') else {
+            continue;
+        };
+        let Some((head, _subject)) = rest.split_once("] ") else {
+            continue;
+        };
+        let Some((branch, sha)) = head.rsplit_once(' ') else {
+            continue;
+        };
+        if branch.is_empty() || !is_hex(sha) {
+            continue;
+        }
+        return Some((branch.to_string(), sha.to_string()));
+    }
+    None
+}
+
+/// The paths a conflicted integration named, distinct.
+///
+/// Two of git's shapes matter: `CONFLICT (content): Merge conflict in <path>`,
+/// and the `CONFLICT (modify/delete): <path> deleted in …` family, where the
+/// path is what follows the parenthesis. **These are compared as git printed
+/// them**, not folded through `board::normalize`: one command's output uses one
+/// separator throughout, so normalising buys nothing, and reaching for the
+/// shared folding here would drag a module that links a database into the pure
+/// lift that executes this function (`tools/lift-analytics.ts`).
+fn conflict_paths(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with("CONFLICT") {
+            continue;
+        }
+        let path = if let Some((_, rest)) = line.split_once("Merge conflict in ") {
+            rest.trim()
+        } else if let Some((_, rest)) = line.split_once("): ") {
+            rest.split(" deleted in").next().unwrap_or(rest).trim()
+        } else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let path = path.to_string();
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The PR a `gh pr create` or `gh pr merge` result names, and whether it says
+/// the request was merged.
+///
+/// GitHub's own URL is the reference; `gh pr merge` prints
+/// `✓ Merged pull request #123 (title)`, which carries the number and no link.
+fn pr_link(text: &str) -> Option<(String, bool)> {
+    let merged = text.contains("Merged pull request");
+    if let Some(at) = text.find("/pull/") {
+        let digits: String = text[at + 6..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        /* **A URL in prose is not an open request.** `gh pr create` prints the
+           link as its whole output, so a line that is the URL and nothing else
+           is the receipt; a `gh pr view` or a `WebFetch` that merely mentions
+           one is not, and counting it would invent a pull request per mention.
+           `gh pr merge` is recognised above by its own sentence. */
+        let alone = text
+            .lines()
+            .any(|line| line.trim().ends_with(&format!("/pull/{digits}")));
+        if !digits.is_empty() && (alone || text.contains("Creating pull request")) {
+            return Some((digits, merged));
+        }
+    }
+    if let Some(at) = text.find("Merged pull request #") {
+        let digits: String = text[at + 21..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return Some((digits, true));
+        }
+    }
+    None
+}
+
+/// The text between a prefix and the next quote, which is how git names a
+/// branch it made.
+fn quoted_after(text: &str, prefix: &str) -> Option<String> {
+    let at = text.find(prefix)?;
+    let rest = &text[at + prefix.len()..];
+    let name: String = rest.chars().take_while(|c| *c != '\'' && *c != '"').collect();
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// One commit as local git history gives it (§3.9).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistCommit {
+    pub(crate) sha: String,
+    /// A merge has two, which is how a history integration is recognised.
+    pub(crate) parents: Vec<String>,
+    /// The author time, in epoch milliseconds.
+    pub(crate) at: i64,
+    pub(crate) files: i64,
+    pub(crate) added: i64,
+    pub(crate) removed: i64,
+    /// The changed paths, relative to the repository root. Read for
+    /// attribution and never stored.
+    pub(crate) paths: Vec<String>,
+}
+
+/// Parse `git log --numstat` with the field separator this module asks for.
+///
+/// The format is `%x1e%H%x1f%P%x1f%at`, so a commit starts with a record
+/// separator and the numstat lines that follow it belong to it until the next
+/// one. A binary file's numstat is `-` in both count columns, and counts as a
+/// file with no lines rather than being dropped.
+pub(crate) fn parse_numstat_log(text: &str) -> Vec<HistCommit> {
+    let mut out: Vec<HistCommit> = Vec::new();
+    let mut cur: Option<HistCommit> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('\u{1e}') {
+            if let Some(done) = cur.take() {
+                out.push(done);
+            }
+            let mut fields = rest.split('\u{1f}');
+            let sha = fields.next().unwrap_or("").trim().to_string();
+            if sha.is_empty() {
+                continue;
+            }
+            let parents: Vec<String> = fields
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+            let at = fields
+                .next()
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .unwrap_or(0)
+                * 1000;
+            cur = Some(HistCommit {
+                sha,
+                parents,
+                at,
+                files: 0,
+                added: 0,
+                removed: 0,
+                paths: Vec::new(),
+            });
+        } else if let Some(commit) = cur.as_mut() {
+            let mut cols = line.split('\t');
+            let (Some(added), Some(removed), Some(path)) =
+                (cols.next(), cols.next(), cols.next())
+            else {
+                continue;
+            };
+            commit.files += 1;
+            commit.added += added.trim().parse::<i64>().unwrap_or(0);
+            commit.removed += removed.trim().parse::<i64>().unwrap_or(0);
+            if !path.trim().is_empty() {
+                commit.paths.push(path.trim().to_string());
+            }
+        }
+    }
+    if let Some(done) = cur {
+        out.push(done);
+    }
+    out
+}
+
 /* ── the write ───────────────────────────────────────────────────────────── */
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -817,6 +1535,17 @@ struct Counts {
     prompt_hours: i64,
     sessions: i64,
     bytes: u64,
+    /// `tool_use` blocks written or resolved this pass.
+    calls: i64,
+    results: i64,
+    /// Work receipts written from a result (§3.9).
+    receipts: i64,
+    /// Settled turns folded into tool facts, and calls written as `no-turn`.
+    folds: i64,
+    no_turn: i64,
+    /// Commits the history observer wrote, and the ones it skipped because a
+    /// receipt already held them.
+    history: i64,
 }
 
 impl Counts {
@@ -835,6 +1564,12 @@ impl Counts {
         self.hours += other.hours;
         self.prompt_hours += other.prompt_hours;
         self.sessions += other.sessions;
+        self.calls += other.calls;
+        self.results += other.results;
+        self.receipts += other.receipts;
+        self.folds += other.folds;
+        self.no_turn += other.no_turn;
+        self.history += other.history;
     }
 }
 
@@ -868,6 +1603,15 @@ pub struct Report {
     pub prompt_hours: i64,
     /// Session rows, counted the same way.
     pub sessions: i64,
+    /// Tool calls and results written, and the work receipts read off results.
+    pub calls: i64,
+    pub results: i64,
+    pub receipts: i64,
+    /// Turns folded into tool facts, calls written as `no-turn`, and commits
+    /// the history observer added.
+    pub folds: i64,
+    pub no_turn: i64,
+    pub history: i64,
     pub refused: i64,
     pub ms: u64,
 }
@@ -1605,6 +2349,849 @@ fn write_prompts(
 ///
 /// Small is a property, not a hope: a mark per transcript the walk read (hundreds
 /// at most) and two indexed deletes, never a row per request.
+/* ── the tool and work writes (§3.7, §3.9) ──────────────────────────────── */
+
+/// The calls this pass saw, as mutable pending rows.
+///
+/// **The memo is what makes a replaced file harmless.** `tool_pending` is
+/// deleted when a turn folds or the sweep writes it, so its own key cannot say
+/// whether a call has already been counted; `tool_seen` can, and it is the same
+/// pattern `usage_seen` strikes for requests. Without it, a transcript re-read
+/// from zero re-inserts a call whose turn already folded — where the marker
+/// stops a second fold and the sweep's claim test stops it being written, so it
+/// sits in `tool_pending` for ever — and re-inserts a subagent's call that an
+/// earlier turn had claimed by its spawn, which the sweep then writes again as
+/// `no-turn`.
+///
+/// `DO NOTHING` on the pending row stays as the belt: two files offering the
+/// same call in one pass are already deduped in memory, and this is the brace.
+fn write_calls(conn: &mut Connection, host: &str, calls: &[ToolCall]) -> Result<i64, String> {
+    if calls.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+    let mut n = 0i64;
+    {
+        let mut seen = tx
+            .prepare("INSERT OR IGNORE INTO tool_seen (tool_use_id, at) VALUES (?1, ?2)")
+            .map_err(|e| format!("analytics: tool seen: {e}"))?;
+        let mut sql = tx
+            .prepare(
+                "INSERT INTO tool_pending
+                   (tool_use_id, at, host, session, agent, kind, server, tool, target,
+                    child_agent, requested_model, async, resolved_at, errors, out_bytes)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'',?10,?11,NULL,0,0)
+                 ON CONFLICT(tool_use_id) DO NOTHING",
+            )
+            .map_err(|e| format!("analytics: tool call: {e}"))?;
+        for call in calls {
+            let fresh = seen
+                .execute(params![call.id, call.at])
+                .map_err(|e| format!("analytics: tool seen: {e}"))?;
+            if fresh == 0 {
+                continue;
+            }
+            n += sql
+                .execute(params![
+                    call.id,
+                    call.at,
+                    host,
+                    call.session,
+                    call.agent,
+                    call.kind,
+                    call.server,
+                    call.tool,
+                    call.target,
+                    call.requested_model,
+                    call.async_ as i64,
+                ])
+                .map_err(|e| format!("analytics: tool call: {e}"))? as i64;
+        }
+    }
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(n)
+}
+
+/// What a result adds to the call it belongs to.
+///
+/// **`resolved_at IS NULL` is the once-only guard.** A result seen twice — a
+/// replaced file, a replay — does not move the latency, and a result landing
+/// after its pending row was folded and deleted updates nothing and is dropped,
+/// which is §3.7's "an unresolved call is written once as `no-result`".
+fn write_results(conn: &mut Connection, results: &[ToolResult]) -> Result<i64, String> {
+    if results.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+    let mut n = 0i64;
+    {
+        let mut sql = tx
+            .prepare(
+                "UPDATE tool_pending
+                    SET resolved_at = ?2,
+                        errors = ?3,
+                        out_bytes = ?4,
+                        child_agent = CASE WHEN ?5 <> '' THEN ?5 ELSE child_agent END
+                  WHERE tool_use_id = ?1 AND resolved_at IS NULL",
+            )
+            .map_err(|e| format!("analytics: tool result: {e}"))?;
+        for result in results {
+            n += sql
+                .execute(params![
+                    result.id,
+                    result.at,
+                    result.errors,
+                    result.out_bytes,
+                    result.child_agent,
+                ])
+                .map_err(|e| format!("analytics: tool result: {e}"))? as i64;
+        }
+    }
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(n)
+}
+
+/// The artifacts a result's command named, written as facts at once.
+///
+/// **A receipt needs no turn and no cost**, so it is written in the pass that
+/// read it rather than waiting for a fold. It is append-only, and the key does
+/// the idempotence: the same result read twice lands on the same `at`, `ref`
+/// and provenance.
+///
+/// `ms` is the call's own latency, read off the pending row by the
+/// `tool_use_id` the result carries. A receipt arriving after its pending row
+/// was folded has no row to measure and says 0, which is honest: the latency is
+/// unknown rather than zero.
+fn write_receipts(conn: &mut Connection, host: &str, receipts: &[Receipt]) -> Result<Counts, String> {
+    if receipts.is_empty() {
+        return Ok(Counts::default());
+    }
+    let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+    let mut counts = Counts::default();
+    let mut fact = tx
+        .prepare(
+            "INSERT INTO work_fact
+               (at, host, session, card, agent, kind, ref, branch, project,
+                files, added, removed, conflict_files, ms, provenance)
+             VALUES (?1,?2,?3,?4,'',?5,?6,?7,?8,0,0,0,?9,?10,'receipt')
+             ON CONFLICT DO NOTHING",
+        )
+        .map_err(|e| format!("analytics: work: {e}"))?;
+    let mut hour = tx
+        .prepare(
+            "INSERT INTO work_hour
+               (hour, host, project, branch, kind, count, files, added, removed, conflict_ms)
+             VALUES (?1,?2,?3,?4,?5,1,0,0,0,?6)
+             ON CONFLICT(hour, host, project, branch, kind) DO UPDATE SET
+               count = count + 1,
+               conflict_ms = conflict_ms + excluded.conflict_ms",
+        )
+        .map_err(|e| format!("analytics: work hour: {e}"))?;
+    for receipt in receipts {
+        let card = card_for(&tx, &receipt.session);
+        let (card_id, card_project, card_branch) = match &card {
+            Some(c) => (c.id.clone(), c.project.clone(), c.branch.clone()),
+            None => (String::new(), String::new(), String::new()),
+        };
+        /* A card's project and branch are the authority where there is one;
+           a terminal or a session whose card row is gone keeps what its own
+           record said, which is the directory's last segment and `gitBranch`. */
+        let project = if card_project.is_empty() {
+            receipt.project.clone()
+        } else {
+            card_project
+        };
+        let branch = if receipt.branch.is_empty() {
+            card_branch
+        } else {
+            receipt.branch.clone()
+        };
+        let ms: i64 = tx
+            .query_row(
+                "SELECT MAX(0, ?2 - at) FROM tool_pending WHERE tool_use_id = ?1",
+                params![receipt.tool_use_id, receipt.at],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| format!("analytics: work: {e}"))?
+            .flatten()
+            .unwrap_or(0);
+        let conflict_ms = if receipt.kind == "conflict" { ms } else { 0 };
+        let inserted = fact
+            .execute(params![
+                receipt.at,
+                host,
+                receipt.session,
+                card_id,
+                receipt.kind,
+                receipt.reference,
+                branch,
+                project,
+                receipt.conflict_files,
+                ms,
+            ])
+            .map_err(|e| format!("analytics: work: {e}"))? as i64;
+        /* **The hour only when the fact is new.** A transcript re-read from
+           zero offers the same result again and the fact's key absorbs it; the
+           rollup has no key of its own, so counting every offer would double
+           those receipts in the month's reading. */
+        if inserted > 0 {
+            counts.receipts += inserted;
+            hour.execute(params![
+                hour_of(receipt.at),
+                host,
+                project,
+                branch,
+                receipt.kind,
+                conflict_ms,
+            ])
+            .map_err(|e| format!("analytics: work hour: {e}"))?;
+        }
+    }
+    drop(fact);
+    drop(hour);
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(counts)
+}
+
+/* ── the fold (§3.7) ─────────────────────────────────────────────────────── */
+
+/// How long after a turn settles its calls are folded.
+///
+/// **The grace is what lets a result that landed just after `ended_at` be
+/// written rather than swept.** Too short and a slow receipt becomes a
+/// `no-result` row on the ordinary path; a turn's own end is written by the
+/// front end when its `result` arrives, and the result records of the calls in
+/// it are already on disk by then, so thirty seconds is generous rather than
+/// tight.
+const FOLD_GRACE_MS: i64 = 30_000;
+
+/// How long a call with no turn waits before the sweep writes it as `no-turn`.
+///
+/// Longer than the fold grace on purpose: a call inside a just-settled turn
+/// must be folded, not swept, and the claim test alone would not save it if the
+/// sweep ran before the fold.
+const NO_TURN_WAIT_MS: i64 = 10 * 60 * 1000;
+
+/// How many settled turns one pass folds. A wall upgrading on a year of history
+/// has thousands, and the pass must remain bounded: each turn is its own
+/// transaction, and the rest wait for the next minute.
+const FOLD_TURNS_PER_PASS: i64 = 400;
+
+/// How many pending rows one fold or sweep transaction carries.
+const FOLD_BATCH: i64 = 500;
+
+/// One settled turn, as the fold reads it.
+struct FoldTurn {
+    id: i64,
+    session: String,
+    opened: i64,
+    ended: i64,
+    usd: f64,
+    account: String,
+    provider: String,
+    project: String,
+}
+
+/// One pending call, as a fold or sweep reads it.
+struct Pending {
+    id: String,
+    at: i64,
+    agent: String,
+    kind: String,
+    server: String,
+    tool: String,
+    target: String,
+    child_agent: String,
+    requested_model: String,
+    async_: i64,
+    ms: i64,
+    errors: i64,
+    out_bytes: i64,
+}
+
+/// What one `tool_hour` row accumulates.
+#[derive(Default)]
+struct ToolSum {
+    calls: i64,
+    errors: i64,
+    receipts: i64,
+    ms: i64,
+    under_50: i64,
+    under_200: i64,
+    under_1s: i64,
+    under_5s: i64,
+    over_5s: i64,
+    out_bytes: i64,
+    usd: f64,
+}
+
+impl ToolSum {
+    fn add(&mut self, row: &Pending, usd: f64) {
+        self.calls += 1;
+        self.errors += row.errors;
+        self.receipts += row.async_;
+        self.ms += row.ms;
+        self.out_bytes += row.out_bytes;
+        self.usd += usd;
+        /* A call with no result contributes no latency, so it lands in no
+           bucket: a median is over completed calls and the count is over all of
+           them (§3.7). */
+        if row.ms > 0 {
+            if row.ms < 50 {
+                self.under_50 += 1;
+            } else if row.ms < 200 {
+                self.under_200 += 1;
+            } else if row.ms < 1_000 {
+                self.under_1s += 1;
+            } else if row.ms < 5_000 {
+                self.under_5s += 1;
+            } else {
+                self.over_5s += 1;
+            }
+        }
+    }
+}
+
+/// Fold every settled turn that has come of age, then sweep what no turn
+/// claimed.
+///
+/// **The order is the correctness.** Folding first means a call inside a
+/// settled turn is written against its turn before the sweep is allowed to look
+/// at it; the sweep's claim test is every turn's interval, open or settled, so
+/// it could not steal one anyway — but the order makes the ordinary case
+/// independent of that test being right.
+fn fold_tools(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Counts, String> {
+    let turns = {
+        let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.id, COALESCE(t.agent_session_id, ''), t.opened_at, t.ended_at,
+                        t.usd, COALESCE(t.account_label, ''), COALESCE(t.provider, ''),
+                        COALESCE((SELECT p.name FROM conversation c
+                                    LEFT JOIN project p ON p.id = c.project_id
+                                   WHERE c.id = t.conversation_id), '')
+                   FROM turn t
+                  WHERE t.ended_at IS NOT NULL
+                    AND t.ended_at <= ?1
+                    AND NOT EXISTS (SELECT 1 FROM analytics_fold f WHERE f.turn_id = t.id)
+                  ORDER BY t.id
+                  LIMIT ?2",
+            )
+            .map_err(|e| format!("analytics: fold turns: {e}"))?;
+        let rows = stmt
+            .query_map(params![now - FOLD_GRACE_MS, FOLD_TURNS_PER_PASS], |r| {
+                let account: String = r.get(5)?;
+                let provider: String = r.get(6)?;
+                Ok(FoldTurn {
+                    id: r.get(0)?,
+                    session: r.get(1)?,
+                    opened: r.get(2)?,
+                    ended: r.get(3)?,
+                    usd: r.get(4)?,
+                    account: if account.trim().is_empty() {
+                        "unknown".into()
+                    } else {
+                        account
+                    },
+                    provider: if provider.trim().is_empty() {
+                        provider_of(Some(&r.get::<_, String>(5)?.clone())).to_string()
+                    } else {
+                        provider
+                    },
+                    project: r.get(7)?,
+                })
+            })
+            .map_err(|e| format!("analytics: fold turns: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("analytics: fold turns: {e}"))?;
+        rows
+    };
+
+    /* **The spawn map is built before any turn folds**, because folding deletes
+       the spawning call's pending row and a child whose parent folded first
+       would then be claimed by whichever turn happened to be running when it
+       acted — exactly the rule §3.7 forbids. One read for the whole pass is also
+       what makes the answer independent of the order the turns fold in. */
+    let spawn: HashMap<(String, String), i64> = {
+        let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT session, child_agent, MIN(at) FROM tool_pending
+                  WHERE child_agent <> ''
+                  GROUP BY session, child_agent",
+            )
+            .map_err(|e| format!("analytics: fold: {e}"))?;
+        let collected = stmt
+            .query_map([], |r| {
+                Ok((
+                    (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| format!("analytics: fold: {e}"))?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|e| format!("analytics: fold: {e}"))?;
+        collected
+    };
+
+    let mut counts = Counts::default();
+    for turn in &turns {
+        let written = {
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            fold_one(&mut conn, host, turn, now, &spawn)?
+        };
+        counts.add(written);
+    }
+    counts.add(sweep_no_turn(conns, host, now)?);
+    Ok(counts)
+}
+
+/// One turn, one transaction: the facts, the hour rows, the marker and the
+/// delete of what it consumed.
+///
+/// **All five in one commit, or none of them.** A crash before the commit rolls
+/// the fold back and the next pass writes it once; a crash after leaves the
+/// marker that skips it. With `tool_hour` outside the transaction a crash in
+/// the window would lose the monthly reading of those calls for good, because
+/// the marker then prevents a re-fold from repairing it.
+fn fold_one(
+    conn: &mut Connection,
+    host: &str,
+    turn: &FoldTurn,
+    now: i64,
+    spawn: &HashMap<(String, String), i64>,
+) -> Result<Counts, String> {
+    let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+    let mut counts = Counts::default();
+    counts.folds = 1;
+
+    tx.execute(
+        "INSERT OR IGNORE INTO analytics_fold (turn_id, at) VALUES (?1, ?2)",
+        params![turn.id, now],
+    )
+    .map_err(|e| format!("analytics: fold mark: {e}"))?;
+
+    /* A turn with no session or no duration writes the marker and no facts, so
+       the pass does not reconsider it every minute. Its calls are not deleted:
+       they are in no interval, so the sweep writes them as `no-turn` once they
+       are old enough — the count and latency survive even where the money
+       cannot. */
+    if turn.session.is_empty() || turn.opened >= turn.ended {
+        tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+        return Ok(counts);
+    }
+
+    /* The spawn map: a subagent's call belongs to the turn its **spawning**
+       call fell in, not to whichever turn was running when it acted (§3.7).
+       It is built once for the pass (`fold_tools`) from the whole session's
+       pending rows, because folding the spawning turn deletes its row. A spawn
+       that folded in an earlier pass is not there, and the call falls back to
+       its own timestamp — the one case this cannot repair, and the smaller
+       loss. */
+    /* **The session's pending rows, not just the interval's.** A subagent's call
+       is claimed from where its spawn fell, which can be outside this turn, so
+       the filter is the claim in Rust rather than a `BETWEEN` here. That read is
+       bounded by the calls a live session is holding, not by its history: every
+       fold deletes what it consumed and the sweep clears what no turn claims, so
+       the set is the work since the last settle. */
+    let pending = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT tool_use_id, at, agent, kind, server, tool, target, child_agent,
+                        requested_model, async, resolved_at, errors, out_bytes
+                   FROM tool_pending
+                  WHERE session = ?1",
+            )
+            .map_err(|e| format!("analytics: fold: {e}"))?;
+        let rows = stmt
+            .query_map([&turn.session], |r| {
+                let resolved: Option<i64> = r.get(10)?;
+                Ok(Pending {
+                    id: r.get(0)?,
+                    at: r.get(1)?,
+                    agent: r.get(2)?,
+                    kind: r.get(3)?,
+                    server: r.get(4)?,
+                    tool: r.get(5)?,
+                    target: r.get(6)?,
+                    child_agent: r.get(7)?,
+                    requested_model: r.get(8)?,
+                    async_: r.get(9)?,
+                    ms: resolved.map(|done| (done - r.get::<_, i64>(1).unwrap_or(0)).max(0)).unwrap_or(0),
+                    errors: r.get(11)?,
+                    out_bytes: r.get(12)?,
+                })
+            })
+            .map_err(|e| format!("analytics: fold: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("analytics: fold: {e}"))?;
+        rows
+    };
+    let claimed: Vec<Pending> = pending
+        .into_iter()
+        .filter(|row| {
+            let claim = if row.agent.is_empty() {
+                row.at
+            } else {
+                spawn
+                    .get(&(turn.session.clone(), row.agent.clone()))
+                    .copied()
+                    .unwrap_or(row.at)
+            };
+            claim >= turn.opened && claim < turn.ended
+        })
+        .collect();
+
+    if claimed.is_empty() {
+        tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+        return Ok(counts);
+    }
+
+    let total = claimed.len() as f64;
+    /* One row per tool and target, in a stable order so two stores diff. */
+    let mut groups: std::collections::BTreeMap<(String, String, String, String, String, String), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (i, row) in claimed.iter().enumerate() {
+        groups
+            .entry((
+                row.agent.clone(),
+                row.kind.clone(),
+                row.server.clone(),
+                row.tool.clone(),
+                row.target.clone(),
+                row.child_agent.clone(),
+            ))
+            .or_default()
+            .push(i);
+    }
+
+    {
+        let mut fact = tx
+            .prepare(
+                "INSERT INTO tool_fact
+                   (turn_id, at, host, session, agent, kind, server, tool, target,
+                    child_agent, requested_model, calls, errors, ms_total, out_bytes, turn_usd)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                 ON CONFLICT DO NOTHING",
+            )
+            .map_err(|e| format!("analytics: tool fact: {e}"))?;
+        for ((agent, kind, server, tool, target, child), indexes) in &groups {
+            let calls = indexes.len() as i64;
+            let errors: i64 = indexes.iter().map(|i| claimed[*i].errors).sum();
+            let ms_total: i64 = indexes.iter().map(|i| claimed[*i].ms).sum();
+            let out_bytes: i64 = indexes.iter().map(|i| claimed[*i].out_bytes).sum();
+            let requested = indexes
+                .iter()
+                .map(|i| claimed[*i].requested_model.as_str())
+                .find(|m| !m.is_empty())
+                .unwrap_or("");
+            /* **The exact apportionment.** The divisor is the turn's own calls,
+               so a sum over the rows is the turn; a no-turn row is outside the
+               denominator by construction (§3.7). */
+            let usd = turn.usd * calls as f64 / total;
+            counts.facts += fact
+                .execute(params![
+                    turn.id,
+                    turn.ended,
+                    host,
+                    turn.session,
+                    agent,
+                    kind,
+                    server,
+                    tool,
+                    target,
+                    child,
+                    requested,
+                    calls,
+                    errors,
+                    ms_total,
+                    out_bytes,
+                    usd,
+                ])
+                .map_err(|e| format!("analytics: tool fact: {e}"))? as i64;
+        }
+    }
+
+    {
+        let share = turn.usd / total;
+        let hour = hour_of(turn.ended);
+        let mut sums: std::collections::BTreeMap<(String, String, String, String), ToolSum> =
+            std::collections::BTreeMap::new();
+        for row in &claimed {
+            sums.entry((
+                row.kind.clone(),
+                row.server.clone(),
+                row.tool.clone(),
+                row.target.clone(),
+            ))
+            .or_default()
+            .add(row, share);
+        }
+        let mut sql = tx
+            .prepare(
+                "INSERT INTO tool_hour
+                   (hour, host, account, provider, project, kind, server, tool, target,
+                    calls, errors, receipts, ms_total,
+                    ms_under_50, ms_under_200, ms_under_1s, ms_under_5s, ms_over_5s,
+                    out_bytes, turn_usd)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+                 ON CONFLICT(hour, host, account, provider, project, kind, server, tool, target)
+                 DO UPDATE SET
+                   calls = calls + excluded.calls,
+                   errors = errors + excluded.errors,
+                   receipts = receipts + excluded.receipts,
+                   ms_total = ms_total + excluded.ms_total,
+                   ms_under_50 = ms_under_50 + excluded.ms_under_50,
+                   ms_under_200 = ms_under_200 + excluded.ms_under_200,
+                   ms_under_1s = ms_under_1s + excluded.ms_under_1s,
+                   ms_under_5s = ms_under_5s + excluded.ms_under_5s,
+                   ms_over_5s = ms_over_5s + excluded.ms_over_5s,
+                   out_bytes = out_bytes + excluded.out_bytes,
+                   turn_usd = turn_usd + excluded.turn_usd",
+            )
+            .map_err(|e| format!("analytics: tool hour: {e}"))?;
+        for ((kind, server, tool, target), sum) in &sums {
+            sql.execute(params![
+                hour,
+                host,
+                turn.account,
+                turn.provider,
+                turn.project,
+                kind,
+                server,
+                tool,
+                target,
+                sum.calls,
+                sum.errors,
+                sum.receipts,
+                sum.ms,
+                sum.under_50,
+                sum.under_200,
+                sum.under_1s,
+                sum.under_5s,
+                sum.over_5s,
+                sum.out_bytes,
+                sum.usd,
+            ])
+            .map_err(|e| format!("analytics: tool hour: {e}"))?;
+        }
+    }
+
+    {
+        let mut gone = tx
+            .prepare("DELETE FROM tool_pending WHERE tool_use_id = ?1")
+            .map_err(|e| format!("analytics: fold: {e}"))?;
+        for row in &claimed {
+            gone.execute([&row.id])
+                .map_err(|e| format!("analytics: fold: {e}"))?;
+        }
+    }
+
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(counts)
+}
+
+/// Write the calls no turn ever claimed, once they are old enough.
+///
+/// **The claim is the test, not the age** (§3.7): a call inside a live turn is
+/// inside its open interval and is never swept however old it is. The age only
+/// keeps a result that is still on its way from being written as `no-result`
+/// first. A swept row keeps `turn_id = 0` and `turn_usd = 0`, so it is outside
+/// every turn's denominator by construction.
+fn sweep_no_turn(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Counts, String> {
+    let mut counts = Counts::default();
+    /* A fixed number of batches per pass, so a corpus with a year of terminal
+       calls cannot turn one minute's ingest into a long hold. */
+    for _ in 0..16 {
+        let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+        let rows = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT p.tool_use_id, p.at, p.session, p.agent, p.kind, p.server,
+                            p.tool, p.target, p.child_agent, p.requested_model, p.async,
+                            p.resolved_at, p.errors, p.out_bytes
+                       FROM tool_pending p
+                      WHERE p.at < ?1
+                        AND NOT EXISTS (
+                              SELECT 1 FROM turn t
+                               WHERE t.agent_session_id = p.session
+                                 AND t.opened_at <= p.at
+                                 AND (t.ended_at IS NULL OR p.at < t.ended_at))
+                      ORDER BY p.at
+                      LIMIT ?2",
+                )
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            let collected = stmt
+                .query_map(params![now - NO_TURN_WAIT_MS, FOLD_BATCH], |r| {
+                let at: i64 = r.get(1)?;
+                let resolved: Option<i64> = r.get(11)?;
+                Ok((
+                    Pending {
+                        id: r.get(0)?,
+                        at,
+                        agent: r.get(3)?,
+                        kind: r.get(4)?,
+                        server: r.get(5)?,
+                        tool: r.get(6)?,
+                        target: r.get(7)?,
+                        child_agent: r.get(8)?,
+                        requested_model: r.get(9)?,
+                        async_: r.get(10)?,
+                        ms: resolved.map(|done| (done - at).max(0)).unwrap_or(0),
+                        errors: r.get(12)?,
+                        out_bytes: r.get(13)?,
+                    },
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| format!("analytics: sweep: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            collected
+        };
+        if rows.is_empty() {
+            break;
+        }
+        let full = rows.len() as i64 == FOLD_BATCH;
+        let with_session = rows;
+
+        /* The project is the session's, where the ingest has written one; a
+           session it has never seen is `''` rather than guessed. Account and
+           provider are `unknown`, because no turn named them. */
+        let mut projects: HashMap<String, String> = HashMap::new();
+        for (_, session) in &with_session {
+            if projects.contains_key(session) {
+                continue;
+            }
+            let project: Option<String> = tx
+                .query_row(
+                    "SELECT project FROM analytics_session WHERE session = ?1 AND host = ?2",
+                    params![session, host],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            projects.insert(session.clone(), project.unwrap_or_default());
+        }
+
+        let mut groups: std::collections::BTreeMap<(i64, String, String, String, String, String, String, String), Vec<&Pending>> =
+            std::collections::BTreeMap::new();
+        for (row, session) in &with_session {
+            groups
+                .entry((
+                    bucket_of(row.at),
+                    session.clone(),
+                    row.agent.clone(),
+                    row.kind.clone(),
+                    row.server.clone(),
+                    row.tool.clone(),
+                    row.target.clone(),
+                    row.child_agent.clone(),
+                ))
+                .or_default()
+                .push(row);
+        }
+        {
+            let mut fact = tx
+                .prepare(
+                    "INSERT INTO tool_fact
+                       (turn_id, at, host, session, agent, kind, server, tool, target,
+                        child_agent, requested_model, calls, errors, ms_total, out_bytes,
+                        turn_usd)
+                     VALUES (0,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,0)
+                     ON CONFLICT(turn_id, at, host, session, agent, kind, server, tool,
+                                 target, child_agent)
+                     DO UPDATE SET
+                       calls = calls + excluded.calls,
+                       errors = errors + excluded.errors,
+                       ms_total = ms_total + excluded.ms_total,
+                       out_bytes = out_bytes + excluded.out_bytes",
+                )
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            let mut hour = tx
+                .prepare(
+                    "INSERT INTO tool_hour
+                       (hour, host, account, provider, project, kind, server, tool, target,
+                        calls, errors, receipts, ms_total,
+                        ms_under_50, ms_under_200, ms_under_1s, ms_under_5s, ms_over_5s,
+                        out_bytes, turn_usd)
+                     VALUES (?1,?2,'unknown','unknown',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,0)
+                     ON CONFLICT(hour, host, account, provider, project, kind, server, tool, target)
+                     DO UPDATE SET
+                       calls = calls + excluded.calls,
+                       errors = errors + excluded.errors,
+                       receipts = receipts + excluded.receipts,
+                       ms_total = ms_total + excluded.ms_total,
+                       ms_under_50 = ms_under_50 + excluded.ms_under_50,
+                       ms_under_200 = ms_under_200 + excluded.ms_under_200,
+                       ms_under_1s = ms_under_1s + excluded.ms_under_1s,
+                       ms_under_5s = ms_under_5s + excluded.ms_under_5s,
+                       ms_over_5s = ms_over_5s + excluded.ms_over_5s,
+                       out_bytes = out_bytes + excluded.out_bytes",
+                )
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            for ((at, session, agent, kind, server, tool, target, child), rows) in &groups {
+                let calls = rows.len() as i64;
+                let errors: i64 = rows.iter().map(|r| r.errors).sum();
+                let ms_total: i64 = rows.iter().map(|r| r.ms).sum();
+                let out_bytes: i64 = rows.iter().map(|r| r.out_bytes).sum();
+                let requested = rows
+                    .iter()
+                    .map(|r| r.requested_model.as_str())
+                    .find(|m| !m.is_empty())
+                    .unwrap_or("");
+                counts.no_turn += fact
+                    .execute(params![
+                        at, host, session, agent, kind, server, tool, target, child,
+                        requested, calls, errors, ms_total, out_bytes
+                    ])
+                    .map_err(|e| format!("analytics: sweep: {e}"))? as i64;
+                let project = projects.get(session).cloned().unwrap_or_default();
+                let mut sum = ToolSum::default();
+                for row in rows {
+                    sum.add(row, 0.0);
+                }
+                hour.execute(params![
+                    hour_of(*at),
+                    host,
+                    project,
+                    kind,
+                    server,
+                    tool,
+                    target,
+                    calls,
+                    sum.errors,
+                    sum.receipts,
+                    sum.ms,
+                    sum.under_50,
+                    sum.under_200,
+                    sum.under_1s,
+                    sum.under_5s,
+                    sum.over_5s,
+                    sum.out_bytes,
+                ])
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            }
+        }
+        {
+            let mut gone = tx
+                .prepare("DELETE FROM tool_pending WHERE tool_use_id = ?1")
+                .map_err(|e| format!("analytics: sweep: {e}"))?;
+            for (row, _) in &with_session {
+                gone.execute([&row.id])
+                    .map_err(|e| format!("analytics: sweep: {e}"))?;
+            }
+        }
+        tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+        if !full {
+            break;
+        }
+    }
+    Ok(counts)
+}
+
 fn write_tail(
     conn: &mut Connection,
     files: &[FileMark],
@@ -1669,6 +3256,22 @@ fn write_tail(
         .map_err(|e| format!("analytics: prune facts: {e}"))?;
     tx.execute("DELETE FROM usage_seen WHERE at < ?1", [cutoff])
         .map_err(|e| format!("analytics: prune seen: {e}"))?;
+    /* **The tool and work fine tiers keep the same ninety days**, and their
+       memos with them (§3.9, §7.2). `analytics_fold` goes too: its marker is
+       only consulted for a turn that could still have pending rows, and none
+       can be older than the window the walk is willing to read. `tool_hour` and
+       `work_hour` are the rollups and are deliberately not here. */
+    tx.execute(
+        "DELETE FROM tool_fact WHERE at <= ?1",
+        [cutoff - BUCKET_MS],
+    )
+    .map_err(|e| format!("analytics: prune tools: {e}"))?;
+    tx.execute("DELETE FROM tool_seen WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune tool seen: {e}"))?;
+    tx.execute("DELETE FROM work_fact WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune work: {e}"))?;
+    tx.execute("DELETE FROM analytics_fold WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune folds: {e}"))?;
 
     tx.commit().map_err(|e| format!("analytics: commit: {e}"))
 }
@@ -1757,6 +3360,32 @@ fn flush(
         let written = {
             let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
             write_prompts(&mut conn, host, part, &batch.owners, &prior)?
+        };
+        counts.add(written);
+    }
+    /* The tool half, under the same discipline. **Every call lands before any
+       result is applied**, which is what lets a call and its result be read in
+       one pass and need no second one; splitting it per chunk of a mixed batch
+       would let a result reach a call the same pass had not written yet. */
+    for part in batch.calls.chunks(chunk.max(1)) {
+        let written = {
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            write_calls(&mut conn, host, part)?
+        };
+        counts.calls += written;
+    }
+    for part in batch.results.chunks(chunk.max(1)) {
+        let written = {
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            write_results(&mut conn, part)?
+        };
+        counts.results += written;
+    }
+    /* A receipt is a fact of its own and waits for no turn (§3.9). */
+    for part in batch.receipts.chunks(chunk.max(1)) {
+        let written = {
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            write_receipts(&mut conn, host, part)?
         };
         counts.add(written);
     }
@@ -2185,7 +3814,22 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
        backfill — the difference between the 34 ms worst case measured for
        `CHUNK_REQUESTS` and a single transaction over every request on the
        machine. `flush` is where the per-chunk lock lives. */
-    let counts = flush(&store.0, &host, &batch, now, CHUNK_REQUESTS, None)?;
+    let mut counts = flush(&store.0, &host, &batch, now, CHUNK_REQUESTS, None)?;
+
+    /* The fold comes after the offsets have advanced on purpose: a call and its
+       result are both durable before any turn is allowed to consume them, so a
+       crash between the two writes re-reads the file and finds the pending rows
+       still there rather than a turn folded around half a call. */
+    counts.add(fold_tools(&store.0, &host, now)?);
+
+    /* The one reader that is not a fold (`docs/ANALYTICS.md` §3.9): a commit
+       made in a terminal emits nothing this app can hear. Bounded by its own
+       clock, because a `git log` per root per minute is three process spawns
+       the wall does not need — §16's budget prices this at one bounded log per
+       repository per observation, not per ingest. */
+    if history_due() {
+        counts.add(observe_history(&store.0, &host, now)?);
+    }
 
     Ok(Report {
         files: scan.read,
@@ -2198,6 +3842,12 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
         prompt_duplicates: counts.prompt_duplicates,
         prompt_hours: counts.prompt_hours,
         sessions: counts.sessions,
+        calls: counts.calls,
+        results: counts.results,
+        receipts: counts.receipts,
+        folds: counts.folds,
+        no_turn: counts.no_turn,
+        history: counts.history,
         refused,
         ms: began.elapsed().as_millis() as u64,
     })
@@ -2212,6 +3862,536 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
 #[tauri::command]
 pub async fn analytics_pass(app: AppHandle) -> Result<Report, String> {
     crate::off_main(move || pass(&app)).await?
+}
+
+/* ── git history, attributed and labelled (§3.9) ────────────────────────── */
+
+/// How often the history observer may look.
+///
+/// **Not a fact that emits an event, and not cheap either**: one `git log` per
+/// repository and per worktree group, each a process spawn. §3.9 accepts that
+/// cost as the fourth thing that goes and looks, and the cadence is what keeps
+/// it from being a per-minute one. A commit made through a card's own `Bash` is
+/// a receipt and needs none of this; what waits ten minutes is the commit made
+/// in a terminal, which the wall could not otherwise hear at all. Ten rather
+/// than five because **creating a process on this machine costs about half a
+/// second** (`spawn-costs-half-a-second`): a root is one spawn and a branch is
+/// another, so the cadence is the term that decides what the observation costs
+/// a wall doing nothing else.
+const HISTORY_EVERY: Duration = Duration::from_secs(600);
+
+/// Commits one `git log` page may return, pages one tree may be read in, and
+/// trees one observation may read.
+///
+/// **The page is a page, not a cap on the window.** The fine tier is ninety
+/// days, so `--since` is the real bound; `-n` alone would return only the newest
+/// N in that window and leave the rest unreachable for ever, which is what a
+/// fixed 600 did to this repository's own ~1,200 in-window commits.
+const HISTORY_CAP: usize = 900;
+const HISTORY_PAGES: usize = 4;
+const HISTORY_ROOTS: usize = 24;
+
+/// How long one `git log` may take before it is killed. A repository on a
+/// network path or behind a credential prompt must not hold the ingest's thread.
+const GIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+static HISTORY_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+/// Whether this pass may observe history, and if so, it arms the next one.
+fn history_due() -> bool {
+    let gate = HISTORY_AT.get_or_init(|| Mutex::new(None));
+    let Ok(mut at) = gate.lock() else {
+        return false;
+    };
+    let now = Instant::now();
+    match *at {
+        Some(last) if now.duration_since(last) < HISTORY_EVERY => false,
+        _ => {
+            *at = Some(now);
+            true
+        }
+    }
+}
+
+/// One card that has worked in a root.
+#[derive(Clone)]
+struct Candidate {
+    card: String,
+    session: String,
+}
+
+/// A tree the observer reads: the project it belongs to, the branch checked out
+/// there, and who was in it.
+struct Root {
+    path: String,
+    project: String,
+    /// Empty when only git can answer it; filled by a `rev-parse` in
+    /// `observe_history`, where no store lock is held.
+    branch: String,
+    candidates: Vec<Candidate>,
+}
+
+/// The trees a card has been in, over the fine window.
+///
+/// **`conversation.worktree` is a worktree's *name*, not a path.** The agent
+/// stands in `worktree::run_dir(cwd, name)`, and the name is the branch the
+/// tree is on (`wt/<key>`), which is why the branch needs no `rev-parse` there.
+/// Its `cwd` is the territory and is where a card without a worktree works.
+/// Neither is read from `analytics_session`, which deliberately drops a
+/// worktree path because that table is synced.
+fn history_roots(conn: &Connection, since: i64) -> Result<Vec<Root>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, COALESCE(c.agent_session_id, ''), COALESCE(c.branch, ''),
+                    COALESCE(c.cwd, ''), COALESCE(c.worktree, ''), COALESCE(p.name, '')
+               FROM conversation c LEFT JOIN project p ON p.id = c.project_id
+              WHERE c.closed_at IS NULL OR c.closed_at >= ?1
+              /* Newest first, so the fixed cap on roots is spent on the trees
+                 a card was in most recently rather than on whichever order the
+                 table happened to return. */
+              ORDER BY c.born_at DESC",
+        )
+        .map_err(|e| format!("analytics: history roots: {e}"))?;
+    let rows = stmt
+        .query_map([since], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(|e| format!("analytics: history roots: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: history roots: {e}"))?;
+
+    let mut roots: Vec<Root> = Vec::new();
+    for (card, session, branch, cwd, worktree, project) in rows {
+        if cwd.trim().is_empty() {
+            continue;
+        }
+        let worktree = worktree.trim();
+        let path = crate::worktree::run_dir(&cwd, (!worktree.is_empty()).then_some(worktree));
+        /* A path that is gone is not a repository to read, and asking git about
+           it would be a process per launch for nothing. */
+        if !Path::new(&path).is_dir() {
+            continue;
+        }
+        /* A worktree's name **is** its branch. A shared tree's is whatever is
+           checked out, which `conversation.branch` is not written with today —
+           so it stays empty here and git answers it outside the lock. */
+        let named = if !worktree.is_empty() {
+            worktree.to_string()
+        } else {
+            branch.trim().to_string()
+        };
+        let candidate = Candidate {
+            card: card.clone(),
+            session: session.clone(),
+        };
+        match roots.iter_mut().find(|r| r.path == path) {
+            Some(root) => {
+                if !root.candidates.iter().any(|c| c.card == candidate.card) {
+                    root.candidates.push(candidate);
+                }
+                if root.branch.is_empty() {
+                    root.branch = named;
+                }
+                if root.project.is_empty() {
+                    root.project = project.clone();
+                }
+            }
+            None => roots.push(Root {
+                path,
+                project: project.clone(),
+                branch: named,
+                candidates: vec![candidate],
+            }),
+        }
+    }
+    Ok(roots)
+}
+
+/// Run a command with a deadline, never a network prompt, and no window to
+/// block on.
+///
+/// **The reader thread is why this is not `Command::output`.** A `git log` over
+/// a few hundred commits with numstat is larger than a pipe buffer, so a child
+/// whose output nobody drains blocks before it can exit, and a timeout that
+/// expected it to exit would wait for ever. Draining and polling are two
+/// threads, and the kill is the timeout.
+fn run_bounded(root: &str, args: &[String], timeout: Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        /* The two halves of "a background poll never asks a question"
+           (`actions.md`): no terminal prompt, and a credential helper told not
+           to go interactive. `git log` reads local objects and needs neither,
+           which is exactly why a repository whose remote credentials expired
+           must not be able to pop a window from here. */
+        .arg("-c")
+        .arg("credential.interactive=false")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => break,
+        }
+    }
+    let bytes = reader.join().ok()?;
+    Some(String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// Whether a sha is already in the store, as a receipt or as a history row.
+///
+/// **A receipt is the exact source and wins.** `git commit` through a card's
+/// tool prints the sha, so the same commit is both a receipt and, minutes
+/// later, a line of local history; counting both would double every commit a
+/// card made, which is every commit the wall made. The receipt's ref may be a
+/// short sha and history's is always full, so the match is by prefix.
+fn history_known(conn: &Connection, sha: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(
+                  SELECT 1 FROM work_fact
+                   WHERE kind = 'commit' AND provenance = 'receipt'
+                     AND (ref = ?1 OR ?1 LIKE ref || '%'))
+             OR EXISTS(
+                  SELECT 1 FROM work_fact
+                   WHERE kind = 'commit' AND provenance = 'history' AND ref = ?1)",
+        [sha],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n != 0)
+    .map_err(|e| format!("analytics: history: {e}"))
+}
+
+/// Did a card's own tool call already record this integration?
+///
+/// **A merge receipt carries no sha.** Verified against real transcripts: the
+/// `gitOperation` is `{"branch":{"ref":"…","action":"merged"}}` and the printed
+/// output is `Merge made by the 'ort' strategy.`, with no `[branch sha]` line —
+/// so `history_known`, which matches on a sha, cannot suppress the history row
+/// that follows. Without this the integration is counted twice: once as the
+/// exact receipt and once as a `merge` commit history finds. The window is
+/// generous because the receipt's stamp is the command's end and the commit's
+/// is its author time, and both belong to the same minute.
+fn receipt_covers_merge(conn: &Connection, branch: &str, at: i64) -> bool {
+    const WINDOW_MS: i64 = 30 * 60 * 1000;
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM work_fact
+                        WHERE kind = 'merge'
+                          AND provenance = 'receipt'
+                          AND branch = ?1
+                          AND at BETWEEN ?2 AND ?3)",
+        params![branch, at - WINDOW_MS, at + WINDOW_MS],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n != 0)
+    .unwrap_or(false)
+}
+
+/// Was this card mid-turn at the author time?
+fn in_turn(conn: &Connection, card: &str, at: i64) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turn
+                        WHERE conversation_id = ?1
+                          AND opened_at <= ?2
+                          AND (ended_at IS NULL OR ?2 < ended_at))",
+        params![card, at],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n != 0)
+    .unwrap_or(false)
+}
+
+/// Did this card touch any of the commit's paths lately?
+///
+/// **Lately, not ever**: a card that edited a file last week did not author
+/// today's commit, so the window runs from twelve hours before the author time
+/// to five minutes after it. A commit's files were written before it landed,
+/// and the small forward allowance covers clock skew between the two records.
+fn touched_by(conn: &Connection, card: &str, commit: &HistCommit) -> bool {
+    if commit.paths.is_empty() {
+        return false;
+    }
+    let window = (commit.at - 12 * 60 * 60 * 1000, commit.at + 5 * 60 * 1000);
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT path FROM file_touch
+          WHERE conversation_id = ?1 AND at >= ?2 AND at <= ?3
+          LIMIT 4000",
+    ) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map(params![card, window.0, window.1], |r| r.get::<_, String>(0))
+    else {
+        return false;
+    };
+    let touched: Vec<String> = rows.filter_map(Result::ok).map(|p| crate::board::normalize(&p)).collect();
+    commit.paths.iter().any(|path| {
+        let want = crate::board::normalize(path);
+        touched.iter().any(|stored| {
+            stored == &want || stored.ends_with(&format!("/{want}"))
+        })
+    })
+}
+
+/// Who made a commit the transcript did not see, in §3.9's order.
+///
+/// `candidates` are the cards whose tree had the branch checked out. One is the
+/// answer on the first rung. Several fall to the turn interval the author time
+/// falls in, then to `file_touch`. A tie at any rung is left unattributed rather
+/// than guessed: `card = ''` still counts the commit toward the project, which
+/// is the honest reading of "somebody in this tree made it".
+fn attribute_commit(
+    conn: &Connection,
+    commit: &HistCommit,
+    candidates: &[Candidate],
+) -> Option<(String, String)> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some((candidates[0].card.clone(), candidates[0].session.clone()));
+    }
+    let mid_turn: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| in_turn(conn, &c.card, commit.at))
+        .collect();
+    if mid_turn.len() == 1 {
+        return Some((mid_turn[0].card.clone(), mid_turn[0].session.clone()));
+    }
+    let pool: Vec<&Candidate> = if mid_turn.is_empty() {
+        candidates.iter().collect()
+    } else {
+        mid_turn
+    };
+    let touched: Vec<&Candidate> = pool
+        .into_iter()
+        .filter(|c| touched_by(conn, &c.card, commit))
+        .collect();
+    if touched.len() == 1 {
+        return Some((touched[0].card.clone(), touched[0].session.clone()));
+    }
+    None
+}
+
+/// Write one tree's history, skipping what the store already holds.
+///
+/// The branch is the tree's, so every candidate in it was working on that
+/// branch: **the first attribution rung has done its work by choosing the
+/// tree**, and interval and file touch are what tell one card in a shared tree
+/// from another.
+fn write_history(
+    conn: &mut Connection,
+    host: &str,
+    root: &Root,
+    commits: &[HistCommit],
+) -> Result<Counts, String> {
+    let tx = conn.transaction().map_err(|e| format!("analytics: begin: {e}"))?;
+    let mut counts = Counts::default();
+    let project = if root.project.is_empty() {
+        root.path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
+    } else {
+        root.project.clone()
+    };
+    let branch = root.branch.as_str();
+    let candidates: Vec<Candidate> = root.candidates.clone();
+
+    let mut fact = tx
+        .prepare(
+            "INSERT INTO work_fact
+               (at, host, session, card, agent, kind, ref, branch, project,
+                files, added, removed, conflict_files, ms, provenance)
+             VALUES (?1,?2,?3,?4,'',?5,?6,?7,?8,?9,?10,?11,0,0,'history')
+             ON CONFLICT DO NOTHING",
+        )
+        .map_err(|e| format!("analytics: history: {e}"))?;
+    let mut hour = tx
+        .prepare(
+            "INSERT INTO work_hour
+               (hour, host, project, branch, kind, count, files, added, removed, conflict_ms)
+             VALUES (?1,?2,?3,?4,?5,1,?6,?7,?8,0)
+             ON CONFLICT(hour, host, project, branch, kind) DO UPDATE SET
+               count = count + 1,
+               files = files + excluded.files,
+               added = added + excluded.added,
+               removed = removed + excluded.removed",
+        )
+        .map_err(|e| format!("analytics: history: {e}"))?;
+
+    for commit in commits {
+        if history_known(&tx, &commit.sha)? {
+            continue;
+        }
+        /* A merge commit's receipt has no sha to match on, so the branch and
+           the moment are what say the card already recorded this integration. */
+        if commit.parents.len() >= 2 && receipt_covers_merge(&tx, branch, commit.at) {
+            continue;
+        }
+        let (card, session) = attribute_commit(&tx, commit, &candidates).unwrap_or_default();
+        let inserted = fact
+            .execute(params![
+                commit.at,
+                host,
+                session,
+                card,
+                "commit",
+                commit.sha,
+                branch,
+                project,
+                commit.files,
+                commit.added,
+                commit.removed,
+            ])
+            .map_err(|e| format!("analytics: history: {e}"))? as i64;
+        if inserted > 0 {
+            counts.history += 1;
+            hour.execute(params![
+                hour_of(commit.at),
+                host,
+                project,
+                branch,
+                "commit",
+                commit.files,
+                commit.added,
+                commit.removed,
+            ])
+            .map_err(|e| format!("analytics: history: {e}"))?;
+        }
+        /* A merge commit is an integration, and the history knows it by its two
+           parents. It is written as a second row rather than a column, because
+           `work_fact` has no parents field and the kind vocabulary already has
+           the word for it (§3.9). */
+        if commit.parents.len() >= 2 {
+            let merged = fact
+                .execute(params![
+                    commit.at,
+                    host,
+                    session,
+                    card,
+                    "merge",
+                    commit.sha,
+                    branch,
+                    project,
+                    0,
+                    0,
+                    0,
+                ])
+                .map_err(|e| format!("analytics: history: {e}"))? as i64;
+            if merged > 0 {
+                hour.execute(params![
+                    hour_of(commit.at),
+                    host,
+                    project,
+                    branch,
+                    "merge",
+                    0,
+                    0,
+                    0
+                ])
+                .map_err(|e| format!("analytics: history: {e}"))?;
+            }
+        }
+    }
+    drop(fact);
+    drop(hour);
+    tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
+    Ok(counts)
+}
+
+/// The fourth reader that goes and looks, for the commits nothing emits an
+/// event for (§3.9).
+///
+/// **No network.** Only local objects are read, with the terminal prompt
+/// disabled and optional locks off, so a repository behind an expired
+/// credential cannot pop a window over the wall from a background pass — the
+/// same rule `actions.md` states for every other background `git`.
+///
+/// A git that is missing, slow or refused costs nothing: every failure here is
+/// a skipped root, never a failed ingest.
+fn observe_history(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Counts, String> {
+    let mut roots = {
+        let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        history_roots(&conn, now - FINE_KEEP_MS)?
+    };
+    let mut counts = Counts::default();
+    for root in roots.iter_mut().take(HISTORY_ROOTS) {
+        /* **The branch is asked of the tree, never of the card**, because
+           nothing writes `conversation.branch` today and a card's idea of where
+           it is can be a week old. A worktree already knows its name is its
+           branch; a shared tree is one `rev-parse` — outside the lock, because
+           a spawn under the store mutex is a frozen wall. */
+        if root.branch.is_empty() {
+            root.branch = run_bounded(
+                &root.path,
+                &["rev-parse".to_string(), "--abbrev-ref".to_string(), "HEAD".to_string()],
+                GIT_TIMEOUT,
+            )
+            .map(|text| text.trim().to_string())
+            .filter(|b| !b.is_empty() && b != "HEAD")
+            .unwrap_or_else(|| "HEAD".to_string());
+        }
+        let since = (now - FINE_KEEP_MS).div_euclid(1000).to_string();
+        /* **Paged, because `-n` alone starves the window for ever.** A fixed
+           newest-N cap on a repository with more than N commits in ninety days
+           hides the older half and no later observation ever reaches it: this
+           repository has ~1,200 in the window, which is what made the first
+           cut wrong on its own project. Each page is one `git log`; a short
+           page is the end of the history. */
+        let mut skip = 0usize;
+        for _ in 0..HISTORY_PAGES {
+            let args = vec![
+                "log".to_string(),
+                root.branch.clone(),
+                "--numstat".to_string(),
+                "--format=%x1e%H%x1f%P%x1f%at".to_string(),
+                format!("--since={since}"),
+                "-n".to_string(),
+                HISTORY_CAP.to_string(),
+                format!("--skip={skip}"),
+            ];
+            let Some(text) = run_bounded(&root.path, &args, GIT_TIMEOUT) else {
+                break;
+            };
+            let commits = parse_numstat_log(&text);
+            if commits.is_empty() {
+                break;
+            }
+            let full = commits.len() >= HISTORY_CAP;
+            let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+            counts.add(write_history(&mut conn, host, root, &commits)?);
+            if !full {
+                break;
+            }
+            skip += HISTORY_CAP;
+        }
+    }
+    Ok(counts)
 }
 
 /* ── the read the room makes (§11) ──────────────────────────────────────── */
@@ -2696,6 +4876,304 @@ pub async fn prompt_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<Prom
     .await?
 }
 
+/* ── tool and work readings, for the behaviour and cost pages (§11.9, §11.14) ── */
+
+/// One `tool_fact` row, as a page reads it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRow {
+    pub turn_id: i64,
+    pub at: i64,
+    pub host: String,
+    pub session: String,
+    pub agent: String,
+    pub kind: String,
+    pub server: String,
+    pub tool: String,
+    pub target: String,
+    pub child_agent: String,
+    pub requested_model: String,
+    pub calls: i64,
+    pub errors: i64,
+    pub ms_total: i64,
+    pub out_bytes: i64,
+    pub turn_usd: f64,
+}
+
+/// A window's tool facts, bounded the way `prompt_rows` is.
+///
+/// **`turn_id = 0` is a call no turn claimed**, and its `turn_usd` is 0 by
+/// construction: a reader must not divide a turn's cost by rows that were never
+/// in its denominator (§3.7).
+pub const TOOL_ROW_CAP: usize = 100_000;
+
+pub fn tool_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<ToolRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT turn_id, at, host, session, agent, kind, server, tool, target,
+                    child_agent, requested_model, calls, errors, ms_total, out_bytes, turn_usd
+               FROM tool_fact
+              WHERE at >= ?1 AND at < ?2
+              ORDER BY at, tool, server
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: tools: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, TOOL_ROW_CAP as i64 + 1], |r| {
+            Ok(ToolRow {
+                turn_id: r.get(0)?,
+                at: r.get(1)?,
+                host: r.get(2)?,
+                session: r.get(3)?,
+                agent: r.get(4)?,
+                kind: r.get(5)?,
+                server: r.get(6)?,
+                tool: r.get(7)?,
+                target: r.get(8)?,
+                child_agent: r.get(9)?,
+                requested_model: r.get(10)?,
+                calls: r.get(11)?,
+                errors: r.get(12)?,
+                ms_total: r.get(13)?,
+                out_bytes: r.get(14)?,
+                turn_usd: r.get(15)?,
+            })
+        })
+        .map_err(|e| format!("analytics: tools: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: tools: {e}"))?;
+    if rows.len() > TOOL_ROW_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {TOOL_ROW_CAP} tool facts, so it is refused \
+             rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn tool_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<ToolRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        tool_rows(&conn, from, to)
+    })
+    .await?
+}
+
+/// One `work_fact` row, as the cost-against-output page reads it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkRow {
+    pub at: i64,
+    pub host: String,
+    pub session: String,
+    pub card: String,
+    pub agent: String,
+    pub kind: String,
+    pub r#ref: String,
+    pub branch: String,
+    pub project: String,
+    pub files: i64,
+    pub added: i64,
+    pub removed: i64,
+    pub conflict_files: i64,
+    pub ms: i64,
+    /// `receipt | history`, kept because §3.9 forbids summing them without
+    /// saying so.
+    pub provenance: String,
+}
+
+pub const WORK_ROW_CAP: usize = 50_000;
+
+pub fn work_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<WorkRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT at, host, session, card, agent, kind, ref, branch, project,
+                    files, added, removed, conflict_files, ms, provenance
+               FROM work_fact
+              WHERE at >= ?1 AND at < ?2
+              ORDER BY at, kind, ref
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: work: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, WORK_ROW_CAP as i64 + 1], |r| {
+            Ok(WorkRow {
+                at: r.get(0)?,
+                host: r.get(1)?,
+                session: r.get(2)?,
+                card: r.get(3)?,
+                agent: r.get(4)?,
+                kind: r.get(5)?,
+                r#ref: r.get(6)?,
+                branch: r.get(7)?,
+                project: r.get(8)?,
+                files: r.get(9)?,
+                added: r.get(10)?,
+                removed: r.get(11)?,
+                conflict_files: r.get(12)?,
+                ms: r.get(13)?,
+                provenance: r.get(14)?,
+            })
+        })
+        .map_err(|e| format!("analytics: work: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: work: {e}"))?;
+    if rows.len() > WORK_ROW_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {WORK_ROW_CAP} work facts, so it is refused \
+             rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn work_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<WorkRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        work_rows(&conn, from, to)
+    })
+    .await?
+}
+
+/// One hour of `work_hour`, which is what a year view reads.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkHourRow {
+    pub hour: i64,
+    pub host: String,
+    pub project: String,
+    pub branch: String,
+    pub kind: String,
+    pub count: i64,
+    pub files: i64,
+    pub added: i64,
+    pub removed: i64,
+    pub conflict_ms: i64,
+}
+
+/// One card's artifacts over a window, kept apart by provenance.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkCardRow {
+    /// `''` for a commit no card could be attributed.
+    pub card: String,
+    pub kind: String,
+    pub provenance: String,
+    pub count: i64,
+    pub files: i64,
+    pub added: i64,
+    pub removed: i64,
+    pub conflicts: i64,
+}
+
+/// The rollup and the per-card totals, in one answer.
+///
+/// **Two presentations of one table, not two measures**: the hour rows are what
+/// a year can afford to carry, and the card totals are what the scatter reads.
+/// The caller passes an hour-aligned window (a local day's bounds are not, and
+/// the hour row keeps its own UTC hour).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkSeries {
+    pub hourly: Vec<WorkHourRow>,
+    pub cards: Vec<WorkCardRow>,
+}
+
+pub const WORK_HOUR_CAP: usize = 50_000;
+
+pub fn work_series_rows(conn: &Connection, from: i64, to: i64) -> Result<WorkSeries, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT hour, host, project, branch, kind, count, files, added, removed, conflict_ms
+               FROM work_hour
+              WHERE hour >= ?1 AND hour < ?2
+              ORDER BY hour, project, kind
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: work series: {e}"))?;
+    let hourly = stmt
+        .query_map(params![from, to, WORK_HOUR_CAP as i64 + 1], |r| {
+            Ok(WorkHourRow {
+                hour: r.get(0)?,
+                host: r.get(1)?,
+                project: r.get(2)?,
+                branch: r.get(3)?,
+                kind: r.get(4)?,
+                count: r.get(5)?,
+                files: r.get(6)?,
+                added: r.get(7)?,
+                removed: r.get(8)?,
+                conflict_ms: r.get(9)?,
+            })
+        })
+        .map_err(|e| format!("analytics: work series: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: work series: {e}"))?;
+    if hourly.len() > WORK_HOUR_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {WORK_HOUR_CAP} work hours, so it is refused \
+             rather than truncated: ask for a narrower one"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT card, kind, provenance, COUNT(*), COALESCE(SUM(files), 0),
+                    COALESCE(SUM(added), 0), COALESCE(SUM(removed), 0),
+                    COALESCE(SUM(conflict_files), 0)
+               FROM work_fact
+              WHERE at >= ?1 AND at < ?2
+              GROUP BY card, kind, provenance
+              ORDER BY card, kind, provenance",
+        )
+        .map_err(|e| format!("analytics: work series: {e}"))?;
+    let cards = stmt
+        .query_map(params![from, to], |r| {
+            Ok(WorkCardRow {
+                card: r.get(0)?,
+                kind: r.get(1)?,
+                provenance: r.get(2)?,
+                count: r.get(3)?,
+                files: r.get(4)?,
+                added: r.get(5)?,
+                removed: r.get(6)?,
+                conflicts: r.get(7)?,
+            })
+        })
+        .map_err(|e| format!("analytics: work series: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: work series: {e}"))?;
+    Ok(WorkSeries { hourly, cards })
+}
+
+#[tauri::command]
+pub async fn work_series(app: AppHandle, from: i64, to: i64) -> Result<WorkSeries, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        work_series_rows(&conn, from, to)
+    })
+    .await?
+}
+
 /* ── saved views (§11.6) ─────────────────────────────────────────────────── */
 
 /// One row of the library, as the surface reads it. The spec travels as the
@@ -2879,17 +5357,23 @@ mod tests {
     }
 
     /// A stamp for an arbitrary millisecond instant, so fixtures read as times
-    /// rather than as arithmetic. Second precision is enough for every fixture.
+    /// rather than as arithmetic.
+    ///
+    /// **The milliseconds are written, not zeroed.** `epoch_ms` reads the
+    /// fraction, so a fixture that dropped it rounded every parsed instant down
+    /// to the second — which made a latency of 450 ms unrepresentable and a
+    /// bucket boundary depend on where `now` happened to fall.
     fn stamp(at: i64) -> String {
         let secs = at.div_euclid(1000);
         let days = secs.div_euclid(86_400);
         let rem = secs.rem_euclid(86_400);
         let (y, m, d) = civil_from_days(days);
         format!(
-            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
             rem / 3600,
             (rem % 3600) / 60,
-            rem % 60
+            rem % 60,
+            at.rem_euclid(1000)
         )
     }
 
@@ -4356,5 +6840,711 @@ mod tests {
         assert_eq!(rows[0].prompt_id, "p1");
         assert_eq!(rows[0].body_state, "locked");
         assert!(prompt_rows(&conn, at + 1, at + 2).unwrap().is_empty());
+    }
+
+    /* ── tools and work (§3.7, §3.9; phase 6a) ───────────────────────────── */
+
+    /* The fixtures are transcript lines, not structs, so a test exercises the
+       parser the walk actually calls. */
+
+    fn call_line(id: &str, at: i64, session: &str, name: &str, input: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","uuid":"u-{id}","timestamp":"{stamp}","sessionId":"{session}",
+                "message":{{"model":"claude-opus-5-5","content":[
+                  {{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#,
+            stamp = stamp(at),
+        )
+    }
+
+    fn agent_call_line(id: &str, at: i64, session: &str, agent: &str, name: &str, input: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","uuid":"u-{id}","timestamp":"{stamp}","sessionId":"{session}",
+                "agentId":"{agent}",
+                "message":{{"model":"claude-opus-5-5","content":[
+                  {{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}"#,
+            stamp = stamp(at),
+        )
+    }
+
+    fn result_line(id: &str, at: i64, session: &str, content: &str, is_error: bool) -> String {
+        let content = serde_json::to_string(content).unwrap();
+        let flag = if is_error { "true" } else { "false" };
+        format!(
+            r#"{{"type":"user","uuid":"r-{id}","timestamp":"{stamp}","sessionId":"{session}",
+                "cwd":"C:\\workbench\\volery","gitBranch":"main",
+                "message":{{"role":"user","content":[
+                  {{"type":"tool_result","tool_use_id":"{id}","is_error":{flag},"content":{content}}}]}},
+                "toolUseResult":{{"stdout":{content},"stderr":"","interrupted":false}}}}"#,
+            stamp = stamp(at),
+        )
+    }
+
+    fn seed(conn: &Connection, session: &str) -> String {
+        conn.execute(
+            "INSERT OR IGNORE INTO project (id, name, root_path, created_at)
+             VALUES ('p1', 'volery', 'C:/x', 0)",
+            [],
+        )
+        .unwrap();
+        let id = format!("card-{session}");
+        conn.execute(
+            "INSERT OR IGNORE INTO conversation
+               (id, agent_session_id, project_id, cwd, branch, born_at)
+             VALUES (?1, ?2, 'p1', 'C:/x', 'main', 0)",
+            params![id, session],
+        )
+        .unwrap();
+        id
+    }
+
+    fn settled_turn(conn: &Connection, card: &str, session: &str, opened: i64, ended: i64, usd: f64) -> i64 {
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier, usd, agent_session_id)
+             VALUES (?1, ?2, ?3, 'done', ?4, ?5)",
+            params![card, opened, ended, usd, session],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// One call and one result, written through the same sink and writer the
+    /// live pass uses, then folded.
+    fn tool_batch(lines: &[String]) -> Batch {
+        let mut reading = Reading::new(HashMap::new(), 0);
+        for line in lines {
+            reading.tools(line);
+        }
+        reading.into_batch()
+    }
+
+    fn tool_facts(conn: &Connection) -> Vec<(i64, String, i64, i64, i64, i64, f64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT turn_id, tool, calls, errors, ms_total, out_bytes, turn_usd
+                   FROM tool_fact ORDER BY tool",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn a_tool_name_is_reduced_to_the_dimensions_the_fact_has() {
+        let mcp = classify_tool("mcp__browser__browser_click", None);
+        assert_eq!((mcp.kind, mcp.server.as_str(), mcp.tool.as_str()), ("mcp", "browser", "browser_click"));
+        assert!(classify_tool("mcp__skein__ask_user", None).server == "skein");
+
+        let input: serde_json::Value =
+            serde_json::from_str(r#"{"skill":"tx-toolkit:committee","args":"x"}"#).unwrap();
+        let skill = classify_tool("Skill", Some(&input));
+        assert_eq!((skill.kind, skill.tool.as_str(), skill.target.as_str()), ("skill", "Skill", "tx-toolkit:committee"));
+
+        let input: serde_json::Value =
+            serde_json::from_str(r#"{"subagent_type":"scout","model":"opus","run_in_background":true}"#).unwrap();
+        let agent = classify_tool("Agent", Some(&input));
+        assert_eq!((agent.kind, agent.target.as_str(), agent.requested_model.as_str()), ("agent", "scout", "opus"));
+        assert!(agent.receipt, "a background agent's result is a receipt");
+
+        let bash = classify_tool("Bash", None);
+        assert_eq!(bash.kind, "builtin");
+        assert!(!bash.receipt, "a foreground shell is work");
+        assert!(classify_tool("Workflow", None).receipt);
+        assert!(classify_tool("Monitor", None).receipt);
+    }
+
+    #[test]
+    fn a_result_keeps_its_size_and_never_its_content() {
+        let at = 1_786_601_268_000;
+        let line = result_line("t1", at, "s1", "the answer is 42", false);
+        let parsed = parse_tool_result(&line).remove(0);
+        assert_eq!(parsed.result.id, "t1");
+        assert_eq!(parsed.result.out_bytes, 16);
+        assert_eq!(parsed.result.errors, 0);
+
+        let failed = result_line("t2", at, "s1", "no such file", true);
+        assert_eq!(parse_tool_result(&failed)[0].result.errors, 1);
+
+        /* A result in block form sums the blocks' text; the content is gone by
+           the time the struct exists. */
+        let blocks = format!(
+            r#"{{"type":"user","timestamp":"{}","sessionId":"s1",
+                 "message":{{"content":[{{"type":"tool_result","tool_use_id":"t3",
+                   "content":[{{"type":"text","text":"abc"}},{{"type":"text","text":"de"}}]}}]}}}}"#,
+            stamp(at)
+        );
+        assert_eq!(parse_tool_result(&blocks)[0].result.out_bytes, 5);
+
+        /* Two results in one record are two results, each with its own id. */
+        let pair = format!(
+            r#"{{"type":"user","timestamp":"{}","sessionId":"s1",
+                 "message":{{"content":[
+                   {{"type":"tool_result","tool_use_id":"t4","content":"aa"}},
+                   {{"type":"tool_result","tool_use_id":"t5","is_error":true,"content":"bbb"}}]}}}}"#,
+            stamp(at)
+        );
+        let parsed = parse_tool_result(&pair);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!((parsed[0].result.id.as_str(), parsed[0].result.out_bytes), ("t4", 2));
+        assert_eq!((parsed[1].result.id.as_str(), parsed[1].result.errors), ("t5", 1));
+    }
+
+    #[test]
+    fn a_commit_receipt_parses_branch_and_sha() {
+        let op: serde_json::Value = serde_json::from_str(
+            r#"{"commit":{"sha":"8adbaaa","kind":"committed","branch":"main"}}"#,
+        )
+        .unwrap();
+        let receipts = parse_receipts("nothing printed", Some(&op));
+        assert_eq!(
+            receipts,
+            vec![ParsedReceipt { kind: "commit", reference: "8adbaaa".into(), conflict_files: 0 }]
+        );
+
+        /* And the printed line is the fallback when the summary is absent. */
+        let printed = parse_receipts("[main 8adbaaa] skein: a thing\n 2 files changed", None);
+        assert!(printed.iter().any(|r| r.kind == "commit" && r.reference == "8adbaaa"));
+
+        /* Two tools in one afternoon do not make a receipt out of prose. */
+        assert!(parse_receipts("read about [main abc1234] in a doc", None)
+            .iter()
+            .all(|r| r.kind != "commit"));
+    }
+
+    #[test]
+    fn a_pr_receipt_names_its_number() {
+        let opened = parse_receipts(
+            "https://github.com/lagardere/volery/pull/412\n",
+            None,
+        );
+        assert_eq!(
+            opened,
+            vec![ParsedReceipt { kind: "pr_open", reference: "412".into(), conflict_files: 0 }]
+        );
+
+        let merged = parse_receipts("✓ Merged pull request #412 (a feature)", None);
+        assert!(merged.iter().any(|r| r.kind == "pr_merge" && r.reference == "412"));
+    }
+
+    #[test]
+    fn a_conflict_names_its_paths() {
+        let text = "Auto-merging src/lib/a.ts\n\
+                    CONFLICT (content): Merge conflict in src/lib/a.ts\n\
+                    CONFLICT (modify/delete): src/lib/b.ts deleted in HEAD and modified in main\n\
+                    Automatic merge failed; fix conflicts and then commit the result.";
+        let op: serde_json::Value =
+            serde_json::from_str(r#"{"branch":{"ref":"main","action":"merged"}}"#).unwrap();
+        let receipts = parse_receipts(text, Some(&op));
+        let conflict = receipts.iter().find(|r| r.kind == "conflict").unwrap();
+        assert_eq!(conflict.conflict_files, 2, "one per path, normalised");
+        assert!(receipts.iter().any(|r| r.kind == "merge" && r.reference == "main"));
+    }
+
+    #[test]
+    fn a_history_commit_carries_its_numstat_and_parents() {
+        let text = "\u{1e}abc123\u{1f}p1 p2\u{1f}1760000000\n\
+                    12\t3\tsrc/lib/a.ts\n\
+                    -\t-\tassets/logo.png\n\
+                    \u{1e}def456\u{1f}abc123\u{1f}1760000100\n\
+                    1\t1\tsrc/lib/b.ts\n";
+        let commits = parse_numstat_log(text);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "abc123");
+        assert_eq!(commits[0].parents, vec!["p1", "p2"], "a merge has two");
+        assert_eq!(commits[0].at, 1_760_000_000_000, "seconds become milliseconds");
+        assert_eq!((commits[0].files, commits[0].added, commits[0].removed), (2, 12, 3));
+        assert_eq!(commits[0].paths, vec!["src/lib/a.ts", "assets/logo.png"]);
+        assert_eq!(commits[1].parents, vec!["abc123"]);
+    }
+
+    #[test]
+    fn a_call_and_result_resolve_once() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let opened = now - 20 * 60 * 1000;
+        let ended = now - 10 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            settled_turn(&conn, &card, "s1", opened, ended, 0.25);
+        }
+        let call = call_line("t1", opened + 1_000, "s1", "Bash", r#"{"command":"ls"}"#);
+        let result = result_line("t1", opened + 1_450, "s1", "a b c", true);
+        let batch = tool_batch(&[call, result]);
+        write(&conns, "home", &batch, now).unwrap();
+
+        /* A second result for the same call changes nothing: the first one
+           resolved it, and the `resolved_at IS NULL` guard is what says so. */
+        let late = result_line("t1", opened + 9_000, "s1", "a much longer late answer", false);
+        write(&conns, "home", &tool_batch(&[late]), now).unwrap();
+
+        fold_tools(&conns, "home", now).unwrap();
+        let conn = conns.lock().unwrap();
+        let facts = tool_facts(&conn);
+        assert_eq!(facts.len(), 1);
+        let (turn_id, tool, calls, errors, ms, out_bytes, usd) = facts[0].clone();
+        assert_eq!(tool, "Bash");
+        assert_eq!((calls, errors, ms, out_bytes), (1, 1, 450, 5), "the first result, not the late one");
+        assert!((usd - 0.25).abs() < 1e-12, "one call takes the whole turn");
+        assert!(turn_id > 0);
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM tool_pending", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "the folded row is deleted");
+        let marked: i64 = conn
+            .query_row("SELECT COUNT(*) FROM analytics_fold WHERE turn_id = ?1", [turn_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(marked, 1);
+    }
+
+    #[test]
+    fn a_result_in_a_later_pass_still_resolves_its_call() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let opened = now - 20 * 60 * 1000;
+        let ended = now - 10 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            settled_turn(&conn, &card, "s1", opened, ended, 0.10);
+        }
+        write(
+            &conns,
+            "home",
+            &tool_batch(&[call_line("t1", opened + 1_000, "s1", "Read", r#"{"file_path":"a"}"#)]),
+            now,
+        )
+        .unwrap();
+        let pending: Option<i64> = conns
+            .lock()
+            .unwrap()
+            .query_row("SELECT resolved_at FROM tool_pending WHERE tool_use_id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(pending.is_none(), "the call waits for its result");
+
+        write(
+            &conns,
+            "home",
+            &tool_batch(&[result_line("t1", opened + 2_000, "s1", "text", false)]),
+            now,
+        )
+        .unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+        let conn = conns.lock().unwrap();
+        let (_, _, calls, errors, ms, out_bytes, _) = tool_facts(&conn)[0].clone();
+        assert_eq!((calls, errors, ms, out_bytes), (1, 0, 1_000, 4));
+    }
+
+    #[test]
+    fn a_call_with_no_result_is_written_as_no_result() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let opened = now - 20 * 60 * 1000;
+        let ended = now - 10 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            settled_turn(&conn, &card, "s1", opened, ended, 0.10);
+        }
+        write(
+            &conns,
+            "home",
+            &tool_batch(&[call_line("t1", opened + 1_000, "s1", "Grep", r#"{"pattern":"x"}"#)]),
+            now,
+        )
+        .unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+        let conn = conns.lock().unwrap();
+        let (_, _, calls, errors, ms, out_bytes, _) = tool_facts(&conn)[0].clone();
+        assert_eq!((calls, errors, ms, out_bytes), (1, 0, 0, 0), "counted, with no time");
+    }
+
+    #[test]
+    fn a_call_no_turn_claims_is_swept_as_no_turn() {
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1");
+        }
+        let now = now_ms();
+        let at = now - 30 * 60 * 1000;
+        write(
+            &conns,
+            "home",
+            &tool_batch(&[call_line("t1", at, "s1", "Bash", r#"{"command":"ls"}"#)]),
+            now,
+        )
+        .unwrap();
+        let written = fold_tools(&conns, "home", now).unwrap();
+        assert_eq!(written.no_turn, 1);
+        let conn = conns.lock().unwrap();
+        let (turn_id, _, calls, _, _, _, usd) = tool_facts(&conn)[0].clone();
+        assert_eq!(turn_id, 0);
+        assert_eq!(calls, 1);
+        assert_eq!(usd, 0.0, "outside every turn's denominator");
+        let fact_at: i64 = conn.query_row("SELECT at FROM tool_fact", [], |r| r.get(0)).unwrap();
+        assert_eq!(fact_at, bucket_of(at), "a no-turn row keeps the bucket grain");
+        let pending: i64 = conn.query_row("SELECT COUNT(*) FROM tool_pending", [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn two_tools_in_a_turn_apportion_exactly() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let opened = now - 20 * 60 * 1000;
+        let ended = now - 10 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            settled_turn(&conn, &card, "s1", opened, ended, 0.333_333);
+        }
+        let lines = vec![
+            call_line("t1", opened + 100, "s1", "Bash", r#"{"command":"x"}"#),
+            call_line("t2", opened + 200, "s1", "Read", r#"{"file_path":"a"}"#),
+        ];
+        write(&conns, "home", &tool_batch(&lines), now).unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+        let conn = conns.lock().unwrap();
+        let facts = tool_facts(&conn);
+        assert_eq!(facts.len(), 2);
+        let sum: f64 = facts.iter().map(|f| f.6).sum();
+        assert!((sum - 0.333_333).abs() < 1e-12, "the rows sum to the turn: {sum}");
+        let hours: (i64, f64) = conn
+            .query_row("SELECT SUM(calls), SUM(turn_usd) FROM tool_hour", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(hours.0, 2);
+        assert!((hours.1 - 0.333_333).abs() < 1e-12, "and the hour agrees");
+    }
+
+    /// **A transcript read twice is one call.** A file replaced under the offset
+    /// is re-read from zero and offers every call again; `tool_pending` has been
+    /// deleted by then, so its key cannot answer "was this counted" — `tool_seen`
+    /// can. Without the memo the call inside the folded turn is re-inserted and
+    /// never swept, and a subagent's call is re-inserted and swept a second
+    /// time, because the sweep's claim test only knows the call's own stamp.
+    #[test]
+    fn a_replayed_transcript_does_not_count_a_call_twice() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let opened = now - 20 * 60 * 1000;
+        let ended = now - 10 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            settled_turn(&conn, &card, "s1", opened, ended, 0.40);
+        }
+        let call = call_line("t1", opened + 1_000, "s1", "Bash", r#"{"command":"ls"}"#);
+        let result = result_line("t1", opened + 1_450, "s1", "a b c", false);
+        write(&conns, "home", &tool_batch(&[call.clone(), result.clone()]), now).unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+
+        /* The same file, re-read from zero, and folded again. */
+        write(&conns, "home", &tool_batch(&[call, result]), now).unwrap();
+        let again = fold_tools(&conns, "home", now).unwrap();
+        assert_eq!(again.folds, 0, "the turn's marker still stands");
+
+        let conn = conns.lock().unwrap();
+        let facts: (i64, i64) = conn
+            .query_row("SELECT COUNT(*), SUM(calls) FROM tool_fact", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(facts, (1, 1), "one fact, one call");
+        let hour: i64 = conn.query_row("SELECT SUM(calls) FROM tool_hour", [], |r| r.get(0)).unwrap();
+        assert_eq!(hour, 1, "and the rollup agrees");
+        let pending: i64 = conn.query_row("SELECT COUNT(*) FROM tool_pending", [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 0, "nothing is re-staged to leak or be swept twice");
+    }
+
+    #[test]
+    fn a_lost_turn_writes_nothing_and_keeps_its_calls_for_the_sweep() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let at = now - 20 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            /* A backfilled row: the only boundary history knows is its end. */
+            settled_turn(&conn, &card, "s1", at, at, 0.10);
+        }
+        write(
+            &conns,
+            "home",
+            &tool_batch(&[call_line("t1", at, "s1", "Bash", r#"{"command":"x"}"#)]),
+            now,
+        )
+        .unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+        let conn = conns.lock().unwrap();
+        let facts = tool_facts(&conn);
+        assert!(
+            facts.iter().all(|f| f.0 == 0),
+            "a zero-length turn writes no fact of its own"
+        );
+        assert_eq!(facts.len(), 1, "the sweep still keeps the call, as no-turn");
+        let marked: i64 = conn.query_row("SELECT COUNT(*) FROM analytics_fold", [], |r| r.get(0)).unwrap();
+        assert_eq!(marked, 1, "but it is not reconsidered every minute");
+    }
+
+    #[test]
+    fn a_subagents_call_belongs_to_the_turn_that_spawned_it() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let first_end = now - 20 * 60 * 1000;
+        let second_open = first_end;
+        let second_end = now - 10 * 60 * 1000;
+        let spawn_turn;
+        {
+            let conn = conns.lock().unwrap();
+            spawn_turn = settled_turn(&conn, &card, "s1", first_end - 60_000, first_end, 0.20);
+            settled_turn(&conn, &card, "s1", second_open, second_end, 0.80);
+        }
+        /* The spawn in turn one, the child's call while turn two was running. */
+        let lines = vec![
+            agent_call_line("spawn", first_end - 30_000, "s1", "", "Agent", r#"{"subagent_type":"scout"}"#),
+            result_line("spawn", first_end - 20_000, "s1", "receipt", false),
+            agent_call_line("child", second_open + 1_000, "s1", "a1", "Read", r#"{"file_path":"a"}"#),
+        ];
+        write(&conns, "home", &tool_batch(&lines), now).unwrap();
+        /* The result carries no agentId in this fixture, so set the mapping the
+           way the CLI's receipt would. */
+        conns
+            .lock()
+            .unwrap()
+            .execute("UPDATE tool_pending SET child_agent = 'a1' WHERE tool_use_id = 'spawn'", [])
+            .unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+        let conn = conns.lock().unwrap();
+        let rows: Vec<(i64, String, f64)> = conn
+            .prepare("SELECT turn_id, tool, turn_usd FROM tool_fact ORDER BY tool")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let read = rows.iter().find(|r| r.1 == "Read").unwrap();
+        assert_eq!(
+            read.0, spawn_turn,
+            "the child's call belongs to the turn that spawned it, not the one running when it acted"
+        );
+        assert!(
+            (read.2 - 0.10).abs() < 1e-12,
+            "apportioned against that turn's cost, shared with its spawn"
+        );
+    }
+
+    #[test]
+    fn a_receipt_is_written_once_and_suppresses_its_history_duplicate() {
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1");
+        }
+        let now = now_ms();
+        let at = now - 60_000;
+        let call = call_line("t1", at - 1_000, "s1", "Bash", r#"{"command":"git commit -m x"}"#);
+        let result = result_line("t1", at, "s1", "[main 8adbaaa] skein: a thing", false);
+        write(&conns, "home", &tool_batch(&[call, result]), now).unwrap();
+        {
+            let conn = conns.lock().unwrap();
+            let row: (String, String, String, String, i64) = conn
+                .query_row(
+                    "SELECT kind, ref, branch, card, ms FROM work_fact",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .unwrap();
+            assert_eq!(row.0, "commit");
+            assert_eq!(row.1, "8adbaaa");
+            assert_eq!(row.2, "main");
+            assert_eq!(row.3, "card-s1");
+            assert!(row.4 >= 1_000, "the call's own latency");
+        }
+
+        /* Re-reading the same result is a no-op. */
+        write(&conns, "home", &tool_batch(&[result_line("t1", at, "s1", "[main 8adbaaa] skein: a thing", false)]), now).unwrap();
+        {
+            let conn = conns.lock().unwrap();
+            let n: i64 = conn.query_row("SELECT COUNT(*) FROM work_fact", [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 1);
+        }
+
+        /* History later finds the same commit with a full sha. */
+        assert!(
+            history_known(
+                &conns.lock().unwrap(),
+                "8adbaaa0000000000000000000000000000000000"
+            )
+            .unwrap()
+        );
+        let commit = HistCommit {
+            sha: "8adbaaa0000000000000000000000000000000000".into(),
+            parents: vec!["p".into()],
+            at,
+            files: 2,
+            added: 10,
+            removed: 1,
+            paths: vec!["src/a.ts".into()],
+        };
+        let root = Root {
+            path: "C:/x".into(),
+            project: "volery".into(),
+            branch: "main".into(),
+            candidates: vec![],
+        };
+        let mut conn = conns.lock().unwrap();
+        let wrote = write_history(&mut conn, "home", &root, &[commit]).unwrap();
+        assert_eq!(wrote.history, 0, "the receipt already holds it");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM work_fact", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn a_history_commit_is_attributed_by_branch_then_interval_then_touch() {
+        let conn = db();
+        seed(&conn, "s1");
+        conn.execute(
+            "INSERT OR IGNORE INTO conversation (id, agent_session_id, project_id, cwd, branch, born_at)
+             VALUES ('card-s2', 's2', 'p1', 'C:/x', 'main', 0)",
+            [],
+        )
+        .unwrap();
+        let at = 1_786_601_268_000;
+        let commit = HistCommit {
+            sha: "aaaaaaa".into(),
+            parents: vec!["p".into()],
+            at,
+            files: 1,
+            added: 1,
+            removed: 0,
+            paths: vec!["src/lib/a.ts".into()],
+        };
+        let both = vec![
+            Candidate { card: "card-s1".into(), session: "s1".into() },
+            Candidate { card: "card-s2".into(), session: "s2".into() },
+        ];
+
+        /* One card on the branch is the first rung. */
+        assert_eq!(
+            attribute_commit(&conn, &commit, &both[..1]),
+            Some(("card-s1".into(), "s1".into()))
+        );
+        /* Two cards, one mid-turn at the author time. */
+        settled_turn(&conn, "card-s2", "s2", at - 1_000, at + 60_000, 0.1);
+        assert_eq!(
+            attribute_commit(&conn, &commit, &both),
+            Some(("card-s2".into(), "s2".into()))
+        );
+        /* Neither mid-turn: the card that touched the file lately wins. */
+        conn.execute("DELETE FROM turn", []).unwrap();
+        conn.execute(
+            "INSERT INTO file_touch (conversation_id, path, op, at)
+             VALUES ('card-s1', 'C:/x/src/lib/a.ts', 'write', ?1)",
+            params![at - 60_000],
+        )
+        .unwrap();
+        assert_eq!(
+            attribute_commit(&conn, &commit, &both),
+            Some(("card-s1".into(), "s1".into()))
+        );
+        /* Nothing ties it to a card, so it counts toward the project. */
+        conn.execute("DELETE FROM file_touch", []).unwrap();
+        assert_eq!(attribute_commit(&conn, &commit, &both), None);
+    }
+
+    #[test]
+    fn a_history_merge_commit_is_written_as_an_integration() {
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1");
+        }
+        let at = now_ms() - 60_000;
+        let commit = HistCommit {
+            sha: "bbbbbbb".into(),
+            parents: vec!["a".into(), "b".into()],
+            at,
+            files: 1,
+            added: 2,
+            removed: 3,
+            paths: vec!["src/a.ts".into()],
+        };
+        let root = Root {
+            path: "C:/x".into(),
+            project: "volery".into(),
+            branch: "main".into(),
+            candidates: vec![Candidate { card: "card-s1".into(), session: "s1".into() }],
+        };
+        let mut conn = conns.lock().unwrap();
+        let wrote = write_history(&mut conn, "home", &root, &[commit]).unwrap();
+        assert_eq!(wrote.history, 1);
+        let kinds: Vec<String> = conn
+            .prepare("SELECT kind FROM work_fact ORDER BY kind")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(kinds, vec!["commit", "merge"]);
+        let counts: Vec<i64> = conn
+            .prepare("SELECT count FROM work_hour ORDER BY kind")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(counts, vec![1, 1]);
+    }
+
+    #[test]
+    fn the_tool_and_work_readings_are_bounded_and_the_series_rolls_up() {
+        let conns = Mutex::new(db());
+        {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1");
+            conn.execute(
+                "INSERT INTO work_fact (at, host, session, card, kind, ref, project, files, added, removed, provenance)
+                 VALUES (100, 'home', 's1', 'card-s1', 'commit', 'a', 'volery', 2, 10, 1, 'receipt')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO work_hour (hour, host, project, branch, kind, count, files, added, removed)
+                 VALUES (0, 'home', 'volery', 'main', 'commit', 1, 2, 10, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = conns.lock().unwrap();
+        assert!(work_rows(&conn, 10, 1).is_err(), "a backwards window is refused");
+        assert_eq!(work_rows(&conn, 0, 200).unwrap().len(), 1);
+        assert_eq!(tool_rows(&conn, 0, 200).unwrap().len(), 0);
+        let series = work_series_rows(&conn, 0, 200).unwrap();
+        assert_eq!(series.hourly.len(), 1);
+        assert_eq!(series.cards.len(), 1);
+        assert_eq!(series.cards[0].count, 1);
+        assert_eq!(series.cards[0].provenance, "receipt");
     }
 }

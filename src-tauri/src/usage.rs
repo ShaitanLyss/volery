@@ -577,6 +577,12 @@ fn scan_with(
                     }
                     if let Some(sink) = reading.as_deref_mut() {
                         sink.request(&rec);
+                        /* **The tool reader is called on this arm too.** An
+                           assistant record carrying a `tool_use` also carries
+                           `usage`, so it never reaches the arm below, and a
+                           sink offered only non-request lines would see no
+                           calls at all (§3.7). */
+                        sink.tools(&text);
                     }
                 }
                 /* Everything that is not a request: the two records analytics
@@ -589,6 +595,11 @@ fn scan_with(
                 None => {
                     if let Some(sink) = reading.as_deref_mut() {
                         sink.other(&text);
+                        /* And here, for a tool *result*, which is a `user`
+                           record and therefore never a request. A call and
+                           its result are two records in two shapes, and one
+                           of them is always on this arm (§3.7). */
+                        sink.tools(&text);
                         /* The byte offset of this line's *start*, which is what
                            a locator records: `off` has already counted this
                            line and its newline, so it gives both back. A line

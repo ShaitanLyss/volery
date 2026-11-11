@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 65;
+const SCHEMA_VERSION: i64 = 66;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -445,6 +445,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (63, migrate_v63),
     (64, migrate_v64),
     (65, migrate_v65),
+    (66, migrate_v66),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -3768,6 +3769,105 @@ fn migrate_v65(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v65: {e}"))
 }
 
+/// What the money bought, and the two columns `tool_pending` was missing
+/// (`docs/ANALYTICS.md` §3.7, §3.9, §17; phase 6a).
+///
+/// **`work_fact` and `work_hour` are §17's, exactly**, with the four indexes the
+/// section names. They are append-only: a receipt is written once from the tool
+/// result that carried it, and a history commit once per sha, which is what
+/// makes §8.1's union merge safe across two walls.
+///
+/// **`tool_pending` gains two columns and that is not a new rung for the tool
+/// tables.** The rung exists for the work tables; the result's `is_error` and
+/// its content size have to live from the pass that saw the result to the pass
+/// that folds the turn, and `tool_pending` is the only row that spans those two
+/// moments. `ms_total` needs no column: it is `resolved_at - at`, the two
+/// timestamps the row already carries. Every statement is `IF NOT EXISTS` or
+/// goes through `add_column`, so a re-run of the rung is a no-op — the v9
+/// lockout's rule, not an aesthetic one.
+fn migrate_v66(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS work_fact (
+            at             INTEGER NOT NULL,
+            host           TEXT NOT NULL,
+            session        TEXT NOT NULL DEFAULT '',
+            card           TEXT NOT NULL DEFAULT '',
+            agent          TEXT NOT NULL DEFAULT '',
+            kind           TEXT NOT NULL,
+            ref            TEXT NOT NULL DEFAULT '',
+            branch         TEXT NOT NULL DEFAULT '',
+            project        TEXT NOT NULL DEFAULT '',
+            files          INTEGER NOT NULL DEFAULT 0,
+            added          INTEGER NOT NULL DEFAULT 0,
+            removed        INTEGER NOT NULL DEFAULT 0,
+            conflict_files INTEGER NOT NULL DEFAULT 0,
+            ms             INTEGER NOT NULL DEFAULT 0,
+            provenance     TEXT NOT NULL DEFAULT 'receipt',
+            PRIMARY KEY (at, host, session, card, kind, ref, branch, project, provenance)
+        );
+
+        CREATE TABLE IF NOT EXISTS work_hour (
+            hour        INTEGER NOT NULL,
+            host        TEXT NOT NULL,
+            project     TEXT NOT NULL,
+            branch      TEXT NOT NULL DEFAULT '',
+            kind        TEXT NOT NULL,
+            count       INTEGER NOT NULL DEFAULT 0,
+            files       INTEGER NOT NULL DEFAULT 0,
+            added       INTEGER NOT NULL DEFAULT 0,
+            removed     INTEGER NOT NULL DEFAULT 0,
+            conflict_ms INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour, host, project, branch, kind)
+        );
+
+        CREATE INDEX IF NOT EXISTS work_fact_by_at      ON work_fact(at);
+        CREATE INDEX IF NOT EXISTS work_fact_by_card    ON work_fact(card, at);
+        CREATE INDEX IF NOT EXISTS work_fact_by_project ON work_fact(project, at);
+        CREATE INDEX IF NOT EXISTS work_hour_by_hour    ON work_hour(hour);
+
+        -- The tool half is read by `at` for the behaviour page, and a scan of
+        -- the fine tier is not what a chart may cost.
+        CREATE INDEX IF NOT EXISTS tool_fact_by_at ON tool_fact(at);
+
+        -- The fold asks "which settled turns are not yet folded" once a pass,
+        -- and the settle time is the only predicate that narrows it.
+        CREATE INDEX IF NOT EXISTS turn_by_end ON turn(ended_at);
+
+        -- A call is read by its session's turn and written by its own id; the
+        -- pair is what keeps the fold's read proportional to one session.
+        CREATE INDEX IF NOT EXISTS tool_pending_by_session ON tool_pending(session, at);
+
+        -- **The memo of calls already taken, the same bargain `usage_seen`
+        -- strikes one tier over.** `tool_pending` is deleted when a turn folds
+        -- or the sweep writes it, so its primary key cannot answer "has this
+        -- call been counted" after that — and a transcript re-read from zero
+        -- offers every call again. Without this, a call inside a folded turn is
+        -- re-inserted and never swept (a leak), and a subagent's call claimed
+        -- by an earlier turn is re-inserted and swept as no-turn (a double
+        -- count). Pruned with the fine tier, which is also when `Reading` stops
+        -- offering a call at all.
+        CREATE TABLE IF NOT EXISTS tool_seen (
+            tool_use_id TEXT PRIMARY KEY,
+            at          INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS tool_seen_by_at ON tool_seen(at);
+
+        -- Work history is deduped by sha, and that lookup is inside the store
+        -- lock once per commit.
+        CREATE INDEX IF NOT EXISTS work_fact_by_sha ON work_fact(kind, provenance, ref);
+
+        -- The coordination reading asks "what did these two cards touch in this
+        -- window", and without this it scans every touch the wall ever recorded.
+        CREATE INDEX IF NOT EXISTS file_touch_by_card ON file_touch(conversation_id, at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v66: {e}"))?;
+    add_column(conn, "tool_pending", "errors", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column(conn, "tool_pending", "out_bytes", "INTEGER NOT NULL DEFAULT 0")?;
+    Ok(())
+}
+
 /* ── saved views ───────────────────────────────────────────────────────────*/
 
 /// A view's name is the library's identity for it, so it is capped here as
@@ -6802,6 +6902,135 @@ pub fn foreign_staged(db: &std::path::Path, card: &str, root: &str, staged: &[St
         }
     }
     out
+}
+
+/// How long two cards were in the same file, for the coordination reading
+/// (`docs/ANALYTICS.md` §3.9).
+///
+/// **A minute is the unit because a tool call is the event.** `file_touch` is
+/// written per `Edit`/`Write`/`Read`, and two cards touching one path in the
+/// same minute is the finest thing the rows can honestly support: a second-level
+/// answer would report the gap between two edits rather than the time they
+/// shared. `overlap_minutes` is the number of distinct minutes in which both
+/// cards touched at least one common file, so a pair that collided on three
+/// files in one minute reads as one minute of overlap and three shared files.
+///
+/// **Paths are normalised before they are compared**, the same folding
+/// `foreign_staged` does: a tool call names an absolute Windows path and a
+/// second card's call may name the same file with forward slashes. `board::
+/// normalize` is that folding and is not respelled here.
+///
+/// A pure inner function because the arithmetic is the part worth testing: the
+/// SQL only narrows, and a database round trip would make a boundary case (a
+/// minute is `[m, m + 60s)`) slow to assert.
+fn overlap_from_touches(left: &str, rows: &[(String, String, i64)]) -> (i64, Vec<String>) {
+    use std::collections::{BTreeSet, HashMap};
+    /* path → the minutes each side was in it. */
+    let mut per: HashMap<String, (BTreeSet<i64>, BTreeSet<i64>)> = HashMap::new();
+    for (card, path, at) in rows {
+        let minute = at.div_euclid(60_000);
+        let entry = per.entry(crate::board::normalize(path)).or_default();
+        if card == left {
+            entry.0.insert(minute);
+        } else {
+            entry.1.insert(minute);
+        }
+    }
+    let mut minutes: BTreeSet<i64> = BTreeSet::new();
+    let mut files: Vec<String> = Vec::new();
+    for (path, (a, b)) in per {
+        if a.is_empty() || b.is_empty() {
+            continue;
+        }
+        minutes.extend(a.intersection(&b).copied());
+        files.push(path);
+    }
+    files.sort();
+    (minutes.len() as i64, files)
+}
+
+/// What two cards shared in a window, as the coordination view reads it.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Overlap {
+    /// Distinct minutes in which both cards touched a file they share.
+    pub minutes: i64,
+    /// The files both cards touched, normalised and sorted.
+    pub files: Vec<String>,
+}
+
+/// How many touches one overlap answer may read.
+///
+/// A day of two busy cards is a few hundred; fifty thousand is a guard against
+/// a malformed window or a pair asked over a year, refused rather than answered
+/// in part — the same bargain `tool_rows` strikes.
+pub const OVERLAP_ROW_CAP: usize = 50_000;
+
+/// The query under `overlap_minutes`, so the command and a suite share one
+/// spelling and the window's arithmetic is not done twice.
+pub fn overlap_between(
+    conn: &Connection,
+    left: &str,
+    right: &str,
+    from: i64,
+    to: i64,
+) -> Result<Overlap, String> {
+    if to <= from {
+        return Err(format!(
+            "an overlap window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT conversation_id, path, at
+               FROM file_touch
+              WHERE conversation_id IN (?1, ?2)
+                AND at >= ?3 AND at < ?4
+              ORDER BY at
+              LIMIT ?5",
+        )
+        .map_err(|e| format!("overlap: {e}"))?;
+    let rows = stmt
+        .query_map(params![left, right, from, to, OVERLAP_ROW_CAP as i64 + 1], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("overlap: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("overlap: {e}"))?;
+    if rows.len() > OVERLAP_ROW_CAP {
+        return Err(format!(
+            "overlap: that window holds more than {OVERLAP_ROW_CAP} file touches for these two \
+             cards, so it is refused rather than truncated: ask for a narrower one"
+        ));
+    }
+    let (minutes, files) = overlap_from_touches(left, &rows);
+    Ok(Overlap { minutes, files })
+}
+
+/// How many minutes two cards spent in the same files over a window.
+///
+/// Off the main thread like every other store read that is proportional to the
+/// rows it scans: a long window over two busy cards is a scan of `file_touch`,
+/// and the thread that paints the wall is the wrong one to do it on.
+#[tauri::command]
+pub async fn overlap_minutes(
+    app: tauri::AppHandle,
+    left: String,
+    right: String,
+    from: i64,
+    to: i64,
+) -> Result<Overlap, String> {
+    crate::off_main(move || {
+        use tauri::Manager;
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        overlap_between(&conn, &left, &right, from, to)
+    })
+    .await?
 }
 
 /// Which other open conversations have edited the same files as this one.
@@ -15272,6 +15501,116 @@ mod tests {
         );
         assert_eq!(rebase(r"C:\Users\lyssandra", &moved), None);
         assert_eq!(rebase("", &moved), None);
+    }
+
+    /// The rung's whole job: §17's two tables, the four indexes it names, and
+    /// the two columns `tool_pending` needed — on a database that already has a
+    /// pending row, and safe to run a second time. Every other rung in this file
+    /// has this test because the v9 lockout is what a missing one costs.
+    #[test]
+    fn v66_adds_the_work_tables_and_the_pending_columns_and_can_run_twice() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for (_, step) in STEPS.iter().take(65) {
+            step(&conn).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO tool_pending (tool_use_id, at, host, session, kind, tool)
+             VALUES ('t1', 10, 'h', 's', 'builtin', 'Bash')",
+            [],
+        )
+        .unwrap();
+
+        migrate_v66(&conn).unwrap();
+        migrate_v66(&conn).unwrap();
+
+        for table in ["work_fact", "work_hour", "tool_seen"] {
+            let n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM pragma_table_info('{table}')"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(n > 0, "{table} was not created");
+        }
+        for index in [
+            "work_fact_by_at",
+            "work_fact_by_card",
+            "work_fact_by_project",
+            "work_hour_by_hour",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{index} was not created");
+        }
+        let kept: (i64, i64) = conn
+            .query_row(
+                "SELECT errors, out_bytes FROM tool_pending WHERE tool_use_id = 't1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (0, 0), "an existing call keeps its row with empty counters");
+    }
+
+    /* ── overlap (§3.9) ───────────────────────────────────────────────────── */
+
+    /// The minute is the unit, and the boundary belongs to the later one, the
+    /// same way `bucket_of` cuts: `[m, m + 60s)`.
+    #[test]
+    fn overlap_counts_distinct_minutes_not_touches() {
+        let t = |card: &str, path: &str, at: i64| (card.to_string(), path.to_string(), at);
+        let rows = vec![
+            t("a", r"C:\x\src\one.ts", 600_000),
+            t("b", "c:/x/src/one.ts", 610_000),   // same file, same minute
+            t("a", r"C:\x\src\one.ts", 620_000),
+            t("b", "c:/x/src/one.ts", 720_000),   // the next minute, shared again
+            t("b", r"C:\x\src\two.ts", 610_000),  // a second shared file, same minute
+            t("a", r"C:\x\src\only-a.ts", 600_000),
+        ];
+        let (minutes, files) = overlap_from_touches("a", &rows);
+        assert_eq!(minutes, 2, "one minute twice, not four touches");
+        assert_eq!(files, vec!["c:/x/src/one.ts", "c:/x/src/two.ts"]);
+    }
+
+    /// A file only one of them touched is not overlap, and neither is the same
+    /// card touching a file twice.
+    #[test]
+    fn one_card_alone_is_no_overlap() {
+        let rows = vec![
+            ("a".to_string(), "x/one.ts".to_string(), 0),
+            ("a".to_string(), "x/one.ts".to_string(), 60_000),
+            ("b".to_string(), "x/other.ts".to_string(), 60_000),
+        ];
+        assert_eq!(overlap_from_touches("a", &rows), (0, vec![]));
+    }
+
+    #[test]
+    fn overlap_reads_the_touches_the_wall_already_keeps() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card(&conn, "c1", false);
+        seed_card(&conn, "c2", false);
+        conn.execute_batch(
+            "INSERT INTO file_touch (conversation_id, path, op, at) VALUES
+               ('c1', 'C:/x/src/a.ts', 'write', 120000),
+               ('c2', 'c:/x/src/a.ts', 'write', 130000),
+               ('c1', 'C:/x/src/a.ts', 'write', 182000),
+               ('c2', 'c:/x/src/a.ts', 'write', 185000),
+               ('c1', 'C:/x/src/b.ts', 'write', 300000);",
+        )
+        .unwrap();
+        let o = overlap_between(&conn, "c1", "c2", 0, 600_000).unwrap();
+        assert_eq!(o.minutes, 2, "minutes 2 and 3, not the later solo one");
+        assert_eq!(o.files, vec!["c:/x/src/a.ts"]);
+        assert!(overlap_between(&conn, "c1", "c2", 600_000, 1_000_000).unwrap().minutes == 0);
+        assert!(overlap_between(&conn, "c1", "c2", 9, 1).is_err(), "a window that does not start");
     }
 }
 
