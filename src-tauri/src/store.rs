@@ -15570,8 +15570,10 @@ mod tests {
             t("a", r"C:\x\src\one.ts", 600_000),
             t("b", "c:/x/src/one.ts", 610_000),   // same file, same minute
             t("a", r"C:\x\src\one.ts", 620_000),
-            t("b", "c:/x/src/one.ts", 720_000),   // the next minute, shared again
-            t("b", r"C:\x\src\two.ts", 610_000),  // a second shared file, same minute
+            t("a", r"C:\x\src\one.ts", 720_000),  // the next minute, shared again
+            t("b", "c:/x/src/one.ts", 720_000),
+            t("a", r"C:\x\src\two.ts", 610_000),  // a second shared file, same minute
+            t("b", r"C:\x\src\two.ts", 610_000),
             t("a", r"C:\x\src\only-a.ts", 600_000),
         ];
         let (minutes, files) = overlap_from_touches("a", &rows);
