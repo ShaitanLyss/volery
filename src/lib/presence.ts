@@ -204,7 +204,7 @@ export function lasted(ms: number): string {
 /** What the asking card is handed, hours later.
  *
  *  **Not a relay mark, and that is the whole decision in this function.**
- *  `relay.ts` recognises five shapes under two marks and every one of them
+ *  `relay.ts` recognises six shapes under two marks and every one of them
  *  means *this was not you* — a message from another card, a notice off the
  *  billboard, a note the wall handed back. This is the opposite: the user
  *  composed it, by reading the question and clicking, and the only thing Volery

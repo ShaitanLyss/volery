@@ -91,6 +91,71 @@ const WALL = /^\[skein relay\] from the wall —/;
    own predicate because the thread draws it as a divider — a session
    boundary inside one card — rather than as a message among messages. */
 const RENEWED = /^\[skein relay\] renewed —/;
+/* A seventh, and the first that is not somebody talking to this card: the
+   brief it was handed to start with (`handOver`). A spawned card's first
+   prompt, the plan a maker card is opened with, and the check a card gets on
+   arriving from another wall are all free prose about work to do — nearly
+   always an agent's, and the wall's own for a move-in — so off disk they were
+   indistinguishable from something you typed. `own.ts` has the whole of that
+   gap. Under the relay mark so both folds can tell they are not yours at all,
+   and with a shape of its own so the panel can say *what* they are. A probe
+   settled that the wire itself cannot carry a mark (`tools/probe-mark.ts`), so
+   the words have to. */
+const HANDED = /^\[skein relay\] handed over —\s*$/;
+
+/** What the cap calls a handover. */
+export const HANDOVER_NAME = "handed over";
+
+/** Whether this line is a handover: a spawned card's brief, a plan handover,
+ *  or the check a card is handed when it arrives on another wall (`handOver`).
+ *  The last is not an opening brief and not an agent's words, which is why the
+ *  note under the header is a parameter rather than a constant. */
+export function isHandoverPrompt(text: string): boolean {
+  const head = text.trimStart().split("\n", 1)[0] ?? "";
+  return HANDED.test(head);
+}
+
+/** The brief, without the header or the note under it — what the prompt
+ *  actually says, and what the panel draws in the prompt's own register. */
+export function handoverBody(text: string): string {
+  return relayBody(text);
+}
+
+/** One of the wall's briefs, enveloped for the wire and the session file.
+ *
+ *  The panel draws `handoverBody` of what goes on the wire, so what is read is
+ *  the brief; the envelope is what the two folds and the child are given. It
+ *  travels inside the text because a field on the user envelope is dropped by
+ *  the CLI before either the replay or the session record (probed).
+ *
+ *  The note is a parameter because the three handovers are not the same kind of
+ *  thing. A spawn's brief and a plan handover are what the card started with;
+ *  the one a moved card gets (`moving::confirm_prompt`) is a check that its
+ *  history arrived, and calling that an opening brief is a sentence the model
+ *  can read and be misled by on the one turn that decides whether the move is
+ *  accepted. */
+export function handOver(brief: string, note: string = HANDOVER_NOTE): string {
+  return `${RELAY_MARK} handed over —\n\n${brief.trim()}\n\n${note}`;
+}
+
+/** The paragraph under an opening brief, addressed to the model: whose words
+ *  these are. Not the relay's "answer to its handle" note — there is nothing
+ *  here to answer, and a child told to reply to a brief would spend its first
+ *  turn replying to its own instructions.
+ *
+ *  "Written for this card" rather than "written by an agent", which would be
+ *  false of the check a moved card receives: the wall composes that. Who *did*
+ *  write a brief is the child's own provenance, which its system prompt
+ *  already carries. */
+export const HANDOVER_NOTE =
+  "(This is the brief this card started with, written for it rather than typed here by the person at the keyboard.)";
+
+/** The paragraph under the check a card is handed on arriving at another wall
+ *  (`openMoved`). Not a brief and not something the card started with: it is a
+ *  cloze question about its own history, and the move is refused if the answer
+ *  does not show it arrived. */
+export const MOVED_NOTE =
+  "(This is the wall's check that this card arrived with its history, not something the person at this keyboard typed.)";
 
 /** The name the cap gives a renewal's note. */
 export const RENEW_NAME = "renewed";
@@ -107,7 +172,7 @@ const WAKE = /^\[skein wake\] you asked to be woken about this (.+?), and it is 
 
 /** Whether this line is one somebody other than you put in your card.
  *
- *  Five shapes under two marks. The name is what it decides — the `relay` line
+ *  Six shapes under two marks. The name is what it decides — the `relay` line
  *  kind — rather than what wrote it; a wake is not a relay and is still not
  *  yours, and `isWakePrompt` is what tells them apart afterwards. */
 export function isRelayPrompt(text: string): boolean {
@@ -156,6 +221,7 @@ export function relayFrom(text: string): RelayFrom | null {
      would be the panel inventing an author for a line that has none. */
   if (WALL.test(head)) return { name: "the wall", handle: "", project: null };
   if (RENEWED.test(head)) return { name: RENEW_NAME, handle: "", project: null };
+  if (HANDED.test(head)) return { name: HANDOVER_NAME, handle: "", project: null };
   return { name: "another card", handle: "", project: null };
 }
 
@@ -178,6 +244,8 @@ export function relayBody(text: string): string {
     body.lastIndexOf("\n\n(This is a standing notice"),
     body.lastIndexOf("\n\n(This came from the wall"),
     body.lastIndexOf("\n\n(This is your own note to yourself"),
+    body.lastIndexOf("\n\n(This is the brief this card started with"),
+    body.lastIndexOf("\n\n(This is the wall's check that this card arrived"),
   );
   if (note !== -1) body = body.slice(0, note);
   return body.trim();
@@ -195,6 +263,7 @@ export function relayCap(text: string): string {
     return from.waitedS === undefined ? WAKE_NAME : `${WAKE_NAME} · waited ${spanWords(from.waitedS)}`;
   }
   if (from?.name === RENEW_NAME) return "renewed · the note this session started from";
+  if (from?.name === HANDOVER_NAME) return "handed over · written for this card";
   return from ? `from ${from.name}` : "from another card";
 }
 

@@ -1645,7 +1645,11 @@
   .col :global(.line) {
     max-width: none;
   }
-  .col :global(.line.you) {
+  /* The bubble's measure, and only the bubble's: a line Skein wrote for an
+     agent is not in this column's right-hand register, so it takes the column
+     (`Thread.svelte`'s `.line.own`). Unscoped, an own line was a narrow
+     78%-wide strip on the left beside full-width prose (found in review). */
+  .col :global(.line.you:not(.own)) {
     max-width: 78%;
   }
   .foot {

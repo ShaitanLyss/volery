@@ -63,7 +63,7 @@
   import { RELEASE } from "./follow.svelte";
   import { others } from "./others.svelte";
   import { spawnedHandle } from "./chatview";
-  import { isRenewPrompt, isWakePrompt, parcelOf, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
+  import { handoverBody, isHandoverPrompt, isRenewPrompt, isWakePrompt, parcelOf, relayBody, relayFrom, sentOf, wakeTimes, WAKE_NAME } from "./relay";
   import type { Parcel } from "./relay";
   import ParcelPlate from "./Parcel.svelte";
   import { ageOf } from "./chatview";
@@ -449,6 +449,12 @@
      for as long as the line exists — and the same one after a restart, since
      history reads it out of the session file. -->
 {#snippet one(line: Line, key: string)}
+  <!-- What a prompt says, without the envelope the wire had to carry: a brief
+       is sent under `[skein relay] handed over —` so both folds can tell it is
+       not yours (`relay.ts`), and the header and its note are plumbing rather
+       than anything the brief says. `line.text` is untouched — the envelope is
+       what went to the CLI and what the replay is matched on. -->
+  {@const said = line.kind === "you" && isHandoverPrompt(line.text) ? handoverBody(line.text) : line.text}
   {#if line.kind === "tool" && line.call}
     <!-- A call is openable: closed it is the line it always was, open it is
          every argument the model wrote and what came back. No `data-nav`, like
@@ -476,19 +482,56 @@
       <Markdown blocks={parseMarkdown(line.text)} />
     </div>
   {:else}
-    <!-- The line is drawn exactly as it was — `pre-wrap` here, so the text stays
-         glued to its tags. -->
+    <!-- Everything that is not prose or a call, drawn as it was written:
+         `pre-wrap`, so a meta note and a tool's own line stay glued to their
+         tags. A *prompt* is the exception now — it renders markdown, which is
+         the branch below — and these are the kinds that do not. -->
     <!-- A prompt is drawn when you send it, so its own line carries whether the
          agent has it yet: dimmed while it is on its way, and saying so if it
          never got there. -->
     <div
       class="line {line.kind}"
+      class:md={line.kind === "you"}
+      class:own={line.kind === "you" && !!line.own}
       class:pending={line.state === "pending"}
       class:held={line.state === "held"}
       class:queued={line.state === "held" && queuedBehindTurn && !!line.heldKey}
       class:failed={line.state === "failed"}
-      data-nav={line.kind === "you" ? "you" : null}
-    >{line.text}</div>
+      data-nav={line.kind === "you" && !line.own ? "you" : null}
+    >
+      <!-- Yours, and rendered: a prompt is prose, and `*this*` or a pasted
+           snippet arriving as asterisks and fences is the panel not reading
+           what was said to it (2026-11-11). What is *drawn* was the old rule
+           and it was drawn for a good reason — the text is what went on the
+           wire, character for character, and rendering must never touch that;
+           `line.text` is untouched here and only the drawing is parsed. Copy
+           still gives back markdown, walked out of these elements
+           (`copy.ts`), so a rendered prompt pastes as the prompt, not as its
+           drawing. -->
+      {#if line.kind === "you" && line.own}
+        <!-- Skein's words, not yours: it is a prompt like any other — echoed
+             and claimed like one — but drawing it in your register put the
+             app's own instructions in your bubble, in your alignment, under a
+             rail entry that says you said it (`own.ts`). Its own mark, the
+             quiet face, and no right-hand bubble. The mark is *read*, not
+             decoration: it is the only thing on the line saying whose words
+             these are, so it is announced rather than hidden from assistive
+             tech (found in review). -->
+        <span class="skeinmark">skein</span>
+        <Markdown blocks={parseMarkdown(said)} nav={false} />
+      {:else if line.kind === "you"}
+        <!-- The rail already has this prompt as one place (`you said`), and the
+             headings inside it are marks in what was *said* rather than places
+             in the answer the contents rail is about. What keeps them out is
+             `Transcript.svelte`'s `collect()` filter, which attributes no mark
+             to a line inside a `.line.you` — `nav={false}` only saves the
+             run-in `lead` mark being computed, since `Markdown.svelte` writes
+             `data-nav` on headings and list items regardless. -->
+        <Markdown blocks={parseMarkdown(said)} nav={false} />
+      {:else}
+        {line.text}
+      {/if}
+    </div>
     <!-- What became of it on another machine. Only a shadow card sets this, and
          it is under the words rather than beside them for the reason the `you`
          register itself is drawn plainly: the receipt is about the sending, not
@@ -1172,13 +1215,18 @@
      mounter reaches in to restyle, and every one of them defaults to exactly
      what the panel draws, so the panel does not move a pixel:
 
+     **Your prompts only.** A line Skein wrote for an agent (`.own`, `own.ts`)
+     is not in your register: it wears no rule and no bubble, and it is marked
+     as Skein's. That is why the selector is `:not(.own)` — the bubble is the
+     one thing on this column that means *I said this* (reported 2026-11-11).
+
      `--you-align`, `--you-width` — where the line sits and how wide;
      `--you-fill`, `--you-radius` — the bubble's ground and corners;
      `--you-rule` — the left edge (the panel's rule);
      `--you-edge` — the other three edges (the panel has none but the round's);
      `--you-pad-l/-r/-t/-b` — the padding; `--you-face`, `--you-size` — the type.
      */
-  .line.you {
+  .line.you:not(.own) {
     color: var(--tx-you, var(--paper));
     border-left: var(--you-rule, 2px solid var(--paper-faint));
     padding-left: var(--you-pad-l, calc(0.6rem * var(--read, 1)));
@@ -1211,6 +1259,29 @@
     margin-top: calc(var(--tx-round, 0rem) * var(--read, 1));
     border-top: var(--you-edge, 1px solid var(--tx-round-rule, transparent));
     padding-top: var(--you-pad-t, calc(var(--tx-round, 0rem) * 0.5 * var(--read, 1)));
+  }
+  /* Skein's own words to a card. It keeps the round's air, because a resumed
+     turn or a nudge does open a round, and loses everything that identifies a
+     *speaker*: no rule on the left, no bubble, no bubble padding. The mark says
+     whose it is in one word, in the utility face, because the cap on a long one
+     is a fold that may be shut and this must be legible shut too.
+     It is a line of its own above the words rather than a prefix beside them:
+     the words are markdown blocks, so a span ahead of them is an anonymous
+     block whatever it is told to be (found in review). */
+  .line.own {
+    color: var(--paper-note, var(--paper-faint));
+    margin-top: calc(var(--tx-round, 0rem) * var(--read, 1));
+    padding-left: calc(0.6rem * var(--read, 1));
+    border-left: 2px solid transparent;
+  }
+  .line.own > .skeinmark {
+    display: block;
+    font-family: var(--util);
+    font-size: calc(0.68rem * var(--read, 1));
+    letter-spacing: 0.02em;
+    color: var(--paper-faint);
+    margin-bottom: calc(0.1rem * var(--read, 1));
+    user-select: none;
   }
   /* The pictures a prompt carried, under it and inside its bracket — the left
      rule continues past them, because they are part of the same thing you said.
@@ -1247,7 +1318,7 @@
      and rule (`--tx-round`, set by `readable`, `column` and the themes built
      on them) were zeroed on every prompt and no theme could draw them. Anchored
      through the wrapper now, which is the column's first block or nothing. */
-  .thread > .blk:first-child > .line.you {
+  .thread > .blk:first-child > .line.you:not(.own) {
     margin-top: 0;
     border-top-color: var(--you-first-top, transparent);
     padding-top: var(--you-pad-t, 0);
@@ -1255,7 +1326,7 @@
   /* On its way. The rule goes dashed and the text sits back a shade — the same
      "not settled yet" the streaming fence uses, and achromatic, because a prompt
      in flight is not a status the wall reports in colour. */
-  .line.you.pending {
+  .line.you:not(.own).pending {
     /* A shade back from wherever the theme put a settled prompt, rather than a
        fixed `--paper-dim`. Fixed was right while a prompt was always `--paper`
        and became wrong the moment `--tx-you` existed: the `prose` theme sets a
@@ -1271,12 +1342,18 @@
      sent` uses — but achromatic, because nothing has gone wrong: the card has
      your words and will send them itself. Rust is kept for the one state of
      the four that means they did not go. */
-  .line.you.held {
+  .line.you:not(.own).held {
     color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
     border-left-style: dashed;
   }
+  /* Both captions are blocks, not tails: a prompt renders markdown now, so its
+     words are block children and a `::after` lands on a line of its own. The
+     leading " · " that joined it to a sentence inline became a dangling dot at
+     the start of a line (found in review). */
   .line.you.held::after {
-    content: " · held — will send when allowance returns";
+    content: "held — will send when allowance returns";
+    display: block;
+    margin-top: calc(0.15rem * var(--read, 1));
     font-family: var(--util);
     font-size: calc(0.7rem * var(--read, 1));
     color: var(--paper-faint);
@@ -1291,17 +1368,19 @@
   /* It never left. Rust, which is what failure is everywhere else here, and it
      says which failure rather than leaving a colour to be interpreted. The words
      stay exactly where they were written, to be copied back out of. */
-  .line.you.failed {
+  .line.you:not(.own).failed {
     border-left-color: var(--st-fail);
   }
   .line.you.failed::after {
-    content: " · not sent";
+    content: "not sent";
+    display: block;
+    margin-top: calc(0.15rem * var(--read, 1));
     font-family: var(--util);
     font-size: calc(0.7rem * var(--read, 1));
     color: var(--st-fail);
   }
   /* What the far wall did with a prompt. Sits under the words in the utility
-     face at the same size `· not sent` uses, indented to the prompt's own rule
+     face at the same size `not sent` uses, indented to the prompt's own rule
      so the two read as one thing. Achromatic while it is ordinary — a message
      crossing a network is not a status — and rust only where it stopped being
      ordinary, which is the house rule for colour rather than an exception to

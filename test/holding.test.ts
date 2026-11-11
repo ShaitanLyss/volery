@@ -14,6 +14,7 @@ import {
   cutsRound,
   handedBackNote,
   heldDivider,
+  heldFromRow,
   heldHeader,
   nextRound,
   queuedCaption,
@@ -21,9 +22,9 @@ import {
   withoutMissing,
   type HeldItem,
 } from "../src/lib/holding";
-import { isRelayPrompt } from "../src/lib/relay";
+import { handOver, isRelayPrompt } from "../src/lib/relay";
 import { isResumePrompt } from "../src/lib/rousing";
-import { isPickUp, isCarryOn } from "../src/lib/classify";
+import { CARRY_ON_TEXT, isPickUp, isCarryOn } from "../src/lib/classify";
 
 let n = 0;
 const yours = (text: string, pictures: string[] = []): HeldItem => ({
@@ -254,7 +255,9 @@ describe("a message waiting for the turn to finish", () => {
        while the receipt silently disappears from the only path the field is
        for (found in review). */
     const skein = readFileSync("src/lib/skein.svelte.ts", "utf8");
-    expect(skein).toContain("conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, behindTurn)");
+    expect(skein).toContain(
+      "conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own })",
+    );
     expect(skein).toContain("behind.get(c.id) ?? false");
     /* And the sender's reading is what the line wears, not one taken after the
        echo opened the turn — a `/effort` companion to a `/model` sent to a
@@ -274,6 +277,31 @@ describe("what a queue says with no turn to be behind", () => {
     expect(queuedCaption(1, false)).toBe(`1 message queued — ${WAITING_TO_SEND}`);
     expect(queuedCaption(2, false)).toBe(`2 messages queued — ${WAITING_TO_SEND}`);
     expect(WAITING_TO_SEND).not.toContain("turn");
+  });
+});
+
+describe("a hold read back off the store", () => {
+  /* The store has one origin column and a heal's prompt can be both things: a
+     carry-on is composed (front of the queue) and Skein's own words. Written as
+     `heal` it came back drawn in the person's register until sent, and kept it
+     after release. The words settle the register; the origin still carries
+     `composed`, which is what queues it at the front. */
+  test("a heal prompt is both composed and skein's", () => {
+    const h = heldFromRow({ key: "k", text: CARRY_ON_TEXT, origin: "heal" });
+    expect(h.composed).toBe(true);
+    expect(h.own).toBe(true);
+    expect(h.pictures).toEqual([]);
+  });
+
+  test("a brief a queued spawn held comes back skein's", () => {
+    const h = heldFromRow({ key: "k", text: handOver("build the thing"), origin: "skein" });
+    expect(h.own).toBe(true);
+    expect(h.composed).toBeUndefined();
+  });
+
+  test("your own words stay yours", () => {
+    expect(heldFromRow({ key: "k", text: "hello" }).own).toBeUndefined();
+    expect(heldFromRow({ key: "k", text: "hello", origin: "heal" }).own).toBeUndefined();
   });
 });
 

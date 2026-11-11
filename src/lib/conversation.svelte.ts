@@ -101,10 +101,10 @@ import { costStep, priceOf } from "./usage";
 import { providerOf, providerModel } from "./providers";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
-import { WAITING_TO_SEND, isQueuedSpawn, type Held, type HeldItem } from "./holding";
+import { WAITING_TO_SEND, heldFromRow, isQueuedSpawn, type Held, type HeldItem } from "./holding";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
-import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
+import { isHandoverPrompt, isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import { owesYou } from "./notice";
 import type { Answers, AskQuestion } from "./asking";
@@ -282,6 +282,14 @@ export type Line = {
    *  *send now* aimed at it (reported 2026-11-11). Read only by that receipt,
    *  and cleared when the line is claimed or released. */
   behindTurn?: true;
+  /** On a `you` line, that the words are **Skein's**, sent for a card to act on rather than
+   *  typed by you: a resumed turn, a jobs report, the job nudge, a heal's pick-up, the brief
+   *  handed to a maker, the prompt asking a card to renew itself. It keeps line kind `you`
+   *  because it is a prompt — echoed, claimed and matched like one — and this is the one fact
+   *  the drawing needs to stop putting it in your bubble (`own.ts`, the `skein` branch in
+   *  `Thread.svelte`). Live it comes from the send that knows (`{ own: true }`); off disk
+   *  from `own.ts`'s recognisers, since a session file marks nothing. */
+  own?: true;
   /** On a `held` line, the `HeldItem.key` it stands for — the handle the
    *  queue's own edits and cancellations go through, and what lets the
    *  transcript ask whether this is the message that goes next. Unset
@@ -1744,13 +1752,7 @@ export class Conversation {
        card wait out a sweep for a door that is already open. */
     const queue: HeldItem[] = (row.held ?? [])
       .filter((h) => h.text?.trim())
-      .map((h) => ({
-        key: h.key,
-        text: h.text,
-        pictures: h.pictures ?? [],
-        ...(h.origin === "heal" ? { composed: true as const } : {}),
-        ...(h.origin === "skein" ? { own: true as const } : {}),
-      }));
+      .map((h) => heldFromRow(h));
     if (queue.length) {
       c.held = {
         queue,
@@ -1769,7 +1771,7 @@ export class Conversation {
          hold had no line in the transcript at all — the words existed only as a
          countdown on the face, which is exactly what reads as lost. Each comes
          back held and awaited, so its release settles it like any other. */
-      for (const h of queue) c.drawHeld(h.key, h.text);
+      for (const h of queue) c.drawHeld(h.key, h.text, !!h.own);
     }
     /* A dormant card emits no `system/init`, so the gear cannot be folded — the
        whole wall would come back drawn as making until each card was woken.
@@ -2242,17 +2244,21 @@ export class Conversation {
    *  sleeping card would call itself queued behind the turn its sibling had
    *  just opened (found in review). It is also exactly the value `#route`
    *  queues on, so the line and the routing cannot disagree. Defaults to false:
-   *  a prompt drawn without being told is one that opened its turn. */
+   *  a prompt drawn without being told is one that opened its turn.
+   *
+   *  `own` says the words are Skein's rather than yours (`Line.own`), and comes
+   *  from the caller for the same reason: only the send knows who asked for it. */
   echo(
     text: string,
     wire?: { echo: string; shots?: { name: string; thumb: string }[] },
-    behindTurn = false,
+    opts: { behindTurn?: boolean; own?: boolean } = {},
   ) {
     const idle = !this.working;
     this.#push("you", text, "pending");
     const line = this.lines[this.lines.length - 1]!;
     line.awaited = true;
-    if (behindTurn) line.behindTurn = true;
+    if (opts.behindTurn) line.behindTurn = true;
+    if (opts.own) line.own = true;
     this.#drawnAt.set(line, Date.now());
     /* Only when it differs, so the ordinary prompt keeps one string and
        `#echoOf`'s fallback is never reading a copy that could drift. */
@@ -2545,10 +2551,11 @@ export class Conversation {
 
   /** Draw a held message again after a restart: held, awaited and counted,
    *  exactly as `echo` and `echoHeld` would have left it. See `restore`. */
-  drawHeld(key: string, text: string) {
+  drawHeld(key: string, text: string, own = false) {
     const line = this.#push("you", text, "held");
     line.awaited = true;
     line.heldKey = key;
+    if (own) line.own = true;
     this.awaiting += 1;
     this.#heldLines.set(key, line);
   }
@@ -3750,7 +3757,12 @@ export class Conversation {
                waiting — the texts could not match, but a relay arriving while a
                send of yours is unacknowledged must not be able to settle it
                either way. */
-            if (isRelayPrompt(said)) {
+            /* A handover is under the relay mark but is not a letter: it is
+               the brief this card was opened with, sent by this wall, and the
+               ordinary prompt arm below is where it belongs. Its line is
+               already drawn by `echo`; this is only the replay that did not
+               claim one, which is where `own` has to be put on by hand. */
+            if (isRelayPrompt(said) && !isHandoverPrompt(said)) {
               this.#push("relay", said, undefined, relayCap(said));
               /* Only where it opens the turn. A relay folded into a turn
                  already running (the CLI attaches queued input between tool
@@ -3763,7 +3775,7 @@ export class Conversation {
               const opens = !this.working || !this.#producedOutput;
               if (!this.working) this.#beginTurn();
               if (opens) this.#opener = openerAfter(this.#opener, { cue: "relay" });
-              /* The one reading on the card where the five shapes are not
+              /* The one reading on the card where the six shapes are not
                  interchangeable. A wake came from nobody — the card asked the
                  wall for it — so "reading a message" would name a sender that
                  does not exist, on the front of the card, which is the same lie
@@ -3774,7 +3786,13 @@ export class Conversation {
               break;
             }
             const claimed = this.#claimEcho(said);
-            if (!claimed) this.#push("you", said);
+            if (!claimed) {
+              const line = this.#push("you", said);
+              /* A handover whose echo went missing is still the wall's
+                 words, not yours — the one shape here the sender's `own` can
+                 no longer vouch for. */
+              if (isHandoverPrompt(said)) line.own = true;
+            }
             /* The turn starts the moment your words land, not seconds later
                when the first token comes back. */
             /* `opens` by the relay arm's reading, for its reason. */

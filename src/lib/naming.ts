@@ -16,6 +16,8 @@
  *  Pure, per the purity boundary — the naming rules are testable and nothing
  *  here touches a rune or an invoke. */
 
+import { handoverBody, isHandoverPrompt } from "./relay";
+
 /** The stored spelling of "this card has never been named".
  *
  *  Not a label. It is `title`'s DEFAULT in the schema (`store.rs`), the test in
@@ -54,9 +56,14 @@ export function isNamed(title: string | null | undefined): boolean {
  *
  *  Whitespace is collapsed because a prompt is not a line: paste four paragraphs
  *  at a card and the newlines land in a `nowrap` span, which draws them as
- *  nothing and leaves the words jammed together. */
+ *  nothing and leaves the words jammed together.
+ *
+ *  A handover is named after its brief rather than after its envelope — the
+ *  header is four words of plumbing, and a card called `[skein relay] handed
+ *  over` is a card called nothing (`relay.ts::handOver`). */
 export function titleFromPrompt(text: string): string {
-  const t = text.replace(/\s+/g, " ").trim();
+  const said = isHandoverPrompt(text) ? handoverBody(text) : text;
+  const t = said.replace(/\s+/g, " ").trim();
   return t.length > TITLE_MAX ? t.slice(0, TITLE_MAX - 1) + "…" : t;
 }
 

@@ -238,11 +238,12 @@ export function blocksOf(lines: Line[], tag = "l", base = 0, apart?: (line: Line
       out.push({ kind: "shell", key: `${tag}r${runs++}`, line });
       continue;
     }
-    /* Skein's own prompts: drawn in your register because that is where a
-       prompt goes, and folded because nobody reads instructions addressed to an
-       agent. Rousing's two, and the nudge a card gets when a background job
-       reported in and nothing picked it up. Asked before `LONG` so the counters
-       stay apart. */
+    /* Skein's own prompts: folded because nobody reads instructions addressed
+       to an agent. Rousing's two, and the nudge a card gets when a background
+       job reported in and nothing picked it up. They keep line kind `you` —
+       they are prompts, echoed and claimed like one — and are drawn outside the
+       person's register by `Line.own` rather than by their kind (`own.ts`).
+       Asked before `LONG` so the counters stay apart. */
     const roused =
       line.kind === "you" &&
       (isResumePrompt(line.text) || isJobsPrompt(line.text) || isJobNudge(line.text));

@@ -57,8 +57,6 @@ import {
   withResendMark,
   healNote,
   carryNote,
-  isCarryOn,
-  isPickUp,
   pickUpNote,
   lapsesOnAnswer,
   QUEUED_BEHIND_NOTE,
@@ -122,7 +120,8 @@ import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
 import { onProvider, providerName, providerOf, providerModel, PROVIDERS } from "./providers";
 import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
 import { RENEW_AFTER_MS, RENEW_ASK, renewBlocker, renewDeclined } from "./renewing";
-import { handleOf } from "./relay";
+import { healFresh, isOwnPrompt } from "./own";
+import { handOver, handleOf, MOVED_NOTE } from "./relay";
 import { UNNAMED, isNamed, nameBesideProject, titleFromPrompt } from "./naming";
 import {
   ROUSE_GAP_MS,
@@ -1853,14 +1852,20 @@ export class Skein {
       }
       const maker = await this.open(conv.cwd, conv.worktree ?? undefined, preset);
       if (!maker) return null;
+      /* Enveloped rather than sent as it stands: the brief is an agent's
+         prose and a session file records a prompt with nothing marking it, so
+         without the envelope a restored maker drew its opening instructions in
+         your register (`relay.ts::handOver`, `own.ts`). */
       await this.send(
         maker,
-        briefFor({
-          plan,
-          handled: trail.files,
-          cwd: trail.root || conv.cwd,
-          planner: handleOf(conv.id),
-        }),
+        handOver(
+          briefFor({
+            plan,
+            handled: trail.files,
+            cwd: trail.root || conv.cwd,
+            planner: handleOf(conv.id),
+          }),
+        ),
         undefined,
         { own: true },
       );
@@ -2015,11 +2020,16 @@ export class Skein {
        message, as one opened by this wall's own `+` does. Only that ask may
        arrive empty — `link.rs` refuses an agent's before it gets here. */
     if (!prompt.trim()) return;
+    /* The brief is the asking agent's words, and this is the one road both a
+       local spawn and one asked for from another wall take — so the envelope
+       goes on here, where the text becomes a prompt, and neither birth path
+       can be the one that forgets it (`relay.ts::handOver`). */
+    const brief = handOver(prompt);
     if (queued) {
-      this.#queueSpawn(conv, prompt, queued);
+      this.#queueSpawn(conv, brief, queued);
       return;
     }
-    await this.send(conv, prompt, undefined, { own: true });
+    await this.send(conv, brief, undefined, { own: true });
   }
 
   /** A spawned card whose brief waits (`admit.rs`), drawn the way a prompt
@@ -2032,7 +2042,10 @@ export class Skein {
   #queueSpawn(conv: Conversation, prompt: string, queued: Queued) {
     const item = this.#hold(conv, prompt, undefined, queued.why, queued.until, true);
     conv.held = { ...conv.held!, waiting: "admission" };
-    conv.drawHeld(item.key, item.text);
+    /* `own`: a queued spawn's words are the brief an agent wrote, not the
+       person's — the same claim the store row makes (`origin: "skein"`), so the
+       line is drawn the same way live and after a restart (found in review). */
+    conv.drawHeld(item.key, item.text, true);
     conv.note(queued.why);
   }
 
@@ -2073,7 +2086,11 @@ export class Skein {
        words, which is what `#deliver` would otherwise name an untitled card
        after. */
     conv.title = m.title && m.title !== "untitled" ? m.title : `moved from ${m.fromHost}`;
-    await this.send(conv, m.prompt, undefined, { own: true });
+    /* The moved check is not a brief: it asks the card to finish a line of its
+       own prose from memory, and the move is refused where it cannot. Its note
+       says so, or the model is told it is being greeted with its own opening
+       instructions (`relay.ts::MOVED_NOTE`). */
+    await this.send(conv, handOver(m.prompt, MOVED_NOTE), undefined, { own: true });
   }
 
   /** Move a card to another wall. `null` when the move is under way — how it
@@ -3474,23 +3491,28 @@ export class Skein {
          here anchors on a prompt's first words, so a prefix would stop the
          resume prompt folding behind `RESUME_CAP` on precisely the retry the
          mark exists to explain. See `resendMark`. */
-      /* The carry-on goes out as it is. It is not a copy of anything — the mark
-         explains a duplicate, and there is none — and a re-send of one (a card
-         whose carry-on met an overload before reaching a model) must not gain
-         "attempt 2 of 4 at this prompt" over words that were never your prompt. */
-      /* A pick-up likewise: it points at a message the CLI already recorded
-         rather than copying one, so there is no duplicate for a mark to
-         explain. */
-      const out =
-        heal.carry || isCarryOn(heal.text) || isPickUp(heal.text)
-          ? heal.text
-          : withResendMark(heal.text, heal.kind, heal.attempt);
+      /* Two questions, and they are not the same one.
+       *
+       * **Does the copy need marking?** A carry-on and a pick-up are new
+       * sentences — the mark explains a duplicate, and there is none — so they
+       * go out as they are. Everything else heal sends repeats text the CLI
+       * recorded when it took the prompt (a prompt of yours, a resume prompt, a
+       * handover brief, a renewal's ask), so it carries the attempt mark.
+       *
+       * **Whose words are they?** Asked of the text actually going out, because
+       * a marked handover is still Skein's and a marked prompt of yours is still
+       * yours (`own.ts::isOwnPrompt` strips the mark). One predicate answering
+       * both is what sent a re-sent brief out unmarked, as though the copy
+       * already in the session were not there (found in review). */
+      const fresh = healFresh(heal);
+      const out = fresh ? heal.text : withResendMark(heal.text, heal.kind, heal.attempt);
+      const own = isOwnPrompt(out);
       /* Told to `#hold`, so a hold of this text is known to be Skein's own
          rather than read off its wording — your prompt quoting a resend mark
          must never lapse. `send` reaches `#hold` before its first await
          returns control to anything that could change the slot. */
       this.#composing.set(conv.id, out);
-      void this.send(conv, out).finally(() => {
+      void this.send(conv, out, undefined, { own }).finally(() => {
         if (this.#composing.get(conv.id) === out) this.#composing.delete(conv.id);
       });
     }, wait);
@@ -5065,7 +5087,7 @@ export class Skein {
        would ever drain it. A dormant card is not behind anything: this send is
        what wakes it. */
     const behindTurn = conv.working && !conv.dormant;
-    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, behindTurn);
+    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own });
     const sent = await this.#route(conv, text, turn, { ...opts, behindTurn });
     /* A model switch carries its usual effort with it — see `effortForModel`.
        Sent as a second prompt of its own because `/effort` is the CLI's and the
@@ -5078,8 +5100,8 @@ export class Skein {
       const line = `/effort ${effort}`;
       /* The same reading as the prompt it follows, rather than one taken after
          that prompt opened a turn — the two are one gesture and go the same
-         way (`Conversation.echo`). */
-      conv.echo(line, undefined, behindTurn);
+         way, ours or yours (`Conversation.echo`). */
+      conv.echo(line, undefined, { behindTurn, own: opts.own });
       await this.#route(conv, line, undefined, { behindTurn });
     }
     return sent;
@@ -6185,7 +6207,9 @@ export class Skein {
     const behind = new Map(convs.map((c) => [c.id, c.working && !c.dormant]));
     for (const c of convs) {
       const t = turnFor(c);
-      c.echo(t?.text ?? text, t && { echo: t.echo, shots: t.shots }, behind.get(c.id) ?? false);
+      c.echo(t?.text ?? text, t && { echo: t.echo, shots: t.shots }, {
+        behindTurn: behind.get(c.id) ?? false,
+      });
     }
     for (const c of convs) {
       const t = turnFor(c);

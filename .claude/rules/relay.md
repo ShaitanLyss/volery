@@ -448,6 +448,18 @@ survive `--resume` reading the CLI's own file.
 - **A sixth shape: `[skein relay] renewed —`**, the note a renewed card's fresh session opens
   on (`renew.rs`, `context.md`). Its author is the card itself, earlier. `isRenewPrompt` tells it
   apart so `Thread.svelte` can draw it under a divider in both rooms, never as a letter.
+- **A seventh: `[skein relay] handed over —`**, the brief a card is opened with — a spawn's
+  prompt, a plan handover, a moved card's check (`relay.ts::handOver`). It is the one of the
+  seven that is not somebody talking to the card, and it is here because it is an agent's free
+  prose: a probe (`tools/probe-mark.ts`) settled that a field on the user envelope is dropped by
+  the CLI from both the replay and the session record, so the words are the only place a mark
+  survives. The note under it is a parameter, because the moved card's is not a brief at all —
+  it is the cloze check that its history arrived, and telling the model it is being greeted with
+  its opening instructions is false on the turn that decides whether the move is accepted
+  (`MOVED_NOTE`). The panel draws `handoverBody` of it in **Skein's own register, not as a relay**
+  (`history.ts` asks it before `isRelayPrompt`; the live fold lets it fall to the ordinary
+  prompt arm) — an opening brief is a prompt this wall sent, and both folds must draw the same
+  line. `naming.ts` names the card after the brief too, never after the envelope.
 - **`relayFrom` degrades rather than refuses.** A header this build cannot parse is still a
   message the agent was given and acted on, so it is drawn as a relay from nobody. Getting it
   wrong in the other direction is the thing that must not happen.

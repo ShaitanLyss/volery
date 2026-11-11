@@ -769,6 +769,8 @@ import {
   type WireLine,
 } from "../src/lib/shadow";
 import { MAX_ATTACHED } from "../src/lib/attach";
+import { pickUpText } from "../src/lib/classify";
+import { handOver } from "../src/lib/relay";
 import { RESULT_PICTURES, resultSize } from "../src/lib/toolcall";
 
 const said = (kind: string, text: string, extra: Partial<TailSource> = {}): TailSource => ({
@@ -1017,6 +1019,19 @@ describe("a far prompt's pictures, in its tail", () => {
   test("an older wall's tail, with no pictures in it, reads as it always did", () => {
     const [line] = asLines(weave(readTail([{ kind: "you", text: "look at [shot 1]" }])!, []), "lab", 20);
     expect(line).toEqual({ kind: "you", text: "look at [shot 1]" });
+  });
+
+  /* The tail carries words only, so a far card's own prompts are recognised
+     here the way `history.ts` recognises a local restore's — otherwise the
+     shadow's panel draws the other wall's brief, pick-up or renew ask in the
+     person's register, which is the one thing the register exists to prevent. */
+  test("skein's words on a far card are drawn as skein's, not yours", () => {
+    const own = [handOver("build the thing"), pickUpText()].map((text) =>
+      asLines(weave(readTail([{ kind: "you", text }])!, []), "lab", 20)[0]!,
+    );
+    expect(own.map((l) => l.own === true)).toEqual([true, true]);
+    const yours = asLines(weave(readTail([{ kind: "you", text: "my words" }])!, []), "lab", 20)[0]!;
+    expect(yours.own).toBeUndefined();
   });
 
   test("a line read off disk, which kept no thumbnails, crosses without a strip", () => {

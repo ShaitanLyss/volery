@@ -69,6 +69,7 @@ import {
 import type { Spot } from "./glass";
 import type { WakeFrom } from "./waiting";
 import { gistOf, type Gist, type GistHeld, type GistSource, type GistTimeline } from "./gist";
+import { isOwnPrompt } from "./own";
 import { planOf, type Plan, type Timeline } from "./timeline";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
@@ -1715,6 +1716,13 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
     if (w.at === "there") {
       const l = w.line;
       const line: Line = { kind: l.kind as Line["kind"], text: l.text };
+      /* Skein's own prompts are recognised here rather than carried across the
+         tail, for `history.ts`'s reason: the far wall's `user` records carry
+         nothing marking them, and a shadow's panel is the same column, so a far
+         card's brief, pick-up or renew ask would otherwise be drawn in the
+         person's register — the one thing this must not do on any surface
+         (found in review). */
+      if (l.kind === "you" && isOwnPrompt(l.text)) line.own = true;
       if (l.note) line.note = l.note;
       if (l.state) line.state = l.state;
       if (l.narration) line.narration = true;

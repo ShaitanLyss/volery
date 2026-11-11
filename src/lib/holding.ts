@@ -1,4 +1,5 @@
 import { MAX_ATTACHED, compose, dropToken, echoOf, type Block, type Carried } from "./attach";
+import { isOwnPrompt } from "./own";
 
 /** What a card holds while no account will take its words, and how they go out
  *  again — and, since 2026-11, the same queue for a message typed while a turn
@@ -57,6 +58,31 @@ export type HeldItem = {
   own?: true;
 };
 
+/** One held message as the store kept it, with what its one origin column
+ *  cannot hold.
+ *
+ *  A heal's prompt can be both things at once: a carry-on is *composed* (it
+ *  goes to the front of the queue, standing in for the turn that broke) and
+ *  Skein's own words (it is drawn in the quiet register). The store has one
+ *  `origin`, written as `heal`, so a restored hold drew the wall's words in the
+ *  person's register until it was sent — and kept that register, since
+ *  `echoResumed` reuses the line. The words settle it, and the stored origin
+ *  still wins for a shape a later build will know and this one will not. */
+export function heldFromRow(row: {
+  key: string;
+  text: string;
+  pictures?: string[] | null;
+  origin?: string | null;
+}): HeldItem {
+  return {
+    key: row.key,
+    text: row.text,
+    pictures: row.pictures ?? [],
+    ...(row.origin === "heal" ? { composed: true as const } : {}),
+    ...(row.origin === "skein" || isOwnPrompt(row.text) ? { own: true as const } : {}),
+  };
+}
+
 /** A card's hold: what it is keeping, and what it is waiting on.
  *
  *  `allowance` — no account will take work; `why` and `until` say which and
@@ -85,8 +111,13 @@ export function isQueuedSpawn(why: string | null | undefined): boolean {
 }
 
 /** What a held line says under your words. Quiet and achromatic, unlike
- *  `· not sent`: nothing has gone wrong, and the card is keeping them. */
-export const HELD_MARK = " · held — will send when allowance returns";
+ *  `not sent`: nothing has gone wrong, and the card is keeping them.
+ *
+ *  No leading dot any more: a prompt renders markdown, so its words are block
+ *  children and this caption lands on a line of its own — where the ` · ` that
+ *  joined it to a sentence inline became a dot hanging at the start of one
+ *  (found in review). */
+export const HELD_MARK = "held — will send when allowance returns";
 
 /** What the face says while a message waits for the turn that is running.
  *

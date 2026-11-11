@@ -202,17 +202,34 @@
        the file starts is a round whose prompt is not on the page. */
     let msg = -1;
     let round = 0;
-    const found = [...scroller.querySelectorAll<HTMLElement>("[data-nav]")].map(
-      (el) => {
+    const found = [...scroller.querySelectorAll<HTMLElement>("[data-nav]")]
+      /* **A mark inside your prompt is not a place in an answer.** Prompts render
+         markdown now, so a heading or a bullet you wrote carries `data-nav` of
+         its own — and since `msg` is counted only by the answers, those marks
+         were attributed to the answer *before* the prompt: the contents rail
+         listed your next prompt's headings as part of the answer being read, and
+         clicking one scrolled into the wrong round (found in review). The
+         prompt's own `you` mark is the wrapper and is kept, so `you said` is
+         unchanged. */
+      .filter((el) => {
+        const owner = el.closest(".line.you");
+        return !owner || owner === el;
+      })
+      .map((el) => {
         const kind = (el.dataset.nav ?? "h") as Kind;
         if (kind === "msg") msg++;
         if (kind === "you") round++;
         /* A heading and a line you typed are whole; a message and a list item
-           are containers, and only their opening is theirs. */
+           are containers, and only their opening is theirs. Your prompt's label
+           is `innerText` rather than `textContent`, which concatenates blocks
+           with nothing between them — two paragraphs read as one word in the
+           rail (found in review). */
         const text =
-          kind === "h" || kind === "you" || kind === "lead"
-            ? (el.textContent ?? "")
-            : startText(el);
+          kind === "you"
+            ? (el.innerText || el.textContent || "")
+            : kind === "h" || kind === "lead"
+              ? (el.textContent ?? "")
+              : startText(el);
         return {
           el,
           kind,

@@ -53,7 +53,8 @@
  * from a `.svelte.ts` module is pulled in at runtime. */
 
 import { answerNote } from "./asking";
-import { isRelayPrompt, relayCap } from "./relay";
+import { isOwnPrompt } from "./own";
+import { isHandoverPrompt, isRelayPrompt, relayCap } from "./relay";
 import {
   SKEIN_ASK_TOOL,
   compactNote,
@@ -141,12 +142,13 @@ export function foldTranscript(
   /* The record being folded's own time, which every line it pushes takes —
      the session file's `timestamp`, an ISO string on every record. */
   let at: number | undefined;
-  const push = (kind: Line["kind"], t: string, note?: string, call?: ToolCall) => {
+  const push = (kind: Line["kind"], t: string, note?: string, call?: ToolCall, own?: true) => {
     if (!t.trim()) return;
     const line: Line = { kind, text: t };
     if (at !== undefined) line.at = at;
     if (note) line.note = note;
     if (call) line.call = call;
+    if (own) line.own = own;
     lines.push(line);
   };
   /* The call each `tool_use` id belongs to, so the `tool_result` records that
@@ -204,12 +206,21 @@ export function foldTranscript(
        it. See `localCommand`. */
     const ran = localCommand(text);
     if (ran) return push(ran.kind, ran.text);
+    /* A brief handed over with the card, under the relay mark so it can be
+       told from your words at all — and Skein's own here, in the register the
+       live copy wears: an opening brief is a prompt this wall sent, not a
+       letter from another card. `Thread.svelte` draws the brief rather than
+       the envelope. Asked before the relay arm for that reason. */
+    if (isHandoverPrompt(text)) return push("you", text, undefined, undefined, true);
     /* Another card on this wall. The one shape where getting it wrong puts
        *another agent's* instructions in your mouth — see `relay.ts`. Both folds
        go through the same two functions, which is the seam this file exists to
        avoid. */
     if (isRelayPrompt(text)) return push("relay", text, relayCap(text));
-    push("you", text);
+    /* And Skein's own prompts, which a session file records with nothing
+       marking them — see `own.ts`. Without this a restored card draws its
+       resumed-turn prompt, its nudge and its briefs as something you typed. */
+    push("you", text, undefined, undefined, isOwnPrompt(text) ? true : undefined);
   };
 
   for (const raw of text.split("\n")) {

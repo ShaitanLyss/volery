@@ -10,6 +10,7 @@ import {
   nameBesideProject,
   titleFromPrompt,
 } from "../src/lib/naming";
+import { handOver } from "../src/lib/relay";
 
 describe("isNamed", () => {
   test("the sentinel is not a name", () => {
@@ -59,6 +60,13 @@ describe("titleFromPrompt", () => {
   test("nothing typed is no title", () => {
     expect(titleFromPrompt("")).toBe("");
     expect(titleFromPrompt(" \n ")).toBe("");
+  });
+
+  /* A card an agent opens without a title is named after its brief, which for
+     a handover is enveloped for the wire — and naming it after the envelope
+     would call every such card `[skein relay] handed over`. */
+  test("a handover is named after its brief, never its envelope", () => {
+    expect(titleFromPrompt(handOver("widen the roster read"))).toBe("widen the roster read");
   });
 });
 

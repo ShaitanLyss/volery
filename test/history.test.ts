@@ -1,7 +1,10 @@
 import { expect, test, describe } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { NUDGE_TEXT, withResendMark } from "../src/lib/classify";
 import { HISTORY_MAX_LINES, foldTranscript, trimOverlap } from "../src/lib/history";
+import { handOver } from "../src/lib/relay";
+import { resumePrompt } from "../src/lib/rousing";
 import { VALUE_CAP } from "../src/lib/toolcall";
 
 /** One NDJSON record per argument, the way a transcript is written. */
@@ -31,6 +34,37 @@ describe("what a transcript says", () => {
       { kind: "you", text: "typed in the terminal" },
       { kind: "you", text: "sent by skein" },
     ]);
+  });
+
+  /* A session file records Skein's own prompts as ordinary user messages with
+     nothing marking them, so the words are the only thing to go on (`own.ts`).
+     Without this a restored card draws its resumed-turn prompt, its nudge and
+     its pick-up as something you typed — the one thing the drawing must not
+     say (`Thread.svelte`'s `skein` mark). */
+  test("skein's own prompts come back marked, and yours do not", () => {
+    const h = foldTranscript(
+      jsonl(
+        user(resumePrompt()),
+        user(withResendMark(NUDGE_TEXT, "overloaded", 2)),
+        user("mine, about something else"),
+      ),
+    );
+    expect(h.lines.map((l) => [l.kind, l.own === true])).toEqual([
+      ["you", true],
+      ["you", true],
+      ["you", false],
+    ]);
+  });
+
+  /* An opening brief is an agent's free prose, so nothing in it identifies it
+     — the wall envelops it (`relay.ts::handOver`). Under the relay mark but
+     Skein's own register, not a letter: the panel draws the brief in it, with
+     the `skein` mark, exactly as the live copy draws it. */
+  test("a handover brief comes back as skein's own prompt, not a relay", () => {
+    const h = foldTranscript(
+      jsonl(user(handOver("## the plan\n\nbuild the thing"))),
+    );
+    expect(h.lines.map((l) => [l.kind, l.own === true])).toEqual([["you", true]]);
   });
 
   test("an assistant turn folds to the same lines the live stream produces", () => {

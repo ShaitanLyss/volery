@@ -31,8 +31,13 @@ the path and no escaping to get wrong; the text is whatever an agent wrote.
 
 Five things it is worth knowing:
 
-- **Only `text` lines fold.** `you` is what you typed, shown character for character; a
-  tool call, an error and a meta note are already terse and already monospaced.
+- **Only `text` lines fold.** A tool call, an error and a meta note are already terse and
+  already monospaced. **`you` renders markdown too**, as of 2026-11-11 — `*this*` and a pasted
+  fence are prose, and drawing them as asterisks was the panel not reading what was said to
+  it. What does *not* change is `line.text`: the prompt on the wire is what was typed,
+  character for character, and it is that string the replay is matched on (`#echoOf`).
+  Rendering is a second reading of the same string, and copy still gives back the markdown by
+  walking the elements (`copy.ts`).
 - **Every *prefix* of an answer has to parse into something showable**, since the streaming
   line is re-parsed as it arrives — an unclosed fence is a code block that says so (a dashed
   edge) rather than a paragraph of literal backticks that becomes a code block later. The

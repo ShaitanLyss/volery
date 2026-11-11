@@ -10,6 +10,12 @@ import {
   RENEW_NAME,
   relayBody,
   relayCap,
+  handOver,
+  handoverBody,
+  isHandoverPrompt,
+  HANDOVER_NAME,
+  HANDOVER_NOTE,
+  MOVED_NOTE,
   relayFrom,
   sentOf,
   SEND_TOOL,
@@ -412,5 +418,50 @@ describe("a parcel that came with a message", () => {
     expect(describeTool(SEND_FILES_TOOL, { to: "abcd1234", paths: ["a"] })).toBe("sent files to abcd1234");
     expect(describeTool(SEND_FILES_TOOL, { to: "abcd1234", paths: ["a", "b"] })).toBe("sent 2 things to abcd1234");
     expect(describeTool(SEND_FILES_TOOL, {})).toBe("sent files to another card");
+  });
+});
+
+/* The brief a card is opened with — a spawn's prompt, a plan handover, a moved
+ * card's check. It is under the relay mark for the reason `relay.md` gives (the
+ * live fold and the one off disk share only the words, and a mark apiece is
+ * what let `[skein wake]` be written and read by nobody), and it is its own
+ * shape so the panel can say what it is — a brief, not a letter. Built by
+ * `handOver` rather than transcribed, because unlike the Rust envelopes both
+ * ends of this one are in this repository. */
+describe("a brief handed over with the card", () => {
+  const brief = "## the plan\n\n1. read `server.rs`\n2. rename the field";
+  const one = handOver(brief);
+
+  test("is recognised as not-you, and as a handover specifically", () => {
+    expect(isRelayPrompt(one)).toBe(true);
+    expect(isHandoverPrompt(one)).toBe(true);
+    expect(isHandoverPrompt(brief)).toBe(false);
+  });
+
+  test("names itself rather than falling through to another card", () => {
+    expect(relayFrom(one)).toEqual({ name: HANDOVER_NAME, handle: "", project: null });
+    expect(relayCap(one)).toBe("handed over · written for this card");
+  });
+
+  test("hands the brief back exactly, envelope and note gone", () => {
+    expect(handoverBody(one)).toBe(brief);
+    expect(relayBody(one)).toBe(brief);
+  });
+
+  test("a brief that itself ends in a parenthesis is not eaten by the note", () => {
+    const tricky = "do the thing (carefully)";
+    expect(handoverBody(handOver(tricky))).toBe(tricky);
+  });
+
+  /* The moved card's handover is not a brief: it is a check that the history
+     arrived, and the note may not call it an opening brief. Its own note, and
+     the body is the check either way. */
+  test("the check a moved card gets carries its own note", () => {
+    const check = "You have been moved to another machine. Finish this line from memory: `the roster reads`";
+    const moved = handOver(check, MOVED_NOTE);
+    expect(moved).toContain(MOVED_NOTE);
+    expect(moved).not.toContain(HANDOVER_NOTE);
+    expect(handoverBody(moved)).toBe(check);
+    expect(isHandoverPrompt(moved)).toBe(true);
   });
 });

@@ -181,6 +181,13 @@ bubble on the right through `--you-align`, `--you-fill`, `--you-radius`, `--you-
 what the panel draws, so the panel did not move a pixel. The agent's prose takes the reading
 colour through `--tx-prose`, as a reading theme already does.
 
+**And the bubble is yours alone.** Every one of those rules is scoped `:not(.own)`: a prompt
+Skein wrote for an agent to act on — a resumed turn, a jobs report, the job nudge, a heal's
+pick-up, a handover brief — is not something you said, and a right-aligned bubble is the one
+thing in this column that means *I said this* (`own.ts`, and the `skein` mark in `Thread.svelte`).
+The `rail`'s *you said* and the `data-nav="you"` marker follow the same rule, so a restored card
+that recognises Skein's words does not list them as rounds you started.
+
 **The palette is one component** (`SlashPalette.svelte`), lifted out of the dock so chat view's
 message box draws the same rows; the composer carries out what a row does. `PromptBox` gained
 `--pb-font`, because you write in the UI's face and the agent answers in the book's (§8.3).

@@ -405,7 +405,7 @@ gesture does is testable and the rune holding the answer is not.
 
 ### The answer is yours, so it is drawn as yours
 
-`answerEnvelope` deliberately carries **no relay mark**. `relay.ts` recognises five shapes
+`answerEnvelope` deliberately carries **no relay mark**. `relay.ts` recognises six shapes
 under two marks and every one of them means *this was not you* — a message from another card,
 a notice off the billboard, a note the wall handed back. This is the opposite: you read the
 question and clicked, and Volery only carried it. A mark here would be the same lie
