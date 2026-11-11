@@ -650,6 +650,155 @@ A sealed body is about a kilobyte and the volume is a few hundred a day, so a ye
 is on the order of a hundred megabytes. That is the cost of the hall, and it is a disk cost,
 not a privacy one, because the disk holds ciphertext.
 
+### 3.9 Work facts: what the money bought
+
+Cost alone makes parallelism look like a leak. Ten cards cost more per hour than one, and a
+chart of dollars per hour says only that. The gain is in what those hours produced, and without
+it the wall cannot answer the question a manager actually asks: *was the fan-out worth it?*
+
+So the store also records **artifacts and coordination cost**, from the same walk that records
+tokens and tools:
+
+| kind | what it is | where it comes from |
+|---|---|---|
+| `commit` | a commit, its branch and its lines | a `git commit` receipt, or git history |
+| `push` | a branch published | a `git push` receipt |
+| `pr_open`, `pr_merge` | a pull request opened, merged | `gh pr create` / `gh pr merge` receipts |
+| `merge`, `rebase` | a branch integrated | the tool receipt, with `CONFLICT` lines when it conflicted |
+| `conflict` | an integration that collided, its files and its latency | the same receipt |
+| `worktree`, `branch` | a tree or branch made | a `spawn` with a worktree key, or `git worktree add` |
+
+**Lines are part of the artifact, not a footnote.** A commit carries `files`, `added`,
+`removed`, `net` (added minus removed) and `churn` (added plus removed). Churn without net
+progress is the signature of rework: a card that rewrites the same forty lines three times
+produced no more code than one that wrote them once, and the cost column already says which
+was dearer. The face draws them together and never as a score for a person.
+
+**Two sources, and the provenance column keeps them apart.**
+
+- **A receipt is exact.** A card commits through its `Bash` tool, and the CLI's own output names
+  the branch and the short sha (`[main 8adbaaa] subject`), the PR URL, the conflicted paths.
+  The tool half of the ingest already parses those records (§3.7), so the work fact is a second
+  reader of the same parse: `provenance = 'receipt'`, `session` and `card` known, `ms` the
+  call's own latency. No text is stored beyond the branch, the sha and the counts.
+- **Git history is a backfill and it is `attributed`, never `measured`.** A commit made from a
+  terminal, by a person, or by a card whose transcript has aged out is in the repository and
+  nowhere in the transcript. A bounded observer reads `git log --numstat` per territory and per
+  worktree group, records the commit with its parents (a merge is one with two), and attributes
+  it by three signals in order: the branch the card's tree had checked out, the turn intervals
+  in which the commit's author time falls, and the `file_touch` rows for its changed paths. A
+  commit no card can claim is left `card = ''` and counts toward the project, not a card. The
+  face says which of the two it is, and never adds an attributed commit to a card's exact count
+  without saying so.
+
+**A conflict is an episode, not an event, and the episode is what cost money.** The moment is
+the first `CONFLICT` line in a merge, rebase, cherry-pick or pull; the tool call's latency is
+the time it was blocked in the command; and the episode runs to the next successful commit or
+merge on that branch, bounded at thirty minutes, because the resolution is the edits and the
+turns after it rather than the command. `conflict_minutes` is that span, and `conflicts_per_100_commits` is the rate that says whether coordination is improving.
+
+**Overlap is the quieter half.** Two cards touching the same file within a window is not a
+conflict yet, and it is the leading indicator of one. `file_touch` already records it for the
+shared-tree warning, so `overlap_minutes` is a reading over rows the wall already keeps: which
+pairs of cards shared a file, for how long, and whether one of them later conflicted. That is
+the difference between a fan-out that was parallel and a fan-out that was queued behind itself.
+
+#### Invalidation: making everybody read again
+
+Some actions do not spend tokens themselves, they spend everybody else's. A cache is keyed by
+the account, the model and the prefix, so anything that changes one of those makes the next
+request pay to write the whole context again. On a wall of long cards that is the largest
+avoidable cost there is, and it is invisible today: the card that caused it looks cheap.
+
+| event | what it invalidates | who pays |
+|---|---|---|
+| a write to `CLAUDE.md` | the prefix of every card whose tree reads it | every other card in that tree, on its next turn |
+| a write to a `.claude/rules/` file | the prefix of cards that open a governed path | those cards, when they next touch one |
+| an account switch | the cache, which is per account | the card, on its first turn on the new account |
+| a provider switch | the provider's cache, which is separate | the card |
+| a model change | the cache, which is per model | the card |
+| a compaction | the running context | the card, once |
+| a renewal | everything; that is its purpose | the card, and it is the one deliberate case |
+
+- **The write is exact; the cost is attributed.** A `Write`/`Edit` receipt names the path, and
+  an account or model move is a Volery action already recorded, so the event is a fact. What
+  follows is an inference: the first request each affected card makes after the event is
+  compared with that card's own recent median cache write, and the excess is the re-read.
+  It is labelled `attributed`, and the page says the mechanism was measured by a probe before
+  it was trusted (the same `tools/probe-context.ts` pattern: one card, one write, the next
+  turn's `usage`).
+- **A churn episode is a run of writes, not a write.** Three edits to `CLAUDE.md` in ten
+  minutes is one episode, and its cost is the excess after the *last* write, because the
+  earlier ones were overwritten before anybody read them. The episode is what the page draws
+  and what the advice is about.
+- **The tree is the scope for instructions and the card is the scope for funding.** A write
+  affects every card whose `cwd` or worktree group is the same; a switch affects one card.
+  Both are joinable because `analytics_session` already carries the tree and the interval.
+- **Account and model moves get a timing reading, not just a total.** A switch while the other
+  cards are mid-turn costs more than the same switch at rest, because it invalidates the turn
+  that is running as well as the next one. `invalidate_usd` for a switch is attributed to the
+  moment it happened, and the coordination strip shows it against the cards that were working.
+- **The wall can say so before it happens.** An account switch is a Volery gesture, so the
+  estimate is available at the moment of asking: *three cards are live in this tree, switching
+  now re-reads about 640k tokens*. `#moveTo` can offer it rather than report it afterwards.
+  This is the one place the analytics is allowed to speak before the spend, because the
+  decision is right there.
+- **Write advice, not a ban.** The alternative to editing `CLAUDE.md` is a path-scoped rule,
+  which is read only when a file it governs is opened, and the wall's own standing instructions,
+  which reach new cards and not live ones. The page says which of the three fits the change,
+  and never tells somebody not to document something.
+- **The benchmark is per card, not per wall.** A card with a 600k context pays ten times what a
+  card at 60k pays for the same invalidation, so the excess is measured against *that* card's
+  median, and a wall-wide average would hide exactly the case worth finding.
+
+```sql
+work_fact(
+  at, host, session, card, agent,
+  kind,              -- commit | push | pr_open | pr_merge | merge | rebase | conflict | worktree | branch
+  ref,               -- the sha, the PR number, the branch or the worktree key
+  branch, project,
+  files, added, removed,   -- 0 where the source does not say
+  conflict_files,
+  ms,                -- the tool call's latency; 0 for a history backfill
+  provenance,        -- receipt | history
+  PRIMARY KEY (at, host, session, card, kind, ref, branch, project, provenance)
+);
+
+work_hour(
+  hour, host, project, branch, kind,
+  count, files, added, removed, conflict_ms,
+  PRIMARY KEY (hour, host, project, branch, kind)
+);
+```
+
+The hourly row is the synced and three-year one, for §3.6's reason: a three-year view of
+artifacts is a count per hour, not a row per commit. The fine tier keeps the rows, with the
+same ninety days as the usage facts.
+
+**What the face does with it**, and the rule that stops it becoming a leaderboard:
+
+- **cost against output, always as a pair.** Dollars per hour and artifacts per hour are two
+  panels, never one axis, because §9.5 forbids the dual axis and because the point is to read
+  them together. A scatter of cards, x = cost, y = merged pull requests (or net lines), is the
+  single clearest picture of which work paid and which did not.
+- **per unit of output, not per card.** `cost_per_merged_pr`, `cost_per_1k_net_lines`,
+  `tokens_per_commit`, `commit_rate`. A card with no commits is not a failure and is drawn as
+  *no artifact*, which is a different reading from *expensive and idle*; analysis, reviews and
+  questions are work and have no commit.
+- **coordination as its own cost.** Cancellation: conflict minutes × the card's burn rate is the
+  dollars coordination spent. The coordination view draws each card as a bar over the day, with
+  overlap bands where two touched a file and conflict episodes marked on the branch, so the
+  moment two cards collided and the time it took to untangle is visible rather than inferred.
+- **a note that the measure is incomplete.** Lines and commits favour work that lands as code.
+  A design card, a review card and a question answered well produce none, and the page says so
+  instead of ranking them at zero.
+
+The work observer costs one bounded `git log` per repository and per worktree group, no
+network, and only for repositories a card is already working in. It is the fourth thing that
+goes and looks rather than folding an event, and it earns the exception the way the release
+check does: a commit made with `git commit` inside a card is a receipt and needs no poll, while
+a commit made in a terminal emits nothing this app can hear.
+
 ---
 
 ## 4. Attribution: who spent it
@@ -1455,6 +1604,18 @@ Pure TypeScript, in `analytics.ts` and friends, tested directly.
   `residual_points`, `cpu`, `gpu`, `mem`, `disk`, `net`, `cards_working`, `worktrees`,
   `turns`, `ended_ok`, `ended_failed`, `calls`, `errors`, `error_rate`, `ms_p50`, `ms_p95`,
   `out_bytes`, `swaps`, `spawns`, `fan_out`, `skill_calls`.
+- **Output measures** (§3.9): `commits`, `pushes`, `prs_opened`, `prs_merged`, `merges`,
+  `lines_added`, `lines_removed`, `lines_net`, `churn`, `files_changed`, `cost_per_commit`,
+  `cost_per_merged_pr`, `cost_per_1k_net_lines`, `tokens_per_commit`, `commit_rate`.
+- **Coordination measures** (§3.9): `conflict_minutes`, `conflict_share` (conflict minutes per
+  card-hour), `conflicts_per_100_commits`, `overlap_minutes`, `coordination_usd` (conflict
+  minutes times the card's burn rate).
+- **Invalidation measures** (§3.9): `invalidate_events`, `invalidate_usd`, `invalidate_share`
+  (the excess as a share of the window's spend), `churn_episodes`, `churn_write_count`, by
+  `kind` and by `tree`. `invalidate_usd` is `null`, not zero, where the event could not be
+  measured: an unmeasured invalidation and a free one are different readings.
+  A ratio whose divisor is zero is `null`, never `0`: a card with no merged pull requests has
+  no cost per merged pull request, and drawing it as zero would put it at the top of a chart.
 - **Bucket**: 1m, 5m, 15m, 1h, 1d, 1w.
 - **Aggregate**: `sum`, `mean`, `p50`, `p95`, `max`, `last`, `count`.
 - **Filter**: a map of dimension to a list of values, with `*` for all. An empty list means
@@ -2101,6 +2262,43 @@ read as a chat page. They show layout, palette and data shape; the chrome around
 approximate, and no number in them is a measurement. The screenshots beside each are what the
 HTML renders.
 
+### 11.14 What it bought: output, and what coordination cost
+
+A tab of its own in the room, and a chapter in chat view, because it answers a question the
+spend pages cannot: whether the work was worth what it cost. §3.9 is the data.
+
+```text
++ work ----------------------------------------------------------------+
+| week · all projects                     cost $412   merged PRs 14    |
+|                                                                      |
+|  cost per hour            artifacts per hour                         |
+|  $$$$      ##             ####   ##                                  |
+|  $$   ##  ####           ##  ## ###                                  |
+|  $ ## ### ####           #    #  ##                                  |
+|  mon tue wed thu fri      mon tue wed thu fri                        |
+|                                                                      |
+|  per card                 cost    commits  merged  net lines  $/PR   |
+|  nova · auth               $98       31       4      +2,410   24.50 |
+|  rise · import             $61       12       2      +640     30.50 |
+|  volery · analytics        $143      44       5      +3,180   28.60 |
+|  terminal (attributed)     $110      18       3      +900     36.70 |
++----------------------------------------------------------------------+
+```
+
+- **Cost and output are two panels, never one axis**, and the pair is the reading: a week where
+  cost doubled and artifacts tripled is a good week, and the same page with only the cost line
+  would draw it as a bad one.
+- **The scatter is the manager's picture.** One dot per card, cost against merged pull requests
+  or net lines; a dot far right and low is expensive work that did not land, and it is a
+  question rather than a verdict.
+- **The coordination strip is under it**: each card a bar across the day, overlap bands where
+  two touched a file, conflict episodes marked where they happened, with the minutes and the
+  dollars they took, and instruction-churn episodes drawn on the same strip (§3.9). That is the
+  moment-to-moment answer to "where did parallel work fight itself".
+- **A card with no artifact is drawn as *no artifact*, not as zero output.** Design, review and
+  answers are work; §3.9's caveat is on the page in one sentence, and there is no ranking of
+  people anywhere in it.
+
 ---
 
 ## 12. The widget
@@ -2607,6 +2805,60 @@ CREATE TABLE tool_hour (
   PRIMARY KEY (hour, host, account, provider, project, kind, server, tool, target)
 );
 
+-- What the money bought (§3.9). A receipt from a card's own tool call is
+-- `provenance = 'receipt'`; a commit found in git history and attributed is
+-- `'history'`, and the two are never summed without saying so.
+CREATE TABLE work_fact (
+  at             INTEGER NOT NULL,
+  host           TEXT NOT NULL,
+  session        TEXT NOT NULL DEFAULT '',
+  card           TEXT NOT NULL DEFAULT '',
+  agent          TEXT NOT NULL DEFAULT '',
+  kind           TEXT NOT NULL,   -- commit | push | pr_open | pr_merge | merge | rebase | conflict | worktree | branch
+  ref            TEXT NOT NULL DEFAULT '',  -- sha, PR number, branch or worktree key
+  branch         TEXT NOT NULL DEFAULT '',
+  project        TEXT NOT NULL DEFAULT '',
+  files          INTEGER NOT NULL DEFAULT 0,
+  added          INTEGER NOT NULL DEFAULT 0,
+  removed        INTEGER NOT NULL DEFAULT 0,
+  conflict_files INTEGER NOT NULL DEFAULT 0,
+  ms             INTEGER NOT NULL DEFAULT 0,  -- the tool call's latency; 0 for history
+  provenance     TEXT NOT NULL DEFAULT 'receipt',
+  PRIMARY KEY (at, host, session, card, kind, ref, branch, project, provenance)
+);
+
+CREATE TABLE work_hour (
+  hour       INTEGER NOT NULL,
+  host       TEXT NOT NULL,
+  project    TEXT NOT NULL,
+  branch     TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL,
+  count      INTEGER NOT NULL DEFAULT 0,
+  files      INTEGER NOT NULL DEFAULT 0,
+  added      INTEGER NOT NULL DEFAULT 0,
+  removed    INTEGER NOT NULL DEFAULT 0,
+  conflict_ms INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, host, project, branch, kind)
+);
+
+-- An event that made somebody read the context again: a change to an
+-- instruction file, or a move of account, provider or model that retired a
+-- cache. The event is exact; `usd` is the attributed excess on the requests
+-- that followed, and `provenance` says which half a reader is looking at.
+CREATE TABLE invalidate_fact (
+  at         INTEGER NOT NULL,
+  host       TEXT NOT NULL,
+  session    TEXT NOT NULL DEFAULT '',
+  card       TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL,   -- instructions | rule | account | provider | model | compact | renew
+  ref        TEXT NOT NULL DEFAULT '',  -- path, account label, model or provider
+  tree       TEXT NOT NULL DEFAULT '',  -- project root or worktree key; scopes who pays
+  affected   INTEGER NOT NULL DEFAULT 0,
+  usd        REAL NOT NULL DEFAULT 0,   -- attributed excess, 0 when unmeasured
+  provenance TEXT NOT NULL DEFAULT 'receipt',  -- receipt | attributed
+  PRIMARY KEY (at, host, session, card, kind, ref, tree)
+);
+
 -- One digest per (host, UTC day), over that day's hourly rows. The manifest
 -- frame carries these; a peer compares before it asks for a day.
 CREATE TABLE usage_day_digest (
@@ -2802,7 +3054,8 @@ CREATE TABLE prompt_day_digest (
 Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
 `usage_fact(account, at)`, `tool_fact(at)`, `tool_fact(session)`, `tool_fact(server, at)`, `tool_fact(turn_id)`,
 `tool_pending(session)`, `turn(agent_session_id, ended_at)`, `turn(conversation_id, ended_at)`,
-`allowance_fact(account, at)`,
+`work_fact(at)`, `work_fact(card, at)`, `work_fact(project, at)`, `work_hour(hour)`,
+`invalidate_fact(at)`, `invalidate_fact(tree, at)`, `allowance_fact(account, at)`,
 `machine_fact(at)`,
 `usage_hour(hour)`, `tool_hour(hour)`, `host_build(host, from_at)`, `prompt_fact(at)`,
 `prompt_fact(kind, at)`, `prompt_fact(card)`, `prompt_hour(hour)`.
@@ -2830,11 +3083,16 @@ Each phase is useful on its own and commits on its own.
    open row, close a lost turn from the reader thread, and add the two indexes. This is a
    change to existing behaviour rather than new tables, so it lands alone and its own tests
    say the day's figure and the activity queries are unchanged.
-2. **Facts and ingest, including prompts and the vault.** Schema, the sink in `usage.rs`, the
-   `user`-record branch for tool results, durable offsets, the `seen` table, the rate history,
-   the prompt redactor and `prompt.rs`, the vault and `seal pending`, the deep first backfill,
-   and a control-surface op to read raw facts. No UI. This is the half that cannot be added
-   later, because the transcripts it reads are on a deletion clock.
+2. **Facts and ingest, including prompts, work and the vault.** Schema, the sink in `usage.rs`,
+   the `user`-record branch for tool results, durable offsets, the `seen` table, the rate
+   history, the prompt redactor and `prompt.rs`, the vault and `seal pending`, the work
+   receipts (commits, pushes, pull requests, merges and conflicts from the same tool parse) and
+   the bounded git-history observer, the invalidation events (instruction-file writes and the
+   account, provider and model moves, with the excess measured on the request that follows),
+   the deep first backfill, and a control-surface op to read raw facts. No UI. This is the half
+   that cannot be added later, because the transcripts it reads are on a deletion clock, and
+   because a commit noticed only after it is a week old is attributed by guesswork rather than
+   by a receipt.
 3. **The query layer, and the card's own reading.** Dimensions, measures, buckets, the view
    spec, the residual arithmetic, the prompt kind vocabulary, all pure and tested. The same
    layer answers `spend read`, so a card gets the self-reading as soon as there are facts to
@@ -3049,6 +3307,32 @@ What "done" means, per part. These are the tests, or the thing a wall test drive
   acknowledges, and its turn goes on. A second pass over the same period writes nothing.
 - **A watch is local.** `spend_watch` appears in no flyway frame and in no report target; a
   second wall holding the same card's history does not inherit it.
+- **A commit is an artifact with lines.** A `git commit` receipt writes one `work_fact` with
+  its sha, branch, files, added and removed; a push, a pull request and a merge are their own
+  kinds, and a PR merged from `gh pr merge` is one row rather than a commit guessed from it.
+- **An attributed commit says so.** A commit found in git history carries
+  `provenance = 'history'`; one no card can claim has `card = ''` and counts toward the
+  project; the face never adds it to a card's receipt count without naming the source.
+- **A conflict is an episode.** The first `CONFLICT` line opens it with the files it names and
+  the command's latency; the next commit or merge on that branch closes it, or thirty minutes
+  does. `conflict_minutes` is the span, and a resolution that takes two turns is not free.
+- **Overlap precedes conflict and is drawn apart.** Two cards touching one file within the
+  window produce `overlap_minutes` and no conflict; when one later collides, both readings
+  name the pair.
+- **A ratio with no divisor is null.** A card with no merged pull requests has no
+  `cost_per_merged_pr`; the chart omits it rather than drawing a zero at the top.
+- **Work and cost are read as a pair.** The page never draws dollars against artifacts on one
+  axis; the scatter is cost against output, and a card with no artifact is drawn as *no
+  artifact*, which is a different reading from idle.
+- **A CLAUDE.md write is an invalidation with a scope.** A `Write`/`Edit` receipt on
+  `CLAUDE.md` records one `invalidate_fact` whose `tree` is the card's root or worktree key
+  and whose `affected` is the other cards standing in it; three writes in ten minutes are one
+  churn episode, and its cost is the excess after the last of them.
+- **An account switch is measured where it is decided.** The move records its own event, the
+  cards that were working are named, and the first request on the new account is compared with
+  the card's median cache write. The estimate is available at the gesture, before the spend.
+- **An unmeasured invalidation is null, not zero.** A probe-less wall and a free event are
+  different readings; the page says which one it is looking at.
 - **The widget and the overlay agree.** One view spec, two surfaces, one number.
 - **A report is self-contained.** It opens from a copied file with the network off, draws
   every panel, and carries no path and no token when anonymized.
@@ -3073,6 +3357,11 @@ before phase 1 rather than staying a scratch script:
   independent counts of overlapping markers rather than a breakdown.
 - **the palette** was checked with the dataviz skill's `validate_palette.js` against the app's
   surface `#1e1a18` on 2026-11-11; the output is quoted in section 10.1.
+- **the re-read mechanism is a probe, not an assumption, and it is owed before invalidation is
+  drawn.** One card, one edit to a file it reads, and the next turn's `usage`: the cache write
+  should jump by the context and the read should fall to nothing. The same arm on an account
+  switch, and a control arm with no edit, so a warm cache cannot read as a working mechanism.
+  Until that probe exists, `invalidate_usd` is `null` and the page says so.
 - **the tool counts** are one five-day scan, not a running probe; they are a shape, not a
   budget.
 - **the bandwidth table** is arithmetic from one stated assumption (under 1 KB a frame, 2s,
@@ -3154,6 +3443,20 @@ not re-opened by accident.
     the person and every later read says so; it never stops a turn. The default is no watch,
     because a wall-wide number is wrong for most cards, and the coordinator's brief is where
     a worker is given one.
+16. **Cost is read against output, and coordination is part of the cost.** Work facts record
+    commits, pushes, pull requests, merges, branches, worktrees and conflicts, with files,
+    added, removed, net and churn, from a card's own tool receipts and, where no receipt
+    exists, from git history labelled `attributed`. A conflict is an episode measured to the
+    next commit or thirty minutes, and overlap between cards is a reading in its own right.
+    The page draws cost and artifacts as two panels and never as one axis, and it never
+    ranks people. Lines are a measure of the artifact, not of the work: analysis, review and
+    a good answer produce none, and the page says so.
+17. **Caches are a shared resource, so invalidating one is a cost someone else pays.**
+    Instruction-file writes and account, provider and model moves are recorded as invalidation
+    events with their scope and affected cards; the excess on the next request is attributed
+    to them, and an unmeasured event is null rather than zero. A churn episode is a run of
+    writes, costed after its last write. The account move offers the estimate at the gesture,
+    and the re-read mechanism is probed before any of it is drawn.
 
 ### 20.1 One left: how live is another machine
 
