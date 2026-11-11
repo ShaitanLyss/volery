@@ -268,6 +268,16 @@ describe("analytics, at the stage its card allows", () => {
     expect(ANALYTICS.after).toContain("report");
     expect(ANALYTICS.after).toContain("not built");
   });
+
+  test("cost is answered against output, and coordination is priced", () => {
+    /* The two the manager asks about. A cost chart alone would read a good
+       week as a bad one, so the copy has to carry both halves. */
+    expect(ANALYTICS.worth.length).toBe(2);
+    expect(ANALYTICS.worth[0]).toContain("artifacts");
+    expect(ANALYTICS.worth[0]).toContain("no artifact");
+    expect(ANALYTICS.worth[1]).toContain("CLAUDE.md");
+    expect(ANALYTICS.worth[1]).toContain("cache");
+  });
 });
 
 describe("the coordinator", () => {

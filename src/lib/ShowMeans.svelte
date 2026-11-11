@@ -151,6 +151,11 @@
       </div>
     </div>
     <p class="acaveat">{ANALYTICS.caveat}</p>
+    <div class="aworth">
+      {#each ANALYTICS.worth as w (w)}
+        <p>{w}</p>
+      {/each}
+    </div>
     <p class="aafter">{ANALYTICS.after}</p>
   </div>
 </div>
@@ -488,9 +493,20 @@
     line-height: 1.5;
     color: var(--paper-faint);
   }
+  .aworth {
+    display: grid;
+    gap: 6px;
+    padding: 8px 0 8px 11px;
+    border-left: 2px solid color-mix(in oklab, var(--edge) 80%, transparent);
+  }
+  .aworth p {
+    margin: 0;
+    font: 12px/1.55 var(--body);
+    color: var(--paper-dim);
+  }
   .aafter {
     margin: 0;
-    padding-top: 4px;
+    padding-top: 8px;
     border-top: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
     font-size: 11px;
     line-height: 1.5;

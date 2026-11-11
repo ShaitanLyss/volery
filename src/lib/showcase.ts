@@ -377,6 +377,12 @@ export const ANALYTICS = {
       line: "the weekly windows across accounts, what is left, when each resets, and optional pacing that holds new work back before the wall runs out mid-afternoon.",
     },
   ] as readonly { title: string; line: string }[],
+  /** The two that answer whether the fan-out paid, rather than what it cost.
+   *  A manager reading a cost chart alone draws the opposite conclusion. */
+  worth: [
+    "Cost is read against output, as a pair: commits, merged pull requests, branches and lines for each card, so a week where cost doubled and artifacts tripled reads as a good week, and a design or review card is drawn as no artifact rather than as zero output.",
+    "Coordination is priced too: a conflict measured to its resolution, an account switch by the cache it retires, and a write to CLAUDE.md by what every other card in that tree has to read again. On a wall of long cards those are the largest avoidable costs, and today the card that causes one looks cheap.",
+  ] as readonly string[],
   after:
     "Across machines over the flyway, so a laptop's spend counts against the same allowance, and one anonymized HTML report a manager can open without Volery. Both are designed, not built.",
 };
