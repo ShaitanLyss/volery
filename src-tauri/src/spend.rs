@@ -1740,7 +1740,7 @@ fn do_watch(app: &AppHandle, card: &str, args: &Value) -> Result<String, String>
         if share.points.is_none() {
             return Err(format!(
                 "an `allowance_points` watch cannot fire on this wall, {}. Watch `usd` or \
-                 `tokens` instead; `allowance` answers the account's own windows.",
+                 `tokens` instead; `mcp__skein__allowance` answers the account's own windows.",
                 share.why
             ));
         }
@@ -1798,7 +1798,7 @@ fn do_unwatch(app: &AppHandle, card: &str, args: &Value) -> Result<String, Strin
         .get("id")
         .and_then(Value::as_i64)
         .filter(|id| *id > 0)
-        .ok_or("`unwatch` needs `id`, the watch number `list` showed you.")?;
+        .ok_or("`unwatch` needs `id`: the watch number `mcp__skein__spend` with verb list showed you.")?;
     let store = app.state::<Store>();
     let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
     if crate::store::drop_watch(&conn, card, id)? {
@@ -1878,25 +1878,29 @@ pub fn handle(app: &AppHandle, caller: &str, tool: &str, args: &Value) -> Option
             "read" => do_read(app, caller, args),
             "list" => do_list(app, caller),
             "" => Err(
-                "`spend` needs a verb: `read` or `list`. `read` answers what this card has used."
+                "`mcp__skein__spend` needs a verb: read, or list. read answers what this card \
+                 has used."
                     .into(),
             ),
             "watch" | "unwatch" => Err(format!(
                 "`{verb}` is on `{SPEND_WATCH_TOOL}`, which is the tool that writes. This one \
                  only reads."
             )),
-            other => Err(format!("`{other}` is not a verb of `spend`. Use `read` or `list`.")),
+            other => Err(format!(
+                "`{other}` is not a verb of `mcp__skein__spend`. Use read, or list."
+            )),
         },
         SPEND_WATCH_TOOL => match verb {
             "watch" => do_watch(app, caller, args),
             "unwatch" => do_unwatch(app, caller, args),
             "" => Err(
-                "`spend_watch` needs a verb: `watch` sets a threshold, `unwatch` removes one."
+                "`mcp__skein__spend_watch` needs a verb: watch sets a threshold, unwatch \
+                 removes one."
                     .into(),
             ),
             other => Err(format!(
-                "`{other}` is not a verb of `spend_watch`. Use `watch` or `unwatch`; the \
-                 reading itself is `mcp__skein__spend`."
+                "`{other}` is not a verb of `mcp__skein__spend_watch`. Use watch or unwatch; \
+                 the reading itself is `mcp__skein__spend`."
             )),
         },
         _ => return None,
@@ -1940,7 +1944,7 @@ pub async fn spend_unwatch(
 /* ── the tool's schema ─────────────────────────────────────────────────────*/
 
 /// The reading, and the listing: both read, so both are safe in plan mode.
-pub fn schema() -> Value {
+pub fn spend_schema() -> Value {
     json!({
         "name": SPEND_TOOL,
         "description":
@@ -2188,7 +2192,7 @@ mod tests {
         /* Plan mode relies on `readOnlyHint`, and `ask.rs` asserts both
            directions of its list, so the verbs that write cannot share a tool
            with the ones that do not. §11.13 records the split. */
-        let read = schema();
+        let read = spend_schema();
         assert_eq!(read["name"], SPEND_TOOL);
         let verbs = read["inputSchema"]["properties"]["verb"]["enum"].as_array().unwrap();
         let verbs: Vec<&str> = verbs.iter().filter_map(|v| v.as_str()).collect();

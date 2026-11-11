@@ -4371,6 +4371,7 @@ mod tests {
         ("sink.rs", include_str!("sink.rs")),
         ("smith.rs", include_str!("smith.rs")),
         ("spawn.rs", include_str!("spawn.rs")),
+        ("spend.rs", include_str!("spend.rs")),
         ("status.rs", include_str!("status.rs")),
         ("supervisor.rs", include_str!("supervisor.rs")),
         ("timeline.rs", include_str!("timeline.rs")),

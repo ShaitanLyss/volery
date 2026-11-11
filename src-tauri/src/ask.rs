@@ -2212,7 +2212,7 @@ pub(crate) fn roster() -> Vec<Value> {
            own spend is. The hint carries the question, because a card reaching
            here is holding "am I over budget", not the verb `read`. */
         found_by(
-            reads_only(crate::spend::schema()),
+            reads_only(crate::spend::spend_schema()),
             "how much have I spent, what has this cost me, am I over budget, my own token \
              usage, what did this turn cost, my subagents' cost, how much of the window is \
              mine, what watches have I set",

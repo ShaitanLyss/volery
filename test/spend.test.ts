@@ -153,7 +153,7 @@ describe("plan mode can read the spend and not write a watch", () => {
   /* The reason the verbs are two tools. `ask.rs` asserts both directions of its
      read-only list; this is the same contract seen from the one that was split. */
   test("`spend` is advertised read-only, `spend_watch` is not", () => {
-    expect(ASK).toMatch(/reads_only\(crate::spend::schema\(\)\)/);
+    expect(ASK).toMatch(/reads_only\(crate::spend::spend_schema\(\)\)/);
     expect(ASK).toMatch(/found_by\(\s*crate::spend::watch_schema\(\)/);
     expect(ASK).not.toMatch(/reads_only\(crate::spend::watch_schema\(\)\)/);
   });
@@ -199,7 +199,7 @@ describe("where it is mounted, and the pointer that reaches it", () => {
   test("it is deferred with a search hint, not loaded", () => {
     /* The loaded tier is at its ceiling; §11.13's discovery channel is
        `allowance`'s answer, which costs nothing per turn. */
-    const at = ASK.indexOf("crate::spend::schema()");
+    const at = ASK.indexOf("crate::spend::spend_schema()");
     expect(at).toBeGreaterThan(-1);
     const around = ASK.slice(Math.max(0, at - 600), at);
     expect(around).toContain("found_by");

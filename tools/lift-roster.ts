@@ -274,6 +274,20 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     file: "src-tauri/src/renew.rs",
     items: ["const RENEW_TOOL", "fn renew_schema"],
   },
+  /* The card's own spend, and the watch it can set on itself. Registered in
+     `roster()` on 2026-11-12 without a line here, which is the failure the
+     entry above records: the lift stopped compiling, and with it every
+     assertion about the loaded tier and the read-only list. Neither schema
+     function reaches anything but its two tool names. */
+  {
+    file: "src-tauri/src/spend.rs",
+    items: [
+      "const SPEND_TOOL",
+      "const SPEND_WATCH_TOOL",
+      "fn spend_schema",
+      "fn watch_schema",
+    ],
+  },
   /* Registered in `roster()` in 0.31 without a line here, which left this lift
      failing to compile — so for that stretch nothing on this machine could
      measure the loaded tier at all. */
@@ -571,6 +585,7 @@ const MODULES = [
   "docket",
   "smith",
   "spawn",
+  "spend",
   "status",
   "store",
   "supervisor",
