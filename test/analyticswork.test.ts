@@ -49,6 +49,31 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const T0 = Date.UTC(2026, 10, 2, 9, 0, 0);
 
+/** The Rust constant the TypeScript wait mirrors, read from source.
+ *
+ *  `analyticswork.ts::ATTRIBUTE_WAIT_MS` exists only so the copy can name the
+ *  bound; the fact is `analytics.rs`'s. A change there that does not reach the
+ *  copy would make the page state a wait the store does not use, silently, so
+ *  this reads both and follows the alias. The regex slices on `;` and never on
+ *  a brace, and line endings do not enter into it: CI checks this out with
+ *  CRLF. */
+const analyticsRs = await Bun.file(new URL("../src-tauri/src/analytics.rs", import.meta.url)).text();
+
+function rustConst(name: string): string {
+  const found = analyticsRs.match(new RegExp(`const\\s+${name}\\s*:\\s*i64\\s*=\\s*([^;]+);`));
+  if (!found) throw new Error(`${name} is not in src-tauri/src/analytics.rs`);
+  return found[1].trim();
+}
+
+/** The product a constant is spelled as (`6 * 60 * 60 * 1000`), without eval. */
+function rustProduct(expr: string): number {
+  return expr.split("*").reduce((n, part) => {
+    const value = Number(part.trim());
+    if (!Number.isFinite(value)) throw new Error(`cannot read the constant ${expr}`);
+    return n * value;
+  }, 1);
+}
+
 function work(over: Partial<WorkRow> & Pick<WorkRow, "at" | "kind">): WorkRow {
   return {
     host: "here",
@@ -981,9 +1006,22 @@ describe("the by-tree reading, and the rows a bad command answer dropped", () =>
   });
 
   test("the unmeasured copy names the wait it mirrors, once", () => {
-    /* Mirrors `analytics.rs::ATTRIBUTE_WAIT_MS`, which is the lookback. Both
-       skins read this helper, so neither can hardcode a stale shorter bound. */
     expect(ATTRIBUTE_WAIT_MS).toBe(6 * HOUR);
     expect(attributeWaitSaid()).toBe("6 hours");
+  });
+
+  test("the TypeScript wait is the one the store actually resolves", () => {
+    /* **The drift guard.** Following the alias is the point: asserting only
+       the literal 6 would pass a Rust file that had moved the wait somewhere
+       else while still spelling the lookback as six hours. */
+    const alias = rustConst("ATTRIBUTE_WAIT_MS");
+    const wait = alias === "ATTRIBUTE_LOOKBACK_MS" ? rustConst("ATTRIBUTE_LOOKBACK_MS") : alias;
+    expect(rustProduct(wait)).toBe(ATTRIBUTE_WAIT_MS);
+    /* And the wait may not exceed the lookback: an event that aged out of the
+       scan can never be revisited, so a longer promise is one the fold cannot
+       keep. */
+    if (alias === "ATTRIBUTE_LOOKBACK_MS") {
+      expect(rustProduct(rustConst("ATTRIBUTE_LOOKBACK_MS"))).toBeGreaterThanOrEqual(ATTRIBUTE_WAIT_MS);
+    }
   });
 });
