@@ -137,6 +137,13 @@ the key never leaves the wall.
 - **The answer is for the ear, not the page.** It is asked in plain spoken
   prose, capped at 1,200 characters, scrubbed like every other text, and read
   out with audio focus so the music ducks. The status line shows it too.
+- **The voice is told what it is speaking for** (`provider::VOICE`). No model
+  has heard of this app, so the prompt carries the facts: what a card is, what
+  the phone can do, where hands-free and the guide live in settings, and that
+  it cannot run anything. Without them, asked "how do I use this app, what can
+  you do for me", `deepseek-flash` described a generic assistant and named none
+  of it. The prompt also says to admit it is not sure about Volery rather than
+  invent, because a spoken number is one somebody acts on.
 - **Both ends need this build.** An older wall passes the unknown word over and
   says nothing; the phone recognises "did not answer" for that word and falls
   back to "not understood" rather than reporting a fault.

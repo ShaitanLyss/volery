@@ -440,6 +440,41 @@ fn fetch_balance(p: &'static Provider) -> Result<Balance, String> {
     }
 }
 
+/// What the voice is told it is, and the app it speaks for.
+///
+/// **The prompt has to carry the app, because no model has heard of it.** The
+/// first version described only the voice's manners, and asked "hello, how do
+/// I use this app, what can you do for me" it answered *"I'm Volery's voice on
+/// your phone, so you can just talk to me and I'll answer questions, explain
+/// things, and think through problems with you"* (probed against
+/// `deepseek-flash` 2026-11-11). Fluent, and a description of nothing this app
+/// does: no wall, no cards, nothing read aloud. A fact about this machine
+/// cannot be in a model's training data, so every one the voice needs is here.
+///
+/// **The facts are the stable half of the product on purpose.** What a card
+/// is, what the phone can and cannot do, and where the guide lives. It does
+/// not restate the tutorial's copy; it points at the row that holds it, so a
+/// slide rewritten in `Tutorial.kt` cannot leave this file telling a different
+/// story.
+///
+/// It is 238 input tokens a question, measured, and a question is asked by a
+/// person pressing a bird rather than by anything on a clock. The last
+/// sentence is the one that keeps a wrong answer from sounding like a right
+/// one: asked how many cards a wall holds, the grounded voice answered "I'm
+/// not sure, the introduction I have does not say" rather than inventing a
+/// number somebody would act on.
+const VOICE: &str = "You are Volery's voice on the user's phone. Volery puts every \
+    running Claude Code conversation on one wall, and each conversation is a card. This \
+    phone is a node on that wall: it shows the cards, reads aloud whatever is waiting on the \
+    user, takes their answer in their own words and sends it to the card that asked, and \
+    answers ordinary questions on its own. Hands-free and the spoken guide live in settings, \
+    where the row how to use volery replays the introduction. You cannot run programs, open \
+    apps, or change anything on the user's computers; work like that has to be asked of a card \
+    on the wall. Answer in one to three short sentences of plain spoken prose, with no \
+    markdown, no lists, no headings, no code and no em dashes. If you are asked something \
+    about Volery that is not covered here, say plainly that you are not sure rather than \
+    inventing an answer.";
+
 /// A one-shot spoken answer from DeepSeek, for a sentence the steward could
 /// not place as a Volery command.
 ///
@@ -461,10 +496,6 @@ fn fetch_balance(p: &'static Provider) -> Result<Balance, String> {
 pub fn answer_question(text: &str) -> Result<String, String> {
     const MODEL: &str = "deepseek-flash";
     const URL: &str = "https://api.deepseek.com/anthropic/v1/messages";
-    const SYSTEM: &str = "You are Volery's voice on the user's phone. Answer in one to three \
-        short sentences of plain spoken prose, with no markdown, no lists, no headings and no \
-        code. You cannot run anything on the user's machines: if the request is an action, say \
-        briefly that it has to be asked of a card on their wall.";
     /// The most a spoken answer may be. A minute of speech is already long for
     /// a walk; past this the phone is reading a page.
     const ANSWER_MOST: usize = 1_200;
@@ -485,7 +516,7 @@ pub fn answer_question(text: &str) -> Result<String, String> {
         "max_tokens": 600,
         "thinking": { "type": "enabled" },
         "output_config": { "effort": "low" },
-        "system": SYSTEM,
+        "system": VOICE,
         "messages": [{ "role": "user", "content": [{ "type": "text", "text": text }] }],
         "stream": false,
     });
@@ -644,6 +675,17 @@ mod tests {
         assert_eq!(spoken(&v).as_deref(), Some("it is raining in paris\nbring a coat"));
         assert!(spoken(&serde_json::json!({ "content": [{ "type": "thinking", "thinking": "x" }] })).is_none());
         assert!(spoken(&serde_json::json!({})).is_none());
+    }
+
+    /// The three facts without which the voice describes a generic assistant
+    /// instead of this app, which is what it did on 2026-11-11 before they
+    /// were here. Held against a rewrite of the prose rather than the prose
+    /// itself, since the wording is not what makes it true.
+    #[test]
+    fn the_voice_is_told_what_it_is_speaking_for() {
+        for fact in ["Volery", "card", "cannot run programs"] {
+            assert!(VOICE.contains(fact), "the voice's prompt lost {fact:?}");
+        }
     }
 
     #[test]
