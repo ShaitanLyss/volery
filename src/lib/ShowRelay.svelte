@@ -60,7 +60,7 @@
       {/if}
 
       {#if act === "message"}
-        <circle class="mote out" r="3.4" fill="var(--st-ask)">
+        <circle class="mote out" r="3.4" fill="var(--st-work)">
           <animateMotion dur="760ms" fill="freeze" path="M258 128 C 330 128, 350 96, 424 96" />
         </circle>
       {:else if act === "read"}

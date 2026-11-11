@@ -291,13 +291,17 @@
     color: var(--paper-mute);
     white-space: pre;
   }
+  /* Achromatic, as the panel's own diff is: a diff's two sides are not a
+     status, and colour on this wall means status. The gutter mark carries the
+     meaning, and the wash is light for a line added and shade for one removed,
+     which is how a printed diff has always done it. */
   .row[data-sign="+"] {
-    background: color-mix(in oklab, var(--st-work) 11%, transparent);
-    color: color-mix(in oklab, var(--paper) 78%, var(--st-work));
+    background: color-mix(in oklab, var(--paper) 7%, transparent);
+    color: var(--paper);
   }
   .row[data-sign="-"] {
-    background: color-mix(in oklab, var(--st-fail) 11%, transparent);
-    color: color-mix(in oklab, var(--paper) 74%, var(--st-fail));
+    background: color-mix(in oklab, var(--shade, #000) 30%, transparent);
+    color: var(--paper-mute);
   }
   .mark {
     flex: none;
