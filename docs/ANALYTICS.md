@@ -2094,6 +2094,13 @@ the rule the roster follows: a tool that changes something asks, a tool that rea
 `watch` is the card's own preference, so it needs no confirmation; it can only change its own
 row.
 
+**The two mockups this was agreed against are in `docs/analytics/`**, kept because they are the
+record of a decision rather than a preview of the build: `analytics-mockup.html` is the wall
+room with a card's page in the inspector, and `analytics-chat-mockup.html` is the same numbers
+read as a chat page. They show layout, palette and data shape; the chrome around them is
+approximate, and no number in them is a measurement. The screenshots beside each are what the
+HTML renders.
+
 ---
 
 ## 12. The widget

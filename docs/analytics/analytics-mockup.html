@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>volery analytics — mockup</title>
+<style>
+  :root {
+    --ink:#151210; --surface:#1e1a18; --surface2:#241f1c; --edge:#332c29;
+    --paper:#ede4d8; --paper-dim:#b4a89c; --paper-mute:#8a7e74; --paper-faint:#615850;
+    --work:#7fb8a4; --ask:#e9a13b; --soft:#a8823f; --rest:#6b6058; --fail:#c5603f;
+    --s1:#3987e5; --s2:#d55181; --s3:#c98500; --s4:#199e70; --s5:#9085e9;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; }
+  body {
+    background: var(--ink); color: var(--paper);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  .room {
+    position:absolute; inset:18px; background:var(--surface);
+    border:1px solid var(--edge); border-radius:14px;
+    display:flex; flex-direction:column; overflow:hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55);
+  }
+  header {
+    display:flex; align-items:center; gap:18px; padding:14px 18px 12px;
+    border-bottom:1px solid var(--edge);
+  }
+  .name { font-size:15px; letter-spacing:.04em; color:var(--paper); }
+  .name b { font-weight:600; }
+  .tabs { display:flex; gap:2px; margin-left:6px; }
+  .tab {
+    padding:4px 10px; border-radius:7px; color:var(--paper-mute);
+    font-size:12px; cursor:default;
+  }
+  .tab.on { background:var(--surface2); color:var(--paper); box-shadow: inset 0 0 0 1px var(--edge); }
+  .grow { flex:1; }
+  .verb {
+    padding:5px 10px; border-radius:7px; border:1px solid var(--edge);
+    color:var(--paper-dim); font-size:12px;
+  }
+  .verb.primary { border-color:#3d5f86; color:#cfe2fb; background:#1b2a3a; }
+  .kpis { display:grid; grid-template-columns: 1.25fr 1fr 1fr 1fr 1fr; gap:1px; background:var(--edge); }
+  .kpi { background:var(--surface); padding:14px 16px 10px; min-width:0; }
+  .kpi .label { color:var(--paper-mute); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
+  .kpi .big { font-size:30px; line-height:1.1; margin-top:6px; letter-spacing:-.015em; }
+  .kpi .big small { font-size:14px; color:var(--paper-dim); letter-spacing:0; }
+  .kpi .sub { color:var(--paper-mute); font-size:11.5px; margin-top:4px; }
+  .kpi.hero .big { font-size:38px; }
+  .spark { display:block; margin-top:8px; width:100%; height:26px; }
+  .filters {
+    display:flex; align-items:center; gap:8px; padding:10px 18px;
+    border-bottom:1px solid var(--edge); flex-wrap:wrap;
+  }
+  .chip {
+    border:1px solid var(--edge); border-radius:999px; padding:3px 10px;
+    color:var(--paper-dim); font-size:11.5px; background:var(--surface2);
+  }
+  .chip b { color:var(--paper); font-weight:500; }
+  .chip .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:1px; }
+  .push { margin-left:auto; }
+  .body { flex:1; display:grid; grid-template-columns: 1fr 286px; min-height:0; }
+  .canvas { padding:16px 18px; display:grid; grid-template-rows: 1.55fr 1fr; gap:14px; min-height:0; }
+  .panel { background:var(--surface2); border:1px solid var(--edge); border-radius:10px; padding:12px 14px; min-height:0; display:flex; flex-direction:column; }
+  .panel h3 { margin:0; font-size:12px; font-weight:550; color:var(--paper-dim); letter-spacing:.02em; }
+  .panel h3 span { color:var(--paper-faint); font-weight:400; margin-left:8px; }
+  .chart { flex:1; min-height:0; position:relative; }
+  .lower { display:grid; grid-template-columns: 1.1fr 1fr .9fr; gap:14px; min-height:0; }
+  .inspector { border-left:1px solid var(--edge); padding:16px; overflow:hidden; background:linear-gradient(180deg, var(--surface) 0%, #1b1715 100%); }
+  .inspector h3 { margin:0 0 10px; font-size:12px; font-weight:550; color:var(--paper-dim); }
+  .fact { display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid #2a2421; font-size:12px; }
+  .fact span:first-child { color:var(--paper-mute); }
+  .fact span:last-child { color:var(--paper); text-align:right; }
+  .prov { margin-top:14px; padding:10px; border:1px solid var(--edge); border-radius:8px; background:#1a1614; }
+  .prov .k { color:var(--paper-faint); font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; }
+  .prov p { margin:6px 0 0; color:var(--paper-dim); font-size:11.5px; line-height:1.5; }
+  .legend { display:flex; gap:14px; align-items:center; margin-top:6px; color:var(--paper-mute); font-size:11px; }
+  .legend i { display:inline-block; width:14px; height:3px; border-radius:2px; margin-right:5px; vertical-align:2px; }
+  .legend i.dash { height:0; border-top:1.5px dashed var(--paper-faint); background:none; vertical-align:4px; }
+  .foot { display:flex; justify-content:space-between; align-items:center; padding:7px 18px; border-top:1px solid var(--edge); color:var(--paper-faint); font-size:11px; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .axis { fill: var(--paper-faint); font-size:10px; }
+  .grid { stroke: #2c2623; stroke-width:1; }
+  .threshold { stroke: var(--fail); stroke-width:1.2; stroke-dasharray: 4 4; opacity:.8; }
+  .threshold-label { fill: var(--fail); font-size:9.5px; letter-spacing:.04em; }
+  .plan { stroke: var(--paper-faint); stroke-width:1.2; stroke-dasharray: 5 5; }
+  .cell-label { fill: var(--paper); font-size:9px; }
+  .hoverline { stroke: var(--paper-faint); stroke-width:1; opacity:.5; }
+</style>
+</head>
+<body>
+<div class="room">
+  <header>
+    <div class="name"><b>analytics</b></div>
+    <div class="tabs">
+      <div class="tab">today</div>
+      <div class="tab on">week</div>
+      <div class="tab">month</div>
+      <div class="tab">year</div>
+    </div>
+    <div class="grow"></div>
+    <div class="verb">search</div>
+    <div class="verb">save</div>
+    <div class="verb">pin to wall</div>
+    <div class="verb primary">export report</div>
+  </header>
+
+  <div class="kpis">
+    <div class="kpi hero">
+      <div class="label">weekly allowance</div>
+      <div class="big">61<small>%</small></div>
+      <div class="sub">lyss leads · resets in 3d 4h</div>
+      <svg class="spark" viewBox="0 0 200 26" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="#3987e5" stroke-width="2" points="0,24 20,22 40,23 60,19 80,17 100,14 120,12 140,9 160,8 180,5 200,6"/>
+      </svg>
+    </div>
+    <div class="kpi">
+      <div class="label">today</div>
+      <div class="big">$412</div>
+      <div class="sub">+6% vs yesterday</div>
+      <svg class="spark" viewBox="0 0 200 26" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="#d55181" stroke-width="2" points="0,20 25,18 50,21 75,15 100,16 125,12 150,11 175,9 200,10"/>
+      </svg>
+    </div>
+    <div class="kpi">
+      <div class="label">fleet burn</div>
+      <div class="big">2.4<small>M tok/min</small></div>
+      <div class="sub">3 walls · as of 12s ago</div>
+      <svg class="spark" viewBox="0 0 200 26" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="#c98500" stroke-width="2" points="0,22 25,20 50,21 75,17 100,18 125,14 150,16 175,12 200,13"/>
+      </svg>
+    </div>
+    <div class="kpi">
+      <div class="label">cards working</div>
+      <div class="big">7</div>
+      <div class="sub">5 here · 2 elsewhere</div>
+      <svg class="spark" viewBox="0 0 200 26" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="#199e70" stroke-width="2" points="0,18 25,18 50,16 75,16 100,12 125,12 150,10 175,12 200,9"/>
+      </svg>
+    </div>
+    <div class="kpi">
+      <div class="label">unattributed</div>
+      <div class="big">9.4<small> pts</small></div>
+      <div class="sub">this week · 2 machines unseen</div>
+      <svg class="spark" viewBox="0 0 200 26" preserveAspectRatio="none" aria-hidden="true">
+        <polyline fill="none" stroke="#8a7e74" stroke-width="2" points="0,10 25,11 50,9 75,12 100,11 125,13 150,12 175,14 200,13"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="filters">
+    <span class="chip">host <b>all</b></span>
+    <span class="chip">account <b>all</b></span>
+    <span class="chip">model <b>all</b></span>
+    <span class="chip">provider <b>all</b></span>
+    <span class="chip">project <b>volery</b></span>
+    <span class="chip">source <b>card + terminal</b></span>
+    <span class="chip" style="margin-left:auto;border-color:#3d5f86;color:#cfe2fb">
+      <span class="dot" style="background:#3987e5"></span>lyss
+    </span>
+    <span class="chip" style="border-color:#5c3040;color:#f0c3d4">
+      <span class="dot" style="background:#d55181"></span>tx-team
+    </span>
+    <span class="chip" style="border-color:#3a3430;color:#c9bdb2">
+      <span class="dot" style="background:#6b6058"></span>unattributed
+    </span>
+  </div>
+
+  <div class="body">
+    <div class="canvas">
+      <div class="panel">
+        <h3>weekly allowance, all accounts <span>window to reset · solid measured, dashed projected</span></h3>
+        <div class="chart">
+          <svg id="main" viewBox="0 0 900 300" preserveAspectRatio="none" style="width:100%;height:100%"></svg>
+        </div>
+        <div class="legend">
+          <span><i style="background:#3987e5"></i>lyss</span>
+          <span><i style="background:#d55181"></i>tx-team</span>
+          <span><i style="background:#4a413b"></i>unattributed</span>
+          <span><i class="dash"></i>plan</span>
+          <span><i style="background:#c5603f;height:0;border-top:1.5px dashed #c5603f"></i>the stop</span>
+          <span style="margin-left:auto;color:#8a7e74">step, not smoothed · hover for the sample it came from</span>
+        </div>
+      </div>
+
+      <div class="lower">
+        <div class="panel">
+          <h3>cost by model <span>modeled list price</span></h3>
+          <div class="chart"><svg id="models" viewBox="0 0 300 150" preserveAspectRatio="none" style="width:100%;height:100%"></svg></div>
+          <div class="legend">
+            <span><i style="background:#3987e5"></i>opus 5.5</span>
+            <span><i style="background:#d55181"></i>sonnet 5.5</span>
+            <span><i style="background:#c98500"></i>deepseek</span>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>burn by hour <span>this week, local</span></h3>
+          <div class="chart"><svg id="heat" viewBox="0 0 300 150" preserveAspectRatio="none" style="width:100%;height:100%"></svg></div>
+        </div>
+        <div class="panel">
+          <h3>cards vs cost <span>one point per card, today</span></h3>
+          <div class="chart"><svg id="scatter" viewBox="0 0 260 150" preserveAspectRatio="none" style="width:100%;height:100%"></svg></div>
+          <div class="legend"><span>cost →</span><span style="margin-left:auto">tokens per turn ↑</span></div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="inspector">
+      <h3>nova · agent audit</h3>
+      <div class="fact"><span>now on</span><span>@deepseek · 42 turns</span></div>
+      <div class="fact"><span>cost</span><span>$38.10</span></div>
+      <div class="fact"><span>tokens</span><span>1.2M</span></div>
+
+      <div class="prov" style="margin-top:12px">
+        <div class="k">paid by</div>
+        <div style="display:flex;height:22px;border-radius:4px;overflow:hidden;margin-top:8px">
+          <div style="width:62%;background:#3987e5"></div>
+          <div style="width:30%;background:#d55181"></div>
+          <div style="width:8%;background:repeating-linear-gradient(45deg,#3a332e 0 5px,#4a413b 5px 9px)"></div>
+        </div>
+        <p style="display:flex;justify-content:space-between;margin-top:7px">
+          <span><b style="color:#3987e5">■</b> lyss 62%</span>
+          <span><b style="color:#d55181">■</b> tx-team 30%</span>
+          <span><b style="color:#6b6058">■</b> 8%</span>
+        </p>
+      </div>
+
+      <div class="prov">
+        <div class="k">changes</div>
+        <p style="line-height:1.7">
+          15:00 opened on lyss · opus 5.5<br/>
+          15:40 swapped to tx-team · window spent<br/>
+          16:20 moved to deepseek · flash · /provider<br/>
+          16:44 model changed to v4-pro · /model
+        </p>
+      </div>
+
+      <div class="prov">
+        <div class="k">provenance</div>
+        <p>Every interval priced at its own date. The split is per request, so the card's
+        current label never pays for the whole transcript.</p>
+      </div>
+    </aside>
+  </div>
+
+  <div class="foot">
+    <span>recording · last pass 11s ago · 168 files · 5,204 requests · hourly merged from 3 walls</span>
+    <span>space then n n &nbsp;·&nbsp; esc</span>
+  </div>
+</div>
+
+<script>
+const S = {
+  s1:'#3987e5', s2:'#d55181', s3:'#c98500', s4:'#199e70', s5:'#9085e9',
+  faint:'#615850', grid:'#2c2623', mute:'#8a7e74', paper:'#ede4d8'
+};
+const svgNS = 'http://www.w3.org/2000/svg';
+function el(name, attrs, parent) {
+  const n = document.createElementNS(svgNS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+
+/* ---- main: one weekly window, measured to now, projected to reset ---- */
+(() => {
+  const s = document.getElementById('main');
+  const W = 900, H = 300, L = 46, R = 16, T = 16, B = 30;
+  const x = t => L + t * (W - L - R);
+  const y = v => T + (1 - v) * (H - T - B);
+  const NOW = 0.55;             // 3d 20h into a 7-day window
+  const USED = 0.61;            // the tile's figure
+  const parts = { lyss: 0.39, tx: 0.17, unattributed: 0.05 };
+
+  // a hatch for the absence, so it never reads as an identity
+  const defs = el('defs', {}, s);
+  const pat = el('pattern', {id:'hatch', width:6, height:6, patternUnits:'userSpaceOnUse', patternTransform:'rotate(45)'}, defs);
+  el('rect', {width:6, height:6, fill:'#4a413b'}, pat);
+  el('rect', {width:2.2, height:6, fill:'#6b6058', 'fill-opacity':.55}, pat);
+
+  for (let g = 0; g <= 4; g++) {
+    const v = g / 4;
+    el('line', {x1:L, x2:W-R, y1:y(v), y2:y(v), class:'grid'}, s);
+    el('text', {x:L-9, y:y(v)+3, 'text-anchor':'end', class:'axis'}, s).textContent = (v*100)+'%';
+  }
+  ['window start','','','','','','','','now','','','reset'].forEach((lab,i) => {
+    if (!lab) return;
+    const t = i === 8 ? NOW : i === 11 ? 1 : 0;
+    el('text', {x:x(t), y:H-8, 'text-anchor': t===0?'start':t===1?'end':'middle', class:'axis'}, s).textContent = lab;
+  });
+
+  // measured series, as small steps so the source grain is visible
+  const N = 240, nowI = Math.round(NOW * (N-1));
+  const shape = (share, phase) => {
+    const out = [];
+    for (let i = 0; i <= nowI; i++) {
+      const t = i / (N-1);
+      const f = Math.pow(t / NOW, 0.92);
+      out.push(share * f + share * 0.012 * Math.sin(t * 34 + phase) * f);
+    }
+    return out;
+  };
+  const lyss = shape(parts.lyss, 0), tx = shape(parts.tx, 2), un = shape(parts.unattributed, 4);
+  const total = lyss.map((v,i) => v + tx[i] + un[i]);
+  const top = (i) => total[Math.min(i, total.length-1)];
+
+  function band(lower, upper, fill, alpha) {
+    let d = `M ${x(0)} ${y(lower[0])}`;
+    for (let i = 1; i < lower.length; i++) d += ` L ${x(i/(N-1))} ${y(lower[i])}`;
+    for (let i = upper.length-1; i >= 0; i--) d += ` L ${x(i/(N-1))} ${y(upper[i])}`;
+    d += ' Z';
+    el('path', {d, fill, 'fill-opacity':alpha}, s);
+  }
+  const zero = lyss.map(()=>0);
+  const l1 = lyss;
+  const l2 = lyss.map((v,i)=>v+tx[i]);
+  const l3 = l2.map((v,i)=>v+un[i]);
+  band(zero, l1, S.s1, .26);
+  band(l1, l2, S.s2, .26);
+  band(l2, l3, 'url(#hatch)', 1);
+  // the measured top edge, stepped
+  let edge = `M ${x(0)} ${y(total[0])}`;
+  for (let i = 1; i < total.length; i++) {
+    edge += ` L ${x((i-1)/(N-1))} ${y(total[i])} L ${x(i/(N-1))} ${y(total[i])}`;
+  }
+  el('path', {d:edge, fill:'none', stroke:S.paper, 'stroke-width':1.6, 'stroke-opacity':.8}, s);
+
+  // plan: linear across the window
+  el('line', {x1:x(0), y1:y(0), x2:x(1), y2:y(1), class:'plan'}, s);
+
+  // the stop, at 100%
+  el('line', {x1:L, x2:W-R, y1:y(1), y2:y(1), class:'threshold'}, s);
+  el('text', {x:W-R, y:y(1)+13, 'text-anchor':'end', class:'threshold-label'}, s).textContent = 'the stop';
+
+  // projection from now at the measured rate, clipped at the stop
+  const rate = USED / NOW;
+  const cross = NOW + (1 - USED) / rate;
+  const px = x(cross), py = y(1);
+  el('path', {d:`M ${x(NOW)} ${y(USED)} L ${px} ${py}`, fill:'none', stroke:S.paper,
+    'stroke-width':1.6, 'stroke-dasharray':'5 5', 'stroke-opacity':.55}, s);
+  el('text', {x:px-6, y:py-8, 'text-anchor':'end', class:'axis', fill:S.fail}, s)
+    .textContent = 'at this pace, before the reset';
+
+  // now marker
+  el('line', {x1:x(NOW), x2:x(NOW), y1:T, y2:H-B, class:'hoverline'}, s);
+  el('circle', {cx:x(NOW), cy:y(USED), r:5, fill:S.paper, stroke:'#1e1a18', 'stroke-width':2}, s);
+  el('text', {x:x(NOW)-10, y:y(USED)-20, 'text-anchor':'end', class:'axis', fill:S.paper}, s)
+    .textContent = '61% used · 39% left';
+  el('text', {x:x(NOW)-10, y:y(USED)-6, 'text-anchor':'end', class:'axis'}, s)
+    .textContent = 'lyss 39 · tx-team 17 · 5 unexplained';
+})();
+
+/* ---- cost by model: stacked bars per day ---- */
+(() => {
+  const s = document.getElementById('models');
+  const W=300,H=150,L=24,R=6,T=10,B=20;
+  const x0=L, x1=W-R, y0=T, y1=H-B;
+  const days=7, bw=(x1-x0)/days*0.62, gap=(x1-x0)/days;
+  const data = [[.42,.22,.10],[.51,.18,.14],[.38,.26,.12],[.62,.24,.16],[.55,.20,.22],[.28,.12,.09],[.34,.16,.11]];
+  const max=1.02;
+  const y=v=>y1-(v/max)*(y1-y0);
+  for(let g=0;g<=3;g++){el('line',{x1:x0,x2:x1,y1:y(g/3),y2:y(g/3),class:'grid'},s);}
+  data.forEach((row,i)=>{
+    let acc=0; const cx=x0+gap*i+(gap-bw)/2;
+    row.forEach((v,j)=>{
+      const c=[S.s1,S.s2,S.s3][j];
+      el('rect',{x:cx,y:y(acc+v),width:bw,height:Math.max(1,y(acc)-y(acc+v)-2),rx:2,fill:c},s);
+      acc+=v;
+    });
+    el('text',{x:cx+bw/2,y:H-6,'text-anchor':'middle',class:'axis'},s).textContent=['m','t','w','t','f','s','s'][i];
+  });
+})();
+
+/* ---- heatmap: hour x weekday ---- */
+(() => {
+  const s = document.getElementById('heat');
+  const W=300,H=150,L=22,R=4,T=8,B=18;
+  const cw=(W-L-R)/24, ch=(H-T-B)/7;
+  const seq=['#16202b','#1b3a5c','#256abf','#3987e5','#6da7ec','#9ec5f4'];
+  for(let d=0;d<7;d++){
+    for(let h=0;h<24;h++){
+      const v=Math.max(0,Math.min(1,
+        Math.exp(-Math.pow(h-14,2)/18)*0.9 + Math.exp(-Math.pow(h-22,2)/8)*0.5 + (d>4?0.05:0.12) + Math.sin(d*3+h)/18
+      ));
+      const c=seq[Math.min(seq.length-1,Math.floor(v*seq.length))];
+      el('rect',{x:L+h*cw,y:T+d*ch,width:Math.max(1,cw-1.5),height:Math.max(1,ch-1.5),rx:1.5,fill:c},s);
+    }
+    el('text',{x:L-6,y:T+d*ch+ch*0.7,'text-anchor':'end',class:'axis'},s).textContent=['m','t','w','t','f','s','s'][d];
+  }
+  [0,6,12,18,23].forEach(h=>{
+    el('text',{x:L+h*cw+cw/2,y:H-5,'text-anchor':'middle',class:'axis'},s).textContent=h;
+  });
+})();
+
+/* ---- scatter: cost vs tokens per turn ---- */
+(() => {
+  const s = document.getElementById('scatter');
+  const W=260,H=150,L=26,R=8,T=10,B=20;
+  const x=xv=>L+(xv/10)*(W-L-R), y=yv=>H-B-(yv/2.2)*(H-T-B);
+  for(let g=0;g<=3;g++) el('line',{x1:L,x2:W-R,y1:y(g*0.73),y2:y(g*0.73),class:'grid'},s);
+  const pts=[
+    [1.1,0.6,S.s1],[2.4,0.9,S.s1],[3.8,1.3,S.s1],[5.2,1.5,S.s1],[6.6,1.9,S.s1],[8.1,1.4,S.s1],
+    [1.8,0.4,S.s2],[3.1,0.8,S.s2],[4.4,1.1,S.s2],[6.0,1.7,S.s2],
+    [2.2,1.2,S.s3],[4.9,1.6,S.s3]
+  ];
+  pts.forEach(([cx,cy,c])=>{
+    el('circle',{cx:x(cx),cy:y(cy),r:5,fill:c,'fill-opacity':.9,stroke:'#241f1c','stroke-width':1.5},s);
+  });
+  el('text',{x:L,y:H-4,class:'axis'},s).textContent='$0';
+  el('text',{x:W-R,y:H-4,'text-anchor':'end',class:'axis'},s).textContent='$10';
+  el('text',{x:L+2,y:T+8,class:'axis'},s).textContent='2M';
+})();
+</script>
+</body>
+</html>
