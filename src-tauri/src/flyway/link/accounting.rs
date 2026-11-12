@@ -94,6 +94,9 @@ impl Link {
         let mut out = self.greeting(current)?;
         if current {
             out.extend(self.accounts_for(Some(host)));
+            /* And this wall's rollup manifest, to a wall that holds rollups and
+               has not heard this exact picture before (`link/rollups.rs`). */
+            out.extend(self.analytics_for(Some(host)));
         }
         Ok(out)
     }

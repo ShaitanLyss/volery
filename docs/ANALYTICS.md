@@ -1553,8 +1553,9 @@ would undo it.
 Facts::can        gains  "analytics", "prompts"
 Facts::build      already says the Volery version
 Facts             gains  now: Option<Now>          -- the live reading, below
-frame "analytics"        { hosts: [{ host, days: [{ day, digest }] }] }
-frame "analytics_day"    { host, day, rows, sessions }        -- hourly rows + their sessions
+frame "analytics"        { hosts: [{ host, days: [{ day, digest, rows }] }] }   -- the manifest
+frame "analytics_ask"    { host, day }                        -- one owner's day, asked for
+frame "analytics_day"    { host, day, digest, rows, sessions, agents }  -- the answer
 frame "analytics_pull"   { host, day }                        -- fine facts for one day
 frame "analytics_fine"   { host, day, rows, sessions, agents }
 frame "prompt_manifest_ask"   { owner, after_day? }            -- ask for the manifest
@@ -1591,9 +1592,34 @@ the row sits.
   rollups must be able to say "I have A's Tuesday and B's Tuesday", so the frame carries a list
   of owner hosts, each with its own days. `Facts::analytics_from` is gone: once merged rows are
   stored, "the oldest hour this wall holds" names no single host and is not worth a field.
-- A peer that is missing a day asks for it by `(owner, day)` with `analytics_day`. The answer is
-  bounded to one day, checked against the digest the owner published, and refused whole if it
-  does not match. Nothing partial is stored, the rule `tail.rs::fit` follows for a transcript.
+- A peer that is missing a day asks for it by `(owner, day)` with `analytics_ask`, and the
+  answer is `analytics_day`. Two tags rather than one because a request carries no rows and an
+  answer carries the whole day, and one tag for both is a frame a reader has to guess the
+  meaning of. The answer is bounded to one day, checked against the digest the owner published,
+  and refused whole if it does not match. Nothing partial is stored, the rule `tail.rs::fit`
+  follows for a transcript.
+- **The digest covers the sidecars.** It is computed over the rows, the sessions and the agents
+  together. A digest over the rows alone would leave a peer that already held a day with a
+  stale `ended_at` or branch for ever, because the day would never look changed and so would
+  never be asked for again. The count stays the row count, since that is what the manifest's
+  `rows` reads.
+- **A manifest is only said when it changed.** Sent unconditionally on a thirty-second tick it
+  would be a few hundred lines per exchange, forever, to report that nothing happened. A wall
+  keeps the digest of the last manifest it sent each peer and says it again only when a row has
+  moved, so an ordinary exchange carries none.
+- **The answer is checked against the digest that was asked for.** `analytics_ask` carries the
+  digest the asker was told, and a frame whose day does not match it is refused before it is
+  stored, because a wall can see the day it was handed is not the one it asked for. A day that
+  has been asked for five times and never arrived is given up and named in the log rather than
+  asked for again for the life of the process, and an ask for a day this wall cannot parse is
+  skipped, so one unanswerable entry cannot hold back the days behind it.
+- **A relayed day fills a hole and never overwrites one.** A peer may be re-serving a day it
+  took before the owner's last correction, and nothing in the frame says which copy is newer.
+  So an ask goes to whoever has the day, and the store takes it from a wall that is not its
+  owner only if it holds no copy at all. That keeps §8.1's single-owner rule true in the one
+  case that could break it. A wall also refuses a day naming itself as owner: a peer relaying
+  this wall's own rows back would otherwise replace everything written since the relay's
+  snapshot.
 - **A peer may re-serve another owner's day; the digest is what makes that safe.** The digest is
   over the owner's rows, so a relay can pass them on but cannot alter them without the digest
   disagreeing. A day is written by its owner, and the owner is authoritative: a late row changes
@@ -1606,6 +1632,37 @@ the row sits.
 - **A card's own watch never crosses.** `spend_watch` is a preference about one card, not an
   observation about the fleet: a second wall holding the same card's history does not inherit
   it, and no frame carries it. Its breach is a local notice and a line in that card's reading.
+
+**As built (schema v72).** `usage_day_digest` is the stored proof of what a wall holds, one row
+per `(host, UTC day)` with the digest and the row count, and it is what makes the manifest an
+indexed read rather than a fold over every hour ever recorded. It is written by the ingest
+after every pass, for **exactly the days that pass touched** rather than for today and
+yesterday, and by a merge for the day it just stored; the rung that creates the table backfills
+it for everything a wall already holds, so an upgrade does not present its own history to the
+fleet as a hole.
+
+The touched set is not a guess, and the reason it is not "today and yesterday" is the sidecars:
+a session alive on three days is carried in all three days' session rows, because a day has to
+be joinable on its own, so ending that session changes three digests. A wall that refreshed only
+the recent window would go on advertising a digest for the oldest day that it can no longer
+serve, and every peer would ask for that day for ever. The set is also taken from the hour keys
+the pass wrote, which reaches back as far as the fine tier's retention when a session is adopted
+or a transcript is read for the first time.
+
+**The digest is computed over the form a day travels in.** Every dimension value is scrubbed
+and capped before it is hashed, exactly as the frame does it, so a stored digest and the digest
+of the frame this wall serves a moment later cannot disagree. Two ways of getting that wrong
+were both one long path or one control character away from a permanent ask/answer loop.
+
+The merge itself is `analytics::merge_day`, one transaction over four tables: the owner's hour
+rows for that day deleted and rewritten, the session and agent sidecars upserted, and the digest
+recorded. Because it replaces rather than adds, replaying a day is a no-op, which is the
+property that lets a wall re-send one without a total quietly doubling.
+
+Nothing else had to change for the rest of this document to become fleet-wide: the query layer
+reads `usage_hour` with no host filter, so every surface over the hourly tier, which is the
+chart, the tiles, the room, the worth block and the report, counts every machine the moment a
+day has been merged. What is still local-only is the fine tier, which is §8.4.
 
 ### 8.3 Live, without a new poll
 

@@ -253,9 +253,15 @@ describe("an allowance share that cannot be computed is null", () => {
 });
 
 describe("the schema rung", () => {
-  test("v71 is the next rung and every rung behind it is still in the ladder", () => {
-    expect(STORE).toContain("const SCHEMA_VERSION: i64 = 71;");
-    expect(STORE).toContain("(71, migrate_v71)");
+  test("the version and the ladder agree, and every rung behind is still there", () => {
+    /* Read from the ladder rather than written down here: a bump that lands a
+       rung and forgets one of the two is exactly what this asserts, and a
+       hardcoded number would have to be edited by the same hand that bumped it,
+       which is the hand that would forget. */
+    const latest = [...STORE.matchAll(/\((\d+), migrate_v\d+\)/g)].map((m) => Number(m[1])).sort((a, b) => a - b).at(-1)!;
+    expect(Number(STORE.match(/const SCHEMA_VERSION: i64 = (\d+);/)![1])).toBe(latest);
+    expect(latest).toBeGreaterThanOrEqual(72);
+    expect(STORE).toContain(`(${latest}, migrate_v${latest})`);
     /* The rung this file was written for, still in the ladder behind it. */
     expect(STORE).toContain("(69, migrate_v69)");
     expect(STORE).toContain("(68, migrate_v68)");

@@ -99,6 +99,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
 use super::act::{self, ActMsg};
+use super::analytics::AnalyticsMsg;
 use super::boards::{self, BoardMsg, Boards};
 use super::cards::{Arrived, Cards};
 use super::fleet::{self, Act, Answer, Deliver, Facts, Fleet, FleetMsg, Origin, Outcome, PromptRequest, Refusal, Request, Spawn, Standing};
@@ -119,6 +120,7 @@ pub mod cast;
 mod leaving;
 mod listing;
 mod moves;
+mod rollups;
 pub(crate) mod seen;
 
 use leaving::{tick_hosts, tick_until_closed, Tenure};
@@ -247,6 +249,17 @@ pub struct Link {
     /// (`flyway-core/src/accounts.rs`, `link/accounting.rs`).
     afar_accounts: StdMutex<accounting::Afar>,
     accounts_due: AtomicBool,
+    /// What each wall last heard of this one's rollup manifest, so an exchange
+    /// in which nothing moved carries no manifest at all (`link/rollups.rs`).
+    rollups_said: StdMutex<HashMap<String, String>>,
+    /// The last rollup manifest each peer said, so a day whose ask was lost is
+    /// asked for again on the next tick rather than waiting for the peer's
+    /// rows to move.
+    rollup_holes: StdMutex<HashMap<String, Vec<super::analytics::HostDays>>>,
+    /// How many times each `(owner, day)` has been asked for, so a day nobody
+    /// can answer stops being asked rather than consuming a slot for the life
+    /// of the wall (`link/rollups.rs`).
+    rollup_tries: StdMutex<HashMap<(String, String), u32>>,
     /// Closed by `shutdown` when this wall leaves, and read by every task this
     /// link started (`leaving.rs`).
     tenure: Tenure,
@@ -425,6 +438,9 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         board_due: AtomicBool::new(false),
         afar_accounts: StdMutex::new(accounting::Afar::default()),
         accounts_due: AtomicBool::new(false),
+        rollups_said: StdMutex::new(HashMap::new()),
+        rollup_holes: StdMutex::new(HashMap::new()),
+        rollup_tries: StdMutex::new(HashMap::new()),
         tenure: Tenure::new(),
         left: StdMutex::new(BTreeSet::new()),
         known: StdMutex::new(known),
@@ -607,6 +623,7 @@ impl Link {
                         super::seeing::WORD.to_string(),
                         super::seeing::CALL_WORD.to_string(),
                         steward::WORD.to_string(),
+                        super::analytics::WORD.to_string(),
                     ])
                     .chain(act::words())
                     .chain(accounting::words())
@@ -728,6 +745,9 @@ impl Link {
             .lock()
             .map(|mut w| w.retain(|_, v| now - v.asked_at <= v.keep_ms))
             .ok();
+        /* Days still missing from a peer's last manifest, asked for again —
+           an ask rides an exchange of its own and can be lost with it. */
+        self.retry_holes();
         self.sweep_moves();
         self.prompts_out
             .lock()
@@ -751,6 +771,13 @@ impl Link {
     }
 
     fn mark(&self, host: &str, ok: bool) {
+        /* A day's manifest is recorded as soon as it is built, before the
+           exchange that carries it, so a dial that failed would leave this wall
+           believing the peer had it. Forgetting the record on a failure makes
+           the next tick say it again (`link/rollups.rs`). */
+        if !ok {
+            self.rollups_said.lock().map(|mut s| s.remove(host)).ok();
+        }
         let Ok(mut f) = self.failing.lock() else { return };
         if ok {
             f.remove(host);
@@ -924,6 +951,10 @@ impl Link {
                 Frame::Look(_) | Frame::Act(_) | Frame::See(_) | Frame::Steward(_) => {}
                 Frame::Board(m @ BoardMsg::Board { .. }) => self.on_board(m),
                 Frame::Accounts(m) => self.on_accounts(m, from),
+                /* Rollups (§8.2): a manifest to compare against, or a day to
+                   store. An ask arriving here is answered by `answer`, never
+                   taken. */
+                Frame::Analytics(m) => self.on_analytics(m, from),
                 /* An unpost's answer is read by the exchange that asked
                    (`unpost_there`); an ask is only ever answered, never taken. */
                 Frame::Board(_) => {}
@@ -1073,6 +1104,15 @@ impl Link {
                 }
                 Frame::Board(m @ BoardMsg::Board { .. }) if who.current => self.on_board(m),
                 Frame::Accounts(m) if who.current => self.on_accounts(m, from.as_deref()),
+                /* One owner's day, read out of this wall's store for a wall
+                   that has a hole the manifest named. Answered on the same
+                   stream; nothing is gossiped. */
+                Frame::Analytics(AnalyticsMsg::AnalyticsAsk { host, day, .. }) if who.current => {
+                    if let Some(f) = self.on_ask(&host, &day) {
+                        out.push(f);
+                    }
+                }
+                Frame::Analytics(m) if who.current => self.on_analytics(m, from.as_deref()),
                 /* A notice of this wall's taken down from another — decided
                    here, against this wall's own ladder (`board.rs`). Not gated
                    by "take work from other walls": it starts nothing. */
@@ -1098,6 +1138,9 @@ impl Link {
             }
             /* And its accounts, to a wall that says them (`accounting.rs`). */
             out.extend(self.accounts_for(from.as_deref()));
+            /* And its rollup manifest, to a wall that holds rollups and has
+               not heard this exact picture (`link/rollups.rs`). */
+            out.extend(self.analytics_for(from.as_deref()));
         }
         if fleet_spoke {
             self.emit_roster();

@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 71;
+const SCHEMA_VERSION: i64 = 72;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -451,6 +451,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (69, migrate_v69),
     (70, migrate_v70),
     (71, migrate_v71),
+    (72, migrate_v72),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4154,6 +4155,85 @@ fn migrate_v71(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v71: {e}"))
+}
+
+/// The fleet's rollups (§8.2, §3.6).
+///
+/// **`usage_day_digest` is what makes a manifest a cheap read.** Without it, a
+/// wall asked "which days do you hold for the laptop" would have to fold every
+/// hour row it has ever merged, on every exchange with every peer. One row per
+/// owner per UTC day, written when the day's rows change, turns that into an
+/// indexed scan of a table with a few hundred rows in it.
+///
+/// The day is `YYYY-MM-DD` in UTC rather than an epoch because a day is a
+/// calendar fact and this table is read by a person when one goes wrong; the
+/// hour rows it describes carry their own instants.
+///
+/// **`analytics_agent.profile` is the one non-rollup column here**, and it is
+/// the column the ingest's agent writer will fill: the live reading needs to say
+/// *which* agent is working (`scout`, `review`) and not merely how many (§4.4).
+/// It lands now because the day's agent sidecar on the wire carries it, and a
+/// field ahead of the store is a field two walls disagree about. Nothing writes
+/// it yet, locally or from a peer.
+fn migrate_v72(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS usage_day_digest (
+            host   TEXT NOT NULL,
+            day    TEXT NOT NULL,
+            digest TEXT NOT NULL,
+            rows   INTEGER NOT NULL,
+            PRIMARY KEY (host, day)
+        );
+
+        CREATE INDEX IF NOT EXISTS usage_day_digest_by_day ON usage_day_digest(day);
+
+        -- The sidecars are read one owner-day at a time by every digest refresh
+        -- and every ask, and the predicate is `started_at < end AND (ended_at
+        -- IS NULL OR ended_at >= start)`. Without these the read is a full scan
+        -- of every session either host has ever recorded, once a minute, under
+        -- the store's one mutex.
+        CREATE INDEX IF NOT EXISTS analytics_session_by_host_start
+            ON analytics_session(host, started_at);
+        CREATE INDEX IF NOT EXISTS analytics_session_by_host_end
+            ON analytics_session(host, ended_at);
+        CREATE INDEX IF NOT EXISTS analytics_agent_by_host_start
+            ON analytics_agent(host, started_at);
+        CREATE INDEX IF NOT EXISTS analytics_agent_by_host_end
+            ON analytics_agent(host, ended_at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v72: {e}"))?;
+    add_column(conn, "analytics_agent", "profile", "TEXT NOT NULL DEFAULT ''")?;
+
+    /* Every day already recorded gets its digest, so a wall that upgrades does
+       not present its own history to the rest of the flyway as a hole. Only the
+       days that actually hold rows: a day with no usage has nothing to send,
+       and walking every calendar day back to the first one would be years of
+       reads to write nothing. */
+    let hours: Vec<(String, i64)> = {
+        /* Every distinct instant, with the day worked out in Rust rather than
+           by SQL integer division: that truncates towards zero where `day_key`
+           floors, and a row before 1970 would land in the wrong day and never
+           be offered. Unreachable through the ingest's own cutoff, and a rung
+           runs once and cannot be corrected by a later pass, so it is worth not
+           depending on. */
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT host, hour FROM usage_hour ORDER BY host, hour")
+            .map_err(|e| format!("migrate v72: {e}"))?;
+        let got = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| format!("migrate v72: {e}"))?;
+        got.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("migrate v72: {e}"))?
+    };
+    let mut days: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    for (host, hour) in hours {
+        days.insert((host, crate::flyway::analytics::day_key(hour)));
+    }
+    for (host, day) in days {
+        crate::analytics::refresh_day(conn, &host, &day)?;
+    }
+    Ok(())
 }
 
 /// Write down that a prompt has just gone to this card's stdin. Called from the

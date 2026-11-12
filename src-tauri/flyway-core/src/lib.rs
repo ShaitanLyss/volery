@@ -22,6 +22,7 @@
 
 pub mod accounts;
 pub mod act;
+pub mod analytics;
 pub mod ask;
 pub mod boards;
 pub mod cards;

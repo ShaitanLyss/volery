@@ -44,6 +44,7 @@ use serde_json::Value;
 
 use super::act::ActMsg;
 use super::accounts::AccountsMsg;
+use super::analytics::AnalyticsMsg;
 use super::boards::BoardMsg;
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
@@ -90,6 +91,11 @@ pub enum Frame {
     /// (`steward.rs`): asked of the wall the phone chose, answered on the same
     /// stream, never gossiped.
     Steward(StewardMsg),
+    /// The fleet's hourly rollups (`analytics.rs`): what a wall holds, one day
+    /// asked for, and one day answered. The manifest is said on an exchange
+    /// with a wall that announces the word; an ask and its answer ride one
+    /// exchange of their own and are never gossiped.
+    Analytics(AnalyticsMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -147,6 +153,7 @@ const KNOWN: &[&str] = &[
     "accounts", "signin_begin", "signin_begun", "signin_code", "signin_done",
     "see", "seen",
     "steward", "stewarded", "confirm", "general",
+    "analytics", "analytics_ask", "analytics_day",
 ];
 
 #[cfg(test)]
@@ -366,6 +373,7 @@ mod tests {
         ] {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
         }
+        written.extend(crate::analytics::TAGS.map(str::to_string));
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();

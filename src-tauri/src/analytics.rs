@@ -32,7 +32,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -41,6 +41,7 @@ use tauri::{AppHandle, Manager};
 use crate::prompt::{self, Form};
 use crate::redact;
 use crate::sessions::{self, Folded};
+use crate::flyway::analytics::{day_key, DayAgent, DayDigest, DayRow, DaySession, HostDays, DAY_MS};
 use crate::store::Store;
 use crate::usage::{epoch_ms, now_ms, Record};
 
@@ -1917,6 +1918,11 @@ struct Counts {
     /// are the halves a reader may never add together.
     invalidations: i64,
     attributed: i64,
+    /// Every UTC day whose `usage_hour` rows or session sidecars this pass
+    /// touched, so the digests are refreshed for exactly those and not for a
+    /// guess. A session alive across three days appears in all three days'
+    /// sidecars, and a day whose sidecar moved has a different digest.
+    days: BTreeSet<String>,
     /// Transcripts the one-off walk read, and those too large to read.
     walked: i64,
     unreadable: i64,
@@ -1948,6 +1954,7 @@ impl Counts {
         self.attributed += other.attributed;
         self.walked += other.walked;
         self.unreadable += other.unreadable;
+        self.days.extend(other.days);
     }
 }
 
@@ -2424,6 +2431,9 @@ fn write_chunk(
           too: a switch is a fact about how many cards were working, and the
           card that moved is one of them. */
     counts.invalidations += write_switches(&tx, host, &switches)?;
+
+    /* 8. Which days moved, for the digest refresh after the commit. */
+    counts.days = touched_days(&hours, &session_rows, now);
 
     tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
     Ok(counts)
@@ -5018,6 +5028,416 @@ pub(crate) fn catch_up(app: &AppHandle, conversation_id: &str) -> Result<Caught,
 ///
 /// The collector is the ordinary caller; `analytics_pass` is the same function
 /// on demand. Nothing else in the app calls it, and the front end never does.
+/* ---------- The fleet's rollups, kept and served (§8.2) ----------
+ *
+ * The hourly tier is what crosses, so everything here works one owner's one
+ * UTC day at a time. Nothing in this block decides *when* a day crosses; that
+ * is `flyway/link.rs`, and the digest it compares against is written here.
+ */
+
+const DAY_ROWS_SQL: &str = "SELECT hour, account, provider, model, effort, cli, source, project,
+                                   provenance, in_tok, out_tok, cache_read, write_5m, write_1h,
+                                   requests, usd_reported
+                              FROM usage_hour
+                             WHERE host = ?1 AND hour >= ?2 AND hour < ?3
+                             ORDER BY hour, account, provider, model, effort, cli, source,
+                                      project, provenance";
+
+/// One owner's hour rows for one day, as the frame carries them.
+///
+/// Rows are bounded by the day rather than by the hour's own calendar, because
+/// `usage_hour.hour` is a bucket floor: an instant belongs to the day its floor
+/// falls in, which is what the owner wrote and what the digest covers.
+pub fn day_rows(conn: &Connection, host: &str, day: &str) -> Result<Vec<DayRow>, String> {
+    let start = day_start_of(day)?;
+    let mut stmt = conn.prepare(DAY_ROWS_SQL).map_err(|e| format!("analytics: day rows: {e}"))?;
+    let got = stmt
+        .query_map(params![host, start, start + DAY_MS], |r| {
+            Ok(DayRow {
+                hour: r.get(0)?,
+                account: r.get(1)?,
+                provider: r.get(2)?,
+                model: r.get(3)?,
+                effort: r.get(4)?,
+                cli: r.get(5)?,
+                source: r.get(6)?,
+                project: r.get(7)?,
+                provenance: r.get(8)?,
+                in_tok: r.get(9)?,
+                out_tok: r.get(10)?,
+                cache_read: r.get(11)?,
+                write_5m: r.get(12)?,
+                write_1h: r.get(13)?,
+                requests: r.get(14)?,
+                usd_reported: r.get(15)?,
+            })
+        })
+        .map_err(|e| format!("analytics: day rows: {e}"))?;
+    got.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("analytics: day rows: {e}"))
+}
+
+/// The sessions a day's rows can be joined to: every session that overlaps the
+/// day, whether it began in it or ran across midnight. A session carried by two
+/// days is written twice and is the same row both times, which is why the merge
+/// can replace it without losing anything.
+pub fn day_sessions(conn: &Connection, host: &str, day: &str) -> Result<Vec<DaySession>, String> {
+    let start = day_start_of(day)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT session, project, source, card_id, parent_card, opened_by, branch,
+                    started_at, ended_at, cli_min, cli_max, account_first, account_last,
+                    provider_first, provider_last, turns
+               FROM analytics_session
+              WHERE host = ?1 AND started_at < ?3 AND (ended_at IS NULL OR ended_at >= ?2)
+              ORDER BY session",
+        )
+        .map_err(|e| format!("analytics: day sessions: {e}"))?;
+    let got = stmt
+        .query_map(params![host, start, start + DAY_MS], |r| {
+            Ok(DaySession {
+                session: r.get(0)?,
+                project: r.get(1)?,
+                source: r.get(2)?,
+                card_id: r.get(3)?,
+                parent_card: r.get(4)?,
+                opened_by: r.get(5)?,
+                branch: r.get(6)?,
+                started_at: r.get(7)?,
+                ended_at: r.get(8)?,
+                cli_min: r.get(9)?,
+                cli_max: r.get(10)?,
+                account_first: r.get(11)?,
+                account_last: r.get(12)?,
+                provider_first: r.get(13)?,
+                provider_last: r.get(14)?,
+                turns: r.get(15)?,
+            })
+        })
+        .map_err(|e| format!("analytics: day sessions: {e}"))?;
+    got.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("analytics: day sessions: {e}"))
+}
+
+pub fn day_agents(conn: &Connection, host: &str, day: &str) -> Result<Vec<DayAgent>, String> {
+    let start = day_start_of(day)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT agent_id, session, parent_agent, depth, kind, profile, requested_model,
+                    started_at, ended_at, turns, cost_usd, account, provider
+               FROM analytics_agent
+              WHERE host = ?1 AND started_at < ?3 AND (ended_at IS NULL OR ended_at >= ?2)
+              ORDER BY agent_id, session",
+        )
+        .map_err(|e| format!("analytics: day agents: {e}"))?;
+    let got = stmt
+        .query_map(params![host, start, start + DAY_MS], |r| {
+            Ok(DayAgent {
+                agent_id: r.get(0)?,
+                session: r.get(1)?,
+                parent_agent: r.get(2)?,
+                depth: r.get(3)?,
+                kind: r.get(4)?,
+                profile: r.get(5)?,
+                requested_model: r.get(6)?,
+                started_at: r.get(7)?,
+                ended_at: r.get(8)?,
+                turns: r.get(9)?,
+                cost_usd: r.get(10)?,
+                account: r.get(11)?,
+                provider: r.get(12)?,
+            })
+        })
+        .map_err(|e| format!("analytics: day agents: {e}"))?;
+    got.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| format!("analytics: day agents: {e}"))
+}
+
+fn day_start_of(day: &str) -> Result<i64, String> {
+    crate::flyway::analytics::day_start(day).ok_or_else(|| format!("analytics: `{day}` is not a UTC date"))
+}
+
+/// Every UTC day an hour key or a session sidecar belongs to.
+///
+/// Both halves matter, and the second is the one that is easy to miss: a
+/// session alive on three days is carried in all three days' sidecars (§8.2,
+/// so a day is joinable on its own), and one change to its `ended_at` or
+/// `turns` changes the digest of every one of them. Refreshing only today and
+/// yesterday would leave the older days advertising a digest this wall can no
+/// longer serve, and a peer would ask for them for ever.
+///
+/// Bounded by the fine tier's own retention, since a record older than that is
+/// never written, and by a hard ceiling so a row with an impossible
+/// `started_at` costs a hundred reads rather than twenty thousand.
+fn touched_days(hours: &HashMap<HourKey, Sums>, sessions: &[SessionWrite], now: i64) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for k in hours.keys() {
+        out.insert(day_key(k.hour));
+    }
+    let floor = now - FINE_KEEP_MS;
+    for s in sessions {
+        let from = s.started_at.max(floor).min(now);
+        let to = if s.ended_at > 0 { s.ended_at.min(now) } else { now }.max(from);
+        let mut at = from - from.rem_euclid(DAY_MS);
+        for _ in 0..400 {
+            if at > to {
+                break;
+            }
+            out.insert(day_key(at));
+            at += DAY_MS;
+        }
+    }
+    out
+}
+
+/// Recompute one day's digest and row count from the rows this wall holds.
+///
+/// Called by the ingest after every pass, for the two days a pass can have
+/// touched. A stored digest is what makes the manifest a scan of a few hundred
+/// rows instead of a fold over every hour ever recorded, and the reason it is
+/// recomputed rather than written alongside a row is that a digest must cover
+/// the whole day: the last write of a day does not know it is the last.
+pub fn refresh_day(conn: &Connection, host: &str, day: &str) -> Result<(), String> {
+    let rows = day_rows(conn, host, day)?;
+    let sessions = day_sessions(conn, host, day)?;
+    let agents = day_agents(conn, host, day)?;
+    let digest = crate::flyway::analytics::digest(host, day, &rows, &sessions, &agents);
+    if rows.is_empty() && sessions.is_empty() && agents.is_empty() {
+        conn.execute("DELETE FROM usage_day_digest WHERE host = ?1 AND day = ?2", params![host, day])
+            .map_err(|e| format!("analytics: day digest: {e}"))?;
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO usage_day_digest (host, day, digest, rows) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(host, day) DO UPDATE SET digest = excluded.digest, rows = excluded.rows",
+        params![host, day, digest, rows.len() as i64],
+    )
+    .map_err(|e| format!("analytics: day digest: {e}"))?;
+    Ok(())
+}
+
+/// Refresh exactly the days a pass touched, as `Counts::days` names them.
+///
+/// **Not "today and yesterday".** A pass can write an hour bucket for any day
+/// inside the fine tier's retention (an adopted terminal session, a transcript
+/// seen for the first time, a clock that is a little ahead), and a session
+/// alive across days appears in each of their sidecars. Both make a day outside
+/// that window move, and a digest that is not refreshed is a peer asking for
+/// that day for ever.
+pub fn refresh_days(conns: &Mutex<Connection>, host: &str, days: &BTreeSet<String>) -> Result<(), String> {
+    if days.is_empty() {
+        return Ok(());
+    }
+    let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+    for day in days {
+        refresh_day(&conn, host, day)?;
+    }
+    Ok(())
+}
+
+/// Every day this wall holds, per owner. The manifest frame, in the shape it
+/// travels in.
+pub fn manifest(conn: &Connection) -> Result<Vec<HostDays>, String> {
+    let mut stmt = conn
+        .prepare("SELECT host, day, digest, rows FROM usage_day_digest ORDER BY host, day")
+        .map_err(|e| format!("analytics: manifest: {e}"))?;
+    let got = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, DayDigest { day: r.get(1)?, digest: r.get(2)?, rows: r.get(3)? }))
+        })
+        .map_err(|e| format!("analytics: manifest: {e}"))?;
+    let mut out: Vec<HostDays> = Vec::new();
+    for row in got {
+        let (host, d) = row.map_err(|e| format!("analytics: manifest: {e}"))?;
+        match out.last_mut() {
+            Some(last) if last.host == host => last.days.push(d),
+            _ => out.push(HostDays { host, days: vec![d] }),
+        }
+    }
+    Ok(out)
+}
+
+/// Which of another wall's days this one lacks or holds an older copy of.
+///
+/// **A relayed day fills a hole and never overwrites one.** A peer may hold an
+/// owner's day from before the owner's last correction, and it cannot tell. So
+/// an ask goes to whoever has it, and `merge_day` refuses to replace a day that
+/// arrived from anybody but its owner. That keeps the rule in §8.1 true in the
+/// only case that could break it: two walls holding different rows and no way
+/// to rank them.
+pub fn days_needed(conn: &Connection, theirs: &[HostDays], mine: &str) -> Result<Vec<(String, String, String)>, String> {
+    /* What this wall holds, in one read. A query per day per tick is the wrong
+       shape for a comparison that one indexed scan answers, and the number of
+       days grows with retention. */
+    let mut held: HashMap<(String, String), String> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT host, day, digest FROM usage_day_digest")
+            .map_err(|e| format!("analytics: days held: {e}"))?;
+        let got = stmt
+            .query_map([], |r| Ok(((r.get::<_, String>(0)?, r.get::<_, String>(1)?), r.get::<_, String>(2)?)))
+            .map_err(|e| format!("analytics: days held: {e}"))?;
+        for row in got {
+            let (k, v) = row.map_err(|e| format!("analytics: days held: {e}"))?;
+            held.insert(k, v);
+        }
+    }
+    let mut out = Vec::new();
+    for h in theirs {
+        if h.host == mine || h.host.trim().is_empty() {
+            continue;
+        }
+        for d in &h.days {
+            /* A day this wall cannot parse is skipped rather than asked for:
+               an ask for it can only ever be answered with silence, and an
+               unanswerable day at the head of the queue would hold back every
+               day behind it. */
+            if crate::flyway::analytics::day_start(&d.day).is_none() || d.digest.is_empty() {
+                continue;
+            }
+            if held.get(&(h.host.clone(), d.day.clone())).map(String::as_str) != Some(d.digest.as_str()) {
+                out.push((h.host.clone(), d.day.clone(), d.digest.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Store one day another wall sent, replacing what this wall held of it.
+///
+/// The whole day is one transaction, so a wall never shows half a day it was
+/// handed: the rows, the sidecars that make them joinable, and the digest all
+/// land or none do. `check` has already refused a frame that does not match its
+/// own digest, a row outside the day, or one over a cap.
+pub fn merge_day(
+    conns: &Mutex<Connection>,
+    owner: &str,
+    day: &str,
+    digest: &str,
+    rows: &[DayRow],
+    sessions: &[DaySession],
+    agents: &[DayAgent],
+    from: &str,
+    mine: &str,
+) -> Result<usize, String> {
+    if owner == mine {
+        return Err(format!("{owner} is this wall; its own day is never taken from another"));
+    }
+    let start = day_start_of(day)?;
+    /* One lock across the check and the write. Two would leave a window in
+       which a relay's frame and the owner's cross in flight, the relay looking
+       at a hole that has just been filled — the one ordering this rule exists
+       to prevent, arrived at by luck rather than by design. */
+    let mut conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+    if from != owner {
+        let held: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM usage_day_digest WHERE host = ?1 AND day = ?2)",
+                params![owner, day],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if held {
+            return Err(format!(
+                "{owner}'s {day} came from {from}, which is not its owner; a relayed day fills a hole and \
+                 never overwrites one"
+            ));
+        }
+    }
+    let tx = conn.transaction().map_err(|e| format!("analytics: merge: {e}"))?;
+    tx.execute(
+        "DELETE FROM usage_hour WHERE host = ?1 AND hour >= ?2 AND hour < ?3",
+        params![owner, start, start + DAY_MS],
+    )
+    .map_err(|e| format!("analytics: merge: {e}"))?;
+    for r in rows {
+        tx.execute(
+            "INSERT INTO usage_hour
+               (hour, host, account, provider, model, effort, cli, source, project, provenance,
+                in_tok, out_tok, cache_read, write_5m, write_1h, requests, usd_reported)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+             ON CONFLICT(hour, host, account, provider, model, effort, cli, source, project,
+                         provenance)
+             DO UPDATE SET
+               in_tok = excluded.in_tok,
+               out_tok = excluded.out_tok,
+               cache_read = excluded.cache_read,
+               write_5m = excluded.write_5m,
+               write_1h = excluded.write_1h,
+               requests = excluded.requests,
+               usd_reported = excluded.usd_reported",
+            params![
+                r.hour, owner, r.account, r.provider, r.model, r.effort, r.cli, r.source,
+                r.project, r.provenance, r.in_tok, r.out_tok, r.cache_read, r.write_5m,
+                r.write_1h, r.requests, r.usd_reported
+            ],
+        )
+        .map_err(|e| format!("analytics: merge: {e}"))?;
+    }
+    for s in sessions {
+        tx.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, parent_card, opened_by, branch,
+                started_at, ended_at, cli_min, cli_max, account_first, account_last,
+                provider_first, provider_last, turns)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+             ON CONFLICT(session, host) DO UPDATE SET
+               project = excluded.project,
+               source = excluded.source,
+               card_id = COALESCE(excluded.card_id, card_id),
+               parent_card = COALESCE(excluded.parent_card, parent_card),
+               opened_by = excluded.opened_by,
+               branch = excluded.branch,
+               started_at = excluded.started_at,
+               ended_at = COALESCE(excluded.ended_at, ended_at),
+               cli_min = excluded.cli_min,
+               cli_max = excluded.cli_max,
+               account_first = excluded.account_first,
+               account_last = excluded.account_last,
+               provider_first = excluded.provider_first,
+               provider_last = excluded.provider_last,
+               turns = excluded.turns",
+            params![
+                s.session, owner, s.project, s.source, s.card_id, s.parent_card, s.opened_by,
+                s.branch, s.started_at, s.ended_at, s.cli_min, s.cli_max, s.account_first,
+                s.account_last, s.provider_first, s.provider_last, s.turns
+            ],
+        )
+        .map_err(|e| format!("analytics: merge: {e}"))?;
+    }
+    for a in agents {
+        tx.execute(
+            "INSERT INTO analytics_agent
+               (agent_id, session, host, parent_agent, depth, kind, profile, requested_model,
+                started_at, ended_at, turns, cost_usd, account, provider)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+             ON CONFLICT(agent_id, session, host) DO UPDATE SET
+               parent_agent = excluded.parent_agent,
+               depth = excluded.depth,
+               kind = excluded.kind,
+               profile = excluded.profile,
+               requested_model = excluded.requested_model,
+               started_at = excluded.started_at,
+               ended_at = COALESCE(excluded.ended_at, ended_at),
+               turns = excluded.turns,
+               cost_usd = excluded.cost_usd,
+               account = excluded.account,
+               provider = excluded.provider",
+            params![
+                a.agent_id, a.session, owner, a.parent_agent, a.depth, a.kind, a.profile,
+                a.requested_model, a.started_at, a.ended_at, a.turns, a.cost_usd, a.account,
+                a.provider
+            ],
+        )
+        .map_err(|e| format!("analytics: merge: {e}"))?;
+    }
+    tx.execute(
+        "INSERT INTO usage_day_digest (host, day, digest, rows) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(host, day) DO UPDATE SET digest = excluded.digest, rows = excluded.rows",
+        params![owner, day, digest, rows.len() as i64],
+    )
+    .map_err(|e| format!("analytics: merge: {e}"))?;
+    tx.commit().map_err(|e| format!("analytics: merge: {e}"))?;
+    Ok(rows.len())
+}
+
 pub fn pass(app: &AppHandle) -> Result<Report, String> {
     let began = Instant::now();
     let now = now_ms();
@@ -5063,6 +5483,11 @@ pub fn pass(app: &AppHandle) -> Result<Report, String> {
        card's own threshold is decided on the same facts the pass just wrote.
        It writes a notice and a mark and never stops, pauses or slows anything. */
     crate::spend::evaluate(&store.0, app, &touched)?;
+
+    /* §8.2's day digests, over exactly the days this pass touched. What a peer
+       reads in the manifest must never name a day whose rows have moved since,
+       and the recompute is a handful of indexed reads rather than a fold. */
+    refresh_days(&store.0, &host, &counts.days)?;
 
     /* The fold comes after the offsets have advanced on purpose: a call and its
        result are both durable before any turn is allowed to consume them, so a
@@ -10710,5 +11135,279 @@ mod tests {
             vec![at + 4 * 3_600_000],
             "one re-read, claimed by the later write"
         );
+    }
+
+    /* ---------- The fleet's rollups (§8.2) ---------- */
+
+    fn fleet_day() -> String {
+        "2026-11-12".to_string()
+    }
+
+    fn at_hour(day: &str, hour: i64) -> i64 {
+        crate::flyway::analytics::day_start(day).unwrap() + hour * 3_600_000
+    }
+
+    fn row(day: &str, hour: i64, in_tok: i64) -> DayRow {
+        DayRow {
+            hour: at_hour(day, hour),
+            account: "lyss".into(),
+            provider: "anthropic".into(),
+            model: "claude-opus-5-5".into(),
+            effort: "".into(),
+            cli: "2.1.233".into(),
+            source: "transcript".into(),
+            project: "C:/workbench/volery".into(),
+            provenance: "transcript".into(),
+            in_tok,
+            out_tok: 0,
+            cache_read: 0,
+            write_5m: 0,
+            write_1h: 0,
+            requests: 1,
+            usd_reported: 0.0,
+        }
+    }
+
+    fn digest_of(host: &str, day: &str, rows: &[DayRow]) -> String {
+        crate::flyway::analytics::digest(host, day, rows, &[], &[])
+    }
+
+    fn total_in(conn: &Connection, host: &str) -> i64 {
+        conn.query_row("SELECT COALESCE(SUM(in_tok), 0) FROM usage_hour WHERE host = ?1", [host], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// **A day is replaced, never added to.** Replaying the same day must leave
+    /// the same rows and not a doubled total, which is the one property that
+    /// makes a union merge safe to re-send.
+    #[test]
+    fn the_same_day_twice_is_the_same_day_and_not_a_sum() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        let rows = vec![row(&day, 1, 100), row(&day, 2, 200)];
+        let d = digest_of("laptop", &day, &rows);
+        merge_day(&conns, "laptop", &day, &d, &rows, &[], &[], "laptop", "desk").unwrap();
+        merge_day(&conns, "laptop", &day, &d, &rows, &[], &[], "laptop", "desk").unwrap();
+        let conn = conns.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM usage_hour WHERE host = 'laptop'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "two rows, not four");
+        assert_eq!(total_in(&conn, "laptop"), 300, "and not six hundred");
+    }
+
+    /// The owner's later copy replaces the earlier one whole, including a row
+    /// it no longer has. An incremental merge would leave the removed row
+    /// behind and the day would disagree with the digest naming it.
+    #[test]
+    fn a_later_copy_of_a_day_replaces_it_whole() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        let first = vec![row(&day, 1, 100), row(&day, 2, 200)];
+        merge_day(&conns, "laptop", &day, &digest_of("laptop", &day, &first), &first, &[], &[], "laptop", "desk")
+            .unwrap();
+        let second = vec![row(&day, 1, 150)];
+        merge_day(&conns, "laptop", &day, &digest_of("laptop", &day, &second), &second, &[], &[], "laptop", "desk")
+            .unwrap();
+        let conn = conns.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM usage_hour WHERE host = 'laptop'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the row the owner dropped is gone here too");
+        assert_eq!(total_in(&conn, "laptop"), 150);
+    }
+
+    /// A relayed day fills a hole and never overwrites one: a peer cannot tell
+    /// whose copy is newer, so it is only allowed to fill a gap.
+    #[test]
+    fn a_relayed_day_fills_a_hole_and_never_overwrites_one() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        let rows = vec![row(&day, 1, 100)];
+        let d = digest_of("laptop", &day, &rows);
+        merge_day(&conns, "laptop", &day, &d, &rows, &[], &[], "laptop", "desk").unwrap();
+        let other = vec![row(&day, 1, 999)];
+        let err = merge_day(&conns, "laptop", &day, &digest_of("laptop", &day, &other), &other, &[], &[], "phone", "desk")
+            .unwrap_err();
+        assert!(err.contains("never overwrites"), "{err}");
+        assert_eq!(total_in(&conns.lock().unwrap(), "laptop"), 100);
+        /* But a hole it can fill. */
+        let fresh = vec![row("2026-11-13", 1, 5)];
+        merge_day(&conns, "laptop", "2026-11-13", &digest_of("laptop", "2026-11-13", &fresh), &fresh, &[], &[], "phone", "desk")
+            .unwrap();
+        assert_eq!(total_in(&conns.lock().unwrap(), "laptop"), 105);
+    }
+
+    /// A wall's own day is never taken from anybody. A peer relaying this
+    /// wall's rows back would otherwise replace rows written since the relay's
+    /// snapshot with what the relay had, which is the one way this merge could
+    /// lose work.
+    #[test]
+    fn a_wall_never_takes_its_own_day_from_another() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        let rows = vec![row(&day, 1, 100)];
+        let err = merge_day(&conns, "desk", &day, &digest_of("desk", &day, &rows), &rows, &[], &[], "desk", "desk")
+            .unwrap_err();
+        assert!(err.contains("its own day"), "{err}");
+        assert_eq!(total_in(&conns.lock().unwrap(), "desk"), 0);
+    }
+
+    /// The manifest names a day only once its digest has been refreshed, and
+    /// `days_needed` asks for what this wall does not hold or holds an older
+    /// copy of.
+    #[test]
+    fn the_manifest_names_a_day_and_a_peer_says_what_is_missing() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        let rows = vec![row(&day, 1, 100)];
+        merge_day(&conns, "laptop", &day, &digest_of("laptop", &day, &rows), &rows, &[], &[], "laptop", "desk")
+            .unwrap();
+        let conn = conns.lock().unwrap();
+        let held = manifest(&conn).unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].host, "laptop");
+        assert_eq!(held[0].days[0].day, day);
+        assert_eq!(held[0].days[0].rows, 1);
+
+        let theirs = vec![
+            held[0].clone(),
+            HostDays {
+                host: "phone".into(),
+                days: vec![DayDigest { day: day.clone(), digest: "abc".into(), rows: 3 }],
+            },
+            HostDays { host: "desk".into(), days: vec![DayDigest { day: day.clone(), digest: "own".into(), rows: 1 }] },
+        ];
+        let needed = days_needed(&conn, &theirs, "desk").unwrap();
+        assert_eq!(
+            needed,
+            vec![("phone".to_string(), day.clone(), "abc".to_string())],
+            "a day held is not asked for, and this wall's own never is"
+        );
+        /* A day this wall cannot parse is skipped rather than asked for, or an
+           unanswerable entry at the head of the queue would hold back every day
+           behind it. */
+        let junk = vec![HostDays {
+            host: "phone".into(),
+            days: vec![DayDigest { day: "12/11/2026".into(), digest: "x".into(), rows: 1 }],
+        }];
+        assert!(days_needed(&conn, &junk, "desk").unwrap().is_empty());
+    }
+
+    /// **A session alive across days moves all of them.** Its sidecar is carried
+    /// in every day it overlaps (§8.2), so ending it changes three digests; a
+    /// refresh that only looked at today and yesterday would leave the oldest
+    /// advertising a digest this wall can no longer serve, and a peer would ask
+    /// for it for ever.
+    #[test]
+    fn a_session_spanning_three_days_touches_all_three() {
+        let day = fleet_day();
+        let start = crate::flyway::analytics::day_start(&day).unwrap();
+        let mut s = SessionWrite {
+            session: "s".into(),
+            host: "desk".into(),
+            project: "p".into(),
+            source: "transcript".into(),
+            card_id: None,
+            parent_card: None,
+            opened_by: "person".into(),
+            branch: String::new(),
+            started_at: start + 3_600_000,
+            ended_at: start + 2 * DAY_MS + 3_600_000,
+            cli_min: String::new(),
+            cli_max: String::new(),
+            account_first: "lyss".into(),
+            account_last: "lyss".into(),
+            provider_first: "anthropic".into(),
+            provider_last: "anthropic".into(),
+            turns: 3,
+            endings_json: "{}".into(),
+        };
+        let days = touched_days(&HashMap::new(), std::slice::from_ref(&s), start + 2 * DAY_MS);
+        assert_eq!(days.len(), 3, "{days:?}");
+        assert!(days.contains(&day));
+        assert!(days.contains(&crate::flyway::analytics::day_key(start + DAY_MS)));
+        assert!(days.contains(&crate::flyway::analytics::day_key(start + 2 * DAY_MS)));
+        /* And an hour key is a day of its own, wherever it sits. */
+        s.started_at = start - 40 * DAY_MS;
+        s.ended_at = 0;
+        let mut hours: HashMap<HourKey, Sums> = HashMap::new();
+        hours.insert(
+            HourKey {
+                hour: start - 40 * DAY_MS,
+                account: "a".into(),
+                provider: "p".into(),
+                model: "m".into(),
+                effort: String::new(),
+                cli: String::new(),
+                source: String::new(),
+                project: String::new(),
+            },
+            Sums::default(),
+        );
+        let days = touched_days(&hours, &[], start);
+        assert_eq!(
+            days.iter().next().map(String::as_str),
+            Some(crate::flyway::analytics::day_key(start - 40 * DAY_MS).as_str())
+        );
+    }
+
+    /// A day this wall wrote is digested and offered, which is what makes its
+    /// own history visible to the fleet.
+    #[test]
+    fn a_day_this_wall_wrote_is_digested_and_offered() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        {
+            let conn = conns.lock().unwrap();
+            conn.execute(
+                "INSERT INTO usage_hour (hour, host, account, provider, model, source, project)
+                 VALUES (?1, 'desk', 'lyss', 'anthropic', 'claude-opus-5-5', 'transcript', 'C:/p')",
+                params![at_hour(&day, 3)],
+            )
+            .unwrap();
+            refresh_day(&conn, "desk", &day).unwrap();
+        }
+        let conn = conns.lock().unwrap();
+        let held = manifest(&conn).unwrap();
+        assert_eq!(held[0].host, "desk");
+        assert_eq!(held[0].days[0].rows, 1);
+        assert_ne!(held[0].days[0].digest, "");
+    }
+
+    /// A day that no longer has anything in it stops being offered, and its
+    /// digest row is removed rather than left describing nothing.
+    #[test]
+    fn a_day_that_empties_is_no_longer_offered() {
+        let conns = Mutex::new(db());
+        let day = fleet_day();
+        {
+            let conn = conns.lock().unwrap();
+            conn.execute(
+                "INSERT INTO usage_hour (hour, host, account, provider, model, source, project)
+                 VALUES (?1, 'desk', 'lyss', 'anthropic', 'claude-opus-5-5', 'transcript', 'C:/p')",
+                params![at_hour(&day, 3)],
+            )
+            .unwrap();
+            refresh_day(&conn, "desk", &day).unwrap();
+            assert_eq!(manifest(&conn).unwrap().len(), 1);
+            conn.execute("DELETE FROM usage_hour WHERE host = 'desk'", []).unwrap();
+            refresh_day(&conn, "desk", &day).unwrap();
+            assert!(manifest(&conn).unwrap().is_empty(), "an empty day is not a day to ask for");
+            let left: i64 = conn
+                .query_row("SELECT COUNT(*) FROM usage_day_digest", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(left, 0, "and the digest row goes with it");
+        }
+    }
+
+    /// A day whose rows do not match the digest carrying them is refused
+    /// before anything is written, so a short or altered frame never becomes
+    /// rows this wall will serve on.
+    #[test]
+    fn a_day_that_does_not_match_its_digest_is_refused_before_it_is_stored() {
+        let day = fleet_day();
+        let rows = vec![row(&day, 1, 100)];
+        let d = digest_of("laptop", &day, &rows);
+        let mut altered = rows.clone();
+        altered[0].in_tok = 1;
+        assert!(crate::flyway::analytics::check("laptop", &day, &d, &altered, &[], &[]).is_err());
+        assert!(crate::flyway::analytics::check("laptop", &day, &d, &rows, &[], &[]).is_ok());
     }
 }
