@@ -66,6 +66,18 @@ const ANALYTICS_ITEMS: string[] = [
   "struct ToolResult",
   "struct Receipt",
   "struct ToolShape",
+  /* The instruction-file writes and the account/provider/model moves (§3.9,
+     the invalidation half). `Batch` holds the writes, so the struct and the
+     parser that fills it come in with the sink — the list had neither, and
+     this script has been failing to compile since the invalidation work
+     landed, which is the one failure mode a lift must not have: it printed
+     `E0425` and ran no assertion at all. */
+  "struct InstructionWrite",
+  "fn parse_writes",
+  "const WRITE_TOOLS",
+  "fn write_path",
+  "fn instruction_kind",
+  "const MAX_INVALIDATE_REF",
   "fn classify_tool",
   "fn parse_tool_use",
   "fn content_size",
@@ -266,6 +278,18 @@ const body = [
   "mod redact;",
   "mod prompt;",
   "use prompt::Form;",
+  /* `analytics.rs` caps a reference with `crate::clip::preview`, which is a
+     re-export of the flyway core's. That crate is not linked here, and the cap
+     is not what these assertions are about: every reference in a lifted test is
+     far under `MAX_INVALIDATE_REF`, so a preview that cuts at the cap and does
+     nothing else answers identically. Written as a stub rather than an import
+     so the lift keeps needing nothing but the app's own rlibs. */
+  "pub mod clip {",
+  "    pub fn preview(text: &str, max: usize) -> String {",
+  "        if text.chars().count() <= max { return text.to_string(); }",
+  "        text.chars().take(max).collect()",
+  "    }",
+  "}",
   creditsModule(),
   providerModule(),
   sessionsModule(),
