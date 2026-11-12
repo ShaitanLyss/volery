@@ -253,14 +253,16 @@ describe("an allowance share that cannot be computed is null", () => {
 });
 
 describe("the schema rung", () => {
-  test("v68 is the next rung and it is in the ladder", () => {
-    expect(STORE).toContain("const SCHEMA_VERSION: i64 = 68;");
+  test("v69 is the next rung and it is in the ladder", () => {
+    expect(STORE).toContain("const SCHEMA_VERSION: i64 = 69;");
+    expect(STORE).toContain("(69, migrate_v69)");
+    /* The rung this file was written for, still in the ladder behind it. */
     expect(STORE).toContain("(68, migrate_v68)");
   });
 
   test("the table is §17's, with the index the tool reads it by", () => {
     const at = STORE.indexOf("fn migrate_v68");
-    const body = STORE.slice(at, STORE.indexOf("/* ── saved views", at));
+    const body = STORE.slice(at, STORE.indexOf("fn migrate_v69", at));
     for (const col of [
       "conversation_id",
       "measure",

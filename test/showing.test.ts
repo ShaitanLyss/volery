@@ -501,6 +501,138 @@ describe("a diagram fence", () => {
   });
 });
 
+/* The 17 fences harvested from this machine's own transcripts are the corpus
+ * these rules were built from, so each real shape is here by name. What each
+ * probe measured against the pinned mermaid 12.2.0, under this app's config
+ * (htmlLabels off, strict), is in `diagram.ts`'s header. */
+describe("repairing what mermaid refuses", () => {
+  const load = async () => await import("../src/lib/diagram");
+
+  test("a fence that parses is handed over exactly as written", async () => {
+    const { repairFence } = await load();
+    const real = [
+      'flowchart LR\n  A -->|"mssql 11 (drizzle)"| B["EOS Azure SQL"]',
+      "flowchart TD\n  A[Internal User Web Applications] --> N[NOVA<br/>new home page]",
+      "sequenceDiagram\n  participant N as Nova\n  E->>N: iframe-ready, posted only to the listed origins",
+      'flowchart LR\n  A["key fp:3f39…"] --> B["✓"]',
+    ];
+    for (const fence of real) expect(repairFence(fence)).toBe(fence);
+  });
+
+  test("a backslash-escaped quote is repaired only where it cannot close a label", async () => {
+    const { repairQuotes } = await load();
+    // The shape that started this: the label goes on past the quote.
+    expect(repairQuotes('A["Command::new(\\"git\\")"]', "'")).toBe('A["Command::new(\'git\')"]');
+    expect(repairQuotes('A["Command::new(\\"git\\")"]', ["“", "”"])).toBe(
+      'A["Command::new(“git”)"]',
+    );
+    // A pair opens on every line, and in every label, rather than closing one
+    // the line above or the label before left half-turned.
+    expect(repairQuotes('A["x \\"y\\""]\nB["z \\"w\\""]', ["“", "”"])).toBe(
+      'A["x “y”"]\nB["z “w”"]',
+    );
+    expect(repairQuotes('A["x \\"y"] --> B["z \\"w"]', ["“", "”"])).toBe(
+      'A["x “y"] --> B["z “w"]',
+    );
+    // A Windows path that ends in a backslash draws today: the quote closes it.
+    expect(repairQuotes('A["C:\\dir\\"]', "'")).toBe('A["C:\\dir\\"]');
+    expect(repairQuotes('A["C:\\"]', "'")).toBe('A["C:\\"]');
+    // An escaped quote before a closing delimiter is a closing quote.
+    expect(repairQuotes('A["x\\"] --> B', "'")).toBe('A["x\\"] --> B');
+    // A directive is JSON, where `\"` really is an escape.
+    expect(repairQuotes('%%{init: {"x": "a\\"b"}}%%', "'")).toBe('%%{init: {"x": "a\\"b"}}%%');
+    // And nothing is repaired at all unless somebody chose the character.
+    expect(repairQuotes('A["say \\"hi\\""]', "'")).toBe("A[\"say 'hi'\"]");
+  });
+
+  test("an unquoted edge label mermaid cannot read is quoted, and nothing else moves", async () => {
+    const { repairEdgeLabels } = await load();
+    /* The second real failure in the corpus: a `]` inside an unquoted edge
+       label. Quoting the same text draws the same label; leaving it is a
+       parse error. */
+    expect(repairEdgeLabels("flowchart LR\n  A -->|Louise renames it 'LUGG]'| B")).toBe(
+      'flowchart LR\n  A -->|"Louise renames it \'LUGG]\'"| B',
+    );
+    // Every bracket mermaid refuses there; probed one character at a time.
+    for (const c of ["]", "[", "(", ")", "{", "}"]) {
+      expect(repairEdgeLabels(`A -->|x ${c} y| B`)).toBe(`A -->|"x ${c} y"| B`);
+    }
+    /* A `"` is refused there too, and deliberately not repaired: quoting a
+       label that holds a quote makes a different parse error, so the fence
+       fails and is reported instead of being made to look handled. */
+    expect(repairEdgeLabels('A -->|x " y| B')).toBe('A -->|x " y| B');
+    // Everything mermaid reads there is left alone, including these.
+    for (const c of ["'", ":", ";", "#", "<", ">", "&", "→"]) {
+      const line = `A -->|x ${c} y| B`;
+      expect(repairEdgeLabels(line)).toBe(line);
+    }
+    // Already quoted, a second edge on the same line, and text that is not an
+    // edge label at all.
+    expect(repairEdgeLabels('A -->|"a ] b"| B')).toBe('A -->|"a ] b"| B');
+    expect(repairEdgeLabels("A -->|a]b| B -->|c]d| C")).toBe('A -->|"a]b"| B -->|"c]d"| C');
+    expect(repairEdgeLabels("A --> B|C]D|E")).toBe("A --> B|C]D|E");
+    expect(repairEdgeLabels("| a ] b |")).toBe("| a ] b |");
+    /* And the shapes that already draw must keep drawing, which the first cut
+       got wrong: it read the line with two `indexOf`s and no idea where it
+       was, so a pipe inside a quoted edge label or inside a node label was
+       taken for an edge label's opening. */
+    for (const line of [
+      'A -->|"grep | head"| B',
+      'A["see -->|x]|"] --> B',
+      'A -->|x " y| B',
+      'A -->|"a || b"| B',
+    ])
+      expect(repairEdgeLabels(line)).toBe(line);
+    // The two labelled forms the arrow pattern used to miss.
+    expect(repairEdgeLabels("A -..->|x]y| B")).toBe('A -..->|"x]y"| B');
+    expect(repairEdgeLabels("A ~~~|x]y| B")).toBe('A ~~~|"x]y"| B');
+  });
+
+  test("the edge repair is a flowchart's, and a sequence message is not one", async () => {
+    const { repairFence } = await load();
+    expect(repairFence("sequenceDiagram\n  A->>B: choose x ] y")).toBe(
+      "sequenceDiagram\n  A->>B: choose x ] y",
+    );
+    expect(repairFence("graph TD\n  A -->|a ] b| B")).toBe('graph TD\n  A -->|"a ] b"| B');
+    expect(repairFence('%% a comment with ]\nflowchart LR\n  A --> B')).toBe(
+      '%% a comment with ]\nflowchart LR\n  A --> B',
+    );
+  });
+
+  test("repairing twice is repairing once", async () => {
+    const { repairFence } = await load();
+    const once = repairFence("flowchart LR\n  A -->|a ] b| B", "'");
+    expect(repairFence(once, "'")).toBe(once);
+  });
+
+  test("the line mermaid names is the fence's own, and is quoted back", async () => {
+    const { refusedLine, refusedText } = await load();
+    const said =
+      'Parse error on line 4:\n...Command::new(\\"git\\")<br/><b>no CREATE_N...\n-----------------------^\nExpecting ' +
+      "'SQE', 'PIPE', got 'STR'";
+    expect(refusedLine(said)).toBe(4);
+    // Both the parser's and the lexer's refusals name a line, and both count
+    // the fence body from 1.
+    expect(refusedLine("Lexical error on line 2. Unrecognized text.")).toBe(2);
+    expect(refusedLine("it is longer than the 50,000 characters a diagram may be")).toBeNull();
+    // The brief's own block: line 4 the parser names is the fourth line of the
+    // *body*, which is the fifth line of the markdown block — the difference
+    // the note has to say out loud, and the quote is what settles it.
+    const fence = [
+      "flowchart LR",
+      "    A[skein.exe<br/>GUI subsystem] -->|\"every 60s pass\"| B{history_due?<br/>10-min gate}",
+      "    B -->|yes| C[observe_history<br/>up to 24 roots]",
+      '    C --> D["run_bounded()<br/>Command::new(\\"git\\")<br/><b>no CREATE_NO_WINDOW</b>"]',
+      "    D --> E[Windows allocates a]",
+    ].join("\n");
+    expect(refusedText(fence, refusedLine(said))).toContain("Command::new");
+    expect(refusedText(fence, null)).toBe("");
+    expect(refusedText(fence, 99)).toBe("");
+    // Clipped, because it is read back on a prompt.
+    expect(refusedText("flowchart LR\n" + "x".repeat(500), 2).length).toBe(160);
+  });
+});
+
 describe("what is believed of the renderer's answer", () => {
   test("only an svg string, drawn as a picture, and never markup", async () => {
     const { readDrawn } = await import("../src/lib/diagram");
@@ -520,9 +652,12 @@ describe("what is believed of the renderer's answer", () => {
     expect("picture" in odd && odd.w === 0 && odd.h === 0).toBe(true);
     // Too big to carry is said, not drawn.
     expect("error" in readDrawn({ svg: "<svg>" + "x".repeat(MAX_IMAGE_CHARS) + "</svg>" })).toBe(true);
-    // An error is its first line, clipped.
-    const bad = readDrawn({ error: "\n  Parse error on line 2:\n...stuff" });
-    expect(bad).toEqual({ error: "Parse error on line 2:" });
+    // An error is its first line, clipped — and the whole of it is kept
+    // beside that, because a note back to the author carries the last line,
+    // which is where mermaid names the token it wanted.
+    const said = "\n  Parse error on line 2:\n...stuff\nExpecting 'TEXT', got 'STR'";
+    const bad = readDrawn({ error: said });
+    expect(bad).toEqual({ error: "Parse error on line 2:", said });
   });
 
   test("the frame's own script reaches for nothing outside it", async () => {

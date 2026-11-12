@@ -976,6 +976,8 @@ pub fn run() {
             flyway::link::accounting::afar_seats,
             flyway::link::accounting::flyway_signin_begin,
             flyway::link::accounting::flyway_signin_code,
+            store::note_diagram_failure,
+            store::announce_diagram_failures,
             store::set_conversation_account,
             store::set_conversation_mode,
             store::set_conversation_bypass,

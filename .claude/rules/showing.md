@@ -265,7 +265,8 @@ one way Claude shows a diagram without being asked.
 - **A fence that cannot be drawn stays a fence**, with a quiet line under it — *not drawn —
   mermaid could not read it:* and the first line of mermaid's error. A drawn one has a
   `source` toggle (keyboard-reachable) that shows the fence it came from; a selection across
-  the drawing copies the fence.
+  the drawing copies the fence. **And the agent that wrote it is told on its next prompt** —
+  see *A diagram that did not draw, told to its author*, below.
 
 **The honest limit**, and it is the gallery's: a sandboxed frame may share its renderer
 process with this window, so a layout that takes a long time holds the window for that long.
@@ -273,6 +274,120 @@ It is bounded rather than prevented — mermaid's own `maxEdges` (500) and `maxT
 (50,000), one render at a time, and a frame that has not answered in `WEDGED_MS` is thrown away
 and made again for the next fence — which is the same partial defence `Gallery.svelte`
 documents for a design's script.
+
+## A diagram that did not draw, told to its author (2026-11-12)
+
+Lyss, watching a card's answer: *"not drawn, mermaid could not read it: Parse error on line
+4"*. **The agent that wrote that fence never saw that line.** It reads its own transcript, not
+the panel, so its diagram looks perfect to it, and it writes the same shape for the rest of the
+conversation. That invisibility is the defect; the parse error is only the symptom.
+
+### The corpus first, because the first guess was wrong
+
+Seventeen fences were harvested from every transcript on this machine (the `assistant` text
+blocks only, tool results excluded) and run through the pinned `mermaid@12.2.0` in a real
+Chrome, with `diagramConfig`'s own settings. Twenty-six more shapes were probed one variable at
+a time. What that settled:
+
+- **Two of the seventeen fail, both the author's, and mermaid's line number is right.** The
+  brief's block fails on `Command::new(\"git\")`: `"` is not an escape in mermaid, the string
+  ends there, and the rest parses as loose tokens against `<br/>`. The other is a `]` inside an
+  *unquoted* edge label, which mermaid cannot read at all.
+- **Mermaid counts the diagram's own lines, from 1 at the `flowchart` line**, not the fence's.
+  What it calls line 4 is the fifth line of the block. Right number, wrong frame of reference,
+  which is worth saying out loud to the author and is what the note does.
+- **`#quot;` does not render a quote here, and neither do `&quot;` or `&#34;`.** The docs' answer
+  assumes HTML labels; with `htmlLabels: false` mermaid escapes the label and the entity shows
+  on screen as its own characters. Eleven spellings were tried. **There is no way to draw an
+  ASCII `"` in a flowchart label under this config**, so the repair cannot be the documented
+  one, and turning HTML labels on is a visible, security-adjacent decision that was asked rather
+  than taken (`QUOTE_REPAIR` in `diagram.ts` is `null` until it is answered).
+- **`<b>`, `<strong>` and `**bold**` are drawn as their own literal text** under the same
+  setting. They parse, so they are not a refusal, and they are named in the note instead: a
+  diagram with visible tags in it is one its author would fix if it knew.
+
+So the split is: **one failure was the author's and one was ours**, the line number is honest,
+and the parity gap with Claude Desktop is `htmlLabels: false`, which is deliberate and stays.
+
+### Layer one: repair only what cannot mean anything else
+
+`diagram.ts::repairFence` runs between the fence and the renderer. Every rule in it is
+provably equivalent, and each has a test:
+
+- **`] [ ( ) { }` in an unquoted edge label.** Probed one character at a time: those six fail
+  and everything else, `'` `:` `;` `#` `→` included, parses. Quoting the same text draws the
+  same label, so the label is quoted and not one other character on the line moves. Gated on the
+  diagram being a `flowchart`/`graph`, on the `|` following an edge token, and on it being
+  outside a quoted string and outside a node's own brackets: a quoted edge label may hold a
+  `|` (`-->|"grep | head"|`) and a node label may hold a whole edge (`A["see -->|x]|"]`), and
+  both drew before this existed. `"` is deliberately not repaired there, because wrapping a
+  label that holds a quote in more quotes is a different parse error, so that one is reported.
+  The first cut read the line with two `indexOf`s and no idea where it was, and rewrote both of
+  those valid shapes into parse errors; the review found it, which is why the scan tracks quotes
+  and depth.
+- **`\"`**, and only when its author says which character takes its place. Mermaid has no
+  escape, so `\"` is genuinely ambiguous: `A["C:\dir\"]` draws today with the backslash as the
+  label's last character, and `Command::new(\"git\")` does not draw at all. **What settles it is
+  whether the label goes on**: a literal quote implies a closing quote later on the line, so a
+  `\"` with no other `"` after it is the closer and is left alone.
+- **`%%` lines are skipped whole**: a directive is JSON, where `\"` really is an escape.
+
+The one case that rule gets wrong is a label ending in a backslash on a line that also holds
+another quoted label. It is accepted rather than solved, because the wrong direction is loud:
+that fence fails to parse and its author is told, where refusing to repair the common shape
+would leave every `\"`-in-prose fence failing silently to the only reader who cannot see it.
+
+**The tension Lyss named, and how it is resolved.** Repairing everything teaches nothing; the
+answer is that the repair is narrow, the repair itself is not the lesson, and the case that
+cannot be repaired stays loud. Nothing is silently skipped: a fence that still fails after
+repairing is written down and reported, with mermaid's own words.
+
+### Layer two: the note, and why this channel
+
+The renderer is in the webview; the only thing that can reach a model is `additionalContext` on
+`UserPromptSubmit`, which `hooks.md` already owns. So the front end writes the failure into
+`diagram_fail` (schema v69), the hook reads what has not been said, and the echo of a prompt is
+what marks it said. Three alternatives were weighed:
+
+- **A tool the agent calls before sending.** Rejected: an agent writes a fence from habit and
+  will not look for a checker, which is `remove.md`'s finding that a capability an agent has a
+  habit against is indistinguishable from one that does not exist.
+- **A `system` line in the transcript.** Rejected: it is drawn *to the user*, and an agent
+  never reads Volery's lines. Injecting into the CLI's session file would forge the stream,
+  which is the one thing the echo bookkeeping cannot survive.
+- **The hook note.** One indexed read on a prompt, nothing on a diagram, and the words land
+  beside the prompt being answered, which is the highest-salience place anything can be put.
+
+Two details carry the feature:
+
+- **The mark is made by the app, on the echo of a prompt, never by the hook.** A hook stays a
+  reader (`hooks.md`), and marking at the *send* would be read as "already said" by the very
+  process it was meant for, since the hook runs after the send. Two things narrow it, and both
+  were review findings. The echo is a `user` event flagged `isReplay`, not any `user` event: a
+  tool result has the same shape and arrives mid-turn, so marking on one would spend a note the
+  hook never read. And the mark is a watermark at the moment the prompt **reached stdin**, recorded by
+  `supervisor::deliver_blocks` (`store::note_prompt_written`), not the moment its echo
+  arrived: the hook costs a few hundred milliseconds here, so a fence drawn in that window is a
+  row it never saw; everything newer waits for the next prompt, where it is said once (or twice,
+  if the hook caught it late, which is the harmless direction). **Not the moment the front end
+  drew the prompt**, which is what the first cut used: a prompt held behind a running turn, a
+  relay, a wake and a rouse prompt all reach stdin later than the gesture that asked for them,
+  so that time would leave every row written in between unmarked and the note repeated each
+  turn.
+
+**A cached refusal is still reported.** The same fence is drawn on surfaces with no author of
+  their own (a card's last message in the dock's notice, in a glance, on the wall), so one of
+  those drawing it first must not be what silences the note for the panel. Every draw and every
+  cache hit reports; the row is deduped in the database, so what the author reads is still one
+  line per refusal.
+- **It is said once**, and it says what it knows: the line (quoted, and named with the counting
+  it uses), mermaid's own sentence, and one targeted hint where the repair layer knows the shape
+  is not simply the author's fault. It never asserts what the diagram meant.
+
+**Where it does not reach, by design:** a diagram in the showcase (no author), and one on a card
+on another wall (its hook runs over there, and this wall writes no rows for a conversation it is
+only reading). A chat card is covered: it gets `--card` and `--db` like any other, so its prose
+can be told to it, which is most of what a chat card writes.
 
 ## Holding pictures
 

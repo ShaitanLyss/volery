@@ -876,6 +876,18 @@ export class Skein {
   #fold(c: Conversation, event: any) {
     c.ingest(event);
     this.#persistConv(c, event);
+    /* **A replayed prompt is the one proof that `UserPromptSubmit` ran**, and
+       the hook's note is the only channel a diagram's failure has to its
+       author (`store::record_diagram_failure`). The flag matters: a tool
+       result is a `user` event too, with no `parent_tool_use_id`, and it
+       arrives mid-turn, so marking on one would spend a note the hook never
+       read. That is this feature's own failure mode arriving from the side.
+       `--replay-user-messages` replays exactly the prompts that fire that
+       hook, so a `/command` answered locally, which neither fires it nor
+       echoes, leaves the row for the next real prompt rather than spending
+       it. */
+    if (event?.type === "user" && event.isReplay === true && !event.parent_tool_use_id)
+      this.#saidDiagrams(c);
     if (event?.type === "result" && this.#renewals.has(c.id)) this.#renewSoon(c);
     this.#writeJobs(c);
     this.#writeGates(c);
@@ -906,6 +918,23 @@ export class Skein {
         void this.setProvider(c, wanted);
       }
     }
+  }
+
+  /** Mark this card's diagram refusals said, against the moment its last prompt
+   *  actually reached stdin.
+   *
+   *  Written here rather than by the hook because a hook is a reader
+   *  (`hooks.md`), and here rather than at the send because the send *precedes*
+   *  the hook: a mark made then would be read as "already said" by the very
+   *  process it was meant for. The echo is strictly after it.
+   *
+   *  **The watermark is the write, and it is Rust's**, `store::note_prompt_written`
+   *  from `supervisor::deliver_blocks`. A time taken here would be the moment a
+   *  prompt was *drawn*, and a prompt held behind a running turn, a relay, a
+   *  wake or a rouse prompt reaches stdin much later, which would leave every
+   *  row written in between unmarked and the same note repeated each turn. */
+  #saidDiagrams(c: Conversation) {
+    void invoke("announce_diagram_failures", { conversation: c.id }).catch(() => {});
   }
 
   /** A card's `set_provider` call, held until its turn ends. */

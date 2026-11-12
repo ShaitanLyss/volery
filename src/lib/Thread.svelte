@@ -40,6 +40,10 @@
   import type { CardHandle } from "./cards.svelte";
   import { WAITING_TO_SEND, queuedCaption } from "./holding";
   import Markdown from "./Markdown.svelte";
+  /* Relay letters and your own prompts are not this card's words, so a
+     fence in either is never reported to the card being read. */
+  import DiagramScope from "./DiagramScope.svelte";
+  import { diagramAuthorScope } from "./drawing.svelte";
   import ToolCall from "./ToolCall.svelte";
   import Figure from "./Figure.svelte";
   import RelayMark from "./RelayMark.svelte";
@@ -70,6 +74,12 @@
   import { cardName } from "./naming";
 
   let { card }: { card: CardHandle } = $props();
+
+  /* Whose words the prose in this column is, for the one thing that needs to
+     know: a ```mermaid fence mermaid refused is reported back to its author
+     (`showing.md`). The mounter scoped it; this reads it for the letters that
+     are the reading card's own (see `letter`). */
+  const ofReadingCard = diagramAuthorScope();
 
   /* Chat view reads a run of machinery as what it came to, where the panel
      reads it as a status line of its last call (`docs/chat-mode.md` §4.2, §6.4
@@ -518,7 +528,7 @@
              these are, so it is announced rather than hidden from assistive
              tech (found in review). -->
         <span class="skeinmark">skein</span>
-        <Markdown blocks={parseMarkdown(said)} nav={false} />
+        <DiagramScope><Markdown blocks={parseMarkdown(said)} nav={false} /></DiagramScope>
       {:else if line.kind === "you"}
         <!-- The rail already has this prompt as one place (`you said`), and the
              headings inside it are marks in what was *said* rather than places
@@ -527,7 +537,7 @@
              to a line inside a `.line.you` — `nav={false}` only saves the
              run-in `lead` mark being computed, since `Markdown.svelte` writes
              `data-nav` on headings and list items regardless. -->
-        <Markdown blocks={parseMarkdown(said)} nav={false} />
+        <DiagramScope><Markdown blocks={parseMarkdown(said)} nav={false} /></DiagramScope>
       {:else}
         {line.text}
       {/if}
@@ -722,6 +732,12 @@
 )}
   {@const long = body.length > LETTER_LONG}
   {@const one = who.length === 1 ? who[0].card : null}
+  /* A letter this conversation sent is its own prose, so a fence in it is
+     reported to this card; one it received is the sender's, reported to the
+     sender when it is a card on this wall and to nobody when it is not (its
+     hook runs on its own wall). */
+  {@const of =
+    dir === "out" ? ofReadingCard() : one && !one.readable.elsewhere ? one.readable.id : null}
   <div class="letter" class:out={dir === "out"} data-nav="msg">
     <div class="hd">
       <span class="bird"><RelayMark {dir} {live} /></span>
@@ -744,7 +760,7 @@
       {/if}
     </div>
     <div class="bd md" class:cut={long && !open[key]}>
-      <Markdown blocks={parseMarkdown(body)} />
+      <DiagramScope {of}><Markdown blocks={parseMarkdown(body)} /></DiagramScope>
     </div>
     {#if long}
       <button type="button" class="more" aria-expanded={open[key] ? "true" : "false"} onclick={() => toggle(key)}
@@ -889,7 +905,7 @@
                one of them. -->
           <div class="inside">
             <div class="line text md">
-              <Markdown blocks={parseMarkdown(b.line.text)} />
+              <DiagramScope><Markdown blocks={parseMarkdown(b.line.text)} /></DiagramScope>
             </div>
           </div>
         {/if}

@@ -2542,6 +2542,15 @@ pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<De
        have: nothing takes the store's lock and then the supervisor's, so nothing
        here can be half of a cycle. */
     persist_turn(app, id, true);
+    /* **The one door every prompt goes through**, typed, held-and-released,
+    relayed, woken or roused, and the moment a prompt refusal's watermark is
+    taken from: a hook reads the diagram table just after this write, so
+    everything older is what it can have seen (`store::announce_diagram_failures`). */
+    if let Some(store) = app.try_state::<crate::store::Store>() {
+        if let Ok(conn) = store.0.lock() {
+            crate::store::note_prompt_written(&conn, id);
+        }
+    }
     Ok(Delivery::Sent)
 }
 

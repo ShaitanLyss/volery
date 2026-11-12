@@ -544,6 +544,28 @@ this arm existed and still works alone.
 shortcut: it is what makes a fourth event cost one line, and what stops the three drifting
 apart in the way the copy of a tool name did.
 
+### The fourth reader on that occasion: a diagram mermaid refused
+
+`standing` answers one more question on `UserPromptSubmit`, and it is the same shape: an
+observation one part of the wall made and the card provably cannot see. The renderer is in the
+webview; the author reads its own transcript, which looks fine, so a mermaid fence that did not
+draw is invisible to it and it writes the same broken shape all conversation. `showing.md` owns
+the whole design. What belongs here:
+
+- **On a prompt alone**, not on `SessionStart`. A compaction is not a card about to write its
+  next diagram, and the row is marked said on the *echo of a prompt*, which a compaction never
+  produces, so speaking there would only make it repeat.
+- **The mark is the app's, on a replayed prompt**, never this process's: a hook is a reader.
+  That is also why the mark cannot be made at the send, since the send precedes the hook and
+  would be read as "already said" by the very process it is for. Two narrowings, both review
+  findings: the event must be `isReplay` (a tool result is a `user` event too and arrives
+  mid-turn), and the mark stops at the moment the prompt was sent, so a row written while this
+  process was running is left for the next prompt rather than spent.
+- **One indexed read on a prompt** against a table that is almost always empty, and nothing on
+  any other event.
+- **The pure half is `standing_diagrams`**, lifted and run by `rustc --test` like
+  `standing_work`'s (four assertions, all passing on 2026-11-12 on the gnu toolchain).
+
 ### The delete guard looks through `cmd /c`, and `bash -c` and `pwsh -c`
 
 `wipes` and `routable` unwrap `cmd /c <command>` and judge the command that follows — and, since

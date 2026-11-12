@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 68;
+const SCHEMA_VERSION: i64 = 69;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -448,6 +448,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (66, migrate_v66),
     (67, migrate_v67),
     (68, migrate_v68),
+    (69, migrate_v69),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4009,6 +4010,228 @@ fn migrate_v68(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v68: {e}"))
+}
+
+/* ── diagrams mermaid refused to draw ─────────────────────────────────────*/
+
+/// One fence mermaid refused, as the card that wrote it is told about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiagramFail {
+    /// 1-based into the fence body, `0` where the refusal named no line.
+    pub line: i64,
+    /// That line, trimmed and clipped where it was written.
+    pub text: String,
+    /// The renderer's own words of refusal: mermaid's parse error, or this
+    /// wall's own sentence for a fence over the size bound.
+    pub said: String,
+}
+
+/// How much of the refused line is kept. A label is short; a long one is
+/// clipped rather than stored whole, because the note that carries it is read
+/// by a model on every turn it is said.
+pub const MAX_DIAGRAM_LINE: usize = 200;
+
+/// How much of mermaid's sentence is kept. The parse error is three lines, the
+/// first of which names the line and the last of which names the token it
+/// wanted — both fit, and the middle is the offending source repeated.
+pub const MAX_DIAGRAM_SAID: usize = 300;
+
+/// How many refusals one conversation may have outstanding. A card that
+/// writes five broken fences in a turn is told about all of them; a card that
+/// has been sitting on twelve for an hour is told about the newest few,
+/// because the note is read on every turn it is said and the older ones are
+/// no longer the thing being written.
+pub const MOST_DIAGRAM_FAILS: usize = 4;
+
+/// One rung for one thing: **a fact the conversation cannot see about itself.**
+///
+/// An agent writes a ```mermaid fence and the panel draws it. When mermaid
+/// refuses the text, the panel draws the fence with a quiet line underneath
+/// saying why — a line the *author* never sees, because an agent reads its own
+/// transcript, not the wall. So it goes on writing the same broken shape for
+/// the rest of the conversation, which is the defect this table exists for
+/// (`showing.md`, *A diagram that did not draw, told to its author*).
+///
+/// **The front end writes it, the hook reads it.** The failure is discovered
+/// by the renderer, in a sandboxed frame, in the webview; the only channel to
+/// a model is `additionalContext` on `UserPromptSubmit`, which is a short-lived
+/// second process (`hooks.md`). This is the meeting point, and it is the same
+/// shape `gate_run` uses: an observation one part of the wall makes and another
+/// part hands to a card.
+///
+/// **`announced_at` is written by the app, never by the hook**, for the reason
+/// `hooks.md` gives twice — a second writer is the path that locked the app out
+/// of its own database. What marks a row said is the *echo of a prompt*, which
+/// is proof the hook ran: `--replay-user-messages` replays exactly the prompts
+/// that fired `UserPromptSubmit`, and no locally answered `/command` echoes.
+/// So a row is said once, and a prompt that never reached the CLI does not
+/// spend it.
+///
+/// The unique index is the dedupe: the same broken fence drawn again — after a
+/// theme change, in the settled column as well as the live one, on another
+/// machine — is one refusal and not five.
+fn migrate_v69(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS diagram_fail (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            at_line         INTEGER NOT NULL DEFAULT 0,
+            line_text       TEXT NOT NULL,
+            said            TEXT NOT NULL,
+            at              INTEGER NOT NULL,
+            announced_at    INTEGER
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS diagram_fail_once
+            ON diagram_fail(conversation_id, at_line, line_text, said);
+
+        CREATE INDEX IF NOT EXISTS diagram_fail_unannounced
+            ON diagram_fail(conversation_id, announced_at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v69: {e}"))?;
+    /* **When this card's last prompt actually reached its stdin.** The column
+       is the watermark a refusal is marked said against, and it has to be the
+       *write* rather than the front end drawing a prompt: a prompt held behind
+       a running turn, a relay, a wake and a rouse prompt all reach stdin after
+       the gesture that asked for them, so a time taken at the gesture would
+       leave every row written in between unmarked and the note repeated at
+       every turn. Written by `supervisor::deliver_blocks`, which is the one
+       door every prompt of every kind goes through. */
+    add_column(conn, "conversation", "last_prompt_at", "INTEGER")
+}
+
+/// Write down that a prompt has just gone to this card's stdin. Called from the
+/// one door every prompt goes through, in the same breath as the turn mark.
+pub fn note_prompt_written(conn: &Connection, conversation: &str) {
+    let _ = conn.execute(
+        "UPDATE conversation SET last_prompt_at = ?2 WHERE id = ?1",
+        params![conversation, now()],
+    );
+}
+
+/// Write down a fence mermaid refused, once. Idempotent by the unique index,
+/// so a fence drawn again costs an insert that does nothing.
+pub fn record_diagram_failure(
+    conn: &Connection,
+    conversation: &str,
+    line: i64,
+    text: &str,
+    said: &str,
+) -> Result<(), String> {
+    /* Through `clip::keep`, which is what every text another reader will see
+       passes through: it caps *and* scrubs the characters a model cannot send
+       (`CLAUDE.md`, `clip::keep`). This text goes back out on a prompt, so a
+       control character in a fence would be this wall breaking the next
+       request it makes. */
+    let text = crate::clip::keep(text, MAX_DIAGRAM_LINE).kept;
+    let said = crate::clip::keep(said, MAX_DIAGRAM_SAID).kept;
+    conn.execute(
+        "INSERT INTO diagram_fail (conversation_id, at_line, line_text, said, at)
+           VALUES (?1, ?2, ?3, ?4, ?5)
+           ON CONFLICT(conversation_id, at_line, line_text, said) DO NOTHING",
+        params![conversation, line, text, said, now()],
+    )
+    .map_err(|e| format!("note diagram: {e}"))?;
+    /* Bounded at the write, not at the read: the note is a handful of lines and
+       a card that wrote forty broken diagrams over an afternoon has four
+       outstanding ones, the newest. Deleting here also keeps the hook's query
+       planning on a small table. */
+    let _ = conn.execute(
+        "DELETE FROM diagram_fail WHERE conversation_id = ?1 AND id NOT IN
+           (SELECT id FROM diagram_fail WHERE conversation_id = ?1
+              ORDER BY id DESC LIMIT ?2)",
+        params![conversation, MOST_DIAGRAM_FAILS as i64],
+    );
+    Ok(())
+}
+
+/// What this conversation has been told nothing about yet, newest first.
+///
+/// Read by `hooks.rs` from a short-lived process, so it takes a `&Connection`
+/// already opened read-only rather than a `Store`.
+pub fn unannounced_diagram_failures(conn: &Connection, conversation: &str) -> Vec<DiagramFail> {
+    let Ok(mut st) = conn.prepare(
+        "SELECT at_line, line_text, said FROM diagram_fail
+           WHERE conversation_id = ?1 AND announced_at IS NULL
+           ORDER BY id DESC LIMIT ?2",
+    ) else {
+        return Vec::new();
+    };
+    let rows = st.query_map(params![conversation, MOST_DIAGRAM_FAILS as i64], |r| {
+        Ok(DiagramFail { line: r.get(0)?, text: r.get(1)?, said: r.get(2)? })
+    });
+    match rows {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Mark this conversation's refusals said, up to `before`. Called on the echo
+/// of a prompt, which is the proof that the hook has read them.
+///
+/// **`before` is the moment the prompt was sent, not the moment the echo
+/// arrived.** The hook takes a few hundred milliseconds here (`hooks.md`), and
+/// a row written inside that window is one the hook never saw; marking it
+/// would spend the note without it ever being said. Everything older than the
+/// send is exactly what the hook can have read. Anything newer waits for the
+/// next prompt: if the hook caught it late it is said twice, which is the
+/// harmless direction, and if it did not it is said once.
+pub fn mark_diagram_failures_announced(
+    conn: &Connection,
+    conversation: &str,
+    before: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE diagram_fail SET announced_at = ?2
+           WHERE conversation_id = ?1 AND announced_at IS NULL AND at <= ?3",
+        params![conversation, now(), before],
+    )
+    .map_err(|e| format!("announce diagrams: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn note_diagram_failure(
+    store: tauri::State<'_, Store>,
+    conversation: String,
+    line: i64,
+    text: String,
+    said: String,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    record_diagram_failure(&conn, &conversation, line, &text, &said)
+}
+
+/// Mark a card's refusals said, against the moment its last prompt was written.
+///
+/// **The watermark is read here rather than passed in**, and it is the column
+/// `note_prompt_written` fills: a time taken in the front end is the moment a
+/// prompt was *drawn*, and a prompt held behind a running turn, a relay, a wake
+/// or a rouse prompt is written much later, which would leave every row written
+/// in between unmarked and the same note repeated at each turn.
+#[tauri::command]
+pub fn announce_diagram_failures(
+    store: tauri::State<'_, Store>,
+    conversation: String,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    let before: i64 = conn
+        .query_row(
+            "SELECT COALESCE(last_prompt_at, 0) FROM conversation WHERE id = ?1",
+            params![conversation],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("announce diagrams: {e}"))?
+        .unwrap_or(0);
+    if before <= 0 {
+        /* No prompt has ever been written into this session: nothing can have
+           been read by a hook, so nothing is spent. */
+        return Ok(());
+    }
+    mark_diagram_failures_announced(&conn, &conversation, before)
 }
 
 /* ── saved views ───────────────────────────────────────────────────────────*/
@@ -16420,6 +16643,81 @@ mod tests {
         assert_eq!(pairs[0].spans, Vec::<[i64; 2]>::new());
         assert_eq!(pairs[0].files, vec!["x/a.ts"]);
     }
+
+    /// A refused fence is written once, and said once.
+    ///
+    /// Three things here are the whole design of the table: the same refusal
+    /// drawn again (a theme change, the settled column after the live one) is
+    /// one row; the hook reads what has not been said and the echo of a prompt
+    /// is what says it; and the set is bounded at the write, because the note
+    /// is read on every turn it is said and only the newest few are still the
+    /// thing being written.
+    #[test]
+    fn a_refused_diagram_is_kept_once_and_said_once() {
+        let conn = db();
+        seed_project(&conn, "p", "C:/p");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at, kind) VALUES ('c', 'p', 'C:/p', 0, 'project')",
+            [],
+        )
+        .unwrap();
+
+        record_diagram_failure(&conn, "c", 2, "A -->|x ] y| B", "Parse error on line 2:").unwrap();
+        record_diagram_failure(&conn, "c", 2, "A -->|x ] y| B", "Parse error on line 2:").unwrap();
+        let waiting = unannounced_diagram_failures(&conn, "c");
+        assert_eq!(waiting.len(), 1, "the same fence drawn again is one refusal");
+        assert_eq!(waiting[0].line, 2);
+
+        /* A row newer than the send is left for the next prompt: the hook
+           cannot have read it. */
+        mark_diagram_failures_announced(&conn, "c", now() - 1_000).unwrap();
+        assert_eq!(unannounced_diagram_failures(&conn, "c").len(), 1);
+        mark_diagram_failures_announced(&conn, "c", now() + 1_000).unwrap();
+        assert!(unannounced_diagram_failures(&conn, "c").is_empty());
+        /* And said is said: the second prompt does not repeat it. */
+        mark_diagram_failures_announced(&conn, "c", now() + 2_000).unwrap();
+        assert!(unannounced_diagram_failures(&conn, "c").is_empty());
+
+        /* A table this is read from by a short-lived process must stay small. */
+        for n in 0..(MOST_DIAGRAM_FAILS as i64 + 4) {
+            record_diagram_failure(&conn, "c", n + 1, &format!("A --> B{n}"), "Parse error").unwrap();
+        }
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM diagram_fail WHERE conversation_id = 'c'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, MOST_DIAGRAM_FAILS as i64);
+        /* The newest are the ones kept, since the newest are what a card is
+           most likely still writing. */
+        let now = unannounced_diagram_failures(&conn, "c");
+        assert_eq!(now.first().map(|f| f.line), Some(MOST_DIAGRAM_FAILS as i64 + 4));
+        /* And the column the command marks against is written by the one door
+           every prompt goes through. */
+        note_prompt_written(&conn, "c");
+        let last: i64 = conn
+            .query_row("SELECT last_prompt_at FROM conversation WHERE id = 'c'", [], |r| r.get(0))
+            .unwrap();
+        assert!(last > 0, "the watermark is written");
+        mark_diagram_failures_announced(&conn, "c", last).unwrap();
+        assert!(unannounced_diagram_failures(&conn, "c").is_empty());
+    }
+
+    #[test]
+    fn one_cards_diagrams_are_not_another_cards() {
+        let conn = db();
+        seed_project(&conn, "p", "C:/p");
+        for id in ["a", "b"] {
+            conn.execute(
+                "INSERT INTO conversation (id, project_id, cwd, born_at, kind) VALUES (?1, 'p', 'C:/p', 0, 'project')",
+                params![id],
+            )
+            .unwrap();
+        }
+        record_diagram_failure(&conn, "a", 2, "A --> B", "Parse error").unwrap();
+        assert!(unannounced_diagram_failures(&conn, "b").is_empty());
+        mark_diagram_failures_announced(&conn, "b", now() + 1_000).unwrap();
+        assert_eq!(unannounced_diagram_failures(&conn, "a").len(), 1, "another card's echo says nothing of mine");
+    }
+
 }
 
 /// A v4 UUID without pulling in a crate for it.

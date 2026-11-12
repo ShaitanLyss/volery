@@ -78,6 +78,17 @@ let settle: (() => void) | null = null;
         const text = typeof c === "string" ? c
           : Array.isArray(c) ? c.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("") : "";
         console.log(at(), "← USER REPLAY:", JSON.stringify(text.slice(0, 80)));
+        /* **`isReplay` is load-bearing now** and nothing else watches it:
+           `Skein` marks a diagram refusal said only on a replayed prompt,
+           because that is the proof `UserPromptSubmit` ran and the note was
+           read (`showing.md`). A CLI that renamed or dropped the flag would
+           make every diagram failure silent to its author, and the app has no
+           way to notice — this line is the tripwire, so run this probe when
+           the CLI updates. */
+        if (ev.isReplay !== true) {
+          console.log(at(), "   ! isReplay=", ev.isReplay, "— a replayed prompt MUST carry it");
+          process.exitCode = 2;
+        }
         const hit = sent.find((s) => !s.echoed && s.text.trim() === text.trim());
         if (hit) hit.echoed = true;
         else console.log(at(), "   (matched nothing sent — would not claim a line)");

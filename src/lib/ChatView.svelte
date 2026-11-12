@@ -25,6 +25,7 @@
   import { ctxSaid, groups, nextNeeding as nextOf, projectsOf, step as stepOf, walkOrder, type ChatRow, type Entered, type Ghost } from "./chatview";
   import CtxRing from "./CtxRing.svelte";
   import { scopeFiles } from "./paths.svelte";
+  import { scopeDiagramAuthor } from "./drawing.svelte";
   import { selectionMarkdown } from "./copy";
   import { stepBy, landing } from "./outline";
   import { nudgeReading } from "./layout";
@@ -668,6 +669,11 @@
      (`Readable.root`), wherever the card runs. The scope is the mounter's to
      set, as the panel sets it (`chatview.md`), and it defaults to off. */
   scopeFiles(() => card?.readable.root ?? null);
+
+  /* And whose diagrams these are, for the same reason and with the same
+     answer as the panel's: a card on another wall has no author here to tell
+     (`showing.md`). */
+  scopeDiagramAuthor(() => (card && !card.readable.elsewhere ? card.readable.id : null));
 
   let scroller: HTMLDivElement | undefined = $state();
   let thread = $state<ReturnType<typeof Thread> | undefined>();

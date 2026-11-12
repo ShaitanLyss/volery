@@ -2957,6 +2957,24 @@ fn standing(payload: &serde_json::Value, card: Option<&str>, db: Option<&str>) -
         }
     }
 
+    /* **A diagram mermaid refused, on a prompt alone.** The renderer discovers
+       the failure; the front end writes it down; this is the only moment a
+       model can be told. It is deliberately not on `SessionStart`: a compaction
+       is not a card about to write its next diagram, and the row is marked said
+       on the *echo of a prompt*, which a compaction never produces — so
+       speaking there would only make it repeat.
+
+       What it costs is one indexed read on a prompt for a table that is almost
+       always empty, and nothing at all on every other event. */
+    if event == "UserPromptSubmit" {
+        if let Some(conn) = crate::store::open_readonly(path) {
+            let fails = crate::store::unannounced_diagram_failures(&conn, card);
+            if let Some(text) = standing_diagrams(&fails) {
+                parts.push(text);
+            }
+        }
+    }
+
     if parts.is_empty() {
         return None;
     }
@@ -2969,6 +2987,101 @@ fn standing(payload: &serde_json::Value, card: Option<&str>, db: Option<&str>) -
         })
         .to_string(),
     )
+}
+
+/// How much of one refused fence is quoted back. The line is already clipped
+/// at the write (`store::MAX_DIAGRAM_LINE`); this bounds the sentence that
+/// wraps it so four refusals still fit in a note read on a prompt.
+const DIAGRAM_SAID_MOST: usize = 300;
+
+/// What a card is told about the diagrams of its own that did not draw. Pure,
+/// so it can be lifted and run.
+///
+/// **The whole feature exists because the failure is invisible to its author.**
+/// An agent writes a ```mermaid fence expecting the client to draw it, the
+/// transcript draws the fence and one quiet line saying mermaid could not read
+/// it, and the agent goes on writing the same shape. It has no other way to
+/// find out: its own text looks fine.
+///
+/// **Line numbers are mermaid's, and they are not the fence block's.** The
+/// parser counts from the diagram's first line, so what it calls line 4 is the
+/// fifth line of the fence — a difference that misleads exactly the author who
+/// goes to fix it. So the note says which counting it is and quotes the line,
+/// and the quote is what actually locates it.
+///
+/// **It says `check` rather than asserting what to do.** The refusal can be a
+/// fence the card can no longer see, in a message it has moved on from; what is
+/// certain is that the text did not draw and why mermaid said so.
+///
+/// One targeted hint, for the shape that is not the author's fault alone: a
+/// `\"` is not an escape in mermaid, and under this client's settings it is not
+/// drawable at all (see `diagram.ts`). Saying only "parse error" there would
+/// send the author round the same loop.
+pub fn standing_diagrams(fails: &[crate::store::DiagramFail]) -> Option<String> {
+    if fails.is_empty() {
+        return None;
+    }
+    let mut s = String::from("<volery-diagram>\n");
+    s.push_str(
+        "A ```mermaid fence you wrote was handed to the renderer and refused, so the transcript \
+         drew the fence with a line under it saying it was not drawn. You cannot see that line; \
+         this is it.\n\n",
+    );
+    let mut hinted = false;
+    for f in fails {
+        if f.line > 0 {
+            /* The renderer counts from the fence body's first line, which is
+               the line after the ```mermaid marker, and says so, because the
+               author is looking at the block. */
+            s.push_str(&format!(
+                "  line {} of the fence body (the line after the ```mermaid marker is 1): {}\n",
+                f.line, f.text
+            ));
+        } else {
+            s.push_str("  the diagram was refused with no line named\n");
+        }
+        let said = one_line(&f.said);
+        s.push_str(&format!("  the renderer said: {said}\n"));
+        /* Tied to `diagram.ts::QUOTE_REPAIR` being `null`: the day a substitute
+           is chosen for that character, this fence stops failing for this
+           reason and this sentence goes with it. */
+        if !hinted && f.text.contains("\\\"") {
+            hinted = true;
+            s.push_str(
+                "  `\\\"` is not an escape in mermaid, and this client cannot draw a double \
+                 quote inside a label: write the label without quotes, or with single quotes.\n",
+            );
+        }
+    }
+    s.push_str(
+        "\nFix the fence in what you write next if it still matters, and remember the shape for \
+         the next one.\n</volery-diagram>",
+    );
+    Some(s)
+}
+
+/// One line out of a multi-line message, and the last line with it when there
+/// is one.
+///
+/// Mermaid's refusal is four lines: what went wrong, the source around it, a
+/// caret, and `Expecting 'A', 'B', got 'C'`. The first line names the line and
+/// the last names the token, and the two middle ones are the fence quoted back
+/// with an arrow under it, which the note has already done better.
+fn one_line(said: &str) -> String {
+    let mut lines = said.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("it could not be read");
+    let last = said.lines().map(str::trim).filter(|l| !l.is_empty()).last();
+    let mut out = first.to_string();
+    if let Some(last) = last {
+        if last != first && last.len() < DIAGRAM_SAID_MOST {
+            out.push(' ');
+            out.push_str(last);
+        }
+    }
+    if out.chars().count() > DIAGRAM_SAID_MOST {
+        out = out.chars().take(DIAGRAM_SAID_MOST - 1).collect::<String>() + "…";
+    }
+    out
 }
 
 /// How stale an observation may be and still be worth handing to a card.
@@ -5429,5 +5542,71 @@ mod tests {
         assert!(msg.contains("git commit -- "));
         /* The two files are one card's piece of work and are drawn as one. */
         assert_eq!(msg.matches("working the sink").count(), 1);
+    }
+
+    /// **The fence that started this, and the two things the note has to get
+    /// right.** Lyss reported it on 2026-11-12: a diagram of hers drew as
+    /// *not drawn — mermaid could not read it: Parse error on line 4*, and the
+    /// agent that wrote it never learned. So the note carries the line mermaid
+    /// named and mermaid's own words, and it does not claim a line number that
+    /// reads as the fence block's.
+    #[test]
+    fn a_refused_diagram_is_named_by_the_line_mermaid_counted() {
+        let fails = [crate::store::DiagramFail {
+            line: 4,
+            text: r#"C --> D["run_bounded()<br/>Command::new(\"git\")"]"#.into(),
+            said: "Parse error on line 4:\n...Command::new(\\\"git\\\")<br/>...\n-----^\nExpecting 'PIPE', got 'STR'".into(),
+        }];
+        let note = standing_diagrams(&fails).expect("a refusal is said");
+        assert!(note.starts_with("<volery-diagram>"));
+        assert!(note.contains("line 4 of the fence body"));
+        assert!(note.contains("the line after the"));
+        assert!(note.contains("Command::new"));
+        /* The first line names the line and the last names the token. The two
+           in between are the fence quoted back with a caret, which the note has
+           already done better. */
+        assert!(note.contains("Parse error on line 4:"));
+        assert!(note.contains("got 'STR'"));
+        assert!(!note.contains("-----^"));
+        /* The shape it cannot repair is explained rather than left as a loop. */
+        assert!(note.contains("is not an escape in mermaid"));
+        assert!(note.ends_with("</volery-diagram>"));
+    }
+
+    #[test]
+    fn the_note_says_one_thing_about_quotes_however_many_fences() {
+        let fails = [
+            crate::store::DiagramFail { line: 2, text: r#"A["x \"y\""]"#.into(), said: "Parse error on line 2:".into() },
+            crate::store::DiagramFail { line: 5, text: r#"B["z \"w\""]"#.into(), said: "Parse error on line 5:".into() },
+        ];
+        let note = standing_diagrams(&fails).unwrap();
+        assert_eq!(note.matches("is not an escape in mermaid").count(), 1);
+        assert!(note.contains("line 2 of the fence body"));
+        assert!(note.contains("line 5 of the fence body"));
+    }
+
+    #[test]
+    fn nothing_to_say_is_said_quietly() {
+        assert_eq!(standing_diagrams(&[]), None);
+        /* A refusal that named no line still has a sentence and mermaid's
+           words, and says only what it knows. */
+        let note = standing_diagrams(&[crate::store::DiagramFail {
+            line: 0,
+            text: String::new(),
+            said: "it is longer than the 50,000 characters a diagram may be".into(),
+        }])
+        .unwrap();
+        assert!(note.contains("no line named"));
+        assert!(note.contains("50,000"));
+    }
+
+    #[test]
+    fn a_long_refusal_is_clipped_to_one_sentence() {
+        let said = format!("Parse error on line 2: {}", "x".repeat(900));
+        let note =
+            standing_diagrams(&[crate::store::DiagramFail { line: 2, text: "A --> B".into(), said }])
+                .unwrap();
+        assert!(note.len() < 900, "a note read on a prompt cannot be a page");
+        assert!(note.contains("…"));
     }
 }

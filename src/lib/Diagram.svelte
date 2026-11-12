@@ -16,13 +16,18 @@
      copies the fence it was drawn from. */
   import InlinePicture, { scrollRootOf } from "./InlinePicture.svelte";
   import Markdown from "./Markdown.svelte";
-  import { diagrams } from "./drawing.svelte";
+  import { diagramAuthorScope, diagrams } from "./drawing.svelte";
   import { fenceMarkdown, type Drawn } from "./diagram";
   import type { Block } from "./markdown";
 
   let { block }: { block: Extract<Block, { t: "code" }> } = $props();
 
   diagrams.begin();
+  /* Whose prose this is, so a fence mermaid refuses can be reported to the
+     agent that wrote it — read lazily, because the panel draws whichever card
+     is selected and this component outlives one of them. Nothing scoped means
+     nobody to tell: a figure in the tour has no author. */
+  const authorOf = diagramAuthorScope();
 
   const md = $derived(fenceMarkdown(block.text));
   /** What kind of diagram, off its first word — `flowchart`, `sequenceDiagram`
@@ -44,6 +49,10 @@
     const got = diagrams.known(block.text);
     drawn = got;
     if (got && "picture" in got) last = got;
+    /* A drawing already made is not asked for again, so this is the only place
+       a cached refusal can still reach its author: another surface may have
+       drawn this fence first, with nobody to tell. */
+    if (got) diagrams.report(block.text, got, authorOf());
   });
 
   $effect(() => {
@@ -51,7 +60,7 @@
     const ink = diagrams.ink;
     if (!near || drawn) return;
     let live = true;
-    void diagrams.draw(text).then((got) => {
+    void diagrams.draw(text, authorOf()).then((got) => {
       if (!live || diagrams.ink !== ink || block.text !== text) return;
       drawn = got;
       if ("picture" in got) last = got;

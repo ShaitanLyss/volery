@@ -25,15 +25,48 @@
  *   every way the ink can change — the shape CLAUDE.md prefers: fold an event
  *   that already exists rather than poll. */
 
+import { getContext, setContext } from "svelte";
+import { invoke } from "@tauri-apps/api/core";
 import { SANDBOX, freshNonce, sandboxDoc } from "./sandbox";
 import {
   BOOT,
   DIAGRAM_MOST,
   diagramConfig,
   readDrawn,
+  refusedLine,
+  refusedText,
+  repairFence,
   type Drawn,
   type Ink,
 } from "./diagram";
+
+/* Which card's words the diagrams under a surface are.
+ *
+ * Ambient rather than a prop, for `scopeFiles`' reason exactly: a surface that
+ * draws an agent's prose is not the place to remember whose prose it is, and a
+ * diagram that comes out wrong has to be told to the author or the author
+ * never learns (`showing.md`). Set once by each panel, read here by the
+ * renderer.
+ *
+ * **It defaults to off**, deliberately: `CLAUDE.md`'s rule for an ambient
+ * capability with no honest default. A diagram drawn with no scope — the tour,
+ * a design preview — is drawn and reported to nobody, which is right: there is
+ * no agent behind it to tell. */
+const AUTHOR = Symbol("diagram-author");
+
+/** Say whose diagrams these are: the conversation id, or `null` where there
+ *  is nobody to tell (a card on another wall, the tour). */
+export function scopeDiagramAuthor(of: () => string | null): void {
+  setContext(AUTHOR, of);
+}
+
+/** The author of the diagrams this surface draws, as a getter — the panel is
+ *  one component drawing whichever card is selected, so reading it eagerly
+ *  would answer for the card it opened on for the rest of the session. Off
+ *  where nothing scoped it. */
+export function diagramAuthorScope(): () => string | null {
+  return getContext<(() => string | null) | undefined>(AUTHOR) ?? (() => null);
+}
 
 /** How long a render may take before the frame is thought wedged, and made
  *  again. Generous: the first one includes reading mermaid. */
@@ -76,16 +109,35 @@ class Diagrams {
   }
 
   /** Draw one fence. Settles with a drawing or with the reason there is none —
-   *  never throws, since a fence that cannot be drawn is still a fence. */
-  draw(text: string): Promise<Drawn> {
+   *  never throws, since a fence that cannot be drawn is still a fence.
+   *
+   *  `of` is the conversation whose words this is, and the only thing it does
+   *  is let a refusal reach its author (`#refused`). Nothing about the drawing
+   *  depends on it, so a surface with no author gets the same diagram. */
+  draw(text: string, of: string | null = null): Promise<Drawn> {
     this.#hear();
     const ink = this.ink;
+    /* The cache is keyed on the fence as *written*, not as repaired: the
+       repair is a pure function of it, and a fence's identity for every other
+       purpose here (the clipboard, the source toggle) is its own text. */
     const key = `${ink}\n${text}`;
     const had = this.#drawn.get(key);
-    if (had) return Promise.resolve(had);
-    if (text.length > DIAGRAM_MOST)
-      return Promise.resolve({ error: `it is longer than the ${DIAGRAM_MOST.toLocaleString()} characters a diagram may be` });
-    const run = this.#line.then(() => this.#render(text, ink));
+    if (had) {
+      /* **A cached refusal is still a refusal, and still has to be told.** The
+         same fence is drawn on surfaces with no author of their own — a card's
+         last message in the dock's notice, in a glance, on the wall — and one
+         of those drawing it first must not be what silences the note for the
+         panel. The write is idempotent, so this costs a statement and never a
+         second line in what the author is told. */
+      this.report(text, had, of);
+      return Promise.resolve(had);
+    }
+    if (text.length > DIAGRAM_MOST) {
+      const drawn = { error: `it is longer than the ${DIAGRAM_MOST.toLocaleString()} characters a diagram may be` };
+      this.report(text, drawn, of);
+      return Promise.resolve(drawn);
+    }
+    const run = this.#line.then(() => this.#render(repairFence(text), ink));
     this.#line = run.catch(() => {});
     return run.then((drawn: Passing) => {
       if (drawn.passing) {
@@ -93,8 +145,32 @@ class Diagrams {
         return said as Drawn;
       }
       this.#keep(key, drawn);
+      /* Only mermaid's own refusal of the text, never our renderer being slow
+         to start: a note saying "mermaid refused this" about a frame that
+         never answered would send an author to fix a diagram that is fine. */
+      this.report(text, drawn, of);
       return drawn;
     });
+  }
+
+  /** Tell the card that wrote this fence that it did not draw, and where.
+   *
+   *  The line is mermaid's, counting from the diagram's first line — which is
+   *  the line after the ```mermaid marker, not line 1 of the block — so the
+   *  quoted text is what actually locates it. Nothing here waits on the write
+   *  and nothing reports a failure: the worst case is that the author is not
+   *  told, which is where the world already was. */
+  report(text: string, drawn: Drawn, of: string | null): void {
+    if (of && "error" in drawn) this.#refused(of, text, drawn.said ?? drawn.error);
+  }
+
+  #refused(of: string, text: string, said: string): void {
+    void invoke("note_diagram_failure", {
+      conversation: of,
+      line: refusedLine(said) ?? 0,
+      text: refusedText(text, refusedLine(said)),
+      said,
+    }).catch(() => {});
   }
 
   #keep(key: string, drawn: Drawn) {

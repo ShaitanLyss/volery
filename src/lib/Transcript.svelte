@@ -6,6 +6,7 @@
   import Rail from "./Rail.svelte";
   import { nudgeReading } from "./layout";
   import { scopeFiles } from "./paths.svelte";
+  import { scopeDiagramAuthor } from "./drawing.svelte";
   import { readingOf } from "./gears";
   import {
     conclusionAt,
@@ -66,6 +67,13 @@
      directory here, its wall for a card on another one, nothing for a chat
      card. The panel does not work it out, so it cannot work it out wrong. */
   scopeFiles(() => conv.root);
+
+  /* And whose diagrams these are, so a ```mermaid fence mermaid refuses can be
+     reported back to the card that wrote it (`showing.md`). A card on another
+     wall has no author on this one to tell — its hook runs over there — so the
+     scope says nothing, which is the honest answer rather than this wall's id
+     for something it is only reading. */
+  scopeDiagramAuthor(() => (conv.elsewhere ? null : conv.id));
 
   let scroller: HTMLDivElement | undefined = $state();
 
