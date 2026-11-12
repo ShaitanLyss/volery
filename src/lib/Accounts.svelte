@@ -127,6 +127,20 @@
     return out;
   });
 
+  /** Which window kinds this wall has ever sampled, per account. The block says
+   *  "not sampled yet" for these rather than "nothing moved", which on an
+   *  install that has just upgraded into the feature would be a claim about a
+   *  month nobody measured. */
+  const sampledBy = $derived.by(() => {
+    const out = new Map<string, Set<string>>();
+    for (const s of worth?.samples ?? []) {
+      const set = out.get(s.account) ?? new Set<string>();
+      set.add(s.kind);
+      out.set(s.account, set);
+    }
+    return out;
+  });
+
   const listeners = new Listeners();
 
   const now = $derived(Date.now());
@@ -761,6 +775,7 @@
                         reading={worthBy.get(account.label)?.[kind] ?? null}
                         fault={worth.fault}
                         spanDays={WORTH_DAYS}
+                        sampled={sampledBy.get(account.label)?.has(kind) ?? false}
                       />
                     {/each}
                   </div>

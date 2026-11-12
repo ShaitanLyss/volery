@@ -35,7 +35,10 @@
           scope: "",
           points,
           usd,
-          tokens: points * (kind === "session" ? 420_000 : 3_100_000),
+          /* Tokens follow the dollars at the blended price this wall actually runs
+           (about $0.31 per million, measured over 28 days of its own facts), so
+           the two columns cannot imply different prices. */
+          tokens: points * (kind === "session" ? 6_450_000 : 38_700_000),
           mix: { "claude-opus-5-5": 0.35, "claude-sonnet-5-5": 0.6, "claude-haiku-5-5": 0.05 },
         });
       }
@@ -44,8 +47,8 @@
   }
 
   const readings: WindowReading[] = [
-    readingOf(bins("lyss", "session", 0.014), "lyss", "session", since, now, 4),
-    readingOf(bins("lyss", "weekly_all", 0.0016), "lyss", "weekly_all", since, now, 4),
+    readingOf(bins("lyss", "session", 2), "lyss", "session", since, now, 4),
+    readingOf(bins("lyss", "weekly_all", 12), "lyss", "weekly_all", since, now, 4),
   ];
 </script>
 

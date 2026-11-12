@@ -35,6 +35,7 @@ let {
   reading,
   fault = "",
   spanDays,
+  sampled = true,
 }: {
   /** The account, for the block's label in a screen reader. */
   label: string;
@@ -46,6 +47,12 @@ let {
   /** Why the read failed, already in words. */
   fault?: string;
   spanDays: number;
+  /** Whether any allowance sample of this window exists at all. A wall that has
+   *  never polled (or one upgraded into the feature today) has no samples, and
+   *  that is not the same reading as a window that did not move: saying "no
+   *  hour moved enough" about a window nobody has ever measured sends the
+   *  reader looking for a quiet month they may not have had. */
+  sampled?: boolean;
 } = $props();
 
 let open = $state(false);
@@ -105,10 +112,14 @@ const extremes = $derived.by(() => {
     {fault ? `the rate could not be read: ${fault}` : "the rate could not be read"}
   </p>
 {:else if worth.hours === 0 || worth.usdPerPoint === null}
-  <!-- Two different absences, and the first was being reported as the second:
-       a window that moved through work the price table cannot place is not a
-       window that did not move. -->
-  {#if worth.unpricedTokens > 0}
+  <!-- Three different absences, and the first two were being reported as the
+       third: no sample has ever been taken, or the window moved through work
+       the price table cannot place, is not a window that did not move. -->
+  {#if !sampled}
+    <p class="aw-empty">
+      this wall has not sampled this window yet, so there is nothing to price
+    </p>
+  {:else if worth.unpricedTokens > 0}
     <p class="aw-empty">
       this window moved, but {count(worth.unpricedTokens)} tokens were on models the
       price table cannot place, so there is no rate to give

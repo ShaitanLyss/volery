@@ -4122,6 +4122,12 @@ So the number is a **marginal price at the mix this wall actually ran**, and the
 the same breath as the figure, naming the models that produced it (`mixSaid`). A reader who sees
 "1% ≈ 380k tokens" and later moves everything to Opus must be able to see why it moved.
 
+**The verdict below is about the money, and the token figure moves with the mix by
+construction.** If the window is weighted by the price list, dollars per point is steady and the
+token count per point is not: an hour of Opus buys fewer tokens than an hour of Haiku for the
+same points, because the dollars buy fewer tokens at Opus rates. That is not a finding about the plan, it is what a price-weighted budget
+means, so a "steady" verdict says the money holds still and never claims the token figure does.
+
 ### 22.3 What the data can and cannot separate
 
 An hour carries **one** dollars total and one movement total, and the models inside it are
@@ -4183,6 +4189,12 @@ No new command. Two reads the room already uses:
 is not weighting Tuesday four times against Wednesday three. Hourly, because the fine tier
 refuses a span past forty-eight hours, and because a week's shape is an hour-of-day question
 rather than a five-minute one. The read happens when the accounts panel opens, never on a clock.
+
+**The points are the account's; the dollars are this wall's.** A flyway with cards on two
+machines has both machines' work in the window's percentage and only this machine's facts in
+`usage_hour`, so a wall that works across machines reads a rate below the truth, by the share
+of the work done elsewhere. The panel's span line says how many hours it rests on; the split by
+host is what a second wall's facts would need, and is not built.
 
 **`prefer_transcript` cannot be applied exactly on this tier**: the rule keys on
 `(session, hour)` and `usage_hour` has no session column. The hourly analogue kept in
