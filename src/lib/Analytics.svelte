@@ -56,6 +56,21 @@
   import { readBehaviourWindow, type BehaviourBundle, type BehaviourReader } from "./analyticsbehaviourread.svelte";
   import { readCardLife, type LifeReader } from "./analyticsliferead.svelte";
   import type { CardLife } from "./analyticslife";
+  import {
+    readAllowanceCosts,
+    readAllowanceSamples,
+    type AllowanceReader,
+    type CostReader,
+  } from "./allowanceread.svelte";
+  import {
+    costBucketsOf,
+    instancesOf,
+    type AllowanceCost,
+    type AllowanceSample,
+  } from "./allowancesamples";
+  import { stripModel, weekResidual, type FleetReading } from "./analyticstiles";
+  import { waterfall } from "./waterfall.svelte";
+  import type { Ledger } from "./ledger.svelte";
   import { habitModel } from "./analyticsbehaviour";
   import type { SpendWatch } from "./spend";
   import { prompts as realPrompts } from "./promptsread.svelte";
@@ -117,6 +132,11 @@
     work,
     behaviour,
     life,
+    samples,
+    costs,
+    fleet = null,
+    now = 0,
+    ledger = null,
     asCard,
     names,
     onclose,
@@ -137,6 +157,22 @@
     behaviour?: BehaviourReader;
     /** One card's life (§11.10), or a fixture. Absent means the command. */
     life?: LifeReader;
+    /** Allowance samples for the live strip (§11.1), or a fixture. Absent
+     *  means the command, and the surface attaches the waterfall while open so
+     *  the poll it already makes becomes a sample. */
+    samples?: AllowanceReader;
+    /** The fine-tier cost read behind the residual, or a fixture. */
+    costs?: CostReader;
+    /** The flyway's readings for the strip, from the shell. Null where there is
+     *  no roster to read (the browser preview). */
+    fleet?: FleetReading | null;
+    /** The wall's clock. The strip's countdown and "today" are readings of it,
+     *  so a room left open has to see it move; a surface with no wall (the
+     *  browser preview) falls back to `Date.now()` read once per render. */
+    now?: number;
+    /** The ledger, so the room can ask for this wall's burn rate while it is
+     *  open. Absent in the preview, which has no transcripts to walk. */
+    ledger?: Ledger | null;
     /** A card to open the inspector on, from its own `analytics…` row or
      *  `space n a`. Absent means no card is selected. */
     asCard?: string;
@@ -176,6 +212,13 @@
   });
 
   const tabNow = $derived(tab.current);
+
+  /* **The wall's clock**, or a reading of the system clock for a surface with
+     no wall behind it (the browser preview). Everything the strip says about
+     "now" reads this: the reset countdown, which window has rolled, and where
+     today begins. A room left open on a frozen `Date.now()` would keep saying
+     "resets in 2h" and would still call yesterday "today" after midnight. */
+  const at = $derived(now > 0 ? now : Date.now());
 
   /* ── what is being asked ─────────────────────────────────────────────── */
 
@@ -352,6 +395,89 @@
     void tick().then(() => root?.focus());
   }
 
+  /* ── the live strip (§11.1) ──────────────────────────────────────────────
+   *
+   * Eight days of allowance samples, whatever span the surface is showing: the
+   * strip's residual is "this week", and the binding window is the current
+   * instance. **The room attaches the waterfall while it is open**, so the
+   * three-minute poll that subsystem already makes becomes a sample and no new
+   * request to the endpoint exists (§5.4). A fixture has no wall behind it to
+   * poll. */
+  const SAMPLE_DAYS = 8;
+  let sampleRows = $state<AllowanceSample[] | null>(null);
+  let costRows = $state<AllowanceCost[] | null>(null);
+  /* The first instant the last read reached, which is what decides whether
+     "yesterday" is a whole day rather than part of one. */
+  let sampleFrom = $state(0);
+  let sampleGen = 0;
+  let pointGen = 0;
+  const sampleReader: AllowanceReader = (from, to) => (samples ?? readAllowanceSamples)(from, to);
+  const costReader: CostReader = (from, to) => (costs ?? readAllowanceCosts)(from, to);
+
+  /** Read the samples and the week's cost facts.
+   *
+   *  **The cost read is the heavy one** — a GROUP BY over eight days of
+   *  five-minute facts — so it rides the open and the 65-second refresh;
+   *  `readPoints` is the minute's lighter refresh and has its own generation,
+   *  or a points read landing after a full one would drop the full read's
+   *  costs on the floor. */
+  async function readSamples() {
+    const mine = ++sampleGen;
+    const now = Date.now();
+    const from = now - SAMPLE_DAYS * 86_400_000;
+    /* The two reads fail apart: a residual that cannot be priced must not take
+       the binding window down with it, and each tile says which it was. */
+    const [points, costs] = await Promise.allSettled([sampleReader(from, now), costReader(from, now)]);
+    if (mine !== sampleGen) return;
+    sampleFrom = from;
+    sampleRows = points.status === "fulfilled" ? points.value : null;
+    costRows = costs.status === "fulfilled" ? costs.value : null;
+  }
+
+  async function readPoints() {
+    const mine = ++pointGen;
+    const now = Date.now();
+    const from = now - SAMPLE_DAYS * 86_400_000;
+    try {
+      const next = await sampleReader(from, now);
+      if (mine === pointGen) {
+        sampleFrom = from;
+        sampleRows = next;
+      }
+    } catch {
+      if (mine === pointGen) sampleRows = null;
+    }
+  }
+
+  /* **The wall already keeps the waterfall attached** (`skein.svelte.ts`), so
+     samples are noted for the life of the app whether or not this room is open;
+     a wall that is not running attached nothing and this room's own wording
+     says so ("no sample yet"). What the room adds is a poll as it opens, so the
+     strip is drawn from a reading taken now rather than from one taken before
+     the last idle hour, and a watcher on the ledger so this wall's burn rate is
+     computed while somebody is looking at it. */
+  onMount(() => {
+    /* The first read is the surface's own, and it happens for a fixture too —
+       a preview has samples and costs to show and no wall to poll. */
+    void readSamples();
+    if (samples) return;
+    void waterfall.poll().then(() => void readSamples());
+    ledger?.attach("analytics", "spend");
+    return () => ledger?.detach("analytics");
+  });
+
+  /* A sample table read once a minute while the room is up: the tile's whole
+     point is that it is live, and the wall's own clock is what decides the
+     minute rather than a timer of this component's. The first tick is the first
+     read. */
+  let lastSampleMinute = 0;
+  $effect(() => {
+    const minute = Math.floor(at / 60_000);
+    if (minute === lastSampleMinute) return;
+    lastSampleMinute = minute;
+    void readPoints();
+  });
+
   /* The card selected is the only dependency. A surface opened straight onto
      one (`asCard`) has made its selection before this first runs, so this is
      also the first read. */
@@ -503,6 +629,34 @@
     behaviourLoaded && behaviourTo > behaviourFrom
       ? habitModel(behaviourLoaded.sessions, behaviourLoaded.tools, behaviourLoaded.changes, behaviourFrom, behaviourTo)
       : null,
+  );
+
+  /* The live strip's five readings, folded once here and drawn by the room
+   * (§11.1); the page has its own document rather than a strip. */
+  /* Priced once per read, not once per tick: the strip re-folds every second so
+     its countdown moves, and pricing a week of facts on every tick would be a
+     cost proportional to the data rather than to the reading. */
+  const costBuckets = $derived(costRows === null ? null : costBucketsOf(costRows));
+  /* The samples folded into instances once, not once a second. */
+  const instances = $derived(sampleRows === null ? [] : instancesOf(sampleRows));
+  /* The week's residual is the nested fold — spans times buckets — so it is
+     quantised to the minute, which is also the only resolution its inputs
+     change at. Everything time-sensitive that *is* cheap (which window binds,
+     the countdown, where today starts) still reads the wall's second. */
+  const week = $derived(
+    weekResidual(sampleRows, instances, costBuckets, Math.floor(at / 60_000) * 60_000),
+  );
+
+  const strip = $derived(
+    stripModel({
+      samples: sampleRows,
+      instances,
+      costs: costBuckets,
+      week,
+      coveredFrom: sampleFrom || Number.POSITIVE_INFINITY,
+      now: at,
+      fleet,
+    }),
   );
 
   const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
@@ -1236,12 +1390,12 @@
         bind:this={room}
         window={loaded}
         series={model.series}
-        kpis={model.kpis}
         measure={measure}
         split={split}
         {span}
         title={`${spanSaid} · ${measureSaid}${split ? ` · ${splitSaid}` : ""}`}
         bucket={bucket}
+        strip={strip ?? []}
         card={card && cardInRoom ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard } : undefined}
       />
     {:else}

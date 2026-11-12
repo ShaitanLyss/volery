@@ -253,9 +253,9 @@ describe("an allowance share that cannot be computed is null", () => {
 });
 
 describe("the schema rung", () => {
-  test("v70 is the next rung and every rung behind it is still in the ladder", () => {
-    expect(STORE).toContain("const SCHEMA_VERSION: i64 = 70;");
-    expect(STORE).toContain("(70, migrate_v70)");
+  test("v71 is the next rung and every rung behind it is still in the ladder", () => {
+    expect(STORE).toContain("const SCHEMA_VERSION: i64 = 71;");
+    expect(STORE).toContain("(71, migrate_v71)");
     /* The rung this file was written for, still in the ladder behind it. */
     expect(STORE).toContain("(69, migrate_v69)");
     expect(STORE).toContain("(68, migrate_v68)");

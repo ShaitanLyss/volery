@@ -250,6 +250,8 @@
   import { opening, type View } from "./lib/viewmode";
   import Welcome from "./lib/Welcome.svelte";
   import { CHORDS, actsOnWall, cardChordStay, mayLead, type Verb as ChordVerb } from "./lib/leader";
+  import { fleetRate, rateAt } from "./lib/rate";
+  import type { FleetReading } from "./lib/analyticstiles";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
@@ -1867,6 +1869,27 @@
   /* Which tab: `space n t` asks for the prompt trace, everything else leaves it
      to the surface's memory. */
   let analyticsTab = $state<SurfaceTab | undefined>(undefined);
+  /* The live strip's two flyway readings (§11.1): the burn rate across every
+     wall heard lately, and how many cards are working across them. Folded here
+     because the ledger and the roster are here; the surface draws it. */
+  const fleetReadings = $derived.by<FleetReading>(() => {
+    const rate = fleetRate(rateAt(ledger.slices, Date.now(), "minute"), ledger.peers, "minute");
+    const local = skein.convs.filter((c) => c.working || c.busy).length;
+    const afar = elsewhere.shadows.filter((s) => s.working && !s.face.unheard).length;
+    return {
+      rate: rate.total,
+      parts: rate.parts,
+      silent: rate.silent,
+      cards: local + afar,
+      local,
+      /* The ledger only walks transcripts while something is watching it, and
+         `rateAt` skips every bucket older than its ten-minute window — so a
+         rate of 0 with no pass inside that window is not a measured zero, and
+         the tile must not draw it as one (§9.1). `ready` alone is "has ever
+         read", which is not the same question. */
+      measured: ledger.ready && Date.now() - ledger.at < 10 * 60_000,
+    };
+  });
   /* A card the surface opens with selected, from its own `analytics…` row or
      `space n a` (§11.10). Undefined is no selection; every other way in clears
      it, so a card does not follow you into the next opening. */
@@ -6031,6 +6054,9 @@
       as={analyticsAs}
       asTab={analyticsTab}
       asCard={analyticsCard}
+      fleet={fleetReadings}
+      now={clock.t}
+      {ledger}
       names={cardNames}
       onpin={pinAnalyticsView}
       onclose={() => {

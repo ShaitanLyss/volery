@@ -31,7 +31,7 @@
 //! machine facts. Those are other phases and other tables.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -4235,6 +4235,15 @@ fn write_tail(
         .map_err(|e| format!("analytics: prune work: {e}"))?;
     tx.execute("DELETE FROM analytics_fold WHERE at < ?1", [cutoff])
         .map_err(|e| format!("analytics: prune folds: {e}"))?;
+    /* **The allowance samples go on the same clock**, though nothing needs more
+       than eight days of them: a point per reading, on a wall whose poll runs
+       for the life of the install, is a table that must have an end. The oldest
+       sample a strip could ask for is eight days back (§11.1), which leaves the
+       ninety as room rather than as a requirement.
+       A peer's row is this wall's copy of a reading it was shown; it ages and
+       goes with the rest, and another wall's copy is that wall's to keep. */
+    tx.execute("DELETE FROM allowance_fact WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune allowance: {e}"))?;
     /* The invalidation fine tier keeps the same ninety days, **except the move
        receipts**: an account, provider or model change is a card's history
        rather than a moment, the same distinction `analytics_session` and the
@@ -6715,6 +6724,356 @@ pub async fn card_life(app: AppHandle, card: String) -> Result<CardLife, String>
     .await?
 }
 
+/* ── allowance samples (§3.3) ──────────────────────────────────────────────*/
+
+/// One reading of one allowance window, as the wall that took it notes it.
+///
+/// **The subsystem adds no poller** (§5.4). Two events already exist and are
+/// folded: a `rate_limit_event` off a card's own request stream (`stream`), and
+/// the poll `limits.rs` already makes for the waterfall and the widget
+/// (`poll`). A reading another wall took and this one reuses is `peer`. The
+/// front end is where all three arrive, so it is where they are noted.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceSample {
+    pub at: i64,
+    /// The wall that took the reading, where it is not this one: a `peer`
+    /// sample keeps the name of the wall it came from, because that is what
+    /// makes the residual *partial* when that wall sent samples and no facts.
+    #[serde(default)]
+    pub host: String,
+    pub account: String,
+    pub kind: String,
+    #[serde(default)]
+    pub scope: String,
+    pub used: f64,
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub plan: Option<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceSampleRow {
+    pub at: i64,
+    pub host: String,
+    pub account: String,
+    pub kind: String,
+    pub scope: String,
+    pub used: f64,
+    pub resets_at: Option<i64>,
+    pub severity: String,
+    pub plan: Option<String>,
+    pub source: String,
+}
+
+/// A sample is one row per reading, and no window is read more often than the
+/// poll's floor allows once the front end has folded its three sources — so
+/// this is a malformed call rather than a long history.
+pub const ALLOWANCE_NOTE_CAP: usize = 500;
+/// Eight days is the only window anything reads, and **only a change is
+/// written** (see `note_allowance_rows`): a wall polling three windows on four
+/// accounts every three minutes moves a percentage a few times an hour, so this
+/// is thousands of rows with room, not the 11,500 a *writing* poll would leave.
+/// Past it the window is refused rather than truncated, the bargain every read
+/// here strikes.
+pub const ALLOWANCE_ROW_CAP: usize = 250_000;
+
+/// What each field is capped at on the way in. `used` needs no cap: it is
+/// clamped to its own unit below, which is also the check that catches a writer
+/// that sent a fraction.
+const ACCOUNT_KEEP: usize = 64;
+const KIND_KEEP: usize = 64;
+const SCOPE_KEEP: usize = 120;
+const SEVERITY_KEEP: usize = 32;
+const PLAN_KEEP: usize = 64;
+const HOST_KEEP: usize = 80;
+
+/// Write a batch of samples, ignoring the ones already held.
+///
+/// **The unit is checked, not converted.** `used` is a percentage 0 to 100,
+/// which is what `limits.rs::Window.used` and `limits.ts::Window.used` carry.
+/// A caller that sent a fraction would be writing 0.27 where every reader
+/// expects 27, and a silent multiply here would make that caller look right
+/// while its own face drew 0%. So a value outside the unit is clamped to its
+/// edge — the direction that cannot invent headroom against a ceiling someone
+/// set — and the scale stays the source's everywhere.
+pub fn note_allowance_rows(
+    conn: &Connection,
+    host: &str,
+    samples: &[AllowanceSample],
+    now: i64,
+) -> Result<usize, String> {
+    if samples.len() > ALLOWANCE_NOTE_CAP {
+        return Err(format!(
+            "analytics: {} allowance samples in one note is more than {ALLOWANCE_NOTE_CAP}",
+            samples.len()
+        ));
+    }
+    let mut insert = conn
+        .prepare(
+            "INSERT OR IGNORE INTO allowance_fact
+               (at, host, account, kind, scope, used, resets_at, severity, plan, source)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        )
+        .map_err(|e| format!("analytics: allowance note: {e}"))?;
+    /* **Only a change is a sample.** The curve is a step, so a poll whose
+       reading is identical to the last stored one adds a point that carries no
+       information and, at a three-minute cadence for the life of an install,
+       most of the table. This is what lets the read's ceiling be a ceiling
+       rather than a limit the ordinary case reaches. */
+    let mut latest = conn
+        .prepare(
+            "SELECT used, resets_at, severity FROM allowance_fact
+              WHERE host = ?1 AND account = ?2 AND kind = ?3 AND scope = ?4
+              ORDER BY at DESC LIMIT 1",
+        )
+        .map_err(|e| format!("analytics: allowance note: {e}"))?;
+    let mut written = 0;
+    for s in samples {
+        if s.at <= 0 || s.at > now + 5 * 60 * 1000 {
+            /* A reading from the future is a clock that is wrong somewhere, and
+               a point placed after now would sit outside every window instance
+               the reader reconstructs. */
+            return Err(format!(
+                "analytics: an allowance sample at {} is not a reading (now {now})",
+                s.at
+            ));
+        }
+        if !s.used.is_finite() {
+            /* Not clamped: a NaN is not a reading of 0%, and the one input this
+               function exists to weed out must not become a real sample. */
+            return Err("analytics: an allowance sample needs a finite percentage".into());
+        }
+        let account = crate::clip::keep(&s.account, ACCOUNT_KEEP).kept;
+        let kind = crate::clip::keep(&s.kind, KIND_KEEP).kept;
+        if account.is_empty() || kind.is_empty() {
+            return Err("analytics: an allowance sample needs an account and a window".into());
+        }
+        let source = match s.source.as_str() {
+            "poll" | "stream" | "peer" => s.source.as_str(),
+            other => return Err(format!("analytics: {other} is not an allowance source")),
+        };
+        /* **A peer sample keeps the wall that took it.** A row stamped with this
+           wall's name would make the residual claim a completeness it does not
+           have: a host that sampled and sent no facts is the only thing that
+           can make the reading *partial* (§5.3). */
+        let sampled_on = if s.host.trim().is_empty() {
+            host.to_string()
+        } else {
+            crate::clip::keep(&s.host, HOST_KEEP).kept
+        };
+        let used = s.used.clamp(0.0, 100.0);
+        let severity = {
+            let kept = crate::clip::keep(&s.severity, SEVERITY_KEEP).kept;
+            if kept.is_empty() { "normal".to_string() } else { kept }
+        };
+        let scope = crate::clip::keep(&s.scope, SCOPE_KEEP).kept;
+        let last: Option<(f64, Option<i64>, String)> = latest
+            .query_row(params![sampled_on, account, kind, scope], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()
+            .map_err(|e| format!("analytics: allowance note: {e}"))?;
+        let resets_at = s.resets_at.filter(|r| *r > 0);
+        if let Some((was, was_reset, was_severity)) = last {
+            if (was - used).abs() < 1e-9 && was_reset == resets_at && was_severity == severity {
+                continue;
+            }
+        }
+        written += insert
+            .execute(params![
+                s.at,
+                sampled_on,
+                account,
+                kind,
+                scope,
+                used,
+                resets_at,
+                severity,
+                s.plan
+                    .as_deref()
+                    .map(|p| crate::clip::keep(p, PLAN_KEEP).kept)
+                    .filter(|p| !p.is_empty()),
+                source,
+            ])
+            .map_err(|e| format!("analytics: allowance note: {e}"))? as usize;
+    }
+    Ok(written)
+}
+
+#[tauri::command]
+pub async fn note_allowance_samples(
+    app: AppHandle,
+    samples: Vec<AllowanceSample>,
+) -> Result<usize, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let now = now_ms();
+        note_allowance_rows(&conn, &crate::flyway::key::host_name(), &samples, now)
+    })
+    .await?
+}
+
+pub fn allowance_sample_rows(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+) -> Result<Vec<AllowanceSampleRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT at, host, account, kind, scope, used, resets_at, severity, plan, source
+               FROM allowance_fact
+              WHERE at >= ?1 AND at < ?2
+              ORDER BY at, account, kind, scope
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: allowance: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, ALLOWANCE_ROW_CAP as i64 + 1], |r| {
+            Ok(AllowanceSampleRow {
+                at: r.get(0)?,
+                host: r.get(1)?,
+                account: r.get(2)?,
+                kind: r.get(3)?,
+                scope: r.get(4)?,
+                used: r.get(5)?,
+                resets_at: r.get(6)?,
+                severity: r.get(7)?,
+                plan: r.get(8)?,
+                source: r.get(9)?,
+            })
+        })
+        .map_err(|e| format!("analytics: allowance: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: allowance: {e}"))?;
+    if rows.len() > ALLOWANCE_ROW_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {ALLOWANCE_ROW_CAP} allowance samples, so it \
+             is refused rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn allowance_samples(
+    app: AppHandle,
+    from: i64,
+    to: i64,
+) -> Result<Vec<AllowanceSampleRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        allowance_sample_rows(&conn, from, to)
+    })
+    .await?
+}
+
+/// One five-minute bucket's tokens for one session, account and model.
+///
+/// **The residual's denominator, at the grain a delta can be split at** (§5.1).
+/// The spend window's own read answers hourly above a day, where a bucket is
+/// too coarse to divide at a sample boundary; this one always asks the fine
+/// tier, for the last week only, and carries `session` and `provenance` so the
+/// front end can apply `prefer_transcript`'s rule — a backfilled turn day and
+/// the transcript facts over the same hour must not be added twice (§7.4).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceCostRow {
+    pub at: i64,
+    pub host: String,
+    pub session: String,
+    pub account: String,
+    pub provider: String,
+    pub model: String,
+    pub provenance: String,
+    pub in_tok: i64,
+    pub out_tok: i64,
+    pub cache_read: i64,
+    pub write_5m: i64,
+    pub write_1h: i64,
+    pub requests: i64,
+}
+
+pub const ALLOWANCE_COST_CAP: usize = 50_000;
+
+pub fn allowance_cost_rows(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+) -> Result<Vec<AllowanceCostRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT at, host, session, account, provider, model, provenance,
+                    SUM(in_tok), SUM(out_tok), SUM(cache_read), SUM(write_5m),
+                    SUM(write_1h), SUM(requests)
+               FROM usage_fact
+              WHERE at >= ?1 AND at < ?2
+              GROUP BY at, host, session, account, provider, model, provenance
+              ORDER BY at
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: allowance costs: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, ALLOWANCE_COST_CAP as i64 + 1], |r| {
+            Ok(AllowanceCostRow {
+                at: r.get(0)?,
+                host: r.get(1)?,
+                session: r.get(2)?,
+                account: r.get(3)?,
+                provider: r.get(4)?,
+                model: r.get(5)?,
+                provenance: r.get(6)?,
+                in_tok: r.get(7)?,
+                out_tok: r.get(8)?,
+                cache_read: r.get(9)?,
+                write_5m: r.get(10)?,
+                write_1h: r.get(11)?,
+                requests: r.get(12)?,
+            })
+        })
+        .map_err(|e| format!("analytics: allowance costs: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: allowance costs: {e}"))?;
+    if rows.len() > ALLOWANCE_COST_CAP {
+        return Err(format!(
+            "analytics: a week holds more than {ALLOWANCE_COST_CAP} cost buckets, so it is \
+             refused rather than truncated"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn allowance_costs(
+    app: AppHandle,
+    from: i64,
+    to: i64,
+) -> Result<Vec<AllowanceCostRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        allowance_cost_rows(&conn, from, to)
+    })
+    .await?
+}
+
 /// One `work_fact` row, as the cost-against-output page reads it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -9191,6 +9550,102 @@ mod tests {
         assert_eq!(life.turns, 1, "the open turn has not settled");
         assert!((life.usd_reported - 0.25).abs() < 1e-12);
         assert_eq!(life.facts_from, 1_100, "where the fine tier begins");
+    }
+
+    /// **A sample is the source's own unit, and one instant of one window is
+    /// one row.** A fraction written where every reader expects a percentage is
+    /// the factor-of-a-hundred mistake §3.3 exists to prevent, and a poll that
+    /// answers the same instant twice must not become two points.
+    #[test]
+    fn an_allowance_sample_keeps_its_unit_and_is_written_once() {
+        let conn = db();
+        let now = now_ms();
+        let sample = |at: i64, used: f64, source: &str| AllowanceSample {
+            at,
+            host: String::new(),
+            account: "lyss".into(),
+            kind: "session".into(),
+            scope: String::new(),
+            used,
+            resets_at: Some(now + 3_600_000),
+            severity: String::new(),
+            plan: Some("team".into()),
+            source: source.into(),
+        };
+        let wrote = note_allowance_rows(&conn, "home", &[sample(now, 27.0, "poll")], now).unwrap();
+        assert_eq!(wrote, 1);
+        /* **The same instant again is the same sample, whatever source said it**,
+           and a reading that has not moved is not a new point at all: the curve
+           is a step, so writing it would fill the table with samples that carry
+           nothing. */
+        let same_instant = note_allowance_rows(&conn, "home", &[sample(now, 27.0, "stream")], now).unwrap();
+        assert_eq!(same_instant, 0);
+        let unchanged = note_allowance_rows(&conn, "home", &[sample(now + 60_000, 27.0, "poll")], now).unwrap();
+        assert_eq!(unchanged, 0, "a poll whose reading did not move adds no point");
+        let moved = note_allowance_rows(&conn, "home", &[sample(now + 120_000, 29.0, "poll")], now).unwrap();
+        assert_eq!(moved, 1);
+        let rows = allowance_sample_rows(&conn, now - 1_000, now + 1_000_000).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].used, 29.0);
+        assert_eq!(rows[0].used, 27.0, "a percentage stays a percentage");
+        assert_eq!(rows[0].severity, "normal", "an empty severity is the source's normal");
+        assert_eq!(rows[0].resets_at, Some(now + 3_600_000));
+        assert!(allowance_sample_rows(&conn, now + 1_000, now - 1_000).is_err());
+    }
+
+    #[test]
+    fn an_allowance_sample_outside_the_vocabulary_is_refused() {
+        let conn = db();
+        let now = now_ms();
+        let mut s = AllowanceSample {
+            at: now,
+            host: String::new(),
+            account: "lyss".into(),
+            kind: "session".into(),
+            scope: String::new(),
+            used: 0.27, /* a caller that sent a fraction */
+            resets_at: None,
+            severity: "warning".into(),
+            plan: None,
+            source: "poll".into(),
+        };
+        note_allowance_rows(&conn, "home", &[s.clone()], now).unwrap();
+        let rows = allowance_sample_rows(&conn, now - 1, now + 1).unwrap();
+        assert_eq!(rows[0].used, 0.27, "no silent multiply: the unit is the source's");
+        s.at = now + 1;
+        s.source = "guess".into();
+        assert!(note_allowance_rows(&conn, "home", &[s.clone()], now).is_err());
+        s.source = "poll".into();
+        s.used = f64::NAN;
+        assert!(
+            note_allowance_rows(&conn, "home", &[s.clone()], now).is_err(),
+            "a percentage that is not a number is refused rather than stored as zero"
+        );
+        s.used = 0.27;
+        s.at = now + 60 * 60 * 1000;
+        assert!(note_allowance_rows(&conn, "home", &[s], now).is_err(), "a future reading is refused");
+    }
+
+    /// **An allowance sample has an end on the same clock as the other fine
+    /// tiers.** A point per reading, on a wall whose poll runs for the life of
+    /// the install, is a table that must have one.
+    #[test]
+    fn an_old_allowance_sample_is_pruned_at_the_fine_tiers_bound() {
+        let mut conn = db();
+        let now = now_ms();
+        let old = now - FINE_KEEP_MS - 60_000;
+        conn.execute(
+            "INSERT INTO allowance_fact (at, host, account, kind, scope, used, severity, source)
+             VALUES (?1,'home','lyss','session','',40,'normal','poll'),
+                    (?2,'home','lyss','session','',41,'normal','poll')",
+            params![old, now - 60_000],
+        )
+        .unwrap();
+        write_tail(&mut conn, &[], &HashSet::new(), now).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM allowance_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "the reading inside the window stays; the old one goes");
     }
 
     /// A card nobody has a row for is still answered — what the facts hold is

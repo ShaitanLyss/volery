@@ -25,10 +25,12 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { samplesOf, type AllowanceSample } from "./allowancesamples";
 import {
   type AfarSeat,
   choose,
   observed,
+  observedKinds,
   polled,
   probing,
   refuse,
@@ -289,6 +291,13 @@ export class Waterfall {
         );
       }
       this.allowances = next;
+      /* Noted for the analytics room (§3.3): the poll already exists, so this
+         is the sample it becomes rather than a second reader. Fire and forget:
+         a sample that could not be written is replaced by the next pass, and a
+         poll must never fail over its own bookkeeping. */
+      for (const a of answers) {
+        if (a.report) this.#note(samplesOf(a.label, a.report));
+      }
       missed = answers.some((a) => !a.report);
     } catch (err) {
       /* The call itself failed, so there is nothing per account to keep or drop
@@ -316,7 +325,23 @@ export class Waterfall {
     if (this.#standIn) return;
     if (!this.list.some((a) => a.label === label)) return;
     const next = observed(this.allowances[label], info, Date.now());
-    if (next) this.allowances = { ...this.allowances, [label]: next };
+    if (!next || !next.ok) return;
+    this.allowances = { ...this.allowances, [label]: next };
+    /* **Only the windows the event itself named.** `observed` merges the event's
+       windows with the ones held from the last poll, and the held ones were
+       read up to three minutes ago — noting them at this instant would claim a
+       read that did not happen. A kind filter cannot tell the two apart when
+       the held window is of the same kind, so the event's own kinds are asked
+       for directly. */
+    const seen = observedKinds(info);
+    if (seen.size > 0) this.#note(samplesOf(label, next, "stream").filter((s) => seen.has(s.kind)));
+  }
+
+  /** Note a reading as an allowance sample (§3.3). The events that matter
+   *  already exist; this only books them. */
+  #note(samples: AllowanceSample[]) {
+    if (samples.length === 0) return;
+    void invoke("note_allowance_samples", { samples }).catch(() => {});
   }
 
   /** Accounts the server has refused, until when, and how many times running.

@@ -1214,19 +1214,22 @@ fn next_turn_usd(context: Option<i64>, model: &str, at: i64) -> Option<f64> {
 /// The share of an allowance window's attributed delta this card accounts for.
 ///
 /// §5.2's arithmetic needs both halves of the window: the account's delta
-/// between samples, and the modelled cost of every known request in it. This
-/// build keeps **no allowance samples at all** (`allowance_fact` is specified
-/// in §3.3 and has no rung yet), so there is no delta to share, and the brief
-/// is explicit that a share which cannot be computed honestly is `null` rather
-/// than a guess. This is the one function the allowance lane fills in.
+/// between samples, and the modelled cost of every known request in it. Since
+/// schema v71 the wall **does** keep samples (`allowance_fact`, §3.3), and the
+/// analytics room attributes a week of them (`allowancesamples.ts`, §5). What
+/// is deliberately absent is a *per-card* share computed here: the arithmetic
+/// prices facts, the room folds it in TypeScript where the same pricing is used
+/// for every other dollar on the surface, and a second attribution in Rust is a
+/// second answer to one question. So this answers null with the reason rather
+/// than a number that could disagree with the room.
 struct Share {
     points: Option<f64>,
     why: String,
 }
 
 fn share_of_window(conn: &Connection, card: &str) -> Result<Share, String> {
-    /* The card is unused today and is the *first* thing to use when this is
-       filled in: the share is this card's points, not the wall's. */
+    /* The card is still unused, and is the first thing a per-card share would
+       need: the share is this card's points, not the wall's. */
     let _ = card;
     let kept: i64 = conn
         .query_row(
@@ -1238,14 +1241,15 @@ fn share_of_window(conn: &Connection, card: &str) -> Result<Share, String> {
     if kept == 0 {
         return Ok(Share {
             points: None,
-            why: "this wall keeps no allowance samples yet, so there is no window delta to \
-                  share"
+            why: "this wall keeps no allowance samples, so there is no window delta to share"
                 .into(),
         });
     }
     Ok(Share {
         points: None,
-        why: "this build has allowance samples but does not attribute them yet".into(),
+        why: "the allowance is attributed over a window in the analytics room, not per card \
+              here"
+            .into(),
     })
 }
 
@@ -1578,8 +1582,10 @@ fn keys_for_card(conn: &Connection, card: &str, now: i64) -> Result<PeriodKeys, 
 
 /// The current allowance window's reset stamp, read off the wall's own cache.
 ///
-/// `None` on a build that keeps no allowance samples, which is also the reason
-/// an `allowance_points` watch is refused rather than stored.
+/// `None` because this wall does not resolve a *per-card* allowance window:
+/// samples are kept (§3.3) and the room attributes them over a window, but
+/// nothing here turns one into a card's share. That is also the reason an
+/// `allowance_points` watch is refused rather than stored.
 fn current_window(_conn: &Connection, _now: i64) -> Result<Option<String>, String> {
     Ok(None)
 }
@@ -2115,8 +2121,9 @@ pub fn watch_schema() -> Value {
                     "description":
                         "For `watch`: the stretch it is measured over. Default `session`, which \
                          is this card's current agent session. `window` takes \
-                         `allowance_points` only, and this build keeps no allowance samples yet, \
-                         so that combination is refused rather than stored."
+                         `allowance_points` only, and a card's share of a window is not computed \
+                         on this wall (the room attributes a week over every card at once), so \
+                         that combination is refused rather than stored."
                 },
                 "scope": {
                     "type": "string",

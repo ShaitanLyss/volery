@@ -615,6 +615,35 @@ export function observed(
   return { ok: true, windows, at: now, ...(overage ? { overage } : {}) };
 }
 
+/** The window kinds a `rate_limit_event` actually named.
+ *
+ *  **`observed` merges the event's windows with the ones held from the last
+ *  poll**, which is right for the waterfall and wrong for an allowance sample:
+ *  a held window noted at the event's instant would claim a read that did not
+ *  happen, and the sample table's whole honesty is that a point is a read at a
+ *  time. The kind a caller filters on cannot tell the two apart — a held window
+ *  of the *same* kind is exactly the case — so the event's own kinds are
+ *  answered here, off the same `UNIFIED` table `observed` walks. */
+export function observedKinds(info: unknown): Set<string> {
+  const out = new Set<string>();
+  if (!info || typeof info !== "object") return out;
+  const i = info as Record<string, unknown>;
+  const unified =
+    i.unifiedWindows && typeof i.unifiedWindows === "object"
+      ? (i.unifiedWindows as Record<string, unknown>)
+      : null;
+  for (const [key, kind] of UNIFIED) {
+    const w = unified?.[key];
+    if (!w || typeof w !== "object") continue;
+    const r = w as Record<string, unknown>;
+    const used = finiteOrNull(r.utilization);
+    const reset = finiteOrNull(r.resetsAt);
+    if (used === null || reset === null || reset <= 0) continue;
+    out.add(kind);
+  }
+  return out;
+}
+
 /** What is left of the usage credits, for the account's row — or `null`, which
  *  the panel draws as nothing at all.
  *

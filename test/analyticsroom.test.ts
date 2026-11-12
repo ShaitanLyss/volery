@@ -28,6 +28,7 @@ import {
   runsOf,
   runsOfTimes,
   shareText,
+  sparkPoints,
   splitSeries,
   spreadLabels,
   stepAt,
@@ -603,5 +604,26 @@ describe("the fixture cannot reach an installer", () => {
   test("the preview page exists and mounts the room", () => {
     const html = readFileSync(join(root, "analytics.html"), "utf8");
     expect(html).toContain("/src/analytics-preview.ts");
+  });
+});
+
+describe("a tile's sparkline", () => {
+  test("a flat series draws a line across the middle, not at the floor", () => {
+    expect(sparkPoints([4, 4, 4])).toBe("1.5,11 50,11 98.5,11");
+  });
+
+  test("one point is a horizontal line, because there is no shape to draw", () => {
+    expect(sparkPoints([9])).toBe("1.5,11 98.5,11");
+    expect(sparkPoints([])).toBe("");
+  });
+
+  test("a value that is not a number is dropped rather than emitted as NaN", () => {
+    const line = sparkPoints([1, Number.NaN, 3, Number.POSITIVE_INFINITY]);
+    expect(line).not.toContain("NaN");
+    expect(line.split(" ").length).toBe(2);
+  });
+
+  test("the series' own maximum is the top of the box, so the shape is the reading", () => {
+    expect(sparkPoints([0, 10])).toBe("1.5,20.5 98.5,1.5");
   });
 });

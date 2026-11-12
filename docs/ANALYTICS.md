@@ -204,6 +204,39 @@ card's own request) or `peer` (a reading another wall took, arriving as an age).
 A sample is a *point*, not an interval. The curve between two points is reconstructed at
 query time and drawn as a step, because that is what is actually known.
 
+**As built.** `allowance_fact` is schema v71 and the primary key is
+`(at, host, account, kind, scope)`. That key dedupes **two sources on one wall reading one
+instant of one window**, which is the case a poll and a card's event can produce together; the
+host in it is what keeps a peer's row distinct, since a `peer` row carries the name of the wall
+that took the reading. The subsystem still adds no poller. The
+front end notes what already arrives — `waterfall.svelte.ts` writes the poll's answers with
+`source: "poll"` (or `"peer"` where the report says *read on <host>*, and the row keeps that
+host's name so a residual can see it) and a card's `rate_limit_event` with
+`source: "stream"` — through `note_allowance_samples`. **Only the windows the event itself
+named** are taken from the stream: the rest of that reading is held from the last poll, and
+noting it at the event's instant would claim a read that did not happen. `accounts.ts` answers
+which those are (`observedKinds`), because a kind filter cannot tell a held window from one the
+event just read when they are the same kind.
+
+**The unit is the source's and is not converted.** A writer that sent a fraction would be
+writing 0.27 where every reader expects 27; the command clamps to 0–100 and leaves the scale
+alone, and a test reads a sample noted at 27 back as 27. `used` is clamped rather than refused
+because the clamp cannot invent headroom against a ceiling someone set, where a silent multiply
+would make a wrong caller look right on its own face. A value that is not a number at all is
+refused, because a NaN is not a reading of zero.
+
+**Only a change is written.** The curve is a step, so a poll whose `used`, `resets_at` and
+`severity` match the last stored row for that window adds a point that carries no information;
+skipping it is what keeps an install-wide three-minute poll from filling the table, and the
+read's ceiling is sized from what remains. Samples prune at ninety days with the other fine
+tiers, though nothing asks for more than eight.
+
+**The wall keeps the waterfall attached for the life of the app** (`skein.svelte.ts`), so
+samples are noted whether or not this room is open; the room asks for one poll as it opens, so
+the strip is drawn from a reading taken now rather than from one taken before an idle hour, and
+it watches the ledger while it is up so this wall's burn rate is computed at all. A wall whose
+poll has not answered yet says *no sample yet*; the room is not what makes sampling happen.
+
 ### 3.4 Machine facts
 
 ```sql
@@ -1961,6 +1994,34 @@ Five stat tiles, each a value, a delta and a sparkline:
 5. **unattributed points this week**, which is the honest blind-spot reading.
 
 A tile that cannot be measured says so. It never shows zero for *unknown*.
+
+**As built.** The strip is `analyticstiles.ts::stripModel`, drawn by the room and folded by the
+shell so a presentation swap cannot give it two values. What each tile reads:
+
+- **The binding window** from allowance samples: the fullest instance that has not reset,
+  across every account. Its sparkline is the instance's own step curve.
+- **Today against yesterday** from the fine-tier cost read (`allowance_costs`, five-minute
+  buckets priced at each fact's own model and date). `yesterday` is a dash when the read's
+  window does not reach its midnight rather than a partial day drawn as a whole one.
+- **The fleet burn and the fleet's cards** from the shell's ledger and roster: the rate over
+  every wall heard lately, and the working cards with this machine's share under them.
+- **Unattributed points** is §5.1's split run over the last week: every sample interval's delta
+  divided among the account's own facts by modeled cost, bucket by bucket, with a bucket that
+  straddles a boundary cut by its width. The residual is what no fact explains, and the tile
+  says *partial* when a host sampled the account and sent no facts. **It is read on the week's
+  own window and nothing else.** The five-hour window moves with every request too, and the
+  two are not additive (§5.5), so an account read only on the five-hour window makes the tile
+  say *no weekly sample* rather than report session points as a week.
+
+The residual read is its own command because the spend window answers hourly above a day and an
+hourly bucket is too coarse to cut at a sample boundary. `allowance_costs` is fine-tier, carries
+`session` and `provenance`, and the front end applies `prefer_transcript` per `(session, hour)`
+as `spend.rs` does. A fact the price table cannot place contributes no cost, so its tokens stay
+out of the denominator rather than being counted at zero, which would make an unknown model look
+free and the residual smaller than it is.
+
+Two states the strip deliberately keeps apart: **no sample yet** (a wall that has not polled) and
+**not read** (a read that failed). Neither draws 0%.
 
 ### 11.2 The canvas
 
@@ -3775,11 +3836,11 @@ not re-opened by accident.
     `ask.rs`'s two-direction test is what stops the next verb being added to the wrong side.
 
     The same entry records the one reading that answers `null`: `share_of_window` needs
-    both halves of an allowance window (§5.2), and this build keeps no allowance samples at
-    all (`allowance_fact` is §3.3 and has no rung), so there is no delta to share. The answer
-    says why and `spend.rs::share_of_window` is the single function the allowance lane fills
-    in; a share guessed from a card's own dollars would be a different number wearing the
-    same name.
+    both halves of an allowance window (§5.2), and what this wall keeps is the window's
+    samples (§3.3, schema v71) attributed **over the room's week**, not per card. So there is
+    no card share to answer with, and `spend.rs::share_of_window` says why rather than guessing
+    one from the card's own dollars, which would be a different number wearing the same name.
+    An `allowance_points` watch stays refused for that reason.
 
 ### 20.1 One left: how live is another machine
 

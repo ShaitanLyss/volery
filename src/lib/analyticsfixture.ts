@@ -21,6 +21,7 @@ import type { BehaviourBundle, BehaviourReader } from "./analyticsbehaviourread.
 import type { SessionFact } from "./analyticsbehaviour";
 import type { CardLife, LifeSpend } from "./analyticslife";
 import type { LifeReader } from "./analyticsliferead.svelte";
+import type { AllowanceCost, AllowanceSample } from "./allowancesamples";
 import type {
   CardSpendRow,
   InvalidateRow,
@@ -1294,4 +1295,110 @@ export function fixtureLife(mode: FixtureMode = "normal"): LifeReader {
       factsFrom: old ? born + 110 * day : born - 30 * day,
     };
   };
+}
+
+/* ── the live strip's allowance samples (§11.1), made up ─────────────────── */
+
+/** Two accounts' windows, over the last eight days and up to now.
+ *
+ * The states the strip has to tell apart: **one current instance** with a reset
+ * inside the day, **a rolled one behind it** which must contribute no delta, and
+ * **a weekly window on another account**, so the binding tile is a choice
+ * between two rather than the only number there is. Sources alternate so the
+ * sample list carries all three doors.
+ */
+export function fixtureAllowanceSamples(from: number, to: number): AllowanceSample[] {
+  const now = Math.min(to, Date.now());
+  const out: AllowanceSample[] = [];
+  const push = (
+    at: number,
+    account: string,
+    kind: string,
+    used: number,
+    resetsAt: number | null,
+    source: AllowanceSample["source"] = "poll",
+  ) => {
+    if (at < from || at > now) return;
+    out.push({
+      at,
+      host: "studio",
+      account,
+      kind,
+      scope: "",
+      used,
+      resetsAt,
+      severity: "normal",
+      plan: "team",
+      source,
+    });
+  };
+  /* The session window: the current instance rises over the last eight hours,
+     and the one before it ended at its own reset. */
+  const sessionReset = now + 2 * HOUR;
+  for (let i = 0; i < 24; i++) {
+    const at = now - (23 - i) * 20 * MINUTE;
+    push(at, "lyss", "session", 6 + i * 2.3, sessionReset, i % 5 === 0 ? "stream" : "poll");
+  }
+  const oldReset = now - 3 * HOUR;
+  for (let i = 0; i < 6; i++) {
+    push(now - 8 * HOUR + i * 50 * MINUTE, "lyss", "session", 62 + i * 0.4, oldReset, "poll");
+  }
+  /* The week, on the other account: slower, and it resets in four days. */
+  const weekReset = now + 4 * 24 * HOUR;
+  for (let i = 0; i < 16; i++) {
+    push(now - (15 - i) * 12 * HOUR, "tx-team", "weekly_all", 40 + i * 0.4, weekReset, i === 0 ? "peer" : "poll");
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** The flyway's two readings, for the preview's strip. */
+export const FIXTURE_FLEET = {
+  rate: 24_130,
+  parts: [
+    { host: null, rate: 20_130 },
+    { host: "lab.queerisfreedom", rate: 4_000 },
+  ],
+  silent: [],
+  cards: 7,
+  local: 5,
+  measured: true,
+};
+
+/** The fine-tier cost buckets the residual is split against, made up: a request
+ *  every twenty minutes for a week, on three models and two accounts, priced by
+ *  the real table so the preview's dollars are the table's. */
+export function fixtureAllowanceCosts(from: number, to: number): AllowanceCost[] {
+  const now = Math.min(to, Date.now());
+  const step = 5 * MINUTE;
+  const models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"];
+  const out: AllowanceCost[] = [];
+  let i = 0;
+  /* `tx-team`'s own requests stop six tenths of the way through, so the week's
+     later sample intervals have nothing to attribute to them and the residual
+     tile has something true to draw. A fixture where every interval has facts
+     can only ever say 0 points, which is the one reading that shows nothing. */
+  const txStops = from + Math.round((now - from) * 0.6);
+  for (let at = Math.ceil(from / step) * step; at < now; at += 20 * MINUTE) {
+    if (i % 4 === 0 && at >= txStops) {
+      i++;
+      continue;
+    }
+    out.push({
+      at,
+      host: "studio",
+      session: `fixture-session-${i % 3}`,
+      account: i % 4 === 0 ? "tx-team" : "lyss",
+      provider: "anthropic",
+      model: models[i % models.length],
+      provenance: "transcript",
+      inTok: 700,
+      outTok: 90,
+      cacheRead: 24_000,
+      write5m: 1_800,
+      write1h: 0,
+      requests: 1,
+    });
+    i++;
+  }
+  return out;
 }

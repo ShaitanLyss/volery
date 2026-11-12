@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 70;
+const SCHEMA_VERSION: i64 = 71;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -450,6 +450,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (68, migrate_v68),
     (69, migrate_v69),
     (70, migrate_v70),
+    (71, migrate_v71),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4113,6 +4114,46 @@ fn migrate_v70(conn: &Connection) -> Result<(), String> {
         "CREATE INDEX IF NOT EXISTS invalidate_fact_by_card ON invalidate_fact(card, at);",
     )
     .map_err(|e| format!("migrate v70: {e}"))
+}
+
+/// Allowance samples (§3.3): one row per reading of one window, whatever source
+/// it came from. A sample is a **point**, not a span — the curve between two is
+/// reconstructed at query time and drawn as a step, because that is what is
+/// known (§5.1).
+///
+/// `used` is the source's own unit, a percentage 0 to 100. A fraction was the
+/// first draft and it was wrong in the most expensive way: one conversion
+/// missed turns 27 into 2700 and every figure downstream inherits the factor.
+///
+/// The primary key dedupes **two sources that read one instant of one window**,
+/// which is the case a poll and a card's own event can produce together. It is
+/// not a per-host key in practice: a `peer` row keeps the name of the wall that
+/// took it, but the store is this wall's, so two hosts at one instant can only
+/// come from a note that named one.
+fn migrate_v71(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS allowance_fact (
+            at         INTEGER NOT NULL,
+            host       TEXT NOT NULL,
+            account    TEXT NOT NULL,
+            kind       TEXT NOT NULL,
+            scope      TEXT NOT NULL DEFAULT '',
+            used       REAL NOT NULL,
+            resets_at  INTEGER,
+            severity   TEXT NOT NULL DEFAULT 'normal',
+            plan       TEXT,
+            source     TEXT NOT NULL,
+            PRIMARY KEY (at, host, account, kind, scope)
+        );
+
+        CREATE INDEX IF NOT EXISTS allowance_fact_by_account
+            ON allowance_fact(account, at);
+        CREATE INDEX IF NOT EXISTS allowance_fact_by_at
+            ON allowance_fact(at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v71: {e}"))
 }
 
 /// Write down that a prompt has just gone to this card's stdin. Called from the

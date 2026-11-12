@@ -29,6 +29,7 @@ import {
   creditsWaiting,
   CREDITS_WAIT,
   observed,
+  observedKinds,
   polled,
   sayCredits,
   vouches,
@@ -1869,5 +1870,32 @@ describe("a poll's answer against what the stream said", () => {
   test("no answer keeps what was held, as before", () => {
     expect(polled(spent(40), null, "offline", T0 + MIN)).toMatchObject({ ok: true, stale: "offline" });
     expect(polled(undefined, null, "offline", T0)).toEqual({ ok: false, fault: "offline" });
+  });
+});
+
+describe("which windows an event actually named", () => {
+  test("both unified windows when the event carries them", () => {
+    expect([...observedKinds(liveInfo())].sort()).toEqual(["session", "weekly_all"]);
+  });
+
+  test("only the one it named, so a held window is never claimed as read", () => {
+    const one = {
+      unifiedWindows: {
+        five_hour: { utilization: 0.4, resetsAt: Math.floor((T0 + HOUR) / 1000), status: "allowed" },
+      },
+    };
+    expect([...observedKinds(one)]).toEqual(["session"]);
+  });
+
+  test("nothing, when the event changed only the overage", () => {
+    expect(observedKinds({ overageStatus: "allowed" }).size).toBe(0);
+    expect(observedKinds(null).size).toBe(0);
+  });
+
+  test("a window with no usable reading is not named", () => {
+    const odd = {
+      unifiedWindows: { seven_day: { utilization: 1, resetsAt: null } },
+    };
+    expect(observedKinds(odd).size).toBe(0);
   });
 });

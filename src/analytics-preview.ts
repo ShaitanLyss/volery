@@ -18,6 +18,9 @@ import Analytics from "./lib/Analytics.svelte";
 import AnalyticsFace from "./lib/AnalyticsFace.svelte";
 import { Analytics as AnalyticsReader } from "./lib/analyticsholder.svelte";
 import {
+  FIXTURE_FLEET,
+  fixtureAllowanceCosts,
+  fixtureAllowanceSamples,
   fixtureBehaviourReader,
   fixtureLife,
   fixturePromptReader,
@@ -110,6 +113,9 @@ if (widgetMode) {
          page has to qualify rather than draw a lifetime share over. */
       asCard: asked.has("card") ? "preview-card" : undefined,
       life: fixtureLife(mode),
+      samples: async (from, to) => fixtureAllowanceSamples(from, to),
+      costs: async (from, to) => fixtureAllowanceCosts(from, to),
+      fleet: FIXTURE_FLEET,
       mode: "wall",
       prompts: fixturePromptReader(mode, vault),
       work: fixtureWorkReader(mode),

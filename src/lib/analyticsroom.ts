@@ -598,3 +598,39 @@ export function emptinessOf(window: AnalyticsWindow): Emptiness | null {
 export function tierSaid(tier: WindowTier): string {
   return tier === "fine" ? "five-minute facts" : "hourly rollups";
 }
+
+/** A sparkline's polyline, in a 100×22 box.
+ *
+ * A tile's history is drawn as a shape, not a chart: no axis, no ticks, and
+ * `vector-effect: non-scaling-stroke` in the markup so the line stays 1px
+ * whatever the tile's width. **A flat series draws a line across the middle**
+ * rather than at the floor, because "nothing changed" and "nothing happened"
+ * are different readings and the second one has no points at all.
+ *
+ * The top of the box is the series' own maximum, so a tile whose value is also
+ * the maximum draws its last point on the top edge — which is the shape of the
+ * reading, not a claim about headroom. */
+export function sparkPoints(values: readonly number[], width = 100, height = 22, pad = 1.5): string {
+  /* A value that is not a number cannot be given a point: it is dropped before
+     the shape is computed, so it neither sets the scale nor emits `NaN` as a
+     coordinate. What is left is the series that can be drawn. */
+  const drawn = values.filter((v) => Number.isFinite(v));
+  const n = drawn.length;
+  if (n === 0) return "";
+  if (n === 1) return `${pad},${height / 2} ${width - pad},${height / 2}`;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const v of drawn) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const span = max - min;
+  const inner = height - pad * 2;
+  return drawn
+    .map((v, i) => {
+      const x = pad + (i / (n - 1)) * (width - pad * 2);
+      const y = span <= 0 ? height / 2 : pad + (1 - (v - min) / span) * inner;
+      return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`;
+    })
+    .join(" ");
+}

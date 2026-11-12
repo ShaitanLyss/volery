@@ -27,6 +27,7 @@
     niceAxis,
     readingsOf,
     shareText,
+    sparkPoints,
     runsOfTimes,
     spreadLabels,
     stepAt,
@@ -37,13 +38,13 @@
     type RoomSeries,
     type RoomMeasure,
     type RoomSplit,
-    type Kpis,
   } from "./analyticsroom";
   import { bucketOf } from "./analytics";
   import { count } from "./usage";
   import type { Bucket } from "./analytics";
   import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
   import type { CardLife } from "./analyticslife";
+  import type { StripTile } from "./analyticstiles";
 
   let {
     window: win,
@@ -53,7 +54,7 @@
     span,
     title,
     bucket,
-    kpis,
+    strip,
     card,
   }: {
     /** The window that came back. Its bounds are the axis; its rows are not
@@ -70,9 +71,9 @@
      *  the shell so the two presentations say the same words. */
     title: string;
     bucket: Bucket;
-    /** The window's five readings, built by the shell from the same rows the
-     *  series are. */
-    kpis: Kpis;
+    /** The live strip's five tiles (§11.1), folded by the shell from the window,
+     *  the allowance samples and the flyway's readings. */
+    strip: readonly StripTile[];
     /** A card opened from its own row or `<space> n a` (§11.10). It is the
      *  inspector's first block, above the bucket, because the room has exactly
      *  one column on the right and two panels called inspector is one too
@@ -272,20 +273,17 @@
 </script>
 
 <div class="an-body">
-  <div class="an-strip" aria-label="in this window">
-    {#each [
-      { key: "spend", label: "spend", value: measureText("usd_modeled", kpis.spend), note: kpis.unpriced > 0 ? `${count(kpis.unpriced)} rows unpriced` : "modeled", off: kpis.spend === null },
-      { key: "tokens", label: "tokens", value: kpis.tokens === null ? "—" : count(kpis.tokens), note: "in, out and cache", off: kpis.tokens === null },
-      { key: "requests", label: "requests", value: count(kpis.requests), note: "in this window", off: false },
-      { key: "cache", label: "cache read", value: shareText(kpis.cacheShare), note: "of all tokens", off: kpis.cacheShare === null },
-      { key: "cards", label: "cards", value: count(kpis.cards), note: "active in this window", off: false },
-      { key: "project", label: "leading project", value: kpis.leading?.project ?? "—", note: kpis.leading ? `${shareText(kpis.leading.share)} of tokens` : "no project yet", off: !kpis.leading },
-      { key: "allowance", label: "allowance", value: "not recorded yet", note: "not in this schema yet", off: true },
-    ] as tile (tile.key)}
-      <div class="an-tile" class:off={tile.off}>
+  <div class="an-strip" aria-label="the live strip">
+    {#each strip as tile (tile.key)}
+      <div class="an-tile" class:off={tile.off} title={tile.title}>
         <span class="an-tile-label">{tile.label}</span>
         <span class="an-tile-value">{tile.value}</span>
         <span class="an-tile-note">{tile.note}</span>
+        {#if tile.points && tile.points.length > 1 && !tile.off}
+          <svg class="an-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points={sparkPoints(tile.points)} vector-effect="non-scaling-stroke" />
+          </svg>
+        {/if}
       </div>
     {/each}
   </div>
@@ -539,6 +537,22 @@
     font-size: 12px;
     font-weight: 500;
     color: var(--paper-faint);
+  }
+  /* The history, as a shape. One pixel whatever the tile's width, and recessive
+     enough that the tile's numeral stays the reading and this stays the cue. */
+  .an-spark {
+    display: block;
+    width: 100%;
+    height: 18px;
+    margin-top: 2px;
+    opacity: 0.7;
+  }
+  .an-spark polyline {
+    fill: none;
+    stroke: color-mix(in oklab, var(--paper) 55%, transparent);
+    stroke-width: 1;
+    stroke-linejoin: round;
+    stroke-linecap: round;
   }
 
   .an-grow {
