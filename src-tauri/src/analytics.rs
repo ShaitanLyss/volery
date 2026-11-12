@@ -5248,6 +5248,19 @@ fn history_roots(conn: &Connection, since: i64) -> Result<Vec<Root>, String> {
     Ok(roots)
 }
 
+/* A GUI app spawning a console program flashes a black window unless it says
+   not to. The same `quiet` as `project.rs`, `forge.rs` and the rest. */
+#[cfg(windows)]
+fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+#[cfg(not(windows))]
+fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd
+}
+
 /// Run a command with a deadline, never a network prompt, and no window to
 /// block on.
 ///
@@ -5256,16 +5269,24 @@ fn history_roots(conn: &Connection, since: i64) -> Result<Vec<Root>, String> {
 /// whose output nobody drains blocks before it can exit, and a timeout that
 /// expected it to exit would wait for ever. Draining and polling are two
 /// threads, and the kill is the timeout.
+///
+/// **And `quiet` is why the history pass does not put windows on the screen.**
+/// This `git` was the one spawn in the app that never asked Windows to hide
+/// its console, so the observer taught the truth of `project.rs`'s comment the
+/// hard way: a history pass reads one root after another for as long as it
+/// takes (88 to 102 seconds measured on 2026-11-12), and each spawn opened a
+/// visible black console over whatever Lyss was doing, then closed, then
+/// opened the next. A background read nobody asked for must not take focus.
 fn run_bounded(root: &str, args: &[String], timeout: Duration) -> Option<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
-    let mut child = Command::new("git")
-        /* The two halves of "a background poll never asks a question"
-           (`actions.md`): no terminal prompt, and a credential helper told not
-           to go interactive. `git log` reads local objects and needs neither,
-           which is exactly why a repository whose remote credentials expired
-           must not be able to pop a window from here. */
-        .arg("-c")
+    let mut cmd = Command::new("git");
+    /* The two halves of "a background poll never asks a question"
+       (`actions.md`): no terminal prompt, and a credential helper told not to
+       go interactive. `git log` reads local objects and needs neither, which is
+       exactly why a repository whose remote credentials expired must not be
+       able to pop a window from here. */
+    cmd.arg("-c")
         .arg("credential.interactive=false")
         .arg("-C")
         .arg(root)
@@ -5275,9 +5296,8 @@ fn run_bounded(root: &str, args: &[String], timeout: Duration) -> Option<String>
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let mut child = quiet(&mut cmd).spawn().ok()?;
     let mut out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();

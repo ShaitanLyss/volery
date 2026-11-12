@@ -39,6 +39,7 @@ import {
   money,
   normalizeView,
   pct,
+  resolveView,
   spanMsOf,
   tokens,
   type Bucket,
@@ -191,6 +192,31 @@ export function surfaceOfView(view: ViewSpec): SurfaceInput {
     split: roomSplitOf(panel?.split),
     filter: view.filter ?? {},
   };
+}
+
+/* ── what a surface cannot honour about a spec ─────────────────────────────*/
+
+/** Why this spec cannot be answered, in the design's own words, or null.
+ *
+ *  §9.1's rule is that an unanswerable combination is **refused with the tier
+ *  named**, never silently answered from the wrong rows. `analytics.ts`'s
+ *  `resolveView` holds the three refusals and, until now, had no caller at all:
+ *  a saved view asking for a session split over a year opened as a view with no
+ *  split, and the surface said nothing. This is the sentence it says instead.
+ *
+ *  `now` is passed rather than read so a view opened a minute ago keeps saying
+ *  the same thing about the window it was opened on. */
+export function refusalOf(view: ViewSpec, now: number): string | null {
+  const one = resolveView(view, now);
+  return one.ok ? null : one.error.detail;
+}
+
+/** A view that asks for more panels than this surface draws. Not a refusal:
+ *  the first panel is a real answer, and the note says which part of the spec
+ *  is not being shown rather than degrading silently (§9.2, §11.2). */
+export function panelNote(view: ViewSpec): string | null {
+  if (view.panels.length <= 1) return null;
+  return `this view asks for ${view.panels.length} panels; one is drawn here`;
 }
 
 /* ── saved views ───────────────────────────────────────────────────────────*/

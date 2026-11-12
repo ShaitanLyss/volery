@@ -45,7 +45,7 @@
     type Reading,
   } from "./analyticswidget";
   import { fold, type Point, type ViewSpec } from "./analytics";
-  import { pageModel, surfaceOfView, surfaceRows } from "./analyticpage";
+  import { pageModel, refusalOf, surfaceOfView, surfaceRows } from "./analyticpage";
   import {
     emptinessOf,
     measureText,
@@ -89,7 +89,7 @@
        a poller kept alive for a face with no drawing is a query a minute spent
        on nobody's reading. And one that *loses* its spec lets go, rather than
        leaving a subscription behind a face that has stopped asking. */
-    if (!reading) {
+    if (!reading || refused) {
       analytics.detach(widget.id);
       return;
     }
@@ -120,6 +120,13 @@
        stops working for the whole wall. See `widgets.svelte.ts::updateQuiet`. */
     onupdate({ config: { ...widget.config, [SNAPSHOT]: next } }, true);
   });
+
+  /* A spec the query layer refuses to answer is a widget that must say why
+     rather than draw a degraded view: §9.1 refuses with the tier named, and a
+     default in its place would be a reading nobody asked for. Captured once so
+     the sentence does not change under a redraw. */
+  const at = Date.now();
+  const refused = $derived(reading ? refusalOf(reading.spec, at) : null);
 
   const win = $derived<AnalyticsWindow | undefined>(analytics.windows[span]);
   const fault = $derived(analytics.faults[span] ?? null);
@@ -193,6 +200,8 @@
            reading. The widget says so rather than going blank. -->
       <p class="said">the view this widget read is gone, and nothing was kept of it.</p>
     {/if}
+  {:else if refused}
+    <p class="said">cannot be answered: {refused}</p>
   {:else if !win && fault}
     <p class="said">could not read the facts. {fault}</p>
   {:else if !win}

@@ -6,6 +6,7 @@ import {
   filterRows,
   fold,
   money,
+  normalizeView,
   type Fact,
   type Filter,
   type UsageRow,
@@ -25,8 +26,11 @@ import {
   naturalFor,
   otherPresentation,
   pageModel,
+  panelNote,
   presentationFor,
+  refusalOf,
   surfaceOfView,
+  viewMatches,
   viewOfSurface,
   PRESENTATION_STORE,
   type SurfaceInput,
@@ -418,5 +422,41 @@ describe("the library as it comes off the store", () => {
     expect(v.createdAt).toBe(0);
     expect(v.updatedAt).toBe(0);
     expect(Number.isNaN(v.updatedAt)).toBe(false);
+  });
+});
+
+describe("what a surface cannot honour about a spec", () => {
+  const T = Date.UTC(2026, 10, 12, 14, 0, 0);
+  const spec = (over: Record<string, unknown> = {}) =>
+    normalizeView({ span: "7d", panels: [{ measure: "usd_modeled", split: null }], ...over });
+
+  test("a spec this surface can answer owes no sentence", () => {
+    expect(refusalOf(spec(), T)).toBe(null);
+    expect(panelNote(spec())).toBe(null);
+  });
+
+  test("a fine-only split over a year is refused with the tier named", () => {
+    /* §9.1: the refusal has to name the tier that answered and could not,
+       because a silent degrade is a chart of a different question. */
+    const said = refusalOf(spec({ span: "1y", panels: [{ measure: "usd_modeled", split: "session" }] }), T);
+    expect(said).toContain("session");
+    expect(said).toContain("hourly");
+  });
+
+  test("a fine-only filter dimension is refused the same way", () => {
+    const said = refusalOf(spec({ span: "1y", filter: { session: ["s1"] } }), T);
+    expect(said).toContain("session");
+    expect(said).toContain("hourly");
+  });
+
+  test("a bucket finer than the grain behind it is refused", () => {
+    const said = refusalOf(spec({ span: "1y", bucket: "1m" }), T);
+    expect(said).toContain("1m");
+  });
+
+  test("more panels than are drawn is said, and is not a refusal", () => {
+    const two = spec({ panels: [{ measure: "usd_modeled" }, { measure: "tokens" }] });
+    expect(refusalOf(two, T)).toBe(null);
+    expect(panelNote(two)).toBe("this view asks for 2 panels; one is drawn here");
   });
 });

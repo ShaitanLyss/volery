@@ -79,6 +79,8 @@
   } from "./analyticsroom";
   import {
     pageModel,
+    panelNote,
+    refusalOf,
     surfaceOfView,
     surfaceRows,
     viewMatches,
@@ -379,10 +381,19 @@
      a view you were not looking at, whose edits move it and whose twin's do
      not. Cleared whenever the question changes away from it. */
   let openedId = $state<string | null>(null);
+  /* The sentence an opened spec owes, and the span it was about. */
+  let asideFor = $state<{ span: string; said: string } | null>(null);
+  const aside = $derived(asideFor && asideFor.span === surface.span ? asideFor.said : null);
 
   function openView(spec: ViewSpec, id?: string) {
     adoptSurface(surfaceOfView(spec));
     openedId = id ?? null;
+    /* What the spec asked for that this surface cannot draw, said here rather
+       than left as a silently different question (§9.1's refusal, §9.2's
+       panels). Held against the span it was opened on, so changing the span
+       takes the sentence away with the window it was about. */
+    const said = [refusalOf(spec, Date.now()), panelNote(spec)].filter(Boolean).join(" · ");
+    asideFor = said ? { span: surface.span, said } : null;
     views = null;
     void tick().then(() => root?.focus());
   }
@@ -910,6 +921,9 @@
         rows={loaded?.rows ?? []}
         onchange={(next) => (surface.filter = next)}
       />
+      {#if aside}
+        <p class="an-narrowed">{aside}</p>
+      {/if}
       {#if narrowed}
         <p class="an-narrowed">
           no rows in this window match these filters.
