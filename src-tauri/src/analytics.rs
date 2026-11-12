@@ -6294,6 +6294,207 @@ pub async fn tool_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<ToolRo
     .await?
 }
 
+/// One tool's totals over the window, as the behaviour page reads them
+/// (§11.9).
+///
+/// The rollup is the reason this command exists rather than the page reading
+/// `tool_facts`: the fine tier is pruned at ninety days while `tool_hour` is
+/// kept, and a percentile over months can only be answered by the five latency
+/// bands that table carries.
+///
+/// **Grouped here, so the answer is tools rather than tool-hours.** The page
+/// draws no instant: its tables, its strip and its scatter answer per tool, and
+/// a year of hours x tools x projects is hundreds of thousands of rows for
+/// dozens of groups. Summing in SQL is what lets the tab offer the spend tab's
+/// year at all, and it is the same figures at a smaller grain. The dimensions
+/// the grouping drops (host, account, provider, project) are the spend view's
+/// filters and are not drawn here; a filter on this page would ask for them
+/// back, which is a change to make when the rail reaches this tab.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolTotalRow {
+    pub kind: String,
+    pub server: String,
+    pub tool: String,
+    pub target: String,
+    pub calls: i64,
+    pub errors: i64,
+    pub receipts: i64,
+    pub ms_total: i64,
+    pub ms_under_50: i64,
+    pub ms_under_200: i64,
+    pub ms_under_1s: i64,
+    pub ms_under_5s: i64,
+    pub ms_over_5s: i64,
+    pub out_bytes: i64,
+    pub turn_usd: f64,
+}
+
+/// Distinct tools, servers, skills and subagents — dozens, not hours. The guard
+/// is for a malformed window, refused rather than truncated, the same bargain
+/// every other read here strikes.
+pub const TOOL_TOTAL_CAP: usize = 20_000;
+
+pub fn tool_total_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<ToolTotalRow>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, server, tool, target,
+                    SUM(calls), SUM(errors), SUM(receipts), SUM(ms_total),
+                    SUM(ms_under_50), SUM(ms_under_200), SUM(ms_under_1s),
+                    SUM(ms_under_5s), SUM(ms_over_5s), SUM(out_bytes), SUM(turn_usd)
+               FROM tool_hour
+              WHERE hour >= ?1 AND hour < ?2
+              GROUP BY kind, server, tool, target
+              ORDER BY kind, server, tool, target
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: tool totals: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, TOOL_TOTAL_CAP as i64 + 1], |r| {
+            Ok(ToolTotalRow {
+                kind: r.get(0)?,
+                server: r.get(1)?,
+                tool: r.get(2)?,
+                target: r.get(3)?,
+                calls: r.get(4)?,
+                errors: r.get(5)?,
+                receipts: r.get(6)?,
+                ms_total: r.get(7)?,
+                ms_under_50: r.get(8)?,
+                ms_under_200: r.get(9)?,
+                ms_under_1s: r.get(10)?,
+                ms_under_5s: r.get(11)?,
+                ms_over_5s: r.get(12)?,
+                out_bytes: r.get(13)?,
+                turn_usd: r.get(14)?,
+            })
+        })
+        .map_err(|e| format!("analytics: tool totals: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: tool totals: {e}"))?;
+    if rows.len() > TOOL_TOTAL_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {TOOL_TOTAL_CAP} tool totals, so it is refused \
+             rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn tool_totals(app: AppHandle, from: i64, to: i64) -> Result<Vec<ToolTotalRow>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        tool_total_rows(&conn, from, to)
+    })
+    .await?
+}
+
+/// One `analytics_session` row, whole, as the behaviour page's habits and a
+/// card's life read it (§11.9, §11.10).
+///
+/// `work_series` already carries a narrower session row for the coordination
+/// strip. This one is the record rather than a drawing of it: `opened_by` is
+/// what splits a spawn by person or agent, and the account and provider halves
+/// are what let a card's history be read without a second query.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFact {
+    pub session: String,
+    pub host: String,
+    pub project: String,
+    pub source: String,
+    /// `''` for a terminal session, which has no card behind it.
+    pub card: String,
+    pub parent_card: String,
+    /// `person`, `agent`, or `unknown` when nothing recorded who opened it.
+    pub opened_by: String,
+    pub branch: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub cli_min: String,
+    pub cli_max: String,
+    pub account_first: String,
+    pub account_last: String,
+    pub provider_first: String,
+    pub provider_last: String,
+    pub turns: i64,
+}
+
+pub const SESSION_FACT_CAP: usize = 20_000;
+
+/// Sessions that overlap the window, not only those that started inside it: a
+/// card that was working at the window's edge is a spawn the window saw, and
+/// `started_at < to AND coalesce(ended_at, to) > from` is the same overlap the
+/// coordination strip places with.
+pub fn session_fact_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<SessionFact>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT session, host, project, source, COALESCE(card_id, ''),
+                    COALESCE(parent_card, ''), opened_by, branch, started_at, ended_at,
+                    COALESCE(cli_min, ''), COALESCE(cli_max, ''),
+                    account_first, account_last, provider_first, provider_last, turns
+               FROM analytics_session
+              WHERE started_at < ?2 AND COALESCE(ended_at, ?2) > ?1
+              ORDER BY started_at
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: sessions: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, SESSION_FACT_CAP as i64 + 1], |r| {
+            Ok(SessionFact {
+                session: r.get(0)?,
+                host: r.get(1)?,
+                project: r.get(2)?,
+                source: r.get(3)?,
+                card: r.get(4)?,
+                parent_card: r.get(5)?,
+                opened_by: r.get(6)?,
+                branch: r.get(7)?,
+                started_at: r.get(8)?,
+                ended_at: r.get(9)?,
+                cli_min: r.get(10)?,
+                cli_max: r.get(11)?,
+                account_first: r.get(12)?,
+                account_last: r.get(13)?,
+                provider_first: r.get(14)?,
+                provider_last: r.get(15)?,
+                turns: r.get(16)?,
+            })
+        })
+        .map_err(|e| format!("analytics: sessions: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: sessions: {e}"))?;
+    if rows.len() > SESSION_FACT_CAP {
+        return Err(format!(
+            "analytics: that window holds more than {SESSION_FACT_CAP} sessions, so it is refused \
+             rather than truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn session_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<SessionFact>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        session_fact_rows(&conn, from, to)
+    })
+    .await?
+}
+
 /// One `work_fact` row, as the cost-against-output page reads it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -8614,6 +8815,77 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM analytics_fold WHERE turn_id = ?1", [turn_id], |r| r.get(0))
             .unwrap();
         assert_eq!(marked, 1);
+    }
+
+    /// The page reads `tool_hour` for anything longer than the fine tier's
+    /// ninety days, so the rollup has to carry the bands and the dollars the
+    /// percentile and the cost column are computed from, and the read has to
+    /// sum them or a year is refused for a payload nobody draws.
+    #[test]
+    fn the_rollup_carries_the_bands_a_percentile_needs() {
+        let conns = Mutex::new(db());
+        let card = {
+            let conn = conns.lock().unwrap();
+            seed(&conn, "s1")
+        };
+        let now = now_ms();
+        let opened = now - 20 * 60 * 1000;
+        let ended = now - 10 * 60 * 1000;
+        {
+            let conn = conns.lock().unwrap();
+            settled_turn(&conn, &card, "s1", opened, ended, 0.25);
+        }
+        let call = call_line("t1", opened + 1_000, "s1", "Bash", r#"{"command":"ls"}"#);
+        let result = result_line("t1", opened + 1_450, "s1", "a b c", true);
+        write(&conns, "home", &tool_batch(&[call, result]), now).unwrap();
+        fold_tools(&conns, "home", now).unwrap();
+
+        let conn = conns.lock().unwrap();
+        let rows = tool_total_rows(&conn, now - 86_400_000, now + 1).unwrap();
+        assert_eq!(rows.len(), 1, "one tool, one row, whatever the hour count");
+        let row = &rows[0];
+        assert_eq!((row.kind.as_str(), row.tool.as_str()), ("builtin", "Bash"));
+        assert_eq!((row.calls, row.errors, row.out_bytes), (1, 1, 5));
+        /* 450ms lands in the 200ms-1s band and in no other, which is what makes
+           the five counts a distribution rather than five totals. */
+        assert_eq!(
+            (row.ms_under_50, row.ms_under_200, row.ms_under_1s, row.ms_under_5s, row.ms_over_5s),
+            (0, 0, 1, 0, 0)
+        );
+        assert!((row.turn_usd - 0.25).abs() < 1e-12, "the turn's whole cost, one call");
+    }
+
+    /// A session row is what says who opened a card and what it spent on, and
+    /// the reader must keep the three states of `opened_by` apart: a session
+    /// with no lineage record is `unknown`, never *person* (§9.7).
+    #[test]
+    fn a_session_fact_keeps_its_opener_and_its_overlap() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, parent_card, opened_by, branch,
+                started_at, ended_at, account_first, account_last, provider_first,
+                provider_last, turns)
+             VALUES ('s1', 'home', 'volery', 'card', 'c1', '', 'person', 'main',
+                     1000, 9000, 'lyss', 'tx-team', 'anthropic', 'anthropic', 3),
+                    ('s2', 'home', 'volery', 'card', '', '', 'agent', 'main',
+                     2000, NULL, 'lyss', 'lyss', 'anthropic', 'deepseek', 1)",
+            [],
+        )
+        .unwrap();
+        /* The window starts after both sessions did and ends before the open
+           one ends: both overlap it, and one that merely *started* before it
+           must not be dropped. */
+        let rows = session_fact_rows(&conn, 5_000, 7_000).unwrap();
+        assert_eq!(rows.len(), 2);
+        let first = rows.iter().find(|r| r.session == "s1").unwrap();
+        assert_eq!((first.opened_by.as_str(), first.card.as_str()), ("person", "c1"));
+        assert_eq!(first.turns, 3);
+        assert_eq!(first.ended_at, Some(9_000));
+        let open = rows.iter().find(|r| r.session == "s2").unwrap();
+        assert_eq!(open.ended_at, None, "an open session travels as no end, not a made-up one");
+        assert_eq!((open.provider_first.as_str(), open.provider_last.as_str()), ("anthropic", "deepseek"));
+        assert!(session_fact_rows(&conn, 7_000, 5_000).is_err(), "a backwards window is refused");
     }
 
     #[test]

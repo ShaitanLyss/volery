@@ -2149,6 +2149,21 @@ Every figure on this page carries its provenance. Counts and latencies are measu
 call is apportioned from the turn and says so; a skill's cost is the turn that invoked it, not
 a hidden per-token meter.
 
+**As built.** The tab is in the surface as `behaviour` (`4`, or `space n b`), in both
+presentations. It reads `tool_totals` (the hourly rollup summed in SQL to one row per tool,
+server, skill and subagent), `session_facts` and the moves the work page already reads
+(`invalidate_facts`), all over the shared span. Three readings differ from the design above.
+**An attributed half does not exist to be toggled:** `tool_hour` records what was invoked and
+nothing records what the kit attributed, so the skills and agents views draw the invoked half
+and say so rather than offering a switch with one side empty. **The grouping is in the query,
+not in the page**, because the page draws no instant and a year of hours x tools x projects is
+hundreds of thousands of rows for dozens of groups; that is what lets the tab offer the spend
+tab's year. **The scatter's p95 is estimated from the hourly bands**, since the rollup is kept
+where the per-call facts are pruned at ninety days and a percentile over months cannot be exact
+by construction. The habits count a *spawn* as a session the wall opened inside the window, so
+a renewal counts again and a card opened before the window is in its sessions but not its
+spawns.
+
 ### 11.10 A card's life: where the lifetime split lives
 
 The lifetime split is not a setting and not a second chart type. It is what **selecting a card**

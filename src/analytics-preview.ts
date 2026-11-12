@@ -16,6 +16,7 @@ import Analytics from "./lib/Analytics.svelte";
 import AnalyticsFace from "./lib/AnalyticsFace.svelte";
 import { Analytics as AnalyticsReader } from "./lib/analyticsholder.svelte";
 import {
+  fixtureBehaviourReader,
   fixturePromptReader,
   fixtureWatches,
   fixtureWindow,
@@ -42,9 +43,11 @@ const tab =
     ? "prompts"
     : asked.get("tab") === "work"
       ? "work"
-      : asked.get("tab") === "spend"
-        ? "spend"
-        : undefined;
+      : asked.get("tab") === "behaviour"
+        ? "behaviour"
+        : asked.get("tab") === "spend"
+          ? "spend"
+          : undefined;
 const vault: VaultMode =
   asked.get("vault") === "none" ? "none" : asked.get("vault") === "unlocked" ? "unlocked" : "locked";
 
@@ -102,6 +105,7 @@ if (widgetMode) {
       mode: "wall",
       prompts: fixturePromptReader(mode, vault),
       work: fixtureWorkReader(mode),
+      behaviour: fixtureBehaviourReader(mode),
       onclose: () => location.reload(),
       read: async (span: string, now: number): Promise<AnalyticsWindow> =>
         fixtureWindow(windowRequest(span, now), mode),

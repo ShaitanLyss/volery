@@ -16,7 +16,9 @@
 
 import type { AnalyticsWindow, WindowRequest } from "./analyticsroom";
 import type { SpendWatch } from "./spend";
-import type { Fact, HourFact, UsageRow } from "./analytics";
+import type { Fact, HourFact, ToolTotal, UsageRow } from "./analytics";
+import type { BehaviourBundle, BehaviourReader } from "./analyticsbehaviourread.svelte";
+import type { SessionFact } from "./analyticsbehaviour";
 import type {
   CardSpendRow,
   InvalidateRow,
@@ -634,6 +636,215 @@ export function fixtureWork(req: WindowRequest, mode: FixtureMode = "normal"): W
  *  does, with no Tauri behind it. */
 export function fixtureWorkReader(mode: FixtureMode = "normal"): WorkReader {
   return async (from, to) => fixtureWork({ since: from, until: to, fine: true }, mode);
+}
+
+/* ── the behaviour tab's window, made up ─────────────────────────────────── */
+
+/** A window of tool hours, sessions and moves, for `?tab=behaviour`.
+ *
+ * It answers the states the drawing has to tell apart rather than producing
+ * plausible-looking noise:
+ *
+ *  - **a built-in beside an MCP tool of a different name**, so the empty server
+ *    column is visible next to a filled one;
+ *  - **three servers plus two more**, which is the palette's cap and the fold;
+ *  - **a server with no completed call**, which is in the table and not on the
+ *    scatter;
+ *  - **a skill and two subagents**, so the invoked half has rows and the face
+ *    can say what is not recorded;
+ *  - **a session opened by an agent, one by nobody, and one still open**, which
+ *    are the three states of `opened_by`;
+ *  - **a move between fundings beside a file invalidation**, so the habits
+ *    count a move and not every invalidation.
+ *
+ * Fractions of the requested window, so the same fixture answers 24h and 1y.
+ * Deterministic for one request.
+ */
+export function fixtureBehaviour(req: { since: number; until: number }, mode: FixtureMode = "normal"): BehaviourBundle {
+  const since = req.since;
+  const until = req.until;
+  const span = Math.max(60_000, until - since);
+  if (mode !== "normal") return { tools: [], sessions: [], changes: [], changesUnread: false };
+
+  const random = rng(Math.floor(span / 60_000) + 7);
+
+  /** One rollup row, its calls split across the five bands so a percentile has
+   *  a distribution rather than a spike. */
+  const row = (
+    over: Pick<ToolTotal, "kind" | "server" | "tool" | "target"> & {
+      calls: number;
+      bands: [number, number, number, number, number];
+      bytes: number;
+      errorShare: number;
+    },
+  ): ToolTotal => {
+    const total = Math.max(1, Math.round(over.calls * (0.7 + random() * 0.6)));
+    const [a, b, c, d, e] = over.bands;
+    const under50 = Math.round(total * a);
+    const under200 = Math.round(total * b);
+    const under1s = Math.round(total * c);
+    const under5s = Math.round(total * d);
+    return {
+      kind: over.kind,
+      server: over.server,
+      tool: over.tool,
+      target: over.target,
+      calls: total,
+      errors: Math.round(total * over.errorShare),
+      receipts: 0,
+      msTotal: Math.round(total * (30 * a + 120 * b + 600 * c + 3000 * d + 8000 * e)),
+      msUnder50: under50,
+      msUnder200: under200,
+      msUnder1s: under1s,
+      msUnder5s: under5s,
+      /* Deliberately *not* the remainder: a call that never returned lands in
+         no band while still counting as a call, which is exactly the state the
+         `flaky` server below is here to draw. */
+      msOver5s: Math.round(total * e),
+      outBytes: Math.round(total * over.bytes * (0.8 + random() * 0.5)),
+      turnUsd: total * 0.0025,
+    };
+  };
+
+  /* Twelve draws of one group each, so the fixture exercises the same summing
+     the SQL does rather than handing the page totals it never has to merge. */
+  const tools: ToolTotal[] = [];
+  for (let i = 0; i < 12; i += 1) {
+    tools.push(
+      row({ kind: "builtin", server: "", tool: "Read", target: "", calls: 90, bands: [0.8, 0.16, 0.03, 0.01, 0], bytes: 900, errorShare: 0.004 }),
+      row({ kind: "builtin", server: "", tool: "Edit", target: "", calls: 26, bands: [0.5, 0.35, 0.12, 0.03, 0], bytes: 120, errorShare: 0.03 }),
+      row({ kind: "builtin", server: "", tool: "Bash", target: "", calls: 34, bands: [0.1, 0.3, 0.4, 0.17, 0.03], bytes: 1400, errorShare: 0.06 }),
+      row({ kind: "builtin", server: "", tool: "Grep", target: "", calls: 18, bands: [0.6, 0.3, 0.09, 0.01, 0], bytes: 2600, errorShare: 0.008 }),
+      row({ kind: "mcp", server: "browser", tool: "browser_take_screenshot", target: "", calls: 12, bands: [0, 0.05, 0.35, 0.5, 0.1], bytes: 210_000, errorShare: 0.04 }),
+      row({ kind: "mcp", server: "skein", tool: "ask_user", target: "", calls: 4, bands: [0.2, 0.5, 0.3, 0, 0], bytes: 400, errorShare: 0 }),
+      row({ kind: "mcp", server: "asana", tool: "asana_board", target: "", calls: 3, bands: [0, 0.2, 0.5, 0.3, 0], bytes: 9000, errorShare: 0.12 }),
+      row({ kind: "skill", server: "", tool: "Skill", target: "tx-toolkit:ship-gauntlet", calls: 2, bands: [0.4, 0.4, 0.2, 0, 0], bytes: 2200, errorShare: 0 }),
+      row({ kind: "skill", server: "", tool: "Skill", target: "volery:coordinate", calls: 1, bands: [0.5, 0.5, 0, 0, 0], bytes: 1800, errorShare: 0 }),
+      row({ kind: "agent", server: "", tool: "Agent", target: "scout", calls: 3, bands: [0.7, 0.2, 0.1, 0, 0], bytes: 600, errorShare: 0.02 }),
+      row({ kind: "agent", server: "", tool: "Agent", target: "red-team", calls: 2, bands: [0.6, 0.3, 0.1, 0, 0], bytes: 1500, errorShare: 0 }),
+    );
+  }
+  /* A server whose calls all failed before they completed: in the table, not
+   * on the scatter, and the figure says why. */
+  tools.push(row({ kind: "mcp", server: "flaky", tool: "flaky_call", target: "", calls: 5, bands: [0, 0, 0, 0, 0], bytes: 0, errorShare: 1 }));
+
+  const sessions = fixtureSessions(since, until);
+  const changes: InvalidateRow[] = [
+    {
+      at: since + span * 0.3,
+      host: "here",
+      session: "b1",
+      card: "c1",
+      kind: "account",
+      ref: "tx-team",
+      tree: "C:/workbench/volery",
+      affected: 3,
+      tokens: 0,
+      inTokens: 0,
+      model: "",
+      usd: 0,
+      provenance: "attributed",
+    },
+    {
+      at: since + span * 0.55,
+      host: "here",
+      session: "b2",
+      card: "c2",
+      kind: "provider",
+      ref: "deepseek",
+      tree: "C:/workbench/nova",
+      affected: 2,
+      tokens: 0,
+      inTokens: 0,
+      model: "",
+      usd: 0,
+      provenance: "attributed",
+    },
+    {
+      at: since + span * 0.7,
+      host: "here",
+      session: "b3",
+      card: "c3",
+      kind: "model",
+      ref: "deepseek-v4-pro",
+      tree: "C:/workbench/rise",
+      affected: 1,
+      tokens: 0,
+      inTokens: 0,
+      model: "",
+      usd: 0,
+      provenance: "receipt",
+    },
+    /* A file invalidation is not a move, and the habits must not count it. */
+    {
+      at: since + span * 0.8,
+      host: "here",
+      session: "b4",
+      card: "c4",
+      kind: "edit",
+      ref: "src/lib/analyticsbehaviour.ts",
+      tree: "C:/workbench/volery",
+      affected: 1,
+      tokens: 0,
+      inTokens: 0,
+      model: "",
+      usd: 0,
+      provenance: "receipt",
+    },
+  ];
+  return { tools, sessions, changes, changesUnread: false };
+}
+
+/** The preview's behaviour reader: `?tab=behaviour` drives the same component
+ *  the app does, with no Tauri behind it. */
+export function fixtureBehaviourReader(mode: FixtureMode = "normal"): BehaviourReader {
+  return async (from, to) => fixtureBehaviour({ since: from, until: to }, mode);
+}
+
+/** The sessions the habits count, with the three opener states and one still
+ *  open. Placed across the window so the day bars have a shape. */
+function fixtureSessions(since: number, until: number): SessionFact[] {
+  const span = Math.max(60_000, until - since);
+  const starts = [0.02, 0.1, 0.16, 0.25, 0.38, 0.44, 0.57, 0.63, 0.72, 0.8, 0.88, 0.94];
+  const openers: SessionFact["openedBy"][] = [
+    "person",
+    "person",
+    "agent",
+    "person",
+    "person",
+    "agent",
+    "person",
+    "unknown",
+    "person",
+    "person",
+    "agent",
+    "person",
+  ];
+  const providers = ["anthropic", "anthropic", "deepseek", "anthropic", "anthropic", "anthropic", "deepseek", "anthropic", "anthropic", "anthropic", "deepseek", "anthropic"];
+  const projects = ["volery", "nova", "volery", "rise", "volery", "nova", "tx-toolkit", "volery", "atlas", "volery", "nova", "volery"];
+  return starts.map((f, i) => {
+    const startedAt = Math.round(since + span * f);
+    const live = i === starts.length - 1;
+    return {
+      session: `b${i + 1}`,
+      host: "here",
+      project: projects[i],
+      source: i === 10 ? "terminal" : "card",
+      card: i === 10 ? "" : `c${i + 1}`,
+      parentCard: openers[i] === "agent" ? "c1" : "",
+      openedBy: openers[i],
+      branch: "main",
+      startedAt,
+      endedAt: live ? null : startedAt + Math.round(span * 0.04),
+      cliMin: "2.1.300",
+      cliMax: "2.1.318",
+      accountFirst: providers[i] === "deepseek" ? "@deepseek" : "lyss",
+      accountLast: providers[i] === "deepseek" ? "@deepseek" : "lyss",
+      providerFirst: providers[i],
+      providerLast: providers[i],
+      turns: 3 + i,
+    };
+  });
 }
 
 /** The watches the preview's selected card carries, so the block beside its

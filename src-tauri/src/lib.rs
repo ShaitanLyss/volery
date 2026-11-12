@@ -1174,6 +1174,8 @@ pub fn run() {
             analytics::analytics_delete_view,
             analytics::prompt_facts,
             analytics::tool_facts,
+            analytics::tool_totals,
+            analytics::session_facts,
             analytics::work_facts,
             analytics::work_series,
             analytics::invalidate_facts,

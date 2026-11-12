@@ -47,9 +47,13 @@
   import AnalyticsWorkPage from "./AnalyticsWorkPage.svelte";
   import AnalyticsViews from "./AnalyticsViews.svelte";
   import FilterRail from "./FilterRail.svelte";
+  import AnalyticsBehaviour from "./AnalyticsBehaviour.svelte";
+  import AnalyticsBehaviourPage from "./AnalyticsBehaviourPage.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
   import { loadSavedViews, savedViews } from "./analyticslibrary.svelte";
   import { dropWatch, readWatches, readWorkWindow } from "./analyticsworkread.svelte";
+  import { readBehaviourWindow, type BehaviourBundle, type BehaviourReader } from "./analyticsbehaviourread.svelte";
+  import { habitModel } from "./analyticsbehaviour";
   import type { SpendWatch } from "./spend";
   import { prompts as realPrompts } from "./promptsread.svelte";
   import {
@@ -108,6 +112,7 @@
     read,
     prompts,
     work,
+    behaviour,
     names,
     onclose,
     onpin,
@@ -123,6 +128,8 @@
     prompts?: PromptReader;
     /** The work read, or a fixture. Absent means the three commands. */
     work?: WorkReader;
+    /** The behaviour read, or a fixture. Absent means the three commands. */
+    behaviour?: BehaviourReader;
     /** The watches one card set on itself, or a fixture. Absent means the
      *  command; the browser preview has no wall to ask. */
     watches?: (card: string) => Promise<SpendWatch[]>;
@@ -190,6 +197,8 @@
   let promptsTab = $state<ReturnType<typeof AnalyticsPrompts> | undefined>();
   let workTab = $state<ReturnType<typeof AnalyticsWork> | undefined>();
   let workPage = $state<ReturnType<typeof AnalyticsWorkPage> | undefined>();
+  let behaviourTab = $state<ReturnType<typeof AnalyticsBehaviour> | undefined>();
+  let behaviourPage = $state<ReturnType<typeof AnalyticsBehaviourPage> | undefined>();
 
   /* The work tab's own read. It is asked for only while that tab is in front:
      the spend window is cheap enough to keep warm, three more queries over a
@@ -203,11 +212,23 @@
   let workGen = 0;
   let workMeasure = $state<ScatterMeasure>("merged");
 
+  /* The behaviour tab's own read, for the same reason the work tab has one:
+     three queries over a window nobody is looking at is a cost with no reader.
+     Its window is the shared span, because `tool_hour` and the session records
+     are kept far past the fine tier's ninety days. */
+  let behaviourLoaded = $state<BehaviourBundle | null>(null);
+  let behaviourFailed = $state<string | null>(null);
+  let behaviourBusy = $state(false);
+  let behaviourFrom = $state(0);
+  let behaviourTo = $state(0);
+  let behaviourGen = 0;
+
   /* A closure rather than the prop itself: a prop read outside one captures
      its initial value, which is exactly the bug a fixture that swapped its
      reader at runtime would be impossible to see. */
   const reader: WindowReader = (span, now) => (read ?? readAnalyticsWindow)(span, now);
   const workReader: WorkReader = (from, to) => (work ?? readWorkWindow)(from, to);
+  const behaviourReader: BehaviourReader = (from, to) => (behaviour ?? readBehaviourWindow)(from, to);
 
   /* The generation counter is what makes a slow read harmless: a span change
      while the last answer is still coming back must not land the old window on
@@ -256,6 +277,26 @@
     }
   }
 
+  async function readBehaviour() {
+    const mine = ++behaviourGen;
+    behaviourBusy = true;
+    const req = windowRequest(span, Date.now());
+    try {
+      const next = await behaviourReader(req.since, req.until);
+      if (mine !== behaviourGen) return;
+      behaviourLoaded = next;
+      behaviourFrom = req.since;
+      behaviourTo = req.until;
+      behaviourFailed = null;
+    } catch (e) {
+      if (mine !== behaviourGen) return;
+      behaviourFailed = e instanceof Error ? e.message : String(e);
+      behaviourLoaded = null;
+    } finally {
+      if (mine === behaviourGen) behaviourBusy = false;
+    }
+  }
+
   /* One read on open and one per span change. Nothing else re-reads, and the
      effect has no other dependency because the reader's own arguments are the
      span alone. The selection a presentation holds is its own: the room clears
@@ -267,7 +308,9 @@
   $effect(() => {
     void span;
     void readNow();
-    if (untrack(() => tab.current) === "work") void readWork();
+    const on = untrack(() => tab.current);
+    if (on === "work") void readWork();
+    else if (on === "behaviour") void readBehaviour();
   });
 
   /* Entering the work tab is its own read, because it was not loaded while the
@@ -292,11 +335,22 @@
      never again, where an effect is a thing that may re-run. `onMount`'s
      cleanup runs when the surface closes, so one left before the minute costs
      nothing and one left open costs one read. */
+  /* Entering the behaviour tab is one read, not a subscription. Its window is
+     the shared span, so there is nothing to narrow first: the only question is
+     whether this is an entry, and `wasBehaviour` answers exactly that. */
+  let wasBehaviour = untrack(() => tab.current === "behaviour");
+  $effect(() => {
+    const on = tab.current === "behaviour";
+    if (on && !wasBehaviour) void readBehaviour();
+    wasBehaviour = on;
+  });
+
   onMount(() => {
     const t = setTimeout(() => {
       void readNow();
       if (tab.current === "prompts") void promptsTab?.reload();
       if (tab.current === "work") void readWork();
+      if (tab.current === "behaviour") void readBehaviour();
     }, 65_000);
     return () => clearTimeout(t);
   });
@@ -366,6 +420,18 @@
       },
     });
   });
+
+  /* The behaviour tab's habits, folded once here so both skins are handed one
+     value (§11.15). The tables are grouped inside the components, because the
+     grouping is a choice of the drawing rather than of the window. */
+  const behaviourHabits = $derived.by(() =>
+    /* The window guard is load-bearing: the answer and its edges are three
+       state writes, and a day-by-day fill from an edge still at zero would walk
+       fifty years of empty days before the next flush. */
+    behaviourLoaded && behaviourTo > behaviourFrom
+      ? habitModel(behaviourLoaded.sessions, behaviourLoaded.tools, behaviourLoaded.changes, behaviourFrom, behaviourTo)
+      : null,
+  );
 
   const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
   const workSpanSaid = $derived(WORK_SPANS.find((s) => s.span === workSpan)?.said ?? workSpan);
@@ -539,6 +605,9 @@
     /* The work tab's episode detail is closed by Escape before the surface is,
        the same order the trace keeps. */
     if (tabNow === "work" && workTab?.key(e)) return;
+    /* The behaviour room's `x` cycles its table's grouping, and it answers
+       `true` only for that key, so the rest of the ladder still applies. */
+    if (tabNow === "behaviour" && behaviourTab?.key(e)) return;
 
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
@@ -567,6 +636,11 @@
     if (e.key === "3") {
       e.preventDefault();
       setTab("work");
+      return;
+    }
+    if (e.key === "4") {
+      e.preventDefault();
+      setTab("behaviour");
       return;
     }
     if (e.key === "v") {
@@ -621,6 +695,44 @@
       } else if (e.key === "End") {
         e.preventDefault();
         workDoc?.goTo("bottom");
+      }
+      return;
+    }
+    /* The behaviour tab keeps the shared span, because its rollups are kept far
+       past the fine tier's limit; it walks its document with the arrows and
+       re-reads on `r`. `x` was already taken by the room above. */
+    if (tabNow === "behaviour") {
+      const behaviourDoc = showing === "room" ? behaviourTab : behaviourPage;
+      if (e.key === "[") {
+        e.preventDefault();
+        stepSpan(-1);
+      } else if (e.key === "]") {
+        e.preventDefault();
+        stepSpan(1);
+      } else if (e.key === "r") {
+        e.preventDefault();
+        void readBehaviour();
+      } else if (e.key === "f") {
+        e.preventDefault();
+        controls?.querySelector<HTMLButtonElement>("button")?.focus();
+      } else if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        behaviourDoc?.scrollBy(64);
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        behaviourDoc?.scrollBy(-64);
+      } else if (e.key === "PageDown") {
+        e.preventDefault();
+        behaviourDoc?.turnPage(1);
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        behaviourDoc?.turnPage(-1);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        behaviourDoc?.goTo("top");
+      } else if (e.key === "End") {
+        e.preventDefault();
+        behaviourDoc?.goTo("bottom");
       }
       return;
     }
@@ -728,6 +840,8 @@
           {:else if tabNow === "work"}
             {workSpanSaid} · artifacts and what they cost
             {#if workLoaded && workLoaded.rows.length > 0}· {count(workLoaded.rows.length)} facts{/if}
+          {:else if tabNow === "behaviour"}
+            {spanSaid} · tools, servers, skills and habits
           {:else}
             {spanSaid} · {tierSaid(loaded?.tier ?? tier)}
             {#if loaded && loaded.rows.length > 0}· {count(loaded.rows.length)} rows{/if}
@@ -746,9 +860,9 @@
         onkeydown={(e) =>
           radioKeys(
             e,
-            3,
-            tabNow === "spend" ? 0 : tabNow === "prompts" ? 1 : 2,
-            (i) => setTab(i === 0 ? "spend" : i === 1 ? "prompts" : "work"),
+            4,
+            tabNow === "spend" ? 0 : tabNow === "prompts" ? 1 : tabNow === "work" ? 2 : 3,
+            (i) => setTab(i === 0 ? "spend" : i === 1 ? "prompts" : i === 2 ? "work" : "behaviour"),
           )}
       >
         <button
@@ -775,6 +889,14 @@
           title="cost against output (3, or space n w)"
           onclick={() => setTab("work")}>work <kbd>3</kbd></button
         >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tabNow === "behaviour"}
+          class:on={tabNow === "behaviour"}
+          title="tools, servers, skills and habits (4, or space n b)"
+          onclick={() => setTab("behaviour")}>behaviour <kbd>4</kbd></button
+        >
       </div>
       <!-- The swap, achromatic and small, beside the title: it says where you
            are going rather than where you are, because that is the thing you
@@ -790,7 +912,15 @@
         <kbd>v</kbd>
       </button>
       <span class="an-grow"></span>
-      <span class="an-keys">{tabNow === "prompts" ? "space n t" : tabNow === "work" ? "space n w" : "space b d"}</span>
+      <span class="an-keys"
+        >{tabNow === "prompts"
+          ? "space n t"
+          : tabNow === "work"
+            ? "space n w"
+            : tabNow === "behaviour"
+              ? "space n b"
+              : "space b d"}</span
+      >
       {#if tabNow === "spend"}
         <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
           <Icon name="pin" small />views
@@ -811,7 +941,7 @@
       </button>
     </header>
 
-    {#if tabNow === "spend" || tabNow === "work"}
+    {#if tabNow === "spend" || tabNow === "work" || tabNow === "behaviour"}
     <div class="an-filters" bind:this={controls} role="group" aria-label="what to read">
       <span class="an-label">span</span>
       <div
@@ -875,7 +1005,7 @@
             >
           {/each}
         </div>
-      {:else}
+      {:else if tabNow === "work"}
         <span class="an-label">against cost</span>
         <div
           class="an-seg"
@@ -904,7 +1034,8 @@
         type="button"
         class="an-btn"
         title="read the window again (r)"
-        onclick={() => void (tabNow === "work" ? readWork() : readNow())}
+        onclick={() =>
+          void (tabNow === "work" ? readWork() : tabNow === "behaviour" ? readBehaviour() : readNow())}
       >
         <Icon name="clock" small />read again
       </button>
@@ -967,6 +1098,37 @@
             to={workTo}
             spanSaid={workSpanSaid}
             measure={workMeasure}
+          />
+        </div>
+      {/if}
+    {:else if tabNow === "behaviour"}
+      {#if behaviourFailed}
+        <div class="an-body an-message">
+          <p class="an-fail">could not read the behaviour facts</p>
+          <p class="an-note">{behaviourFailed}</p>
+        </div>
+      {:else if !behaviourLoaded || !behaviourHabits}
+        <div class="an-body an-message">
+          <p class="an-note">{behaviourBusy ? "reading…" : "no answer yet"}</p>
+        </div>
+      {:else if showing === "room"}
+        <div class="an-page">
+          <AnalyticsBehaviour
+            bind:this={behaviourTab}
+            bundle={behaviourLoaded}
+            to={behaviourTo}
+            {spanSaid}
+            habits={behaviourHabits}
+          />
+        </div>
+      {:else}
+        <div class="an-page">
+          <AnalyticsBehaviourPage
+            bind:this={behaviourPage}
+            bundle={behaviourLoaded}
+            to={behaviourTo}
+            {spanSaid}
+            habits={behaviourHabits}
           />
         </div>
       {/if}

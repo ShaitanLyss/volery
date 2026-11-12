@@ -299,6 +299,35 @@ export type ToolHour = {
   turnUsd: number;
 };
 
+/** One tool's totals over a whole window, with no time in the row at all.
+ *
+ * This is the behaviour page's grain (§11.9): its tables, its strip and its
+ * scatter answer "which tool, how often, how slow, how costly" and none of them
+ * draws an instant. Grouping in SQL rather than shipping every `tool_hour` row
+ * is what lets a year answer: hours x tools x projects is hundreds of thousands
+ * of rows, and the distinct tools in it are dozens.
+ *
+ * The five latency bands travel with it, because a percentile needs a
+ * distribution and totals alone would leave only a mean.
+ */
+export type ToolTotal = {
+  kind: ToolKind;
+  server: string;
+  tool: string;
+  target: string;
+  calls: number;
+  errors: number;
+  receipts: number;
+  msTotal: number;
+  msUnder50: number;
+  msUnder200: number;
+  msUnder1s: number;
+  msUnder5s: number;
+  msOver5s: number;
+  outBytes: number;
+  turnUsd: number;
+};
+
 export type ToolRow = ToolFact | ToolHour;
 
 /* ── filtering ─────────────────────────────────────────────────────────────*/
@@ -973,7 +1002,7 @@ export type LatencyReading = {
  *  stores bands, so its percentile is estimated over calls and labelled as an
  *  estimate. The doc's rule is that a chart may swap one for the other only if
  *  it says so. */
-export function latency(rows: readonly ToolRow[], q: number): LatencyReading | null {
+export function latency(rows: readonly (ToolRow | ToolTotal)[], q: number): LatencyReading | null {
   if (rows.length === 0) return null;
   const first = rows[0];
   if ("msUnder50" in first) {

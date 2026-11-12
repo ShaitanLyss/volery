@@ -218,6 +218,7 @@ const OPEN_GLYPH: Record<Extract<ChordVerb, { kind: "open" }>["what"], IconName>
   analyticspage: "file",
   analyticstrace: "quote",
   analyticswork: "plan",
+  analyticsbehaviour: "gauge",
 };
 const READING_GLYPH: Partial<Record<Extract<ChordVerb, { kind: "reading" }>["widget"], IconName>> = {
   pipelines: "pipe",

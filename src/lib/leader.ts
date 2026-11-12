@@ -126,7 +126,8 @@ export type Verb =
         | "analytics"
         | "analyticspage"
         | "analyticstrace"
-        | "analyticswork";
+        | "analyticswork"
+        | "analyticsbehaviour";
     }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
@@ -457,6 +458,10 @@ export const CHORDS: readonly Chord[] = [
      reason: the tab decides what the surface is about, and the skin stays
      whatever the mode remembers. */
   { keys: "nw", label: "cost against output", verb: { kind: "open", what: "analyticswork" } },
+  /* `nb`: how the wall is worked rather than what it spent (§11.9) — the
+     tools, servers, skills and habits, which is the tab a spend chart cannot
+     answer. A third letter of the `n` family for `nt`'s reason. */
+  { keys: "nb", label: "tools, servers and habits", verb: { kind: "open", what: "analyticsbehaviour" } },
   ...readings(),
 ];
 

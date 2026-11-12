@@ -721,6 +721,7 @@
       else if (verb.what === "analyticspage") openAnalytics("page");
       else if (verb.what === "analyticstrace") openAnalytics(undefined, "prompts");
       else if (verb.what === "analyticswork") openAnalytics(undefined, "work");
+      else if (verb.what === "analyticsbehaviour") openAnalytics(undefined, "behaviour");
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
