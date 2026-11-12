@@ -444,15 +444,15 @@ belief about her. Nothing moves itself.
 
 ### 3.5 Presence decides where
 
-Presence is designed in `docs/PRESENCE-PHONE.md` by card `d1e5adfe`, which **has not landed
-yet** (it is under its own second review). This design reads from it rather than redesigning
-it. The two cards compared notes on 2026-11-12, and what that design will and will not provide
-shaped this section:
+Presence is designed in `docs/PRESENCE-PHONE.md` by card `d1e5adfe` (committed as `f3bc74d`,
+still a design). This design reads from it rather than redesigning it. The two cards compared
+notes on 2026-11-12, and its section *What other designs can read from this* answers what this
+one asked:
 
 | what initiative needs | what presence gives | so this design |
 |---|---|---|
 | is she reachable | `person(w)`: some source is present **and covers wall w**. Reachability is relative to the wall asking | asks `person(w)` of the home wall |
-| where she is | each source's `idle_ms`, an age since her last deliberate input, minute-rounded (proposed there as D5b) | rings on the freshest source; a tie goes to the phone, since that is the one in her hand |
+| where she is | each source's `idle_ms`, an age since her last deliberate input, minute-rounded (proposed there as D5b) | rings on the freshest source, by presence's own D5b rule: when two sources are within 2 minutes of each other both ring, since a minute-rounded age cannot say which is in her hand |
 | in what form | nothing on the wire, and none needed: the phone's voice is a delivery channel there, never a presence source | lets the receiving node pick the form; a phone narrating with the screen off speaks it, a wall shows it |
 | why she is away | one bit per source; chosen and idle look the same from another wall | needs nothing more, except the pocket question below |
 | when she comes back | no per-person edge exists; walls only see their own switch flip | folds its own edge, on the home wall only |
@@ -564,7 +564,7 @@ Each phase is useful on its own and none depends on a later one.
 | 0 | presence over the flyway (`docs/PRESENCE-PHONE.md`), plus `buzzable` if O8 says so | that design's own criteria |
 | 1 | the two probes (snapshot, prompt file); the memory: claims, proposals, approval, the panel, `memory` and `propose`, spawn tiers, change notes, renew on forget, flyway sync, the import | a preference she approves on one machine is cited by a card on another, with its date and source, whether that card is fresh or was already running; a tainted proposal cannot be believed without her yes; a forget leaves no text in any wall's store and names what it could not reach |
 | 2 | open loops, the wall-owned timer table, the comeback edge, the brief on return (needs 0, 1) | "remind me Thursday", said by voice, reaches her on Thursday on whichever node she is on, once |
-| 3 | initiative over the wall's own events: collisions, pile age, allowance pace, red gates (needs 1, 2) | two cards editing one file raises one heads-up on one node, before either commits |
+| 3 | initiative over the wall's own events: collisions, pile age, allowance pace, red gates (needs 1, 2) | two cards editing one file raises one heads-up, delivered once by the home wall to the freshest source, before either commits |
 | 4 | outside events through the Azure relay; Graph if IT agrees (needs 3) | a review request reaches her with no widget open and no timer running on the laptop |
 | 5 | looks with a budget; tier proposals from her responses (needs 3) | a look cannot write, never exceeds its cap or the day's budget, and a tier never changes without her yes |
 | 6 | relaxing approval where the numbers say so; personal beyond the front desk | her call, made on the acceptance rates phase 1 records |
