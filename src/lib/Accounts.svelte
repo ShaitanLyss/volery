@@ -45,6 +45,9 @@
   import { creditsFace, money, parseBudget, sayBudgetSet, sayCreditsBand, sayKey } from "./credits";
   import { Listeners } from "./listeners";
   import { codeFrom, looksLikeCode, readSignin } from "./signin";
+  import AccountWorth from "./AccountWorth.svelte";
+  import { binsOf, readingOf, type WindowReading } from "./equivalence";
+  import { readWorth, WORTH_DAYS, type WorthRead } from "./worthread.svelte";
 
   /* `me` is this wall's flyway name and `flying` whether it flies with any
      other wall: the sync line says which wall changed a setting, and keeps
@@ -101,6 +104,29 @@
   let imported = $state<string[]>([]);
   let renames = $state<{ from: string; to: string }[]>([]);
 
+  /** What a point of each account's window is worth (§22), read once when the
+   *  panel opens. `null` before the answer and after a failure; the block words
+   *  the second and draws nothing for the first. */
+  let worth = $state<WorthRead | null>(null);
+
+  /** One reading per account and window kind, folded from that one read. The
+   *  fold is not cheap (a bootstrap per window), so it happens when the read or
+   *  the registry changes and never on a clock. */
+  const worthBy = $derived.by(() => {
+    const out = new Map<string, Record<string, WindowReading>>();
+    const read = worth;
+    if (!read || read.samples === null || read.window === null) return out;
+    for (const account of waterfall.list) {
+      const bins = binsOf(read.samples, read.window.rows, account.label);
+      const by: Record<string, WindowReading> = {};
+      for (const kind of ["session", "weekly_all"]) {
+        by[kind] = readingOf(bins, account.label, kind, read.since, read.until, WORTH_DAYS / 7);
+      }
+      out.set(account.label, by);
+    }
+    return out;
+  });
+
   const listeners = new Listeners();
 
   const now = $derived(Date.now());
@@ -139,6 +165,10 @@
     /* What credits have cost and whether a key is stored, as of opening: both
        change without this panel, and both are drawn in it. */
     void purse.refresh();
+    /* Four weeks of allowance samples and hourly facts, once. Not a poll: this
+       is a reading of how the last month went, and a panel nobody is looking at
+       has no business folding it again. */
+    void readWorth(Date.now()).then((read) => (worth = read));
 
     /* Subscriptions are kept so they can be let go of — `Listeners` exists
        because `tauri dev` rebuilds this component on every edit, and a
@@ -714,6 +744,24 @@
                       </label>
                     {:else}
                       <span class="dim">no windows read yet</span>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if account.signedIn && worth !== null}
+                  <!-- What a point of each window is worth (§22). Drawn only
+                       once the read has answered, so a panel that has barely
+                       opened does not say "not measured" about a month it has
+                       not looked at yet. -->
+                  <div class="worths">
+                    {#each [["session", "the 5-hour window"], ["weekly_all", "the weekly window"]] as [kind, label] (kind)}
+                      <AccountWorth
+                        label={account.label}
+                        kind={label}
+                        reading={worthBy.get(account.label)?.[kind] ?? null}
+                        fault={worth.fault}
+                        spanDays={WORTH_DAYS}
+                      />
                     {/each}
                   </div>
                 {/if}
@@ -1296,6 +1344,15 @@
     flex-wrap: wrap;
     gap: 0.4rem 0.9rem;
     padding-left: 1.5ch;
+  }
+  /* The worth reading sits under the ceilings with the same indent and a rule
+     above it: it is a different kind of statement (what the window is worth,
+     not what is left of it) and a hairline is the whole of what this wall uses
+     to say so. */
+  .worths {
+    margin: 0.5rem 0 0 1.5ch;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--edge);
   }
   .cap {
     display: flex;

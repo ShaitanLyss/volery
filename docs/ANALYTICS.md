@@ -4074,3 +4074,136 @@ tokens would have cost at API prices, the percentage is how much of the plan wen
 - **Backfilled fundings.** A `turn` row written before v59 has no label and reads as this
   machine's sign-in, which is what it was. There is no way to recover which subscription paid, and
   guessing would be worse than the honest default.
+
+## 22. What a window is worth, and how steady that is
+
+Lyss, 2026-11-12: *"I should also be able to get a reading on claude accounts from this
+equivalence we're building of how many tokens a claude allowance is equivalent to, as well as
+how many api credits it's equivalent … and it'd be interesting to make the derived equivalence
+smart to see if there's a concept of peak hour or variability across the week. We shouldn't
+assume 10% of a premium 5-hour allowance to be equivalent to always the same amount."*
+
+### 22.1 The two sides of the reading
+
+§21 gave the edges from a percentage to dollars and to tokens, one fact at a time. What was
+missing is the same edge read *the other way up*: not "what did this turn cost in points" but
+**"what is a point worth"**, on the account's own page, where the question is asked.
+
+Three readings, one denominator:
+
+- **tokens per point**, the sum of `in + out + cache_read + cache_write` over the hours the
+  window moved through;
+- **dollars per point**, the modelled cost of those same hours;
+- **a whole window**, those two multiplied by 100, because the question was how much an
+  allowance is worth rather than one percent of it.
+
+**This is an hourly fold, not §21's attribution, and the difference is stated rather than
+papered over.** §21 divides one sample interval's delta among its facts by modelled cost; that
+needs the fine tier, which `analytics_window` refuses past forty-eight hours. The question here
+is about four weeks, so both sides are binned to the hour (`binsOf`): the movement by splitting
+each sample interval at hour edges by time, the money by summing every priced row in the hour.
+The two can differ over the same span, because an hour is coarser than a sample interval, and
+the panel's rate is the monthly one. Nothing pretends the two surfaces are the same arithmetic.
+
+`equivalence.ts::worthOf` is the fold, `worthSaid` and `windowSaid` are what a row says, and
+`bootBand` puts an interval on the rate by resampling the hours themselves. A bootstrap over
+bins and not a Poisson standard error over points, because points are not independent draws:
+one request can move a tenth of a window. The generator is seeded, since an interval that
+reseeds per render is a number that flickers.
+
+### 22.2 It is a price, not a property of the plan
+
+Anthropic publishes no token figure for a window, and there is no honest way to state one as if
+it were a constant. **A point buys whatever the wall spent it on.** Opus 5.5 and Haiku 5.5 cost
+different dollars for the same tokens, and a cached re-read costs a fraction of a fresh one, so
+the same 1% of the same window is worth different token counts on two days of one week.
+
+So the number is a **marginal price at the mix this wall actually ran**, and the panel says so in
+the same breath as the figure, naming the models that produced it (`mixSaid`). A reader who sees
+"1% ≈ 380k tokens" and later moves everything to Opus must be able to see why it moved.
+
+### 22.3 What the data can and cannot separate
+
+An hour carries **one** dollars total and one movement total, and the models inside it are
+recorded only as a share of that total. So an hour that ran one model does carry that model's
+dollars-per-point, and `groupingOf`'s mix grouping reports exactly that: the mean rate of the
+hours dominated by each model. What the data cannot do is split a *mixed* hour, and it cannot
+say whether a difference between two classes is the model or the time it ran, without assuming
+which. Those are the two limits, stated, and they are narrower than "no per-model rate exists".
+
+What *is* solidly identifiable is the shape of the deviation. For every hour, what one point
+cost, and whether the hours that cost more are the ones with a different model mix, or specific
+hours of the day, or the same hours wearing both. `verdictOf` compares three groupings over one
+set of weighted deviations and answers one of:
+
+- **unmeasured**, when no hour in the span could be priced at all;
+- **few**, when a rate exists but rests on fewer than `MIN_HOURS` hours. The figures above it are
+  real, so it says the *steadiness* cannot be read rather than that the rate is not measured;
+- **steady**, when nothing clears the floors. A real answer, and the one to expect when the
+  window is weighted by the price list;
+- **moves with what you run**, when the mix grouping carries the movement;
+- **moves with the clock**, when the hour-of-day or weekday grouping does, at one mix, and it
+  says **which** of the two: a weekend effect reported as "some hours" was the first version's
+  worst sentence;
+- **cannot separate the two**, when both carry a lot and the clock predicts the mix class nearly
+  perfectly (`confoundingOf` ≥ `CONFOUNDED_ABOVE`). This wall really does run Opus on a
+  schedule, so the panel says so rather than awarding the credit to whichever grouping fit best;
+- **two separable effects**, when both carry a lot over hours that contain both classes.
+
+The floors are `MIN_POINTS` (an hour below one point is the sample's rounding, not a
+measurement), `MIN_HOURS`, `SPREAD_FLOOR` and `EXPLAINED_FLOOR`. **The variance share is ω²,
+degree-of-freedom corrected, not η².** Raw η² is about 1 on a single day of 24 bins grouped by
+24 hours, because every group is a singleton, so one afternoon would have been reported as a
+time-of-day effect at full confidence; simulated with no real effect, the false-clock rate was
+1.00 at one day, 0.35 at a week and 0.00 at four. And the percentages the sentences use are
+against the **cheapest group**, not against the average: a cheapest hour at $0.01 and a dearest
+at $0.03 is 200% dearer, where the width over the average reads 100%. Every arm of `verdictSaid` is a
+claim the data supports, and none of them interprets a residual as peak-hour pricing.
+
+### 22.4 The week
+
+The rate by hour of day and weekday, drawn as a heatmap of 168 cells. **A cell with no
+trustworthy hour is blank rather than filled with the period's average**, because a heatmap that
+fills its gaps invents exactly the pattern it is being asked about. The extremes sentence names
+the cheapest and dearest measured hour, so the same content is available without hovering.
+
+Magnitude is one hue light to dark, and on this wall that hue is the paper's: colour is status
+everywhere else and stays that way. The cells are a grid of blocks with a `title`, and the
+block's own sentence carries the numbers, so nothing is legible only by shade.
+
+### 22.5 Where the reading comes from, and what it costs
+
+No new command. Two reads the room already uses:
+
+- `allowance_samples(from, to)` for the points;
+- `analytics_window(since, until, fine = false)` for the dollars and the tokens, off the hourly
+  tier.
+
+**Twenty-eight days**, so every weekday appears exactly four times and a day-of-week comparison
+is not weighting Tuesday four times against Wednesday three. Hourly, because the fine tier
+refuses a span past forty-eight hours, and because a week's shape is an hour-of-day question
+rather than a five-minute one. The read happens when the accounts panel opens, never on a clock.
+
+**`prefer_transcript` cannot be applied exactly on this tier**: the rule keys on
+`(session, hour)` and `usage_hour` has no session column. The hourly analogue kept in
+`equivalence.ts` is coarser and stated: a `turn` row is dropped when any transcript row stands
+for the same `(hour, host, account)`. It errs towards counting nothing twice, which is the
+direction §7.4 is about, and it is the rule the turn backfill will owe again if it lands (§7.4
+is not built).
+
+`spansOf` also learned to walk its buckets from where each span begins rather than scanning the
+whole week per interval. A week of five-minute buckets against a few hundred intervals was a
+product nobody chose, and it is on the path of a fold that is redrawn while the room is open.
+
+### 22.6 What is deliberately absent
+
+- **A token figure for a plan, a tier or a vendor.** This is a derivation from this wall's own
+  facts at its own mix, and the panel says so beside the number.
+- **A per-model rate for a mixed hour.** The mix grouping reports what a single-model hour
+  costs per point, which is the honest half of it; splitting an hour that ran three models
+  would be dividing one number three ways on an assumption nothing in the data checks.
+- **A peak-hour curve from an unexplained residual.** A residual is equally consistent with
+  time-varying weighting on the server and with a few atypical afternoons. It is reported with
+  its size and the hours behind it, and not drawn as a curve.
+- **A rate carried across accounts.** Two subscriptions' points are two currencies (§21), even
+  where the plans are the same.
