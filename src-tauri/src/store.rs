@@ -13754,6 +13754,40 @@ mod tests {
         assert_eq!(tables, 10, "a second pass must not drop or duplicate anything");
     }
 
+    /// The wedge case for rung 72: it ran, the stamp fell behind, and the next
+    /// launch runs it again over a wall that already holds hours. The backfill
+    /// must land on the same digests, and `add_column` must not complain.
+    #[test]
+    fn v72_can_run_twice_over_existing_hours_and_keeps_its_digests() {
+        let conn = Connection::open_in_memory().unwrap();
+        for (_, step) in STEPS.iter().take(71) {
+            step(&conn).unwrap();
+        }
+        for hour in [1_700_000_000_i64 / 3600 * 3600, 1_700_003_600, 1_700_100_000] {
+            conn.execute(
+                "INSERT INTO usage_hour (hour, host, account, provider, model, source, project)
+                 VALUES (?1, 'desk', 'lyss', 'anthropic', 'claude-opus-5-5', 'transcript', 'C:/p')",
+                [hour],
+            )
+            .unwrap();
+        }
+        migrate_v72(&conn).unwrap();
+        let read = |conn: &Connection| -> Vec<(String, String, String, i64)> {
+            let mut stmt = conn
+                .prepare("SELECT host, day, digest, rows FROM usage_day_digest ORDER BY host, day")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let first = read(&conn);
+        assert!(!first.is_empty(), "the backfill digests every day already recorded");
+
+        migrate_v72(&conn).expect("rung 72 must be safe to re-run over existing rows");
+        assert_eq!(read(&conn), first, "a second pass leaves every digest as it was");
+    }
+
     /// §17's five columns and nothing else: the spec is opaque, so a column for
     /// span or measure would be Rust pretending to a vocabulary it deliberately
     /// does not have.
