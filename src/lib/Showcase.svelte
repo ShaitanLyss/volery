@@ -31,6 +31,25 @@
   let root = $state<HTMLElement>();
   let scroller = $state<HTMLElement>();
 
+  /* The tour is presented from a laptop, an external display and, tomorrow, a
+   * meeting-room screen. The layout is drawn at 1280x800, and a fixed 12.5px
+   * reading that is right on the laptop is a caption on a projector. So the
+   * whole frame scales with the window: every demo, every label, the rail.
+   * Uniformly, so a chapter keeps the composition it was designed with rather
+   * than reflowing into a different shape. The cap is there because a 4K panel
+   * at 100% would otherwise ask for a scale near 3, which reads as a web page
+   * somebody zoomed rather than as a surface. */
+  let scale = $state(1);
+  $effect(() => {
+    const fit = () => {
+      const z = Math.min(window.innerWidth / 1280, window.innerHeight / 800);
+      scale = Math.min(2.4, Math.max(1, Math.round(z * 100) / 100));
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  });
+
   /* Where the keyboard was before the tour took it, put back when the tour
      goes. Read here rather than in an effect because the effect below moves
      the focus a frame later, and the answer by then is the tour itself. */
@@ -125,6 +144,7 @@
   bind:this={root}
   onkeydown={key}
 >
+  <div class="frame" style:--z={scale}>
   <aside class="rail">
     <div class="brand">
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
@@ -213,6 +233,7 @@
       </div>
     </div>
   </div>
+  </div>
 </div>
 
 <style>
@@ -220,9 +241,6 @@
     position: fixed;
     inset: 0;
     z-index: 70;
-    display: grid;
-    grid-template-columns: 252px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
     color: var(--paper);
     font-family: var(--cv-ui, var(--util));
     font-size: 13.5px;
@@ -235,6 +253,19 @@
     overflow: hidden;
     outline: none;
     animation: fade var(--dur-scene, 360ms) var(--ease-out, ease-out) both;
+  }
+  /* The frame the scale multiplies. Its box is divided by the same factor the
+     transform applies, so it lands exactly on the window and the rail stays
+     against the left edge. Everything inside is drawn at its designed size and
+     then scaled once, which is what keeps a demo's proportions intact. */
+  .frame {
+    width: calc(100% / var(--z, 1));
+    height: calc(100% / var(--z, 1));
+    transform: scale(var(--z, 1));
+    transform-origin: top left;
+    display: grid;
+    grid-template-columns: 252px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
   }
   @keyframes fade {
     from {
