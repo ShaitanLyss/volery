@@ -7,11 +7,12 @@
    * reads. Two tables with two column decisions is exactly how a skin change
    * becomes a data change, so both presentations mount this.
    *
-   * **A dash is not a zero.** A percentile nothing completed, a rate with no
-   * calls, a cost the turn never attributed: each is null and each prints a
-   * dash with the reason in the row's title. Sorting puts a dash last whichever
-   * way the column runs, because a dash at the top of a descending column is a
-   * reader asking why.
+   * **A dash means the measure does not exist; a measured zero is a zero.** No
+   * completed call has no percentile, and a cost no turn claimed is not free,
+   * so both print a dash with the reason in the cell's title. A healthy tool's
+   * error count and a zero-byte result are readings and print as `0`. Sorting
+   * puts a dash last whichever way the column runs, because a dash at the top
+   * of a descending column is a reader asking why.
    */
   import { count } from "./usage";
   import {
@@ -40,9 +41,9 @@
   let sort = $state<ToolSort>("calls");
   let dir = $state<"asc" | "desc">("desc");
 
-  /* The grouping changes under the sort when `view` does: a server view has no
-     per-tool percentile worth ordering by, and carrying `p50` across would
-     order servers by a number the head no longer shows. */
+  /* The sort is the table's own and resets when the grouping changes: `Skill`
+     ordered by p95 is a question about one row, and carrying the head across a
+     view change would leave a column lit that the reader did not choose here. */
   let sortFor = $state<ToolView>("tools");
   $effect(() => {
     if (sortFor === view) return;
@@ -82,10 +83,14 @@
         return line.errorRate === null
           ? "no calls in this window"
           : `${count(line.errors)} failed of ${count(line.calls)}`;
+      case "errors":
+        return line.errors > 0
+          ? `${count(line.errors)} of ${count(line.calls)} calls returned an error`
+          : "no call returned an error";
       case "cost":
         return line.cost > 0 ? "apportioned from the turn that made the call" : "no turn claimed these calls";
       case "bytes":
-        return line.bytes > 0 ? bytesSaid(line.bytes) : "no result was recorded";
+        return line.bytes > 0 ? bytesSaid(line.bytes) : "no bytes came back from these calls";
       default:
         return undefined;
     }
@@ -117,10 +122,16 @@
             {#if column.key === "name"}
               <th scope="row" class="bh-name" title={line.kind === "mcp" ? `mcp · ${line.server}` : line.kind}>
                 <span class="bh-what">{line.name}</span>
-                {#if view === "tools" && line.server}
-                  <span class="bh-server">{line.server}</span>
-                {:else if view === "tools"}
-                  <span class="bh-server bh-builtin" title="a built-in has no server">built-in</span>
+                {#if view === "tools"}
+                  {#if line.server}
+                    <span class="bh-server">{line.server}</span>
+                  {:else if line.kind === "builtin"}
+                    <span class="bh-server bh-builtin" title="a built-in has no server">built-in</span>
+                  {:else}
+                    <!-- A skill or a subagent is not a built-in with no server:
+                         emptiness means the kind, and the kind is said. -->
+                    <span class="bh-server bh-builtin">{line.kind}</span>
+                  {/if}
                 {/if}
               </th>
             {:else}

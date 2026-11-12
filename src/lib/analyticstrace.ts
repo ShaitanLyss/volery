@@ -705,10 +705,6 @@ export function tabFor(raw: string | null): SurfaceTab {
   return raw === "prompts" || raw === "work" || raw === "behaviour" ? raw : "spend";
 }
 
-export function otherTab(tab: SurfaceTab): SurfaceTab {
-  return tab === "spend" ? "prompts" : "spend";
-}
-
 /* ── the reader, as a fixture or as the commands ────────────────────────── */
 
 /** Everything the prompts tab asks of the wall, in one value.

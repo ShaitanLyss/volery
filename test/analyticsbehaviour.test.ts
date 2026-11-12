@@ -8,10 +8,13 @@ import {
   cellOf,
   columnsFor,
   concurrency,
+  dayBuckets,
+  foldSlices,
   habitModel,
   habitSaid,
   isSwap,
   latencySaid,
+  rateSaid,
   serverPoints,
   shareSaid,
   slices,
@@ -23,6 +26,7 @@ import {
 } from "../src/lib/analyticsbehaviour";
 import type { InvalidateRow } from "../src/lib/analyticswork";
 import type { ToolTotal } from "../src/lib/analytics";
+import { dayKey } from "../src/lib/analyticstrace";
 
 const HOUR = 3_600_000;
 
@@ -283,6 +287,19 @@ describe("the scatter", () => {
     expect(points).toHaveLength(1);
     expect(unplaced).toBe(1);
   });
+
+  test("a slot is spent only on a server that is drawn", () => {
+    /* The loudest server failed every call, so it is in the table and not on
+       the chart; the third hue belongs to the third server actually plotted. */
+    const { points } = serverPoints([
+      hour({ tool: "big", kind: "mcp", server: "big", calls: 100, msUnder50: 0 }),
+      hour({ tool: "a", kind: "mcp", server: "alpha", calls: 40 }),
+      hour({ tool: "b", kind: "mcp", server: "beta", calls: 30 }),
+      hour({ tool: "c", kind: "mcp", server: "gamma", calls: 20 }),
+    ]);
+    const slot = Object.fromEntries(points.map((p) => [p.server, p.slot]));
+    expect(slot).toEqual({ alpha: 0, beta: 1, gamma: 2 });
+  });
 });
 
 describe("habits", () => {
@@ -349,7 +366,7 @@ describe("habits", () => {
     expect(peak).toBe(1);
   });
 
-  test("fan-out is agent calls per card session", () => {
+  test("fan-out is agent calls per card session working in the window", () => {
     const model = habitModel(
       [session({ session: "a" }), session({ session: "b" })],
       [hour({ kind: "agent", tool: "Agent", target: "scout", calls: 6 })],
@@ -359,6 +376,35 @@ describe("habits", () => {
     );
     expect(model.agentCalls).toBe(6);
     expect(model.fanOut).toBe(3);
+  });
+
+  test("a card opened before the window is in the fan-out denominator, not the spawns", () => {
+    /* It made the agent calls this morning, so it belongs to both halves of
+       the ratio; it was not opened in the window, so it is not a spawn. */
+    const model = habitModel(
+      [session({ session: "old", startedAt: 1_000, endedAt: null })],
+      [hour({ kind: "agent", tool: "Agent", target: "scout", calls: 4 })],
+      [],
+      5_000,
+      10_000,
+    );
+    expect(model.spawns).toBe(0);
+    expect(model.fanOut).toBe(4);
+  });
+
+  test("working at once means cards, not adopted terminal sessions", () => {
+    const model = habitModel(
+      [
+        session({ session: "a", startedAt: 1_000, endedAt: 9_000 }),
+        session({ session: "t", source: "terminal", card: "", startedAt: 1_000, endedAt: 9_000 }),
+      ],
+      [],
+      [],
+      0,
+      10_000,
+    );
+    expect(model.peakConcurrent).toBe(1, "the terminal session is not a card");
+    expect(model.sessions).toBe(2);
   });
 
   test("a move is counted once, and a file invalidation is not a move", () => {
@@ -376,12 +422,21 @@ describe("habits", () => {
 
   test("the days are zero-filled, so a quiet day is a bar of nothing rather than a gap", () => {
     const from = new Date(2026, 10, 1).getTime();
-    const to = new Date(2026, 10, 4, 12).getTime();
+    const to = new Date(2026, 10, 5).getTime();
     const model = habitModel([session({ startedAt: from + HOUR })], [], [], from, to);
     expect(model.days.map((d) => d.day)).toEqual(["2026-11-01", "2026-11-02", "2026-11-03", "2026-11-04"]);
     expect(model.days[0].person).toBe(1);
     expect(model.days[1].total).toBe(0);
     expect(model.perDay).toBeCloseTo(0.25);
+  });
+
+  test("a day that starts at the window's end is not a day the window has", () => {
+    const from = new Date(2026, 10, 1).getTime();
+    const to = new Date(2026, 10, 2).getTime();
+    const sessions = [1, 2, 3, 4].map((n) => session({ session: `s${n}`, startedAt: from + n * 1000 }));
+    const model = habitModel(sessions, [], [], from, to);
+    expect(model.days.map((d) => d.day)).toEqual(["2026-11-01"], "one bar, not a phantom one at midnight");
+    expect(model.perDay).toBe(4, "four cards in one day is four a day");
   });
 
   test("the provider is the last one the session spent on", () => {
@@ -424,11 +479,18 @@ describe("saying it", () => {
     expect(latencySaid({ ms: 41, basis: "rows", exact: true, atLeast: false, n: 3 })).toBe("41ms");
   });
 
-  test("bytes are in a unit a person thinks in", () => {
-    expect(bytesSaid(0)).toBe("—");
+  test("bytes are in a unit a person thinks in, and a measured zero is 0 B", () => {
+    expect(bytesSaid(0)).toBe("0 B");
     expect(bytesSaid(999)).toBe("999 B");
     expect(bytesSaid(2048)).toBe("2.0 KB");
     expect(bytesSaid(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+
+  test("a small nonzero rate is never floored to nothing", () => {
+    expect(rateSaid(0.004)).toBe("<1%");
+    expect(rateSaid(0)).toBe("0%");
+    expect(rateSaid(0.123)).toBe("12%");
+    expect(rateSaid(null)).toBe("—");
   });
 
   test("a share is floored, so nothing reads 100% while something is left", () => {
@@ -436,11 +498,20 @@ describe("saying it", () => {
     expect(shareSaid(null)).toBe("—");
   });
 
-  test("a null cell is a dash, and zero errors is a dash rather than a zero", () => {
-    const [line] = toolLines([hour({ errors: 0, calls: 1 })], "tools");
-    expect(cellOf(line, "errors")).toBe("—");
-    expect(cellOf(line, "cost")).toBe("$0.10");
-    expect(cellOf(line, "bytes")).toBe("10 B");
+  test("a dash means the measure does not exist; a measured zero is a zero", () => {
+    const [healthy] = toolLines([hour({ errors: 0, calls: 1 })], "tools");
+    expect(cellOf(healthy, "errors")).toBe("0", "no failure is a reading, not an absence");
+    expect(cellOf(healthy, "bytes")).toBe("10 B");
+    expect(cellOf(healthy, "cost")).toBe("$0.10");
+
+    /* No completed call has no percentile, and a cost no turn claimed is a
+       dash rather than a zero that would read as free. */
+    const [unpriced] = toolLines(
+      [hour({ calls: 0, turnUsd: 0, msUnder50: 0, msUnder200: 0, msUnder1s: 0, msUnder5s: 0, msOver5s: 0 })],
+      "tools",
+    );
+    expect(cellOf(unpriced, "p95")).toBe("—");
+    expect(cellOf(unpriced, "cost")).toBe("—");
   });
 
   test("a line's title carries its provenance", () => {
@@ -472,5 +543,46 @@ describe("saying it", () => {
     expect(said).toContain("2 cards were opened");
     expect(said).toContain("50% of them by an agent");
     expect(habitSaid(habitModel([], [], [], 0, 1))).toBe("no sessions in this window");
+
+    /* Nothing opened is said before any rate is, or the sentence argues with
+       the empty strip drawn below it. */
+    const none = habitModel(
+      [session({ startedAt: 1_000, endedAt: null })],
+      [hour({ kind: "agent", tool: "Agent", target: "scout", calls: 2 })],
+      [],
+      5_000,
+      10_000,
+    );
+    expect(habitSaid(none)).toBe("no card was opened in this window");
+  });
+
+  test("slices fold into an others row so the bars still add up", () => {
+    const folded = foldSlices(
+      [
+        { label: "a", value: 4, share: 0.4 },
+        { label: "b", value: 3, share: 0.3 },
+        { label: "c", value: 2, share: 0.2 },
+        { label: "d", value: 1, share: 0.1 },
+      ],
+      2,
+    );
+    expect(folded.map((s) => s.label)).toEqual(["a", "b", "others"]);
+    expect(folded[2].value).toBe(3);
+    expect(folded[2].share).toBeCloseTo(0.3);
+    expect(foldSlices([{ label: "a", value: 1, share: 1 }], 2)).toHaveLength(1);
+  });
+
+  test("a year of days folds into buckets a card can draw", () => {
+    const days = Array.from({ length: 366 }, (_, i) => {
+      const at = new Date(2026, 0, 1 + i).getTime();
+      return { day: dayKey(at), at, person: 1, agent: 0, unknown: 0, total: 1 };
+    });
+    const buckets = dayBuckets(days, 52);
+    expect(buckets.length).toBeLessThanOrEqual(52);
+    expect(buckets.reduce((n, b) => n + b.total, 0)).toBe(366, "nothing is lost in the folding");
+    expect(buckets.reduce((n, b) => n + b.days, 0)).toBe(366);
+    expect(buckets.every((b) => b.days >= 1 && b.days <= Math.ceil(366 / 52))).toBe(true);
+    /* Few days are themselves: a week draws seven bars, labelled by day. */
+    expect(dayBuckets(days.slice(0, 7), 52).map((b) => b.days)).toEqual([1, 1, 1, 1, 1, 1, 1]);
   });
 });

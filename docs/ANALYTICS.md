@@ -2150,19 +2150,34 @@ call is apportioned from the turn and says so; a skill's cost is the turn that i
 a hidden per-token meter.
 
 **As built.** The tab is in the surface as `behaviour` (`4`, or `space n b`), in both
-presentations. It reads `tool_totals` (the hourly rollup summed in SQL to one row per tool,
-server, skill and subagent), `session_facts` and the moves the work page already reads
-(`invalidate_facts`), all over the shared span. Three readings differ from the design above.
-**An attributed half does not exist to be toggled:** `tool_hour` records what was invoked and
-nothing records what the kit attributed, so the skills and agents views draw the invoked half
-and say so rather than offering a switch with one side empty. **The grouping is in the query,
-not in the page**, because the page draws no instant and a year of hours x tools x projects is
-hundreds of thousands of rows for dozens of groups; that is what lets the tab offer the spend
-tab's year. **The scatter's p95 is estimated from the hourly bands**, since the rollup is kept
-where the per-call facts are pruned at ninety days and a percentile over months cannot be exact
-by construction. The habits count a *spawn* as a session the wall opened inside the window, so
-a renewal counts again and a card opened before the window is in its sessions but not its
-spawns.
+presentations. It reads `tool_totals`, `session_facts` and the moves the work page already
+reads (`invalidate_facts`), all over the shared span. The rollup is summed in the query to one
+row per (kind, server, tool, target); the four views are grouped on top of that in the page,
+because the grouping is a drawing and the window is not. Summing there is also what lets the
+tab offer the spend tab's year: a year of hours x tools x projects is hundreds of thousands of
+rows for dozens of groups.
+
+What the drawing does **not** do, and why:
+
+- **An attributed half does not exist to be toggled.** `tool_hour` records what was invoked and
+  nothing records what the kit attributed, so the skills and agents views draw the invoked half
+  and say the other is missing rather than offering a switch with one side empty (sink
+  `[5a01695e]`).
+- **The scatter's p95 is estimated from the hourly bands.** The rollup is kept where the
+  per-call facts are pruned at ninety days, so a percentile over months cannot be exact by
+  construction; every face that draws one labels it.
+- **A server row is a server and its tools** until the page merges them, which is why the count
+  beside the servers view is servers and not rows.
+- **The design bullets above go further than this build.** There is no per-hour spawn split and
+  no server row naming the cards and projects that used it; the query drops the project
+  dimension deliberately, because the tab draws no filter over it yet. A model split is blocked
+  on the session row recording one (sink `[5c212348]`).
+
+The habits count a *spawn* as a session the wall opened inside the window, so a renewal counts
+again and a card opened before the window is in its sessions but not its spawns. "Working at
+once" counts cards, not adopted terminal sessions, and fan-out divides the window's agent calls
+by every card session working in it rather than only the ones opened in it, since an old card
+can fan out this morning.
 
 ### 11.10 A card's life: where the lifetime split lives
 

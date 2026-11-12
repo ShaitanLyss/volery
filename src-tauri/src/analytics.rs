@@ -6396,13 +6396,13 @@ pub async fn tool_totals(app: AppHandle, from: i64, to: i64) -> Result<Vec<ToolT
     .await?
 }
 
-/// One `analytics_session` row, whole, as the behaviour page's habits and a
-/// card's life read it (§11.9, §11.10).
+/// One `analytics_session` row, whole, as the behaviour page's habits read it
+/// (§11.9).
 ///
 /// `work_series` already carries a narrower session row for the coordination
 /// strip. This one is the record rather than a drawing of it: `opened_by` is
-/// what splits a spawn by person or agent, and the account and provider halves
-/// are what let a card's history be read without a second query.
+/// what splits a spawn by person or agent, and the account, provider and turn
+/// halves are what a card's history will read when a view asks for it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionFact {
@@ -6429,10 +6429,16 @@ pub struct SessionFact {
 
 pub const SESSION_FACT_CAP: usize = 20_000;
 
-/// Sessions that overlap the window, not only those that started inside it: a
-/// card that was working at the window's edge is a spawn the window saw, and
-/// `started_at < to AND coalesce(ended_at, to) > from` is the same overlap the
-/// coordination strip places with.
+/// Sessions that overlap the window, not only those that started inside it:
+/// a card working at the window's edge belongs to whatever the window counts,
+/// and `started_at < to AND coalesce(ended_at, to) > from` is the same overlap
+/// the coordination strip places with.
+///
+/// **A spawn is narrower than this.** The front end counts a card as opened
+/// only when its `started_at` falls inside the window, so a session returned
+/// here because it overlapped is in the window's sessions and not in its
+/// spawns; that is the doc's §9.7 measure and it is decided where the habits
+/// are folded.
 pub fn session_fact_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<SessionFact>, String> {
     if to <= from {
         return Err(format!(
@@ -8817,12 +8823,14 @@ mod tests {
         assert_eq!(marked, 1);
     }
 
-    /// The page reads `tool_hour` for anything longer than the fine tier's
-    /// ninety days, so the rollup has to carry the bands and the dollars the
-    /// percentile and the cost column are computed from, and the read has to
-    /// sum them or a year is refused for a payload nobody draws.
+    /// The page reads the rollup at every span, because the fine tier is
+    /// pruned at ninety days and this one is kept: it has to carry the bands
+    /// and the dollars the percentile and the cost column are computed from,
+    /// and the read has to sum them across hours or a year is refused for a
+    /// payload nobody draws. **Two calls in two different hours**, because one
+    /// row would pass with no `GROUP BY` at all.
     #[test]
-    fn the_rollup_carries_the_bands_a_percentile_needs() {
+    fn the_rollup_sums_its_hours_and_carries_the_bands() {
         let conns = Mutex::new(db());
         let card = {
             let conn = conns.lock().unwrap();
@@ -8831,13 +8839,24 @@ mod tests {
         let now = now_ms();
         let opened = now - 20 * 60 * 1000;
         let ended = now - 10 * 60 * 1000;
+        let old_opened = now - 4 * 60 * 60 * 1000;
+        let old_ended = now - 3 * 60 * 60 * 1000;
         {
             let conn = conns.lock().unwrap();
             settled_turn(&conn, &card, "s1", opened, ended, 0.25);
+            settled_turn(&conn, &card, "s1", old_opened, old_ended, 0.5);
         }
         let call = call_line("t1", opened + 1_000, "s1", "Bash", r#"{"command":"ls"}"#);
         let result = result_line("t1", opened + 1_450, "s1", "a b c", true);
-        write(&conns, "home", &tool_batch(&[call, result]), now).unwrap();
+        let older_call = call_line("t2", old_opened + 1_000, "s1", "Bash", r#"{"command":"pwd"}"#);
+        let older_result = result_line("t2", old_opened + 1_200, "s1", "ok", false);
+        write(
+            &conns,
+            "home",
+            &tool_batch(&[call, result, older_call, older_result]),
+            now,
+        )
+        .unwrap();
         fold_tools(&conns, "home", now).unwrap();
 
         let conn = conns.lock().unwrap();
@@ -8845,14 +8864,14 @@ mod tests {
         assert_eq!(rows.len(), 1, "one tool, one row, whatever the hour count");
         let row = &rows[0];
         assert_eq!((row.kind.as_str(), row.tool.as_str()), ("builtin", "Bash"));
-        assert_eq!((row.calls, row.errors, row.out_bytes), (1, 1, 5));
-        /* 450ms lands in the 200ms-1s band and in no other, which is what makes
-           the five counts a distribution rather than five totals. */
+        assert_eq!((row.calls, row.errors, row.out_bytes), (2, 1, 7), "both hours, summed");
+        /* 450ms lands in the 200ms-1s band and 200ms in the same one, which is
+           what makes the five counts a distribution rather than five totals. */
         assert_eq!(
             (row.ms_under_50, row.ms_under_200, row.ms_under_1s, row.ms_under_5s, row.ms_over_5s),
-            (0, 0, 1, 0, 0)
+            (0, 0, 2, 0, 0)
         );
-        assert!((row.turn_usd - 0.25).abs() < 1e-12, "the turn's whole cost, one call");
+        assert!((row.turn_usd - 0.75).abs() < 1e-12, "both turns' apportioned cost");
     }
 
     /// A session row is what says who opened a card and what it spent on, and

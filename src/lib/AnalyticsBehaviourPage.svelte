@@ -67,17 +67,24 @@
       `${kpis.servers === 1 ? "server" : "servers"}. ${habitSaid(habits)}.`,
   );
 
+  const basis = (reading: { basis: "rows" | "buckets" } | null) =>
+    !reading ? "no call completed" : reading.basis === "buckets" ? "estimated from hourly bands" : "over completed calls";
+
   const figures = $derived([
     { label: "calls", value: count(kpis.calls), note: "every tool, built-in and mcp" },
     {
-      label: "failed",
+      label: "error rate",
       value: rateSaid(kpis.errorRate),
-      note: kpis.errors > 0 ? `${count(kpis.errors)} calls returned an error` : "nothing failed",
+      note: kpis.errors > 0 ? `${count(kpis.errors)} calls returned an error` : "no call returned an error",
     },
-    { label: "p50", value: latencySaid(kpis.p50), note: "half of the completed calls were faster" },
-    { label: "p95", value: latencySaid(kpis.p95), note: "the tail a card waits on" },
+    { label: "p50", value: latencySaid(kpis.p50), note: basis(kpis.p50) },
+    { label: "p95", value: latencySaid(kpis.p95), note: basis(kpis.p95) },
     { label: "results", value: bytesSaid(kpis.bytes), note: "returned to the agents" },
-    { label: "apportioned cost", value: money(kpis.cost), note: "from the turns that made the calls" },
+    {
+      label: "apportioned cost",
+      value: kpis.cost > 0 ? money(kpis.cost) : "—",
+      note: kpis.cost > 0 ? "from the turns that made the calls" : "no turn claimed these calls",
+    },
   ]);
 
   /* ── the scatter, drawn larger than the room's ─────────────────────────── */
@@ -120,13 +127,18 @@
 
   /* ── what the habits add up to, as sentences ──────────────────────────── */
 
-  const sliceSaid = (slices: HabitModel["byProject"], empty: string) =>
-    slices.length === 0
-      ? empty
-      : slices
-          .slice(0, 4)
-          .map((s) => `${s.label || "unknown"} ${count(s.value)} (${shareSaid(s.share)})`)
-          .join(", ");
+  /* Four labels and a count of the rest: a list that silently stops at four
+     leaves shares adding up to well under the whole. */
+  const sliceSaid = (slices: HabitModel["byProject"], empty: string) => {
+    if (slices.length === 0) return empty;
+    const shown = slices.slice(0, 4).map((s) => `${s.label} ${count(s.value)} (${shareSaid(s.share)})`);
+    const rest = slices.slice(4);
+    if (rest.length > 0) {
+      const value = rest.reduce((n, s) => n + s.value, 0);
+      shown.push(`and ${count(value)} across ${count(rest.length)} more`);
+    }
+    return shown.join(", ");
+  };
 
   export function scrollBy(dy: number): void {
     scroller?.scrollBy({ top: dy, behavior: "smooth" });
@@ -169,7 +181,7 @@
           The biggest is {toolList[0].name} at {count(toolList[0].calls)}
           {toolList[0].calls === 1 ? "call" : "calls"}.
           {#if toolList[0].cost > 0}
-            Its share of the turn cost is {money(toolList[0].cost)}, apportioned by call count.
+            Its apportioned cost is {money(toolList[0].cost)}, its share of the turns that made these calls.
           {/if}
         </p>
       {:else}

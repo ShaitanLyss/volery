@@ -28,6 +28,8 @@
     ATTRIBUTION_GAP,
     TOOL_VIEWS,
     bytesSaid,
+    dayBuckets,
+    foldSlices,
     habitSaid,
     latencySaid,
     msSaid,
@@ -86,8 +88,8 @@
       note: `${count(kpis.tools)} ${kpis.tools === 1 ? "tool" : "tools"} · ${spanSaid}`,
     },
     {
-      label: "failed",
-      value: kpis.errors > 0 ? count(kpis.errors) : "—",
+      label: "failed calls",
+      value: count(kpis.errors),
       note: `error rate ${rateSaid(kpis.errorRate)}`,
     },
     {
@@ -106,9 +108,11 @@
       note: "returned to the agent",
     },
     {
+      /* A window whose calls no turn claimed costs nothing to attribute, and
+         `$0` would read as free. The dash matches the table's cost cell. */
       label: "apportioned",
-      value: money(kpis.cost),
-      note: "from the turns these calls paid for",
+      value: kpis.cost > 0 ? money(kpis.cost) : "—",
+      note: kpis.cost > 0 ? "from the turns these calls paid for" : "no turn claimed these calls",
     },
   ]);
 
@@ -157,16 +161,22 @@
 
   /* ── the habits ────────────────────────────────────────────────────────── */
 
+  /* A year of days is 366 columns in a card a few hundred pixels wide, which
+     draws as hairlines and overflows; past 52 the days fold into buckets. */
+  const strip = $derived(dayBuckets(habits.days, 52));
+  const labelEvery = $derived(Math.max(1, Math.ceil(strip.length / 5)));
+
   const dayMax = $derived.by(() => {
     let max = 0;
-    for (const day of habits.days) if (day.total > max) max = day.total;
+    for (const day of strip) if (day.total > max) max = day.total;
     return max;
   });
 
   const dayHeight = (n: number) => (dayMax > 0 ? Math.round((n / dayMax) * 46) : 0);
 
+  /* Top four plus what is left over, so the bars still sum to the whole. */
   function sliceRows(slices: HabitModel["byProject"]) {
-    return slices.slice(0, 4);
+    return foldSlices(slices, 4);
   }
 
   /* ── the shell's keyboard, and the document's ─────────────────────────── */
@@ -300,10 +310,10 @@
           <p class="bh-said">{habitSaid(habits)}</p>
 
           <div class="bh-days" role="img" aria-label="cards opened a day, by who opened them">
-            {#each habits.days as day, i (day.day)}
+            {#each strip as day, i (day.day)}
               <div
                 class="bh-day"
-                title={`${dayLabel(day.day, to)} · ${day.total} ${day.total === 1 ? "card" : "cards"} opened · ${day.person} by a person, ${day.agent} by an agent, ${day.unknown} unknown`}
+                title={`${day.days > 1 ? `${day.days} days from ${dayLabel(day.day, to)}` : dayLabel(day.day, to)} · ${day.total} ${day.total === 1 ? "card" : "cards"} opened · ${day.person} by a person, ${day.agent} by an agent, ${day.unknown} unknown`}
               >
                 <!-- Bottom-up: the person's share sits on the baseline and the
                      agent's and nobody's stack above it, which is the order the
@@ -319,7 +329,7 @@
                     <i class="bh-seg" style:height={`${dayHeight(day.unknown)}px`} style:background={seriesColor(2)}></i>
                   {/if}
                 </div>
-                {#if i === 0 || i === habits.days.length - 1 || i % 7 === 0}
+                {#if i === 0 || i === strip.length - 1 || i % labelEvery === 0}
                   <span class="bh-dlabel">{dayLabel(day.day, to).replace(/^\w/, (c) => c.toUpperCase())}</span>
                 {:else}
                   <span class="bh-dlabel" aria-hidden="true"></span>
@@ -354,7 +364,7 @@
               <h4>project</h4>
               {#each sliceRows(habits.byProject) as slice (slice.label)}
                 <p class="bh-slice">
-                  <span class="bh-slabel" title={slice.label}>{slice.label || "unknown"}</span>
+                  <span class="bh-slabel" title={slice.label}>{slice.label}</span>
                   <span class="bh-sbar"><i style:width={`${Math.floor((slice.share ?? 0) * 100)}%`}></i></span>
                   <span class="bh-svalue">{count(slice.value)} · {shareSaid(slice.share)}</span>
                 </p>
@@ -656,13 +666,18 @@
     border-radius: 2px;
     opacity: 0.85;
   }
+  /* Labels are sparse (five or six across the strip), so they read past their
+     own column rather than being cut to one letter by it. */
   .bh-dlabel {
     font-family: var(--cv-ui, var(--util));
     font-size: 8px;
     color: var(--paper-faint);
     white-space: nowrap;
-    overflow: hidden;
+    overflow: visible;
     text-align: center;
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
   }
   .bh-day:first-child .bh-dlabel {
     text-align: left;

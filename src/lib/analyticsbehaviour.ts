@@ -29,10 +29,12 @@
  * Pure: no Tauri, no runes. Tested in `test/analyticsbehaviour.test.ts`.
  */
 
-import { latency, type LatencyReading, type ToolKind, type ToolTotal } from "./analytics";
+import { SERIES_ALL_PAIRS, latency, type LatencyReading, type ToolKind, type ToolTotal } from "./analytics";
 import type { InvalidateRow } from "./analyticswork";
 import { addDays, dayKey, startOfDay } from "./analyticstrace";
 import { count, money } from "./usage";
+
+const DAY = 86_400_000;
 
 /* ── the rows, as the commands answer them ─────────────────────────────────*/
 
@@ -180,9 +182,10 @@ export type ToolColumn = {
   views: readonly ToolView[];
 };
 
-/** One table, four readings. A column absent from a view is absent because the
- *  measure is not in that view's denominator: a skill view has no server, and
- *  receipts only mean something where a call can be backgrounded. */
+/** One table, four readings. Every view shows the same measures, because a
+ *  skill call and a subagent are calls like any other; what changes is the key
+ *  rows are grouped by. `views` is kept so a future reading can show fewer
+ *  columns without a second table. */
 export const TOOL_COLUMNS: readonly ToolColumn[] = [
   { key: "name", label: "name", short: "name", numeric: false, views: ["tools", "servers", "skills", "agents"] },
   { key: "calls", label: "calls", short: "calls", numeric: true, views: ["tools", "servers", "skills", "agents"] },
@@ -331,37 +334,34 @@ export type ServerPoint = {
   errorRate: number | null;
   /** The x axis. p95 rather than p50, because the tail is what a card feels. */
   p95: number | null;
-  /** `0`, `1`, `2` for the three loudest servers and `-1` for the rest, which
-   *  fold to one muted tone. Assigned by *name* order within the window, so
-   *  sorting the table or filtering a row cannot repaint the survivors (§10). */
+  /** `0`, `1`, `2` for the three loudest *drawn* servers and `-1` for the
+   *  rest, which fold to one muted tone. Assigned from the window's server set
+   *  by call count, so sorting the table cannot repaint the scatter (§10); a
+   *  filter would have to lift this assignment into the model, which is why the
+   *  tab has none. */
   slot: number;
 };
 
 /** The scatter's points, out of the same lines the table drew. Only a server
- *  with a latency reading can be placed; one whose calls never completed is
- *  in the table and not on the chart, which the face says. */
+ *  with a latency reading can be placed; one whose calls never completed is in
+ *  the table and not on the chart, which the face says. **A slot is spent only
+ *  on a server that is drawn**, or a failing server would take one of the three
+ *  names from a plotted neighbour that then had no label. */
 export function serverPoints(rows: readonly ToolTotal[]): { points: ServerPoint[]; unplaced: number } {
   const lines = toolLines(rows, "servers").sort((a, b) => a.name.localeCompare(b.name));
-  const loudest = [...lines].sort((a, b) => b.calls - a.calls);
+  const placeable = lines.filter((line) => line.p95 !== null);
+  const loudest = [...placeable].sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
   const slots = new Map<string, number>();
-  loudest.slice(0, 3).forEach((line, i) => slots.set(line.key, i));
-  const points: ServerPoint[] = [];
-  let unplaced = 0;
-  for (const line of lines) {
-    if (!line.p95) {
-      unplaced += 1;
-      continue;
-    }
-    points.push({
-      server: line.name,
-      calls: line.calls,
-      errors: line.errors,
-      errorRate: line.errorRate,
-      p95: line.p95.ms,
-      slot: slots.get(line.key) ?? -1,
-    });
-  }
-  return { points, unplaced };
+  loudest.slice(0, SERIES_ALL_PAIRS).forEach((line, i) => slots.set(line.key, i));
+  const points: ServerPoint[] = placeable.map((line) => ({
+    server: line.name,
+    calls: line.calls,
+    errors: line.errors,
+    errorRate: line.errorRate,
+    p95: line.p95?.ms ?? null,
+    slot: slots.get(line.key) ?? -1,
+  }));
+  return { points, unplaced: lines.length - placeable.length };
 }
 
 /* ── the strip ─────────────────────────────────────────────────────────────*/
@@ -456,7 +456,10 @@ export type HabitModel = {
   /** Cards working at once: the peak and the mean over the window. */
   peakConcurrent: number;
   meanConcurrent: number | null;
-  /** `Agent`/`Task` calls in the window, and them per card-session. */
+  /** `Agent`/`Task` calls in the window, and them per card-session that was
+   *  working in it. The denominator is every card session overlapping the
+   *  window, not only the ones opened inside it: an old card that ran a fan-out
+   *  this morning is part of both the numerator and the denominator. */
   agentCalls: number;
   fanOut: number | null;
   /** Account, provider and model moves. A move is one row however many
@@ -499,9 +502,13 @@ export function concurrency(sessions: readonly SessionFact[], from: number, to: 
   return { peak, mean: area / (to - from) };
 }
 
-/** The days the window covers, zero-filled. The spend view's strip draws every
- *  day including the quiet ones, because a gap in a bar chart reads as an
- *  outage rather than as a day off. */
+/** The days the window covers, zero-filled. The strip draws every day
+ *  including the quiet ones, because a gap in a bar chart reads as an outage
+ *  rather than as a day off.
+ *
+ *  **The window is half-open, like the command's own.** A day that starts at
+ *  the window's end is not a day it contains, and including it would add a
+ *  phantom bar and divide the per-day rate by one day too many. */
 /** A window is at most the year this surface offers; a thousand days is a guard
  *  against a malformed one walking for ever, never a limit a span reaches. */
 const MAX_DAYS = 1_000;
@@ -510,7 +517,7 @@ function dayFrames(sessions: readonly SessionFact[], from: number, to: number): 
   const byDay = new Map<string, SpawnDay>();
   const first = startOfDay(from);
   let drawn = 0;
-  for (let at = first; at <= to && drawn < MAX_DAYS; at = addDays(at, 1), drawn += 1) {
+  for (let at = first; at < to && drawn < MAX_DAYS; at = addDays(at, 1), drawn += 1) {
     const day = dayKey(at);
     byDay.set(day, { day, at, person: 0, agent: 0, unknown: 0, total: 0 });
   }
@@ -518,7 +525,7 @@ function dayFrames(sessions: readonly SessionFact[], from: number, to: number): 
     /* Bounded by the window as well as by the day, so the bars reconcile with
        the headline: a spawn the window did not contain is not on a bar either,
        even when it falls on one of the window's own days. */
-    if (s.source !== "card" || s.startedAt < from || s.startedAt > to) continue;
+    if (s.source !== "card" || s.startedAt < from || s.startedAt >= to) continue;
     const frame = byDay.get(dayKey(s.startedAt));
     if (!frame) continue;
     if (s.openedBy === "person") frame.person += 1;
@@ -547,33 +554,43 @@ export function habitModel(
      last week and is still running because its spend and its bar belong to this
      window; it was not opened in it, and counting it would put a spawn on a day
      whose bar does not hold one. */
-  const spawns = sessions.filter((s) => s.source === "card" && s.startedAt >= from && s.startedAt <= to);
+  const spawns = sessions.filter((s) => s.source === "card" && s.startedAt >= from && s.startedAt < to);
   /* A window that does not run forwards has no days to fill and no spawns to
      count; it is answered rather than thrown at `dayFrames`. */
   const days = to > from ? dayFrames(sessions, from, to) : [];
   const spawned = spawns.length;
   const agentCalls = tools.reduce((sum, row) => sum + (row.kind === "agent" ? row.calls : 0), 0);
   const swaps = changes.filter(isSwap);
-  const cards = new Set<string>();
-  for (const row of swaps) if (row.card) cards.add(row.card);
-  const { peak, mean } = concurrency(sessions, from, to);
+  const moved = new Set<string>();
+  for (const row of swaps) if (row.card) moved.add(row.card);
+  /* **Cards working at once means cards**, not every session the window
+     overlaps: an adopted terminal session has no card and is drawn on no
+     coordination strip of this wall's. */
+  const cardSessions = sessions.filter((s) => s.source === "card");
+  const { peak, mean } = concurrency(cardSessions, from, to);
+  /* Per *day*, not per calendar day touched: a 24-hour window spans two dates
+     once you count the boundary, and dividing by two halved the rate. */
+  const windowDays = to > from ? (to - from) / DAY : 0;
   return {
     sessions: sessions.length,
     spawns: spawned,
     byOpener: slices(spawns.map((s) => [s.openedBy, 1] as [string, number])),
     byProject: slices(spawns.map((s) => [s.project, 1] as [string, number])),
     /* The provider a session *last* spent on, because a card that moved is a
-       card whose work mostly happened after the move. A session with no turn
-       names no provider and is `no turn`, not a guess. */
-    byProvider: slices(spawns.map((s) => [s.providerLast || s.providerFirst || "no turn", 1] as [string, number])),
+       card whose work mostly happened after the move. `unknown` is the real
+       value for a funding that never resolved and is said as itself, never
+       guessed at. */
+    byProvider: slices(spawns.map((s) => [s.providerLast || s.providerFirst, 1] as [string, number])),
     days,
-    perDay: days.length > 0 ? spawned / days.length : null,
+    perDay: windowDays > 0 ? spawned / windowDays : null,
     peakConcurrent: peak,
     meanConcurrent: mean,
     agentCalls,
-    fanOut: spawns.length > 0 ? agentCalls / spawns.length : null,
+    /* Every card session in the window, because the numerator counts agent
+       calls made by all of them — an old card can fan out this morning. */
+    fanOut: cardSessions.length > 0 ? agentCalls / cardSessions.length : null,
     swaps: swaps.length,
-    swapCards: cards.size,
+    swapCards: moved.size,
   };
 }
 
@@ -600,9 +617,11 @@ export function latencySaid(reading: LatencyReading | null): string {
 }
 
 /** A size, in the unit a reader thinks in. A tool's result is bytes; a wall
- *  that says "1048576" is a wall that has not decided what it is showing. */
+ *  that says "1048576" is a wall that has not decided what it is showing. A
+ *  measured zero is `0 B`: nothing came back, which is a reading, where a dash
+ *  would claim the size is unknown. */
 export function bytesSaid(n: number): string {
-  if (!(n > 0)) return "—";
+  if (!Number.isFinite(n) || n < 0) return "—";
   if (n < 1024) return `${Math.round(n)} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`;
@@ -615,12 +634,18 @@ export function shareSaid(share: number | null): string {
   return `${Math.floor(share * 100)}%`;
 }
 
+/** A rate, floored the same way and never rounded down to nothing: one failure
+ *  in a thousand is `<1%`, not `0%`, because a face that says nothing failed
+ *  next to "1 call returned an error" is a face arguing with itself. */
 export function rateSaid(rate: number | null): string {
-  return shareSaid(rate);
+  if (rate === null || !Number.isFinite(rate)) return "—";
+  if (rate > 0 && rate < 0.01) return "<1%";
+  return `${Math.floor(rate * 100)}%`;
 }
 
-/** The cells of one line, in the column order the view asked for. The face
- *  prints a dash for a null and never a zero, which is the whole of it. */
+/** The cells of one line. **A dash means the measure does not exist** — no
+ *  completed call, no turn claiming the cost; a measured zero prints as zero.
+ *  Conflating the two is how a healthy tool's error column became all dashes. */
 export function cellOf(line: ToolLine, key: ToolSort): string {
   switch (key) {
     case "name":
@@ -628,7 +653,7 @@ export function cellOf(line: ToolLine, key: ToolSort): string {
     case "calls":
       return count(line.calls);
     case "errors":
-      return line.errors > 0 ? count(line.errors) : "—";
+      return count(line.errors);
     case "errorRate":
       return rateSaid(line.errorRate);
     case "p50":
@@ -663,14 +688,72 @@ export function toolTitle(line: ToolLine): string {
 export const ATTRIBUTION_GAP = "what the kit attributed is not recorded yet";
 
 /** The habits' one sentence, generated from the numbers by a template and
- *  never by a model, the way the work page's lede is. */
+ *  never by a model, the way the work page's lede is.
+ *
+ *  **Nothing opened is said before any rate is**: "0 cards were opened, about
+ *  one every 33 days" is what a template does when it appends a clause it has
+ *  no numerator for, and it argues with the empty strip drawn below it. */
 export function habitSaid(model: HabitModel): string {
   if (model.sessions === 0) return "no sessions in this window";
+  if (model.spawns === 0) return "no card was opened in this window";
   const cards = `${count(model.spawns)} ${model.spawns === 1 ? "card was" : "cards were"} opened`;
   const byAgent = model.byOpener.find((s) => s.label === "agent");
   const agent = byAgent && byAgent.value > 0 ? `, ${shareSaid(byAgent.share)} of them by an agent` : "";
+  /* A rate below one a day is said as an interval rather than as a fraction:
+     "about one every 33 days" is a reading, "0.0 a day" is not. */
   const perDay =
-    model.perDay === null ? "" : `, about ${model.perDay < 1 ? "one every few days" : `${model.perDay.toFixed(1)} a day`}`;
+    model.perDay === null
+      ? ""
+      : `, about ${
+          model.perDay < 0.5
+            ? `one every ${Math.max(2, Math.round(1 / model.perDay))} days`
+            : `${model.perDay.toFixed(1)} a day`
+        }`;
   const busy = model.peakConcurrent > 1 ? `, and as many as ${model.peakConcurrent} were working at once` : "";
   return `${cards}${agent}${perDay}${busy}`;
+}
+
+/** At most `n` slices plus one that carries the rest, so the bars still add up
+ *  to the whole and a reader is never shown four labels whose shares sum to
+ *  60% with nothing saying where the rest went. */
+export function foldSlices(slices: readonly Slice[], n: number): Slice[] {
+  if (slices.length <= n) return [...slices];
+  const head = slices.slice(0, n);
+  const rest = slices.slice(n);
+  let value = 0;
+  let share = 0;
+  for (const slice of rest) {
+    value += slice.value;
+    share += slice.share ?? 0;
+  }
+  return [...head, { label: "others", value, share }];
+}
+
+/** A day strip with no more columns than a narrow card can draw.
+ *
+ *  A year is 366 days, and 366 flex children with a 2px gap is more gap than
+ *  the card is wide: the bars collapse to hairlines and the row overflows. So
+ *  past `max` days, consecutive days fold into equal buckets. The last bucket
+ *  is partial and is labelled by its first day, which is the only day in it the
+ *  reader can name without arithmetic. */
+export type DayBucket = SpawnDay & { days: number };
+
+export function dayBuckets(days: readonly SpawnDay[], max = 52): DayBucket[] {
+  if (days.length <= max) return days.map((d) => ({ ...d, days: 1 }));
+  const size = Math.ceil(days.length / max);
+  const out: DayBucket[] = [];
+  for (let i = 0; i < days.length; i += size) {
+    const group = days.slice(i, i + size);
+    const first = group[0];
+    out.push({
+      day: first.day,
+      at: first.at,
+      person: group.reduce((n, d) => n + d.person, 0),
+      agent: group.reduce((n, d) => n + d.agent, 0),
+      unknown: group.reduce((n, d) => n + d.unknown, 0),
+      total: group.reduce((n, d) => n + d.total, 0),
+      days: group.length,
+    });
+  }
+  return out;
 }

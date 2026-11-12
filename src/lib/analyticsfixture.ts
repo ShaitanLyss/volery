@@ -647,7 +647,8 @@ export function fixtureWorkReader(mode: FixtureMode = "normal"): WorkReader {
  *
  *  - **a built-in beside an MCP tool of a different name**, so the empty server
  *    column is visible next to a filled one;
- *  - **three servers plus two more**, which is the palette's cap and the fold;
+ *  - **three servers plus two more that also complete**, which is the palette's
+ *    cap and the fold, so the muted tone is drawn rather than described;
  *  - **a server with no completed call**, which is in the table and not on the
  *    scatter;
  *  - **a skill and two subagents**, so the invoked half has rows and the face
@@ -669,21 +670,35 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
   const random = rng(Math.floor(span / 60_000) + 7);
 
   /** One rollup row, its calls split across the five bands so a percentile has
-   *  a distribution rather than a spike. */
+   *  a distribution rather than a spike.
+   *
+   *  The bands are computed over the calls that *completed* and the last one
+   *  takes the rounding remainder, so they sum to it exactly as
+   *  `ToolSum::add` makes them. `noResult` is the one exception, and it is the
+   *  real shape of it: a call that never returned counts as a call and lands in
+   *  no band at all. */
   const row = (
     over: Pick<ToolTotal, "kind" | "server" | "tool" | "target"> & {
       calls: number;
       bands: [number, number, number, number, number];
       bytes: number;
       errorShare: number;
+      noResult?: boolean;
     },
   ): ToolTotal => {
     const total = Math.max(1, Math.round(over.calls * (0.7 + random() * 0.6)));
+    const done = over.noResult ? 0 : total;
     const [a, b, c, d, e] = over.bands;
-    const under50 = Math.round(total * a);
-    const under200 = Math.round(total * b);
-    const under1s = Math.round(total * c);
-    const under5s = Math.round(total * d);
+    const counts = [Math.round(done * a), Math.round(done * b), Math.round(done * c), Math.round(done * d), 0];
+    /* The rounding remainder goes to the band the row means to have most of,
+       so a distribution with a 5% error still reads as one with a 5% error
+       rather than as a spike in the open band. */
+    const biggest = [a, b, c, d, e].indexOf(Math.max(a, b, c, d, e));
+    let remainder = done - (counts[0] + counts[1] + counts[2] + counts[3]);
+    while (remainder > 0) {
+      counts[biggest] += 1;
+      remainder -= 1;
+    }
     return {
       kind: over.kind,
       server: over.server,
@@ -692,16 +707,13 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
       calls: total,
       errors: Math.round(total * over.errorShare),
       receipts: 0,
-      msTotal: Math.round(total * (30 * a + 120 * b + 600 * c + 3000 * d + 8000 * e)),
-      msUnder50: under50,
-      msUnder200: under200,
-      msUnder1s: under1s,
-      msUnder5s: under5s,
-      /* Deliberately *not* the remainder: a call that never returned lands in
-         no band while still counting as a call, which is exactly the state the
-         `flaky` server below is here to draw. */
-      msOver5s: Math.round(total * e),
-      outBytes: Math.round(total * over.bytes * (0.8 + random() * 0.5)),
+      msTotal: Math.round(done * (30 * a + 120 * b + 600 * c + 3000 * d + 8000 * e)),
+      msUnder50: counts[0],
+      msUnder200: counts[1],
+      msUnder1s: counts[2],
+      msUnder5s: counts[3],
+      msOver5s: counts[4],
+      outBytes: over.noResult ? 0 : Math.round(done * over.bytes * (0.8 + random() * 0.5)),
       turnUsd: total * 0.0025,
     };
   };
@@ -718,6 +730,10 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
       row({ kind: "mcp", server: "browser", tool: "browser_take_screenshot", target: "", calls: 12, bands: [0, 0.05, 0.35, 0.5, 0.1], bytes: 210_000, errorShare: 0.04 }),
       row({ kind: "mcp", server: "skein", tool: "ask_user", target: "", calls: 4, bands: [0.2, 0.5, 0.3, 0, 0], bytes: 400, errorShare: 0 }),
       row({ kind: "mcp", server: "asana", tool: "asana_board", target: "", calls: 3, bands: [0, 0.2, 0.5, 0.3, 0], bytes: 9000, errorShare: 0.12 }),
+      /* Two quieter servers that do complete, so the scatter really draws the
+         fold rather than three named dots and an empty fourth hue. */
+      row({ kind: "mcp", server: "linear", tool: "linear_list", target: "", calls: 2, bands: [0.3, 0.5, 0.2, 0, 0], bytes: 2000, errorShare: 0 }),
+      row({ kind: "mcp", server: "github", tool: "github_pr", target: "", calls: 1, bands: [0.1, 0.4, 0.4, 0.1, 0], bytes: 5000, errorShare: 0.05 }),
       row({ kind: "skill", server: "", tool: "Skill", target: "tx-toolkit:ship-gauntlet", calls: 2, bands: [0.4, 0.4, 0.2, 0, 0], bytes: 2200, errorShare: 0 }),
       row({ kind: "skill", server: "", tool: "Skill", target: "volery:coordinate", calls: 1, bands: [0.5, 0.5, 0, 0, 0], bytes: 1800, errorShare: 0 }),
       row({ kind: "agent", server: "", tool: "Agent", target: "scout", calls: 3, bands: [0.7, 0.2, 0.1, 0, 0], bytes: 600, errorShare: 0.02 }),
@@ -725,8 +741,11 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
     );
   }
   /* A server whose calls all failed before they completed: in the table, not
-   * on the scatter, and the figure says why. */
-  tools.push(row({ kind: "mcp", server: "flaky", tool: "flaky_call", target: "", calls: 5, bands: [0, 0, 0, 0, 0], bytes: 0, errorShare: 1 }));
+   * on the scatter, and the figure says why. Every call returned nothing, so
+   * it lands in no latency band while still counting as a call. */
+  tools.push(
+    row({ kind: "mcp", server: "flaky", tool: "flaky_call", target: "", calls: 5, bands: [0, 0, 0, 0, 0], bytes: 0, errorShare: 1, noResult: true }),
+  );
 
   const sessions = fixtureSessions(since, until);
   const changes: InvalidateRow[] = [
@@ -825,14 +844,18 @@ function fixtureSessions(since: number, until: number): SessionFact[] {
   return starts.map((f, i) => {
     const startedAt = Math.round(since + span * f);
     const live = i === starts.length - 1;
+    const terminal = i === 10;
     return {
       session: `b${i + 1}`,
       host: "here",
       project: projects[i],
-      source: i === 10 ? "terminal" : "card",
-      card: i === 10 ? "" : `c${i + 1}`,
-      parentCard: openers[i] === "agent" ? "c1" : "",
-      openedBy: openers[i],
+      source: terminal ? "terminal" : "card",
+      card: terminal ? "" : `c${i + 1}`,
+      /* A terminal session was typed by a person and has no parent card; the
+         two fields travel together or the fixture models a thing that cannot
+         happen. */
+      parentCard: !terminal && openers[i] === "agent" ? "c1" : "",
+      openedBy: terminal ? "person" : openers[i],
       branch: "main",
       startedAt,
       endedAt: live ? null : startedAt + Math.round(span * 0.04),
