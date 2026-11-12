@@ -143,6 +143,42 @@ export function viewOfSurface(surface: SurfaceInput, name: string): ViewSpec {
   };
 }
 
+/** Two filters that say the same thing. Order inside a list is not a claim
+ *  about anything, so `["a","b"]` and `["b","a"]` are one question. A dimension
+ *  missing from one and named with an empty list in the other are *not* merged:
+ *  §9.1 keeps "none" and "all" apart on purpose, and a comparison that tidied
+ *  that away would hang the wrong widget on the wall. */
+function sameFilter(a: Filter, b: Filter): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    /* A dimension named with an empty list is *none* and one not named at all
+       is *all* (`analytics.ts::matches`), so the two are not the same question
+       even though both have no values. */
+    if (Object.hasOwn(a, key) !== Object.hasOwn(b, key)) return false;
+    const x = [...(a[key as keyof Filter] ?? [])].sort();
+    const y = [...(b[key as keyof Filter] ?? [])].sort();
+    if (x.length !== y.length || x.some((v, i) => v !== y[i])) return false;
+  }
+  return true;
+}
+
+/** Whether the surface is asking exactly this spec's question.
+ *
+ *  It is what decides how a pin is hung (§12): a widget pointed at a saved view
+ *  is a reading that every edit to that view moves, and one carrying a copy is
+ *  its own. Pinning the question the overlay is already showing should not make
+ *  a second copy of a view that is in the library — so the overlay asks this,
+ *  and shares when the answer is yes. */
+export function viewMatches(view: ViewSpec, surface: SurfaceInput): boolean {
+  const panel = view.panels[0];
+  return (
+    view.span === surface.span &&
+    roomMeasureOf(panel?.measure) === surface.measure &&
+    roomSplitOf(panel?.split) === surface.split &&
+    sameFilter(view.filter ?? {}, surface.filter ?? {})
+  );
+}
+
 /** A spec, back as the four controls. A measure or a split this surface cannot
  *  draw degrades to the nearest it can rather than refusing the whole view: a
  *  saved spec is data from a build that may have had more, and reopening it

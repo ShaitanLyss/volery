@@ -11,6 +11,7 @@
   import { untrack } from "svelte";
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
+  import type { Analytics } from "./analyticsholder.svelte";
   import type { Cycle } from "./cycle.svelte";
   import type { DevOps } from "./devops.svelte";
   import type { Asana } from "./asana.svelte";
@@ -39,6 +40,7 @@
     scale,
     meter,
     ledger,
+    analytics,
     pomodoro,
     devops,
     asana,
@@ -63,6 +65,7 @@
     onopen,
     onkeyring,
     onforgerun,
+    onanalyticsopen,
     timelines,
     centred = false,
     onmeasure,
@@ -75,6 +78,8 @@
     /** The one transcript reader behind however many usage widgets are up —
      *  handed down for the reason the meter is, and idle until one attaches. */
     ledger: Ledger;
+    /** The one analytics reader behind however many analytics widgets are up. */
+    analytics: Analytics;
     /** The studio's one cycle. Every pomodoro widget is a view onto it — see
      *  `pomodoro.svelte.ts` — so it is handed down rather than made here. */
     pomodoro: Cycle;
@@ -137,7 +142,8 @@
     names: Map<string, string>;
     naming: (role: string, reference: string | null) => string | null;
     toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
-    onupdate: (patch: Partial<Widget>) => void;
+    /** `quiet` writes without an undo act — see `widgets.svelte.ts::updateQuiet`. */
+    onupdate: (patch: Partial<Widget>, quiet?: boolean) => void;
     onremove: () => void;
     onreveal?: (role: string, reference: string) => void;
     /** The card with this id, here or on another wall — what a widget that is
@@ -165,6 +171,8 @@
      *  and plain `onrun` goes *down* to `Pipelines`, where there is only one kind
      *  of run and nothing to spell around. */
     onforgerun?: (run: ForgeRun) => void;
+    /** Open an analytics view in the overlay, from the widget that reads it. */
+    onanalyticsopen?: (view: import("./analytics").ViewSpec) => void;
     /** The plans cards have drawn — what a plate looks its timeline up in, and
      *  where its gestures go. Handed down for the reason the meter is. */
     timelines?: Timelines;
@@ -309,6 +317,7 @@
       {scale}
       {meter}
       {ledger}
+      {analytics}
       {pomodoro}
       {devops}
       {asana}
@@ -331,6 +340,7 @@
       {onopen}
       {onkeyring}
       {onforgerun}
+      {onanalyticsopen}
       {timelines}
       onreading={(open) => (reading = open)}
     />

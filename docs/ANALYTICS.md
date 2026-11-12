@@ -2459,9 +2459,11 @@ state and is honest about what just happened. A widget that has never drawn, on 
 the view is already gone, is left off the wall, which is the existing rule and the only case
 where there is no spec to draw.
 
-**Attaching is one gesture.** From the overlay, `pin` puts the current view on the wall at the
-focused card's side, or at the pointer. From a widget, `open in analytics` opens the overlay
-with that view loaded and that widget's filters applied.
+**Attaching is one gesture.** From the overlay, `pin` puts the current view on the wall in the
+middle of what you are looking at, which is where every other *on the wall* lands: it is a
+reading of the facts rather than of a card, so it does not go and stand beside one. From a
+widget, `open in analytics` opens the overlay with that view loaded and that widget's filters
+applied.
 
 The live nature follows the existing bound: the widget attaches when it is on the wall and
 detaches when it is taken down. One `Analytics` holder and one machine sampler serve however
@@ -2471,6 +2473,13 @@ The frame knob applies as it does to every widget. A `bare` analytics widget ove
 is the one place a chart might be furniture rather than an instrument, and the rule that keeps
 it readable is the same as the clock's: the reading is opaque when framed and when plated, and
 `bare` is a deliberate choice.
+
+**As built**: `analyticswidget.ts` is the pure half (the config resolved against the library,
+the three intents' readings, the snapshot and the fork); `analyticsholder.svelte.ts` is the one
+reader behind however many are up, and it asks for the window before a `stat`'s window only
+where a figure is drawn; `AnalyticsFace.svelte` draws them through the same `splitSeries` the
+room and the page call. The pin is `p` in the overlay and a row action in the library, and
+`.claude/rules/widgets.md` carries what building it cost.
 
 ---
 

@@ -50,6 +50,7 @@ const NOT_AGENT_BOUND: Record<string, string> = {
   "lib/Guidance.svelte": "standing instructions, applied at spawn rather than sent",
   "lib/HuntBar.svelte": "a word to find in the transcript",
   "lib/Import.svelte": "a filter over recorded sessions",
+  "lib/FilterRail.svelte": "a filter over the analytics facts — it narrows a chart and reaches no agent",
   "lib/Kanban.svelte": "an Asana task's title",
   "lib/Lookup.svelte": "the query ctrl+K searches by",
   "lib/PilePage.svelte": "a search over the sink or the billboard",

@@ -272,6 +272,7 @@ describe("the which-key hint", () => {
       { keys: "bd", label: "analytics" },
       { keys: "bg", label: "gates" },
       { keys: "bh", label: "asana health" },
+      { keys: "bk", label: "analytics view" },
       { keys: "bm", label: "performance" },
       { keys: "bn", label: "billboard" },
       { keys: "bp", label: "pipelines" },

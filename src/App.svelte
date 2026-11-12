@@ -54,6 +54,10 @@
   import { caption } from "./lib/browser";
   import { AUTO_UPDATE_GRACE_MS, READY_LINE, autoUpdateStep, quietForUpdate, sayOffer } from "./lib/update";
   import { Ledger } from "./lib/ledger.svelte";
+  import { Analytics as AnalyticsReader } from "./lib/analyticsholder.svelte";
+  import { adoptSurface } from "./lib/analyticsview.svelte";
+  import { surfaceOfView } from "./lib/analyticpage";
+  import type { ViewSpec } from "./lib/analytics";
   import { DevOps } from "./lib/devops.svelte";
   import { Cycle } from "./lib/cycle.svelte";
   import {
@@ -454,6 +458,11 @@
   const ledger = new Ledger();
   /* The burn rate is the flyway's, not this machine's alone (`usage.md`). */
   ledger.fly(() => elsewhere.roster);
+  /* The facts reader behind the analytics widget: idle, and scanning nothing,
+     until one is on the wall. It polls while it is watched and stops when the
+     last widget lets go — the collector writes once a minute and announces
+     nothing, which is the same argument the meter makes. */
+  const analytics = new AnalyticsReader();
   /* The one connection to Azure DevOps, behind however many pipelines and
      reviews widgets are up. Idle — and holding no credential — until one of them
      attaches, which matters more here than for either of the other two: this is
@@ -1853,6 +1862,21 @@
     analyticsTab = at;
     showAnalytics = true;
   }
+  /* A widget's view, opened where its controls are. The spec is adopted rather
+     than consulted, and no presentation is named: the view is data and the mode
+     picks the default drawing, which is §11.15's rule read from this side. A
+     sheet the gesture came from closes first — two overlays stacked is one the
+     Escape ladder has to guess about. */
+  function openAnalyticsView(view: ViewSpec) {
+    adoptSurface(surfaceOfView(view));
+    closeReading();
+    /* **The money tab, explicitly.** A widget draws a spend view, and the
+       surface's remembered tab can be the prompt trace or the work page from a
+       previous visit, which would open the tool on a tab that is not the thing
+       the widget was showing. The gesture's whole job is "this view, where I
+       can change it". */
+    openAnalytics(undefined, "spend");
+  }
   /* The sink's two gestures, which had no keyboard path at all before — the
      Basin is a widget, so reading the pile meant hanging one on the wall and
      adding to it meant finding that widget first. See `leader.ts`. */
@@ -1944,17 +1968,35 @@
   /** The sheet's *on the wall*: the same reading, with the knobs it had in the
    *  sheet, hung at the middle of the wall — switching to the wall first, since
    *  that is where you asked to see it. */
+  /* Hang an analytics view on the wall (§12). The spec rides in the widget's
+     own config — the saved view's id when it is a reading of one, a copy of the
+     spec otherwise (`analyticswidget.ts` reads both) — and it lands where every
+     *on the wall* lands, at the middle of what you are looking at, rather than
+     beside a card: this is a reading of the facts, not of that card. */
+  async function pinAnalyticsView(what: { spec: ViewSpec; shared: string | null }) {
+    showAnalytics = false;
+    analyticsAs = undefined;
+    analyticsTab = undefined;
+    if (view.current === "chat") await switchView("wall");
+    await tick();
+    const at = canvas?.center() ?? { x: 0, y: 0 };
+    /* The config goes *into* the add, so hanging a view is one undo rather
+       than an add followed by an edit — see `Widgets.add`. */
+    const w = await widgets.add("analytics", at.x, at.y, {
+      view: what.shared ?? "",
+      spec: what.shared ? "" : JSON.stringify(what.spec),
+      snapshot: what.shared ? JSON.stringify(what.spec) : "",
+    });
+    if (w) canvas?.revealWidget(w.id);
+  }
+
   async function hangReading(kind: WidgetKind, config: Record<string, string | number | boolean>) {
     closeReading();
     if (view.current === "chat") await switchView("wall");
     await tick();
-    const spec = specFor(kind);
     const at = canvas?.center() ?? { x: 0, y: 0 };
-    const w = await widgets.add(kind, at.x - (spec?.box.w ?? 0) / 2, at.y - (spec?.box.h ?? 0) / 2);
-    if (w) {
-      widgets.update(w.id, { config: { ...w.config, ...config } });
-      canvas?.revealWidget(w.id);
-    }
+    const w = await widgets.add(kind, at.x, at.y, config);
+    if (w) canvas?.revealWidget(w.id);
   }
 
   /* Standing instructions — what you tell every card once instead of every
@@ -5904,6 +5946,8 @@
           scale: 1,
           meter,
           ledger,
+          analytics,
+          onanalyticsopen: openAnalyticsView,
           pomodoro,
           devops,
           asana,
@@ -5966,6 +6010,7 @@
       as={analyticsAs}
       asTab={analyticsTab}
       names={cardNames}
+      onpin={pinAnalyticsView}
       onclose={() => {
         showAnalytics = false;
         analyticsAs = undefined;
@@ -6264,6 +6309,7 @@
         {pomodoro}
         {meter}
         {ledger}
+        {analytics}
         {devops}
         naming={nameFor}
         onreveal={revealRow}
@@ -6271,6 +6317,7 @@
         onopen={(url) => void skein.openLink(url)}
         onkeyring={() => (showKeyring = true)}
         onforgerun={(run) => (openRun = run)}
+        onanalyticsopen={openAnalyticsView}
         onplan={(conv, path) => {
           /* Rooted at the plans directory rather than at the card's project,
              because that is where the document is and the viewer refuses to

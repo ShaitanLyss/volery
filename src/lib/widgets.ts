@@ -44,6 +44,18 @@ import { TETHER } from "./tether";
    the wall, and when a finished one goes to the archive. `plates.ts` owns what
    they mean; this file only has to know they exist. */
 import { ARCHIVE, ARCHIVE_DEFAULT, KEPT, PLAN, WALL } from "./plates";
+/* The analytics widget's one knob and the three config keys it reads rather
+   than offers. Aliased because `SPEC` and `SIZE` say nothing on their own in a
+   file that is a catalogue of every kind — and because `SPANS` is already the
+   per-core graph's, two lines up. */
+import {
+  SIZE as FACT_SIZE,
+  SIZES as FACT_SIZES,
+  SPEC as FACTS_SPEC,
+  SNAPSHOT as FACTS_SNAPSHOT,
+  VIEW as FACTS_VIEW,
+  specOf,
+} from "./analyticswidget";
 
 export type WidgetKind =
   | "clock"
@@ -71,7 +83,8 @@ export type WidgetKind =
   | "browser"
   | "screen"
   | "said"
-  | "timeline";
+  | "timeline"
+  | "analytics";
 
 export type Choice = { value: string; label: string };
 
@@ -245,6 +258,13 @@ export type WidgetSpec = {
    *  plan — and takes it down when the plan leaves the glass. Never offered
    *  from a menu, never carried in a layout. See `plates.ts`. */
   plan?: true;
+  /** A reading of the analytics facts (§12): the widget's config carries a
+   *  saved-view id, an inline spec and the spec it last drew
+   *  (`analyticswidget.ts`), which are not knobs and so are copied through by
+   *  `normalizeWidget` rather than filled from the catalogue. A widget whose
+   *  spec was written and will not parse is a widget from a newer build and is
+   *  left off the wall. */
+  facts?: true;
   /** The letter of its `space b` chord, which opens this reading in a sheet
    *  over either view rather than hanging it on the wall (`ReadingSheet.svelte`).
    *
@@ -1807,6 +1827,40 @@ export const WIDGETS: WidgetSpec[] = [
       { key: KEPT, def: 0 },
     ],
   },
+  {
+    /* One view of the facts, kept on the wall (§12). The kind is offered from
+       every menu a widget is offered from, and `pin` in the overlay hangs the
+       view you are looking at up at once — the gesture that makes a reading a
+       thing rather than a place you go.
+
+       **Its config is not knobs.** A saved-view id, an inline spec and the spec
+       it last drew are carried through by `normalizeWidget` (`facts: true`)
+       because a menu row for any of them would be a row nobody could use: a
+       spec is three controls and a filter, and the place to change it is the
+       overlay, which `open in analytics` on the face goes to.
+
+       `sheet: "k"` on purpose — `bd` is the room, and the design says the
+       smallest presentation gets a letter of its own rather than sharing the
+       room's, because they are two surfaces and not one swap. */
+    kind: "analytics",
+    label: "analytics view",
+    family: "claude",
+    short: "a view of the facts",
+    offer: "hang up an analytics view",
+    note: "one saved view of what the wall has spent, drawn small",
+    sheet: "k",
+    facts: true,
+    box: { w: 340, h: 240 },
+    min: { w: 150, h: 110 },
+    params: [
+      choice(
+        FACT_SIZE,
+        "how much of it",
+        FACT_SIZES.map((s) => ({ value: s.key, label: s.said })),
+        "chart",
+      ),
+    ],
+  },
 ];
 
 /** Is this a view of something else on the wall rather than furniture — a card's
@@ -2134,6 +2188,20 @@ export function normalizeWidget(raw: unknown): Widget | null {
     const plan = cfg[PLAN];
     if (typeof plan !== "string" || !plan) return null;
     config[PLAN] = plan;
+  }
+  /* And the analytics widget's three, for the same reason: none is a knob, so
+     none is in the catalogue, and a config filled only from `paramsOf` would
+     come back off disk pointing at nothing. An empty spec is a widget that has
+     just been hung up and opens on the default view; one that was written and
+     will not parse is a widget from a build this one does not understand, and
+     it is left off the wall rather than drawn as something it is not. */
+  if (spec.facts) {
+    for (const key of [FACTS_VIEW, FACTS_SPEC, FACTS_SNAPSHOT]) {
+      const raw = cfg[key];
+      if (typeof raw === "string") config[key] = raw;
+    }
+    const written = String(config[FACTS_SPEC] ?? "");
+    if (written.trim() && !specOf(written)) return null;
   }
 
   return {

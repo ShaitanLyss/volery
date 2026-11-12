@@ -303,9 +303,19 @@ export type ToolRow = ToolFact | ToolHour;
 
 /* ── filtering ─────────────────────────────────────────────────────────────*/
 
+/** The prefix that makes a filter value an exclusion (§11.3): `["!deepseek"]`
+ *  is every provider but that one, and `["opus", "!opus-5"]` is one of the
+ *  opuses bar the fifth. It lives in the list rather than in a second field
+ *  because a filter rides in a saved view, a widget's config and a report, all
+ *  of which are opaque JSON columns: a prefix needs no migration, and a build
+ *  that read it wrong would draw *no rows*, which is visible, rather than every
+ *  row, which is not. */
+export const NOT = "!";
+
 /** A map of dimension to values. `*` means every value; an empty list means
  *  none, which is different from all and is never produced by accident in the
- *  UI (section 9.1). A dimension absent from the map is unfiltered. */
+ *  UI (section 9.1). A dimension absent from the map is unfiltered. A value
+ *  prefixed with `NOT` is excluded rather than required. */
 export type Filter = Partial<Record<Dimension, string[]>>;
 
 export type DimensionMap = Partial<Record<Dimension, string>>;
@@ -352,14 +362,34 @@ export function toolDimsOf(row: ToolRow): DimensionMap {
 
 /** Whether a row's dimensions satisfy a filter. An empty list matches nothing;
  *  `*` anywhere in a list matches everything; a dimension the filter does not
- *  name is unfiltered. */
+ *  name is unfiltered.
+ *
+ *  A value carrying `NOT` excludes rather than requires, so a list can say
+ *  "one of these, except that one". A list of nothing but exclusions is
+ *  "everything but these", which is the reading that makes "hide deepseek"
+ *  sayable at all. */
 export function matches(filter: Filter, dims: DimensionMap): boolean {
   for (const [dim, values] of Object.entries(filter)) {
     if (!values) continue;
+    /* `*` anywhere in a list means every value and settles the dimension, which
+       is the contract §9.1 states. "Everything but deepseek" is written as the
+       exclusion alone, where there is nothing for a star to contradict. */
     if (values.includes("*")) continue;
     if (values.length === 0) return false;
     const value = dims[dim as Dimension] ?? "";
-    if (!values.includes(value)) return false;
+    let required = false;
+    let allowed = false;
+    for (const one of values) {
+      if (one.startsWith(NOT)) {
+        /* A bare `!` names nothing and excludes nothing, which is the safe
+           reading of a value somebody typed and did not finish. */
+        if (one.length > 1 && one.slice(1) === value) return false;
+      } else {
+        required = true;
+        if (one === value) allowed = true;
+      }
+    }
+    if (required && !allowed) return false;
   }
   return true;
 }

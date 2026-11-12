@@ -29,6 +29,7 @@
    *
    * Keyboard: `v` swaps the presentation, `[` `]` step the span, `f` goes to
    * the controls, `r` reads again, `s` saves a view, `l` opens the library,
+   * `p` hangs what is on screen on the wall as a widget,
    * `1` `2` `3` choose a tab, Escape leaves. The spend tab adds `m` for the
    * measure and `g` for the split; the work tab adds `x` for its scatter
    * measure. The room's own keys (`t` for its table, the arrows or `j`/`k` to
@@ -45,7 +46,9 @@
   import AnalyticsWork from "./AnalyticsWork.svelte";
   import AnalyticsWorkPage from "./AnalyticsWorkPage.svelte";
   import AnalyticsViews from "./AnalyticsViews.svelte";
+  import FilterRail from "./FilterRail.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
+  import { loadSavedViews, savedViews } from "./analyticslibrary.svelte";
   import { dropWatch, readWatches, readWorkWindow } from "./analyticsworkread.svelte";
   import type { SpendWatch } from "./spend";
   import { prompts as realPrompts } from "./promptsread.svelte";
@@ -74,7 +77,15 @@
     type RoomSplit,
     type WindowReader,
   } from "./analyticsroom";
-  import { pageModel, surfaceOfView, type HostMode, type Presentation } from "./analyticpage";
+  import {
+    pageModel,
+    surfaceOfView,
+    surfaceRows,
+    viewMatches,
+    viewOfSurface,
+    type HostMode,
+    type Presentation,
+  } from "./analyticpage";
   import {
     SCATTER_MEASURES,
     WORK_SPANS,
@@ -97,6 +108,7 @@
     work,
     names,
     onclose,
+    onpin,
     mode = view.current,
     as,
     asTab,
@@ -128,6 +140,11 @@
     /** An explicit tab asked for as it opened: `space n t` is the trace.
      *  Absent means the remembered tab. */
     asTab?: SurfaceTab;
+    /** Hang this question on the wall as a widget (§12). The overlay hands the
+     *  spec and, where the surface is showing exactly a saved view, that view's
+     *  id — a widget pointing at one is a *reading* that every edit to the view
+     *  moves, and one carrying a copy is its own. */
+    onpin?: (what: { spec: ViewSpec; shared: string | null }) => void;
   } = $props();
 
   /* The remembered choices, read once, before the first frame — an effect would
@@ -165,6 +182,7 @@
 
   let root = $state<HTMLElement>();
   let controls = $state<HTMLElement>();
+  let rail = $state<ReturnType<typeof FilterRail>>();
   let room = $state<ReturnType<typeof AnalyticsRoom> | undefined>();
   let page = $state<ReturnType<typeof AnalyticsPage> | undefined>();
   let promptsTab = $state<ReturnType<typeof AnalyticsPrompts> | undefined>();
@@ -310,6 +328,14 @@
 
   const empty = $derived(loaded ? emptinessOf(loaded) : null);
 
+  /* A filter can select nothing, and that is a different reading from a window
+     with nothing recorded in it (`emptinessOf` only ever looks at the window).
+     Said here rather than drawn as an empty axis with zeroed tiles, which would
+     read as a quiet week rather than as a question nobody answers (§11.9's
+     honesty rules). */
+  const matched = $derived(loaded ? surfaceRows(loaded, surface.filter).length : 0);
+  const narrowed = $derived(loaded !== null && loaded.rows.length > 0 && matched === 0);
+
   /* The work tab reads its own window and folds it once, here, so both skins
      are handed the same value (§11.15). The "nothing recorded" state is the
      spend read's own knowledge; without it the work tab still draws, it just
@@ -347,11 +373,44 @@
   /* ── the library (§11.6) ─────────────────────────────────────────────── */
 
   let views = $state<"save" | "list" | null>(null);
+  /* The library row the surface was last opened from, so a pin binds to *that*
+     view. Two saved views can ask the same question, and a search by equality
+     would pick whichever the list happens to order first — a widget titled with
+     a view you were not looking at, whose edits move it and whose twin's do
+     not. Cleared whenever the question changes away from it. */
+  let openedId = $state<string | null>(null);
 
-  function openView(spec: ViewSpec) {
+  function openView(spec: ViewSpec, id?: string) {
     adoptSurface(surfaceOfView(spec));
+    openedId = id ?? null;
     views = null;
     void tick().then(() => root?.focus());
+  }
+
+  /* What is on screen, hung on the wall — the gesture that makes a reading a
+     thing rather than a place you go (§12). It shares when the surface is
+     asking exactly a saved view's question, so pinning a view you opened from
+     the library does not quietly make a second copy of it; anything else is a
+     copy of its own, which is the honest record of a question nobody saved. */
+  async function pinCurrent() {
+    if (!onpin) return;
+    const name = `${spanSaid} · ${measureSaid}${split ? ` by ${split}` : ""}`;
+    let spec = viewOfSurface(surface, name);
+    let shared: string | null = null;
+    try {
+      const list = savedViews.ready ? savedViews.list : await loadSavedViews();
+      /* The view this question was opened from wins, if it still asks it. */
+      const from = openedId ? list.find((v) => v.id === openedId) : undefined;
+      const one = from && viewMatches(from.view, surface) ? from : list.find((v) => viewMatches(v.view, surface));
+      if (one) {
+        shared = one.id;
+        spec = one.view;
+      }
+    } catch {
+      /* The library is a convenience here rather than the point: a copy is
+         still a correct answer when it cannot be asked. */
+    }
+    onpin({ spec, shared });
   }
 
   function closeViews() {
@@ -570,14 +629,24 @@
       e.preventDefault();
       void readNow();
     } else if (e.key === "f") {
+      /* §11.5: `f` is the filter row. The rail is that row now; the span,
+         measure and split controls keep their own arrow keys and Tab, so
+         nothing became mouse-only by the key moving. */
       e.preventDefault();
-      controls?.querySelector<HTMLButtonElement>("button")?.focus();
+      if (rail && tabNow === "spend") rail.focus();
+      else controls?.querySelector<HTMLButtonElement>("button")?.focus();
     } else if (e.key === "s") {
       e.preventDefault();
       views = "save";
     } else if (e.key === "l") {
       e.preventDefault();
       views = "list";
+    } else if (e.key === "p" && tabNow === "spend") {
+      /* The pin hangs the *spend* question, so it is the spend tab's key. On
+         the prompts or work tab there is no view to pin and pinning the money
+         would be a widget about a tab you are not looking at. */
+      e.preventDefault();
+      void pinCurrent();
     } else if (showing === "room") {
       if (e.key === "t") {
         e.preventDefault();
@@ -715,6 +784,16 @@
         <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
           <Icon name="pin" small />views
         </button>
+        {#if onpin}
+          <button
+            type="button"
+            class="an-btn"
+            title="hang this on the wall (p)"
+            onclick={() => void pinCurrent()}
+          >
+            <Icon name="pin" small />on the wall
+          </button>
+        {/if}
       {/if}
       <button type="button" class="an-btn an-close" title="close (esc)" aria-label="close" onclick={onclose}>
         <Icon name="x" small />
@@ -821,6 +900,24 @@
     </div>
     {/if}
 
+    <!-- The rail is the spend tab's: the work and prompts tabs read different
+         fact tables, whose dimensions are not these and whose filters would be
+         a vocabulary that lies. -->
+    {#if tabNow === "spend"}
+      <FilterRail
+        bind:this={rail}
+        filter={surface.filter}
+        rows={loaded?.rows ?? []}
+        onchange={(next) => (surface.filter = next)}
+      />
+      {#if narrowed}
+        <p class="an-narrowed">
+          no rows in this window match these filters.
+          <button type="button" onclick={() => (surface.filter = {})}>clear them</button>
+        </p>
+      {/if}
+    {/if}
+
     {#if tabNow === "prompts"}
       <AnalyticsPrompts bind:this={promptsTab} reader={prompts ?? realPrompts} presentation={showing} />
     {:else if tabNow === "work"}
@@ -915,6 +1012,7 @@
         surface={surface}
         onclose={closeViews}
         onopen={openView}
+        onhang={onpin ? (row) => onpin?.({ spec: row.view, shared: row.id }) : undefined}
       />
     {/if}
   </div>
@@ -1140,6 +1238,27 @@
     gap: 6px;
     padding: 40px;
     text-align: center;
+  }
+  /* A filter that selects nothing. It stands above the room rather than inside
+     it, because the room would draw an empty axis and a strip of zeroes, which
+     reads as a quiet window rather than as a question with no answer. */
+  .an-narrowed {
+    flex: none;
+    margin: 0;
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--paper-mute);
+    border-bottom: 1px solid var(--cv-hair, var(--edge));
+  }
+  .an-narrowed button {
+    border: 0;
+    background: transparent;
+    color: var(--paper);
+    font: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+    padding: 0 2px;
   }
   .an-empty {
     margin: 0;

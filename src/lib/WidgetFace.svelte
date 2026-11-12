@@ -60,6 +60,9 @@
   import { tetherOf } from "./tether";
   import type { Timelines } from "./timelines.svelte";
   import type { CardHandle } from "./cards.svelte";
+  import type { Analytics } from "./analyticsholder.svelte";
+  import type { ViewSpec } from "./analytics";
+  import AnalyticsFace from "./AnalyticsFace.svelte";
 
   let {
     widget,
@@ -90,6 +93,8 @@
     onforgerun,
     timelines,
     onreading,
+    analytics,
+    onanalyticsopen,
   }: {
     widget: Widget;
     /** Canvas zoom, so the handles stay a constant size on screen. */
@@ -159,7 +164,10 @@
      *  in the words on the card. */
     names: Map<string, string>;
     naming: (role: string, reference: string | null) => string | null;
-    onupdate: (patch: Partial<Widget>) => void;
+    /**  writes without an undo act — see . */
+    /** `quiet` writes without putting an act on the undo stack, which is what a
+     *  widget's own bookkeeping owes — see `widgets.svelte.ts::updateQuiet`. */
+    onupdate: (patch: Partial<Widget>, quiet?: boolean) => void;
     onreveal?: (role: string, reference: string) => void;
     /** The card with this id, here or on another wall — what a widget that is
      *  a view of one card reads. A function rather than the cards, so the
@@ -192,6 +200,13 @@
     /** A face that hangs a card over itself (a plate's hover) says so, so its
      *  holder can lift it over its neighbours while that card is open. */
     onreading?: (open: boolean) => void;
+    /** The one analytics reader behind however many analytics widgets are up —
+     *  idle, and reading no facts at all, until one attaches. */
+    analytics: Analytics;
+    /** Open a view in the overlay, where the controls that change it live.
+     *  Routed out for the reason `onopen` is: which surface is on screen is the
+     *  studio's business. */
+    onanalyticsopen?: (view: ViewSpec) => void;
   } = $props();
 
   function setRun(run: Run) {
@@ -321,4 +336,13 @@
     />
   {:else if widget.kind === "timeline" && timelines}
     <Plate {widget} {timelines} onreading={(open) => onreading?.(open)} />
+  {:else if widget.kind === "analytics"}
+    <!-- One spec, drawn small: the same `splitSeries` the room and the page
+         draw, so the three surfaces cannot disagree about a number (§9.1). -->
+    <AnalyticsFace
+      {widget}
+      {analytics}
+      {onupdate}
+      onopen={onanalyticsopen ? (view) => onanalyticsopen?.(view) : undefined}
+    />
   {/if}

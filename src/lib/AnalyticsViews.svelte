@@ -15,7 +15,7 @@
    */
   import { onMount, tick } from "svelte";
   import Icon from "./Icon.svelte";
-  import { deleteSavedView, readSavedViews, renameSavedView, saveSavedView } from "./analyticslibrary.svelte";
+  import { deleteSavedView, loadSavedViews, renameSavedView, saveSavedView } from "./analyticslibrary.svelte";
   import { orderViews, surfaceOfView, viewOfSurface, type SavedView, type SurfaceInput } from "./analyticpage";
   import { ROOM_MEASURES, ROOM_SPLITS, SPANS } from "./analyticsroom";
   import { MAX_NAME } from "./analytics";
@@ -25,11 +25,15 @@
     surface,
     onclose,
     onopen,
+    onhang,
   }: {
     mode: "save" | "list";
     surface: SurfaceInput;
     onclose: () => void;
-    onopen: (view: SavedView["view"]) => void;
+    onopen: (view: SavedView["view"], id: string) => void;
+    /** Hang this saved view on the wall as a widget that reads it. Absent in
+     *  the browser preview, which has no wall. */
+    onhang?: (view: SavedView) => void;
   } = $props();
 
   let list = $state<SavedView[]>([]);
@@ -75,7 +79,7 @@
   async function load() {
     loading = true;
     try {
-      list = await readSavedViews();
+      list = await loadSavedViews();
       fault = null;
     } catch (e) {
       fault = e instanceof Error ? e.message : String(e);
@@ -278,13 +282,17 @@
                     renaming = v.id;
                     renameText = v.name;
                     void tick().then(() => panel?.querySelector<HTMLInputElement>(".av-rename")?.focus());
+                  } else if (e.key === "p" && onhang) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onhang(v);
                   } else if (e.key === "Delete" || e.key === "Backspace") {
                     e.preventDefault();
                     e.stopPropagation();
                     void remove(v);
                   }
                 }}
-                onclick={() => onopen(v.view)}
+                onclick={() => onopen(v.view, v.id)}
               >
                 <span class="av-name">{v.name}</span>
                 <span class="av-what">{summary(v)}</span>
@@ -302,6 +310,16 @@
                 void tick().then(() => panel?.querySelector<HTMLInputElement>(".av-rename")?.focus());
               }}>rename</button
             >
+            {#if onhang}
+              <button
+                type="button"
+                class="av-btn av-mini"
+                title="hang it on the wall (p) — every edit to this view moves the widget"
+                aria-label={`hang ${v.name} on the wall`}
+                onclick={() => onhang?.(v)}
+                >on the wall</button
+              >
+            {/if}
             <button
               type="button"
               class="av-btn av-mini"

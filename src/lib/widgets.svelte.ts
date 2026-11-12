@@ -20,6 +20,7 @@ import {
   runs,
   specFor,
   type Widget,
+  type WidgetConfig,
   type WidgetKind,
 } from "./widgets";
 import { bank, isRunning, settle, type Duo } from "./timing";
@@ -163,8 +164,19 @@ export class Widgets {
     return [...this.items.map((w) => w.z), ...this.others()];
   }
 
-  /** Hang one on the wall, centred on a point in canvas space. */
-  async add(kind: WidgetKind, atX: number, atY: number): Promise<Widget | null> {
+  /** Hang one on the wall, centred on a point in canvas space.
+   *
+   *  `config` is written *into the row that is recorded and saved*, which is
+   *  what makes hanging a reading that carries a view one undo rather than two:
+   *  an `add` followed by an `update` is two acts on the stack, so the first
+   *  Ctrl+Z leaves the same box on the wall drawing a different thing. `tether`
+   *  takes its card the same way and for the same reason. */
+  async add(
+    kind: WidgetKind,
+    atX: number,
+    atY: number,
+    config?: WidgetConfig,
+  ): Promise<Widget | null> {
     if (!specFor(kind)) {
       this.fault = `no such widget: ${kind}`;
       return null;
@@ -182,7 +194,8 @@ export class Widgets {
     /* Behind the cards, for the reason a reference image is: the wall is a
        working surface first, and nothing hung on it should cover live work.
        The menu's "bring to front" is there for when you mean the opposite. */
-    const w = newWidget(kind, atX, atY, nextBackZ(this.#stack()));
+    const fresh = newWidget(kind, atX, atY, nextBackZ(this.#stack()));
+    const w = config ? { ...fresh, config: { ...fresh.config, ...config } } : fresh;
     this.items = [...this.items, w];
     this.picks.only("widget", w.id);
     /* An edit from nothing — see the shape note in `undo.ts`. Recorded before
@@ -203,6 +216,19 @@ export class Widgets {
     const before = $state.snapshot(was);
     const next = this.#patch(id, patch);
     if (next) this.scribe.note("widget", id, before, next, patch);
+  }
+
+  /** A write a widget makes about *itself*, with nothing said to the undo
+   *  stack — the analytics face banking the spec it last drew.
+   *
+   *  This is not tidiness. A remembered bookkeeping write is one an undo can
+   *  take back, and the face writes it straight back on the next effect: press
+   *  Ctrl+Z and the pop calls `put`, `quiet` closes, the effect re-applies the
+   *  snapshot and records a *new* act — so the stack can never get past it and
+   *  nothing earlier on the wall can be undone at all. `beat` banks a timer's
+   *  seconds through the same door, and says the same thing. */
+  updateQuiet(id: string, patch: Partial<Widget>): void {
+    this.#patch(id, patch);
   }
 
   /** The change itself, with nothing said about it.

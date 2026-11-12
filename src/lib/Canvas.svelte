@@ -51,6 +51,7 @@
   import type { CardHandle } from "./cards.svelte";
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
+  import type { Analytics } from "./analyticsholder.svelte";
   import type { DevOps } from "./devops.svelte";
   import type { Asana } from "./asana.svelte";
   import type { Cycle } from "./cycle.svelte";
@@ -105,6 +106,7 @@
     undo,
     meter,
     ledger,
+    analytics,
     pomodoro,
     devops,
     asana,
@@ -114,6 +116,7 @@
     onopen,
     onkeyring,
     onforgerun,
+    onanalyticsopen,
     ambience,
     flights,
     lineage,
@@ -214,6 +217,8 @@
     meter: Meter;
     /** The one transcript reader behind however many usage widgets are up. */
     ledger: Ledger;
+    /** The one analytics reader behind however many analytics widgets are up. */
+    analytics: Analytics;
     /** The studio's one pomodoro cycle, behind however many views of it are up. */
     pomodoro: Cycle;
     /** What is in the air between cards, and what is waiting undelivered. */
@@ -256,6 +261,8 @@
      *  studio. The canvas carries it and does not read it — same as
      *  `onkeyring`. */
     onforgerun?: (run: import("./azdo").Run) => void;
+    /** Open an analytics view in the overlay, from the widget that reads it. */
+    onanalyticsopen?: (view: import("./analytics").ViewSpec) => void;
     /** What the wall does when nobody is asking it anything, or null for a bare
      *  one. Drawn inside the surface rather than in App, so it covers exactly
      *  the wall and never the transcript you are reading. */
@@ -2999,6 +3006,8 @@
     scale={glass ? 1 : studio.scale}
     {meter}
     {ledger}
+    {analytics}
+    {onanalyticsopen}
     {pomodoro}
     {devops}
     {asana}
@@ -3024,7 +3033,11 @@
     {timelines}
     centred={glass && isStacked(w)}
     onmeasure={(box) => measurePlate(w.id, box)}
-    onupdate={(patch) => widgets.update(w.id, glass ? glassPatch(patch) : patch)}
+    onupdate={(patch, quiet) => {
+      const one = glass ? glassPatch(patch) : patch;
+      if (quiet) widgets.updateQuiet(w.id, one);
+      else widgets.update(w.id, one);
+    }}
     onremove={() => void widgets.remove(w.id)}
   />
 {/snippet}

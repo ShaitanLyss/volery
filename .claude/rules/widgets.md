@@ -457,6 +457,47 @@ Four smaller calls, each of which would be a bug the other way round:
   The `only what is not operational` narrowing is the same shape done safely — the face says how
   many it is keeping back, so a blank pane is never a widget that looks broken.
 
+#### The analytics view
+
+Kind `analytics`, face `AnalyticsFace.svelte`, reader `analyticsholder.svelte.ts`, and the
+design is `docs/ANALYTICS.md` §12 — this is only what building it taught. One saved view (or
+a copy of one) drawn three ways, `stat` / `chart` / `board`, under the catalogue's own
+`variant` key.
+
+- **Its config is not knobs, and that is the whole of `facts: true`.** A saved-view id, an
+  inline spec and the spec it last drew are three strings `paramsOf` would fill with nothing,
+  so `normalizeWidget` copies them through by hand the way `TETHER` and `PLAN` are — and
+  refuses a spec that was written and will not parse, because that is a widget from a build
+  this one does not understand. A widget with *no* spec yet is a different thing: it is one
+  just hung up, and it opens on `defaultSpec()`.
+- **A size intent is a variant, not three kinds**, on the rule above: all three draw one spec.
+  But `SIZES` lives in `analyticswidget.ts` and `widgets.ts` imports it, so the *key* cannot be
+  imported back without a cycle — it is a literal there and `test/widgets.test.ts` is what
+  holds the two spellings together.
+- **A shared widget writes back what it drew.** A saved view deleted while the wall is up
+  would otherwise blank the widget, so `snapshotOf` writes the resolved spec beside the id
+  after a successful draw, and only on a change — an unguarded write in that `$effect` is a
+  widget updating itself on every frame. The face then says *kept* and offers **keep**, which
+  is `forkedOf`: the snapshot becomes an inline copy and the id is dropped.
+- **An unread library is not an empty one.** The second between a launch and the library's
+  answer would otherwise have every shared widget announce that its view was deleted, which
+  is a false statement about the user's data. `resolveOf` takes `known`, and `savedViews.ready`
+  is what the face passes it.
+- **The reader is the third deliberate poller, and it asks for a second window.** The
+  collector writes once a minute and announces nothing, so one self-scheduling pass serves
+  however many widgets and stops with the last detach — the `Meter`/`Ledger` bargain. The
+  exception is the `stat` intent, whose delta is against **the window before**, which is a
+  second query: it is asked for only where a widget draws a figure, because a delta computed
+  from the same rows is a different claim wearing the same numeral.
+- **No `cqw` without a cap.** Every other face here is a dial whose type *should* fill the
+  box; this one is a list of words, and `min(7cqw, 12cqh)` on a widget dragged to 680px drew
+  its own title at 48px. Each size is `min(…cqw, …cqh, <px>)`, seen in a render rather than
+  reasoned about.
+- **A chart's series colour is a presentation attribute and the stylesheet must not touch
+  `stroke`.** Any CSS rule beats a presentation attribute, so a `stroke: …` in `.chart path`
+  would paint every series the same colour and silently lose the palette. The rule sets the
+  width, the caps and `vector-effect`, and nothing else.
+
 #### Three logs, one substrate — and then a fourth
 
 Three widgets read a stream of lines somebody else is producing: a dev server group, a build or
