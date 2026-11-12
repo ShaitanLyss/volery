@@ -1,6 +1,6 @@
 [package]
 name = "skein"
-version = "0.125.0"
+version = "0.126.0"
 description = "A studio wall for every Claude Code conversation at once"
 authors = ["moonlyss"]
 license = "AGPL-3.0-or-later"
