@@ -2081,6 +2081,12 @@ analytics export <model-json>     -> writes the HTML report, returns its path
 analytics record on|off           -> the recording switch
 ```
 
+**As built, this surface has no analytics ops yet.** `control.rs` carries none of the four
+arms above: the wall test drives the overlay through the app's own commands, and the report
+export needs a path from a native save dialog, which a headless op cannot open. If `export`
+is added it will take a destination path explicitly rather than opening a dialog, and that is
+the reason it is not one of the four the design named.
+
 `snapshot.analytics` reports `recording`, `lastPassAt`, `files`, `requests`, `fineRows`,
 `hourRows`, `residual` and `fault` apart from each other. `recording` and `lastPassAt` are
 reported separately for `meter.sampling`'s reason: a collector that is on with a pass that has
@@ -2647,7 +2653,8 @@ the app.
   Claude Code versions in the data, and whether the report is anonymized;
 - the KPI strip;
 - every panel the author chose, rendered as live SVG with hover, tooltips, filter chips and a
-  table toggle;
+  table toggle (as built: **the panel on screen**, one of them, as SVG with a `<title>` tooltip
+  per bucket and a `<details>` table; filter chips and a panel picker are not built);
 - a methodology appendix: what is measured, what is modeled, what is attributed, what is
   residual, and what was excluded.
 
@@ -2658,25 +2665,18 @@ rows.
 
 ### 13.2 How it is built
 
-The renderer is one vanilla module, no framework, no imports beyond the pure analytics
-modules it shares with the app. It is built as a second Vite entry into one IIFE file, shipped
-as a Tauri bundle resource, and composed into the HTML by `analytics export`, which takes the
-already-anonymized `ReportModel` from the front end and writes one file. The in-app preview
-imports the same source directly, which is what keeps a shared report and the app from drawing
-one model two ways.
+**As built, and it is simpler than this section first proposed.** The renderer is one vanilla
+module, no framework, no imports beyond the pure analytics modules it shares with the app. The
+first draft planned a second Vite entry, an IIFE bundle resource and an `analytics export`
+control op composing the file in Rust; none of that was needed, because `AnalyticsExport.svelte`
+imports `analyticsreport.ts` directly and the file is produced where the model already is. The
+bytes reach the disk through `write_report`, which takes the rendered HTML and checks its
+shape: absolute path, `.html` suffix, a size ceiling, `off_main`.
 
 The model is built in the front end because that is where the query layer, the anonymizer and
 the view spec already are. Rust writes bytes and nothing else; a second query implementation
-in Rust would be a second set of numbers waiting to disagree.
-
-Two build-order traps, both from `build.md`:
-
-- **A `bundle.resources` path must exist before the build starts.** The report runtime is
-  produced by a `tools/` step invoked by `check-gnu.sh`, `build-gnu.ps1` and `release.yml`,
-  not by a build script. Anything else produces the "resource path does not exist" failure
-  that names nothing useful.
-- **The gnu overlay is only for things that do not exist under MSVC.** The report asset exists
-  on every toolchain, so it belongs in `tauri.conf.json`, not the overlay.
+in Rust would be a second set of numbers waiting to disagree. A second Vite entry would have
+been a second place for the renderer's source to drift from the app's.
 
 ### 13.3 Anonymize
 
@@ -2684,19 +2684,26 @@ A report for a manager or a team does not need account emails, hostnames, branch
 project paths. The export offers:
 
 - **labels anonymized** to *account A, B, C* in a stable order, with the real labels in a
-  private appendix only if the author opts in;
+  private appendix only if the author opts in (as built: the letters, not the appendix);
 - **hosts anonymized** to *machine A, B, C*, because a hostname is an inventory of somebody's
   machines;
-- **projects reduced to names**, never paths, and optionally renamed;
-- **branches reduced to `<branch>`** or dropped, because a branch name can name a client;
-- **tool, server and skill names folded** to `tool A`, `server A`, `skill A`, because
-  `mcp__acme_crm__…` is a client name in a tool id;
-- **cards reduced to `card A`**, because a card title is free text somebody typed;
+- **projects reduced to names**, never paths, and optionally renamed (as built: the leading
+  project and the split's own labels lettered together, so the KPI and the series agree);
+- **branches reduced to `<branch>`**, because a branch name can name a client;
+- **tool, server and skill names replaced by the kind alone**, because `mcp__acme_crm__…` is a
+  client name in a tool id (as built: `tool`, `server`, `skill`, not `tool A`);
+- **cards reduced to `card`**, because a card title is free text somebody typed;
+- **sessions and subagents lettered**, because an id is an identity even when it is opaque,
+  and a `!` exclusion keeps its `!` rather than turning into a selection of a fictitious
+  account;
 - **dollar figures** replaced by allowance points, or by an index, if the author does not want
-  to publish a bill;
+  to publish a bill (**not built**: the report carries the surface's own unit);
 - **the embedded view spec's filter values anonymized too**, not only the rows it selected: a
   `filter: { account: ["lyss"] }` in the JSON is as readable as a label on a chart, and the
-  first cut anonymized the model while leaving the spec alone.
+  first cut anonymized the model while leaving the spec alone. **And the methodology's filter
+  sentence is rebuilt from the renamed values**, which the first shipped cut did not do: the
+  file's lede said `anonymized` while its own methods paragraph named the raw account, session
+  and project.
 
 The anonymization is applied to the model before it is embedded, not in the renderer, so a
 rendered file cannot be un-anonymized by opening the console.
@@ -2705,6 +2712,35 @@ rendered file cannot be un-anonymized by opening the console.
 
 The same file prints: a print stylesheet hides the filter chrome, keeps the legends and the
 methodology, and paginates on panel boundaries. PDF is the print dialog, not a second export.
+
+**As built.** `analyticsreport.ts` builds and renders the file; `write_report` writes the bytes
+and is narrow on purpose (absolute path, `.html`, a size ceiling), the same bargain
+`portage.rs` strikes. The panel is `AnalyticsExport.svelte`, opened by `e` on the spend tab or
+`space n e`, and it asks the one question the export has: whether the names travel.
+
+What this build carries, and what it deliberately does not:
+
+- **The spend surface only.** The cover, the KPI strip, the panel on screen drawn as an area
+  chart (stacked as both app presentations stack it, with a dot for a one-bucket series), a
+  per-bucket tooltip and a "numbers behind it" table, and the methodology. The tools, servers,
+  work and prompt-trace tabs have no report yet and the methodology says so in as many words
+  rather than leaving a reader to wonder.
+- **One model, embedded once.** The JSON is the model the app drew, escaped so a name with
+  `</script>` in it cannot end the element, and the size ceiling is checked on the model
+  *before* anything is rendered. All or nothing, as §13.1 asks.
+- **Anonymised before it is embedded**, in `anonymizeReport`: accounts to `account A, B, C` in
+  a stable sorted order, hosts to `machine A…`, the leading project and the spec's filter
+  values with them, and the fold's own `other` left alone because it is not an identity. A
+  chart's series labels are the split's values, and the split is known at the call site —
+  guessing a dimension from a label renamed an account called `volery` as a project in the
+  first draft.
+- **No external anything.** No font, script, image or stylesheet by URL; the test asserts the
+  file contains no `http(s)://` at all. `<title>` on a per-bucket hit band is the tooltip, so
+  the file needs no JavaScript to be read.
+- **Not built:** the dollar-as-points substitution §13.3 offers, the private appendix of real
+  labels, filter chips in the file, a panel picker (the report carries the panel on screen),
+  and a preview inside the app (the browser preview's `?report=1` renders the same file, which
+  is how it is looked at on a machine with no MSVC).
 
 ---
 

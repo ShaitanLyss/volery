@@ -61,8 +61,54 @@ const vault: VaultMode =
    `?h=` pixels, `?split=project` for the divided reading. It is the third
    surface of one spec (§12), and the only way to look at it with no wall behind
    it — the app's own path needs a widget hung up, a store and a minute of facts. */
+/* `?report=1` renders a report file from the fixture and shows it in a frame,
+   which is the only way to look at §13's output with no wall to export from.
+   `?anon=1` anonymises it; the panel's own switch is exercised in the app. */
+if (asked.has("report")) {
+  const { renderReport, anonymizeReport, reportModel } = await import("./lib/analyticsreport");
+  const { pageModel } = await import("./lib/analyticpage");
+  const { windowRequest } = await import("./lib/analyticsroom");
+  const now = Date.now();
+  const win = fixtureWindow(windowRequest("7d", now), mode);
+  const page = pageModel({
+    window: win,
+    filter: {},
+    measure: "usd_modeled",
+    split: "account",
+    bucket: "1d",
+    span: "7d",
+    book: new Map(),
+  });
+  let report = reportModel({
+    window: { since: win.since, until: win.until },
+    series: page.series,
+    kpis: page.kpis,
+    span: "7d",
+    measure: "usd_modeled",
+    unit: "usd",
+    bucket: "1d",
+    split: "account",
+    filter: {},
+    title: "the last 7 days · modeled spend by account",
+    now,
+    version: "preview",
+    claude: [...new Set(win.rows.map((r) => r.cli).filter(Boolean))].sort().pop() ?? null,
+    hosts: [...new Set(win.rows.map((r) => r.host))],
+    accounts: [...new Set(win.rows.map((r) => r.account))],
+    spec: null,
+  });
+  if (asked.has("anon")) report = anonymizeReport(report, "account");
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "width:100%;height:100vh;border:0;display:block";
+  frame.srcdoc = renderReport(report);
+  document.body.style.margin = "0";
+  document.getElementById("app")!.append(frame);
+}
+
 const widgetMode = asked.get("widget");
-if (widgetMode) {
+if (asked.has("report")) {
+  /* Mounted above; the room must not draw underneath it. */
+} else if (widgetMode) {
   const box = document.createElement("div");
   box.style.cssText = `width:${asked.get("w") ?? "340"}px;height:${asked.get("h") ?? "240"}px;container-type:size;background:var(--ink);border:1px solid var(--edge);border-radius:8px;overflow:hidden`;
   document.getElementById("app")!.append(box);
@@ -112,6 +158,9 @@ if (widgetMode) {
          with it makes that card older than the facts, which is the state the
          page has to qualify rather than draw a lifetime share over. */
       asCard: asked.has("card") ? "preview-card" : undefined,
+      /* `?export=1` opens the report panel; writing it needs a wall, so the
+         panel's own write is the one thing the preview cannot finish. */
+      asExport: asked.has("export"),
       life: fixtureLife(mode),
       samples: async (from, to) => fixtureAllowanceSamples(from, to),
       costs: async (from, to) => fixtureAllowanceCosts(from, to),

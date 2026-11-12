@@ -50,6 +50,7 @@
   import AnalyticsBehaviour from "./AnalyticsBehaviour.svelte";
   import AnalyticsBehaviourPage from "./AnalyticsBehaviourPage.svelte";
   import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
+  import AnalyticsExport from "./AnalyticsExport.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
   import { loadSavedViews, savedViews } from "./analyticslibrary.svelte";
   import { dropWatch, readWatches, readWorkWindow } from "./analyticsworkread.svelte";
@@ -69,6 +70,9 @@
     type AllowanceSample,
   } from "./allowancesamples";
   import { stripModel, weekResidual, type FleetReading } from "./analyticstiles";
+  import { anonymizeReport, reportModel } from "./analyticsreport";
+  import { writeReportFile } from "./analyticsreport.svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { waterfall } from "./waterfall.svelte";
   import type { Ledger } from "./ledger.svelte";
   import { habitModel } from "./analyticsbehaviour";
@@ -100,6 +104,7 @@
     type WindowReader,
   } from "./analyticsroom";
   import {
+    coverOf,
     pageModel,
     panelNote,
     refusalOf,
@@ -121,7 +126,7 @@
     type WorkModel,
     type WorkReader,
   } from "./analyticswork";
-  import { spanMsOf, type ViewSpec } from "./analytics";
+  import { MEASURES, spanMsOf, type ViewSpec } from "./analytics";
   import type { PromptReader, SurfaceTab } from "./analyticstrace";
   import { count } from "./usage";
   import { view } from "./view.svelte";
@@ -138,6 +143,7 @@
     now = 0,
     ledger = null,
     asCard,
+    asExport = false,
     names,
     onclose,
     onpin,
@@ -176,6 +182,8 @@
     /** A card to open the inspector on, from its own `analytics…` row or
      *  `space n a`. Absent means no card is selected. */
     asCard?: string;
+    /** The report panel asked for as it opened (`space n e`). */
+    asExport?: boolean;
     /** The watches one card set on itself, or a fixture. Absent means the
      *  command; the browser preview has no wall to ask. */
     watches?: (card: string) => Promise<SpendWatch[]>;
@@ -721,6 +729,49 @@
     void tick().then(() => root?.focus());
   }
 
+  /* ── the report (§13) ────────────────────────────────────────────────────
+   *
+   * `e` opens this on the spend tab, and `space n e` opens the surface with it
+   * already up. The model is built here, at the gesture, from what is on
+   * screen: the same series, the same KPIs, the same view spec. The only
+   * decision the panel asks is whether names travel, and the anonymizer is
+   * applied to the model *before* it is embedded, so opening the file's console
+   * cannot undo it (§13.3). */
+  let exporting = $state<boolean>(untrack(() => asExport));
+
+  function closeExport() {
+    exporting = false;
+    void tick().then(() => root?.focus());
+  }
+
+  async function writeReportNow(anonymous: boolean): Promise<string> {
+    if (!loaded || !model) throw new Error("nothing is drawn yet, so there is nothing to export");
+    /* **The cover describes what the report includes, which is the filtered
+       rows.** See `coverOf`: it is the same row set the series came through. */
+    const cover = coverOf(loaded, surface.filter);
+    const title = `${spanSaid} · ${measureSaid}${split ? ` by ${split}` : ""}`;
+    const report = reportModel({
+      window: { since: loaded.since, until: loaded.until },
+      series: model.series,
+      kpis: model.kpis,
+      span: spanSaid,
+      measure,
+      unit: MEASURES[measure]?.unit ?? "count",
+      bucket,
+      split,
+      filter: surface.filter,
+      title,
+      now: Date.now(),
+      version: await getVersion().catch(() => "unknown"),
+      claude: cover.claude,
+      hosts: cover.hosts,
+      accounts: cover.accounts,
+      spec: viewOfSurface(surface, title),
+    });
+    const final = anonymous ? anonymizeReport(report, split) : report;
+    return writeReportFile(final, title);
+  }
+
   /* ── focus ───────────────────────────────────────────────────────────── */
 
   /* Focus comes in on open, stays in while the surface is up, and goes back
@@ -820,6 +871,17 @@
         e.preventDefault();
         e.stopPropagation();
         closeViews();
+      }
+      return;
+    }
+    /* The report panel owns the keys while it is up, Escape included — the same
+       order the library keeps, and before a field's own handling so a checkbox
+       does not take the key. */
+    if (exporting) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeExport();
       }
       return;
     }
@@ -981,6 +1043,11 @@
     } else if (e.key === "g") {
       e.preventDefault();
       cycleSplit();
+    } else if (e.key === "e") {
+      /* `e` exports the window. This branch is the spend tab's alone (the other
+         three have returned above), and that is the only tab with a report. */
+      e.preventDefault();
+      exporting = true;
     } else if (e.key === "r") {
       e.preventDefault();
       void readNow();
@@ -1155,6 +1222,9 @@
               : "space b d"}</span
       >
       {#if tabNow === "spend"}
+        <button type="button" class="an-btn" title="export this window as a report (e)" onclick={() => (exporting = true)}>
+          <Icon name="file" small />export
+        </button>
         <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
           <Icon name="pin" small />views
         </button>
@@ -1445,6 +1515,10 @@
         </aside>
       {/if}
     </div>
+
+    {#if exporting}
+      <AnalyticsExport onclose={closeExport} onwrite={writeReportNow} />
+    {/if}
 
     {#if views}
       <AnalyticsViews

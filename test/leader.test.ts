@@ -327,6 +327,7 @@ describe("the which-key hint", () => {
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "na", label: "the focused card's figures" },
       { keys: "nb", label: "tools, servers and habits" },
+      { keys: "ne", label: "export a report" },
       { keys: "nn", label: "analytics as a document" },
       { keys: "nt", label: "the prompt trace" },
       { keys: "nw", label: "cost against output" },

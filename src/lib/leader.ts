@@ -141,7 +141,8 @@ export type Verb =
         | "analyticspage"
         | "analyticstrace"
         | "analyticswork"
-        | "analyticsbehaviour";
+        | "analyticsbehaviour"
+        | "analyticsreport";
     }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
@@ -476,6 +477,10 @@ export const CHORDS: readonly Chord[] = [
      tools, servers, skills and habits, which is the tab a spend chart cannot
      answer. A third letter of the `n` family for `nt`'s reason. */
   { keys: "nb", label: "tools, servers and habits", verb: { kind: "open", what: "analyticsbehaviour" } },
+  /* `ne`: the same window as one HTML file to send somebody (§13). In the `n`
+     family, on the tab that is the money; the panel it opens asks the only
+     question the export has, which is whether the names travel. */
+  { keys: "ne", label: "export a report", verb: { kind: "open", what: "analyticsreport" } },
   /* `na`: the focused card as a history (§11.10) — what it cost, who paid for
      it and when it moved, opened in the room's inspector. A card letter rather
      than an `n` reading, because it is about one card and the wall always knows

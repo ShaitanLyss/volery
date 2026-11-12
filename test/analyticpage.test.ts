@@ -22,6 +22,7 @@ import {
 } from "../src/lib/analyticsroom";
 import {
   asSavedViews,
+  coverOf,
   figureOf,
   naturalFor,
   otherPresentation,
@@ -458,5 +459,20 @@ describe("what a surface cannot honour about a spec", () => {
     const two = spec({ panels: [{ measure: "usd_modeled" }, { measure: "tokens" }] });
     expect(refusalOf(two, T)).toBe(null);
     expect(panelNote(two)).toBe("this view asks for 2 panels; one is drawn here");
+  });
+});
+
+/* ── a report's cover ──────────────────────────────────────────────────────*/
+
+describe("a report's cover describes what the report includes", () => {
+  test("its hosts and accounts are the filtered rows', not the whole window's", () => {
+    const win = fixtureWindow(windowRequest("7d", T0 + 7 * DAY), "normal");
+    const all = coverOf(win);
+    expect(all.accounts.length).toBeGreaterThan(1);
+    const one = coverOf(win, { account: [all.accounts[0]] });
+    expect(one.accounts).toEqual([all.accounts[0]]);
+    expect(one.hosts.length).toBeGreaterThan(0);
+    expect(one.hosts.every((h) => all.hosts.includes(h))).toBe(true);
+    expect(one.claude).not.toBeNull();
   });
 });

@@ -724,6 +724,7 @@
       else if (verb.what === "analyticstrace") openAnalytics(undefined, "prompts");
       else if (verb.what === "analyticswork") openAnalytics(undefined, "work");
       else if (verb.what === "analyticsbehaviour") openAnalytics(undefined, "behaviour");
+      else if (verb.what === "analyticsreport") openAnalytics(undefined, "spend", undefined, true);
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -1894,10 +1895,13 @@
      `space n a` (§11.10). Undefined is no selection; every other way in clears
      it, so a card does not follow you into the next opening. */
   let analyticsCard = $state<string | undefined>(undefined);
-  function openAnalytics(as?: Presentation, at?: SurfaceTab, card?: string) {
+  /* Whether the report panel is asked for as the surface opens (`space n e`). */
+  let analyticsExport = $state(false);
+  function openAnalytics(as?: Presentation, at?: SurfaceTab, card?: string, report = false) {
     analyticsAs = as;
     analyticsTab = at;
     analyticsCard = card;
+    analyticsExport = report;
     showAnalytics = true;
   }
   /* A widget's view, opened where its controls are. The spec is adopted rather
@@ -2016,6 +2020,7 @@
     analyticsAs = undefined;
     analyticsTab = undefined;
     analyticsCard = undefined;
+    analyticsExport = false;
     if (view.current === "chat") await switchView("wall");
     await tick();
     const at = canvas?.center() ?? { x: 0, y: 0 };
@@ -6054,6 +6059,7 @@
       as={analyticsAs}
       asTab={analyticsTab}
       asCard={analyticsCard}
+      asExport={analyticsExport}
       fleet={fleetReadings}
       now={clock.t}
       {ledger}
@@ -6064,6 +6070,7 @@
         analyticsAs = undefined;
         analyticsTab = undefined;
         analyticsCard = undefined;
+        analyticsExport = false;
       }}
     />
   {/if}

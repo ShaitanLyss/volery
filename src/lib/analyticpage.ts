@@ -630,6 +630,41 @@ export function surfaceRows(window: AnalyticsWindow, filter: Filter = {}): Usage
   return filterRows(window.rows, filter, dimsOf);
 }
 
+/** What a report's cover may say about its contents (§13.1).
+ *
+ *  **The hosts, accounts and CLI version of the rows the report includes**,
+ *  not of the window it was asked for. The first cut read the unfiltered window,
+ *  so a report filtered to one account listed every account on its cover while
+ *  the methodology named one; with anonymisation on it also minted letters for
+ *  identities that never appear in the body. One row set, so the cover and the
+ *  series cannot describe different data. */
+export function coverOf(
+  window: AnalyticsWindow,
+  filter: Filter = {},
+): { hosts: string[]; accounts: string[]; claude: string | null } {
+  const rows = surfaceRows(window, filter);
+  const unique = (values: string[]): string[] => [...new Set(values.filter(Boolean))].sort();
+  /* The most common non-empty version, because a straddling window can hold
+     two and a report has one line for it. */
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.cli) counts.set(row.cli, (counts.get(row.cli) ?? 0) + 1);
+  }
+  let claude: string | null = null;
+  let most = 0;
+  for (const [cli, n] of counts) {
+    if (n > most) {
+      claude = cli;
+      most = n;
+    }
+  }
+  return {
+    hosts: unique(rows.map((r) => r.host)),
+    accounts: unique(rows.map((r) => r.account)),
+    claude,
+  };
+}
+
 /** Everything the page draws, in one value. */
 export function pageModel(input: PageInput): PageModel {
   const rows = surfaceRows(input.window, input.filter);

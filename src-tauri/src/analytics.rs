@@ -7074,6 +7074,62 @@ pub async fn allowance_costs(
     .await?
 }
 
+/* ── the report (§13) ──────────────────────────────────────────────────────*/
+
+/// The extension a report is written with. Not a format check — the bytes are
+/// the HTML `analyticsreport.ts` rendered — but it keeps this command from
+/// being a way to overwrite arbitrary files, the same bargain `portage.rs`
+/// strikes with `.volery.json`. **`.html` rather than a narrower suffix**,
+/// deliberately: the whole point of the file is that somebody else double-clicks
+/// it, and `report.volery.html` is a name that asks a reader to trust an app
+/// they do not have. The suffix constrains the shape; the path still comes from
+/// a dialog the person chose.
+const REPORT_SUFFIX: &str = ".html";
+/// **A backstop, not the rule.** `analyticsreport.ts::reportFile` owns the real
+/// ceiling and refuses a rendered file over 4 MB before it reaches this command,
+/// so the markup is already inside that cap; this is what answers a *different*
+/// caller holding the IPC that hands over a document the exporter never built.
+const REPORT_CEILING: usize = 8 * 1024 * 1024;
+
+/// The guards under `write_report`, so they can be tested without a write.
+///
+/// **The IPC belongs to the webview, not to a card.** A `claude` child cannot
+/// call a Tauri command, so the reachability this narrowness answers is a bug in
+/// the front end or something driving the same webview, not an agent with a
+/// shell. The shape still matters: a verb that takes an arbitrary absolute path
+/// and truncates it is one stray variable away from replacing a document a
+/// person cared about, which is `portage.rs::checked`'s argument.
+fn report_target(path: &str, bytes: usize) -> Result<PathBuf, String> {
+    if !Path::new(path).is_absolute() {
+        return Err(format!("{path} is not a full path"));
+    }
+    if !path.to_ascii_lowercase().ends_with(REPORT_SUFFIX) {
+        return Err(format!("a report is a {REPORT_SUFFIX} file"));
+    }
+    if bytes > REPORT_CEILING {
+        return Err(format!(
+            "this report is {bytes} bytes, which is more than a report may be"
+        ));
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// Write one report file (§13).
+///
+/// **Narrow on purpose, and `off_main` on purpose.** The verb takes a path the
+/// save dialog chose, insists on `.html`, and refuses a document larger than any
+/// report. The write is one blocking call on a file that may be megabytes, which
+/// is CLAUDE.md's paragraph on `off_main` whole and not a formality.
+#[tauri::command]
+pub async fn write_report(path: String, html: String) -> Result<(), String> {
+    let target = report_target(&path, html.len())?;
+    crate::off_main(move || {
+        std::fs::write(&target, html.as_bytes())
+            .map_err(|e| format!("could not write {}: {e}", target.display()))
+    })
+    .await?
+}
+
 /// One `work_fact` row, as the cost-against-output page reads it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -7639,6 +7695,32 @@ mod tests {
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         crate::store::migrate(&conn).unwrap();
         conn
+    }
+
+    /// The report writer's three refusals, and the shape it accepts. Tested
+    /// here rather than through a write because the guard is the part that
+    /// matters: the bytes are the front end's renderer's, and a refusal that
+    /// needed a file on disk to prove would not cover the absoluteness.
+    #[test]
+    fn a_report_is_only_written_to_an_absolute_html_path_of_a_sane_size() {
+        let ok = if cfg!(windows) {
+            r"C:\Users\x\spend.html"
+        } else {
+            "/tmp/spend.html"
+        };
+        assert!(report_target(ok, 1024).is_ok());
+        assert!(report_target(ok, REPORT_CEILING).is_ok(), "the ceiling itself is allowed");
+        assert!(
+            report_target(ok, REPORT_CEILING + 1).is_err(),
+            "a byte past the ceiling is refused, not truncated"
+        );
+        assert!(report_target("spend.html", 10).is_err(), "a bare name is refused");
+        let wrong = if cfg!(windows) {
+            r"C:\Users\x\spend.txt"
+        } else {
+            "/tmp/spend.txt"
+        };
+        assert!(report_target(wrong, 10).is_err(), "the suffix is part of the shape");
     }
 
     fn request(at: i64, model: &str, tokens: i64) -> String {
