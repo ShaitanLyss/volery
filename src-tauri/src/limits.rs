@@ -1159,7 +1159,7 @@ pub const ACCOUNTS_TOOL: &str = "accounts";
 /// How far back the spend figure looks.
 ///
 /// A rolling day rather than "today", and that is the one place this parts
-/// company with `spend_since` — whose cutoff comes from the front end because
+/// company with `spend_fundings` — whose cutoff comes from the front end because
 /// **the timezone lives there** (see the note on that command). Nothing in Rust
 /// knows where midnight is, and a guessed one would make the number wrong twice
 /// a year and at every hour before breakfast. A rolling window needs no

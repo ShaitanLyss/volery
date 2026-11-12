@@ -161,6 +161,7 @@ import {
   type Survey,
 } from "./reaping";
 import { dayStart, turnRowKind } from "./usage";
+import { asFundingRow, type FundingRow } from "./fundings";
 import { whois } from "./whois.svelte";
 import type { Studio } from "./studio.svelte";
 
@@ -6232,6 +6233,11 @@ export class Skein {
    *  cannot show, since a day's spend and a session's look identical from
    *  outside until one of them is dated. */
   spendSince = $state(0);
+  /** The day split by who paid (§21): subscription labels, `@credits`, and
+   *  provider sentinels. `null` is a read that failed, `[]` a day that has
+   *  settled nothing; the header says which, because an empty breakdown and an
+   *  unread one are different news. */
+  fundings = $state<FundingRow[] | null>([]);
 
   /** Re-read the day's spend if the day has rolled over underneath us.
    *
@@ -6261,16 +6267,28 @@ export class Skein {
     purse.setBoost(on);
   }
 
-  /** Ask the table what the day has cost. The table is the only source: a turn
-   *  is added to the figure by being *recorded*, never by being added here as
-   *  well, or the two would drift and only one of them would survive a
-   *  restart. */
+  /** Ask the table what the day has cost, and who paid (§21). The table is the
+   *  only source: a turn is added to the figure by being *recorded*, never by
+   *  being added here as well, or the two would drift and only one of them
+   *  would survive a restart.
+   *
+   *  **One read, not two.** The total and the breakdown were two commands taken
+   *  one after the other, and a turn settling between them left a breakdown that
+   *  did not add up to the figure it is captioned as splitting. `spend_fundings`
+   *  answers both, its total being the sum of its own rows, so they cannot
+   *  disagree. A failure leaves the last good figure up and marks the breakdown
+   *  unread: a failed read is not a day that cost nothing, and the ground going
+   *  cold would say it was. */
   async #readSpend() {
     try {
-      this.spend = await invoke<number>("spend_since", { since: this.spendSince });
+      const raw = await invoke<unknown>("spend_fundings", { since: this.spendSince });
+      const day = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+      const usd = Number(day.usd);
+      if (Number.isFinite(usd)) this.spend = usd;
+      const rows = Array.isArray(day.rows) ? day.rows : [];
+      this.fundings = rows.map(asFundingRow).filter((r): r is FundingRow => r !== null);
     } catch {
-      /* Leave the last good figure up. A failed read is not a day that cost
-         nothing, and the ground going cold would say it was. */
+      this.fundings = null;
     }
   }
 

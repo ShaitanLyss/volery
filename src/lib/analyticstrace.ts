@@ -155,7 +155,7 @@ export function asPromptRows(raw: unknown): PromptRow[] {
 /** Local midnight of the day `at` falls in.
  *
  * `prompt_facts` takes the window from its caller because Rust does not know
- * where midnight is (`usage.md`'s argument for `spend_since`), and a local day
+ * where midnight is (`usage.md`'s argument for the day's cutoff), and a local day
  * is 23 or 25 hours twice a year. This is that arithmetic, done here. */
 export function startOfDay(at: number): number {
   const d = new Date(at);

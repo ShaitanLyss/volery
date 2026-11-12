@@ -18,6 +18,7 @@
  */
 
 import {
+  attributedCost,
   isSentinel,
   modeledUsd,
   residualOf,
@@ -352,10 +353,29 @@ export function costBucketsOf(rows: readonly AllowanceCost[]): CostBucket[] {
   return [...merged.values()].sort((a, b) => a.at - b.at);
 }
 
+/** The first index whose bucket ends after `at`, on a list sorted by `at`. */
+function firstEndingAfter(buckets: readonly CostBucket[], at: number): number {
+  let lo = 0;
+  let hi = buckets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (buckets[mid].at + FINE_BUCKET_MS <= at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /** The spans of every instance of one window key, with the facts that overlap
  *  each one. A fact bucket straddling a span boundary is split by the fraction
  *  of its width on each side (§5.1) — the bucket has no finer resolution, and a
- *  wider claim would be pretending it does. */
+ *  wider claim would be pretending it does.
+ *
+ *  **The buckets are sorted and walked from where each span begins.** A week of
+ *  five-minute buckets is a few thousand rows and a window's samples are a few
+ *  hundred intervals, so scanning the whole list per interval was a product
+ *  nobody chose: measured at 20ms to 60ms per call on eight days of a real
+ *  wall, and this is called once per window kind per account on a fold that is
+ *  redrawn while the room is open (§22.5). */
 export function spansOf(
   instances: readonly WindowInstance[],
   buckets: readonly CostBucket[],
@@ -363,6 +383,7 @@ export function spansOf(
 ): DeltaSpan[] {
   const spans: DeltaSpan[] = [];
   const mine = instances.filter((i) => i.account === account);
+  const sorted = [...buckets].sort((a, b) => a.at - b.at);
   for (const one of mine) {
     for (let i = 1; i < one.points.length; i++) {
       const from = one.points[i - 1].at;
@@ -371,7 +392,9 @@ export function spansOf(
       if (to <= from) continue;
       const facts: CostFact[] = [];
       const seen = new Set<string>();
-      for (const b of buckets) {
+      for (let j = firstEndingAfter(sorted, from); j < sorted.length; j++) {
+        const b = sorted[j];
+        if (b.at >= to) break;
         const end = b.at + FINE_BUCKET_MS;
         const overlap = Math.min(to, end) - Math.max(from, b.at);
         if (overlap <= 0) continue;
@@ -412,6 +435,41 @@ export type AllowanceResidual = {
  *
  *  The per-account reading is `analytics.ts::residualOf`'s; this only gathers
  *  the accounts of one kind and states the coverage that the smallest one had. */
+/** The dollars behind one account's window movement, for the exchange rate.
+ *
+ *  `delta` is the points the window moved and `cost` the modelled cost of the
+ *  facts that carried them, through the same predicate `attribute` uses. Null
+ *  when the window did not move: an exchange rate over an empty denominator is
+ *  not a cheap rate, it is no rate, and a caller must draw a dash rather than a
+ *  number it invented.
+ *
+ *  Call it once per window kind, like `allowanceResidual`: the five-hour and the
+ *  weekly are different currencies and are never summed. */
+export function attributedCostOf(
+  instances: readonly WindowInstance[],
+  buckets: readonly CostBucket[],
+  account: string,
+  kind: string,
+  /** Two `weekly_scoped` windows can share a kind and differ only here, so a
+   *  caller that names one must name its scope too or it will sum two windows'
+   *  spans and count the overlapping buckets twice. */
+  scope = "",
+): { delta: number; cost: number } | null {
+  if (isSentinel(account)) return null;
+  const mine = instances.filter(
+    (i) => i.account === account && i.kind === kind && i.scope === scope,
+  );
+  if (mine.length === 0) return null;
+  let delta = 0;
+  let cost = 0;
+  for (const span of spansOf(mine, buckets, account)) {
+    const d = Number.isFinite(span.delta) && span.delta > 0 ? span.delta : 0;
+    delta += d;
+    cost += attributedCost(d, span.facts, account);
+  }
+  return delta > 0 ? { delta, cost } : null;
+}
+
 export function allowanceResidual(
   instances: readonly WindowInstance[],
   buckets: readonly CostBucket[],

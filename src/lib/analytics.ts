@@ -1107,6 +1107,23 @@ export function attribute(
   return { points, attributed: d, residual: 0 };
 }
 
+/** The dollar weight under one interval's attribution (§21).
+ *
+ *  `attribute` divides a delta among the facts that can carry a share. This
+ *  sums those same facts' modelled cost through the same predicate, so the
+ *  denominator and the money cannot disagree about which facts were eligible.
+ *  `cost / delta` is what one allowance point cost that account, which is the
+ *  exchange rate the funding breakdown reads in both directions. */
+export function attributedCost(
+  delta: number,
+  facts: readonly CostFact[],
+  account: string,
+): number {
+  const d = Number.isFinite(delta) && delta > 0 ? delta : 0;
+  if (d === 0) return 0;
+  return facts.filter((f) => attributable(f, account)).reduce((a, f) => a + f.cost, 0);
+}
+
 export type DeltaSpan = {
   /** Points the window moved across this sample interval. `max(0, …)` is the
    *  caller's, per section 5.1: a roll starts a new instance and never produces

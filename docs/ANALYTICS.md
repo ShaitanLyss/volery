@@ -3967,3 +3967,110 @@ The 2s frame is a few hundred bytes of payload and a well-understood exchange; t
 stream is a new lifecycle. That is the whole reason for the split, and it is worth saying out
 loud before anybody spends a fortnight on sub-second freshness that a two-second reading cannot
 use.
+## 21. One spend, several currencies
+
+Lyss, 2026-11-12: *"now that we have a better reading on allowance and equivalent to tokens and
+api credits, all those informations should be readable interchangably. I want to be able to know
+how many api credits worth I used, how many percentage of 5hour allowance I used (175% for
+example), how much of a weekly, or the real breakdown of I used 158% 5hour allowance of premium
+claude seat + 40 anthropic api credits + 50 deepseek credits. also atm volery shows the daily
+amount of api credits worth of tokens I consumed regardless of where they come from, when I get
+this number I want the actual break down."*
+
+The wall has been recording all three units for a while and drawing them on three surfaces that
+never meet. This section makes them one reading with stated edges, and splits the day's figure by
+what paid for it.
+
+### 21.1 The three units, and the only edges between them
+
+| unit | what it answers | where it comes from |
+|---|---|---|
+| **tokens** | how much was processed | `usage_fact`, and the token columns on `turn` |
+| **api-credit worth** | what it would cost at API prices | `turn.usd`, which is the CLI's own reported figure, advanced by `usage.ts::priceOf` for a provider whose CLI reports zero (§3.5) |
+| **allowance points** | how close an account is to being stopped | `allowance_fact` samples (§3.3), attributed per account (§5) |
+
+Tokens become dollars through the rate table, per fact, at the fact's own instant. Dollars become
+points through **attribution**: the modelled cost of the facts inside a window, divided by the
+points that window moved, for that account and that kind. `fundings.ts::usdPerPoint` is that
+division and it returns null, never zero, when the window moved no points: a rate over an empty
+denominator is not a cheap rate.
+
+Three sums are refused, each for the reason its parent section already gives:
+
+- **The five-hour and the weekly windows are never added.** They are different currencies (§5.5).
+- **Two accounts' percentages are never added.** A point on a Max 5x plan is not a point on a
+  Max 20x plan, and the exchange rate that would make them comparable is exactly what differs.
+- **A percentage is never added to a dollar.** The one figure that adds across fundings is
+  api-credit worth, because it is the only unit all of them share.
+
+### 21.2 A day can be more than 100% of a five-hour window
+
+Five hours refill roughly four times a day, so a day that filled the session window 90% and then
+68% has consumed **158%** of a five-hour allowance, and both figures are true at once. The day's
+reading is the sum of every instance's positive steps that the day overlaps, split by time where a
+step straddles the boundary (`fundings.ts::windowSpend`, the same arithmetic as `spansOf`). A
+single instance still pins at its own 0 to 100; nothing clamps the day.
+
+The weekly window is summed the same way, and it does not reset inside a day, so its day reading
+is its instance's delta.
+
+### 21.3 The breakdown, by funding
+
+Every settled turn carries `account_label`, which is the funding that paid: a subscription label,
+`@credits` (Anthropic API credits), or a provider sentinel such as `@deepseek` (§3.6,
+`providers.md`). `store.rs::spend_fundings` groups the day by it, and
+`fundings.ts::fundingReadings` joins each subscription label to that account's windows for the day.
+
+The sentence the user asked for is therefore a rendered fold, not a new measurement:
+
+> lyss $30.00 (158% of the 5-hour allowance) · anthropic api credits $40.00 · deepseek credits $50.00
+
+`store.rs::spend_fundings` is the read: one `GROUP BY account_label` over the same `turn` rows
+`spend_row` sums, returning dollars, every token kind and the turn count per funding. **The total
+and the breakdown are one command and one look at the table**, the total being the sum of these
+rows; two reads a moment apart once let a turn settle between them, which left the breakdown not
+adding up to the figure it is captioned as splitting. It is `async` on `off_main`, because a scan
+of an unbounded table has no business on the thread that paints every card.
+
+**The two halves are different scopes and the surface says so.** The money is this wall's settled
+turns; the percentages are the account's own windows, which also count work in a terminal and on
+another wall. That is the useful join, and it is not an identity: the dollars are what those
+tokens would have cost at API prices, the percentage is how much of the plan went.
+
+### 21.4 Where it is read
+
+- **The title bar's day figure** gains the breakdown as its hover and is a button: clicking it
+  opens the room on the spend tab. It is the figure the user named, so it is where the split
+  first appears, and the percentages live one click away because they need the samples.
+- **The room's spend tab** gains a `the day on this wall, by funding` block, directly under the
+  live strip: one row per funding, with api-credit worth, tokens, and for a subscription its
+  `% of the 5-hour` and `% of the weekly`. Its total is the title bar's figure, by construction:
+  both come from the one `spend_fundings` answer the wall holds, which the room reads through an
+  accessor rather than a read of its own. A second read there is how the block came to sit at
+  open-time money beside a total that moves. Credits and provider rows say `no window` in the
+  percentage columns, never 0: a provider has no allowance window to be a percentage of.
+- **The exchange** is in the percentage cell's hover, not printed in the cell, and it appears
+  only when the attribution can compute it: "1% ≈ $0.0014 of modeled work, measured over the
+  last eight days". It is measured over the allowance instances the room reads, not over the
+  day alone, because a single day's window is a noisy denominator; the percentage is the day's,
+  and the hover says which is which. **It is deliberately not laid beside the money column**:
+  the money is this wall's settled turns and the rate is the account window's modeled work, so
+  a reader adding the two would be adding different scopes. The reverse reading is the row's
+  own percentage: today's dollars answer as a fraction of the window.
+- **A cell that cannot be read says so in words**: `not read` for a plan whose samples did not
+  cover the day, `no window` for a funding that has none, `unpriced` for tokens the price table
+  could not place, `no window` on a total row with no subscription at all, `not summed` on one
+  with more than one. Never a zero, and a window the samples covered that did not move is a real
+  `0%` rather than `not read`: the row exists, with zero points.
+
+### 21.5 What is deliberately absent
+
+- **A single total in points across accounts.** The rate that would collapse them is the one that
+  differs, so the total is in api-credit worth and the percentages sit beside it, per account.
+- **A per-turn percentage.** A turn's share of a window is only knowable between two samples, and
+  inventing one per turn would be a number no sample supports (§5.2).
+- **A percentage for a provider.** `@deepseek` is billed per token with a cap Volery enforces
+  (`providers.md`), not a window that fills; its cap is drawn by the provider panel, not here.
+- **Backfilled fundings.** A `turn` row written before v59 has no label and reads as this
+  machine's sign-in, which is what it was. There is no way to recover which subscription paid, and
+  guessing would be worse than the honest default.

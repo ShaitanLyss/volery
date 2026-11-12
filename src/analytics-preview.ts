@@ -21,6 +21,7 @@ import {
   FIXTURE_FLEET,
   fixtureAllowanceCosts,
   fixtureAllowanceSamples,
+  fixtureFundings,
   fixtureBehaviourReader,
   fixtureLife,
   fixturePromptReader,
@@ -164,6 +165,9 @@ if (asked.has("report")) {
       life: fixtureLife(mode),
       samples: async (from, to) => fixtureAllowanceSamples(from, to),
       costs: async (from, to) => fixtureAllowanceCosts(from, to),
+      /* `?funding=0` is a breakdown that could not be read, which is the state
+         the block has to word rather than draw an empty day over. */
+      fundings: () => (asked.get("funding") === "0" ? null : fixtureFundings()),
       fleet: FIXTURE_FLEET,
       mode: "wall",
       prompts: fixturePromptReader(mode, vault),

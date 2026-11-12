@@ -6523,7 +6523,7 @@ fn clear_row(conn: &Connection, id: &str, session_id: &str) -> Result<(), String
 /// would put a vocabulary in the column that the fold has not decided yet.
 ///
 /// `open_turn_row` rather than `open_turn` for the reason `spend_row` is not
-/// `spend_since`: the `#[tauri::command]` answers the invoke and this is the
+/// `spend_fundings`: the `#[tauri::command]` answers the invoke and this is the
 /// statement under it, and Rust has one namespace for both.
 pub fn open_turn_row(conn: &Connection, conversation_id: &str) -> Result<i64, String> {
     let (session, label, model): (Option<String>, Option<String>, Option<String>) = conn
@@ -6869,13 +6869,11 @@ fn row_kind(said: Option<&str>) -> &'static str {
 /// is a SUM of a few tens of thousands of tiny rows, run as a turn settles and
 /// once when the day rolls; an index would cost a migration to save a fraction
 /// of a millisecond.
-#[tauri::command]
-pub fn spend_since(store: tauri::State<'_, Store>, since: i64) -> Result<f64, String> {
-    let conn = store.0.lock().unwrap();
-    spend_row(&conn, since)
-}
-
-/// The statement itself, so it can be tested without a Tauri app.
+///
+/// **Not a command of its own any more.** `spend_fundings` answers this figure
+/// and the breakdown that splits it in one read, so a turn settling between two
+/// commands cannot leave the two disagreeing (§21). This is the statement under
+/// both, kept apart so it can be tested without a Tauri app.
 ///
 /// **Every `kind` of row, and that is not an omission.** `migrate_v25` split
 /// turns from money-with-no-turn-behind-it, and it is tempting to read this
@@ -6908,6 +6906,86 @@ fn spend_row(conn: &Connection, since: i64) -> Result<f64, String> {
         |r| r.get(0),
     )
     .map_err(|e| e.to_string())
+}
+
+/// One funding's share of the day (§21).
+///
+/// **The label is the only vocabulary.** `@credits` is Anthropic's credits, any
+/// other `@`-prefixed label is a provider sentinel (`providers.md`), and
+/// anything else is a subscription. The kind is not sent, because the front end
+/// already has `fundings.ts::fundingOf` and two spellings of that rule is two
+/// answers to one question.
+#[derive(Debug, Serialize)]
+pub struct FundingSpend {
+    pub label: String,
+    pub usd: f64,
+    /// Every kind of token: in, out, and both cache halves. A token total is a
+    /// statement about volume, and cache reads are most of this wall's volume.
+    pub tokens: i64,
+    pub turns: i64,
+}
+
+/// The day's figure and its breakdown, from one look at the table.
+#[derive(Debug, Serialize)]
+pub struct FundingDay {
+    pub usd: f64,
+    pub rows: Vec<FundingSpend>,
+}
+
+/// Ask the table what the day has cost, split by who paid (§21).
+///
+/// **The total and the breakdown are one read**, and that is the point rather
+/// than a saving. They were two commands taken one after the other, so a turn
+/// settling between them gave a breakdown that did not add up to the figure it
+/// is captioned as splitting, for exactly one pass. Here the total is the sum of
+/// the groups, so the two cannot disagree.
+///
+/// `async` on `off_main` for `store::spend_since`'s reason one line up: a
+/// blocking command runs on the main thread, which is the thread that paints
+/// every card. The table is one row per settled turn and the work is a scan, but
+/// a scan of an unbounded table is not something to do where a paint waits.
+#[tauri::command]
+pub async fn spend_fundings(
+    app: tauri::AppHandle,
+    since: i64,
+) -> Result<FundingDay, String> {
+    crate::off_main(move || {
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        let rows = spend_funding_rows(&conn, since)?;
+        let usd = rows.iter().map(|r| r.usd).sum();
+        Ok(FundingDay { usd, rows })
+    })
+    .await?
+}
+
+/// The statement under both the command and the test. LARGEST SPEND FIRST, then
+/// label, so a breakdown is read from the top and two runs of the same day are
+/// ordered the same.
+fn spend_funding_rows(conn: &Connection, since: i64) -> Result<Vec<FundingSpend>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(account_label, ''), COALESCE(SUM(usd), 0),
+                    COALESCE(SUM(in_tokens + out_tokens + cache_read_tokens + cache_write_tokens), 0),
+                    COUNT(*)
+               FROM turn
+              WHERE ended_at >= ?1 AND ended_at IS NOT NULL
+              GROUP BY 1
+              ORDER BY 2 DESC, 1 ASC",
+        )
+        .map_err(|e| format!("spend: fundings: {e}"))?;
+    let rows = stmt
+        .query_map(params![since], |r| {
+            Ok(FundingSpend {
+                label: r.get(0)?,
+                usd: r.get(1)?,
+                tokens: r.get(2)?,
+                turns: r.get(3)?,
+            })
+        })
+        .map_err(|e| format!("spend: fundings: {e}"))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("spend: fundings: {e}"))
 }
 
 /// One card's visit to one file.
@@ -7102,8 +7180,8 @@ pub fn session_of(conn: &Connection, id: &str) -> Option<(String, Option<String>
 
 /// The same sum, for a caller that already holds the lock.
 ///
-/// `spend_since` is the command and takes its cutoff from the front end, which
-/// is where the timezone lives (see the note there). `limits::do_allowance` is
+/// `spend_fundings` is the command and takes its cutoff from the front end,
+/// which is where the timezone lives (see the note there). `limits::do_allowance` is
 /// not the front end and has no timezone, so it asks for a rolling window
 /// instead — which is why this is exposed rather than the command being called
 /// from Rust with a guessed midnight.
@@ -12995,6 +13073,67 @@ mod tests {
             spend_row(&conn, 900).unwrap(),
             0.0,
             "a day with nothing in it yet is zero, not an error"
+        );
+    }
+
+    /// The day, split by who paid (§21): one row per funding, its sum the
+    /// figure the title bar draws, and a turn still open excluded because it has
+    /// no reported cost yet.
+    #[test]
+    fn the_days_spend_splits_by_funding_and_still_adds_up() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        let row = |at: i64, label: Option<&str>, usd: f64, tok: i64| {
+            conn.execute(
+                "INSERT INTO turn (conversation_id, opened_at, ended_at, status_tier,
+                                   in_tokens, out_tokens, cache_read_tokens, cache_write_tokens,
+                                   usd, account_label)
+                 VALUES ('c1', ?1, ?1, 'rest', ?2, 0, 0, 0, ?3, ?4)",
+                params![at, tok, usd, label],
+            )
+            .unwrap();
+        };
+        /* Two plan turns on the same account, one on each kind of credit, one
+           the label-less sign-in, one before the cutoff and one with no end. */
+        row(100, Some("lyss"), 2.0, 10);
+        row(150, Some("lyss"), 1.0, 5);
+        row(200, Some("@credits"), 1.5, 20);
+        row(250, Some("@deepseek"), 5.0, 30);
+        row(300, None, 0.25, 7);
+        row(50, Some("lyss"), 9.0, 1_000);
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, status_tier, usd, account_label)
+             VALUES ('c1', 400, 'work', 9.0, 'lyss')",
+            [],
+        )
+        .unwrap();
+
+        let rows = spend_funding_rows(&conn, 100).unwrap();
+        let got: Vec<(&str, f64, i64, i64)> = rows
+            .iter()
+            .map(|r| (r.label.as_str(), r.usd, r.tokens, r.turns))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("@deepseek", 5.0, 30, 1),
+                ("lyss", 3.0, 15, 2),
+                ("@credits", 1.5, 20, 1),
+                ("", 0.25, 7, 1),
+            ],
+            "largest spend first; a NULL label is the sign-in, not a reason to lose the row"
+        );
+
+        let sum: f64 = rows.iter().map(|r| r.usd).sum();
+        assert_eq!(
+            (sum * 100.0).round(),
+            (spend_row(&conn, 100).unwrap() * 100.0).round(),
+            "the breakdown and the total are the same rows"
         );
     }
 

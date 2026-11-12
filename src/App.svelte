@@ -252,6 +252,7 @@
   import { CHORDS, actsOnWall, cardChordStay, mayLead, type Verb as ChordVerb } from "./lib/leader";
   import { fleetRate, rateAt } from "./lib/rate";
   import type { FleetReading } from "./lib/analyticstiles";
+  import { fundingLine } from "./lib/fundings";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
@@ -5428,6 +5429,21 @@
       : [],
   );
 
+  /** What the day's figure is made of, for its tooltip (§21).
+   *
+   *  **The breakdown is the whole of what the figure is a sum of**, read off the
+   *  same `turn` rows by `spend_fundings`, so it cannot disagree with the number
+   *  above it; a failed read says so instead of describing a day that cost
+   *  nothing. The percentages are not here: they are the account's and the
+   *  exchange needs the samples, which the room (one click away) reads. */
+  const spendTitle = $derived.by(() => {
+    const held = `${skein.heldTokens.toLocaleString()} tokens held across the wall`;
+    const rows = skein.fundings;
+    if (rows === null) return `spent today · the funding breakdown could not be read · ${held}`;
+    if (rows.length === 0) return `spent today · nothing has settled yet · ${held}`;
+    return `spent today, by funding · ${fundingLine(rows)} · click for tokens and allowance windows (space then b d opens the room) · ${held}`;
+  });
+
   /** Every text in the bar that has a width, joined — so the fold is recomputed
    *  when a label changes and not only when the window is dragged. None of
    *  these change the bar's own size, so the observer below would never hear
@@ -5746,11 +5762,16 @@
       </span>
     {:else if key === "spend"}
       <!-- Dated in the tooltip, because a day's spend and a session's are the
-           same six characters and only one of them survives a restart. -->
-      <span
+           same six characters and only one of them survives a restart, and
+           split by funding (§21) because the figure is what several purses add
+           up to. The click is the room: the tokens and the allowance windows
+           are readings of the same day, one layer down. -->
+      <button
+        type="button"
         class="spend"
-        title="spent today · {skein.heldTokens.toLocaleString()} tokens held across the wall"
-        >${skein.spend.toFixed(2)}</span
+        title={spendTitle}
+        onclick={mute ? undefined : () => openAnalytics(undefined, "spend")}
+        >${skein.spend.toFixed(2)}</button
       >
     {:else if key === "live"}
       <span class="livecount">{skein.live} live</span>
@@ -6063,6 +6084,7 @@
       fleet={fleetReadings}
       now={clock.t}
       {ledger}
+      fundings={() => skein.fundings}
       names={cardNames}
       onpin={pinAnalyticsView}
       onclose={() => {
@@ -6838,6 +6860,17 @@
     font-size: 0.68rem;
     color: var(--paper-mute);
     font-variant-numeric: tabular-nums;
+    /* A button so the figure is reachable by Tab and opens the room, but it
+       must read as the same quiet figure it always was. */
+    background: none;
+    border: 0;
+    padding: 0 2px;
+    margin: 0;
+    line-height: inherit;
+    cursor: pointer;
+  }
+  .spend:hover {
+    color: var(--paper);
   }
   .livecount {
     font-family: var(--util);

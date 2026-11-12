@@ -6146,7 +6146,7 @@ pub const PROMPT_ROW_CAP: usize = 10_000;
 /// The prompts said in `[from, to)`, oldest first.
 ///
 /// **The window is the caller's.** A day is a timezone and Rust does not know
-/// where midnight is (`usage.md`'s argument for `spend_since`), so the front end
+/// where midnight is (`usage.md`'s argument for the day's cutoff), so the front end
 /// passes its own bounds; a local day is 23 or 25 hours twice a year, and only
 /// the front end can compute that. The trace lane decides whether it wants a
 /// local day, a UTC one, or something else entirely.

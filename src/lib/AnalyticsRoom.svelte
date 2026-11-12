@@ -43,8 +43,10 @@
   import { count } from "./usage";
   import type { Bucket } from "./analytics";
   import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
+  import AnalyticsFundings from "./AnalyticsFundings.svelte";
   import type { CardLife } from "./analyticslife";
   import type { StripTile } from "./analyticstiles";
+  import type { Exchange, FundingReading } from "./fundings";
 
   let {
     window: win,
@@ -55,6 +57,7 @@
     title,
     bucket,
     strip,
+    funding,
     card,
   }: {
     /** The window that came back. Its bounds are the axis; its rows are not
@@ -74,6 +77,10 @@
     /** The live strip's five tiles (§11.1), folded by the shell from the window,
      *  the allowance samples and the flyway's readings. */
     strip: readonly StripTile[];
+    /** The day split by who paid (§21): the title bar's figure, the account's
+     *  windows, and the exchange between them. `readings` is null when that read
+     *  failed, which the block says in words. */
+    funding: { readings: readonly FundingReading[] | null; exchange: readonly Exchange[] };
     /** A card opened from its own row or `<space> n a` (§11.10). It is the
      *  inspector's first block, above the bucket, because the room has exactly
      *  one column on the right and two panels called inspector is one too
@@ -287,6 +294,8 @@
       </div>
     {/each}
   </div>
+
+  <AnalyticsFundings readings={funding.readings} exchange={funding.exchange} />
 
   <div class="an-main" class:with-card={!!card}>
 <section class="an-canvas" aria-label={table ? "the window as a table" : "the window over time"} tabindex="-1" bind:this={canvas}>

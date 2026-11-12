@@ -22,6 +22,7 @@ import type { SessionFact } from "./analyticsbehaviour";
 import type { CardLife, LifeSpend } from "./analyticslife";
 import type { LifeReader } from "./analyticsliferead.svelte";
 import type { AllowanceCost, AllowanceSample } from "./allowancesamples";
+import type { FundingRow } from "./fundings";
 import type {
   CardSpendRow,
   InvalidateRow,
@@ -1301,11 +1302,14 @@ export function fixtureLife(mode: FixtureMode = "normal"): LifeReader {
 
 /** Two accounts' windows, over the last eight days and up to now.
  *
- * The states the strip has to tell apart: **one current instance** with a reset
- * inside the day, **a rolled one behind it** which must contribute no delta, and
- * **a weekly window on another account**, so the binding tile is a choice
- * between two rather than the only number there is. Sources alternate so the
- * sample list carries all three doors.
+ * The states the strip has to tell apart: **one session instance that ended at
+ * its own reset** (90 points, which the day keeps), **the current one behind it**
+ * (68 points, so the last day is 158% of the five-hour allowance and the block
+ * can be seen saying so), and **a weekly window on each account**, so the binding
+ * tile is a choice between accounts rather than the only number there is. The
+ * stamps are stable inside an instance and move only at the reset: a fixture
+ * that drifts one is a fixture that loses the delta it meant to sum.
+ * Sources alternate so the sample list carries all three doors.
  */
 export function fixtureAllowanceSamples(from: number, to: number): AllowanceSample[] {
   const now = Math.min(to, Date.now());
@@ -1332,23 +1336,52 @@ export function fixtureAllowanceSamples(from: number, to: number): AllowanceSamp
       source,
     });
   };
-  /* The session window: the current instance rises over the last eight hours,
-     and the one before it ended at its own reset. */
-  const sessionReset = now + 2 * HOUR;
-  for (let i = 0; i < 24; i++) {
-    const at = now - (23 - i) * 20 * MINUTE;
-    push(at, "lyss", "session", 6 + i * 2.3, sessionReset, i % 5 === 0 ? "stream" : "poll");
+  /* The five-hour window, twice today. The first instance fills and is given
+     back at its reset; the second is the one the wall is in now. */
+  const firstReset = now - 4 * HOUR;
+  const first = [0, 18, 40, 63, 90];
+  for (let i = 0; i < first.length; i++) {
+    push(now - 9 * HOUR + i * (5 * HOUR) / (first.length - 1), "lyss", "session", first[i], firstReset);
   }
-  const oldReset = now - 3 * HOUR;
-  for (let i = 0; i < 6; i++) {
-    push(now - 8 * HOUR + i * 50 * MINUTE, "lyss", "session", 62 + i * 0.4, oldReset, "poll");
+  const sessionReset = now + 1.2 * HOUR;
+  const second = [0, 9, 22, 35, 47, 58, 68];
+  for (let i = 0; i < second.length; i++) {
+    push(
+      now - 3.5 * HOUR + (i * 3.5 * HOUR) / (second.length - 1),
+      "lyss",
+      "session",
+      second[i],
+      sessionReset,
+      i % 3 === 0 ? "stream" : "poll",
+    );
   }
-  /* The week, on the other account: slower, and it resets in four days. */
+  /* The week, on each account: slower, and it resets days out. */
+  const lyssWeek = now + 1 * 24 * HOUR;
+  const lyssWeekAt = [34, 35.2, 36.5, 38.4, 40, 41, 41.6];
+  for (let i = 0; i < lyssWeekAt.length; i++) {
+    push(now - 6 * 24 * HOUR + i * 24 * HOUR, "lyss", "weekly_all", lyssWeekAt[i], lyssWeek);
+  }
   const weekReset = now + 4 * 24 * HOUR;
   for (let i = 0; i < 16; i++) {
-    push(now - (15 - i) * 12 * HOUR, "tx-team", "weekly_all", 40 + i * 0.4, weekReset, i === 0 ? "peer" : "poll");
+    push(
+      now - (15 - i) * 12 * HOUR,
+      "tx-team",
+      "weekly_all",
+      40 + i * 0.4,
+      weekReset,
+      i === 0 ? "peer" : "poll",
+    );
   }
   return out.sort((a, b) => a.at - b.at);
+}
+
+/** The day's turns, grouped by funding, for the preview's block (§21). */
+export function fixtureFundings(): FundingRow[] {
+  return [
+    { label: "@deepseek", kind: "provider", usd: 50, tokens: 2_100_000, turns: 11 },
+    { label: "@credits", kind: "credits", usd: 40, tokens: 860_000, turns: 6 },
+    { label: "lyss", kind: "plan", usd: 30, tokens: 1_240_000, turns: 18 },
+  ];
 }
 
 /** The flyway's two readings, for the preview's strip. */

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   allowanceResidual,
   asAllowanceSamples,
+  attributedCostOf,
   bindingOf,
   costBucketsOf,
   daySpend,
@@ -147,6 +148,34 @@ describe("attributing the delta", () => {
     expect(spans.length).toBe(1);
     expect(spans[0].delta).toBe(10);
     expect(spans[0].facts[0].cost).toBeCloseTo(1, 10);
+  });
+
+  test("the exchange rate's dollar side is only this account's own facts", () => {
+    const at = NOW - HOUR;
+    const instances = instancesOf([
+      sample({ kind: "weekly_all", at, used: 10 }),
+      sample({ kind: "weekly_all", at: at + FINE_BUCKET_MS, used: 30 }),
+    ]);
+    const exchange = attributedCostOf(
+      instances,
+      [bucket(at, "lyss", 3), bucket(at, "tx-team", 7)],
+      "lyss",
+      "weekly_all",
+    )!;
+    expect(exchange.delta).toBe(20);
+    expect(exchange.cost).toBeCloseTo(3);
+    /* Twenty points cost $3 of modelled work, so one point is fifteen cents. */
+    expect(exchange.cost / exchange.delta).toBeCloseTo(0.15);
+  });
+
+  test("a window that did not move has no exchange rate, and so does a sentinel", () => {
+    const at = NOW - HOUR;
+    const still = instancesOf([
+      sample({ kind: "weekly_all", at, used: 10 }),
+      sample({ kind: "weekly_all", at: at + FINE_BUCKET_MS, used: 10 }),
+    ]);
+    expect(attributedCostOf(still, [bucket(at, "lyss", 3)], "lyss", "weekly_all")).toBeNull();
+    expect(attributedCostOf(still, [bucket(at, "@deepseek", 3)], "@deepseek", "weekly_all")).toBeNull();
   });
 
   test("another account's facts are not in this account's denominator", () => {

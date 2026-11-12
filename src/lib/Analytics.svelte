@@ -69,6 +69,13 @@
     type AllowanceCost,
     type AllowanceSample,
   } from "./allowancesamples";
+  import {
+    exchangesOf,
+    fundingReadings,
+    type Exchange,
+    type FundingReading,
+    type FundingRow,
+  } from "./fundings";
   import { stripModel, weekResidual, type FleetReading } from "./analyticstiles";
   import { anonymizeReport, reportModel } from "./analyticsreport";
   import { writeReportFile } from "./analyticsreport.svelte";
@@ -128,7 +135,7 @@
   } from "./analyticswork";
   import { MEASURES, spanMsOf, type ViewSpec } from "./analytics";
   import type { PromptReader, SurfaceTab } from "./analyticstrace";
-  import { count } from "./usage";
+  import { count, dayStart } from "./usage";
   import { view } from "./view.svelte";
 
   let {
@@ -139,6 +146,7 @@
     life,
     samples,
     costs,
+    fundings,
     fleet = null,
     now = 0,
     ledger = null,
@@ -169,6 +177,12 @@
     samples?: AllowanceReader;
     /** The fine-tier cost read behind the residual, or a fixture. */
     costs?: CostReader;
+    /** The day's settled turns, grouped by who paid (§21). An accessor rather
+     *  than a read of this room's own: the same rows the title bar's figure
+     *  is drawn from, refreshed by the wall on every settled turn and on the
+     *  day's roll. A second read here is how the block came to disagree with
+     *  the figure it is captioned as splitting. */
+    fundings?: () => readonly FundingRow[] | null;
     /** The flyway's readings for the strip, from the shell. Null where there is
      *  no roster to read (the browser preview). */
     fleet?: FleetReading | null;
@@ -414,6 +428,9 @@
   const SAMPLE_DAYS = 8;
   let sampleRows = $state<AllowanceSample[] | null>(null);
   let costRows = $state<AllowanceCost[] | null>(null);
+  /** The day's settled turns, grouped by who paid (§21), read straight off the
+   *  wall. `null` is a read that failed and the block words it. */
+  const fundingRows = $derived(fundings ? fundings() : null);
   /* The first instant the last read reached, which is what decides whether
      "yesterday" is a whole day rather than part of one. */
   let sampleFrom = $state(0);
@@ -435,7 +452,10 @@
     const from = now - SAMPLE_DAYS * 86_400_000;
     /* The two reads fail apart: a residual that cannot be priced must not take
        the binding window down with it, and each tile says which it was. */
-    const [points, costs] = await Promise.allSettled([sampleReader(from, now), costReader(from, now)]);
+    const [points, costs] = await Promise.allSettled([
+      sampleReader(from, now),
+      costReader(from, now),
+    ]);
     if (mine !== sampleGen) return;
     sampleFrom = from;
     sampleRows = points.status === "fulfilled" ? points.value : null;
@@ -665,6 +685,26 @@
       now: at,
       fleet,
     }),
+  );
+
+  /* The day, split by who paid (§21). Joined here, once, rather than in the
+     block: the percentages are the samples' and the money is the turn table's,
+     and doing that join in a drawing would be a second place to get the two
+     scopes wrong.
+     **The joining instant is quantised to the minute**, which is the only
+     resolution any input changes at: the samples are a poll, the money changes
+     when a turn settles, and `at` ticks every second. Reading `at` directly made
+     the exchange rate — a spans-times-buckets fold — re-run once a second for a
+     reading that had not moved, on the thread that paints every card (`week` is
+     quantised for the same reason). */
+  const fundAt = $derived(Math.floor(at / 60_000) * 60_000);
+  const fundingRowsToday = $derived(
+    fundingRows === null
+      ? null
+      : fundingReadings(fundingRows, instances, dayStart(fundAt), fundAt),
+  );
+  const fundingExchange = $derived(
+    fundingRowsToday === null ? [] : exchangesOf(instances, costBuckets ?? [], fundingRowsToday),
   );
 
   const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
@@ -1466,6 +1506,7 @@
         title={`${spanSaid} · ${measureSaid}${split ? ` · ${splitSaid}` : ""}`}
         bucket={bucket}
         strip={strip ?? []}
+        funding={{ readings: fundingRowsToday, exchange: fundingExchange }}
         card={card && cardInRoom ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard } : undefined}
       />
     {:else}

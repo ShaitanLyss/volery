@@ -1043,7 +1043,7 @@ pub fn run() {
             store::open_turn,
             supervisor::abandon_turn,
             store::record_turn,
-            store::spend_since,
+            store::spend_fundings,
             store::record_file_touch,
             store::overlapping_conversations,
             store::files_handled_by,
