@@ -4235,13 +4235,29 @@ fn write_tail(
         .map_err(|e| format!("analytics: prune work: {e}"))?;
     tx.execute("DELETE FROM analytics_fold WHERE at < ?1", [cutoff])
         .map_err(|e| format!("analytics: prune folds: {e}"))?;
-    /* The invalidation fine tier keeps the same ninety days. The walk mark is
-       not pruned on that clock: it is a fact about a file rather than about a
-       moment, and forgetting it would re-read an old transcript. It is pruned
-       to the files that still exist, under the same "a walk that could not
-       read the root reports nothing" guard the offsets use. */
-    tx.execute("DELETE FROM invalidate_fact WHERE at < ?1", [cutoff])
-        .map_err(|e| format!("analytics: prune invalidation: {e}"))?;
+    /* The invalidation fine tier keeps the same ninety days, **except the move
+       receipts**: an account, provider or model change is a card's history
+       rather than a moment, the same distinction `analytics_session` and the
+       walk mark make. A card's page draws its change timeline from them
+       (§11.10), and one pruned at ninety days would say a card that swapped
+       accounts last spring never did. They are bounded by a person's gestures,
+       not by requests, so the rows kept are a fraction of the writes beside
+       them.
+       **A receipt only.** `attribute` writes one `attributed` row per paying
+       card per switch, of the same kind, and that is a measurement of one
+       turn's excess rather than the card's history; it prunes with the rest.
+       The walk mark is not pruned on that clock either: it is a fact about a
+       file rather than about a moment, and forgetting it would re-read an old
+       transcript. It is pruned to the files that still exist, under the same
+       "a walk that could not read the root reports nothing" guard the offsets
+       use. */
+    tx.execute(
+        "DELETE FROM invalidate_fact
+          WHERE at < ?1
+            AND NOT (provenance = 'receipt' AND kind IN ('account', 'provider', 'model'))",
+        [cutoff],
+    )
+    .map_err(|e| format!("analytics: prune invalidation: {e}"))?;
     if !alive.is_empty() {
         let known: Vec<String> = {
             let mut stmt = tx
@@ -6429,6 +6445,37 @@ pub struct SessionFact {
 
 pub const SESSION_FACT_CAP: usize = 20_000;
 
+/// One `analytics_session` row off a reader, in the column order both queries
+/// below select. Shared so a card's life and a window cannot disagree about
+/// what a session row is.
+fn session_at(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionFact> {
+    Ok(SessionFact {
+        session: r.get(0)?,
+        host: r.get(1)?,
+        project: r.get(2)?,
+        source: r.get(3)?,
+        card: r.get(4)?,
+        parent_card: r.get(5)?,
+        opened_by: r.get(6)?,
+        branch: r.get(7)?,
+        started_at: r.get(8)?,
+        ended_at: r.get(9)?,
+        cli_min: r.get(10)?,
+        cli_max: r.get(11)?,
+        account_first: r.get(12)?,
+        account_last: r.get(13)?,
+        provider_first: r.get(14)?,
+        provider_last: r.get(15)?,
+        turns: r.get(16)?,
+    })
+}
+
+const SESSION_COLUMNS: &str =
+    "session, host, project, source, COALESCE(card_id, ''),
+     COALESCE(parent_card, ''), opened_by, branch, started_at, ended_at,
+     COALESCE(cli_min, ''), COALESCE(cli_max, ''),
+     account_first, account_last, provider_first, provider_last, turns";
+
 /// Sessions that overlap the window, not only those that started inside it:
 /// a card working at the window's edge belongs to whatever the window counts,
 /// and `started_at < to AND coalesce(ended_at, to) > from` is the same overlap
@@ -6446,39 +6493,16 @@ pub fn session_fact_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<Se
         ));
     }
     let mut stmt = conn
-        .prepare(
-            "SELECT session, host, project, source, COALESCE(card_id, ''),
-                    COALESCE(parent_card, ''), opened_by, branch, started_at, ended_at,
-                    COALESCE(cli_min, ''), COALESCE(cli_max, ''),
-                    account_first, account_last, provider_first, provider_last, turns
+        .prepare(&format!(
+            "SELECT {SESSION_COLUMNS}
                FROM analytics_session
               WHERE started_at < ?2 AND COALESCE(ended_at, ?2) > ?1
               ORDER BY started_at
-              LIMIT ?3",
-        )
+              LIMIT ?3"
+        ))
         .map_err(|e| format!("analytics: sessions: {e}"))?;
     let rows = stmt
-        .query_map(params![from, to, SESSION_FACT_CAP as i64 + 1], |r| {
-            Ok(SessionFact {
-                session: r.get(0)?,
-                host: r.get(1)?,
-                project: r.get(2)?,
-                source: r.get(3)?,
-                card: r.get(4)?,
-                parent_card: r.get(5)?,
-                opened_by: r.get(6)?,
-                branch: r.get(7)?,
-                started_at: r.get(8)?,
-                ended_at: r.get(9)?,
-                cli_min: r.get(10)?,
-                cli_max: r.get(11)?,
-                account_first: r.get(12)?,
-                account_last: r.get(13)?,
-                provider_first: r.get(14)?,
-                provider_last: r.get(15)?,
-                turns: r.get(16)?,
-            })
-        })
+        .query_map(params![from, to, SESSION_FACT_CAP as i64 + 1], session_at)
         .map_err(|e| format!("analytics: sessions: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("analytics: sessions: {e}"))?;
@@ -6497,6 +6521,196 @@ pub async fn session_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<Ses
         let store = app.state::<Store>();
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
         session_fact_rows(&conn, from, to)
+    })
+    .await?
+}
+
+/* ── a card's life (§11.10) ────────────────────────────────────────────────*/
+
+/// One `(session, account, provider, model)` group of a card's spend.
+///
+/// Built by `spend::payer_split`, which is where the fold lives: the
+/// `prefer_transcript` rule that stops a backfilled turn day and the transcript
+/// facts over the same hour being added twice is that module's, and a second
+/// copy of it here would be a second answer to one question.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifeSpend {
+    pub session: String,
+    pub account: String,
+    pub provider: String,
+    pub model: String,
+    /// The first and last request under this funding and model. The bar reads
+    /// the sums; the change timeline reads the instants.
+    pub first_at: i64,
+    pub last_at: i64,
+    pub in_tok: i64,
+    pub out_tok: i64,
+    pub cache_read: i64,
+    pub write_5m: i64,
+    pub write_1h: i64,
+    pub requests: i64,
+    /// Modelled dollars at each fact's own instant (`pricing.json`); null only
+    /// when this build cannot read the table.
+    pub usd: Option<f64>,
+    /// Tokens on a model the table does not know: counted, never priced as 0.
+    pub unpriced: i64,
+}
+
+/// A move of account, provider or model, as a card's change timeline reads it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifeMove {
+    pub at: i64,
+    pub kind: String,
+    pub reference: String,
+}
+
+/// Everything a card's page draws, in one read.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardLife {
+    pub card: String,
+    pub label: String,
+    /// The session it is on now, and the funding and model its row carries —
+    /// the chip at the top, never the caption of the total (§11.10).
+    pub now_session: String,
+    pub now_account: String,
+    pub now_model: String,
+    /// Every session `analytics_session` attributes to this card, oldest first.
+    pub sessions: Vec<SessionFact>,
+    pub spend: Vec<LifeSpend>,
+    pub moves: Vec<LifeMove>,
+    /// The CLI's own reported cost over this card's settled turns, all time.
+    /// The `turn` table is not pruned, so this figure is the card's whole life.
+    pub usd_reported: f64,
+    pub turns: i64,
+    /// The oldest `usage_fact` this wall still holds. When the card was born
+    /// before it, the token totals and the split cover only what survived the
+    /// fine tier's ninety days, and the page says so rather than drawing a
+    /// lifetime bar over a recent window.
+    pub facts_from: i64,
+}
+
+pub const LIFE_MOVE_CAP: usize = 2_000;
+pub const LIFE_SPEND_CAP: usize = 4_000;
+
+/// A card's whole life: its sessions, who paid for what, when it moved, and
+/// what it cost. **Not windowed on the surface's span** — a card is a history,
+/// and a page fed by the current span would redraw the card whenever you
+/// widened a chart.
+pub fn card_life_rows(conn: &Connection, card: &str) -> Result<CardLife, String> {
+    if card.trim().is_empty() {
+        return Err("analytics: a card's life needs a card".into());
+    }
+    let (label, now_session, now_account, now_model) = conn
+        .query_row(
+            "SELECT COALESCE(title, ''), COALESCE(agent_session_id, ''),
+                    COALESCE(account_label, ''), COALESCE(model, '')
+               FROM conversation WHERE id = ?1",
+            [card],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| format!("analytics: card: {e}"))?
+        .unwrap_or_default();
+
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {SESSION_COLUMNS}
+               FROM analytics_session
+              WHERE card_id = ?1
+              ORDER BY started_at
+              LIMIT ?2"
+        ))
+        .map_err(|e| format!("analytics: card sessions: {e}"))?;
+    let sessions = stmt
+        .query_map(params![card, SESSION_FACT_CAP as i64 + 1], session_at)
+        .map_err(|e| format!("analytics: card sessions: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: card sessions: {e}"))?;
+    if sessions.len() > SESSION_FACT_CAP {
+        return Err(format!(
+            "analytics: this card holds more than {SESSION_FACT_CAP} sessions, which is more than \
+             a page can draw"
+        ));
+    }
+    drop(stmt);
+
+    let spend = crate::spend::payer_split(conn, card)?;
+    if spend.len() > LIFE_SPEND_CAP {
+        return Err(format!(
+            "analytics: this card has spend under more than {LIFE_SPEND_CAP} account, provider \
+             and model groupings, which is more than the page can draw"
+        ));
+    }
+
+    /* Moves only, and only receipts: an `attributed` row is one paying card's
+       excess at the same instant, not a transition of this card. The move rows
+       are kept past the fine tier's ninety days by the retention tail in
+       `write_tail`, so a card's history does not lose its turns in the middle. */
+    let mut stmt = conn
+        .prepare(
+            "SELECT at, kind, ref FROM invalidate_fact
+              WHERE card = ?1 AND provenance = 'receipt'
+                AND kind IN ('account', 'provider', 'model')
+              ORDER BY at, kind
+              LIMIT ?2",
+        )
+        .map_err(|e| format!("analytics: card moves: {e}"))?;
+    let moves = stmt
+        .query_map(params![card, LIFE_MOVE_CAP as i64 + 1], |r| {
+            Ok(LifeMove {
+                at: r.get(0)?,
+                kind: r.get(1)?,
+                reference: r.get(2)?,
+            })
+        })
+        .map_err(|e| format!("analytics: card moves: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("analytics: card moves: {e}"))?;
+    if moves.len() > LIFE_MOVE_CAP {
+        return Err(format!(
+            "analytics: this card has moved more than {LIFE_MOVE_CAP} times, which is more than a \
+             timeline can draw"
+        ));
+    }
+    drop(stmt);
+
+    let (turns, usd_reported): (i64, f64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(usd), 0) FROM turn
+              WHERE conversation_id = ?1 AND ended_at IS NOT NULL",
+            [card],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("analytics: card turns: {e}"))?;
+
+    let facts_from: i64 = conn
+        .query_row("SELECT COALESCE(MIN(at), 0) FROM usage_fact", [], |r| r.get(0))
+        .map_err(|e| format!("analytics: facts: {e}"))?;
+
+    Ok(CardLife {
+        card: card.to_string(),
+        label,
+        now_session,
+        now_account,
+        now_model,
+        sessions,
+        spend,
+        moves,
+        usd_reported,
+        turns,
+        facts_from,
+    })
+}
+
+#[tauri::command]
+pub async fn card_life(app: AppHandle, card: String) -> Result<CardLife, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        card_life_rows(&conn, &card)
     })
     .await?
 }
@@ -8905,6 +9119,128 @@ mod tests {
         assert_eq!(open.ended_at, None, "an open session travels as no end, not a made-up one");
         assert_eq!((open.provider_first.as_str(), open.provider_last.as_str()), ("anthropic", "deepseek"));
         assert!(session_fact_rows(&conn, 7_000, 5_000).is_err(), "a backwards window is refused");
+    }
+
+    /// A card's page reads four things that must not leak into each other: its
+    /// own sessions (not another card's), its own spend grouped by who paid,
+    /// its own moves (not the writes beside them, not attributed excess), and
+    /// its settled turns only.
+    #[test]
+    fn a_cards_life_is_its_own_sessions_spend_moves_and_reported_cost() {
+        let conn = db();
+        let card = seed(&conn, "s1");
+        let other = seed(&conn, "s9");
+        conn.execute(
+            "UPDATE conversation SET title = 'agent audit', account_label = '@deepseek',
+                    model = 'deepseek-chat' WHERE id = ?1",
+            [&card],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO analytics_session
+               (session, host, project, source, card_id, opened_by, started_at, ended_at, turns)
+             VALUES ('s1','home','volery','card',?1,'person',1000,2000,2),
+                    ('s2','home','volery','card',?1,'person',3000,NULL,1),
+                    ('sx','home','volery','card',?2,'person',1500,2500,9)",
+            params![card, other],
+        )
+        .unwrap();
+        /* Two requests under one model in one session, one under another model
+           in the second session, and one belonging to another card: the split
+           must fold the first two and leave the fourth out. */
+        conn.execute(
+            "INSERT INTO usage_fact
+               (at, host, session, model, source, account, provider, project,
+                in_tok, out_tok, requests)
+             VALUES (1100,'home','s1','claude-opus-5-5','card','lyss','anthropic','volery',100,10,1),
+                    (1200,'home','s1','claude-opus-5-5','card','lyss','anthropic','volery',50,5,1),
+                    (3100,'home','s2','deepseek-chat','card','@deepseek','deepseek','volery',7,3,1),
+                    (1600,'home','sx','claude-opus-5-5','card','lyss','anthropic','volery',999,999,9)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO invalidate_fact (at, host, session, card, kind, ref, tree, affected, provenance)
+             VALUES (1500,'home','s1',?1,'account','tx-team','/w',1,'receipt'),
+                    (1550,'home','s1',?1,'write','a.rs','/w',1,'receipt'),
+                    (1600,'home','s1',?1,'model','claude-opus-5-5','/w',1,'attributed'),
+                    (1700,'home','sx',?2,'provider','deepseek','/w',1,'receipt')",
+            params![card, other],
+        )
+        .unwrap();
+        settled_turn(&conn, &card, "s1", 1000, 2000, 0.25);
+        conn.execute(
+            "INSERT INTO turn (conversation_id, opened_at, status_tier, agent_session_id)
+             VALUES (?1, 3000, 'working', 's2')",
+            [&card],
+        )
+        .unwrap();
+
+        let life = card_life_rows(&conn, &card).unwrap();
+        assert_eq!(life.label, "agent audit");
+        assert_eq!((life.now_account.as_str(), life.now_model.as_str()), ("@deepseek", "deepseek-chat"));
+        assert_eq!(life.sessions.len(), 2, "the other card's session is not this card's life");
+        assert_eq!(life.spend.len(), 2, "two fundings, folded within each");
+        let first = life.spend.iter().find(|s| s.session == "s1").unwrap();
+        assert_eq!((first.in_tok, first.out_tok, first.requests), (150, 15, 2));
+        assert_eq!((first.first_at, first.last_at), (1_100, 1_200));
+        let second = life.spend.iter().find(|s| s.session == "s2").unwrap();
+        assert_eq!((second.in_tok, second.requests), (7, 1));
+        assert_eq!(life.moves.len(), 1, "a receipt move, not a write and not attributed excess");
+        assert_eq!((life.moves[0].kind.as_str(), life.moves[0].reference.as_str()), ("account", "tx-team"));
+        assert_eq!(life.turns, 1, "the open turn has not settled");
+        assert!((life.usd_reported - 0.25).abs() < 1e-12);
+        assert_eq!(life.facts_from, 1_100, "where the fine tier begins");
+    }
+
+    /// A card nobody has a row for is still answered — what the facts hold is
+    /// the answer — and a life read never invents a session to go with them.
+    #[test]
+    fn a_card_with_no_row_is_an_empty_life_not_an_error() {
+        let conn = db();
+        let life = card_life_rows(&conn, "gone").unwrap();
+        assert_eq!((life.sessions.len(), life.spend.len(), life.moves.len()), (0, 0, 0));
+        assert_eq!((life.label.as_str(), life.now_session.as_str()), ("", ""));
+        assert!(card_life_rows(&conn, "  ").is_err(), "a life with no card named is refused");
+    }
+
+    /// **A move receipt outlives the fine tier's ninety days.** An account,
+    /// provider or model change is a card's history; the writes beside it, and
+    /// the `attributed` measurement of one turn's excess, are moments. Both
+    /// live in the same table, so retention has to tell them apart.
+    #[test]
+    fn a_move_receipt_is_kept_past_the_ninety_days_the_rest_is_not() {
+        let mut conn = db();
+        let now = now_ms();
+        let old = now - FINE_KEEP_MS - 60_000;
+        conn.execute(
+            "INSERT INTO invalidate_fact (at, host, session, card, kind, ref, tree, affected, tokens, provenance)
+             VALUES (?1,'home','s','c1','account','tx-team','/w',1,0,'receipt'),
+                    (?1,'home','s','c1','provider','deepseek','/w',1,0,'receipt'),
+                    (?1,'home','s','c1','model','claude-opus-5-5','/w',1,0,'receipt'),
+                    (?1,'home','s','c1','instructions','CLAUDE.md','/w',1,0,'receipt'),
+                    (?1,'home','s','c2','account','tx-team','/w',2,900,'attributed')",
+            params![old],
+        )
+        .unwrap();
+        write_tail(&mut conn, &[], &HashSet::new(), now).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT kind FROM invalidate_fact WHERE provenance = 'receipt' ORDER BY kind")
+            .unwrap();
+        let left: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(left, vec!["account", "model", "provider"], "the three moves survived; the write did not");
+        let attributed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM invalidate_fact WHERE provenance = 'attributed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(attributed, 0, "an attributed row is a measurement, not the card's history");
     }
 
     #[test]

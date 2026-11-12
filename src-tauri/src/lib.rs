@@ -1176,6 +1176,7 @@ pub fn run() {
             analytics::tool_facts,
             analytics::tool_totals,
             analytics::session_facts,
+            analytics::card_life,
             analytics::work_facts,
             analytics::work_series,
             analytics::invalidate_facts,

@@ -630,6 +630,7 @@ struct Fact {
     parent_agent: String,
     depth: i64,
     model: String,
+    account: String,
     provider: String,
     provenance: String,
     input: i64,
@@ -744,7 +745,7 @@ fn facts(conn: &Connection, sessions: &[String], since: i64) -> Result<Vec<Fact>
     }
     let holes = vec!["?"; sessions.len()].join(",");
     let sql = format!(
-        "SELECT at, session, agent, parent_agent, depth, model, provider, provenance,
+        "SELECT at, session, agent, parent_agent, depth, model, account, provider, provenance,
                 in_tok, out_tok, cache_read, write_5m, write_1h, requests
            FROM usage_fact
           WHERE session IN ({holes}) AND at >= ?
@@ -765,14 +766,15 @@ fn facts(conn: &Connection, sessions: &[String], since: i64) -> Result<Vec<Fact>
                 parent_agent: r.get(3)?,
                 depth: r.get(4)?,
                 model: r.get(5)?,
-                provider: r.get(6)?,
-                provenance: r.get(7)?,
-                input: r.get(8)?,
-                output: r.get(9)?,
-                cache_read: r.get(10)?,
-                write_5m: r.get(11)?,
-                write_1h: r.get(12)?,
-                requests: r.get(13)?,
+                account: r.get(6)?,
+                provider: r.get(7)?,
+                provenance: r.get(8)?,
+                input: r.get(9)?,
+                output: r.get(10)?,
+                cache_read: r.get(11)?,
+                write_5m: r.get(12)?,
+                write_1h: r.get(13)?,
+                requests: r.get(14)?,
             })
         })
         .map_err(|e| format!("spend: facts: {e}"))?;
@@ -799,6 +801,100 @@ fn prefer_transcript(rows: Vec<Fact>) -> Vec<Fact> {
                 || !fine.contains(&(f.session.clone(), crate::analytics::hour_of(f.at)))
         })
         .collect()
+}
+
+/* ── a card's life, by who paid for it (§11.10) ────────────────────────────*/
+
+/// One `(session, account, provider, model)` group of a card's spend, with the
+/// instants the card was first and last billed under it.
+///
+/// **This is the card page's bar and its change timeline.** It is grouped here
+/// rather than in the front end because the rule that matters is
+/// `prefer_transcript`: a backfilled `turn` day and the transcript facts over
+/// the same hour must not be added into one figure, and that rule lives in
+/// this module. A reader asking for the groups gets them already deduped.
+///
+/// `usd` is modelled per fact at the fact's own instant through
+/// `pricing.json`, the one table both sides price from, so this figure and the
+/// surface's own `usd_modeled` agree. It is `None` only when this build cannot
+/// read the table; tokens on a model it does not know are counted in
+/// `unpriced` and never priced as zero.
+///
+/// **The groups are what the wall still holds**, not the card's whole life: the
+/// fine tier keeps ninety days (the `turn` table, which is where the all-time
+/// reported dollars come from, keeps everything). `analytics::card_life` reads
+/// the oldest fact on the wall beside this so the page can say when the split
+/// begins.
+pub(crate) fn payer_split(
+    conn: &Connection,
+    card: &str,
+) -> Result<Vec<crate::analytics::LifeSpend>, String> {
+    let current = card_row(conn, card).map(|r| r.session).unwrap_or_default();
+    let sessions = card_sessions(conn, card, &current)?;
+    if sessions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = prefer_transcript(facts(conn, &sessions, i64::MIN)?);
+    let have_book = book().is_some();
+    let mut groups: HashMap<(String, String, String, String), crate::analytics::LifeSpend> =
+        HashMap::new();
+    for f in &rows {
+        let key = (
+            f.session.clone(),
+            f.account.clone(),
+            f.provider.clone(),
+            f.model.clone(),
+        );
+        let g = groups.entry(key).or_insert_with(|| crate::analytics::LifeSpend {
+            session: f.session.clone(),
+            account: f.account.clone(),
+            provider: f.provider.clone(),
+            model: f.model.clone(),
+            first_at: f.at,
+            last_at: f.at,
+            in_tok: 0,
+            out_tok: 0,
+            cache_read: 0,
+            write_5m: 0,
+            write_1h: 0,
+            requests: 0,
+            usd: if have_book { Some(0.0) } else { None },
+            unpriced: 0,
+        });
+        g.first_at = g.first_at.min(f.at);
+        g.last_at = g.last_at.max(f.at);
+        g.in_tok += f.input;
+        g.out_tok += f.output;
+        g.cache_read += f.cache_read;
+        g.write_5m += f.write_5m;
+        g.write_1h += f.write_1h;
+        g.requests += f.requests;
+        let priced = book().and_then(|b| {
+            rules::price(
+                b,
+                rules::billed_model(&f.model, &f.provider),
+                f.at,
+                f.input,
+                f.output,
+                f.cache_read,
+                f.write_5m,
+                f.write_1h,
+            )
+        });
+        if priced.is_none() {
+            g.unpriced += f.tokens();
+        }
+        g.usd = g.usd.map(|sum| sum + priced.unwrap_or(0.0));
+    }
+    let mut out: Vec<_> = groups.into_values().collect();
+    out.sort_by(|a, b| {
+        a.first_at
+            .cmp(&b.first_at)
+            .then_with(|| a.session.cmp(&b.session))
+            .then_with(|| a.account.cmp(&b.account))
+            .then_with(|| a.model.cmp(&b.model))
+    });
+    Ok(out)
 }
 
 /// What one card has spent, in the pieces the answer and a watch both need.

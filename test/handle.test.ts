@@ -235,7 +235,18 @@ describe("one row vocabulary for the menu and the keys", () => {
       i.kind === "item" ? [i.id] : i.kind === "more" ? i.items.flatMap((x) => (x.kind === "item" ? [x.id] : [])) : [],
     );
     expect(leaves.length).toBeGreaterThan(10);
-    for (const id of leaves) expect(rowVerb(id)).not.toBeNull();
+    /* **The one row that is not a card verb, named so a second cannot slip
+       in.** `analytics…` opens a panel about the card — its figures, read off
+       this wall's store — rather than doing anything to it, and it is
+       dispatched beside the menu in `App.cardMenuAct`. There is no verb for
+       `can` to refuse and none for `do` to run, which is what this list says
+       rather than weakening the rule for every row. */
+    const besideTheHandle = new Set(["analytics"]);
+    for (const id of leaves) {
+      if (besideTheHandle.has(id)) continue;
+      expect(rowVerb(id)).not.toBeNull();
+    }
+    expect(leaves.filter((id) => besideTheHandle.has(id))).toEqual(["analytics"]);
   });
 });
 

@@ -49,10 +49,13 @@
   import FilterRail from "./FilterRail.svelte";
   import AnalyticsBehaviour from "./AnalyticsBehaviour.svelte";
   import AnalyticsBehaviourPage from "./AnalyticsBehaviourPage.svelte";
+  import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
   import { readAnalyticsWindow } from "./analyticsread.svelte";
   import { loadSavedViews, savedViews } from "./analyticslibrary.svelte";
   import { dropWatch, readWatches, readWorkWindow } from "./analyticsworkread.svelte";
   import { readBehaviourWindow, type BehaviourBundle, type BehaviourReader } from "./analyticsbehaviourread.svelte";
+  import { readCardLife, type LifeReader } from "./analyticsliferead.svelte";
+  import type { CardLife } from "./analyticslife";
   import { habitModel } from "./analyticsbehaviour";
   import type { SpendWatch } from "./spend";
   import { prompts as realPrompts } from "./promptsread.svelte";
@@ -113,6 +116,8 @@
     prompts,
     work,
     behaviour,
+    life,
+    asCard,
     names,
     onclose,
     onpin,
@@ -130,6 +135,11 @@
     work?: WorkReader;
     /** The behaviour read, or a fixture. Absent means the three commands. */
     behaviour?: BehaviourReader;
+    /** One card's life (§11.10), or a fixture. Absent means the command. */
+    life?: LifeReader;
+    /** A card to open the inspector on, from its own `analytics…` row or
+     *  `space n a`. Absent means no card is selected. */
+    asCard?: string;
     /** The watches one card set on itself, or a fixture. Absent means the
      *  command; the browser preview has no wall to ask. */
     watches?: (card: string) => Promise<SpendWatch[]>;
@@ -297,6 +307,58 @@
     }
   }
 
+  /* ── a card's life (§11.10) ──────────────────────────────────────────────
+   *
+   * The inspector's first block, opened by a card's own `analytics…` row or
+   * `space n a`, and read on its own: **a card is a history, not a window**, so
+   * widening a chart must not redraw it. That is also why it is asked for once
+   * per card rather than by the span effect below. */
+  /* Initialised from the prop rather than in the `untrack` block above: that
+     block runs before this declaration, and a selected card has to be there
+     for the first frame, not one later. Read untracked on purpose — the
+     surface is mounted per opening and a card asked for at the door stays
+     selected until it is closed, whatever a later prop does. */
+  let card = $state<string | null>(untrack(() => asCard) ?? null);
+  let lifeOf = $state<CardLife | null>(null);
+  let lifeFailed = $state<string | null>(null);
+  let lifeBusy = $state(false);
+  let lifeGen = 0;
+
+  const lifeReader: LifeReader = (id) => (life ?? readCardLife)(id);
+
+  async function readLife() {
+    const id = card;
+    if (!id) return;
+    const mine = ++lifeGen;
+    lifeBusy = true;
+    try {
+      const next = await lifeReader(id);
+      if (mine !== lifeGen || card !== id) return;
+      lifeOf = next;
+      lifeFailed = next ? null : "that card has no life recorded";
+    } catch (e) {
+      if (mine !== lifeGen || card !== id) return;
+      lifeFailed = e instanceof Error ? e.message : String(e);
+      lifeOf = null;
+    } finally {
+      if (mine === lifeGen) lifeBusy = false;
+    }
+  }
+
+  function closeCard() {
+    card = null;
+    lifeOf = null;
+    lifeFailed = null;
+    void tick().then(() => root?.focus());
+  }
+
+  /* The card selected is the only dependency. A surface opened straight onto
+     one (`asCard`) has made its selection before this first runs, so this is
+     also the first read. */
+  $effect(() => {
+    if (card) void readLife();
+  });
+
   /* One read on open and one per span change. Nothing else re-reads, and the
      effect has no other dependency because the reader's own arguments are the
      span alone. The selection a presentation holds is its own: the room clears
@@ -351,6 +413,7 @@
       if (tab.current === "prompts") void promptsTab?.reload();
       if (tab.current === "work") void readWork();
       if (tab.current === "behaviour") void readBehaviour();
+      if (card) void readLife();
     }, 65_000);
     return () => clearTimeout(t);
   });
@@ -383,6 +446,15 @@
   });
 
   const empty = $derived(loaded ? emptinessOf(loaded) : null);
+
+  /* Where a selected card is drawn. The room has one column on the right and it
+     is already an inspector, so the card is its first block there (§11.10);
+     every other tab, and the page, has no such column and gets the surface's
+     own. The condition matches the branch that actually mounts the room, or a
+     card selected over a refused or empty window would be drawn nowhere. */
+  const cardInRoom = $derived(
+    showing === "room" && tabNow === "spend" && !failed && !!loaded && !!model && !empty,
+  );
 
   /* A filter can select nothing, and that is a different reading from a window
      with nothing recorded in it (`emptinessOf` only ever looks at the window).
@@ -612,15 +684,22 @@
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
 
+    /* The inspector is a layer of the surface, so Escape takes it down before
+       the room: the same order the trace's detail and the work tab's episode
+       keep, and the only way back from a card without closing everything. */
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      onclose();
+      if (card) closeCard();
+      else onclose();
       return;
     }
     /* Everything else is the surface's while it is up, including the letters
        the wall would otherwise take into the composer. */
     e.stopPropagation();
+    /* `r` refreshes the card's life whichever tab is in front: the tab branches
+       below each own their own reader, and none of them owns the card. */
+    if (e.key === "r" && card) void readLife();
     /* The tabs are on `1`, `2` and `3`, and are the surface's in either
        drawing. */
     if (e.key === "1") {
@@ -941,6 +1020,12 @@
       </button>
     </header>
 
+    <!-- The stage is the body and, when a card is selected, its inspector. The
+         head stays full width above both; everything the tab decides lives in
+         the left column, so a card's page cannot change what a chart is asked. -->
+    <div class="an-stage">
+      <div class="an-main">
+
     {#if tabNow === "spend" || tabNow === "work" || tabNow === "behaviour"}
     <div class="an-filters" bind:this={controls} role="group" aria-label="what to read">
       <span class="an-label">span</span>
@@ -1157,6 +1242,7 @@
         {span}
         title={`${spanSaid} · ${measureSaid}${split ? ` · ${splitSaid}` : ""}`}
         bucket={bucket}
+        card={card && cardInRoom ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard } : undefined}
       />
     {:else}
       <div class="an-page">
@@ -1181,6 +1267,30 @@
     {:else if readAt && !empty && tabNow === "spend"}
       <p class="an-read">read at {new Date(readAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</p>
     {/if}
+
+      </div>
+
+      {#if card && !cardInRoom}
+        <!-- The inspector's first block (§11.10). A card's own page is a
+             history beside the window, so it reads nothing this surface's span
+             asks and draws the same in either presentation. On the spend room
+             the room draws it in its own column instead. -->
+        <aside class="an-inspector" aria-label="this card's life">
+          {#if lifeFailed}
+            <div class="an-message">
+              <p class="an-fail">could not read this card</p>
+              <p class="an-note">{lifeFailed}</p>
+            </div>
+          {:else if !lifeOf}
+            <div class="an-message">
+              <p class="an-note">{lifeBusy ? "reading…" : "no answer yet"}</p>
+            </div>
+          {:else}
+            <AnalyticsCardLife life={lifeOf} onclose={closeCard} />
+          {/if}
+        </aside>
+      {/if}
+    </div>
 
     {#if views}
       <AnalyticsViews
@@ -1398,6 +1508,39 @@
   .an-seg button.on {
     background: color-mix(in oklab, var(--paper) 11%, transparent);
     color: var(--paper);
+  }
+
+  /* ── the stage: the body, and the card beside it ──────────────────────── */
+
+  /* The inspector narrows the body rather than covering it, because a chart
+     under a floating panel is a chart with its right-hand end unreadable —
+     and it is a column rather than a second overlay so Escape has one ladder
+     to climb, not two. */
+  .an-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .an-main {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .an-inspector {
+    flex: none;
+    width: min(380px, 36%);
+    min-width: 260px;
+    overflow: auto;
+    border-left: 1px solid var(--cv-hair, var(--edge));
+    background: color-mix(in oklab, var(--paper) 3%, transparent);
+  }
+  .an-inspector .an-message {
+    padding: 24px 18px;
+  }
+  .an-room.reading .an-inspector {
+    background: color-mix(in oklab, var(--paper) 2%, transparent);
   }
 
   /* ── the body ─────────────────────────────────────────────────────────── */

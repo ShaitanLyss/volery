@@ -476,7 +476,11 @@
   }
   /** The conversation a card verb in the palette would reach, with its own
    *  `can` — so a row refuses exactly as the handle would. */
-  const target = $derived(card ? { title: card.face.title, can: (v: CardVerb) => card.can(v) } : null);
+  const target = $derived(
+    card
+      ? { title: card.face.title, host: card.remote?.host ?? null, can: (v: CardVerb) => card.can(v) }
+      : null,
+  );
   /** Build a finished plan in the conversation that wrote it: out of plan
    *  first — which takes the plan card down (`Conversation.planDoc`) — and
    *  told to go. The same two moves a hand makes on the wall. */

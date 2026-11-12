@@ -249,7 +249,7 @@
   import { replies } from "./lib/replies.svelte";
   import { opening, type View } from "./lib/viewmode";
   import Welcome from "./lib/Welcome.svelte";
-  import { CHORDS, actsOnWall, mayLead, type Verb as ChordVerb } from "./lib/leader";
+  import { CHORDS, actsOnWall, cardChordStay, mayLead, type Verb as ChordVerb } from "./lib/leader";
   import Plume from "./lib/Plume.svelte";
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
@@ -784,6 +784,15 @@
     else if (verb.kind === "card") {
       if (verb.act === "menu") menuFocused();
       else if (verb.act === "glance") glanceFocused();
+      /* Its figures, as a page beside the window (§11.10). Not a card verb: it
+         does nothing to the card and reads this wall's store, so a card on
+         another wall keeps its own, and says so. */
+      else if (verb.act === "analytics") {
+        const stay = card?.remote ? cardChordStay("analytics", card.remote.host) : null;
+        if (!card) skein.fault = "no card has the focus";
+        else if (stay) skein.fault = stay;
+        else openAnalytics(undefined, undefined, card.id);
+      }
       /* Its last message kept beside it — on the wall, or on the glass. One
          verb with an argument, so the two chords are one row of the table. */
       else if (verb.act === "keep") verbFocused("keep");
@@ -1858,9 +1867,14 @@
   /* Which tab: `space n t` asks for the prompt trace, everything else leaves it
      to the surface's memory. */
   let analyticsTab = $state<SurfaceTab | undefined>(undefined);
-  function openAnalytics(as?: Presentation, at?: SurfaceTab) {
+  /* A card the surface opens with selected, from its own `analytics…` row or
+     `space n a` (§11.10). Undefined is no selection; every other way in clears
+     it, so a card does not follow you into the next opening. */
+  let analyticsCard = $state<string | undefined>(undefined);
+  function openAnalytics(as?: Presentation, at?: SurfaceTab, card?: string) {
     analyticsAs = as;
     analyticsTab = at;
+    analyticsCard = card;
     showAnalytics = true;
   }
   /* A widget's view, opened where its controls are. The spec is adopted rather
@@ -1978,6 +1992,7 @@
     showAnalytics = false;
     analyticsAs = undefined;
     analyticsTab = undefined;
+    analyticsCard = undefined;
     if (view.current === "chat") await switchView("wall");
     await tick();
     const at = canvas?.center() ?? { x: 0, y: 0 };
@@ -2804,10 +2819,7 @@
            question about the thing, not a visit to it. */
         ring(c);
         target = c.menu();
-        act = (id) => {
-          const r = rowVerb(id);
-          if (r) void c.do(r.verb, r.args);
-        };
+        act = cardMenuAct(c);
       }
     } else if (sectionEl?.dataset.section) {
       const made = sectionMenuFor(
@@ -4962,19 +4974,27 @@
     menu = { x: at.x, y: at.y, items, act, keyed };
   }
 
+  /** What a card's right-click row does — one closure for the wall, chat view
+   *  and the menu opened by `<space> c m`, so a row added to `menu.ts` reaches
+   *  all three rather than the one site that remembered it. */
+  function cardMenuAct(c: CardHandle) {
+    return (id: string) => {
+      /* Its figures, beside the window (§11.10). Not a card verb: it asks
+       *this* wall what the card spent and reaches nothing, so a card on another
+       * wall is offered no row (`menu.ts`) and no refusal is needed here. */
+      if (id === "analytics") {
+        openAnalytics(undefined, undefined, c.id);
+        return;
+      }
+      const v = rowVerb(id);
+      if (v) void c.do(v.verb, v.args);
+    };
+  }
+
   function menuAt(c: CardHandle, x: number, y: number, keyed: boolean) {
     const items = menuFor(c.menu());
     if (!items.length) return;
-    menu = {
-      x,
-      y,
-      items,
-      act: (id) => {
-        const v = rowVerb(id);
-        if (v) void c.do(v.verb, v.args);
-      },
-      keyed,
-    };
+    menu = { x, y, items, act: cardMenuAct(c), keyed };
   }
 
   /* ── every card of a grouping, to another machine ─────────────────────── */
@@ -6010,12 +6030,14 @@
     <Analytics
       as={analyticsAs}
       asTab={analyticsTab}
+      asCard={analyticsCard}
       names={cardNames}
       onpin={pinAnalyticsView}
       onclose={() => {
         showAnalytics = false;
         analyticsAs = undefined;
         analyticsTab = undefined;
+        analyticsCard = undefined;
       }}
     />
   {/if}

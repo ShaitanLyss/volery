@@ -464,6 +464,15 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            reliably answers "nothing" is one you stop reading after the second
            time, which is how a real answer gets missed later. */
         has("processes") && !t.dormant ? item("processes", "processes…") : null,
+        /* Its figures (§11.10): the card as a history — what it cost, who paid
+           for it and when it moved — opened beside the window in the analytics
+           room. **Only a card on this wall**, because the answer is read off
+           this wall's store and a card elsewhere keeps its own there; the row
+           is absent rather than refusing, this file's standing rule about
+           offering nothing. Offered on a card that has never spoken, since a
+           card that has only just been opened is exactly the one whose first
+           spend you are watching. */
+        !t.host ? item("analytics", "analytics…") : null,
         wall && has("pin") && t.pinned ? item("unpin", "let it flow again") : null,
         /* One item with two labels rather than two items, because it is one
            state with two sides — the same shape as `pinned`'s "let it flow

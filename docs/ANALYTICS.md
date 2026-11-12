@@ -2240,6 +2240,67 @@ the fold holds every call the turn has made, including the ones the store has no
 tools view with no card working shows the stored history and says the live edge is quiet,
 rather than an empty table.
 
+**As built.** One command, `card_life(card)`, answers the whole block for one card and no
+window: a card is a history, so widening a chart must not redraw it. It reads four things that
+must not leak into each other, and each has its own rule:
+
+- **Sessions** from `analytics_session WHERE card_id`, all time.
+- **Spend** grouped by `(session, account, provider, model)` by `spend::payer_split`, which is
+  the one fold that owns `prefer_transcript`: a backfilled turn day and the transcript facts
+  over the same hour must not be added twice, and a second copy of that rule would be a second
+  answer. Dollars are modelled per fact at the fact's own instant from the same `pricing.json`
+  both sides read.
+- **Moves** from `invalidate_fact`, receipts of kind `account`, `provider` or `model` only. An
+  attributed row is one paying card's excess at the same instant, not a transition.
+- **The reported cost** from the `turn` table, which is not pruned, so the dollar total is the
+  card's whole life. **The token half is not**: the fine tier keeps ninety days, so the read
+  also returns `facts_from`, the oldest fact the wall still holds. When the card was born
+  before it, the page says where the token half begins instead of drawing a lifetime share
+  over a recent window.
+
+**A move now outlives the fine tier.** Retention used to delete every `invalidate_fact` row
+past ninety days, which would have made the timeline say a card that swapped accounts last
+spring never did. An account, provider or model change is a fact about a card's history rather
+than about a moment, the distinction `analytics_session` and the walk mark already make, so
+those three kinds of receipt are kept and every other invalidation still goes at ninety days.
+An `attributed` row of the same kind is one paying card's measurement at that instant, not the
+mover's history, and prunes with the rest. The card read is served by
+`invalidate_fact(card, at)`, added in schema v70: the table had indexes on `(tree, at)` and
+`(at)` and neither answers a query by card.
+
+The block is one component, `AnalyticsCardLife.svelte`, drawn in the room's inspector beside
+the body (a column, so it narrows the charts rather than covering them) and unchanged in the
+page presentation. It is reached from the card's `analytics…` row, from `<space> n a` on the
+focused card, and from chat view's conversation row, which is the same `menu.ts` row and the
+same dispatch. **A card on another wall is offered no row**: the answer is read from this
+wall's store, and that card's figures are kept there.
+
+What the timeline draws, and what it refuses to invent:
+
+- **Two clocks meet here, and the page is written knowing it.** `usage_fact.at` is a
+  five-minute bucket floor while a session's start and a move's instant are exact, so the
+  opening row is scoped by session id rather than by comparing the group's stamp with
+  `started_at`, and a move is matched to the end of the group's own bucket rather than to its
+  stamp. Without that, every opening row loses its model and every real move is drawn twice.
+- The opening row names the funding and model of the first session's first request.
+- One row per later session, because a renewal or a clear is a new session and its funding is
+  measured rather than inferred.
+- One row per move, with the new value the wall recorded and **`reason unknown`**. The move row
+  carries no why; the ingest can see a funding change and not its cause, and a guessed reason
+  is worse than an unanswered one.
+- Where a funding and model begins with no move row beside it (a wall from before the moves
+  were kept, or a change the ingest saw), a row says *first spent on* that funding. It is a
+  measured instant, not an inferred move, and it is suppressed when a session row or a move
+  already explains the change, so one transition is never drawn twice.
+
+Still not built from this section: **selecting a row in the room's tables to open the
+inspector**, because none of the four tables has a card dimension yet; the **live tools view**
+drawn from the card's own fold while a turn is running (the behaviour tab answers the stored
+half, and the inspector shows no tools of its own); a model column on `analytics_session`,
+which is what the split would read if it did not read the facts, so a wall whose fine tier has
+already been pruned loses the earliest half of the token split and says when it begins; and a
+reason on a move row, which the wall does not record.
+
 ### 11.11 The prompt trace
 
 A page in both views, reached from the analytics room's `prompts` tab, from `space n t` (`t`

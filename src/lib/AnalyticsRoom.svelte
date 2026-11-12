@@ -42,6 +42,8 @@
   import { bucketOf } from "./analytics";
   import { count } from "./usage";
   import type { Bucket } from "./analytics";
+  import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
+  import type { CardLife } from "./analyticslife";
 
   let {
     window: win,
@@ -52,6 +54,7 @@
     title,
     bucket,
     kpis,
+    card,
   }: {
     /** The window that came back. Its bounds are the axis; its rows are not
      *  read here, since the series are already built from them. */
@@ -70,6 +73,11 @@
     /** The window's five readings, built by the shell from the same rows the
      *  series are. */
     kpis: Kpis;
+    /** A card opened from its own row or `<space> n a` (§11.10). It is the
+     *  inspector's first block, above the bucket, because the room has exactly
+     *  one column on the right and two panels called inspector is one too
+     *  many. */
+    card?: { life: CardLife | null; failed: string | null; busy: boolean; onclose: () => void };
   } = $props();
 
   const list = $derived(series);
@@ -282,7 +290,7 @@
     {/each}
   </div>
 
-  <div class="an-main">
+  <div class="an-main" class:with-card={!!card}>
 <section class="an-canvas" aria-label={table ? "the window as a table" : "the window over time"} tabindex="-1" bind:this={canvas}>
   <div class="an-chart-head">
     <span class="an-title">{title}</span>
@@ -423,8 +431,22 @@
   {/if}
 </section>
 
-<aside class="an-inspect" aria-label="the selected bucket">
-  <h3>inspector</h3>
+<aside class="an-inspect" aria-label={card ? "this card, and the selected bucket" : "the selected bucket"}>
+  {#if card}
+    <div class="an-inspect-card">
+      {#if card.failed}
+        <p class="an-inspect-fail">could not read this card</p>
+        <p class="an-note">{card.failed}</p>
+      {:else if !card.life}
+        <p class="an-note">{card.busy ? "reading this card…" : "no answer yet"}</p>
+      {:else}
+        <AnalyticsCardLife life={card.life} onclose={card.onclose} />
+      {/if}
+    </div>
+    <h3>bucket</h3>
+  {:else}
+    <h3>inspector</h3>
+  {/if}
   {#if activeReading && active !== null}
     <p class="an-inspect-when">{bucketLabel(active, bucket)}</p>
     <p class="an-inspect-value">{measureText(measure, activeReading.total)}</p>
@@ -722,6 +744,30 @@
 
   /* ── the inspector ────────────────────────────────────────────────────── */
 
+  /* A card's page is wider than a bucket's reading, so the column widens with
+     one and the chart gives it up. 340px is where the change timeline's date
+     and sentence stop fighting for the same line. */
+  .an-main.with-card {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+  /* The card brings its own padding; the aside's would double it, so the card
+     is pulled out to the column's edges and rules itself off from the bucket. */
+  .an-inspect-card {
+    margin: -12px -14px 0;
+    border-bottom: 1px solid var(--cv-hair, var(--edge));
+  }
+  .an-inspect-card .an-note {
+    padding: 12px 14px;
+  }
+  .an-inspect-fail {
+    margin: 0;
+    padding: 12px 14px 0;
+    font-size: 12.5px;
+    color: var(--st-fail);
+  }
+  .an-inspect-card + h3 {
+    margin-top: 12px;
+  }
   .an-inspect {
     min-height: 0;
     overflow: auto;

@@ -325,6 +325,7 @@ describe("the which-key hint", () => {
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mu", label: "update claude code & plugins now" },
       { keys: "mw", label: "keep awake on mains: on / off" },
+      { keys: "na", label: "the focused card's figures" },
       { keys: "nb", label: "tools, servers and habits" },
       { keys: "nn", label: "analytics as a document" },
       { keys: "nt", label: "the prompt trace" },

@@ -19,6 +19,8 @@ import type { SpendWatch } from "./spend";
 import type { Fact, HourFact, ToolTotal, UsageRow } from "./analytics";
 import type { BehaviourBundle, BehaviourReader } from "./analyticsbehaviourread.svelte";
 import type { SessionFact } from "./analyticsbehaviour";
+import type { CardLife, LifeSpend } from "./analyticslife";
+import type { LifeReader } from "./analyticsliferead.svelte";
 import type {
   CardSpendRow,
   InvalidateRow,
@@ -1116,5 +1118,180 @@ export function fixturePromptReader(mode: FixtureMode = "normal", vaultMode: Vau
       favourites = favourites.filter((f) => `${f.host}/${f.promptId}` !== `${host}/${promptId}`);
       return favourites.length < before;
     },
+  };
+}
+
+/* ── a card's life, made up (§11.10) ─────────────────────────────────────── */
+
+/** A card's history for `?card=1`: a card opened on one account, swapped to a
+ *  team, moved to DeepSeek and given a wider model, with the spend under each
+ *  funding to draw the bar.
+ *
+ * **The three modes answer the states the block has to tell apart**, which is
+ * why it is a fixture rather than a recording:
+ *
+ *  - `normal` — a life the facts cover from its start, so the bar is a lifetime
+ *    share and nothing has to be qualified;
+ *  - `quiet` — a card older than the fine tier, so `factsFrom` is inside the
+ *    life and the page must say where the token half begins rather than draw a
+ *    lifetime share over a recent window;
+ *  - `empty` — a card opened and not yet spoken to: no session, no spend, and
+ *    a total that must be a dash rather than `$0.00`.
+ */
+export function fixtureLife(mode: FixtureMode = "normal"): LifeReader {
+  return async (card: string): Promise<CardLife | null> => {
+    const now = Date.now();
+    const day = 86_400_000;
+    if (mode === "empty") {
+      return {
+        card,
+        label: "just opened",
+        nowSession: "",
+        nowAccount: "",
+        nowModel: "",
+        sessions: [],
+        spend: [],
+        moves: [],
+        usdReported: 0,
+        turns: 0,
+        factsFrom: 0,
+      };
+    }
+    const old = mode === "quiet";
+    const born = now - (old ? 200 : 9) * day;
+    /* **The store's two clocks, which the fixture has to have too.** A fact is
+       stamped with its five-minute bucket floor while a session's start and a
+       move's instant are exact, so a session beginning at 12:03:20 has its
+       first fact at 12:00:00 and a move at 12:06:23 is followed by a group at
+       12:05:00. A fixture that put the fact after the session start, or the
+       move before the group, would hide exactly the arithmetic the page is
+       careful about. */
+    const bucket = (t: number) => Math.floor(t / (5 * MINUTE)) * (5 * MINUTE);
+    const sessionA = "11111111-aaaa-4000-8000-000000000001";
+    const sessionB = "11111111-bbbb-4000-8000-000000000002";
+    const sessions: SessionFact[] = [
+      {
+        session: sessionA,
+        host: "studio",
+        project: "volery",
+        source: "card",
+        card,
+        parentCard: "",
+        openedBy: "person",
+        branch: "main",
+        startedAt: born + 7_000,
+        endedAt: born + 5 * day,
+        cliMin: "2.1.300",
+        cliMax: "2.1.319",
+        accountFirst: "lyss",
+        accountLast: "tx-team",
+        providerFirst: "anthropic",
+        providerLast: "anthropic",
+        turns: 31,
+      },
+      {
+        session: sessionB,
+        host: "studio",
+        project: "volery",
+        source: "card",
+        card,
+        parentCard: "",
+        openedBy: "person",
+        branch: "main",
+        startedAt: born + 6 * day + 12 * MINUTE + 5_000,
+        endedAt: null,
+        cliMin: "2.1.319",
+        cliMax: "2.1.319",
+        accountFirst: "@deepseek",
+        accountLast: "@deepseek",
+        providerFirst: "deepseek",
+        providerLast: "deepseek",
+        turns: 11,
+      },
+    ];
+    const spend: LifeSpend[] = [
+      {
+        session: sessionA,
+        account: "lyss",
+        provider: "anthropic",
+        model: "claude-opus-5-5",
+        firstAt: bucket(born),
+        lastAt: bucket(born + 3 * day),
+        inTok: 780_000,
+        outTok: 61_000,
+        cacheRead: 16_400_000,
+        write5m: 2_100_000,
+        write1h: 900_000,
+        requests: 26,
+        usd: 23.62,
+        unpriced: 0,
+      },
+      {
+        session: sessionA,
+        account: "tx-team",
+        provider: "anthropic",
+        model: "claude-opus-5-5",
+        firstAt: bucket(born + 3 * day + 40 * MINUTE),
+        lastAt: bucket(born + 5 * day),
+        inTok: 210_000,
+        outTok: 18_000,
+        cacheRead: 5_200_000,
+        write5m: 640_000,
+        write1h: 200_000,
+        requests: 5,
+        usd: 9.80,
+        unpriced: 0,
+      },
+      {
+        session: sessionB,
+        account: "@deepseek",
+        provider: "deepseek",
+        model: "deepseek-flash",
+        firstAt: bucket(born + 6 * day + 12 * MINUTE),
+        lastAt: bucket(born + 7 * day),
+        inTok: 94_000,
+        outTok: 12_000,
+        cacheRead: 1_800_000,
+        write5m: 0,
+        write1h: 0,
+        requests: 8,
+        usd: 2.94,
+        unpriced: 0,
+      },
+      {
+        session: sessionB,
+        account: "@deepseek",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        firstAt: bucket(born + 7 * day + 90 * MINUTE),
+        lastAt: bucket(now - 40 * MINUTE),
+        inTok: 48_000,
+        outTok: 9_000,
+        cacheRead: 900_000,
+        write5m: 0,
+        write1h: 0,
+        requests: 3,
+        usd: 1.74,
+        unpriced: 0,
+      },
+    ];
+    return {
+      card,
+      label: "agent audit",
+      nowSession: sessionB,
+      nowAccount: "@deepseek",
+      nowModel: "deepseek-v4-pro",
+      sessions,
+      spend,
+      moves: [
+        { at: born + 3 * day + 40 * MINUTE, kind: "account", reference: "tx-team" },
+        { at: born + 6 * day + 12 * MINUTE + 7_000, kind: "provider", reference: "deepseek" },
+        { at: born + 7 * day + 90 * MINUTE, kind: "model", reference: "deepseek-v4-pro" },
+      ],
+      usdReported: 38.1,
+      turns: 42,
+      /* An old card's facts begin inside its life; a young one's do not. */
+      factsFrom: old ? born + 110 * day : born - 30 * day,
+    };
   };
 }

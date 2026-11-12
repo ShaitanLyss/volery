@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 69;
+const SCHEMA_VERSION: i64 = 70;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -449,6 +449,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (67, migrate_v67),
     (68, migrate_v68),
     (69, migrate_v69),
+    (70, migrate_v70),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4100,6 +4101,18 @@ fn migrate_v69(conn: &Connection) -> Result<(), String> {
        every turn. Written by `supervisor::deliver_blocks`, which is the one
        door every prompt of every kind goes through. */
     add_column(conn, "conversation", "last_prompt_at", "INTEGER")
+}
+
+/// A card's page asks `invalidate_fact` by **card** (§11.10), and that table's
+/// indexes were `(tree, at)` and `(at)` — neither of which a `WHERE card = ?`
+/// can use. The move rows are also now kept past ninety days, so the table a
+/// per-gesture read would scan grows. This is the rung that gives the read an
+/// index rather than a scan.
+fn migrate_v70(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS invalidate_fact_by_card ON invalidate_fact(card, at);",
+    )
+    .map_err(|e| format!("migrate v70: {e}"))
 }
 
 /// Write down that a prompt has just gone to this card's stdin. Called from the

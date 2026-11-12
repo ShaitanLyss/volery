@@ -4,7 +4,9 @@
  * room's reader is a fixture, so the same component that reads the real command
  * draws made-up facts here. `?empty=1` is a store that has never recorded
  * anything and `?quiet=1` is a working wall with nothing in the window, which
- * are the two states the room exists to tell apart.
+ * are the two states the room exists to tell apart. `?card=1` opens the
+ * inspector on a made-up card, and `?card=1&quiet=1` on one older than the
+ * facts, which is the card page's honesty case.
  *
  * Dev only: Vite's build input is `index.html`, so nothing here reaches an
  * installer. `test/analyticsroom.test.ts` asserts that nothing else imports the
@@ -17,6 +19,7 @@ import AnalyticsFace from "./lib/AnalyticsFace.svelte";
 import { Analytics as AnalyticsReader } from "./lib/analyticsholder.svelte";
 import {
   fixtureBehaviourReader,
+  fixtureLife,
   fixturePromptReader,
   fixtureWatches,
   fixtureWindow,
@@ -102,6 +105,11 @@ if (widgetMode) {
     props: {
       as,
       asTab: tab,
+      /* `?card=1` opens the inspector on a made-up card (§11.10); `?quiet=1`
+         with it makes that card older than the facts, which is the state the
+         page has to qualify rather than draw a lifetime share over. */
+      asCard: asked.has("card") ? "preview-card" : undefined,
+      life: fixtureLife(mode),
       mode: "wall",
       prompts: fixturePromptReader(mode, vault),
       work: fixtureWorkReader(mode),

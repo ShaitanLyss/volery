@@ -189,6 +189,19 @@ describe("a row that reaches the focused conversation", () => {
     expect(standingOf(chordRow("cp"), dormant)).toEqual({ on: "fix the contact form", refused: "it is dormant, so it holds no processes" });
   });
 
+  test("a chord that only means something for a card here is refused on another wall", () => {
+    const here = { title: "t", can: () => "yes" as const };
+    expect(standingOf(chordRow("na"), here)).toEqual({ on: "t", refused: null });
+    /* Its figures are kept in the store of the wall that ran it, so the palette
+       says so before Enter rather than faulting after it. */
+    const afar = { title: "t", host: "lab", can: () => "yes" as const };
+    expect(standingOf(chordRow("na"), afar)).toEqual({
+      on: "t",
+      refused: "its figures are kept on lab, in that wall's store",
+    });
+    expect(standingOf(chordRow("cc"), afar)).toEqual({ on: "t", refused: null });
+  });
+
   test("with nothing in front of you, it is refused rather than guessed at", () => {
     expect(standingOf(chordRow("cc"), null)).toEqual({ on: null, refused: "no conversation is in front of you" });
   });

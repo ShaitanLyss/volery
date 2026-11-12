@@ -99,9 +99,23 @@ export type CardChord =
   | "copy-cwd"
   | "processes"
   | "menu"
+  | "analytics"
   | "glance"
   | "keep"
   | "keep-glass";
+
+/** Why a card chord does nothing for a card on another wall, in one sentence
+ *  for the two places that say it: the chord's own refusal in `App.svelte` and
+ *  the palette's, so a row that would be refused reads as refused before
+ *  Enter. Null for the chords that mean the same on either wall.
+ *
+ *  Today it is `analytics` alone: a card's figures are read from the store of
+ *  the wall that ran it (`docs/ANALYTICS.md` §11.10) and nothing carries them
+ *  across the flyway. */
+export function cardChordStay(act: CardChord, host: string): string | null {
+  if (act !== "analytics") return null;
+  return `its figures are kept on ${host}, in that wall's store`;
+}
 
 /** What a `d` chord does in the dock's queue: step to the next thing waiting,
  *  or deal with a reply whose item went before it was sent (`Dock.svelte`).
@@ -462,6 +476,12 @@ export const CHORDS: readonly Chord[] = [
      tools, servers, skills and habits, which is the tab a spend chart cannot
      answer. A third letter of the `n` family for `nt`'s reason. */
   { keys: "nb", label: "tools, servers and habits", verb: { kind: "open", what: "analyticsbehaviour" } },
+  /* `na`: the focused card as a history (§11.10) — what it cost, who paid for
+     it and when it moved, opened in the room's inspector. A card letter rather
+     than an `n` reading, because it is about one card and the wall always knows
+     which; it sits in the `n` family because the subject is the numbers, not the
+     card's own verbs (`c`), and the right-click carries the mouse's row. */
+  { keys: "na", label: "the focused card's figures", verb: { kind: "card", act: "analytics" } },
   ...readings(),
 ];
 

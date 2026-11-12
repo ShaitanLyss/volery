@@ -10,7 +10,7 @@
 
 import { matches, whereOf, type ChatRow } from "./chatview";
 import { score } from "./finding";
-import type { Verb as ChordVerb } from "./leader";
+import { cardChordStay, type Verb as ChordVerb } from "./leader";
 import type { Can, Verb as CardVerb } from "./handle";
 import type { IconName } from "./icons";
 
@@ -240,7 +240,10 @@ const READING_GLYPH: Partial<Record<Extract<ChordVerb, { kind: "reading" }>["wid
 export function cardVerbOf(e: Entry): CardVerb | null {
   if (e.kind !== "chord" || e.verb?.kind !== "card") return null;
   const act = e.verb.act;
-  if (act === "menu" || act === "glance") return null;
+  /* The three that are not the handle's vocabulary: the menu, the glance and
+     the card's figures (§11.10). None of them does anything *to* the card, so
+     there is no verb for `can` to refuse; what they share is needing one. */
+  if (act === "menu" || act === "glance" || act === "analytics") return null;
   if (act === "keep-glass") return "keep";
   return act;
 }
@@ -253,8 +256,9 @@ export function wantsCard(e: Entry): boolean {
 }
 
 /** The conversation a row would act on, as the palette needs it: its title
- *  for the note, and its handle's own `can`. */
-export type Target = { title: string; can: (v: CardVerb) => Can };
+ *  for the note, the wall it runs on where that is not this one, and its
+ *  handle's own `can`. */
+export type Target = { title: string; host?: string | null; can: (v: CardVerb) => Can };
 
 /** What the palette says beside a row that reaches the focused conversation:
  *  which one, and — if the handle would refuse — why, in the handle's words.
@@ -262,6 +266,14 @@ export type Target = { title: string; can: (v: CardVerb) => Can };
 export function standingOf(e: Entry, target: Target | null): { on: string | null; refused: string | null } | null {
   if (!wantsCard(e)) return null;
   if (!target) return { on: null, refused: "no conversation is in front of you" };
+  /* A chord that only means something for a card on this wall is refused here
+     in the leader's own words, before Enter, rather than faulting after it —
+     `menu.ts` offers no row for it on a shadow, and the palette should not
+     disagree with the menu. */
+  if (e.kind === "chord" && e.verb?.kind === "card" && target.host) {
+    const stay = cardChordStay(e.verb.act, target.host);
+    if (stay) return { on: target.title, refused: stay };
+  }
   const v = cardVerbOf(e);
   const can = v ? target.can(v) : "yes";
   return { on: target.title, refused: can === "yes" ? null : can.no };
