@@ -100,13 +100,20 @@ export const ROOM_MEASURES: readonly { key: RoomMeasure; label: string; said: st
 ];
 
 /** One dimension at a time (§11.2: split is a panel's, never two axes). */
-export type RoomSplit = null | "project" | "account" | "model";
+export type RoomSplit = null | "project" | "account" | "model" | "host";
 
+/** **`machine` is a split, not a filter.** The rail has offered `machine` since
+ *  the fleet was one wall's, and a filter answers "show me the laptop" while a
+ *  split answers "show me all three summed, side by side" — which is the
+ *  reading §8 exists for: one person on several machines, each line its own
+ *  contribution to the total. It is labelled `machine` because that is what the
+ *  rail calls it, and one word for one thing. */
 export const ROOM_SPLITS: readonly { key: RoomSplit; label: string }[] = [
   { key: null, label: "none" },
   { key: "project", label: "project" },
   { key: "account", label: "account" },
   { key: "model", label: "model" },
+  { key: "host", label: "machine" },
 ];
 
 /* ── the window, read defensively ──────────────────────────────────────────*/

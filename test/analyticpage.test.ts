@@ -27,6 +27,7 @@ import {
   naturalFor,
   otherPresentation,
   pageModel,
+  roomSplitOf,
   panelNote,
   presentationFor,
   refusalOf,
@@ -474,5 +475,24 @@ describe("a report's cover describes what the report includes", () => {
     expect(one.hosts.length).toBeGreaterThan(0);
     expect(one.hosts.every((h) => all.hosts.includes(h))).toBe(true);
     expect(one.claude).not.toBeNull();
+  });
+});
+
+describe("the machine as a split", () => {
+  /* §8's reading: one person on several machines is the chart's job, not only
+     the rail's. A saved view that asks for it must survive the round trip
+     through the opaque JSON a view, a widget and a report each store it in. */
+  test("a view can ask for the machines, and comes back asking for them", () => {
+    const spec = viewOfSurface(
+      { span: "7d", measure: "usd_modeled", split: "host", filter: {} },
+      "by machine",
+    );
+    expect(spec.panels[0]!.split).toBe("host");
+    expect(surfaceOfView(spec).split).toBe("host");
+  });
+
+  test("a split the room does not draw falls back to none", () => {
+    expect(roomSplitOf("branch")).toBeNull();
+    expect(roomSplitOf("host")).toBe("host");
   });
 });

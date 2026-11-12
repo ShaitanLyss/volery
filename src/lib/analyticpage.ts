@@ -113,10 +113,10 @@ export type SurfaceInput = {
   filter: Filter;
 };
 
-/** The three splits the room draws, which is also what a saved view may ask
- *  for without the surface having a picker for the other twelve dimensions. */
+/** The splits the room draws, which is also what a saved view may ask for
+ *  without the surface having a picker for the other twelve dimensions. */
 export function roomSplitOf(dim: unknown): RoomSplit {
-  return dim === "project" || dim === "account" || dim === "model" ? dim : null;
+  return dim === "project" || dim === "account" || dim === "model" || dim === "host" ? dim : null;
 }
 
 export function roomMeasureOf(key: unknown): RoomMeasure {
