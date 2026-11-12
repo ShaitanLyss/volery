@@ -52,7 +52,7 @@ export type FleetReading = {
 };
 
 export type StripTile = {
-  key: "allowance" | "today" | "burn" | "cards" | "unattributed";
+  key: "allowance" | "today" | "burn" | "cards" | "gestures" | "unattributed";
   label: string;
   value: string;
   note: string;
@@ -123,6 +123,10 @@ export type StripInput = {
   /** The flyway's readings, or null where this surface was opened with no
    *  link to the roster (the browser preview). */
   fleet: FleetReading | null;
+  /** Deliberate gestures so far this minute, counted by the collector itself
+   *  (§3.10). Zero is a real reading here — you have not done anything yet —
+   *  which is why the tile says `off: false` and not "no reading". */
+  gestures: number;
 };
 
 function instanceWindow(one: WindowInstance): Window {
@@ -138,14 +142,31 @@ function instanceWindow(one: WindowInstance): Window {
 }
 
 export function stripModel(input: StripInput): StripTile[] {
-  const { samples, instances, costs, week, coveredFrom, now, fleet } = input;
+  const { samples, instances, costs, week, coveredFrom, now, fleet, gestures } = input;
   const buckets = costs ?? [];
   return [
     allowanceTile(samples, instances, now),
     todayTile(costs, buckets, coveredFrom, now),
     ...fleetTiles(fleet),
+    gestureTile(gestures),
     unattributedTile(week),
   ];
+}
+
+/** The starcraft number (§11.1, §3.10): deliberate gestures in the minute you
+ *  are in. Nothing is read for it — the collector already holds the count — so
+ *  it is the one tile on the strip that costs no query at all. */
+function gestureTile(n: number): StripTile {
+  return {
+    key: "gestures",
+    label: "actions this minute",
+    value: String(n),
+    note: n === 0 ? "nothing yet this minute" : "clicks, prompts, interrupts and commands",
+    title:
+      "The count since this minute began, from the gestures the wall records: a click, a prompt sent, " +
+      "a turn stopped, a command run. Nothing typed is recorded, and the count resets on the minute.",
+    off: false,
+  };
 }
 
 function allowanceTile(

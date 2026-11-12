@@ -40,6 +40,7 @@
    */
   import { onMount, tick, untrack } from "svelte";
   import Icon from "./Icon.svelte";
+  import { acts } from "./acts.svelte";
   import AnalyticsRoom from "./AnalyticsRoom.svelte";
   import AnalyticsPage from "./AnalyticsPage.svelte";
   import AnalyticsPrompts from "./AnalyticsPrompts.svelte";
@@ -675,6 +676,15 @@
     weekResidual(sampleRows, instances, costBuckets, Math.floor(at / 60_000) * 60_000),
   );
 
+  /* **The wall's second is the dependency, not the collector's counter.** The
+     counter only bumps when a gesture lands, so a minute that ends without one
+     would leave the last minute's count standing on the strip; reading `at`
+     here makes the minute roll whether or not anything happened in it. */
+  const liveActs = $derived.by(() => {
+    void at;
+    return acts.thisMinute;
+  });
+
   const strip = $derived(
     stripModel({
       samples: sampleRows,
@@ -684,6 +694,7 @@
       coveredFrom: sampleFrom || Number.POSITIVE_INFINITY,
       now: at,
       fleet,
+      gestures: liveActs,
     }),
   );
 

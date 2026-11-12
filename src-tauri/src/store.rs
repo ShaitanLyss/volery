@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 72;
+const SCHEMA_VERSION: i64 = 73;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -452,6 +452,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (70, migrate_v70),
     (71, migrate_v71),
     (72, migrate_v72),
+    (73, migrate_v73),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4234,6 +4235,62 @@ fn migrate_v72(conn: &Connection) -> Result<(), String> {
         crate::analytics::refresh_day(conn, &host, &day)?;
     }
     Ok(())
+}
+
+/// The person's own gestures (§3.10), and the hour rollup that outlives them.
+///
+/// **A minute bucket rather than a second.** Every question asked of this table
+/// is a rate, and a per-second grain over a year is a hundred million rows to
+/// answer them; a burst of clicks in one minute is one row whose `count` is the
+/// number a sparkline reads.
+///
+/// **`detail` is in the fine key and not in the hour's.** The hour keeps the
+/// card, which is the dimension a reader filters by; it drops which view or
+/// which chord, because that multiplies rows without answering anything that
+/// survives three years — the same trade §3.6 makes when it drops `card` and
+/// `session` from `usage_hour`.
+///
+/// Both tables are written by the same call (`analytics::note_action_rows`),
+/// and neither is backfilled: nothing recorded a gesture before this rung, so
+/// there is nothing to derive one from.
+pub(crate) fn migrate_v73(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS action_fact (
+            at     INTEGER NOT NULL,
+            host   TEXT NOT NULL,
+            kind   TEXT NOT NULL,
+            target TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            count  INTEGER NOT NULL,
+            PRIMARY KEY (at, host, kind, target, detail)
+        );
+
+        CREATE TABLE IF NOT EXISTS action_hour (
+            at     INTEGER NOT NULL,
+            host   TEXT NOT NULL,
+            kind   TEXT NOT NULL,
+            target TEXT NOT NULL DEFAULT '',
+            count  INTEGER NOT NULL,
+            PRIMARY KEY (at, host, kind, target)
+        );
+
+        -- The marks, at the instant they happened. **A minute bucket cannot
+        -- hold an order**, and the order is what a context switch is: a ledger
+        -- of A then B then A inside one minute is one row per card in the
+        -- count table, sorted by an id that means nothing. One row per event,
+        -- for the five kinds whose sequence is the reading.
+        CREATE TABLE IF NOT EXISTS action_mark (
+            at     INTEGER NOT NULL,
+            host   TEXT NOT NULL,
+            kind   TEXT NOT NULL,
+            target TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (at, host, kind, target)
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v73: {e}"))
 }
 
 /// Write down that a prompt has just gone to this card's stdin. Called from the

@@ -20,9 +20,21 @@ const HOUR = 3_600_000;
 
 /** The strip's input with its two folded halves built the way the shell does:
  *  instances once, and the week's residual once. */
-function stripOf(input: { samples: any; costs: any; coveredFrom: number; now: number; fleet: any }) {
+function stripOf(input: {
+  samples: any;
+  costs: any;
+  coveredFrom: number;
+  now: number;
+  fleet: any;
+  gestures?: number;
+}) {
   const instances = input.samples === null ? [] : instancesOf(input.samples);
-  return stripModel({ ...input, instances, week: weekResidual(input.samples, instances, input.costs, input.now) });
+  return stripModel({
+    gestures: 0,
+    ...input,
+    instances,
+    week: weekResidual(input.samples, instances, input.costs, input.now),
+  });
 }
 const NOW = new Date(2026, 10, 12, 15, 0).getTime();
 
@@ -316,7 +328,15 @@ describe("the live strip", () => {
     expect(allowance.note).toContain("resets in 2h");
     expect(tiles.find((t) => t.key === "burn")!.value).toContain("tok/min");
     expect(tiles.find((t) => t.key === "cards")!.value).toBe("3");
-    expect(tiles.length).toBe(5);
+    /* Two fleet tiles, the two money ones, the gestures and the residual. */
+    expect(tiles.map((t) => t.key)).toEqual([
+      "allowance",
+      "today",
+      "burn",
+      "cards",
+      "gestures",
+      "unattributed",
+    ]);
   });
 
   test("no delta this week is a measured zero, not an unknown", () => {
@@ -434,5 +454,26 @@ describe("a window that has rolled", () => {
     ]);
     expect(instances.length).toBe(2);
     expect(bindingOf(instances, NOW)!.last).toBe(4);
+  });
+});
+
+describe("the gesture tile", () => {
+  test("is on the strip, and says this minute rather than a window", () => {
+    const tiles = stripOf({ samples: [sample()], costs: [], coveredFrom: NOW - 8 * 24 * HOUR, now: NOW, fleet: null, gestures: 12 });
+    const tile = tiles.find((t) => t.key === "gestures");
+    expect(tile).toBeDefined();
+    expect(tile!.value).toBe("12");
+    expect(tile!.off).toBe(false);
+  });
+
+  /* Nothing yet this minute is a reading, and the tile must not say "no
+     reading": the collector is running, and a person who has not clicked is
+     not a wall that could not answer. */
+  test("zero gestures is a real zero", () => {
+    const tiles = stripOf({ samples: [sample()], costs: [], coveredFrom: NOW - 8 * 24 * HOUR, now: NOW, fleet: null, gestures: 0 });
+    const tile = tiles.find((t) => t.key === "gestures")!;
+    expect(tile.value).toBe("0");
+    expect(tile.off).toBe(false);
+    expect(tile.note).toContain("nothing yet");
   });
 });

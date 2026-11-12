@@ -25,6 +25,7 @@ import {
   type Choice,
 } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
+import { acts } from "./acts.svelte";
 import { freshening } from "./freshening.svelte";
 import { currentCli, runRow, staleCards, type Run as FreshRun, type Stale } from "./freshen";
 import { purse } from "./purse.svelte";
@@ -5185,6 +5186,13 @@ export class Skein {
        would ever drain it. A dormant card is not behind anything: this send is
        what wakes it. */
     const behindTurn = conv.working && !conv.dormant;
+    /* **Only what the person sent.** `yours` is the composer and dictation,
+       which are the two roads a typed sentence takes; a resume prompt, a
+       relayed message from another card and this wall's own notes all arrive
+       without it, and counting them would make the scoreboard measure the
+       wall's manners rather than the person's day (§3.10). What was said is
+       not recorded — a send is a mark, never a word. */
+    if (opts.yours) acts.note("send", conv.id);
     conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own });
     const sent = await this.#route(conv, text, turn, { ...opts, behindTurn });
     /* A model switch carries its usual effort with it — see `effortForModel`.
@@ -5458,6 +5466,11 @@ export class Skein {
          dock's stop and *send now* all aim at the same nothing. The mark is
          Rust's own, so this is not the wall asking itself. */
       const turning = await invoke<boolean>("interrupt_conversation", { id: conv.id });
+      /* A turn that was actually open, and not the gesture's own bare word:
+         this is Rust's mark answering, which is the same test the branch below
+         is built on. An interrupt aimed at nothing is not a gesture the person
+         made (§3.10). */
+      if (turning) acts.note("interrupt", conv.id);
       /* **And never on the gesture's own bare word.** `openedByGesture` is true
          from the Enter to the first thing the process says, and in that span
          the mark can say nothing useful: the write may not have landed yet (the

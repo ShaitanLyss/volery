@@ -7,6 +7,7 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import type { Conversation } from "./lib/conversation.svelte";
   import { clock } from "./lib/conversation.svelte";
+  import { acts } from "./lib/acts.svelte";
   import Drop from "./lib/Drop.svelte";
   import Sieve from "./lib/Sieve.svelte";
   import { Attention } from "./lib/attention.svelte";
@@ -711,7 +712,25 @@
     }
     runChord(verb);
   });
-  function runChord(verb: ChordVerb) {
+  /** Which member of the verb a row names, for the scoreboard's detail line.
+   *  One field per variant in `leader.ts`'s `Verb`, and none of them is
+   *  anything the person typed — a chord's own word (`analytics`, `span`) or
+   *  a widget kind. */
+  function chordTarget(verb: ChordVerb): string {
+    const o = verb as unknown as Record<string, unknown>;
+    for (const key of ["what", "act", "mode", "toy", "widget"]) {
+      const got = o[key];
+      if (typeof got === "string") return got;
+    }
+    return "";
+  }
+
+  function runChord(verb: ChordVerb, from: "leader" | "palette" = "leader") {
+    /* One verb, two roads to it, and the kind says which — a chord typed and a
+       pick from a list are different gestures even when they run the same
+       thing (§3.10). Nothing is typed here: `said` is the chord's own label,
+       which every one of them already has. */
+    acts.note(from === "leader" ? "leader" : "command", chordTarget(verb), verb.kind);
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") {
       if (verb.what === "pile") presence.openPile();
@@ -3863,6 +3882,7 @@
    *  window moving before the view does, since the two fight otherwise. */
   async function switchView(to: View) {
     if (to === view.current) return;
+    acts.note("view", to);
     if (to === "chat") {
       /* A question in the dock you had half answered for a card other than
          the focused one: chat view opens on *that* conversation, because what
@@ -4006,8 +4026,8 @@
     if (e.kind === "chord") {
       const c = CHORDS.find((k) => k.keys === e.keys);
       if (!c) return;
-      if (actsOnWall(c.verb)) void switchView("wall").then(() => runChord(c.verb));
-      else runChord(c.verb);
+      if (actsOnWall(c.verb)) void switchView("wall").then(() => runChord(c.verb, "palette"));
+      else runChord(c.verb, "palette");
     } else if (e.kind === "command") {
       field.text = `/${e.name} `;
       field.caret = null;
@@ -4043,6 +4063,10 @@
    *  the one thing in a focus that is about which wall a card is on. */
   function ring(c: CardHandle) {
     focusedId = c.id;
+    /* The one road to a focus, so this is where a visit starts (§3.10). The
+       collector keeps it to a change of card: landing on the one already in
+       hand is not a gesture. */
+    acts.focus(c.id);
     /* Never the wall's selection under chat view: that is a gathering Lyss
        may have built, and chat view does not read it (§5.2). */
     if (view.current === "chat") return;

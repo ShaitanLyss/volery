@@ -29,6 +29,16 @@
     toolLines,
   } from "./analyticsbehaviour";
   import type { BehaviourBundle } from "./analyticsbehaviourread.svelte";
+  import {
+    cardRows,
+    duration,
+    gestureRate,
+    gestureSeries,
+    interruptRate,
+    medianDwellMs,
+    perHour,
+    switchesPerHour,
+  } from "./acts";
   import type { HabitModel } from "./analyticsbehaviour";
   import { dayLabel } from "./analyticstrace";
   import { count, money } from "./usage";
@@ -66,6 +76,53 @@
       `${count(kpis.tools)} ${kpis.tools === 1 ? "tool" : "tools"} and ${count(kpis.servers)} mcp ` +
       `${kpis.servers === 1 ? "server" : "servers"}. ${habitSaid(habits)}.`,
   );
+
+  /* ── the hands (§3.10): what the person did, beside what the agents did ──── */
+
+  /** **Null is a reading this window cannot give, never a zero.** A store that
+   *  refused the ask, and a span answered from the hour rollup (which has the
+   *  counts and not the order a visit is folded from), both say so in words
+   *  rather than drawing a quiet day. */
+  const hand = $derived.by(() => {
+    if (bundle.actionsUnread) return null;
+    const w = bundle.actions;
+    return {
+      apm: gestureRate(w.series, w.from, w.to),
+      switches: switchesPerHour(w.marks, w.from, w.to),
+      dwell: medianDwellMs(w.marks, w.from, w.to),
+      interrupts: interruptRate(w.series),
+      cards: cardRows(w).slice(0, 10),
+      coarse: w.coarse,
+      /* A window holding more visits than a fold may be handed: the rate, the
+       counts and the strip are whole, and only the order is missing. */
+      capped: w.marksCapped,
+      grain: w.bucket === 60_000 ? "minute" : w.bucket === 3_600_000 ? "hour" : "day",
+    };
+  });
+
+  /** The strip, folded to at most this many columns. A year of minutes is half
+   *  a million bars; a drawing that puts one DOM node per minute is a page that
+   *  stops scrolling. Each column is the **sum** of the buckets it covers, so
+   *  the bars stay comparable, and the note under it says which grain it is. */
+  const STRIP_COLS = 220;
+  const strip = $derived.by(() => {
+    const raw = gestureSeries(bundle.actions);
+    if (raw.length <= STRIP_COLS) return { bars: raw, folded: 1 };
+    const per = Math.ceil(raw.length / STRIP_COLS);
+    const bars: number[] = [];
+    for (let i = 0; i < raw.length; i += per) bars.push(raw.slice(i, i + per).reduce((a, b) => a + b, 0));
+    return { bars, folded: per };
+  });
+  const stripTop = $derived(Math.max(1, ...strip.bars));
+
+  /** A rate below a tenth is said so, rather than rounded to a zero that reads
+   *  as *you did nothing*: a year averages a working day out to almost nothing,
+   *  and `0.0` is the one number that looks like a broken instrument. */
+  const apmSaid = $derived.by(() => {
+    if (hand?.apm == null) return "—";
+    if (hand.apm > 0 && hand.apm < 0.05) return "<0.1";
+    return hand.apm.toFixed(1);
+  });
 
   const basis = (reading: { basis: "rows" | "buckets" } | null) =>
     !reading ? "no call completed" : reading.basis === "buckets" ? "estimated from hourly bands" : "over completed calls";
@@ -320,6 +377,108 @@
     </section>
 
     <section class="bhp-section">
+      <h2>your hands</h2>
+      {#if bundle.actionsUnread}
+        <p class="bhp-nothing">
+          The recorded gestures could not be read for this window, so this band is missing rather than
+          quiet.
+        </p>
+      {:else if hand && (hand.switches !== null || hand.apm !== null)}
+        <p>
+          The wall records what you did, never what you typed: a click, a prompt sent, a turn stopped, a
+          chord. That is the second subject beside the money, and the one that says whether a day was
+          focused or scattered.
+        </p>
+        <div class="bhp-figures">
+          <div class="bhp-figure">
+            <span class="bhp-flabel">actions a minute</span>
+            <span class="bhp-fvalue">{apmSaid}</span>
+            <span class="bhp-fnote">clicks, prompts, interrupts and commands, averaged over the window</span>
+          </div>
+          <div class="bhp-figure">
+            <span class="bhp-flabel">context switches</span>
+            <span class="bhp-fvalue">{perHour(hand.switches)}</span>
+            <span class="bhp-fnote">
+              {hand.coarse
+                ? "the order the visits happened in is kept for ninety days, so this window has no switch count"
+                : hand.capped
+                  ? "this window holds more visits than one fold is handed, so the switches and stays are missing"
+                  : "a brief return to the card you were on is one visit, not two switches"}
+            </span>
+          </div>
+          <div class="bhp-figure">
+            <span class="bhp-flabel">median stay</span>
+            <span class="bhp-fvalue">{duration(hand.dwell)}</span>
+            <span class="bhp-fnote">the middle stay on one card, so one card left open all night does not move it</span>
+          </div>
+          <div class="bhp-figure">
+            <span class="bhp-flabel">interrupted</span>
+            <span class="bhp-fvalue">
+              {hand.interrupts === null ? "—" : rateSaid(hand.interrupts.share)}
+            </span>
+            <span class="bhp-fnote">
+              {hand.interrupts === null
+                ? hand.coarse
+                  ? "a mark is kept for ninety days, so this window has no interrupt count"
+                  : "no prompt was sent in this window"
+                : `${count(hand.interrupts.interrupts)} of ${count(hand.interrupts.sends)} prompts stopped mid-turn`}
+            </span>
+          </div>
+        </div>
+        {#if strip.bars.length > 0}
+          <div class="bhp-strip" role="img" aria-label="deliberate gestures over the window, one bar per bucket">
+            {#each strip.bars as v, i (i)}
+              <span style={`height:${(v / stripTop) * 100}%`}></span>
+            {/each}
+          </div>
+          <p class="bhp-small">
+            One bar is {strip.folded === 1 ? `a ${hand.grain}` : `${strip.folded} ${hand.grain}s`}, and its height is the
+            gestures in it: clicks, prompts, interrupts and commands. The tallest holds
+            {count(stripTop)}. Quiet stretches are drawn as a baseline rather than left out, so a gap
+            is a gap.
+          </p>
+        {/if}
+        {#if hand.cards.length > 0}
+          <table class="bhp-cards">
+            <thead>
+              <tr>
+                <th>card</th>
+                <th>visits</th>
+                <th>sent</th>
+                <th>stopped</th>
+                <th>stayed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each hand.cards as row (row.card)}
+                <tr>
+                  <td title={row.card}>{row.card.slice(0, 8)}</td>
+                  <td>{row.focus}</td>
+                  <td>{row.sends}</td>
+                  <td>{row.interrupts}</td>
+                  <!-- A stay is folded from the order, which the hour tier does
+                       not keep: a column of zeros here would be a wrong answer
+                       drawn where a missing one is honest. -->
+                  <td>{hand.coarse || hand.capped ? "—" : duration(row.dwellMs)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="bhp-small">
+            Busiest first, by visits and prompts together. A card with a high stopped count against a
+            low prompt count is one that cannot be left alone.
+          </p>
+        {/if}
+      {:else}
+        <p class="bhp-nothing">
+          No click, prompt, interrupt or command was recorded in this window. That is a quiet window
+          rather than a missing one: a read the wall could not answer says so above instead of
+          falling through to here.
+        </p>
+      {/if}
+    </section>
+
+    <section class="bhp-section">
       <h2>what these figures are</h2>
       <p>
         Calls, failures and result sizes are measured from the hourly rollup, which is kept while the
@@ -336,6 +495,12 @@
         The habits count sessions the wall itself opened, so a renewal is another session and counts again.
         A session was opened by a person or by an agent, and one with no lineage record is counted as
         unknown rather than folded into either.
+      </p>
+      <p>
+        The gestures are recorded on this machine, one row a minute, and are kept at that grain for ninety
+        days: switches and stays stop there, because a visit is folded from the order the events arrived in
+        and the hourly rollup keeps the counts and not the order. Nothing types: a prompt is a mark, never
+        its words, and there is no kind for a keystroke.
       </p>
     </section>
   </article>
@@ -500,6 +665,59 @@
   .bhp-list dd {
     margin: 0;
     color: var(--paper-dim);
+  }
+
+  /* The gesture strip (§3.10): one bar per bucket, thin, anchored to a
+     baseline so a quiet stretch reads as ground rather than as a missing
+     drawing. No hue: this page draws status in the theme's own greys, and a
+     rate is not a state. */
+  .bhp-strip {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 72px;
+    padding-top: 2px;
+    border-bottom: 1px solid var(--edge);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .bhp-strip span {
+    flex: 1 1 0;
+    min-width: 1px;
+    max-width: 6px;
+    background: var(--paper-faint);
+    border-radius: 2px 2px 0 0;
+    transition: background 140ms ease;
+  }
+  .bhp-strip:hover span {
+    background: var(--paper-dim);
+  }
+
+  .bhp-cards {
+    width: 100%;
+    max-width: 560px;
+    border-collapse: collapse;
+    font-family: var(--body);
+    font-size: 12.5px;
+  }
+  .bhp-cards th {
+    text-align: left;
+    font-family: var(--cv-ui, var(--util));
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.055em;
+    color: var(--paper-faint);
+    padding: 0 10px 4px 0;
+    border-bottom: 1px solid var(--edge);
+  }
+  .bhp-cards td {
+    padding: 5px 10px 5px 0;
+    color: var(--paper-dim);
+    border-bottom: 1px solid color-mix(in oklab, var(--edge) 55%, transparent);
+    font-variant-numeric: tabular-nums;
+  }
+  .bhp-cards tbody tr:last-child td {
+    border-bottom: 0;
   }
 
   @media (max-width: 1080px) {

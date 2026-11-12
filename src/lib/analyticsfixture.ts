@@ -19,6 +19,7 @@ import type { SpendWatch } from "./spend";
 import type { Fact, HourFact, ToolTotal, UsageRow } from "./analytics";
 import type { BehaviourBundle, BehaviourReader } from "./analyticsbehaviourread.svelte";
 import type { SessionFact } from "./analyticsbehaviour";
+import type { ActionMark, ActionSeriesRow, ActionSlice, ActionWindow } from "./acts";
 import type { CardLife, LifeSpend } from "./analyticslife";
 import type { LifeReader } from "./analyticsliferead.svelte";
 import type { AllowanceCost, AllowanceSample } from "./allowancesamples";
@@ -669,7 +670,25 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
   const since = req.since;
   const until = req.until;
   const span = Math.max(60_000, until - since);
-  if (mode !== "normal") return { tools: [], sessions: [], changes: [], changesUnread: false };
+  if (mode !== "normal")
+    return {
+      tools: [],
+      sessions: [],
+      changes: [],
+      actions: {
+        from: since,
+        to: until,
+        bucket: 60_000,
+        coarse: false,
+        marksCapped: false,
+        series: [],
+        marks: [],
+        cards: [],
+        hosts: [],
+      },
+      changesUnread: false,
+      actionsUnread: false,
+    };
 
   const random = rng(Math.floor(span / 60_000) + 7);
 
@@ -815,7 +834,77 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
       provenance: "receipt",
     },
   ];
-  return { tools, sessions, changes, changesUnread: false };
+  return { tools, sessions, changes, actions: fixtureActions(since, until), changesUnread: false, actionsUnread: false };
+}
+
+/** The gesture window the behaviour page's band draws from (§3.10).
+ *
+ *  Deterministic for one span, and shaped to make the folds *visible* rather
+ *  than merely non-empty: a card returned to inside the twenty-second floor
+ *  (which is one visit, not two switches), a burst of clicks in one minute, two
+ *  walls so the per-machine split has something to split, and a run of quiet
+ *  buckets so the strip's gaps are gaps. */
+function fixtureActions(since: number, until: number): ActionWindow {
+  const span = Math.max(60_000, until - since);
+  /* **The same tier the store would answer with.** A span past the fine tier
+     has counts and no marks, and the preview has to show that rather than a
+     comfortable version of it: the band's whole honest half is what it says
+     when the order is gone. */
+  const coarse = span > 90 * 24 * 3_600_000;
+  const at = (f: number) => Math.round((since + span * f) / 60_000) * 60_000;
+  const cards = ["a1", "b2", "c3", "d4"] as const;
+  const marks: ActionMark[] = [];
+  const cardsFocused = new Map<string, { first: number; last: number; count: number }>();
+  let focus = 0;
+  for (let i = 0; i < 26; i++) {
+    const f = 0.02 + (i / 26) * 0.94;
+    /* Every fourth stay is a glance: out and back inside the floor. */
+    const card = i % 4 === 0 && i > 0 ? cards[(focus - 2 + 8) % cards.length]! : cards[focus % cards.length]!;
+    const at0 = at(f);
+    marks.push({ at: at0, host: i % 3 === 0 ? "laptop" : "desk", kind: "focus", target: card });
+    const held = cardsFocused.get(card) ?? { first: at0, last: at0, count: 0 };
+    held.count++;
+    held.last = at0;
+    cardsFocused.set(card, held);
+    if (i % 4 === 0 && i > 0) continue;
+    focus++;
+    if (i % 3 === 0) marks.push({ at: at0 + 60_000, host: "desk", kind: "send", target: card });
+    if (i % 9 === 4) marks.push({ at: at0 + 120_000, host: "desk", kind: "interrupt", target: card });
+  }
+  /* The same ladder the reader climbs, so a year is 365 bars rather than half a
+     million. */
+  const bucket = span > 60 * 24 * 3_600_000 ? 24 * 3_600_000 : span > 2 * 24 * 3_600_000 ? 3_600_000 : 60_000;
+  const series: ActionSeriesRow[] = [];
+  for (let t = since - (since % bucket); t < until; t += bucket) {
+    const f = (t - since) / span;
+    /* A working day: busy through the middle, quiet at both ends. */
+    const busy = Math.max(0, Math.sin(f * Math.PI));
+    if (busy < 0.05) continue;
+    series.push({ at: t, kind: "click", count: Math.round(busy * 14) });
+    if (busy > 0.5) series.push({ at: t, kind: "send", count: Math.round(busy * 2) });
+  }
+  const cardsOut: ActionSlice[] = [...cardsFocused].flatMap(([key, held]) => [
+    { key, kind: "focus", count: held.count, first: held.first, last: held.last },
+    { key, kind: "send", count: marks.filter((m) => m.kind === "send" && m.target === key).length, first: held.first, last: held.last },
+  ]);
+  const hosts: ActionSlice[] = ["laptop", "desk"].map((key) => ({
+    key,
+    kind: "focus",
+    count: marks.filter((m) => m.kind === "focus" && m.host === key).length,
+    first: since,
+    last: until,
+  }));
+  return {
+    from: since,
+    to: until,
+    bucket,
+    coarse,
+    marksCapped: false,
+    series,
+    marks: coarse ? [] : marks,
+    cards: cardsOut,
+    hosts,
+  };
 }
 
 /** The preview's behaviour reader: `?tab=behaviour` drives the same component

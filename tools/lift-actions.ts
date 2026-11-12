@@ -1,0 +1,191 @@
+/* Actually run the action scoreboard's store assertions on a machine with no MSVC.
+ *
+ *     bun tools/lift-actions.ts
+ *
+ * ### What is being lifted, and why it cannot be checked by reading it
+ *
+ * `src-tauri/src/analytics.rs`'s actions block, between its `LIFT-BEGIN` and
+ * `LIFT-END` markers, with the **real** `store::migrate_v73` out of `store.rs`
+ * and a real in-memory SQLite behind it. That last part is the whole reason
+ * this lift exists rather than a note in the build rule: the arithmetic it
+ * checks is *delta arithmetic over an upsert*, and no amount of reading tells
+ * you whether a retried flush doubles every click in it.
+ *
+ * The claim being tested is not "the rows land". It is that **a row is a
+ * statement about a bucket so far**, so the writer can take the larger of the
+ * two and fold only the difference into the hour. Get the difference wrong in
+ * either direction and nothing errors: the day's rate is simply too high or too
+ * low, for ever, in one direction.
+ *
+ * The markers exist so the lift compiles the assertions rather than a
+ * transcription of them: a test added inside them is run here, and a test that
+ * drifts outside them is a test this machine silently stops running, which the
+ * runner's pass-count check would only notice once every one of them had gone.
+ */
+
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { blockAt, depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
+
+const ANALYTICS = "src-tauri/src/analytics.rs";
+const ACTS = "src/lib/acts.ts";
+const STORE = "src-tauri/src/store.rs";
+const CLIP = "src-tauri/flyway-core/src/clip.rs";
+const CLEAN = "src-tauri/flyway-core/src/clean.rs";
+const DEPS = depsDir();
+const HOST = "src-tauri/target/debug/deps";
+
+const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+
+/** Everything between the two markers, exclusive, so the block's own prose is
+ *  not run as code and the command wrappers after the end marker are not
+ *  lifted (they reach `AppHandle` and the store's mutex, which is the crate). */
+function actionsBlock(): string {
+  const src = read(ANALYTICS);
+  const begin = src.indexOf("/* LIFT-BEGIN actions");
+  const end = src.indexOf("/* LIFT-END actions */");
+  if (begin < 0 || end < 0) throw new Error(`no LIFT markers in ${ANALYTICS} — were they removed?`);
+  if (end < begin) throw new Error(`LIFT-END comes before LIFT-BEGIN in ${ANALYTICS}`);
+  const after = src.indexOf("*/", begin);
+  if (after < 0 || after > end) throw new Error(`LIFT-BEGIN's comment is unterminated in ${ANALYTICS}`);
+  return src.slice(after + 2, end);
+}
+
+/** The rung that creates the two tables. Lifted rather than restated: a test
+ *  that made its own tables could pass against a shape the migration does not
+ *  produce, which is the one thing a test of a migration must not do. */
+function rung(): string {
+  const lines = read(STORE).split("\n");
+  const at = lines.findIndex((l) => /^\s*pub\(crate\) fn migrate_v73\b/.test(l));
+  if (at < 0) throw new Error(`no migrate_v73 in ${STORE} — has it been renamed?`);
+  return blockAt(lines, at, STORE);
+}
+
+/** The words between a marker and its closing bracket, quoted or not. */
+function wordsAfter(src: string, marker: string, close: string): string[] {
+  const at = src.indexOf(marker);
+  if (at < 0) throw new Error(`${marker} has gone — rename or remove this check with it`);
+  const end = src.indexOf(close, at);
+  if (end < 0) throw new Error(`${marker}'s list is unterminated`);
+  return [...src.slice(at, end).matchAll(/"([a-z]+)"/g)].map((m) => m[1]!);
+}
+
+/** **The two copies of the vocabulary, held together.** `analytics.rs` refuses
+ *  a kind it does not know and `acts.ts` types every `note()` against its own
+ *  list, so a word added to one side alone is either a row the writer refuses
+ *  (and a flush that retries for ever) or a kind nothing ever emits. Neither
+ *  says so, either: the refusal is a rejected promise in a fire-and-forget
+ *  flush, and the unused kind is a row that simply never appears. It costs no
+ *  Rust to check, so it runs before the compile. */
+function parity(): void {
+  const rust = read(ANALYTICS);
+  const ts = read(ACTS);
+  const pairs: [string, string][] = [
+    ["ACTION_KINDS", "ACTION_KINDS"],
+    ["ACTION_MARK_KINDS", "MARK_KINDS"],
+  ];
+  for (const [was, now] of pairs) {
+    const a = wordsAfter(rust, `pub const ${was}:`, "];");
+    const b = wordsAfter(ts, `export const ${now}`, "] as");
+    const same = a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
+    if (!same) {
+      console.error(
+        `${now} disagrees between analytics.rs and acts.ts:\n  rust: ${a.join(", ")}\n  ts:   ${b.join(", ")}`,
+      );
+      process.exit(1);
+    }
+  }
+}
+
+parity();
+
+const lift = [
+  "// GENERATED by tools/lift-actions.ts — do not edit, do not keep.",
+  "mod clean {",
+  read(CLEAN),
+  "}",
+  "mod clip {",
+  read(CLIP),
+  "}",
+  /* A stub, not a copy of the logic: the block only needs the number, and the
+     day is the one constant on this wall that is not going to move. */
+  "mod flyway { pub mod analytics { pub const DAY_MS: i64 = 86_400_000; } }",
+  "mod store {",
+  "use rusqlite::Connection;",
+  rung(),
+  "}",
+  "use flyway::analytics::DAY_MS;",
+  "use rusqlite::{params, Connection, OptionalExtension};",
+  "use serde::{Deserialize, Serialize};",
+  /* The three constants `analytics.rs` imports or defines above the block. */
+  "pub(crate) const HOUR_MS: i64 = 60 * 60 * 1000;",
+  "pub(crate) const FINE_KEEP_MS: i64 = 90 * 24 * 60 * 60 * 1000;",
+  actionsBlock(),
+].join("\n");
+
+const dir = mkdtempSync(join(tmpdir(), "lift-actions-"));
+const file = join(dir, "lifted.rs");
+const exe = join(dir, "lifted.exe");
+writeFileSync(file, lift);
+
+/* The EDR on this machine refuses to start a fresh exe out of `%TEMP%` the
+   first time it sees it, and refuses to remove a directory holding one. The
+   spawn is retried and the cleanup is best-effort; neither is a code problem
+   (`tools/lift-rollups.ts` carries the same pair for the same reason). */
+function run(exe: string): ReturnType<typeof spawnSync> {
+  for (let go = 0; go < 5; go++) {
+    const got = spawnSync(exe, ["--test-threads", "1"], { encoding: "utf8" });
+    if (got.error && (got.error as NodeJS.ErrnoException).code === "EPERM") continue;
+    return got;
+  }
+  return spawnSync(exe, ["--test-threads", "1"], { encoding: "utf8" });
+}
+
+try {
+  const build = spawnSync(
+    "rustc",
+    [
+      "--test",
+      "--edition",
+      "2021",
+      "--crate-name",
+      "actions",
+      "-A",
+      "dead_code",
+      "--extern",
+      `serde=${newestRlib("serde")}`,
+      "--extern",
+      `rusqlite=${newestRlib("rusqlite")}`,
+      "-L",
+      `dependency=${DEPS}`,
+      "-L",
+      `dependency=${HOST}`,
+      file,
+      "-o",
+      exe,
+    ],
+    /* Load-bearing, as in every lift: bare `rustc` takes the msvc default and
+       dies on `link: extra operand`, which names nothing (sink b282b54c). */
+    { encoding: "utf8", env: rustEnv() },
+  );
+  if (build.status !== 0) {
+    console.error(build.stderr || build.stdout);
+    console.error(`\nthe lift is at ${file} — it was NOT removed, so you can read it.`);
+    process.exit(1);
+  }
+  const got = run(exe);
+  console.log(got.stdout);
+  if (got.stderr) console.error(got.stderr);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* The EDR holds the exe; the directory is in `%TEMP%` and would be swept
+       anyway. Never turn that into a red lift. */
+  }
+  process.exit(got.status ?? 1);
+} catch (e) {
+  console.error(e);
+  process.exit(1);
+}

@@ -4277,6 +4277,22 @@ fn write_tail(
         [cutoff],
     )
     .map_err(|e| format!("analytics: prune invalidation: {e}"))?;
+    /* **The gesture fine tier keeps the same ninety days, and its hour rollup
+       is written when the gesture is, not here** (§3.10). `action_hour` is not
+       in this list: it is the three-year tier, and a wall opened after ninety
+       idle days would prune these rows without ever running a pass that could
+       have rolled them up. Pruned by the end of the bucket, the same rule the
+       facts follow, so a minute at the old edge is not a hole for ever. */
+    tx.execute(
+        "DELETE FROM action_fact WHERE at <= ?1",
+        [cutoff - ACTION_MINUTE_MS],
+    )
+    .map_err(|e| format!("analytics: prune actions: {e}"))?;
+    /* The marks keep the same ninety days and are the reason the face says
+       switches and stays stop there: their `at` is an instant, so the same
+       range is expressed against the cutoff rather than the end of a bucket. */
+    tx.execute("DELETE FROM action_mark WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune marks: {e}"))?;
     if !alive.is_empty() {
         let known: Vec<String> = {
             let mut stmt = tx
@@ -7495,6 +7511,860 @@ pub async fn allowance_costs(
         let store = app.state::<Store>();
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
         allowance_cost_rows(&conn, from, to)
+    })
+    .await?
+}
+
+/* ── the person's own actions (§3.10) ──────────────────────────────────────*/
+
+/* LIFT-BEGIN actions
+ *
+ * `tools/lift-actions.ts` compiles everything between these two markers, with
+ * the real `migrate_v73` out of `store.rs`, and runs its assertions. `cargo
+ * test` does not link on a machine with no MSVC (`.claude/rules/build.md`), so
+ * without the markers the whole of this block would be code nobody has ever
+ * run. Nothing outside the markers may be reached from inside them. */
+
+/// The verbs a gesture may be recorded as. **A closed vocabulary, and this is
+/// the only place it is written in Rust.**
+///
+/// `acts.ts` carries the same fifteen words as a union and
+/// `tools/lift-actions.ts` reads both files and fails when they disagree. That
+/// is the shape every other vocabulary on the wire uses (the flyway's `TAGS`
+/// are held against their enum by a test), because the failure is otherwise
+/// silent in both directions: a kind one side spells differently is a row the
+/// writer refuses, or a row nothing draws, and neither says so.
+///
+/// **There is no `key`.** Not a keystroke is recorded, and the vocabulary says
+/// so rather than leaving the next person to add one.
+pub const ACTION_KINDS: [&str; 15] = [
+    "focus", "send", "interrupt", "click", "command", "leader", "view", "open", "close", "spawn",
+    "move", "rename", "search", "pause", "resume",
+];
+
+/// The kinds that are **marks**: one row per event, whose *order* is the
+/// reading. A focus mark is what a context switch is folded from, so these are
+/// the rows a window returns one by one rather than only summed.
+pub const ACTION_MARK_KINDS: [&str; 5] = ["focus", "send", "interrupt", "spawn", "close"];
+
+/// A gesture's bucket. A minute rather than a second: every question asked of
+/// this table is a rate ("a minute", "an hour", "today"), and a per-second
+/// grain over a year is a hundred million rows to answer them with.
+pub const ACTION_MINUTE_MS: i64 = 60 * 1000;
+
+/// Rows one flush may carry. A flush is a five-second batch of a person's
+/// gestures; four hundred in one is a malformed call rather than a busy hand.
+pub const ACTION_NOTE_CAP: usize = 400;
+
+/// Groups any one of a window's three aggregates may produce. Past it the
+/// window is refused rather than truncated, the bargain every read here
+/// strikes: a count folded from the first fifty thousand rows is a smaller
+/// number presented as a whole one.
+pub const ACTION_ROW_CAP: usize = 50_000;
+
+/// Marks a window may return. **Its own ceiling and its own answer**, because
+/// what it protects is different: a window that holds more visits than a fold
+/// may be handed still has every count, rate and per-card total it was asked
+/// for, so this refuses the marks alone (`marks_capped`) rather than the
+/// window. Ninety days of a heavy hand is tens of thousands of these.
+pub const ACTION_MARK_CAP: usize = 40_000;
+
+const ACTION_TARGET_KEEP: usize = 80;
+const ACTION_DETAIL_KEEP: usize = 40;
+
+/// How late a flush may be, and how far ahead its clock may be. A wall asleep
+/// keeps its buckets and sends them on waking, so the past bound is generous;
+/// the future one is not, because a bucket after now would sit outside every
+/// window the reader reconstructs.
+const ACTION_LATE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const ACTION_EARLY_MS: i64 = 5 * 60 * 1000;
+
+/// One gesture, as the collector sends it: a bucket, a verb, what it acted on
+/// and how many of it happened in that bucket.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionNote {
+    pub at: i64,
+    pub kind: String,
+    pub target: String,
+    pub detail: String,
+    pub count: i64,
+}
+
+/// One **mark**: a gesture whose *order* is the reading, sent at the instant it
+/// happened rather than at its minute.
+///
+/// A mark kind is sent twice, deliberately: once as a count (so it reaches the
+/// rates and the three-year rollup) and once as a mark (so the sequence
+/// survives). They are two facts about one gesture rather than two sources for
+/// one, which is why they cannot disagree: both are made by the same line of
+/// the collector.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionMark {
+    pub at: i64,
+    pub kind: String,
+    pub target: String,
+    pub detail: String,
+}
+
+/// Marks one flush may carry. A flush is a few seconds of a person's gestures;
+/// four hundred in one is a malformed call.
+pub const ACTION_MARK_NOTE_CAP: usize = 400;
+
+/// Record a batch of gestures, and fold it into the hour it belongs to.
+///
+/// **A row is a statement about a bucket so far, not a delta.** The collector
+/// holds a bucket's counts while the minute is open and sends the running
+/// total each flush, so a flush whose answer was lost and is sent again must
+/// add nothing. The writer therefore takes the larger of what it holds and what
+/// it was sent, and adds only the difference to the hour — where an additive
+/// write would double every click in a retried batch and a bare `MAX` would
+/// lose the minutes a flush did not mention.
+///
+/// The hour is written here rather than by a later rollup pass, and that is the
+/// difference between a three-year tier and a hole: a wall that is opened after
+/// ninety idle days prunes its minute rows without ever running anything that
+/// would have rolled them up.
+///
+/// **Marks are the other half of the same gesture.** They are events rather
+/// than running totals, so they are inserted one per row and a repeat is
+/// ignored by the primary key: re-sending a flush that landed adds nothing, for
+/// the same reason `MAX` makes a retried count free. Their `at` is the instant,
+/// not the minute — a minute cannot hold the order a switch is folded from.
+pub fn note_action_rows(
+    conn: &Connection,
+    host: &str,
+    notes: &[ActionNote],
+    marks: &[ActionMark],
+    now: i64,
+) -> Result<usize, String> {
+    if notes.len() > ACTION_NOTE_CAP {
+        return Err(format!(
+            "analytics: {} actions in one note is more than {ACTION_NOTE_CAP}",
+            notes.len()
+        ));
+    }
+    if marks.len() > ACTION_MARK_NOTE_CAP {
+        return Err(format!(
+            "analytics: {} marks in one note is more than {ACTION_MARK_NOTE_CAP}",
+            marks.len()
+        ));
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("analytics: actions: {e}"))?;
+    let mut held = tx
+        .prepare(
+            "SELECT count FROM action_fact
+              WHERE at = ?1 AND host = ?2 AND kind = ?3 AND target = ?4 AND detail = ?5",
+        )
+        .map_err(|e| format!("analytics: actions: {e}"))?;
+    let mut put = tx
+        .prepare(
+            "INSERT INTO action_fact (at, host, kind, target, detail, count)
+             VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(at, host, kind, target, detail)
+             DO UPDATE SET count = MAX(action_fact.count, excluded.count)",
+        )
+        .map_err(|e| format!("analytics: actions: {e}"))?;
+    let mut hour = tx
+        .prepare(
+            "INSERT INTO action_hour (at, host, kind, target, count)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(at, host, kind, target)
+             DO UPDATE SET count = action_hour.count + excluded.count",
+        )
+        .map_err(|e| format!("analytics: actions: {e}"))?;
+    let mut written = 0;
+    for n in notes {
+        if n.at <= 0 || n.at > now + ACTION_EARLY_MS || n.at < now - ACTION_LATE_MS {
+            /* A bucket outside the window is a clock that is wrong somewhere.
+               Refused rather than clamped: a gesture moved to `now` would be
+               attributed to a minute it did not happen in. */
+            return Err(format!(
+                "analytics: an action bucket at {} is not one (now {now})",
+                n.at
+            ));
+        }
+        if n.at % ACTION_MINUTE_MS != 0 {
+            /* The bucket is the grain. A row at an instant would make two
+               writes for one minute, and every rate folded from the table
+               would count them as two minutes. */
+            return Err(format!(
+                "analytics: an action at {} is not on a minute boundary",
+                n.at
+            ));
+        }
+        let kind = crate::clip::keep(&n.kind, ACTION_DETAIL_KEEP).kept;
+        if !ACTION_KINDS.contains(&kind.as_str()) {
+            return Err(format!("analytics: {kind:?} is not an action kind"));
+        }
+        if n.count <= 0 {
+            return Err("analytics: an action row counts at least one gesture".into());
+        }
+        let target = crate::clip::keep(&n.target, ACTION_TARGET_KEEP).kept;
+        let detail = crate::clip::keep(&n.detail, ACTION_DETAIL_KEEP).kept;
+        let was: i64 = held
+            .query_row(params![n.at, host, kind, target, detail], |r| r.get(0))
+            .optional()
+            .map_err(|e| format!("analytics: actions: {e}"))?
+            .unwrap_or(0);
+        /* The bucket only grows, so anything at or below what is held is a
+           retry of a flush that already landed. */
+        if n.count <= was {
+            continue;
+        }
+        let delta = n.count - was;
+        put.execute(params![n.at, host, kind, target, detail, n.count])
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        hour.execute(params![
+            n.at - n.at % HOUR_MS,
+            host,
+            kind,
+            target,
+            delta
+        ])
+        .map_err(|e| format!("analytics: actions: {e}"))?;
+        written += 1;
+    }
+    drop(held);
+    drop(put);
+    drop(hour);
+    {
+        let mut mark = tx
+            .prepare(
+                "INSERT OR IGNORE INTO action_mark (at, host, kind, target, detail)
+                 VALUES (?1,?2,?3,?4,?5)",
+            )
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        for m in marks {
+            if m.at <= 0 || m.at > now + ACTION_EARLY_MS || m.at < now - ACTION_LATE_MS {
+                return Err(format!(
+                    "analytics: an action mark at {} is not one (now {now})",
+                    m.at
+                ));
+            }
+            let kind = crate::clip::keep(&m.kind, ACTION_DETAIL_KEEP).kept;
+            if !ACTION_MARK_KINDS.contains(&kind.as_str()) {
+                return Err(format!("analytics: {kind:?} is not an action mark"));
+            }
+            let target = crate::clip::keep(&m.target, ACTION_TARGET_KEEP).kept;
+            let detail = crate::clip::keep(&m.detail, ACTION_DETAIL_KEEP).kept;
+            written += mark
+                .execute(params![m.at, host, kind, target, detail])
+                .map_err(|e| format!("analytics: actions: {e}"))? as usize;
+        }
+    }
+    tx.commit()
+        .map_err(|e| format!("analytics: actions: {e}"))?;
+    Ok(written)
+}
+
+/// One bucket of the action series: a bucket floor, and how many gestures of a
+/// kind fell in it, summed over every target and every wall.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionSeriesRow {
+    pub at: i64,
+    pub kind: String,
+    pub count: i64,
+}
+
+/// One mark, in order. **`at` is the instant**, not the minute: a minute
+/// bucket cannot hold an order, and the order is the whole reading — A→B→A in
+/// ten seconds is one row per card in the count table, sorted by an id that
+/// means nothing. The twenty-second floor is applied by the reader over these
+/// rows, not here.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionMarkRow {
+    pub at: i64,
+    pub host: String,
+    pub kind: String,
+    pub target: String,
+}
+
+/// One row of a grouped slice, whether the group is a card or a wall.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionSliceRow {
+    pub key: String,
+    pub kind: String,
+    pub count: i64,
+    pub first: i64,
+    pub last: i64,
+}
+
+/// Everything one window asks of the action tables, in one read.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionWindow {
+    pub from: i64,
+    pub to: i64,
+    pub bucket: i64,
+    /// The window reached past the fine tier, so it was answered from the hour
+    /// rollup and there are no marks to fold. The face says which, because a
+    /// switch count that quietly stopped at ninety days would read as a habit
+    /// that changed.
+    pub coarse: bool,
+    /// The window held more marks than one fold may be handed, so `marks` is
+    /// empty for a reason other than the tier. Everything else is whole.
+    pub marks_capped: bool,
+    pub series: Vec<ActionSeriesRow>,
+    pub marks: Vec<ActionMarkRow>,
+    pub cards: Vec<ActionSliceRow>,
+    pub hosts: Vec<ActionSliceRow>,
+}
+
+/// What a window of a person's gestures looks like (§3.10, §11.9).
+///
+/// **One table per answer, chosen by the span.** A window inside the fine tier
+/// is read from `action_fact` and can say *when* each focus landed; a window
+/// reaching past it is read from `action_hour`, which has the counts and not
+/// the order. Mixing the two would double-count the overlap, since both cover
+/// it.
+///
+/// `bucket` is the drawing's own choice of grain and must divide the day, so
+/// every bucket boundary is a boundary of every other.
+pub fn action_window(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+    bucket: i64,
+    now: i64,
+) -> Result<ActionWindow, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    if !matches!(bucket, ACTION_MINUTE_MS | HOUR_MS | DAY_MS) {
+        return Err(format!(
+            "analytics: {bucket} ms is not an action bucket (a minute, an hour or a day)"
+        ));
+    }
+    /* **A minute of grace, because the two clocks are two clocks.** `from` was
+       worked out on the front end and `now` is taken here, milliseconds later,
+       so a span asked for as exactly ninety days fell on the coarse side every
+       time and the fine rows the whole window already holds were never read.
+       The grace is on the coarse side of the boundary, which is the side the
+       prune leaves room on: a row is deleted at `cutoff - a minute`, so the
+       minute past ninety days is still there to be read. */
+    let coarse = from < now - FINE_KEEP_MS - ACTION_MINUTE_MS;
+    let table = if coarse { "action_hour" } else { "action_fact" };
+    let bound = ACTION_ROW_CAP as i64 + 1;
+    let more_than = |what: &str, n: usize| -> Result<(), String> {
+        if n as i64 > ACTION_ROW_CAP as i64 {
+            Err(format!(
+                "analytics: this window holds more than {ACTION_ROW_CAP} action {what}, so it is \
+                 refused rather than truncated: ask for a narrower one"
+            ))
+        } else {
+            Ok(())
+        }
+    };
+
+    let series: Vec<ActionSeriesRow> = {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT at - (at % ?3), kind, SUM(count)
+                   FROM {table}
+                  WHERE at >= ?1 AND at < ?2
+                  GROUP BY 1, 2
+                  ORDER BY 1, 2
+                  LIMIT ?4"
+            ))
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        let rows = stmt
+            .query_map(params![from, to, bucket, bound], |r| {
+                Ok(ActionSeriesRow {
+                    at: r.get(0)?,
+                    kind: r.get(1)?,
+                    count: r.get(2)?,
+                })
+            })
+            .map_err(|e| format!("analytics: actions: {e}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        more_than("buckets", rows.len())?;
+        rows
+    };
+
+    let mut marks_capped = false;
+    let marks: Vec<ActionMarkRow> = if coarse {
+        Vec::new()
+    } else {
+        /* **From the mark table, not the count table.** A count row is one per
+           minute per card, sorted by an id that means nothing, so the order a
+           switch is folded from is not in it.
+           **Focus only**, and that is a budget rather than a claim about what
+           the table holds: the mark table records all five kinds, and the
+           switch fold is the one reader of their sequence today. Sending the
+           other four would multiply the payload of every window by its rate. */
+        let mut stmt = conn
+            .prepare(
+                "SELECT at, host, kind, target
+                   FROM action_mark
+                  WHERE at >= ?1 AND at < ?2 AND kind = 'focus'
+                  ORDER BY at
+                  LIMIT ?3",
+            )
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        let rows = stmt
+            .query_map(params![from, to, ACTION_MARK_CAP as i64 + 1], |r| {
+                Ok(ActionMarkRow {
+                    at: r.get(0)?,
+                    host: r.get(1)?,
+                    kind: r.get(2)?,
+                    target: r.get(3)?,
+                })
+            })
+            .map_err(|e| format!("analytics: actions: {e}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        if rows.len() > ACTION_MARK_CAP {
+            marks_capped = true;
+            Vec::new()
+        } else {
+            rows
+        }
+    };
+
+    let slice = |column: &str| -> Result<Vec<ActionSliceRow>, String> {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {column}, kind, SUM(count), MIN(at), MAX(at)
+                   FROM {table}
+                  WHERE at >= ?1 AND at < ?2
+                  GROUP BY 1, 2
+                  ORDER BY 3 DESC
+                  LIMIT ?3"
+            ))
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        let rows = stmt
+            .query_map(params![from, to, bound], |r| {
+                Ok(ActionSliceRow {
+                    key: r.get(0)?,
+                    kind: r.get(1)?,
+                    count: r.get(2)?,
+                    first: r.get(3)?,
+                    last: r.get(4)?,
+                })
+            })
+            .map_err(|e| format!("analytics: actions: {e}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        more_than("groups", rows.len())?;
+        Ok(rows)
+    };
+
+    let cards = slice("target")?;
+    let hosts = slice("host")?;
+    Ok(ActionWindow {
+        from,
+        to,
+        bucket,
+        coarse,
+        marks_capped,
+        series,
+        marks,
+        cards,
+        hosts,
+    })
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    /// A fixed instant, minute-aligned, so no assertion depends on today.
+    const NOW: i64 = 1_764_000_000_000;
+    const MIN: i64 = ACTION_MINUTE_MS;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::store::migrate_v73(&conn).unwrap();
+        conn
+    }
+
+    fn note(at: i64, kind: &str, target: &str, count: i64) -> ActionNote {
+        ActionNote {
+            at,
+            kind: kind.into(),
+            target: target.into(),
+            detail: String::new(),
+            count,
+        }
+    }
+
+    fn hour_of(conn: &Connection, kind: &str) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(SUM(count), 0) FROM action_hour WHERE kind = ?1",
+            [kind],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The hour tier is written by the same call as the minute tier, so the two
+    /// can only disagree if the delta arithmetic is wrong. Every other
+    /// assertion here is about one row; this is the one about the tiers.
+    #[test]
+    fn the_hour_equals_the_sum_of_its_minutes() {
+        let conn = db();
+        for step in 0..5 {
+            let at = NOW - 10 * MIN + step * MIN;
+            note_action_rows(
+                &conn,
+                "wall",
+                &[
+                    note(at, "click", "", 2 + step),
+                    note(at, "send", "card-a", 1),
+                ],
+                &[],
+                NOW,
+            )
+            .unwrap();
+            /* A second flush inside the same minute, as the collector makes. */
+            note_action_rows(&conn, "wall", &[note(at, "click", "", 9)], &[], NOW).unwrap();
+        }
+        let minutes: i64 = conn
+            .query_row("SELECT SUM(count) FROM action_fact", [], |r| r.get(0))
+            .unwrap();
+        let hours: i64 = conn
+            .query_row("SELECT SUM(count) FROM action_hour", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(minutes, hours);
+    }
+
+    #[test]
+    fn a_batch_lands_in_the_minute_and_the_hour() {
+        let conn = db();
+        let written = note_action_rows(&conn, "wall", &[note(NOW, "click", "", 7)], &[], NOW).unwrap();
+        assert_eq!(written, 1);
+        let (at, count): (i64, i64) = conn
+            .query_row("SELECT at, count FROM action_fact", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((at, count), (NOW, 7));
+        assert_eq!(hour_of(&conn, "click"), 7);
+    }
+
+    /// **The whole reason a row is a running total.** A flush whose answer was
+    /// lost is sent again, and an additive write would double it.
+    #[test]
+    fn a_retried_flush_adds_nothing() {
+        let conn = db();
+        let batch = [note(NOW, "click", "", 4)];
+        note_action_rows(&conn, "wall", &batch, &[], NOW).unwrap();
+        let written = note_action_rows(&conn, "wall", &batch, &[], NOW).unwrap();
+        assert_eq!(written, 0);
+        assert_eq!(hour_of(&conn, "click"), 4);
+    }
+
+    #[test]
+    fn a_growing_bucket_adds_only_the_difference() {
+        let conn = db();
+        note_action_rows(&conn, "wall", &[note(NOW, "click", "", 4)], &[], NOW).unwrap();
+        note_action_rows(&conn, "wall", &[note(NOW, "click", "", 9)], &[], NOW).unwrap();
+        assert_eq!(hour_of(&conn, "click"), 9);
+        let minute: i64 = conn
+            .query_row("SELECT count FROM action_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(minute, 9);
+    }
+
+    /// Two flushes in one minute, each naming a different verb: the hour must
+    /// carry both, which a bare `MAX` at the hour grain would lose.
+    #[test]
+    fn two_flushes_in_one_minute_both_reach_the_hour() {
+        let conn = db();
+        note_action_rows(&conn, "wall", &[note(NOW, "click", "", 3)], &[], NOW).unwrap();
+        note_action_rows(&conn, "wall", &[note(NOW, "send", "a", 1)], &[], NOW).unwrap();
+        let total: i64 = conn
+            .query_row("SELECT SUM(count) FROM action_hour", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn an_instant_that_is_not_a_minute_is_refused() {
+        let conn = db();
+        let err = note_action_rows(&conn, "wall", &[note(NOW + 1, "click", "", 1)], &[], NOW).unwrap_err();
+        assert!(err.contains("minute boundary"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_verb_is_refused() {
+        let conn = db();
+        let err = note_action_rows(&conn, "wall", &[note(NOW, "keystroke", "", 1)], &[], NOW).unwrap_err();
+        assert!(err.contains("not an action kind"), "{err}");
+    }
+
+    #[test]
+    fn a_row_that_counts_nothing_is_refused() {
+        let conn = db();
+        assert!(note_action_rows(&conn, "wall", &[note(NOW, "click", "", 0)], &[], NOW).is_err());
+    }
+
+    #[test]
+    fn a_bucket_outside_the_window_is_refused() {
+        let conn = db();
+        assert!(note_action_rows(&conn, "wall", &[note(NOW + 60 * MIN, "click", "", 1)], &[], NOW).is_err());
+        assert!(
+            note_action_rows(&conn, "wall", &[note(NOW - 30 * 24 * 60 * MIN, "click", "", 1)], &[], NOW)
+                .is_err()
+        );
+    }
+
+    /// Every text on the wire goes through `clip::keep`, and this one is
+    /// written by a browser and read by a page: a control character here is a
+    /// row no face can draw.
+    #[test]
+    fn text_is_capped_and_scrubbed() {
+        let conn = db();
+        note_action_rows(
+            &conn,
+            "wall",
+            &[ActionNote {
+                at: NOW,
+                kind: "view".into(),
+                target: "a\u{7}b".into(),
+                detail: "x\u{0}y".into(),
+                count: 1,
+            }],
+            &[],
+            NOW,
+        )
+        .unwrap();
+        let (target, detail): (String, String) = conn
+            .query_row("SELECT target, detail FROM action_fact", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(target, "ab");
+        assert_eq!(detail, "xy");
+        let long_target = "u".repeat(ACTION_TARGET_KEEP + 50);
+        note_action_rows(&conn, "wall", &[note(NOW, "view", &long_target, 1)], &[], NOW).unwrap();
+        let widest: i64 = conn
+            .query_row("SELECT MAX(LENGTH(target)) FROM action_fact", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(widest, ACTION_TARGET_KEEP as i64);
+    }
+
+    fn mark(at: i64, kind: &str, target: &str) -> ActionMark {
+        ActionMark {
+            at,
+            kind: kind.into(),
+            target: target.into(),
+            detail: String::new(),
+        }
+    }
+
+    /// A span with both halves of the record: the minute counts the rates read,
+    /// and the marks the sequence is folded from. Written at instants that are
+    /// **not** minute floors, because that is the only way the order can exist.
+    fn seeded() -> Connection {
+        let conn = db();
+        note_action_rows(
+            &conn,
+            "wall-a",
+            &[
+                note(NOW - 30 * MIN, "click", "", 5),
+                note(NOW - 30 * MIN, "send", "one", 1),
+                note(NOW - 10 * MIN, "focus", "one", 1),
+                note(NOW - 9 * MIN, "focus", "two", 1),
+                note(NOW - 8 * MIN, "interrupt", "two", 1),
+                note(NOW, "click", "", 2),
+            ],
+            &[
+                mark(NOW - 30 * MIN + 5_000, "send", "one"),
+                mark(NOW - 10 * MIN + 2_000, "focus", "one"),
+                mark(NOW - 9 * MIN + 2_000, "focus", "two"),
+                mark(NOW - 8 * MIN + 3_000, "interrupt", "two"),
+            ],
+            NOW,
+        )
+        .unwrap();
+        note_action_rows(
+            &conn,
+            "wall-b",
+            &[note(NOW - 10 * MIN, "focus", "three", 1)],
+            &[mark(NOW - 10 * MIN + 4_000, "focus", "three")],
+            NOW,
+        )
+        .unwrap();
+        conn
+    }
+
+    /// **The bug this table exists for.** A minute absorbs the order: A then B
+    /// then A inside ten seconds is one row per card, sorted by an id that
+    /// means nothing, and the twenty-second floor can never see the return.
+    /// The mark table keeps the instants, so the fold gets the sequence it was
+    /// written for.
+    #[test]
+    fn a_mark_keeps_its_instant_and_so_its_order() {
+        let conn = db();
+        note_action_rows(
+            &conn,
+            "wall",
+            &[],
+            &[
+                mark(NOW, "focus", "a"),
+                mark(NOW + 3_000, "focus", "b"),
+                mark(NOW + 8_000, "focus", "a"),
+            ],
+            NOW + 10_000,
+        )
+        .unwrap();
+        let w = action_window(&conn, NOW, NOW + MIN, ACTION_MINUTE_MS, NOW + 10_000).unwrap();
+        let seen: Vec<(&str, i64)> = w.marks.iter().map(|m| (m.target.as_str(), m.at)).collect();
+        assert_eq!(
+            seen,
+            vec![("a", NOW), ("b", NOW + 3_000), ("a", NOW + 8_000)]
+        );
+    }
+
+    /// **The marks a window returns are the visits, and nothing else.** The
+    /// interrupt rate is a count, so it is answered from the count table at
+    /// every span; multiplying every window's payload by its send rate to
+    /// answer the same question would be the wrong trade.
+    #[test]
+    fn a_window_returns_the_visits_and_not_every_mark() {
+        let conn = db();
+        note_action_rows(
+            &conn,
+            "wall",
+            &[note(NOW, "send", "a", 3)],
+            &[
+                mark(NOW + 1_000, "focus", "a"),
+                mark(NOW + 2_000, "send", "a"),
+                mark(NOW + 3_000, "interrupt", "a"),
+            ],
+            NOW + 5_000,
+        )
+        .unwrap();
+        let w = action_window(&conn, NOW, NOW + MIN, ACTION_MINUTE_MS, NOW + 5_000).unwrap();
+        assert_eq!(w.marks.len(), 1);
+        assert_eq!(w.marks[0].kind, "focus");
+        /* And the sends are still counted where a rate reads them. */
+        let sent: i64 = w.series.iter().filter(|s| s.kind == "send").map(|s| s.count).sum();
+        assert_eq!(sent, 3);
+    }
+
+    /// A kind that is not a mark may not be sent as one: the count table is
+    /// where `click` lives, and a click has no order worth a row.
+    #[test]
+    fn a_click_is_not_a_mark() {
+        let conn = db();
+        let err = note_action_rows(&conn, "wall", &[], &[mark(NOW, "click", "")], NOW).unwrap_err();
+        assert!(err.contains("not an action mark"), "{err}");
+    }
+
+    /// **The two clocks.** A span asked for as exactly the fine tier used to
+    /// land on the coarse side of the boundary every time, because `from` is
+    /// worked out on the front end and `now` a millisecond later here.
+    #[test]
+    fn a_window_of_exactly_the_fine_tier_still_reads_the_marks() {
+        let conn = seeded();
+        let w = action_window(&conn, NOW - FINE_KEEP_MS, NOW + MIN, HOUR_MS, NOW).unwrap();
+        assert!(!w.coarse);
+        assert!(!w.marks.is_empty());
+    }
+
+    #[test]
+    fn a_window_sums_kinds_and_targets_into_buckets() {
+        let conn = seeded();
+        let w = action_window(&conn, NOW - 60 * MIN, NOW + MIN, HOUR_MS, NOW).unwrap();
+        let clicks: i64 = w.series.iter().filter(|s| s.kind == "click").map(|s| s.count).sum();
+        assert_eq!(clicks, 7);
+        assert!(w.series.iter().all(|s| s.at % HOUR_MS == 0));
+        assert!(!w.coarse);
+    }
+
+    #[test]
+    fn marks_are_the_ordered_ones() {
+        let conn = seeded();
+        let w = action_window(&conn, NOW - 60 * MIN, NOW + MIN, ACTION_MINUTE_MS, NOW).unwrap();
+        let kinds: Vec<&str> = w.marks.iter().map(|m| m.kind.as_str()).collect();
+        /* Two walls focused inside the same minute, four seconds apart, and the
+           read puts them in the order they happened rather than the order
+           their card ids sort in. Focus only: it is the one kind whose
+           sequence a reading folds today. */
+        assert_eq!(kinds, vec!["focus", "focus", "focus"]);
+        /* Written out of order above; the read is what imposes the order a
+           switch count depends on. */
+        assert!(w.marks.windows(2).all(|p| p[0].at <= p[1].at));
+        assert!(w.marks.iter().all(|m| ACTION_MARK_KINDS.contains(&m.kind.as_str())));
+    }
+
+    #[test]
+    fn a_window_past_the_fine_tier_reads_the_hour_and_has_no_marks() {
+        let conn = seeded();
+        let w = action_window(&conn, NOW - 200 * 24 * 60 * MIN, NOW + MIN, HOUR_MS, NOW).unwrap();
+        assert!(w.coarse);
+        assert!(w.marks.is_empty());
+        let clicks: i64 = w.series.iter().filter(|s| s.kind == "click").map(|s| s.count).sum();
+        assert_eq!(clicks, 7);
+    }
+
+    #[test]
+    fn cards_and_hosts_are_sliced() {
+        let conn = seeded();
+        let w = action_window(&conn, NOW - 60 * MIN, NOW + MIN, HOUR_MS, NOW).unwrap();
+        let two: i64 = w
+            .cards
+            .iter()
+            .filter(|c| c.key == "two")
+            .map(|c| c.count)
+            .sum();
+        assert_eq!(two, 2);
+        assert!(w.hosts.iter().any(|h| h.key == "wall-b" && h.count == 1));
+        assert!(w.cards.iter().all(|c| c.first <= c.last));
+    }
+
+    #[test]
+    fn a_bucket_that_is_not_a_minute_hour_or_day_is_refused() {
+        let conn = db();
+        assert!(action_window(&conn, NOW, NOW + MIN, 7_000, NOW).is_err());
+    }
+
+    #[test]
+    fn a_window_that_ends_before_it_starts_is_refused() {
+        let conn = db();
+        assert!(action_window(&conn, NOW, NOW, HOUR_MS, NOW).is_err());
+    }
+}
+
+/* LIFT-END actions */
+
+#[tauri::command]
+pub async fn note_actions(
+    app: AppHandle,
+    notes: Vec<ActionNote>,
+    marks: Vec<ActionMark>,
+) -> Result<usize, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        note_action_rows(&conn, &crate::flyway::key::host_name(), &notes, &marks, now_ms())
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn action_facts(
+    app: AppHandle,
+    from: i64,
+    to: i64,
+    bucket: i64,
+) -> Result<ActionWindow, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        action_window(&conn, from, to, bucket, now_ms())
     })
     .await?
 }

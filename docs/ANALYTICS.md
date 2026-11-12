@@ -882,6 +882,95 @@ goes and looks rather than folding an event, and it earns the exception the way 
 check does: a commit made with `git commit` inside a card is a receipt and needs no poll, while
 a commit made in a terminal emits nothing this app can hear.
 
+### 3.10 The person's own actions
+
+A second subject beside tokens and allowance: **what the person did**, not what the money did.
+It answers questions the money cannot — how often you change conversation, how often you stop
+a turn, how many deliberate gestures a minute — and it is the only table here whose subject
+is the hand rather than the agent.
+
+`action_fact`, keyed on a **minute bucket**:
+
+| column | what it is |
+|---|---|
+| `at` | the minute the gesture happened in |
+| `host` | the wall it happened on |
+| `kind` | a closed vocabulary, below |
+| `target` | a card id, a panel name, a territory, `''` for the wall |
+| `detail` | one short word: which view, which chord, which menu |
+| `count` | 1 for a point gesture; a rolled-up minute for clicks |
+
+**A minute rather than a second.** Every question asked of this table is a rate, and a
+per-second grain over a year is a hundred million rows to answer them with; a burst of clicks
+in one minute is one row whose `count` a sparkline reads directly.
+
+**A minute cannot hold an order, and the order is what a switch is.** A→B→A inside ten
+seconds is one row per card in the table above, sorted by an id that means nothing, and the
+twenty-second floor can never see the return. So five kinds — `focus`, `send`, `interrupt`,
+`spawn`, `close` — are also written to `action_mark`, one row per event at **the instant it
+happened**. A mark kind is written twice, deliberately: once as a count, so it reaches the
+rates and the three-year rollup, and once as a mark, so the sequence survives. The two cannot
+disagree because both come from the same line of the collector.
+
+**The window returns focus marks only, under a ceiling of their own.** Focus is the one
+sequence a reading folds today; sending the other four would multiply every window's payload
+by its send rate to answer a question the count table already answers. And a window holding
+more visits than one fold may be handed returns no marks rather than refusing the window: the
+rate, the counts and the per-card totals still draw, and only the switch half says it is
+missing. **A cap that took the whole band down would refuse a window for the one thing it
+could not answer.**
+
+**A row is a statement about a bucket so far, not a delta.** The collector holds a bucket's
+counts while the minute is open and sends the running total every five seconds, so the writer
+takes the larger of what it holds and what it was sent and folds only the difference into
+`action_hour`. An additive write would double every click in a retried flush; a bare `MAX` at
+the hour would lose the minutes a later flush did not mention. This is also why the hour
+rollup is written **at the gesture** rather than by a later pass: a wall opened after ninety
+idle days prunes its minute rows without ever running anything that would have rolled them up.
+
+**The vocabulary is closed, and there is no `key` in it.** `focus`, `send`, `interrupt`,
+`click`, `command`, `leader`, `view`, `open`, `close`, `spawn`, `move`, `rename`, `search`,
+`pause`, `resume`. Nothing types: a send is a mark, never its words, and a draft, a prompt and
+a keystroke are all outside what this table can hold. `open`, `close` and `spawn` are in the
+vocabulary and deliberately not emitted — `analytics_session` already records all three with
+their project and their opener, and a second row for one event is two sources for one fact.
+
+**Where the nine gestures enter, and why there are so few places.** An instrument every
+component has to remember to call is one that silently stops covering a surface the day
+somebody adds a panel. So each is emitted at the one function every road to it passes
+through: a focus at `App.svelte::ring`, a send at `Skein.send` when the prompt is the
+person's, an interrupt at the `interrupt_conversation` answer (Rust's own turn mark, not the
+gesture's bare word), a click in `Canvas.groundDown` (the wall's one capture-phase press
+entry, so a button inside a card is counted without a listener of its own), a view at
+`switchView`, a chord or a palette pick at `runChord`. Clicks are counted, never targeted: what
+was clicked is not the reading.
+
+**The folds are pure and tested** (`acts.ts`), because the interesting numbers are all
+arithmetic rather than storage:
+
+- **context switches an hour**, with a **twenty-second floor**: returning to the card you
+  were on inside it is the same visit, not a switch. Without the floor, tabbing through six
+  cards looking for one and back again reads as six switches, and the reading punishes the
+  gesture that finds things.
+- **median stay**, so one card left open all night does not move it.
+- **actions a minute** over clicks, sends, interrupts and commands. Navigation kinds are
+  deliberately out: a rate that rises when you tidy a wall has stopped measuring anything.
+- **interrupt rate**, per day and per card. A high rate against a low prompt count on one
+  card is a card that cannot be left alone.
+- **fragmentation**: distinct cards an hour, and the share of buckets holding any gesture.
+
+Retention follows §3.6 exactly: `action_fact` and `action_mark` at the fine grain for ninety
+days, `action_hour` for three years. **Switches and stays therefore stop at ninety days**, because
+a visit is folded from the order the events arrived in and the hourly tier keeps the counts
+and not the order; the face says which tier answered. `detail` is dropped from the hour key
+for the reason `usage_hour` drops `session`: a three-year table keyed by which chord is a
+table of every chord ever pressed.
+
+**Not yet on the wire.** The rows are recorded and read on the wall that made them. Getting
+them across the flyway is the next wing: the day frame's sidecar and its digest, on the same
+terms as the session and agent sidecars (§8.2). Until then the per-machine slice in
+`action_window` splits this wall's own history by host, which today is one host.
+
 ---
 
 ## 4. Attribution: who spent it
@@ -2042,13 +2131,14 @@ the panel's narrow column cannot hold a KPI row, a chart and a filter rail at on
 
 ### 11.1 The live strip
 
-Five stat tiles, each a value, a delta and a sparkline:
+Six stat tiles, each a value, a delta and a sparkline:
 
 1. **the binding allowance window** across all accounts, with its reset countdown;
 2. **today's modeled cost** against the previous day;
 3. **the fleet burn rate**, from `rate.ts::fleetRate`, with each wall's share in the tooltip;
 4. **cards working across the fleet**, with the local machine's share;
-5. **unattributed points this week**, which is the honest blind-spot reading.
+5. **actions this minute** (§3.10), which is the one tile here that costs no query at all;
+6. **unattributed points this week**, which is the honest blind-spot reading.
 
 A tile that cannot be measured says so. It never shows zero for *unknown*.
 
@@ -2062,6 +2152,11 @@ shell so a presentation swap cannot give it two values. What each tile reads:
   window does not reach its midnight rather than a partial day drawn as a whole one.
 - **The fleet burn and the fleet's cards** from the shell's ledger and roster: the rate over
   every wall heard lately, and the working cards with this machine's share under them.
+- **Actions this minute** is the collector's own counter, not a read: the gestures noted since
+  the minute began, rolled by the wall's second rather than by a bump, because a minute that
+  ends without a gesture must not leave the last one's count standing. Zero is a real reading
+  here (you have not done anything yet this minute), which is why this is the one tile on the
+  strip that never says *no reading*.
 - **Unattributed points** is §5.1's split run over the last week: every sample interval's delta
   divided among the account's own facts by modeled cost, bucket by bucket, with a bucket that
   straddles a boundary cut by its width. The residual is what no fact explains, and the tile
@@ -2280,6 +2375,23 @@ row per (kind, server, tool, target); the four views are grouped on top of that 
 because the grouping is a drawing and the window is not. Summing there is also what lets the
 tab offer the spend tab's year: a year of hours x tools x projects is hundreds of thousands of
 rows for dozens of groups.
+
+**And a fifth section: your hands** (§3.10), which is the only part of this page that is about
+the person rather than the agents. It reads `action_facts` over the same span — four figures
+(actions a minute, context switches an hour, the median stay, the interrupt rate), a strip of
+the gesture rate with one bar per bucket, and a table per card busiest first. The proportions
+are counted in `acts.ts`, so a rule changed there changes every face that draws it.
+
+Three things the band says rather than draws:
+
+- **A window it could not read is missing, not quiet.** A refused store and a span answered
+  from the hour rollup each get their own sentence, and neither is drawn as a flat zero.
+- **Switches and stays are a ninety-day reading**, because they are folded from the order the
+  events arrived in and the hourly tier keeps the counts and not the order. Past ninety days
+  the band says so on the figure rather than under it, and a window too busy to fold says that
+  instead, with the rate and the counts still drawn.
+- **The strip's bars are summed**, at most 220 columns of them, so a year of minutes is not
+  half a million DOM nodes. The note under it says what one bar is.
 
 What the drawing does **not** do, and why:
 
@@ -3460,6 +3572,45 @@ CREATE TABLE prompt_day_digest (
   PRIMARY KEY (host, day)
 );
 
+-- What the person did (§3.10), schema v73. A minute bucket, the closed kind
+-- vocabulary, and a count so a burst in one minute is one row.
+CREATE TABLE action_fact (
+  at     INTEGER NOT NULL,          -- the minute the gesture happened in
+  host   TEXT NOT NULL,
+  kind   TEXT NOT NULL,             -- focus | send | interrupt | click | command |
+                                    -- leader | view | open | close | spawn | move |
+                                    -- rename | search | pause | resume
+  target TEXT NOT NULL DEFAULT '',  -- a card id, a panel, a territory, '' for the wall
+  detail TEXT NOT NULL DEFAULT '',  -- one short word: which view, which chord
+  count  INTEGER NOT NULL,
+  PRIMARY KEY (at, host, kind, target, detail)
+);
+
+-- The marks: one row per event, at the instant it happened, for the five kinds
+-- whose order is the reading. A minute bucket absorbs that order, and a switch
+-- is exactly the thing that happens inside one. Fine tier only.
+CREATE TABLE action_mark (
+  at     INTEGER NOT NULL,          -- the instant, not the minute
+  host   TEXT NOT NULL,
+  kind   TEXT NOT NULL,             -- focus | send | interrupt | spawn | close
+  target TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (at, host, kind, target)
+);
+
+-- The three-year tier, written by the same call rather than by a later rollup
+-- pass, because a wall opened after ninety idle days prunes the minutes above
+-- without ever running a pass that would have rolled them up. `detail` is
+-- dropped here for the reason `usage_hour` drops `session`.
+CREATE TABLE action_hour (
+  at     INTEGER NOT NULL,          -- a UTC hour start
+  host   TEXT NOT NULL,
+  kind   TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  count  INTEGER NOT NULL,
+  PRIMARY KEY (at, host, kind, target)
+);
+
 -- The `turn` rebuild above is the last statement of the rung; there is no
 -- ALTER for it, because relaxing `ended_at`'s NOT NULL needs the copy.
 ```
@@ -3472,6 +3623,10 @@ Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
 `machine_fact(at)`,
 `usage_hour(hour)`, `tool_hour(hour)`, `host_build(host, from_at)`, `prompt_fact(at)`,
 `prompt_fact(kind, at)`, `prompt_fact(card)`, `prompt_hour(hour)`.
+
+The action tables need no index of their own: every read is a range on `at`, which the primary
+key's first column answers, and the grouped reads (`by card`, `by wall`) are over one window
+rather than over the life of the table.
 
 The view table is a `CREATE TABLE IF NOT EXISTS` and a `config_json` column for the same
 reason `widget` has one: the shape belongs to the front end, and a renamed form must degrade
@@ -3524,6 +3679,13 @@ Each phase is useful on its own and commits on its own.
 10. **Pacing.** The plan curve, the measures, the advice, the opt-in holds.
 11. **The persistent live channel**, when the live tool feed exists to justify it. Specified in
     section 20.1, deliberately not before.
+12. **The person's own actions** (§3.10), schema v73. **Built**, on one wall: the minute
+    table, its hour rollup, the collector and the seven choke points, the pure folds, the
+    behaviour page's band and the live strip's tile. **Not built**: the flyway side (the day
+    frame's action sidecar and its digest), which is what turns "actions this minute" from a
+    local reading into one person's day across three machines. It waits because the wire's
+    sidecars are a union merge with one owner per day, and adding a fourth one changes every
+    day's digest — a change worth making against a settled vocabulary rather than beside it.
 
 The order is chosen so that phase 2 starts recording before anything can make the record
 incomplete, and phase 9 is allowed to be wrong for a while without costing history. Phase 1

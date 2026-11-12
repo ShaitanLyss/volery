@@ -74,8 +74,8 @@
      *  the shell so the two presentations say the same words. */
     title: string;
     bucket: Bucket;
-    /** The live strip's five tiles (§11.1), folded by the shell from the window,
-     *  the allowance samples and the flyway's readings. */
+    /** The live strip's tiles (§11.1), folded by the shell from the window, the
+     *  allowance samples, the flyway's readings and the gesture collector. */
     strip: readonly StripTile[];
     /** The day split by who paid (§21): the title bar's figure, the account's
      *  windows, and the exchange between them. `readings` is null when that read

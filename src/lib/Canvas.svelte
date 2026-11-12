@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Conversation } from "./conversation.svelte";
+  import { acts } from "./acts.svelte";
   /* Which view the window draws — named apart from this file's own `view`,
      the viewport. */
   import { view as viewing } from "./view.svelte";
@@ -1498,6 +1499,13 @@
   $effect(() => () => unwatch?.());
 
   function groundDown(e: PointerEvent) {
+    /* **Every press on the wall lands here**, in the capture phase, on all four
+       kinds of thing standing on it and on bare ground alike — so this is the
+       one place a click is counted, rather than a listener added to every
+       button (§3.10). A count, never a target: what was clicked is not the
+       reading, and a per-control listener is the prop-shaped bug CLAUDE.md
+       warns about, one press at a time. */
+    acts.note("click");
     /* A card on another wall answers its own left press. It is nothing the
        wall can pick or carry, so to `nodeOf` it is bare ground — and a plain
        click on it would release as "let go of everything", closing the panel
