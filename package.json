@@ -2,7 +2,7 @@
   "name": "volery",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "version": "0.120.0",
+  "version": "0.121.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
