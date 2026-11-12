@@ -7523,7 +7523,13 @@ pub async fn allowance_costs(
  * the real `migrate_v73` out of `store.rs`, and runs its assertions. `cargo
  * test` does not link on a machine with no MSVC (`.claude/rules/build.md`), so
  * without the markers the whole of this block would be code nobody has ever
- * run. Nothing outside the markers may be reached from inside them. */
+ * run.
+ *
+ * **It reaches exactly one thing outside itself**: `conversation.title`, for a
+ * card's name, because an id is not something a face may draw. The lift stands
+ * a two-column `conversation` up for that, and a new table reached from in here
+ * is the lift's to learn — stated so that the next one is a decision rather
+ * than a surprise. */
 
 /// The verbs a gesture may be recorded as. **A closed vocabulary, and this is
 /// the only place it is written in Rust.**
@@ -7794,6 +7800,12 @@ pub struct ActionSliceRow {
     pub count: i64,
     pub first: i64,
     pub last: i64,
+    /// **A card's name, resolved here rather than drawn raw.** An id is not
+    /// something a person reads, and `test/whois.test.ts` holds the wall to
+    /// that: the only surfaces that cut an id to a handle are the ones that
+    /// define what a handle is. Empty for a group that is not a card, and for
+    /// one whose row has gone.
+    pub name: String,
 }
 
 /// Everything one window asks of the action tables, in one read.
@@ -7934,7 +7946,7 @@ pub fn action_window(
     let slice = |column: &str| -> Result<Vec<ActionSliceRow>, String> {
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {column}, kind, SUM(count), MIN(at), MAX(at)
+                "SELECT {column}, kind, SUM(count), MIN(at), MAX(at), ''
                    FROM {table}
                   WHERE at >= ?1 AND at < ?2
                   GROUP BY 1, 2
@@ -7950,6 +7962,7 @@ pub fn action_window(
                     count: r.get(2)?,
                     first: r.get(3)?,
                     last: r.get(4)?,
+                    name: r.get(5)?,
                 })
             })
             .map_err(|e| format!("analytics: actions: {e}"))?
@@ -7959,7 +7972,41 @@ pub fn action_window(
         Ok(rows)
     };
 
-    let cards = slice("target")?;
+    /* The cards, with the name the wall gave them. **Only the kinds aimed at a
+       card**: a click has no target, a view names a presentation and a chord
+       names a panel, and folding those into a per-card table would invent
+       cards called `wall`. */
+    let cards: Vec<ActionSliceRow> = {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT f.target, f.kind, SUM(f.count), MIN(f.at), MAX(f.at),
+                        COALESCE(MAX(c.title), '')
+                   FROM {table} f
+                   LEFT JOIN conversation c ON c.id = f.target
+                  WHERE f.at >= ?1 AND f.at < ?2 AND f.target <> ''
+                    AND f.kind IN ('focus', 'send', 'interrupt', 'open', 'close', 'spawn')
+                  GROUP BY 1, 2
+                  ORDER BY 3 DESC
+                  LIMIT ?3"
+            ))
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        let rows = stmt
+            .query_map(params![from, to, bound], |r| {
+                Ok(ActionSliceRow {
+                    key: r.get(0)?,
+                    kind: r.get(1)?,
+                    count: r.get(2)?,
+                    first: r.get(3)?,
+                    last: r.get(4)?,
+                    name: r.get(5)?,
+                })
+            })
+            .map_err(|e| format!("analytics: actions: {e}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("analytics: actions: {e}"))?;
+        more_than("groups", rows.len())?;
+        rows
+    };
     let hosts = slice("host")?;
     Ok(ActionWindow {
         from,
@@ -7982,9 +8029,16 @@ mod action_tests {
     const NOW: i64 = 1_764_000_000_000;
     const MIN: i64 = ACTION_MINUTE_MS;
 
+    /// The rung's three tables, plus the two columns of `conversation` the
+    /// cards read joins for a name. In the app that table is the store's own;
+    /// here it is a stand-in, and the lift's header says why it is allowed.
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         crate::store::migrate_v73(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conversation (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT 'untitled');",
+        )
+        .unwrap();
         conn
     }
 
@@ -8323,6 +8377,45 @@ mod action_tests {
         assert_eq!(two, 2);
         assert!(w.hosts.iter().any(|h| h.key == "wall-b" && h.count == 1));
         assert!(w.cards.iter().all(|c| c.first <= c.last));
+    }
+
+    /// **A card is named, not numbered.** The table a person reads says which
+    /// card it is; an id is not a name, and the wall has a rule about that
+    /// (`test/whois.test.ts`). A card whose row has gone is empty rather than
+    /// a handle, and the page says so in words.
+    #[test]
+    fn a_card_slice_carries_its_name() {
+        let conn = seeded();
+        conn.execute(
+            "INSERT INTO conversation (id, title) VALUES ('one', 'the harbour chart')",
+            [],
+        )
+        .unwrap();
+        let w = action_window(&conn, NOW - 60 * MIN, NOW + MIN, HOUR_MS, NOW).unwrap();
+        let one = w.cards.iter().find(|c| c.key == "one").unwrap();
+        assert_eq!(one.name, "the harbour chart");
+        let two = w.cards.iter().find(|c| c.key == "two").unwrap();
+        assert_eq!(two.name, "");
+    }
+
+    /// A gesture aimed at the wall or a panel is not a card, and the per-card
+    /// table may not invent one: `view` names a presentation and a chord names
+    /// a panel, so neither is in the cards read at all.
+    #[test]
+    fn a_view_is_not_a_card() {
+        let conn = db();
+        note_action_rows(
+            &conn,
+            "wall",
+            &[note(NOW, "view", "chat", 1), note(NOW, "click", "", 4)],
+            &[],
+            NOW,
+        )
+        .unwrap();
+        let w = action_window(&conn, NOW, NOW + MIN, ACTION_MINUTE_MS, NOW).unwrap();
+        assert!(w.cards.is_empty());
+        /* And the counts are still there for the rate. */
+        assert!(w.series.iter().any(|s| s.kind == "view"));
     }
 
     #[test]

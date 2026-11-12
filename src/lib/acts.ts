@@ -65,8 +65,16 @@ export type ActionSeriesRow = { at: number; kind: string; count: number };
 export type ActionMark = { at: number; host: string; kind: string; target: string };
 /** One grouped row, whether the group is a card (`target`) or a machine
  *  (`host`). `first` and `last` are bucket floors, so a span derived from them
- *  is accurate to the minute. */
-export type ActionSlice = { key: string; kind: string; count: number; first: number; last: number };
+ *  is accurate to the minute. `name` is the card's name, which the store
+ *  resolves — a raw id is not something a face may draw. */
+export type ActionSlice = {
+  key: string;
+  kind: string;
+  count: number;
+  first: number;
+  last: number;
+  name: string;
+};
 
 export type ActionWindow = {
   from: number;
@@ -127,7 +135,14 @@ export function asActionWindow(raw: unknown, fallback: { from: number; to: numbe
       const first = num(o.first);
       const last = num(o.last);
       if (count === null || first === null || last === null) continue;
-      out.push({ key: text(o.key, 80), kind: text(o.kind, 40), count, first, last });
+      out.push({
+        key: text(o.key, 80),
+        kind: text(o.kind, 40),
+        count,
+        first,
+        last,
+        name: text(o.name, 200),
+      });
     }
     return out;
   };
@@ -261,6 +276,8 @@ export function fragmentation(
  *  it has the timestamps but not the order. */
 export type CardRow = {
   card: string;
+  /** The card's name as the wall has it, or empty for one whose row is gone. */
+  name: string;
   focus: number;
   sends: number;
   interrupts: number;
@@ -269,17 +286,17 @@ export type CardRow = {
 
 export function cardRows(window: ActionWindow): CardRow[] {
   const rows = new Map<string, CardRow>();
-  const got = (card: string): CardRow => {
+  const got = (card: string, name = ""): CardRow => {
     let row = rows.get(card);
     if (!row) {
-      row = { card, focus: 0, sends: 0, interrupts: 0, dwellMs: 0 };
+      row = { card, name, focus: 0, sends: 0, interrupts: 0, dwellMs: 0 };
       rows.set(card, row);
-    }
+    } else if (!row.name && name) row.name = name;
     return row;
   };
   for (const slice of window.cards) {
     if (!slice.key) continue;
-    const row = got(slice.key);
+    const row = got(slice.key, slice.name);
     if (slice.kind === "focus") row.focus += slice.count;
     else if (slice.kind === "send") row.sends += slice.count;
     else if (slice.kind === "interrupt") row.interrupts += slice.count;

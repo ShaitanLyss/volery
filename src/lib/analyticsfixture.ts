@@ -883,9 +883,32 @@ function fixtureActions(since: number, until: number): ActionWindow {
     series.push({ at: t, kind: "click", count: Math.round(busy * 14) });
     if (busy > 0.5) series.push({ at: t, kind: "send", count: Math.round(busy * 2) });
   }
+  /* Names rather than ids, because that is what the store resolves and what the
+     table draws: the fixture would otherwise show a row the real page cannot
+     produce. */
+  const names = new Map([
+    ["a1", "the shader representing flow"],
+    ["b2", "nova reader for attributes"],
+    ["c3", "context menu pass"],
+    ["d4", "the harbour chart"],
+  ]);
   const cardsOut: ActionSlice[] = [...cardsFocused].flatMap(([key, held]) => [
-    { key, kind: "focus", count: held.count, first: held.first, last: held.last },
-    { key, kind: "send", count: marks.filter((m) => m.kind === "send" && m.target === key).length, first: held.first, last: held.last },
+    {
+      key,
+      kind: "focus",
+      count: held.count,
+      first: held.first,
+      last: held.last,
+      name: names.get(key) ?? "",
+    },
+    {
+      key,
+      kind: "send",
+      count: marks.filter((m) => m.kind === "send" && m.target === key).length,
+      first: held.first,
+      last: held.last,
+      name: names.get(key) ?? "",
+    },
   ]);
   const hosts: ActionSlice[] = ["laptop", "desk"].map((key) => ({
     key,
@@ -893,6 +916,7 @@ function fixtureActions(since: number, until: number): ActionWindow {
     count: marks.filter((m) => m.kind === "focus" && m.host === key).length,
     first: since,
     last: until,
+    name: "",
   }));
   return {
     from: since,

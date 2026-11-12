@@ -452,7 +452,10 @@
             <tbody>
               {#each hand.cards as row (row.card)}
                 <tr>
-                  <td title={row.card}>{row.card.slice(0, 8)}</td>
+                  <!-- The name the wall gave it, never its id: an id is not
+                       something a person reads, and the one surface that cuts
+                       one to a handle is the one that defines a handle. -->
+                  <td>{row.name || "a card that is gone"}</td>
                   <td>{row.focus}</td>
                   <td>{row.sends}</td>
                   <td>{row.interrupts}</td>
