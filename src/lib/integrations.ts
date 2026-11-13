@@ -40,7 +40,7 @@
 /** The services, as an id the wire uses. A union rather than a string so a
  *  typo in a component is a build error rather than a command that answers
  *  "no such integration" at runtime. */
-export type ServiceId = "azdo" | "asana" | "anthropic" | "deepseek";
+export type ServiceId = "azdo" | "asana" | "anthropic" | "deepseek" | "artificialanalysis";
 
 export type Integration = {
   id: ServiceId;
@@ -145,6 +145,20 @@ export const INTEGRATIONS: Integration[] = [
     scope: null,
     sole: true,
     probe: "GET /models",
+  },
+  {
+    id: "artificialanalysis",
+    label: "artificial analysis",
+    target: "dev.skein.studio/artificialanalysis-key",
+    credential: "api key",
+    why: "an independent second reading for the models panel — off until a key is here",
+    /* The free tier is 100 requests a day and asks for attribution, which the
+       panel gives. The key is optional in a way no other row here is: without
+       it the panel says the second source is off rather than faulting. */
+    mint: "artificialanalysis.ai → data api → sign up → api keys",
+    scope: null,
+    sole: true,
+    probe: "GET /api/v2/language/models/free",
   },
 ];
 

@@ -1,0 +1,196 @@
+{
+  "version": 1,
+  "authoredOn": "2026-11-13",
+  "benchmarks": {
+    "deepSwe": {
+      "label": "DeepSWE",
+      "task": "repo"
+    },
+    "terminalBench41": {
+      "label": "Terminal-Bench 4.1",
+      "task": "tool-use"
+    },
+    "sweVerified": {
+      "label": "SWE-bench Verified",
+      "task": "repo"
+    },
+    "automationBench": {
+      "label": "AutomationBench",
+      "task": "tool-use"
+    },
+    "agentsLastExam": {
+      "label": "Agents' Last Exam",
+      "task": "tool-use"
+    },
+    "liveCodeBench": {
+      "label": "LiveCodeBench",
+      "task": "coding"
+    },
+    "programBench": {
+      "label": "ProgramBench",
+      "task": "coding"
+    },
+    "humaneval": {
+      "label": "HumanEval",
+      "task": "coding"
+    },
+    "gpqaDiamond": {
+      "label": "GPQA Diamond",
+      "task": "reasoning"
+    },
+    "hle": {
+      "label": "HLE",
+      "task": "reasoning"
+    },
+    "apex": {
+      "label": "Apex",
+      "task": "reasoning"
+    },
+    "arcAgi1": {
+      "label": "ARC-AGI-1",
+      "task": "reasoning"
+    },
+    "mmluPro": {
+      "label": "MMLU-Pro",
+      "task": "knowledge"
+    },
+    "browseComp": {
+      "label": "BrowseComp",
+      "task": "search"
+    },
+    "deepSearchQa": {
+      "label": "DeepSearchQA",
+      "task": "search"
+    },
+    "longBenchV2": {
+      "label": "LongBench v2",
+      "task": "long-context"
+    },
+    "mrcrv2": {
+      "label": "MRCRv2",
+      "task": "long-context"
+    },
+    "mrcr1m": {
+      "label": "MRCR 1M",
+      "task": "long-context"
+    },
+    "chartography": {
+      "label": "Chartography (no tools)",
+      "task": "vision"
+    },
+    "mmmuPro": {
+      "label": "MMMU-Pro",
+      "task": "vision"
+    },
+    "mmmu": {
+      "label": "MMMU",
+      "task": "vision"
+    },
+    "babyVision": {
+      "label": "BabyVision",
+      "task": "vision"
+    }
+  },
+  "profiles": [
+    {
+      "id": "coding-agent",
+      "label": "coding agent",
+      "note": "repo-level work: a tree, a tool call, a fix that has to land",
+      "defaultFor": "project",
+      "order": "quality",
+      "members": [
+        { "benchmark": "deepSwe", "weight": 3 },
+        { "benchmark": "terminalBench41", "weight": 3 },
+        { "benchmark": "sweVerified", "weight": 2 },
+        { "benchmark": "automationBench", "weight": 1 },
+        { "benchmark": "agentsLastExam", "weight": 1 }
+      ]
+    },
+    {
+      "id": "one-shot-coding",
+      "label": "one-shot coding",
+      "note": "a function, a program, a puzzle: written once, with no repository to read",
+      "defaultFor": null,
+      "order": "quality",
+      "members": [
+        { "benchmark": "liveCodeBench", "weight": 3 },
+        { "benchmark": "programBench", "weight": 2 },
+        { "benchmark": "humaneval", "weight": 1 }
+      ]
+    },
+    {
+      "id": "hard-reasoning",
+      "label": "hard reasoning",
+      "note": "the problem where being wrong is expensive and the answer is not a pattern",
+      "defaultFor": null,
+      "order": "quality",
+      "members": [
+        { "benchmark": "gpqaDiamond", "weight": 3 },
+        { "benchmark": "hle", "weight": 2 },
+        { "benchmark": "apex", "weight": 2 },
+        { "benchmark": "arcAgi1", "weight": 1 }
+      ]
+    },
+    {
+      "id": "knowledge-research",
+      "label": "knowledge and research",
+      "note": "what is known, and finding out what is not: reading, sources, synthesis",
+      "defaultFor": "chat",
+      "order": "quality",
+      "members": [
+        { "benchmark": "mmluPro", "weight": 3 },
+        { "benchmark": "gpqaDiamond", "weight": 2 },
+        { "benchmark": "hle", "weight": 2 },
+        { "benchmark": "browseComp", "weight": 1 }
+      ]
+    },
+    {
+      "id": "long-context",
+      "label": "long context",
+      "note": "a million tokens held whole: the job is bookkeeping, not thinking",
+      "defaultFor": null,
+      "order": "quality",
+      "members": [
+        { "benchmark": "longBenchV2", "weight": 3 },
+        { "benchmark": "mrcrv2", "weight": 2 },
+        { "benchmark": "mrcr1m", "weight": 1 }
+      ]
+    },
+    {
+      "id": "vision-charts",
+      "label": "vision and charts",
+      "note": "a screenshot, a diagram, a chart: what the model can see",
+      "defaultFor": null,
+      "order": "quality",
+      "members": [
+        { "benchmark": "chartography", "weight": 3 },
+        { "benchmark": "mmmuPro", "weight": 2 },
+        { "benchmark": "mmmu", "weight": 1 },
+        { "benchmark": "babyVision", "weight": 1 }
+      ]
+    },
+    {
+      "id": "search",
+      "label": "search",
+      "note": "finding the page, and knowing when the page answered",
+      "defaultFor": null,
+      "order": "quality",
+      "members": [
+        { "benchmark": "browseComp", "weight": 3 },
+        { "benchmark": "deepSearchQa", "weight": 2 }
+      ]
+    },
+    {
+      "id": "cheap-bulk",
+      "label": "cheap bulk",
+      "note": "many small turns: ranked by price among the entries that clear the floor",
+      "defaultFor": null,
+      "order": "cost",
+      "members": [
+        { "benchmark": "deepSwe", "weight": 1 },
+        { "benchmark": "liveCodeBench", "weight": 1 },
+        { "benchmark": "mmluPro", "weight": 1 }
+      ]
+    }
+  ]
+}

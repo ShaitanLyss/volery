@@ -1,0 +1,69 @@
+{
+ "tier": "free",
+ "intelligence_index_version": 5,
+ "pagination": {
+  "page": 1,
+  "page_size": 200,
+  "total_pages": 1,
+  "has_more": false
+ },
+ "data": [
+  {
+   "id": "m1",
+   "name": "Claude Sonnet 5.5",
+   "slug": "claude-sonnet-5-5",
+   "release_date": "2026-09-28",
+   "model_creator": {
+    "id": "anthropic",
+    "name": "Anthropic"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 71.0,
+    "artificial_analysis_coding_index": 76.5,
+    "artificial_analysis_agentic_index": null,
+    "artificial_analysis_finance_and_accounting_index": 60.2,
+    "artificial_analysis_strategy_and_ops_index": null,
+    "artificial_analysis_legal_index": null,
+    "artificial_analysis_healthcare_and_medical_index": null,
+    "artificial_analysis_engineering_index": 55.0,
+    "artificial_analysis_economics_index": null
+   },
+   "pricing": {
+    "price_1m_input_tokens": 3.0,
+    "price_1m_output_tokens": 15.0
+   },
+   "performance": null,
+   "performance_v3": {
+    "mean_output_tokens_per_second": 62.5,
+    "mean_time_to_first_token_seconds": 1.1,
+    "mean_time_to_first_answer_token_seconds": 2.0
+   }
+  },
+  {
+   "id": "m2",
+   "name": "DeepSeek V4.1 Flash",
+   "slug": "deepseek-v4-1-flash",
+   "release_date": "2026-10-17",
+   "model_creator": {
+    "id": "deepseek",
+    "name": "DeepSeek"
+   },
+   "evaluations": {
+    "artificial_analysis_intelligence_index": 58.0,
+    "artificial_analysis_coding_index": 64.0,
+    "artificial_analysis_agentic_index": 49.0,
+    "artificial_analysis_finance_and_accounting_index": null,
+    "artificial_analysis_strategy_and_ops_index": null,
+    "artificial_analysis_legal_index": null,
+    "artificial_analysis_healthcare_and_medical_index": null,
+    "artificial_analysis_engineering_index": null,
+    "artificial_analysis_economics_index": null
+   },
+   "pricing": {
+    "price_1m_input_tokens": 0.28,
+    "price_1m_output_tokens": 1.12
+   },
+   "performance_v3": null
+  }
+ ]
+}

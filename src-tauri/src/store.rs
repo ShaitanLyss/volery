@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 75;
+const SCHEMA_VERSION: i64 = 76;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -455,6 +455,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (73, migrate_v73),
     (74, migrate_v74),
     (75, migrate_v75),
+    (76, migrate_v76),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4310,6 +4311,72 @@ pub(crate) fn migrate_v75(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v75: {e}"))
+}
+
+/// The models reading: a cache of what the benchmark sources published, plus
+/// the state of each source.
+///
+/// **It is a cache and not an authored record**, which is why nothing here is
+/// seeded: an empty table means "nothing has been read yet", and the panel says
+/// so rather than drawing an empty ranking that looks like a bad morning. A
+/// fetched source replaces its own rows in one transaction
+/// (`benchmarks::replace_source`), and a failed fetch replaces none of them, so
+/// the last good reading survives the network.
+///
+/// `effort` is on the reading rather than on the model because the design's
+/// unit is a model *at an effort*; every source today states none, so it holds
+/// `not-stated`, and the column is the place a source that does state one lands
+/// without a second rung.
+pub(crate) fn migrate_v76(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS benchmark_source (
+            id     TEXT PRIMARY KEY,
+            at     INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'never',
+            said   TEXT,
+            rows   INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmark_model (
+            source         TEXT NOT NULL,
+            key            TEXT NOT NULL,
+            name           TEXT NOT NULL,
+            creator        TEXT NOT NULL DEFAULT '',
+            context_window INTEGER,
+            release        TEXT,
+            vision         INTEGER,
+            tool_use       INTEGER,
+            PRIMARY KEY (source, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmark_def (
+            source   TEXT NOT NULL,
+            key      TEXT NOT NULL,
+            name     TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            unit     TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS benchmark_reading (
+            source    TEXT NOT NULL,
+            model     TEXT NOT NULL,
+            benchmark TEXT NOT NULL,
+            effort    TEXT NOT NULL DEFAULT 'not-stated',
+            score     REAL,
+            unit      TEXT NOT NULL DEFAULT '',
+            harness   TEXT,
+            published TEXT,
+            vendor    INTEGER NOT NULL DEFAULT 0,
+            fetched   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (source, model, benchmark, effort)
+        );
+        CREATE INDEX IF NOT EXISTS benchmark_reading_model ON benchmark_reading (source, model);
+        CREATE INDEX IF NOT EXISTS benchmark_reading_benchmark ON benchmark_reading (benchmark);
+        "#,
+    )
+    .map_err(|e| format!("migrate v76: {e}"))
 }
 
 pub(crate) fn migrate_v73(conn: &Connection) -> Result<(), String> {

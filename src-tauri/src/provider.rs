@@ -212,7 +212,10 @@ pub fn set_provider_schema() -> serde_json::Value {
              process ends and comes back against the same session — transcript, tools, files and \
              plans stay, and claude's thinking is still in the session when it returns. The move \
              happens after this turn's result, so nothing being written now is lost. Use it when \
-             the work has outgrown the balance it is on, or to go back to the subscription.",
+             the work has outgrown the balance it is on, or to go back to the subscription. \
+             Which service or model is worth moving to is a measurement rather than a guess: \
+             `mcp__skein__models` gives the readings for this kind of work, with their sources, \
+             dates and prices.",
         "inputSchema": {
             "type": "object",
             "properties": {

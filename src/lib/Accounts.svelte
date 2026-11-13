@@ -66,6 +66,7 @@
   } from "./fill";
   import { sparkPoints } from "./analyticsroom";
   import { tipOf } from "./tipped.svelte";
+  import Models from "./Models.svelte";
 
   /* `me` is this wall's flyway name and `flying` whether it flies with any
      other wall: the sync line says which wall changed a setting, and keeps
@@ -87,6 +88,12 @@
   } = $props();
 
   const WATCHER = "accounts-panel";
+
+  /** Which half of the panel is up: whose money a card spends, or what the
+   *  thing it spends it on is measured at. Local rather than stored — there is
+   *  one accounts panel, and which half you were reading is not worth
+   *  surviving a restart. */
+  let tab = $state<"accounts" | "models">("accounts");
 
   /** The name being typed for a new account. */
   let naming = $state("");
@@ -619,6 +626,7 @@
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
 
+
 <!-- mousedown rather than click, so letting go of a drag that started inside the
      panel does not dismiss it — the same call Themes.svelte makes. -->
 <div class="scrim" onmousedown={onclose} role="presentation">
@@ -633,12 +641,20 @@
     tabindex="-1"
   >
     <div class="head">
-      <span class="mark">accounts</span>
+      <!-- Two readings of one panel: whose money a card spends, and what the
+           thing it spends it on is measured at. The tab is local state rather
+           than a store: there is one accounts panel, and which half you were
+           looking at is not worth surviving a restart. -->
+      <div class="tabs" role="tablist" aria-label="accounts and models">
+        <button type="button" role="tab" aria-selected={tab === "accounts"} class:on={tab === "accounts"} onclick={() => (tab = "accounts")}>accounts</button>
+        <button type="button" role="tab" aria-selected={tab === "models"} class:on={tab === "models"} onclick={() => (tab = "models")}>models</button>
+      </div>
       <span class="grow"></span>
       {#if note}<span class="said">{note}</span>{/if}
       <button class="x" onclick={onclose} {@attach tipOf("close")}>✕</button>
     </div>
 
+    <div class="pane" class:gone={tab === "models"}>
     <p class="note">
       Work falls through these in priority order: a whole priority is spent before the next one
       is touched. Accounts sharing a priority share the work: whichever has spent least of its
@@ -1271,6 +1287,11 @@
     {#if waterfall.fault}
       <p class="fault">{waterfall.fault}</p>
     {/if}
+    </div>
+
+    {#if tab === "models"}
+      <Models />
+    {/if}
   </div>
 </div>
 
@@ -1303,15 +1324,39 @@
     align-items: baseline;
     gap: 0.5rem;
   }
-  .mark {
+  .grow {
+    flex: 1;
+  }
+  /* The two readings. Achromatic and quiet like the `mark` they replace: this is
+     navigation, and colour here is status. */
+  .tabs {
+    display: flex;
+    gap: 0.15rem;
+  }
+  .tabs button {
+    border: none;
+    background: transparent;
+    color: var(--paper-mute);
     font-family: var(--util);
     font-size: 0.78rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--paper-dim);
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    cursor: pointer;
   }
-  .grow {
-    flex: 1;
+  .tabs button.on {
+    color: var(--paper);
+    background: color-mix(in srgb, var(--paper) 9%, transparent);
+  }
+  /* `display: contents` keeps the accounts half laid out exactly as it was:
+     the panel is the flex column, and a wrapper with a box of its own would
+     add a gap and a scroll container the panel never had. */
+  .pane {
+    display: contents;
+  }
+  .pane.gone {
+    display: none;
   }
   .said {
     font-family: var(--util);

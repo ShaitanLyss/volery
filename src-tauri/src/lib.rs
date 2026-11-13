@@ -32,6 +32,7 @@ mod accounts;
 mod accountsync;
 mod ownshare;
 mod bang;
+mod benchmarks;
 mod browser;
 /// Where the `claude` binary is. Public so `examples/slash-probe.rs` can find
 /// the same one the app spawns rather than assuming it is on PATH.
@@ -973,6 +974,10 @@ pub fn run() {
             freshen::freshen_state,
             freshen::freshen_now,
             freshen::freshen_settings,
+            benchmarks::models_view,
+            benchmarks::models_catalogue,
+            benchmarks::models_refresh,
+            benchmarks::models_sources,
             accounts::list_accounts,
             accounts::add_account,
             accounts::remove_account,

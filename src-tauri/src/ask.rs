@@ -2078,6 +2078,18 @@ pub(crate) fn roster() -> Vec<Value> {
              out of memory, machine slow, CPU pinned, RAM full, is another card running \
              tests, who is using the memory, is my code broken or is it the machine",
         ),
+        /* Deferred: a card knows from its prompt whether the choice of model is
+           a question in front of it, and most turns never touch one. The hint is
+           written as the thing a card is holding — a model *name* it was told to
+           use, or a bill it is trying not to run up — because the reflex this
+           replaces is "pro sounds like the hard one". */
+        found_by(
+            reads_only(crate::benchmarks::models_schema()),
+            "which model should I use, is flash better than pro, which is the best \
+             model for coding, compare opus and sonnet, benchmark scores, what does a \
+             model cost, cheapest model, quality against cost, context window, which \
+             model has vision, choose a model for this work, is my model good enough",
+        ),
         found_by(
             reads_only(crate::status::status_schema()),
             "is claude down, is it me or them, api error, 500, overloaded, rate \
@@ -3885,6 +3897,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                that reached one and not the other would read the
                                account's figures as its own. */
                             .or_else(|| crate::spend::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| crate::benchmarks::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::compact::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::renew::handle(&app, &conversation_id, &tool, &args))
                             /* A census of the process table, so not free in
@@ -4508,7 +4521,7 @@ mod tests {
            are argued at `reads_only`, and the rule for the next one is stated
            there. A tool that writes on its caller's behalf is not on this list
            at all — `spend_watch` is the newest of those. */
-        const READS: [&str; 23] = [
+        const READS: [&str; 24] = [
             "ask_user",
             "load",
             "board",
@@ -4524,6 +4537,10 @@ mod tests {
             "accounts",
             "servers",
             "chronicle",
+            /* The models reading: a cache read and a possible GET against two
+               public sources. No write to anything a planning card could not
+               have read aloud. */
+            "models",
             "claude_status",
             "touched",
             "recall",

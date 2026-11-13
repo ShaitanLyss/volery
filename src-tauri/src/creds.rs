@@ -101,6 +101,14 @@ const ANTHROPIC_WHO: &str = "anthropic api key (volery)";
 const DEEPSEEK_TARGET: &str = "dev.skein.studio/deepseek-key";
 const DEEPSEEK_WHO: &str = "deepseek api key (volery)";
 
+/// The optional benchmark source's key (`benchmarks.rs`). Its own target for
+/// the same reason the two above have theirs: it is a different service's
+/// money, and replacing one must never replace another. **It is optional in a
+/// way the others are not**: without it the models panel reads BenchLM and
+/// says the second source is off, rather than faulting.
+const AA_TARGET: &str = "dev.skein.studio/artificialanalysis-key";
+const AA_WHO: &str = "artificial analysis api key (volery)";
+
 const SERVICES: &[Service] = &[
     Service {
         id: "azdo",
@@ -129,6 +137,15 @@ const SERVICES: &[Service] = &[
            reaches the next card spawned on credits with no cache to drop. A card
            already running keeps the key it was born with, as every environment
            variable does. */
+        forget: forget_nothing,
+    },
+    Service {
+        id: "artificialanalysis",
+        target: AA_TARGET,
+        who: AA_WHO,
+        probe: probe_aa,
+        /* Nothing held: `benchmarks.rs` reads the vault when a fetch is due,
+           so a replaced key reaches the next refresh. */
         forget: forget_nothing,
     },
     Service {
@@ -561,6 +578,31 @@ fn probe_deepseek(token: &str, _roots: &[String]) -> Result<String, String> {
     }
 }
 
+/// The free-tier models endpoint, which is the one a free key may call: the
+/// documented `/api/v2/language/models` answers `403` on a free tier (read
+/// 2026-11-13), and the free sibling answers the same shape a Pro key would
+/// get from it. A key is accepted if it can see models at all.
+fn probe_aa(token: &str, _roots: &[String]) -> Result<String, String> {
+    let res = crate::forge::agent()
+        .get("https://artificialanalysis.ai/api/v2/language/models/free")
+        .set("x-api-key", token.trim())
+        .call();
+    match res {
+        Ok(res) => {
+            let v: serde_json::Value = res
+                .into_json()
+                .map_err(|e| format!("unreadable answer from artificial analysis: {e}"))?;
+            let n = v.get("data").and_then(|d| d.as_array()).map_or(0, |d| d.len());
+            Ok(format!("an api key that can see {n} models"))
+        }
+        Err(ureq::Error::Status(code, res)) => Err(format!(
+            "artificial analysis answered {code}{}",
+            trailing(res.into_string().unwrap_or_default())
+        )),
+        Err(e) => Err(format!("could not reach artificial analysis: {e}")),
+    }
+}
+
 /// Anthropic's error body is `{"type":"error","error":{"type":…,"message":…}}`,
 /// which neither of `trailing`'s two shapes is.
 pub(crate) fn trailing_anthropic(body: String) -> String {    let said = serde_json::from_str::<serde_json::Value>(&body)
@@ -653,6 +695,10 @@ mod tests {
            real PAT is under this name; renaming it does not migrate the
            credential, it orphans it. */
         assert_eq!(lookup("azdo").unwrap().target, "dev.skein.studio/azdo-pat");
+        assert_eq!(
+            lookup("artificialanalysis").unwrap().target,
+            "dev.skein.studio/artificialanalysis-key"
+        );
     }
 
     #[test]

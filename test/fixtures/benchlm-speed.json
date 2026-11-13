@@ -1,0 +1,39 @@
+{
+ "schemaVersion": "1.0",
+ "name": "BenchLM speed",
+ "generatedAt": "2026-11-13T02:11:01.846Z",
+ "source": {
+  "name": "Artificial Analysis",
+  "url": "https://artificialanalysis.ai/leaderboards/models",
+  "updatedAt": "2026-11-12",
+  "speedLabel": "Median tokens/s",
+  "latencyLabel": "Latency first answer chunk (s)"
+ },
+ "attribution": "Data from BenchLM.ai",
+ "items": [
+  {
+   "canonicalModelKey": "deepseek-v4-1-flash",
+   "slug": "deepseek-v4-1-flash",
+   "model": "DeepSeek V4.1 Flash 1017",
+   "tokensPerSecond": 184,
+   "ttft": 12.06,
+   "sourceUpdatedAt": "2026-11-12"
+  },
+  {
+   "canonicalModelKey": "claude-sonnet-5-5",
+   "slug": "claude-sonnet-5-5",
+   "model": "Claude Sonnet 5.5",
+   "tokensPerSecond": 138,
+   "ttft": 448.12,
+   "sourceUpdatedAt": "2026-11-12"
+  },
+  {
+   "canonicalModelKey": "claude-opus-5-5",
+   "slug": "claude-opus-5-5",
+   "model": "Claude Opus 5.5",
+   "tokensPerSecond": 98,
+   "ttft": 663.66,
+   "sourceUpdatedAt": "2026-11-12"
+  }
+ ]
+}

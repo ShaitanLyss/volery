@@ -246,6 +246,13 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     items: ["const LOAD_TOOL", "fn load_schema"],
   },
   {
+    file: "src-tauri/src/benchmarks.rs",
+    /* The schema interpolates none of the module's own constants, and its
+       `handle` is not lifted: what needs executing is the tier, the hint and
+       the read-only annotation, all of which are in the schema body. */
+    items: ["const MODELS_TOOL", "fn models_schema"],
+  },
+  {
     file: "src-tauri/src/status.rs",
     items: ["const STATUS_TOOL", "fn status_schema"],
   },
@@ -560,6 +567,7 @@ function serdeJsonRlib(): string {
  *  file's own root here, which is what makes it work at all. */
 const MODULES = [
   "accounts",
+  "benchmarks",
   "ask",
   "board",
   "clean",

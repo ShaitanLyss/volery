@@ -1,0 +1,233 @@
+{
+ "schemaVersion": "1.0",
+ "name": "BenchLM benchmark definitions",
+ "generatedAt": "2026-11-13T02:11:01.846Z",
+ "attribution": "Data from BenchLM.ai",
+ "items": [
+  {
+   "benchmarkKey": "gpqaDiamond",
+   "name": "GPQA-D",
+   "category": "knowledge",
+   "capabilityCategory": "knowledge",
+   "format": "Multiple choice questions",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "mmluPro",
+   "name": "MMLU-Pro",
+   "category": "knowledge",
+   "capabilityCategory": "knowledge",
+   "format": "10-way multiple choice",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.055555555555555546
+  },
+  {
+   "benchmarkKey": "hle",
+   "name": "HLE",
+   "category": "knowledge",
+   "capabilityCategory": "knowledge",
+   "format": "Open-ended and multiple choice",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.44444444444444436
+  },
+  {
+   "benchmarkKey": "humaneval",
+   "name": "HumanEval",
+   "category": "coding",
+   "capabilityCategory": "coding",
+   "format": "Python function generation",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "sweVerified",
+   "name": "SWE-bench Verified",
+   "category": "coding",
+   "capabilityCategory": "coding",
+   "format": "Code patch generation",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "liveCodeBench",
+   "name": "LiveCodeBench",
+   "category": "coding",
+   "capabilityCategory": "coding",
+   "format": "Competitive-programming evaluation",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "programBench",
+   "name": "ProgramBench",
+   "category": "coding",
+   "capabilityCategory": "coding",
+   "format": "Cleanroom executable reimplementation",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "deepSwe",
+   "name": "DeepSWE",
+   "category": "coding",
+   "capabilityCategory": "coding",
+   "format": "Pass@1 with confidence interval, cost, time, and token metadata",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.1530612244897959
+  },
+  {
+   "benchmarkKey": "apex",
+   "name": "Apex",
+   "category": "math",
+   "capabilityCategory": "math",
+   "format": "Pass@1 math benchmark",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "arcAgi1",
+   "name": "ARC-AGI-1",
+   "category": "reasoning",
+   "capabilityCategory": "reasoning",
+   "format": "Verified accuracy",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "longBenchV2",
+   "name": "LongBench v2",
+   "category": "reasoning",
+   "capabilityCategory": "reasoning",
+   "format": "Extended-context retrieval and reasoning",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.05
+  },
+  {
+   "benchmarkKey": "mrcrv2",
+   "name": "MRCRv2",
+   "category": "reasoning",
+   "capabilityCategory": "reasoning",
+   "format": "Multi-round long-context evaluation",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.2
+  },
+  {
+   "benchmarkKey": "mrcr1m",
+   "name": "MRCR 1M",
+   "category": "reasoning",
+   "capabilityCategory": "reasoning",
+   "format": "Long-context retrieval MMR",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "terminalBench41",
+   "name": "Terminal-Bench 4.1",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Task completion rate across 5 trials per task",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.09022556390977442
+  },
+  {
+   "benchmarkKey": "aaBriefcaseElo",
+   "name": "AA Briefcase",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Elo",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "browseComp",
+   "name": "BrowseComp",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Web search and evidence synthesis",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.09022556390977442
+  },
+  {
+   "benchmarkKey": "gdpvalAa",
+   "name": "GDPval-AA",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Elo",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "aaAgenticIndex",
+   "name": "AA Agentic Index",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Aggregated model score",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "automationBench",
+   "name": "AutomationBench",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Agent task-completion score",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.060150375939849614
+  },
+  {
+   "benchmarkKey": "agentsLastExam",
+   "name": "Agents' Last Exam",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Provider-reported task score",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.030075187969924807
+  },
+  {
+   "benchmarkKey": "deepSearchQa",
+   "name": "DeepSearchQA",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Search / open / find browser-agent evaluation",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.022556390977443604
+  },
+  {
+   "benchmarkKey": "chartography",
+   "name": "Chartography (no tools)",
+   "category": "multimodalGrounded",
+   "capabilityCategory": "multimodalGrounded",
+   "format": "Accuracy without tools",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "mmmu",
+   "name": "MMMU",
+   "category": "multimodalGrounded",
+   "capabilityCategory": "multimodalGrounded",
+   "format": "Image + text question answering",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "mmmuPro",
+   "name": "MMMU-Pro",
+   "category": "multimodalGrounded",
+   "capabilityCategory": "multimodalGrounded",
+   "format": "Image + text question answering",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.3
+  },
+  {
+   "benchmarkKey": "babyVision",
+   "name": "BabyVision",
+   "category": "multimodalGrounded",
+   "capabilityCategory": "multimodalGrounded",
+   "format": "Multimodal visual reasoning",
+   "scoringBasis": null,
+   "weight": null
+  }
+ ]
+}

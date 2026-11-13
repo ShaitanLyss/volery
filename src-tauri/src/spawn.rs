@@ -992,7 +992,11 @@ pub fn spawn_schema() -> Value {
              means every card that gets opened is one somebody decided was worth a card, and \
              the only thing standing between a decomposition and a hundred agents on one \
              prompt is your judgement. Open what the work is actually divided into. Close \
-             them with `close` when they have reported.",
+             them with `close` when they have reported.\n\n\
+             **Do not pick `model` or `effort` from the sound of a name.** `pro` reads as \
+             the hard end and is not always the better or the dearer-value one; ask \
+             `mcp__skein__models` for the workflow this piece is doing, and it answers what \
+             each model at each effort is measured at and what it costs.",
         "inputSchema": {
             "type": "object",
             "properties": {

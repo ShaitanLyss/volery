@@ -1,0 +1,168 @@
+{
+ "schemaVersion": "1.0",
+ "name": "BenchLM models",
+ "generatedAt": "2026-11-13T02:11:01.846Z",
+ "sourceLastUpdated": "November 13, 2026",
+ "license": "CC BY-NC 4.0",
+ "attribution": "Data from BenchLM.ai",
+ "items": [
+  {
+   "slug": "claude-sonnet-5-5",
+   "canonicalModelKey": "claude-sonnet-5-5",
+   "model": "Claude Sonnet 5.5",
+   "creator": "Anthropic",
+   "sourceType": "Proprietary",
+   "reasoningType": "Reasoning",
+   "contextWindow": "1M",
+   "contextWindowTokens": 1000000,
+   "displayScore": 83.07,
+   "releaseDate": "2026-09-28",
+   "family": {
+    "familyKey": "claude-sonnet-5-5",
+    "familyName": "Claude Sonnet 5.5",
+    "variantType": "base",
+    "snapshotLabel": null,
+    "baseFamilyModelKey": "claude-sonnet-5-5",
+    "relatedModelKeys": [
+     "claude-sonnet-5",
+     "claude-opus-5-5"
+    ],
+    "isCanonicalFamilyEntry": true,
+    "supersedesModelKey": "claude-sonnet-5"
+   },
+   "benchmarks": {
+    "agentic": {
+     "terminalBench41": 63.9,
+     "gdpvalAa": 1844,
+     "aaBriefcaseElo": 1811
+    },
+    "coding": {
+     "deepSwe": 71,
+     "programBench": 79.7
+    },
+    "multimodalGrounded": {
+     "chartography": 61.6
+    }
+   }
+  },
+  {
+   "slug": "deepseek-v3-0324",
+   "canonicalModelKey": "deepseek-v3-0324",
+   "model": "DeepSeek V3 0324",
+   "creator": "DeepSeek",
+   "sourceType": "Open Weight",
+   "reasoningType": "Non-Reasoning",
+   "contextWindow": "128K",
+   "contextWindowTokens": 128000,
+   "displayScore": 35.92,
+   "releaseDate": "2025-03-24",
+   "family": {
+    "familyKey": "deepseek",
+    "familyName": "DeepSeek",
+    "variantType": "snapshot",
+    "snapshotLabel": "V3 0324",
+    "baseFamilyModelKey": "deepseek-v3",
+    "relatedModelKeys": [
+     "deepseek-v3"
+    ],
+    "isCanonicalFamilyEntry": false,
+    "supersedesModelKey": "deepseek-v3"
+   },
+   "benchmarks": {}
+  },
+  {
+   "slug": "claude-opus-5-5",
+   "canonicalModelKey": "claude-opus-5-5",
+   "model": "Claude Opus 5.5",
+   "creator": "Anthropic",
+   "sourceType": "Proprietary",
+   "reasoningType": "Reasoning",
+   "contextWindow": "1M",
+   "contextWindowTokens": 1000000,
+   "displayScore": 86.64,
+   "releaseDate": "2026-09-22",
+   "family": {
+    "familyKey": "claude-opus-5-5",
+    "familyName": "Claude Opus 5.5",
+    "variantType": "base",
+    "snapshotLabel": null,
+    "baseFamilyModelKey": "claude-opus-5-5",
+    "relatedModelKeys": [
+     "claude-opus-5",
+     "claude-fable-5-1",
+     "claude-sonnet-5"
+    ],
+    "isCanonicalFamilyEntry": true,
+    "supersedesModelKey": "claude-opus-5"
+   },
+   "benchmarks": {
+    "agentic": {
+     "terminalBench41": 65.8,
+     "gdpvalAa": 1846,
+     "automationBench": 40,
+     "aaBriefcaseElo": 1801
+    },
+    "coding": {
+     "deepSwe": 74.2,
+     "programBench": 91.2
+    },
+    "reasoning": {
+     "arcAgi1": 97.5
+    },
+    "multimodalGrounded": {
+     "chartography": 64.4
+    }
+   }
+  },
+  {
+   "slug": "deepseek-v4-1-flash",
+   "canonicalModelKey": "deepseek-v4-1-flash",
+   "model": "DeepSeek V4.1 Flash 1017",
+   "creator": "DeepSeek",
+   "sourceType": "Open Weight",
+   "reasoningType": "Reasoning",
+   "contextWindow": "1M",
+   "contextWindowTokens": 1000000,
+   "displayScore": 64.51,
+   "releaseDate": "2026-10-17",
+   "family": {
+    "familyKey": "deepseek-v4-1-flash",
+    "familyName": "DeepSeek V4.1 Flash",
+    "variantType": "flash-reasoning",
+    "snapshotLabel": "1017",
+    "baseFamilyModelKey": "deepseek-v4-1-flash",
+    "relatedModelKeys": [
+     "deepseek-v4-flash-max",
+     "deepseek-v4-pro-max"
+    ],
+    "isCanonicalFamilyEntry": true,
+    "supersedesModelKey": "deepseek-v4-flash-max"
+   },
+   "benchmarks": {
+    "agentic": {
+     "automationBench": 60.5,
+     "agentsLastExam": 35.4
+    },
+    "coding": {
+     "deepSwe": 77,
+     "programBench": 29.1
+    },
+    "knowledge": {
+     "gpqaDiamond": 90.9,
+     "hle": 42.6
+    },
+    "math": {
+     "apex": 65.6
+    }
+   }
+  },
+  {
+   "slug": "native-judgebench-arena-hard-claude-3-5-sonnet-20240620",
+   "canonicalModelKey": "native-judgebench-arena-hard-claude-3-5-sonnet-20240620",
+   "model": "Arena-Hard (judge)",
+   "creator": "x",
+   "contextWindowTokens": 0,
+   "benchmarks": {}
+  }
+ ]
+}

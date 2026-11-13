@@ -18,6 +18,9 @@
   import { turnOf } from "./attach";
   import { chipSaid, modelSaid, presetRows, switchLines } from "./starting";
   import { tipOf } from "./tipped.svelte";
+  import { standings } from "./standings.svelte";
+  import { profileFor, standingLine } from "./benchmarks";
+  import { onMount } from "svelte";
 
   let {
     card,
@@ -59,6 +62,15 @@
       : chip.split(" ")[0],
   );
 
+  /* What the menu is choosing between, measured. The store is the panel's; a
+     menu that arrives first asks for the profile that fits this card, and one
+     that arrives second uses what is already there — and says which profile
+     that is on every row, so the two can never be mistaken for each other. */
+  const fitting = $derived(profileFor(card && !card.reach.chat ? "project" : "chat"));
+  onMount(() => {
+    if (!standings.view) void standings.load(fitting.id);
+  });
+
   const rows = $derived<PickRow[]>(
     presetRows()
       .filter((r) => !runs || r.id !== "")
@@ -76,7 +88,19 @@
             ? p.model === runs.model
             : !live && !!p && family(p.model) === family(runs.model) && (p.effort ?? null) === (runs.effort ?? null)
           : r.id === (starter.preset === null ? (starter.resolved?.id ?? "") : starter.preset);
-        return { id: r.id, label: r.label, aside: r.chip, on, sep: r.sep || (r.id === "" && i > 0) };
+        const model = p ? standings.entryForAlias(p.model) : null;
+        return {
+          id: r.id,
+          label: r.label,
+          aside: r.chip,
+          /* The measurement, where the choice is made. A model the sources did
+             not read says so rather than carrying a blank, and the profile is
+             named because a score without one is a claim about every kind of
+             work. */
+          note: p ? standingLine(model, standings.profile) : undefined,
+          on,
+          sep: r.sep || (r.id === "" && i > 0),
+        };
       }),
   );
 

@@ -4368,6 +4368,7 @@ mod tests {
     const SPEAKING_SOURCES: &[(&str, &str)] = &[
         ("accounts.rs", include_str!("accounts.rs")),
         ("ask.rs", include_str!("ask.rs")),
+        ("benchmarks.rs", include_str!("benchmarks.rs")),
         ("board.rs", include_str!("board.rs")),
         ("chronicle.rs", include_str!("chronicle.rs")),
         ("docket.rs", include_str!("docket.rs")),

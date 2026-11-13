@@ -244,3 +244,25 @@ scope and is done; the gate is the user's.
 **Sink bodies are clipped at 1,200 characters** (`sink.rs:87`, filed as `7b26058e`), which is
 why the three items above all end mid-sentence in the pile and why this is a file rather than
 three more voices on them.
+
+---
+
+## 4. Applied: `models`, and the one reflex it has to reach (2026-11-13)
+
+Not a decision — a worked example of item 1, added with `docs/MODELS.md`. The `models`
+tool (rank / frontier / compare / explain, and the readings behind them) is **deferred**,
+with the hint written as the words a card is holding: *"is flash better than pro"*,
+*"which is the best model for coding"*, *"what does a model cost"*. That is item 1's shape
+exactly — the reflex it replaces is choosing by name, which is not a search for a tool.
+
+The half a hint cannot reach is the half item 1 identified: a card that has a habit for the
+job does not go looking. So the same change puts one clause in `spawn`'s and
+`set_provider`'s descriptions — shape B, without the deny — because those two are already
+the tools a model-choosing card has open, and a sentence there arrives at the moment of the
+choice rather than in a listing nobody reads. It costs nothing per turn: both schemas are
+deferred, so the clause is read once, by a card that has already decided to spawn.
+
+What was *not* built, and why: nothing denies `spawn` without a `models` call. A model
+choice is not destructive and its evidence can be wrong in either direction; a guard that
+forces a lookup before every spawn would be obstructive exactly where the wall has decided
+spawning should be cheap.

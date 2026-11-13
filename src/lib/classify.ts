@@ -254,6 +254,12 @@ export const SKEIN_STATUS_TOOL = "mcp__skein__claude_status";
  *  check that misbehaved is the check's fault. */
 export const SKEIN_LOAD_TOOL = "mcp__skein__load";
 
+/** What the models this wall can spawn are measured at — `benchmarks.rs`. A
+ *  reading of somebody else's evidence, asked before a choice; it changes
+ *  nothing, and its cache may have been refreshed by the call. The line says
+ *  what was asked, not what it answered, for `SKEIN_LOAD_TOOL`'s reason. */
+export const SKEIN_MODELS_TOOL = "mcp__skein__models";
+
 /** And the dev servers, which a card can now read and drive.
  *
  *  The first tools on this server that change what is *running on the machine*
@@ -873,6 +879,8 @@ export function describeTool(name: string, input: any, nameOf: (address: string)
        stopped being true. */
     case SKEIN_LOAD_TOOL:
       return "checked how loaded the machine is";
+    case SKEIN_MODELS_TOOL:
+      return "looked up what the models are measured at";
     /* The dev servers. `servers` and `server_log` read something the wall is
        already holding and cost nobody anything; `server` runs processes on this
        machine, so it gets the specific line — the same asymmetry `spawn` and
