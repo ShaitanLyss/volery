@@ -1,20 +1,21 @@
-/* The reader behind the cap: what the panel draws and what the door compares.
+/* The fold behind the cap: what the panel draws and what the door compares.
  *
- * The arithmetic itself is `allowancesamples.ts::ownPoints` and is tested
- * there. What is asserted here is the reading's *scope* — one window per kind,
- * keyed by account label, rebuilt on every read — because that is the part that
- * decides whether a cap is measured against one window or four.
+ * The arithmetic is `allowancesamples.ts::ownPoints` and is tested there. What
+ * is asserted here is the reading's *scope* and its three states, because those
+ * are what decide whether a cap is measured against one window or four, and
+ * whether "this wall spent nothing" is told apart from "this wall's spend could
+ * not be priced".
  */
 
 import { describe, expect, test } from "bun:test";
-import { OwnShare } from "../src/lib/ownshare.svelte";
-import type { AllowanceCost, AllowanceSample } from "../src/lib/allowancesamples";
+import { ownUses, type AllowanceCost, type AllowanceSample } from "../src/lib/allowancesamples";
 
 const NOW = Date.UTC(2026, 10, 13, 3, 0, 0);
 const MIN = 60_000;
+const HOUR = 60 * MIN;
 
 /** One window read twice, ten points apart, an hour before it rolls. */
-function samples(used: number[]): AllowanceSample[] {
+function samples(used: number[], over: Partial<AllowanceSample> = {}): AllowanceSample[] {
   return used.map((u, i) => ({
     at: NOW + i * 10 * MIN,
     host: "studio",
@@ -22,14 +23,15 @@ function samples(used: number[]): AllowanceSample[] {
     kind: "session",
     scope: "",
     used: u,
-    resetsAt: NOW + 3_600_000,
+    resetsAt: NOW + HOUR,
     severity: "normal",
     plan: "max",
     source: "poll",
+    ...over,
   }));
 }
 
-function costs(at = NOW): AllowanceCost[] {
+function costs(at = NOW, over: Partial<AllowanceCost> = {}): AllowanceCost[] {
   return [
     {
       at,
@@ -46,60 +48,64 @@ function costs(at = NOW): AllowanceCost[] {
       write5m: 0,
       write1h: 0,
       requests: 1,
+      ...over,
     },
   ];
 }
 
 describe("the share the wall keeps", () => {
-  test("is the movement the fact covered, per account", () => {
-    const own = new OwnShare();
-    own.settle(samples([10, 20]), costs());
-    const [got] = own.list("lyss");
+  test("is the movement the fact covered, with the reading it is a share of", () => {
+    const [got] = ownUses(samples([10, 20]), costs());
     expect(got!.points).toBe(10);
     expect(got!.moved).toBe(10);
     expect(got!.priced).toBeGreaterThan(0);
+    expect(got!.worked).toBe(true);
+    expect(got!.used).toBe(20);
+    expect(got!.resetsAt).toBe(NOW + HOUR);
   });
 
-  /* An account with no reading is *not measured*, which every caller has to be
-     able to tell from a share of zero — the cap's whole fallback turns on it. */
+  /* The difference the cap's fallback turns on: this wall spent nothing in the
+     window (a share of zero, whatever the account reads) against this wall
+     spent something that could not be priced (unknown). */
+  test("says whether this wall worked at all, priced or not", () => {
+    const [quiet] = ownUses(samples([10, 20]), []);
+    expect(quiet!.worked).toBe(false);
+    expect(quiet!.priced).toBe(0);
+
+    /* A request whose model the price table cannot place is still work. */
+    const [unpriced] = ownUses(samples([10, 20]), costs(NOW, { model: "a-model-from-2027" }));
+    expect(unpriced!.worked).toBe(true);
+  });
+
   test("an account nobody measured answers with nothing", () => {
-    const own = new OwnShare();
-    own.settle(samples([10, 20]), costs());
-    expect(own.list("tx-team")).toEqual([]);
+    expect(ownUses(samples([10, 20]), costs()).find((r) => r.account === "tx-team")).toBeUndefined();
   });
 
   /* A window rolled is a new instance, and a sum over instances is four times
      the scale of the reading a cap is compared against. One row per kind. */
   test("only the window that is open now is what it keeps", () => {
-    const own = new OwnShare();
-    const rolled: AllowanceSample[] = [
+    const rolled = [
       ...samples([0, 10]),
       ...samples([0, 5]).map((s) => ({
         ...s,
-        at: s.at + 5 * 3_600_000,
-        resetsAt: s.resetsAt + 5 * 3_600_000,
+        at: s.at + 5 * HOUR,
+        resetsAt: s.resetsAt + 5 * HOUR,
       })),
     ];
-    own.settle(rolled, [...costs(NOW), ...costs(NOW + 5 * 3_600_000)]);
-    const rows = own.list("lyss");
+    const rows = ownUses(rolled, [...costs(NOW), ...costs(NOW + 5 * HOUR)]);
     expect(rows.length).toBe(1);
     expect(rows[0]!.points).toBe(5);
   });
 
-  test("a second read replaces the first rather than adding to it", () => {
-    const own = new OwnShare();
-    own.settle(samples([0, 10]), costs());
-    own.settle(samples([0, 3]), costs());
-    expect(own.list("lyss").map((r) => r.points)).toEqual([3]);
+  test("a subscription sentinel has no window to share", () => {
+    expect(ownUses(samples([0, 10], { account: "@credits" }), costs())).toEqual([]);
   });
 
-  test("a subscription sentinel has no window to share", () => {
-    const own = new OwnShare();
-    own.settle(
-      samples([0, 10]).map((s) => ({ ...s, account: "@credits" })),
-      costs(),
-    );
-    expect(own.list("@credits")).toBeDefined();
-    expect(own.list("@credits").length === 0 || own.list("@credits")[0]!.points === 0).toBe(true);
+  /* Two scoped windows of one kind would each credit the same cost buckets, and
+     a cap keys on the kind, so it would be compared against a doubled figure.
+     Left out rather than summed, and the cap falls back to the account's own
+     percentage for that kind — the behaviour it had before any of this. */
+  test("a scoped window is left out rather than summed", () => {
+    expect(ownUses(samples([0, 10], { scope: "Opus" }), costs())).toEqual([]);
   });
 });

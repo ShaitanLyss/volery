@@ -2086,3 +2086,35 @@ describe("the share the face draws", () => {
     expect(shareFor(win({ kind: "session", used: 30 }), own(80)).points).toBe(30);
   });
 });
+
+/* The three states a share can be in, and the two that must not be confused.
+   A wall that slept through the start of a five-hour window has spent nothing
+   of it; a wall that spent something the price table cannot place is unknown.
+   Reading the first as the second is what held a prompt on somebody else's
+   morning. */
+describe("a share of nothing is not a share that cannot be read", () => {
+  const quiet = [{ kind: "session", points: 0, moved: 0, priced: 0, worked: false }];
+  const unpriced = [{ kind: "session", points: 0, moved: 40, priced: 0, worked: true }];
+
+  test("a window this wall did not work in is zero, and a cap of 50 lets it run", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    expect(blockersFor(a, [win({ kind: "session", used: 90 })], false, false, quiet)).toEqual([]);
+    expect(shareFor(win({ kind: "session", used: 90 }), quiet)).toEqual({ points: 0, own: true });
+  });
+
+  test("but a ceiling of zero still refuses, which is what it means", () => {
+    const a = acct("lyss", { caps: { session: 0 } });
+    expect(blockersFor(a, [win({ kind: "session", used: 90 })], false, false, quiet)).toHaveLength(1);
+  });
+
+  test("spend that could not be priced is unknown, and the account's figure stands in", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    expect(shareFor(win({ kind: "session", used: 90 }), unpriced)).toEqual({
+      points: 90,
+      own: false,
+    });
+    expect(blockersFor(a, [win({ kind: "session", used: 90 })], false, false, unpriced)).toHaveLength(
+      1,
+    );
+  });
+});

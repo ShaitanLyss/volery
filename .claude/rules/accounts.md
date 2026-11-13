@@ -326,17 +326,36 @@ reading an account is not one. `.claude/rules/usage.md` has the face's half.
 Lyss, 2026-11-13: *"someone saying ok you can use 50% of my account, if they do
 20%, it shouldn't interfere with my 50%"*. The account's percentage is
 everybody's, so a ceiling meant for your share was being spent by somebody
-else's work. Every reader of a cap now takes the share this wall's own facts
-explain (`accounts.ts::SelfUse`) and measures the ceiling on that: `blockersFor`,
-`spentOf`, `standingOf` and `choose`. The server's ceiling is untouched by it —
-a subscription refused for everybody is refused for you too.
+else's work. The readers of a cap take the share this wall's own facts explain
+(`accounts.ts::SelfUse`): `blockersFor`, `spentOf`, `standingOf`, `choose`,
+`overrunFor`, `speaksWith` (the usage widget's row, so a face cannot draw a
+ceiling the wall is not honouring) and `admit.ts::nearness` (the fan-out queue).
+The server's ceiling is untouched by it: a subscription refused for everybody is
+refused for you too.
 
-**It is already a fleet figure, which is why this needed no protocol.** A
-window's movement is divided among the priced facts under it
-(`analytics.ts::attribute`), and the facts *and* the samples both travel the
-flyway, so a card on the other laptop is in this wall's own tables and counts
-towards its own share. Nothing is published, and a wall that has been offline
-understates its share rather than pretending to one.
+**Three states, and the fallback is the third.** A share with `worked: false` is
+a window this wall spent nothing in, so it is zero however full the account is;
+that is what stops the first prompt of a five-hour window being held on somebody
+else's morning. A share with `priced: 0` and `worked` true is spend this wall
+could not put a price on, which is unknown rather than zero, and the account's
+own percentage stands in. No share at all is the same unknown. Reading the first
+as the third is what kept the complaint alive for the wall that had merely been
+asleep.
+
+**It is this wall's figure, and it is an upper bound.** A window's movement is
+divided among the priced facts under it (`analytics.ts::attribute`), and the
+facts are the ones this wall can see: samples travel the flyway but the
+fine-grained `usage_fact` rows do not, so a card on the other laptop is in *its*
+tables. Two consequences, both worth saying plainly rather than discovering:
+
+- **Two walls on one subscription each measure the ceiling on their own work**,
+  so together they can approach twice it. Publishing own-points by account
+  identity is the fix, and it needs the identity mapping the settings already
+  have; it is not built.
+- **A co-worker working in the same five minutes is counted as yours**, because
+  the denominator is only ever facts this wall can see. Intervals where this
+  wall did nothing at all are excluded, which is the half that was asked for;
+  the overlapping intervals are the residue.
 
 - **The current instance only** (`allowancesamples.ts::currentOnly`). Four
   five-hour windows in a day add up the way a day's percentage does, which is
@@ -372,11 +391,18 @@ arithmetic**: two implementations of "how much of this window is yours" would
 drift, and the drift would show as a wall holding work back over a figure the
 panel drew differently.
 
-The note is a rate, not a fact — at most two minutes old. Inside a window usage
-only accumulates, so a stale note understates, and an absent one is the old
-behaviour exactly. `ownshare::share` is the pure half and is lifted
-(`tools/lift-ownshare.ts`), since `cargo test` cannot link on a machine with no
-MSVC.
+The note is a rate, not a fact — at most one waterfall pass old. Inside a window
+usage only accumulates, so a stale note understates, and an absent one is the old
+behaviour exactly. **The note carries the whole comparison**, including the
+reading it is a share of and when that window rolls: the first cut read the
+account's percentage out of `limits::own_reading`, which is emptied whenever the
+last usage widget detaches and can describe a window that has since rolled, so
+the door both stopped enforcing and, once, refused a prompt on a reset that had
+already happened. A bypassed card is never refused here — the bypass is the
+deliberate instruction to spend past the reserve, and a door that ignored it
+would refuse the one gesture made to do so. `ownshare::share` is the pure half
+and is lifted (`tools/lift-ownshare.ts`), since `cargo test` cannot link on a
+machine with no MSVC.
 
 ### The bypass is per card, and it only moves your own ceiling
 

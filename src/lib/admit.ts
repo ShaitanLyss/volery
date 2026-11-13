@@ -1,4 +1,4 @@
-import { capFor, type Account, type Allowance } from "./accounts";
+import { capFor, shareFor, type Account, type Allowance, type SelfUse } from "./accounts";
 import { CREDITS, type Decision } from "./credits";
 
 /** What the wall tells Rust about its allowance, so a spawn, a wake and a
@@ -77,12 +77,15 @@ export const NOTHING_KNOWN: AllowanceFacts = {
 export function nearness(
   account: Account,
   allowance: Allowance | undefined,
+  /** Your own share, on `blockersFor`'s terms. A queue held behind somebody
+   *  else's 85% is the same complaint the cap itself had. */
+  self: readonly SelfUse[] = [],
 ): { spent: number; resetsAt: number | null } | null {
   if (!allowance || !allowance.ok) return null;
   let worst: { spent: number; resetsAt: number | null } | null = null;
   for (const w of allowance.windows) {
     if (w.group !== "session") continue;
-    const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
+    const used = shareFor(w, self).points;
     const cap = capFor(account, w.kind, false);
     const spent = cap <= 0 ? 1 : used / cap;
     if (!worst || spent > worst.spent) worst = { spent, resetsAt: w.resetsAt };
@@ -93,7 +96,12 @@ export function nearness(
 /** What the lookup knows about one account. `credits` is true where boost is
  *  on and the account's own usage credits cover a send — then the window
  *  filling is a bill rather than a wall, and nothing need finish first. */
-export type Looked = { account: Account; allowance: Allowance | undefined; credits: boolean };
+export type Looked = {
+  account: Account;
+  allowance: Allowance | undefined;
+  self: readonly SelfUse[];
+  credits: boolean;
+};
 
 /** Where one decision lands, and how near. */
 export function facetOf(d: Decision, lookup: (label: string) => Looked | null): Facet {
@@ -107,7 +115,7 @@ export function facetOf(d: Decision, lookup: (label: string) => Looked | null): 
   const found = lookup(d.label);
   /* The same decision made with the account's own usage credits. */
   if (found?.credits) return EMPTY;
-  const near = found ? nearness(found.account, found.allowance) : null;
+  const near = found ? nearness(found.account, found.allowance, found.self) : null;
   return { landing: d.label, spent: near?.spent ?? null, resetsAt: near?.resetsAt ?? null };
 }
 

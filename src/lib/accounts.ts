@@ -280,6 +280,13 @@ export type SelfUse = {
   /** Modeled dollars under that movement: the evidence that `points` is a
    *  reading. Zero means nothing priced was seen. */
   priced: number;
+  /** Did this wall work in this window at all, priced or not. Absent is read as
+   *  unknown — the older behaviour — so nothing that assembles a share by hand
+   *  has to learn about it. False is the case that matters: a window opened
+   *  while this wall was asleep, or the first prompt of a five-hour window, is
+   *  one where your share is genuinely zero and the account's figure is
+   *  somebody else's entirely. */
+  worked?: boolean;
 };
 
 /** What the cap is compared against for one window: your share where it is
@@ -302,9 +309,14 @@ export function shareFor(
 ): { points: number; own: boolean } {
   const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
   const mine = self.find((s) => s.kind === w.kind);
-  if (mine === undefined || !(mine.priced > 0) || !Number.isFinite(mine.points)) {
-    return { points: used, own: false };
-  }
+  if (mine === undefined) return { points: used, own: false };
+  /* **Nothing to report and cannot report are different**, and only the first
+     is a share of zero. A window that opened while this wall slept, or the
+     first prompt of a five-hour window, is a window this wall has spent nothing
+     of, however full somebody else has it. `worked === false` is that case, and
+     reading it as unknown is what held a prompt on the other person's usage. */
+  if (mine.worked === false) return { points: 0, own: true };
+  if (!(mine.priced > 0) || !Number.isFinite(mine.points)) return { points: used, own: false };
   return { points: Math.min(Math.max(0, mine.points), used), own: true };
 }
 
@@ -555,11 +567,16 @@ export type Spoken = {
  *  conversation told to ignore the caps you set — and this is a widget reading an
  *  account, where those caps are in force. A window past 100 or already refused
  *  is the server's and shows through either way. */
-export function speaksWith(account: Account, windows: Window[], credits = false): Spoken {
+export function speaksWith(
+  account: Account,
+  windows: Window[],
+  credits = false,
+  self: readonly SelfUse[] = [],
+): Spoken {
   /* `credits` for the same reason `blockersFor` takes it: a week spent with
      usage credits behind it is not finished, the wall is still sending work
      there, and a face reading it as spent would disagree with the chooser. */
-  const weekly = blockersFor(account, windows, false, credits).filter(
+  const weekly = blockersFor(account, windows, false, credits, self).filter(
     (b) => b.window.group === "weekly",
   );
   if (weekly.length > 0) {

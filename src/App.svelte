@@ -156,7 +156,6 @@
   import { adrift, Portage } from "./lib/portage.svelte";
   import { sayBlocked, usable } from "./lib/accounts";
   import { waterfall } from "./lib/waterfall.svelte";
-  import { ownShare } from "./lib/ownshare.svelte";
   import { purse } from "./lib/purse.svelte";
   import { boostLabel, onCredits, sayBoost } from "./lib/credits";
   import { boost } from "./lib/boost.svelte";
@@ -1179,17 +1178,10 @@
     untrack(() => void skein.letRest());
   });
 
-  /* Your own share of each account's window, which a cap is measured on
-     (`accounts.ts::SelfUse`). Two reads of this wall's own tables and no
-     network, so — unlike the allowance poll, which waits for a panel — this
-     runs whenever the wall is up. It has to: a cap nobody is looking at the
-     accounts panel for is still a cap, and a share that is only read while the
-     panel is open is a share the door never sees. Throttled inside, and the
-     tick is the only dependency. */
-  $effect(() => {
-    void clock.t;
-    untrack(() => void ownShare.maybeRefresh());
-  });
+  /* Your own share of each account's window is read inside `Waterfall.poll`,
+     which the wall attaches at construction and so runs whether or not the
+     accounts panel is open. A tick of its own here was a second read of eight
+     days of facts for a figure the poll had already refreshed. */
 
   /* And the hard stop: a card working past your own ceiling by more than
      `CAP_MARGIN` is interrupted rather than left to spend the reserve in one

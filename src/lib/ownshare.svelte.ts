@@ -7,31 +7,30 @@
  * measured on `allowancesamples.ts::ownPoints`, which divides each window's
  * movement among the priced facts under it.
  *
- * **The figure is already the fleet's, and that is why this is a read rather
- * than a protocol.** Samples travel (the poll, a card's `rate_limit_event`, a
- * peer's reading) and so do the facts, so the facts of a card on the other
- * laptop are in this wall's own tables and `attribute` counts them. Nothing
- * needs publishing, and a wall that has been offline understates its own share
- * rather than pretending to a second one.
+ * **This wall's figure, not the fleet's.** Samples travel the flyway; the
+ * fine-grained facts do not — `allowance_costs` reads `usage_fact`, which only
+ * the local ingest writes — so a card on the other laptop is in *its* tables and
+ * not in these. Two walls on one subscription therefore each measure the
+ * ceiling on their own work, and the pair can approach twice it. That is a
+ * limitation with a shape worth knowing rather than one to discover from a bill,
+ * and `allowancesamples.ts::ownPoints` states it where the figure is made.
  *
  * **The current instance only.** Four five-hour windows in a day add up the way
  * a day's percentage does, which is right for a day and four times the scale of
  * the reading a cap is compared against (`allowancesamples.ts::currentOnly`).
  *
  * A read, not a fold: it costs two table reads, so it happens where the
- * allowance is already being read — once a pass, in `Waterfall.poll` — rather
- * than at every send.
+ * allowance is already being read — inside `Waterfall.poll`, which the wall
+ * attaches at construction and so runs whether or not the accounts panel is
+ * open — rather than at every send.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  costBucketsOf,
-  currentOnly,
-  instancesOf,
-  ownPoints,
+  ownUses,
   type AllowanceCost,
   type AllowanceSample,
-  type OwnPoints,
+  type OwnUse,
 } from "./allowancesamples";
 import { readAllowanceCosts, readAllowanceSamples } from "./allowanceread.svelte";
 
@@ -39,24 +38,15 @@ import { readAllowanceCosts, readAllowanceSamples } from "./allowanceread.svelte
  *  cap is about. Four five-hour windows fit inside it many times over. */
 export const SELF_SPAN_MS = 8 * 24 * 60 * 60 * 1000;
 
-/** How often the wall re-reads its own share.
- *
- *  **Two minutes, because this is not the allowance poll and has none of its
- *  politeness.** That one spends somebody else's request on an endpoint that
- *  answers 429 to a minute, so it asks only while a panel is open. This is two
- *  reads of the wall's own tables, so it may run with nothing open — and it has
- *  to, because a cap is a cap whether or not anybody is looking at the accounts
- *  panel. Two minutes is well inside the resolution anything reads it at: the
- *  share moves by a point or two a turn, against caps measured in tens. */
-export const SELF_EVERY_MS = 2 * 60_000;
-
 export class OwnShare {
-  #byAccount = new Map<string, OwnPoints[]>();
+  /** Bumped when a read lands, so the panel redraws. `#byAccount` is a plain
+   *  map on purpose — this is a decision input, not a drawing — and a derived
+   *  that returned the same map every time would never invalidate, which is
+   *  `editing.md`'s trap. */
+  version = $state(0);
+
+  #byAccount = new Map<string, OwnUse[]>();
   #at = 0;
-  /** When a read was last *attempted*, which is what the cadence below turns
-   *  on. `#at` is when one last succeeded, so throttling on it would retry
-   *  every tick against a store that is refusing — a read a second, forever. */
-  #tried = 0;
   #busy: Promise<void> | null = null;
   /** What the last read could not do, in the wire's own words. Empty when it
    *  worked; the previous reading is kept through a failure for `keptThrough`'s
@@ -66,7 +56,7 @@ export class OwnShare {
   /** Your shares for one account, in `accounts.ts::SelfUse`'s terms. An account
    *  with no reading gives an empty list, which every caller treats as *not
    *  measured* rather than as zero. */
-  list(label: string): readonly OwnPoints[] {
+  list(label: string): readonly OwnUse[] {
     return this.#byAccount.get(label) ?? [];
   }
 
@@ -75,27 +65,21 @@ export class OwnShare {
     return this.#at;
   }
 
-  /** Re-read, unless one landed recently. What the wall's tick calls. */
-  maybeRefresh(now = Date.now()): Promise<void> {
-    if (this.#busy) return this.#busy;
-    if (this.#tried > 0 && now - this.#tried < SELF_EVERY_MS) return Promise.resolve();
-    return this.refresh(now);
-  }
-
-  /** Re-read. **Single-flight**, because the poll can be asked twice while a
-   *  read is in flight and two reads of eight days of facts is one too many. */
+  /** Re-read. **Single-flight**, because the waterfall's pass and a send can
+   *  both ask while a read is in flight, and two reads of eight days of facts
+   *  is one too many. */
   refresh(now = Date.now()): Promise<void> {
     if (this.#busy) return this.#busy;
     const until = Math.floor(now / 60_000) * 60_000;
     const from = until - SELF_SPAN_MS;
-    this.#tried = now;
+
     this.#busy = (async () => {
       try {
         const [samples, costs] = await Promise.all([
           readAllowanceSamples(from, until),
           readAllowanceCosts(from, until),
         ]);
-        const rows = this.settle(samples, costs);
+        this.settle(samples, costs);
         this.fault = "";
         this.#at = Date.now();
         /* **And the door is told.** `deliver_blocks` is where a relay, a wake and
@@ -105,7 +89,7 @@ export class OwnShare {
            there: one definition of what a share is, read by two doors.
            Fire and forget, because a note that did not land costs a stale
            comparison for one cadence and the next read sends it again. */
-        void invoke("note_own", { shares: rows }).catch(() => {});
+        void invoke("note_own", { shares: this.notes() }).catch(() => {});
       } catch (err) {
         this.fault = String(err);
       } finally {
@@ -115,19 +99,49 @@ export class OwnShare {
     return this.#busy;
   }
 
-  /** The fold, kept apart from the read so a test can hand it fixtures and so
-   *  the arithmetic has one home (`ownPoints`, which is pure and tested). It
-   *  keeps the rows and hands them back, and makes no call of its own. */
-  settle(samples: readonly AllowanceSample[], costs: readonly AllowanceCost[]): OwnPoints[] {
-    const rows = ownPoints(currentOnly(instancesOf(samples)), costBucketsOf(costs));
-    const next = new Map<string, OwnPoints[]>();
+  /** The fold, which is `ownUses` — pure, in `allowancesamples.ts`, and tested
+   *  there because a `.svelte.ts` with a rune in it cannot be imported by a bun
+   *  test. This keeps the rows and bumps the version; it makes no call of its
+   *  own. */
+  settle(samples: readonly AllowanceSample[], costs: readonly AllowanceCost[]): OwnUse[] {
+    const rows = ownUses(samples, costs);
+    const next = new Map<string, OwnUse[]>();
     for (const row of rows) {
       const held = next.get(row.account);
       if (held) held.push(row);
       else next.set(row.account, [row]);
     }
     this.#byAccount = next;
+    this.version++;
     return rows;
+  }
+
+  /** What the door is told: one row per share, carrying the whole comparison —
+   *  the share, whether it is a reading or a hole, and the reading it is a share
+   *  of (`share.rs`). */
+  notes(): {
+    account: string;
+    kind: string;
+    points: number;
+    priced: number;
+    worked: boolean | undefined;
+    used: number;
+    resetsAt: number | null;
+  }[] {
+    return this.all().map((row) => ({
+      account: row.account,
+      kind: row.kind,
+      points: row.points,
+      priced: row.priced,
+      worked: row.worked,
+      used: row.used,
+      resetsAt: row.resetsAt,
+    }));
+  }
+
+  /** Every row, in one list. */
+  all(): OwnUse[] {
+    return [...this.#byAccount.values()].flat();
   }
 }
 

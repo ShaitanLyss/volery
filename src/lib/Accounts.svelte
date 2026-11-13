@@ -335,6 +335,9 @@
    *  account's percentage: a shared account reading 70% under a 50% cap with
    *  nothing said about it is a panel arguing with itself. */
   function shareOf(label: string, kind: string): number | null {
+    /* Read so this repaints when a read lands: the share lives in a plain map
+       on purpose, and the version is the dependency (`editing.md`'s trap). */
+    void ownShare.version;
     const a = waterfall.allowances[label];
     const w = a?.ok ? a.windows.find((x) => x.kind === kind) : null;
     if (!w) return null;

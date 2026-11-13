@@ -25,6 +25,7 @@
   import { clock } from "./conversation.svelte";
   import type { Ledger } from "./ledger.svelte";
   import { waterfall } from "./waterfall.svelte";
+  import { ownShare } from "./ownshare.svelte";
   import type { Window } from "./limits";
   import {
     binding,
@@ -199,7 +200,7 @@
   const every = $derived(
     faces.map((f) => {
       const spoke = f.account
-        ? speaksWith(f.account, f.windows, f.credits)
+        ? speaksWith(f.account, f.windows, f.credits, ownShare.list(f.account.label))
         : { window: binding(f.windows), ceiling: null };
       const worst = spoke.window;
       return {

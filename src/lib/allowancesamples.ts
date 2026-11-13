@@ -243,19 +243,8 @@ export function currentOnly(instances: readonly WindowInstance[]): WindowInstanc
  *  has been given back and is not binding whatever it last read, which is the
  *  same rule `accounts.ts::keptThrough` keeps for a held reading. */
 export function bindingOf(instances: readonly WindowInstance[], now: number): WindowInstance | null {
-  /* **Only the newest instance of each window is a reading of it now.** An
-     instance closed by a drop stays in the list — its deltas are history and
-     the residual needs them — but its last value is not what the account is at
-     any more. Without this, a window whose percentage halved on a plan change
-     would go on binding at its old figure for the rest of the day. */
-  const latest = new Map<string, WindowInstance>();
-  for (const one of instances) {
-    const key = keyOf(one);
-    const held = latest.get(key);
-    if (!held || one.from >= held.from) latest.set(key, one);
-  }
   let best: WindowInstance | null = null;
-  for (const one of latest.values()) {
+  for (const one of currentOnly(instances)) {
     if (one.resetsAt !== null && one.resetsAt <= now) continue;
     if (!best) {
       best = one;
@@ -705,11 +694,28 @@ export function cardAllowance(
  *  explain**, per account and window kind.
  *
  *  It is `residualOf`'s `attributed` half, read per window kind, and it is the
- *  number a cap has to be measured against if the account is shared with
- *  somebody who is not on the flyway: their usage moves the same counter, and a
- *  ceiling meant for *your* share must not count it. Summing these across a
- *  fleet gives "our own usage", and what is left of the movement is genuinely
- *  somebody else's rather than merely another wall's.
+ *  number a cap is measured against when the account is shared with somebody
+ *  who is not on the flyway: their usage moves the same counter, and a ceiling
+ *  meant for *your* share must not count it.
+ *
+ *  **It is an upper bound, and saying so is the honest reading of it.** The
+ *  attribution divides an interval's movement among the facts under it, and the
+ *  denominator is only ever facts this wall can see — a co-worker's requests
+ *  leave no row here. So an interval where this wall worked is credited to it
+ *  whole, and an interval where it did nothing is credited to it not at all.
+ *  Two people working in the same five minutes therefore both count that five
+ *  minutes, and the figure over-counts by however much they overlapped. The
+ *  alternative — the account's own percentage — is a strictly larger bound that
+ *  is wrong on every interval, and this is wrong only on the shared ones.
+ *  `residualOf`'s unused movement is the measure of how much of the account
+ *  this wall cannot explain at all.
+ *
+ *  **A per-wall figure, not a fleet one.** `allowance_costs` reads
+ *  `usage_fact`, which only the local ingest writes — the samples sync, the
+ *  facts do not — so two walls on one subscription each enforce the ceiling on
+ *  their own work and the pair can approach twice it. Said in
+ *  `.claude/rules/accounts.md` rather than left for somebody to discover from a
+ *  bill.
  *
  *  `moved` is the movement the same intervals carried, so a reading can say
  *  "34 of 50" against the cap and "of 62 moved" against the account. */
@@ -726,6 +732,18 @@ export type OwnPoints = {
    *  nothing about how much of the window was yours. `accounts.ts::SelfUse`
    *  is the same fact one layer out, where the cap reads it. */
   priced: number;
+  /** **Did this wall make a request in this window at all**, priced or not.
+   *
+   *  Filled by the reader (`ownshare.svelte.ts`), which still holds the raw
+   *  rows, because this fold is handed only the ones the price table could
+   *  place. It is the difference between *nothing to report* and *cannot
+   *  report*, and without it a wall that slept through the opening of a window
+   *  would be held on somebody else's usage for the first prompt of it: no
+   *  facts means `priced` is zero, and zero priced reads as unknown.
+   *
+   *  Absent is read as unknown, which is the older behaviour, so a caller
+   *  assembling these by hand gets what it got before. */
+  worked?: boolean;
 };
 
 /** **This wall's own share**, per account and kind, over the samples it holds.
@@ -733,19 +751,30 @@ export type OwnPoints = {
  *  Only an account with a subscription has a window, so a provider sentinel
  *  contributes nothing here. A window that moved with no priced fact under it
  *  contributes to `moved` and not to `points`, which is exactly the asymmetry
- *  the residual names. */
+ *  the residual names.
+ *
+ *  **A scoped window is left out**, and that is a refusal rather than an
+ *  omission. `caps` keys on a window *kind*, so one ceiling is compared against
+ *  every scoped window of that kind at once; two of them (a model-scoped week
+ *  and another) would each credit the same cost buckets and the sum would be
+ *  counted once per scope over the same intervals. `attributedCostOf` already
+ *  warns about exactly this. With no share for a scoped kind the cap falls back
+ *  to the account's own percentage, which is the behaviour it had before any of
+ *  this, and which is honest about what it can see. */
 export function ownPoints(
   instances: readonly WindowInstance[],
   costs: readonly CostBucket[],
 ): OwnPoints[] {
   const kinds = new Map<string, { account: string; kind: string }>();
   for (const one of instances) {
-    if (isSentinel(one.account)) continue;
+    if (isSentinel(one.account) || one.scope !== "") continue;
     kinds.set(`${one.account}\u0000${one.kind}`, { account: one.account, kind: one.kind });
   }
   const out: OwnPoints[] = [];
   for (const { account, kind } of kinds.values()) {
-    const mine = instances.filter((i) => i.account === account && i.kind === kind);
+    const mine = instances.filter(
+      (i) => i.account === account && i.kind === kind && i.scope === "",
+    );
     const spans = spansOf(mine, costs, account);
     let points = 0;
     let moved = 0;
@@ -758,6 +787,53 @@ export function ownPoints(
     out.push({ account, kind, points, moved, priced });
   }
   return out.sort((a, b) => b.moved - a.moved || a.account.localeCompare(b.account) || a.kind.localeCompare(b.kind));
+}
+
+/** One share, with the reading it is a share of. What the reader keeps and what
+ *  the door is told. */
+export type OwnUse = OwnPoints & {
+  /** The account's own percentage at the sample this was measured over. */
+  used: number;
+  /** When that window rolls, so a note about one that has already rolled can be
+   *  recognised rather than enforced. */
+  resetsAt: number | null;
+};
+
+/** **The fold the cap reads, whole.** `ownPoints` over the *current* instance of
+ *  each window, with the two facts that need the rows `ownPoints` is never
+ *  handed: whether this wall worked in the window at all (priced or not), and
+ *  the reading the share is a share of.
+ *
+ *  Pure, and here rather than beside the reader for the reason every fold in
+ *  this codebase is: a `.svelte.ts` cannot be imported by a bun test, and the
+ *  difference between "spent nothing" and "could not price what it spent" is
+ *  exactly the kind of thing that has to be asserted. */
+export function ownUses(
+  samples: readonly AllowanceSample[],
+  costs: readonly AllowanceCost[],
+): OwnUse[] {
+  const current = currentOnly(instancesOf(samples));
+  const rows = ownPoints(current, costBucketsOf(costs));
+  const out: OwnUse[] = [];
+  for (const row of rows) {
+    const one = current.find(
+      (i) => i.account === row.account && i.kind === row.kind && i.scope === "",
+    );
+    if (!one) continue;
+    out.push({
+      ...row,
+      worked: costs.some(
+        (c) =>
+          c.account === row.account &&
+          c.at >= one.from &&
+          c.at <= one.to &&
+          (c.requests > 0 || c.inTok + c.outTok + c.cacheRead + c.write5m + c.write1h > 0),
+      ),
+      used: one.last,
+      resetsAt: one.resetsAt,
+    });
+  }
+  return out;
 }
 
 /** The same figure summed over every wall that has said one, this wall's

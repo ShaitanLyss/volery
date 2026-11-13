@@ -3167,14 +3167,21 @@ export class Skein {
    *
    *  The next turn needs nothing from this: `blockersFor` is measured on the
    *  same share, so once the ceiling is passed the door holds every prompt until
-   *  the window rolls or the cap is raised. */
+   *  the window rolls or the cap is raised.
+   *
+   *  **A card parked on a question is left alone.** It is `working` and it is
+   *  spending nothing while it waits; a stop there would take the question out
+   *  of the dock unanswered, which is the one thing this wall must not do to
+   *  somebody's turn. The same goes for a card holding a prompt it has not sent
+   *  — that is `held`, which is not `working` — and for one that has already
+   *  been stood down. */
   enforceCaps() {
     for (const id of this.#stopped.keys()) {
       if (!this.#byId.has(id)) this.#stopped.delete(id);
     }
     for (const conv of this.convs) {
       if (!conv.working || conv.dormant) continue;
-      if (conv.activity === "stopping…") continue;
+      if (conv.activity === "stopping…" || conv.pendingAsk) continue;
       const label = conv.accountLabel ?? "";
       const acct = waterfall.list.find((a) => a.label === label);
       if (!acct) continue;
@@ -3182,7 +3189,10 @@ export class Skein {
       if (!allowance?.ok) continue;
       const over = overrunFor(acct, allowance.windows, conv.bypassCaps, ownShare.list(label));
       if (over === null) continue;
-      const key = `${label}\u0000${over.window.kind}\u0000${over.window.resetsAt ?? 0}`;
+      /* The cap is in the key as well as the window: raising it, letting the
+         card work and lowering it again inside one window is a fresh decision,
+         and a key without the cap would have the hard stop never fire again. */
+      const key = `${label}\u0000${over.window.kind}\u0000${over.window.resetsAt ?? 0}\u0000${over.cap}`;
       if (this.#stopped.get(conv.id) === key) continue;
       this.#stopped.set(conv.id, key);
       conv.note(overrunNote(over));
@@ -4772,6 +4782,9 @@ export class Skein {
     return {
       account,
       allowance,
+      /* Your own share, so a queue held behind somebody else's usage is not
+         held at all (`admit.ts::nearness`). */
+      self: ownShare.list(label),
       /* Boost on and the account's own usage credits behind it: the window
          filling is a bill, not a wall, so nothing need finish first. */
       credits: waterfall.overage && !!allowance?.ok && covers(allowance.overage),
