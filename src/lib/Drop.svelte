@@ -34,6 +34,7 @@
    */
   import { KINDS, type Edit, type Kind } from "./sink";
   import type { Sink } from "./sink.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let { sink, onclose }: { sink: Sink; onclose: () => void } = $props();
 
@@ -104,7 +105,7 @@
           class="kind"
           class:on={kind === k}
           onclick={() => (kind = k)}
-          title="file it as {k}"
+          {@attach tipOf(() => `file it as ${k}`)}
         >
           {k}
         </button>

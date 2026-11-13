@@ -28,6 +28,7 @@
   import Thread from "./Thread.svelte";
   import HuntBar from "./HuntBar.svelte";
   import type { CardHandle } from "./cards.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     card,
@@ -711,9 +712,9 @@
     <!-- Off the gist, which a card anywhere answers (`gist.ts`): a card on
          another wall drew "0 tok · 0 turns" here off constants. What its wall
          did not send is said as unknown, never as a number. -->
-    <span title={card.gist.ctxTokens === null ? "its wall does not say" : undefined}>{countSaid(card.gist.ctxTokens)} tok</span>
+    <span {@attach tipOf(() => (card.gist.ctxTokens === null ? "its wall does not say" : undefined))}>{countSaid(card.gist.ctxTokens)} tok</span>
     <span class="sep">·</span>
-    <span title={card.gist.turns === null ? "its wall does not say" : undefined}
+    <span {@attach tipOf(() => (card.gist.turns === null ? "its wall does not say" : undefined))}
       >{countSaid(card.gist.turns)} {card.gist.turns === 1 ? "turn" : "turns"}</span
     >
     {#if card.gist.costUsd}
@@ -750,7 +751,7 @@
          on this wall has always been, and a word that never varies is one
          nobody reads after the first day. Same argument as `acct`. -->
     {#if conv.gear === "planning"}
-      <span class="gear" title={readingOf(conv.gear).note}
+      <span class="gear" {@attach tipOf(() => (readingOf(conv.gear).note))}
         >{readingOf(conv.gear).name}</span
       >
     {/if}

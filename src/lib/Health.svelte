@@ -35,6 +35,7 @@
     type Project,
   } from "./asana";
   import { rowsFor, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -103,7 +104,7 @@
           <button
             class="dot"
             data-tier={healthTier(healthOf(p.status))}
-            title={why(p)}
+            {@attach tipOf(() => (why(p)))}
             aria-label={p.name}
             onclick={() => onopen(p.url)}
           ></button>
@@ -114,7 +115,7 @@
     <ul class="rows" data-text>
       {#each rows as p (p.gid)}
         <li>
-          <button class="row" title={why(p)} onclick={() => onopen(p.url)}>
+          <button class="row" {@attach tipOf(() => (why(p)))} onclick={() => onopen(p.url)}>
             <i class="pip" data-tier={healthTier(healthOf(p.status))} aria-hidden="true"></i>
             <span class="name">{p.name}</span>
             <!-- The heading of the update, which is a sentence somebody wrote

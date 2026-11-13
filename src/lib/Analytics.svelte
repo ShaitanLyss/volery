@@ -141,6 +141,7 @@
   import type { PromptReader, SurfaceTab } from "./analyticstrace";
   import { count, dayStart } from "./usage";
   import { view } from "./view.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     read,
@@ -1247,7 +1248,7 @@
           role="tab"
           aria-selected={tabNow === "spend"}
           class:on={tabNow === "spend"}
-          title="the money (1)"
+          {@attach tipOf("the money (1)")}
           onclick={() => setTab("spend")}>spend <kbd>1</kbd></button
         >
         <button
@@ -1255,7 +1256,7 @@
           role="tab"
           aria-selected={tabNow === "prompts"}
           class:on={tabNow === "prompts"}
-          title="the prompt trace and the hall (2, or space n t)"
+          {@attach tipOf("the prompt trace and the hall (2, or space n t)")}
           onclick={() => setTab("prompts")}>prompts <kbd>2</kbd></button
         >
         <button
@@ -1263,7 +1264,7 @@
           role="tab"
           aria-selected={tabNow === "work"}
           class:on={tabNow === "work"}
-          title="cost against output (3, or space n w)"
+          {@attach tipOf("cost against output (3, or space n w)")}
           onclick={() => setTab("work")}>work <kbd>3</kbd></button
         >
         <button
@@ -1271,7 +1272,7 @@
           role="tab"
           aria-selected={tabNow === "behaviour"}
           class:on={tabNow === "behaviour"}
-          title="tools, servers, skills and habits (4, or space n b)"
+          {@attach tipOf("tools, servers, skills and habits (4, or space n b)")}
           onclick={() => setTab("behaviour")}>behaviour <kbd>4</kbd></button
         >
       </div>
@@ -1281,7 +1282,7 @@
       <button
         type="button"
         class="an-btn an-pres"
-        title={showing === "room" ? "read it as a document (v)" : "back to the instrument (v)"}
+        {@attach tipOf(() => (showing === "room" ? "read it as a document (v)" : "back to the instrument (v)"))}
         onclick={swap}
       >
         <Icon name={showing === "room" ? "file" : "wave"} small />
@@ -1299,24 +1300,24 @@
               : "space b d"}</span
       >
       {#if tabNow === "spend"}
-        <button type="button" class="an-btn" title="export this window as a report (e)" onclick={() => (exporting = true)}>
+        <button type="button" class="an-btn" {@attach tipOf("export this window as a report (e)")} onclick={() => (exporting = true)}>
           <Icon name="file" small />export
         </button>
-        <button type="button" class="an-btn" title="saved views (s saves one, l opens the library)" onclick={() => (views = "list")}>
+        <button type="button" class="an-btn" {@attach tipOf("saved views (s saves one, l opens the library)")} onclick={() => (views = "list")}>
           <Icon name="pin" small />views
         </button>
         {#if onpin}
           <button
             type="button"
             class="an-btn"
-            title="hang this on the wall (p)"
+            {@attach tipOf("hang this on the wall (p)")}
             onclick={() => void pinCurrent()}
           >
             <Icon name="pin" small />on the wall
           </button>
         {/if}
       {/if}
-      <button type="button" class="an-btn an-close" title="close (esc)" aria-label="close" onclick={onclose}>
+      <button type="button" class="an-btn an-close" {@attach tipOf("close (esc)")} aria-label="close" onclick={onclose}>
         <Icon name="x" small />
       </button>
     </header>
@@ -1343,7 +1344,7 @@
             role="radio"
             aria-checked={span === s.span}
             class:on={span === s.span}
-            title={`${s.said} ([ and ] step it)`}
+            {@attach tipOf(() => (`${s.said} ([ and ] step it)`))}
             onclick={() => (surface.span = s.span)}>{s.label}</button
           >
         {/each}
@@ -1365,7 +1366,7 @@
               role="radio"
               aria-checked={measure === m.key}
               class:on={measure === m.key}
-              title={`${m.said} (m cycles it)`}
+              {@attach tipOf(() => (`${m.said} (m cycles it)`))}
               onclick={() => (surface.measure = m.key)}>{m.label}</button
             >
           {/each}
@@ -1386,7 +1387,7 @@
               role="radio"
               aria-checked={split === s.key}
               class:on={split === s.key}
-              title={`split by ${s.label} (g cycles it)`}
+              {@attach tipOf(() => (`split by ${s.label} (g cycles it)`))}
               onclick={() => (surface.split = s.key)}>{s.label}</button
             >
           {/each}
@@ -1407,7 +1408,7 @@
               role="radio"
               aria-checked={workMeasure === m.key}
               class:on={workMeasure === m.key}
-              title={`${m.said} (x switches it)`}
+              {@attach tipOf(() => (`${m.said} (x switches it)`))}
               onclick={() => (workMeasure = scatterMeasureFor(m.key))}>{m.label}</button
             >
           {/each}
@@ -1419,7 +1420,7 @@
       <button
         type="button"
         class="an-btn"
-        title="read the window again (r)"
+        {@attach tipOf("read the window again (r)")}
         onclick={() =>
           void (tabNow === "work" ? readWork() : tabNow === "behaviour" ? readBehaviour() : readNow())}
       >

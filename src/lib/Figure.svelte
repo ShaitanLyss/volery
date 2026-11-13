@@ -15,6 +15,7 @@
   import { pictureMarkdown } from "./markdown";
   import { useOpener, usePictureRoot } from "./paths.svelte";
   import { keptSource, nameOf, placeOf, shownOf } from "./showing";
+  import { tipOf } from "./tipped.svelte";
 
   let { line }: { line: Line } = $props();
 
@@ -72,7 +73,7 @@
         type="button"
         class="plate"
         disabled={!opener() || !root}
-        title={opener() && root ? `open ${name} · ctrl-click to show it in Explorer` : name}
+        {@attach tipOf(() => (opener() && root ? `open ${name} · ctrl-click to show it in Explorer` : name))}
         onclick={open}
         ><span class="name">{name}</span>{#if where.dir}<span class="dir">{where.dir}</span>{/if}</button
       >
@@ -84,7 +85,7 @@
     <!-- Nothing was shown, and the gap says so in a box that names the file
          and the reason — never an empty space that reads as the panel having
          lost a picture. -->
-    <div class="figure refused" data-md={`${name} was not shown — ${why}`} title={shown.why} role="note">
+    <div class="figure refused" data-md={`${name} was not shown — ${why}`} {@attach tipOf(() => (shown.why))} role="note">
       <span class="name">{name}</span> was not shown — {why}
     </div>
   {/if}

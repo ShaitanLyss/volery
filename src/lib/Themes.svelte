@@ -18,6 +18,7 @@
   import { skin, SKIN_GROUPS, SKIN_KNOB_INFO } from "./palette.svelte";
   import { levelSaid } from "./brightness";
   import type { Entry, Ring } from "./catalogue";
+  import { tipOf } from "./tipped.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -196,7 +197,7 @@
       <span class="mark">how it reads</span>
       <span class="grow"></span>
       <span class="hint">{axis === "reading" ? "ctrl+shift+T" : "ctrl+shift+Y"} cycles</span>
-      <button class="x" onclick={onclose} title="close">✕</button>
+      <button class="x" onclick={onclose} {@attach tipOf("close")}>✕</button>
     </div>
 
     <!-- The two rings. Siblings rather than a hierarchy: neither is a mode of
@@ -242,7 +243,7 @@
       <!-- How bright the room is, for the skin that is on: a pass over what
            the skin drew rather than a knob in it, so it is remembered per skin
            and never written into one. See `brightness.ts`. -->
-      <div class="bright" title="how bright {skin.theme.label} is set (space then v k, v j, v 0)">
+      <div class="bright" {@attach tipOf(() => `how bright ${skin.theme.label} is set (space then v k, v j, v 0)`)}>
         <span class="bname">brightness</span>
         <input
           type="range"
@@ -255,7 +256,7 @@
         />
         <span class="level">{levelSaid(skin.brightness)}</span>
         {#if skin.brightness !== 0}
-          <button class="tiny" onclick={() => skin.setBrightness(0)} title="as the skin is (space then v 0)"
+          <button class="tiny" onclick={() => skin.setBrightness(0)} {@attach tipOf("as the skin is (space then v 0)")}
             >↺</button
           >
         {/if}
@@ -283,7 +284,7 @@
                   arming = null;
                   ring.set(t.id);
                 }}
-                title={t.note}
+                {@attach tipOf(() => (t.note))}
               >
                 <span class="label">{t.label}</span>
                 <span class="what">{t.note}</span>
@@ -296,17 +297,17 @@
                   editing = t.id;
                   editLabel = t.label;
                 }}
-                title="rename">rename</button
+                {@attach tipOf("rename")}>rename</button
               >
               <button
                 class="tiny go"
                 class:armed={arming === t.id}
                 onmousedown={(e) => e.stopPropagation()}
                 onclick={() => remove(t)}
-                title={cost(t)}>{arming === t.id ? "sure?" : "✕"}</button
+                {@attach tipOf(() => (cost(t)))}>{arming === t.id ? "sure?" : "✕"}</button
               >
             {:else if t.builtin}
-              <span class="tiny flat" title="a built-in — derive from it to change it"
+              <span class="tiny flat" {@attach tipOf("a built-in — derive from it to change it")}
                 >built in</span
               >
             {/if}
@@ -333,7 +334,7 @@
             {#each g.knobs as k (k)}
               {@const set = over[k] !== undefined}
               <div class="knob" class:set>
-                <label class="kname" for="knob-{k}" title={info[k].note}>
+                <label class="kname" for="knob-{k}" {@attach tipOf(() => (info[k].note))}>
                   {info[k].label}
                 </label>
                 <input
@@ -354,7 +355,7 @@
                 <button
                   class="tiny"
                   disabled={!set}
-                  title={set ? "clear it" : "not set here"}
+                  {@attach tipOf(() => (set ? "clear it" : "not set here"))}
                   onclick={() => ring.tweak(k, null)}>↺</button
                 >
               </div>
@@ -376,21 +377,21 @@
       <button
         class="act"
         onclick={() => create("extend")}
-        title="a new theme holding only what you change, following {current.label} as it is edited"
+        {@attach tipOf(() => `a new theme holding only what you change, following ${current.label} as it is edited`)}
         >extend</button
       >
       <button
         class="act"
         onclick={() => create("copy")}
-        title="a new theme with {current.label}'s values inlined, standing alone"
+        {@attach tipOf(() => `a new theme with ${current.label}'s values inlined, standing alone`)}
         >copy</button
       >
       <span class="grow"></span>
       {#if said}<span class="said">{said}</span>{/if}
-      <button class="act" onclick={exportAll} title="every theme you wrote, to the clipboard"
+      <button class="act" onclick={exportAll} {@attach tipOf("every theme you wrote, to the clipboard")}
         >export</button
       >
-      <button class="act" onclick={importAll} title="themes from the clipboard, renamed on a clash"
+      <button class="act" onclick={importAll} {@attach tipOf("themes from the clipboard, renamed on a clash")}
         >import</button
       >
     </div>

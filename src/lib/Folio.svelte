@@ -15,6 +15,7 @@
      all**. See the note there. */
   import Markdown from "./Markdown.svelte";
   import { GRID_COLS, type Doc, type Grid } from "./office";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     doc,

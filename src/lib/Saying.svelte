@@ -27,6 +27,7 @@
   import { cardName } from "./naming";
   import { scopeFiles } from "./paths.svelte";
   import type { CardHandle } from "./cards.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -108,7 +109,7 @@
     {#if card}
       <button
         class="who"
-        title="Go to the card and open its transcript"
+        {@attach tipOf("Go to the card and open its transcript")}
         onclick={() => onreveal?.(card.id)}>{name}</button
       >
       <span class="doing">{face?.doing ?? ""}</span>

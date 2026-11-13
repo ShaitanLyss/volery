@@ -57,6 +57,7 @@
   } from "./analyticsroom";
   import { count } from "./usage";
   import type { Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -211,19 +212,19 @@
     <p class="said">{empty.title}<span class="quiet"> {empty.note}</span></p>
   {:else}
     <header class="top">
-      <span class="who" title={`${reading.name} · ${span}`}>{reading.name}</span>
+      <span class="who" {@attach tipOf(() => (`${reading.name} · ${span}`))}>{reading.name}</span>
       {#if reading.shared}
-        <span class="share" class:gone={reading.gone} title={shareSaid(reading)}
+        <span class="share" class:gone={reading.gone} {@attach tipOf(() => (shareSaid(reading)))}
           >{reading.gone ? "kept" : "shared"}</span
         >
       {/if}
       {#if reading.gone}
-        <button type="button" class="act" title="keep this as this widget's own view" onclick={() => keepCopy(reading)}
+        <button type="button" class="act" {@attach tipOf("keep this as this widget's own view")} onclick={() => keepCopy(reading)}
           >keep</button
         >
       {/if}
       {#if onopen}
-        <button type="button" class="act open" title="open in analytics" aria-label="open in analytics" onclick={() => onopen?.(reading.spec)}
+        <button type="button" class="act open" {@attach tipOf("open in analytics")} aria-label="open in analytics" onclick={() => onopen?.(reading.spec)}
           ><Icon name="arrow-r" small /></button
         >
       {/if}
@@ -283,14 +284,14 @@
       {#if legend.length > 1}
         <ul class="legend">
           {#each legend as s (s.key)}
-            <li title={s.label}><span class="dot" style={`background:${s.color}`}></span>{s.label || "unnamed"}</li>
+            <li {@attach tipOf(() => (s.label))}><span class="dot" style={`background:${s.color}`}></span>{s.label || "unnamed"}</li>
           {/each}
         </ul>
       {/if}
     {/if}
 
     {#if fault}
-      <p class="stale" title={fault}>· stale</p>
+      <p class="stale" {@attach tipOf(() => (fault))}>· stale</p>
     {/if}
   {/if}
 </div>

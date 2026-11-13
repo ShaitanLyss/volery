@@ -19,6 +19,7 @@
   import { orderViews, surfaceOfView, viewOfSurface, type SavedView, type SurfaceInput } from "./analyticpage";
   import { ROOM_MEASURES, ROOM_SPLITS, SPANS } from "./analyticsroom";
   import { MAX_NAME } from "./analytics";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     mode,
@@ -210,7 +211,7 @@
     <header class="av-head">
       <h3>saved views</h3>
       <span class="av-grow"></span>
-      <button type="button" class="av-x" title="close (esc)" aria-label="close" onclick={onclose}><Icon name="x" small /></button>
+      <button type="button" class="av-x" {@attach tipOf("close (esc)")} aria-label="close" onclick={onclose}><Icon name="x" small /></button>
     </header>
 
     <div class="av-save">
@@ -229,7 +230,7 @@
           }
         }}
       />
-      <button type="button" class="av-btn" title="save what is on screen under this name" onclick={() => void save()}>
+      <button type="button" class="av-btn" {@attach tipOf("save what is on screen under this name")} onclick={() => void save()}>
         <Icon name="pin" small />save
       </button>
     </div>
@@ -274,7 +275,7 @@
                 type="button"
                 class="av-open"
                 data-row
-                title={`open “${v.name}” · ${summary(v)}`}
+                {@attach tipOf(() => (`open “${v.name}” · ${summary(v)}`))}
                 onkeydown={(e) => {
                   if (e.key === "r") {
                     e.preventDefault();
@@ -301,7 +302,7 @@
             <button
               type="button"
               class="av-btn av-mini"
-              title="rename it (r)"
+              {@attach tipOf("rename it (r)")}
               aria-label={`rename ${v.name}`}
               onclick={() => {
                 renaming = v.id;
@@ -314,7 +315,7 @@
               <button
                 type="button"
                 class="av-btn av-mini"
-                title="hang it on the wall (p) — every edit to this view moves the widget"
+                {@attach tipOf("hang it on the wall (p) — every edit to this view moves the widget")}
                 aria-label={`hang ${v.name} on the wall`}
                 onclick={() => onhang?.(v)}
                 >on the wall</button
@@ -324,7 +325,7 @@
               type="button"
               class="av-btn av-mini"
               class:on={armed === v.id}
-              title="delete it (delete, twice)"
+              {@attach tipOf("delete it (delete, twice)")}
               aria-label={`delete ${v.name}`}
               onclick={() => void remove(v)}
               >{armed === v.id ? "sure?" : "delete"}</button

@@ -32,6 +32,7 @@
     samePlace,
     type Place,
   } from "./starting";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     skein,
@@ -210,7 +211,7 @@
           class="place"
           aria-haspopup="menu"
           aria-expanded={placing}
-          title="where this conversation works (ctrl+shift+P)"
+          {@attach tipOf("where this conversation works (ctrl+shift+P)")}
           onclick={() => (placing = !placing)}
         >
           <Icon name={starter.place.kind === "chat" ? "globe" : "folder"} small />{placeLabel(starter.place)}<Icon
@@ -230,7 +231,7 @@
             class:there
             aria-haspopup="menu"
             aria-expanded={machining}
-            title="which machine it works on (ctrl+shift+E)"
+            {@attach tipOf("which machine it works on (ctrl+shift+E)")}
             onclick={() => ((machining = !machining), (placing = false))}
           >
             <Icon name="wall" small />{starter.machine ?? "this machine"}<Icon name="chev-d" small />
@@ -246,7 +247,7 @@
           class="toggle"
           class:on={starter.plan}
           aria-pressed={starter.plan}
-          title="plan first — read and propose, change nothing (alt+P)"
+          {@attach tipOf("plan first — read and propose, change nothing (alt+P)")}
           onclick={() => (starter.plan = !starter.plan)}
         >
           <Icon name="plan" small />plan first
@@ -259,11 +260,11 @@
         class="send"
         class:idle={empty || blocked}
         disabled={empty || blocked || starter.starting}
-        title={blocked
+        {@attach tipOf(() => (blocked
           ? starter.ready === "missing"
             ? "claude code has to be installed first — a provider card rides the same binary"
             : "sign in to claude, or pick a deepseek card"
-          : "start it (enter)"}
+          : "start it (enter)"))}
         aria-label="start the conversation"
       >
         <Icon name="up" />

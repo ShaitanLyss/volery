@@ -18,6 +18,7 @@
   import { casts } from "./cast.svelte";
   import { monitorLabel, statsLine } from "./cast";
   import Screen from "./Screen.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   const W = 320;
   const H = 180;
@@ -63,16 +64,16 @@
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="strip" onpointerdown={(e) => down(e, f.key, f.x, f.y)} onpointermove={move} onpointerup={up}>
-      <span class="name" title={nameOf(f.key)}>{nameOf(f.key)}</span>
+      <span class="name" {@attach tipOf(() => (nameOf(f.key)))}>{nameOf(f.key)}</span>
       <span class="stats">{statsLine(s?.stats ?? null, s?.path ?? null)}</span>
       <button
         type="button"
-        title="open it in the sheet"
+        {@attach tipOf("open it in the sheet")}
         onclick={() => (casts.sheet = f.key)}>open</button
       >
       <button
         type="button"
-        title="stop floating it (space then r v, with it open)"
+        {@attach tipOf("stop floating it (space then r v, with it open)")}
         aria-label="stop floating it"
         onclick={() => casts.toggleFloat(f.key)}>×</button
       >

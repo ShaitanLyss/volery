@@ -3,6 +3,7 @@
   import { basename, windowForObserved } from "./classify";
   import { clock } from "./conversation.svelte";
   import type { Session } from "./skein.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     sessions,
@@ -132,7 +133,7 @@
     <div class="head">
       <span class="mark">Adopt a conversation</span>
       <span class="grow"></span>
-      <button class="x" onclick={onclose} title="Close">✕</button>
+      <button class="x" onclick={onclose} {@attach tipOf("Close")}>✕</button>
     </div>
 
     <p class="note">
@@ -162,7 +163,7 @@
         <button
           class="row"
           class:missed={s.id in missed}
-          title={missed[s.id] ?? undefined}
+          {@attach tipOf(() => (missed[s.id] ?? undefined))}
           disabled={taken.includes(s.id) || working.includes(s.id)}
           onclick={() => pick(s)}
           data-session={s.id}

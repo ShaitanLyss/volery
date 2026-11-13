@@ -36,6 +36,7 @@
   import type { Presence } from "./presence.svelte";
   import type { Sketchbook } from "./sketch.svelte";
   import { drawn } from "./sketch";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     presence,
@@ -457,7 +458,7 @@
         <span class="grow"></span>
         <button
           class="skip off"
-          title="Stop putting a puzzle in the way when you come back. They stay on the toy shelf either way — space then t."
+          {@attach tipOf("Stop putting a puzzle in the way when you come back. They stay on the toy shelf either way — space then t.")}
           onclick={() => {
             presence.setToys(false);
             onthrough();
@@ -471,7 +472,7 @@
           <button
             class="skip"
             class:here={t.id === id}
-            title={t.about}
+            {@attach tipOf(() => (t.about))}
             onclick={() => {
               id = t.id;
               reset();

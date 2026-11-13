@@ -15,6 +15,7 @@
    */
   import { money, count } from "./usage";
   import { signed, type CardWork } from "./analyticswork";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     cards,
@@ -64,12 +65,12 @@
               <span class="wk-proj">{card.project}</span>
             {/if}
             {#if card.noArtifact}
-              <span class="wk-none" title="design, review and answers produce no artifact">no artifact</span>
+              <span class="wk-none" {@attach tipOf("design, review and answers produce no artifact")}>no artifact</span>
             {/if}
           </th>
           <td
             class="wk-num"
-            title={card.cost === null
+            {@attach tipOf(() => (card.cost === null
               ? card.unpriced > 0
                 ? `${count(card.unpriced)} spend rows could not be priced`
                 : "no spend was attributed to this card"
@@ -77,19 +78,19 @@
                 ? `priced, plus ${count(card.unpriced)} unpriced spend rows`
                 : card.reported > 0
                   ? "modeled and reported"
-                  : "modeled"}
+                  : "modeled"))}
           >{dollars(card.cost)}</td>
           <td class="wk-num">
             {count(card.commits)}{#if card.attributedCommits > 0}<span
                 class="wk-attr"
-                title={`${count(card.attributedCommits)} attributed from git history rather than a receipt`}
+                {@attach tipOf(() => (`${count(card.attributedCommits)} attributed from git history rather than a receipt`))}
                 >·{count(card.attributedCommits)} attr</span
               >{/if}
           </td>
           <td class="wk-num">
             {count(card.merged)}{#if card.attributedMerges > 0}<span
                 class="wk-attr"
-                title={`${count(card.attributedMerges)} attributed from git history rather than a receipt`}
+                {@attach tipOf(() => (`${count(card.attributedMerges)} attributed from git history rather than a receipt`))}
                 >·{count(card.attributedMerges)} attr</span
               >{/if}
           </td>
@@ -99,19 +100,19 @@
           {/if}
           <td
             class="wk-num"
-            title={card.costPerMerged === null
+            {@attach tipOf(() => (card.costPerMerged === null
               ? card.merged === 0
                 ? "no merged artifact in this window, so there is no divisor"
                 : "no spend was attributed to this card"
-              : "cost divided by merged pull requests and merge commits"}
+              : "cost divided by merged pull requests and merge commits"))}
           >{card.costPerMerged === null ? "" : money(card.costPerMerged)}</td>
           <td
             class="wk-num"
-            title={card.costPerCommit === null
+            {@attach tipOf(() => (card.costPerCommit === null
               ? card.commits === 0
                 ? "no commit in this window, so there is no divisor"
                 : "no spend was attributed to this card"
-              : "cost divided by commits"}
+              : "cost divided by commits"))}
           >{card.costPerCommit === null ? "" : money(card.costPerCommit)}</td>
         </tr>
       {/each}

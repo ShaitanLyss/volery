@@ -9,7 +9,7 @@
   import { flip } from "svelte/animate";
   import { cubicInOut } from "svelte/easing";
   import Icon from "./Icon.svelte";
-  import { fullTitle } from "./tipped.svelte";
+  import { fullTitle, tipOf } from "./tipped.svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { boost } from "./boost.svelte";
   import CtxRing from "./CtxRing.svelte";
@@ -157,10 +157,10 @@
 </script>
 
 <nav class="side" aria-label="conversations">
-  <button class="new" type="button" onclick={onnew} title="a new conversation (ctrl+shift+O)">
+  <button class="new" type="button" onclick={onnew} {@attach tipOf("a new conversation (ctrl+shift+O)")}>
     <Icon name="plus" />new conversation<kbd>ctrl shift O</kbd>
   </button>
-  <button class="find" type="button" onclick={onsearch} title="search conversations and everything else (ctrl+K)">
+  <button class="find" type="button" onclick={onsearch} {@attach tipOf("search conversations and everything else (ctrl+K)")}>
     <Icon name="search" />search<kbd>ctrl K</kbd>
   </button>
 
@@ -183,7 +183,7 @@
       type="button"
       onclick={() => onaccount?.()}
       disabled={!onaccount}
-      title={onaccount ? "accounts and allowance" : "billed per token — there is no account to manage"}
+      {@attach tipOf(() => (onaccount ? "accounts and allowance" : "billed per token — there is no account to manage"))}
     >
       <b>{account?.name ?? "not signed in"}</b>
       {#if account?.line}<span>{account.line}</span>{/if}
@@ -217,11 +217,11 @@
     {@const g = p.ghost}
     {@const reach = reaches(g)}
     {#if reach}
-      <button type="button" class="ghost" class:gone={g.state !== "here"} title={reach} aria-label={reach} onclick={() => onparent(g)}
+      <button type="button" class="ghost" class:gone={g.state !== "here"} {@attach tipOf(() => (reach))} aria-label={reach} onclick={() => onparent(g)}
         >{g.label}{#if g.state !== "here"}<span class="act"> · open it</span>{/if}</button
       >
     {:else}
-      <div class="ghost gone" title={g.state === "unseen" ? "its wall has not been heard from" : "closed on its own wall"}>{g.label}</div>
+      <div class="ghost gone" {@attach tipOf(() => (g.state === "unseen" ? "its wall has not been heard from" : "closed on its own wall"))}>{g.label}</div>
     {/if}
   {/if}
   <button
@@ -253,17 +253,17 @@
     {#if flaring.has(p.row.id)}<span class="flare" aria-hidden="true"></span>{/if}
     <i class="st {p.tone}" aria-hidden="true"></i>
     <span class="t"
-      >{#if boost.on && p.row.credits}<span class="crest" title="on the organisation's api credits">{@html boost.look.crest}</span
+      >{#if boost.on && p.row.credits}<span class="crest" {@attach tipOf("on the organisation's api credits")}>{@html boost.look.crest}</span
         >{/if}{p.row.title}</span
     >
-    <span class="aside" title={p.aside}>{p.aside}</span>
+    <span class="aside" {@attach tipOf(() => (p.aside))}>{p.aside}</span>
     {#if p.tone !== "work" && !p.row.working && !p.row.asking}
       <!-- Not a nested button: the row is one. The menu's *close* is the key path. -->
       <span
         class="x"
         role="button"
         tabindex="-1"
-        title="close this conversation"
+        {@attach tipOf("close this conversation")}
         aria-label="close {p.row.title}"
         onclick={(e) => {
           e.stopPropagation();
@@ -275,7 +275,7 @@
     <!-- The column is kept when the ring is not drawn, so the place beside the
          title does not shift as a conversation crosses a third or is selected. -->
     {#if ringShown(p.row.ctx, p.row.id === selected)}
-      <span class="ctx" title={ctxSaid(p.row.ctx ?? 0, p.row.ctxTokens)}
+      <span class="ctx" {@attach tipOf(() => (ctxSaid(p.row.ctx ?? 0, p.row.ctxTokens)))}
         ><CtxRing ctx={p.row.ctx ?? 0} dormant={!!p.row.dormant} size={20} /></span
       >
     {:else}
@@ -341,7 +341,7 @@
             class:on={casts.sheet === "all"}
             aria-current={casts.sheet === "all" ? "true" : undefined}
             onclick={() => (casts.sheet = "all")}
-            title="every screen on the flyway at once (space then r a)"
+            {@attach tipOf("every screen on the flyway at once (space then r a)")}
           >
             <Icon name="wall" small />
             <span class="t">all screens</span>
@@ -356,7 +356,7 @@
               class:on={casts.sheet === c.key}
               aria-current={casts.sheet === c.key ? "true" : undefined}
               onclick={() => (casts.sheet = c.key)}
-              title={`${c.machine} · ${monitorLabel(c.monitor, c.all)}`}
+              {@attach tipOf(() => (`${c.machine} · ${monitorLabel(c.monitor, c.all)}`))}
             >
               <Icon name="screen" small />
               <span class="t">{c.machine} · {monitorLabel(c.monitor, c.all)}</span>
@@ -386,7 +386,7 @@
               class:on={pileOn === p.kind}
               aria-current={pileOn === p.kind ? "true" : undefined}
               onclick={() => onpile?.(p.kind)}
-              title={p.kind === "sink" ? "the sink — what cards noticed and did not stop for" : "the billboard — standing notices about work in progress"}
+              {@attach tipOf(() => (p.kind === "sink" ? "the sink — what cards noticed and did not stop for" : "the billboard — standing notices about work in progress"))}
             >
               <Icon name={p.kind === "sink" ? "list" : "pin"} small />
               <span class="t">{p.label}</span>
@@ -400,7 +400,7 @@
               type="button"
               class="row folder"
               onclick={() => onanalytics?.()}
-              title="the numbers: analytics read as a document (space then n n)"
+              {@attach tipOf("the numbers: analytics read as a document (space then n n)")}
             >
               <Icon name="pulse" small />
               <span class="t">analytics</span>

@@ -72,6 +72,7 @@
   import ParcelPlate from "./Parcel.svelte";
   import { ageOf } from "./chatview";
   import { cardName } from "./naming";
+  import { tipOf } from "./tipped.svelte";
 
   let { card }: { card: CardHandle } = $props();
 
@@ -485,9 +486,9 @@
       class="line text md"
       class:narration={line.narration}
       data-nav="msg"
-      title={line.narration
+      {@attach tipOf(() => (line.narration
         ? "summarised by the server — what the agent wrote between tool calls"
-        : undefined}
+        : undefined))}
     >
       <Markdown blocks={parseMarkdown(line.text)} />
     </div>
@@ -579,7 +580,7 @@
             type="button"
             class="now"
             onclick={() => void card.do("stop")}
-            title="stop this turn — the queued message goes next (esc)">send now</button
+            {@attach tipOf("stop this turn — the queued message goes next (esc)")}>send now</button
           >
         {/if}
       </div>
@@ -606,7 +607,7 @@
               type="button"
               class="now"
               onclick={() => void card.do("stop", { keepQueue: true })}
-              title="interrupt this turn — this message goes next">send now</button
+              {@attach tipOf("interrupt this turn — this message goes next")}>send now</button
             >
           {/if}
           {#if item.mine}
@@ -614,13 +615,13 @@
               type="button"
               class="now"
               onclick={() => startEdit(line)}
-              title="rewrite this message before it goes">edit</button
+              {@attach tipOf("rewrite this message before it goes")}>edit</button
             >
             <button
               type="button"
               class="now"
               onclick={() => dropQueued(line)}
-              title="delete it — it has not been sent">delete</button
+              {@attach tipOf("delete it — it has not been sent")}>delete</button
             >
           {/if}
         </div>
@@ -665,7 +666,7 @@
     {#if line.shots?.length}
       <div class="shots">
         {#each line.shots as s (s.name)}
-          <img src={s.thumb} alt={s.name} title={s.name} />
+          <img src={s.thumb} alt={s.name} {@attach tipOf(() => (s.name))} />
         {/each}
       </div>
     {/if}
@@ -686,7 +687,7 @@
           class="linked"
           class:work={kid.face.working}
           onclick={() => reach.open(kid.id)}
-          title="open the conversation this one started"
+          {@attach tipOf("open the conversation this one started")}
         >
           <svg class="i" viewBox="0 0 16 16" aria-hidden="true"
             ><circle cx="4.5" cy="3.5" r="1.6" /><circle cx="4.5" cy="12.5" r="1.6" /><circle cx="11.5" cy="5.5" r="1.6" /><path
@@ -748,7 +749,7 @@
                 class="name"
                 onclick={() => reach?.open(c.id)}
                 title="open {w.name}{w.handle ? ` — ${handleTip(w.handle)}` : ''}">{w.name}</button
-              >{:else}<span title={w.handle ? handleTip(w.handle) : undefined}>{w.name}</span>{/if}{/each}</span
+              >{:else}<span {@attach tipOf(() => (w.handle ? handleTip(w.handle) : undefined))}>{w.name}</span>{/if}{/each}</span
         >
         <span class="sub">{sub}</span>
       </span>
@@ -882,7 +883,7 @@
           class:failed={b.line.state === "failed"}
           aria-expanded={open[b.key] ? "true" : "false"}
           onclick={() => toggle(b.key)}
-          title={open[b.key] ? "fold it away" : fold.hint}
+          {@attach tipOf(() => (open[b.key] ? "fold it away" : fold.hint))}
         >
           <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
           {#if b.line.kind === "relay" && !isWakePrompt(b.line.text) && !isRenewPrompt(b.line.text)}
@@ -931,7 +932,7 @@
           class:failed={b.line.state === "failed"}
           aria-expanded={runOpen(b.key) ? "true" : "false"}
           onclick={() => toggleRun(b.key)}
-          title={runOpen(b.key) ? "fold what it printed away" : "what it printed"}
+          {@attach tipOf(() => (runOpen(b.key) ? "fold what it printed away" : "what it printed"))}
         >
           <span class="mark" aria-hidden="true">{runOpen(b.key) ? "▾" : "▸"}</span>
           <span class="what">{runFoldCap(b.line)}</span>
@@ -955,7 +956,7 @@
           class="cap"
           aria-expanded={open[b.key] ? "true" : "false"}
           onclick={() => toggle(b.key)}
-          title={open[b.key] ? "fold the calls away" : foldSummary(namedNow(b.lines))}
+          {@attach tipOf(() => (open[b.key] ? "fold the calls away" : foldSummary(namedNow(b.lines))))}
         >
           <span class="mark" aria-hidden="true">{open[b.key] ? "▾" : "▸"}</span>
           <!-- Folded, the cap carries the latest call in the run, so a group at

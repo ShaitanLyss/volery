@@ -28,6 +28,7 @@
     tabLabel,
   } from "./dogears";
   import type { Finder } from "./finder.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let { finder }: { finder: Finder } = $props();
 
@@ -115,7 +116,7 @@
           <span class="dir">{p.dir}</span><span class="name">{p.name}</span
           >{#if tab.line !== null}<span class="at">:{tab.line}</span>{/if}
         </button>
-        <button class="x" onclick={() => shut(key)} title="Close this one">✕</button>
+        <button class="x" onclick={() => shut(key)} {@attach tipOf("Close this one")}>✕</button>
         <!-- The fuse, drawn only where there is one. A safe tab has no hairline
              rather than a full one: a line under every pill would read as
              chrome, and this has to read as a thing running out. -->
@@ -129,7 +130,7 @@
       class="more"
       class:on={knobs}
       onclick={() => (knobs = !knobs)}
-      title="How many files are kept to hand, and for how long">⋯</button
+      {@attach tipOf("How many files are kept to hand, and for how long")}>⋯</button
     >
 
     {#if knobs}

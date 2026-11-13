@@ -23,6 +23,7 @@
 import { mount } from "svelte";
 import "./lib/tokens.css";
 import Accounts from "./lib/Accounts.svelte";
+import Tooltip from "./lib/Tooltip.svelte";
 import { waterfall } from "./lib/waterfall.svelte";
 import { ownShare } from "./lib/ownshare.svelte";
 import type { AllowanceCost, AllowanceSample } from "./lib/allowancesamples";
@@ -101,3 +102,8 @@ mount(Accounts, {
   target: document.getElementById("app")!,
   props: { onclose: () => {} },
 });
+
+/* And the tip host, which `App.svelte` mounts once at the root: without it the
+   panel's hovers would attach and draw nothing, and the preview would be the
+   one place a tooltip could not be looked at. */
+mount(Tooltip, { target: document.body });

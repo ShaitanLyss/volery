@@ -28,6 +28,7 @@ import {
   type WeekCell,
   type WindowReading,
 } from "./equivalence";
+  import { tipOf } from "./tipped.svelte";
 
 let {
   label,
@@ -136,7 +137,7 @@ const extremes = $derived.by(() => {
       type="button"
       aria-expanded={open}
       onclick={() => (open = !open)}
-      title={`${kind}: ${verdictSaid(reading!.verdict)} · measured over ${worth.hours} hours of the last ${spanDays} days at ${mixSaid(worth) || "a mix this wall recorded"}`}
+      {@attach tipOf(() => (`${kind}: ${verdictSaid(reading!.verdict)} · measured over ${worth.hours} hours of the last ${spanDays} days at ${mixSaid(worth) || "a mix this wall recorded"}`))}
     >
       <span class="aw-kind">{kind}</span>
       <span class="aw-main">{worthSaid(worth)}</span>
@@ -165,7 +166,7 @@ const extremes = $derived.by(() => {
                 class="aw-cell"
                 class:aw-blank={s === null}
                 style={s === null ? "" : `--aw-shade: ${(0.1 + s * 0.62).toFixed(3)}`}
-                title={cellTitle(cell)}
+                {@attach tipOf(() => (cellTitle(cell)))}
               ></span>
             {/each}
           {/each}

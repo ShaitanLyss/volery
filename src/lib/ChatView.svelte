@@ -81,6 +81,7 @@
   import ScreenSheet from "./ScreenSheet.svelte";
   import { onCredits } from "./credits";
   import { providerName } from "./providers";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     skein,
@@ -832,7 +833,7 @@
         <button
           class="iconbtn menu"
           type="button"
-          title={needing ? `conversations — ${needing} need you (ctrl+shift+S)` : "conversations (ctrl+shift+S)"}
+          {@attach tipOf(() => (needing ? `conversations — ${needing} need you (ctrl+shift+S)` : "conversations (ctrl+shift+S)"))}
           aria-expanded={drawer}
           onclick={toggleSidebar}
           ><Icon name="menu" />{#if needing}<span class="badge" aria-hidden="true">{needing}</span>{/if}</button
@@ -841,7 +842,7 @@
         <button
           class="iconbtn"
           type="button"
-          title={sidebar ? "hide the sidebar (ctrl+shift+S)" : "show the sidebar (ctrl+shift+S)"}
+          {@attach tipOf(() => (sidebar ? "hide the sidebar (ctrl+shift+S)" : "show the sidebar (ctrl+shift+S)"))}
           aria-pressed={sidebar}
           onclick={toggleSidebar}><Icon name="side" /></button
         >
@@ -858,14 +859,14 @@
     </div>
     <span class="grow" data-tauri-drag-region></span>
     {#if card}
-      <span class="ctx" title={`how full this conversation's memory is — ${ctxSaid(card.gist.ctx, card.gist.ctxTokens)}`}>
+      <span class="ctx" {@attach tipOf(() => (`how full this conversation's memory is — ${ctxSaid(card.gist.ctx, card.gist.ctxTokens)}`))}>
         <CtxRing ctx={card.gist.ctx} dormant={card.face.dormant} size={18} />{ctx}%
       </span>
     {/if}
     <button
       class="iconbtn act"
       type="button"
-      title="go anywhere, do anything — the readings, the panels, every chord (space, with nothing typed; ctrl+K searches)"
+      {@attach tipOf("go anywhere, do anything — the readings, the panels, every chord (space, with nothing typed; ctrl+K searches)")}
       aria-label="actions"
       aria-haspopup="dialog"
       aria-expanded={looking === "actions"}
@@ -887,16 +888,16 @@
       <button
         class="iconbtn"
         type="button"
-        title={view.pane ? "hide the plan, files and linked conversations (ctrl+.)" : "the plan, files and linked conversations (ctrl+.)"}
+        {@attach tipOf(() => (view.pane ? "hide the plan, files and linked conversations (ctrl+.)" : "the plan, files and linked conversations (ctrl+.)"))}
         aria-pressed={view.pane}
         onclick={togglePane}><Icon name="pane" /></button
       >
     {/if}
     <div class="views" role="group" aria-label="view">
-      <button type="button" onclick={onwall} title="the wall — every conversation at once (ctrl+shift+M, or space then w v)">
+      <button type="button" onclick={onwall} {@attach tipOf("the wall — every conversation at once (ctrl+shift+M, or space then w v)")}>
         <Icon name="wall" small />wall
       </button>
-      <button type="button" class="on" aria-pressed="true" title="chat — one conversation at a time">
+      <button type="button" class="on" aria-pressed="true" {@attach tipOf("chat — one conversation at a time")}>
         <Icon name="chat" small />chat
       </button>
     </div>
@@ -1073,7 +1074,7 @@
                     class="cap"
                     aria-expanded={openPutOff === card.id ? "true" : "false"}
                     onclick={() => (openPutOff = openPutOff === card.id ? null : card.id)}
-                    title={openPutOff === card.id ? "fold the questions away" : "answer them later"}
+                    {@attach tipOf(() => (openPutOff === card.id ? "fold the questions away" : "answer them later"))}
                   >
                     <span class="mark" aria-hidden="true">{openPutOff === card.id ? "▾" : "▸"}</span>
                     <span class="what"
@@ -1108,7 +1109,7 @@
                           <button
                             type="button"
                             onclick={() => void dropHere(d)}
-                            title="take it off without answering — the agent was told nothing was decided"
+                            {@attach tipOf("take it off without answering — the agent was told nothing was decided")}
                             >not worth answering</button
                           >
                         </p>
@@ -1128,22 +1129,22 @@
                     type="button"
                     disabled={acking}
                     onclick={() => void doneWith()}
-                    title="nothing more to say — take it out of needs you (space then d a)">done with it</button
+                    {@attach tipOf("nothing more to say — take it out of needs you (space then d a)")}>done with it</button
                   >
                   <button
                     type="button"
                     onclick={() => void card.do("close")}
-                    title="close this conversation — the same close the wall's notice offers">close</button
+                    {@attach tipOf("close this conversation — the same close the wall's notice offers")}>close</button
                   >
                 </p>
               {:else if endedOnQuestion && endedOnQuestion.kind === "notice"}
                 {@const q = endedOnQuestion.notice}
                 <p class="ended">
                   it ended on a question — your answer goes in the box below
-                  <button type="button" onclick={() => void card.acknowledge(q, "")} title="it needs nothing from you — take it out of needs you"
+                  <button type="button" onclick={() => void card.acknowledge(q, "")} {@attach tipOf("it needs nothing from you — take it out of needs you")}
                     >dismiss</button
                   >
-                  <button type="button" onclick={() => void card.do("close")} title="close this conversation">close</button>
+                  <button type="button" onclick={() => void card.do("close")} {@attach tipOf("close this conversation")}>close</button>
                 </p>
               {/if}
             {:else}

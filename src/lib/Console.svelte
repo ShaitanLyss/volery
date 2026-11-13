@@ -3,6 +3,7 @@
   import { ansiVar, parseAnsi } from "./ansi";
   import { stickToTail, snapToTail } from "./follow";
   import type { Shell } from "./shell.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let { shell }: { shell: Shell } = $props();
 
@@ -77,8 +78,8 @@
   <header>
     <span class="mark">shell</span>
     {#if shell.program}<span class="prog">{shell.program}</span>{/if}
-    <span class="path" title={shell.cwd}>{shell.where}</span>
-    {#if shell.busy}<span class="run" title="running">working</span>{/if}
+    <span class="path" {@attach tipOf(() => (shell.cwd))}>{shell.where}</span>
+    {#if shell.busy}<span class="run" {@attach tipOf("running")}>working</span>{/if}
     <span class="grow"></span>
     <!-- One shell per project means a build can be running in a project you are
          not looking at, and the panel used to *be* every shell there was. So it
@@ -87,23 +88,23 @@
     {#if shell.others.length}
       <span
         class="others"
-        title={shell.others
+        {@attach tipOf(() => (shell.others
           .map((o) => `${o.where}${o.busy ? " — working" : ""}`)
-          .join("\n")}>{shell.others.length} more</span
+          .join("\n")))}>{shell.others.length} more</span
       >
     {/if}
     {#if shell.live}
       <button
         class="ghost"
         onclick={() => shell.stop()}
-        title="Kill what is running and open a fresh shell here — these children have no console, so there is no ctrl+C to send them"
+        {@attach tipOf("Kill what is running and open a fresh shell here — these children have no console, so there is no ctrl+C to send them")}
         >stop</button
       >
     {/if}
-    <button class="ghost" onclick={() => shell.clear()} title="Clear the scrollback (ctrl+L)"
+    <button class="ghost" onclick={() => shell.clear()} {@attach tipOf("Clear the scrollback (ctrl+L)")}
       >clear</button
     >
-    <button class="x" onclick={() => shell.hide()} title="Put it away (alt+I) — the shell keeps running">✕</button>
+    <button class="x" onclick={() => shell.hide()} {@attach tipOf("Put it away (alt+I) — the shell keeps running")}>✕</button>
   </header>
 
   <div class="out" bind:this={scroller} {@attach stickToTail}>

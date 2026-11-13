@@ -24,6 +24,7 @@
 <script lang="ts">
   import { cubicOut } from "svelte/easing";
   import { arcSpots, ARC_STAGGER } from "./arc";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     choices,
@@ -111,7 +112,7 @@
          last, which is the same bug one layer along. -->
     <button
       class="pick"
-      title={c.title}
+      {@attach tipOf(() => (c.title))}
       style:transform="translate(calc(-50% + {at.dx.toFixed(2)}px), calc(-50% + {at.dy.toFixed(
         2,
       )}px))"

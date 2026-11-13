@@ -62,6 +62,7 @@
   } from "./asana";
   import { clock } from "./conversation.svelte";
   import { textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -289,7 +290,7 @@
 
 <div class="board" data-variant={variant} class:dragging={!!held?.moved}>
   <header>
-    <span class="what" title={board?.name ?? "asana"}>{board?.name ?? "asana"}</span>
+    <span class="what" {@attach tipOf(() => (board?.name ?? "asana"))}>{board?.name ?? "asana"}</span>
     {#if board}
       <!-- What it holds and what it cost, the same as the pipelines widget's:
            this is somebody else's server and the wall should be honest about
@@ -399,7 +400,7 @@
                 data-grip
                 class:lifting={held?.moved && held.task === card.gid}
                 class:done={card.completed}
-                title={why(card, col)}
+                {@attach tipOf(() => (why(card, col)))}
                 onpointerdown={(e) => press(e, card)}
               >
                 <span class="cardname">{card.name}</span>

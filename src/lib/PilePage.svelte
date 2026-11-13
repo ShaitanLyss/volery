@@ -44,6 +44,7 @@
   import { shortHandle } from "./whois";
   import type { Sink } from "./sink.svelte";
   import type { Board } from "./board.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     kind,
@@ -246,7 +247,7 @@
         bind:this={searchBox}
         bind:value={query}
         placeholder="search"
-        title="search (/) — every word somewhere; &quot;quote&quot; a phrase to keep it whole"
+        {@attach tipOf("search (/) — every word somewhere; &quot;quote&quot; a phrase to keep it whole")}
         aria-label="search {kind === 'sink' ? 'the sink' : 'the billboard'}"
       />
     </label>
@@ -286,7 +287,7 @@
                 {#if it.heldBy && st !== "settled"}
                   <button type="button" class="btn" onclick={() => void sink.release(it.id)}>release the hold</button>
                 {/if}
-                <button type="button" class="btn quiet" title="copy {shortHandle(it.id)}, to paste to an agent" onclick={() => void copyId(it.id)}>copy id</button>
+                <button type="button" class="btn quiet" {@attach tipOf(() => `copy ${shortHandle(it.id)}, to paste to an agent`)} onclick={() => void copyId(it.id)}>copy id</button>
                 <span class="grow"></span>
                 <button
                   type="button"
@@ -321,7 +322,7 @@
               {/if}
               {#if elsewhere(n)}<p class="note">{elsewhere(n)}</p>{/if}
               <div class="acts">
-                <button type="button" class="btn quiet" title="copy {shortHandle(n.id)}, to paste to an agent" onclick={() => void copyId(n.id)}>copy id</button>
+                <button type="button" class="btn quiet" {@attach tipOf(() => `copy ${shortHandle(n.id)}, to paste to an agent`)} onclick={() => void copyId(n.id)}>copy id</button>
                 <span class="grow"></span>
                 <button type="button" class="btn danger" onclick={() => void board.unpost(n.id, n.host)}>take it down</button>
               </div>

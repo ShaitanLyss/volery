@@ -34,6 +34,7 @@
   import { seriesColor } from "./analytics";
   import { count, money } from "./usage";
   import { watchSaid, type SpendWatch } from "./spend";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     model,
@@ -542,7 +543,7 @@
               role="radio"
               aria-checked={measure === m.key}
               class:on={measure === m.key}
-              title={`${m.said} (x switches it)`}
+              {@attach tipOf(() => (`${m.said} (x switches it)`))}
               onclick={() => onmeasure(m.key)}>{m.label}</button
             >
           {/each}
@@ -623,7 +624,7 @@
             <button
               type="button"
               class="aw-watchclose"
-              title="close (the dot stays selected until another is picked)"
+              {@attach tipOf("close (the dot stays selected until another is picked)")}
               aria-label="close the watches"
               onclick={() => {
                 picked = null;
@@ -649,7 +650,7 @@
                   <button
                     type="button"
                     class="aw-watchdrop"
-                    title="remove this watch (watch #{w.id})"
+                    {@attach tipOf(() => `remove this watch (watch #${w.id})`)}
                     onclick={() => removeWatch(w.id)}>delete</button
                   >
                 </li>
@@ -684,13 +685,13 @@
       <div class="aw-strip" style:height={`${stripHeight}px`}>
         <div class="aw-striplabels">
           {#each barRows as bar, i (bar.card)}
-            <div class="aw-rowlabel" style:height={`${ROW}px`} title={`${bar.project}${bar.burnUsdPerHour === null ? "" : ` · ${money(bar.burnUsdPerHour)} an hour`}`}>
+            <div class="aw-rowlabel" style:height={`${ROW}px`} {@attach tipOf(() => (`${bar.project}${bar.burnUsdPerHour === null ? "" : ` · ${money(bar.burnUsdPerHour)} an hour`}`))}>
               <span class="aw-rowname">{bar.label}</span>
               <span class="aw-rowcost">{bar.cost === null ? "unpriced" : money(bar.cost)}</span>
             </div>
           {/each}
           {#if inv.episodesCount > 0}
-            <div class="aw-rowlabel" style:height={`${ROW}px`} title="writes to instruction and rule files, and what the other cards paid to read again">
+            <div class="aw-rowlabel" style:height={`${ROW}px`} {@attach tipOf("writes to instruction and rule files, and what the other cards paid to read again")}>
               <span class="aw-rowname">re-reads</span>
               <span class="aw-rowcost">{inv.usd === null ? "unmeasured" : money(inv.usd)}</span>
             </div>
@@ -705,7 +706,7 @@
                 style:width={`${Math.max(4, (span[1] - span[0]) / width * stripW)}px`}
                 style:top={`${band.top}px`}
                 style:height={`${Math.max(2, band.height)}px`}
-                title={band.label}
+                {@attach tipOf(() => (band.label))}
               ></span>
             {/each}
           {/each}
@@ -716,7 +717,7 @@
                   class="aw-bar"
                   style:left={`${(span[0] - from) / width * stripW}px`}
                   style:width={`${Math.max(2, (span[1] - span[0]) / width * stripW)}px`}
-                  title={`${bar.label}: ${new Date(span[0]).toLocaleString("en-GB")} to ${new Date(span[1]).toLocaleString("en-GB")}`}
+                  {@attach tipOf(() => (`${bar.label}: ${new Date(span[0]).toLocaleString("en-GB")} to ${new Date(span[1]).toLocaleString("en-GB")}`))}
                 ></span>
               {/each}
               {#each strips.conflicts as c (`${c.episode.start}|${c.episode.card}`)}
@@ -726,7 +727,7 @@
                     class="aw-conflict"
                     style:left={`${c.x}px`}
                     style:width={`${c.w}px`}
-                    title={`${episodeSaid(c.episode)} (open it)`}
+                    {@attach tipOf(() => (`${episodeSaid(c.episode)} (open it)`))}
                     aria-label={episodeSaid(c.episode)}
                     onclick={() => (episode = c.episode)}
                   ></button>
@@ -745,7 +746,7 @@
                   style:left={`${m.x}px`}
                   style:width={`${m.size}px`}
                   style:height={`${m.size}px`}
-                  title={`${invSaid(m.episode)} (open it)`}
+                  {@attach tipOf(() => (`${invSaid(m.episode)} (open it)`))}
                   aria-label={invSaid(m.episode)}
                   onclick={() => (reread = m.episode)}
                 ></button>
@@ -844,7 +845,7 @@
           <div class="aw-ephead">
             <strong>{episodeLabel(reread)}</strong>
             <span>{episodeAuthor(reread, nameOf)}</span>
-            <button type="button" class="aw-epclose" title="close (esc)" aria-label="close episode" onclick={() => (reread = null)}>×</button>
+            <button type="button" class="aw-epclose" {@attach tipOf("close (esc)")} aria-label="close episode" onclick={() => (reread = null)}>×</button>
           </div>
           <dl class="aw-epfacts">
             <div><dt>tree</dt><dd>{reread.tree || "no tree"}</dd></div>
@@ -882,7 +883,7 @@
           <div class="aw-ephead">
             <strong>{episode.branch || "unnamed branch"}</strong>
             <span>{bandLabel(episode.card)}</span>
-            <button type="button" class="aw-epclose" title="close (esc)" aria-label="close episode" onclick={() => (episode = null)}>×</button>
+            <button type="button" class="aw-epclose" {@attach tipOf("close (esc)")} aria-label="close episode" onclick={() => (episode = null)}>×</button>
           </div>
           <dl class="aw-epfacts">
             <div><dt>minutes</dt><dd>{count(Math.round(episode.minutes))}</dd></div>

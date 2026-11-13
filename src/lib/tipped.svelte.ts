@@ -43,6 +43,39 @@ export function fullTitle(
   text: () => string,
   measure: (el: HTMLElement) => HTMLElement | null = (el) => el,
 ): Attachment<HTMLElement> {
+  return tipOn(text, measure, (t) => cutShort(t));
+}
+
+/** **The wall's tip, for anything that would otherwise carry a native
+ *  `title`.** Lyss, 2026-11-13: *"I want no plain html tooltips, they should
+ *  all use custom volery components and styles"*. A native title is the
+ *  browser's box in the system's face, after the system's delay; this is the
+ *  one `Tooltip.svelte` draws, at the same settle as a cut-short title.
+ *
+ *  Unlike `fullTitle` it shows whether or not anything is cut, because what it
+ *  carries is an explanation rather than a repeat: which command a button runs,
+ *  what a numeral counts. The site keeps an `aria-label` where the title was
+ *  the only accessible name, since this attachment draws nothing for a screen
+ *  reader.
+ *
+ *  `text` is read when the tip goes up, so a title that changes does not
+ *  re-run the attachment — the reason `fullTitle` takes a function too. */
+export function tipOf(
+  text: string | null | undefined | (() => string | null | undefined),
+): Attachment<HTMLElement> {
+  const read =
+    typeof text === "function" ? () => text() ?? "" : () => text ?? "";
+  return tipOn(read, (el) => el, () => true);
+}
+
+/** The one arm-and-show, shared by the two above so the settle, the drag guard
+ *  and the teardown cannot come to differ. `want` is asked of the measured
+ *  element when the pointer settles. */
+function tipOn(
+  text: () => string,
+  measure: (el: HTMLElement) => HTMLElement | null,
+  want: (t: HTMLElement) => boolean,
+): Attachment<HTMLElement> {
   return (el) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const clear = () => {
@@ -57,9 +90,10 @@ export function fullTitle(
       timer = setTimeout(() => {
         timer = null;
         const t = measure(el);
-        if (!el.isConnected || !t || !cutShort(t)) return;
+        const said = text();
+        if (!el.isConnected || !t || !said || !want(t)) return;
         const r = t.getBoundingClientRect();
-        tipped.show({ text: text(), at: { left: r.left, top: r.top, bottom: r.bottom }, by: el });
+        tipped.show({ text: said, at: { left: r.left, top: r.top, bottom: r.bottom }, by: el });
       }, TIP_SETTLE_MS);
     };
     const leave = () => {

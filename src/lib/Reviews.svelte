@@ -34,6 +34,7 @@
     type ReviewScope,
   } from "./azdo";
   import { rowsFor, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -93,7 +94,7 @@
   </header>
 
   {#if half.fault && !half.rows.length}
-    <p class="fault" title={half.fault}>{half.fault}</p>
+    <p class="fault" {@attach tipOf(() => (half.fault))}>{half.fault}</p>
   {:else if !shown.length}
     <!-- `half.unseen` is passed now, where it used to be left to default. It was
          structurally always zero while Azure DevOps answered pull requests
@@ -111,7 +112,7 @@
           class="dot"
           data-tier={reviewTierOf(r)}
           class:wants={needsMe(r)}
-          title={why(r)}
+          {@attach tipOf(() => (why(r)))}
           onclick={() => onopen(r.url)}
           aria-label={why(r)}
         ></button>
@@ -129,7 +130,7 @@
                   class="dot"
                   data-tier={reviewTierOf(r)}
                   class:wants={needsMe(r)}
-                  title={why(r)}
+                  {@attach tipOf(() => (why(r)))}
                   onclick={() => onopen(r.url)}
                   aria-label={why(r)}
                 ></button>
@@ -146,7 +147,7 @@
           <button
             class="row"
             data-tier={reviewTierOf(r)}
-            title={why(r)}
+            {@attach tipOf(() => (why(r)))}
             onclick={() => onopen(r.url)}
           >
             <span class="mark"></span>

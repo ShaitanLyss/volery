@@ -1,5 +1,6 @@
 <script module lang="ts">
   import { PictureCache, Sizes, type Dims, type PictureSource } from "./showing";
+  import { tipOf } from "./tipped.svelte";
 
   /** Where a picture comes from — decided by `showing.ts::proseSource` and
    *  `keptSource` off the root the surface counts from, never by the surface.
@@ -539,7 +540,7 @@
       type="button"
       class="hit"
       bind:this={hit}
-      title={`${label}${stale ? " — the kept copy has gone; this is the file as it is now" : ""}${note ? ` — ${note}` : ""} · enter or click to look at it full size`}
+      {@attach tipOf(() => (`${label}${stale ? " — the kept copy has gone; this is the file as it is now" : ""}${note ? ` — ${note}` : ""} · enter or click to look at it full size`))}
       aria-label={`${label} — look at it full size`}
       onclick={look}
       onpointerdown={press}
@@ -560,7 +561,7 @@
       type="button"
       class="copy"
       class:said={copied || !!copyFault}
-      title={copyFault ?? "copy the picture as an image — to paste into a message"}
+      {@attach tipOf(() => (copyFault ?? "copy the picture as an image — to paste into a message"))}
       aria-label="copy the picture as an image"
       onclick={copy}
       >{copyFault ? "could not copy" : copied ? "copied" : "copy"}</button

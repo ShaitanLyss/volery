@@ -55,6 +55,7 @@
   } from "./chronicle";
   import { ago } from "./gates";
   import { textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -108,7 +109,7 @@
     class:unread={e.seenAt === null}
     class:goes={!!e.from}
     data-st={statusOf(e.level)}
-    title={e.from ? `${e.source} — go to the card` : e.source}
+    {@attach tipOf(() => (e.from ? `${e.source} — go to the card` : e.source))}
     onclick={() => open(e)}
   >
     <i class="dot" aria-hidden="true"></i>
@@ -127,7 +128,7 @@
          verb is: a button that is there and does nothing is one you learn to
          distrust. -->
     {#if chronicle.waiting > 0}
-      <button class="seen" title="Mark everything as read" onclick={() => void chronicle.markSeen()}
+      <button class="seen" {@attach tipOf("Mark everything as read")} onclick={() => void chronicle.markSeen()}
         >all seen</button
       >
     {/if}

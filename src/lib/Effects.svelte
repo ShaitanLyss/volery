@@ -12,6 +12,7 @@
    * the wall as you make it and in the database a quarter-second later. */
 
   import { EFFECTS, specFor, type Ambience } from "./ambience.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let { ambience }: { ambience: Ambience } = $props();
 
@@ -32,7 +33,7 @@
         class="chip"
         class:on={p.id === ambience.activeId}
         data-profile={p.id}
-        title="Show this one"
+        {@attach tipOf("Show this one")}
         onclick={() => ambience.use(p.id)}>{p.name}</button
       >
     {/each}
@@ -41,7 +42,7 @@
     <button
       class="chip add"
       class:on={ambience.activeId === null}
-      title="Stop drawing anything"
+      {@attach tipOf("Stop drawing anything")}
       onclick={() => ambience.use(null)}>bare</button
     >
     <button class="chip add" onclick={() => ambience.create()}>+ profile</button>
@@ -51,7 +52,7 @@
         class="rename"
         value={active.name}
         spellcheck="false"
-        title="What this profile is called"
+        {@attach tipOf("What this profile is called")}
         oninput={(e) => ambience.rename(active.id, e.currentTarget.value)}
       />
       <!-- How most profiles get made: you like what is up there and want to try
@@ -69,7 +70,7 @@
     {#each active.layers as l, i (l.id)}
       {@const spec = specFor(l.kind)}
       <div class="layer" data-layer={l.id} data-kind={l.kind}>
-        <label class="on" title={l.on ? "Drawing" : "Kept, but not drawing"}>
+        <label class="on" {@attach tipOf(() => (l.on ? "Drawing" : "Kept, but not drawing"))}>
           <input
             type="checkbox"
             checked={l.on}
@@ -80,7 +81,7 @@
         <span class="note">{spec?.note ?? ""}</span>
         <span class="grow"></span>
 
-        <label class="op" title="How strongly this layer draws">
+        <label class="op" {@attach tipOf("How strongly this layer draws")}>
           <input
             type="range"
             min="0"
@@ -99,13 +100,13 @@
         <button
           class="ghost"
           disabled={i === 0}
-          title="Draw this layer further back"
+          {@attach tipOf("Draw this layer further back")}
           onclick={() => ambience.moveLayer(l.id, -1)}>back</button
         >
         <button
           class="ghost"
           disabled={i === active.layers.length - 1}
-          title="Draw this layer further forward"
+          {@attach tipOf("Draw this layer further forward")}
           onclick={() => ambience.moveLayer(l.id, 1)}>front</button
         >
         <button
@@ -114,7 +115,7 @@
           onclick={() => (ambience.open = ambience.open === l.id ? null : l.id)}
           >{ambience.open === l.id ? "close" : "adjust"}</button
         >
-        <button class="ghost danger" title="Remove this layer" onclick={() => ambience.removeLayer(l.id)}
+        <button class="ghost danger" {@attach tipOf("Remove this layer")} onclick={() => ambience.removeLayer(l.id)}
           >×</button
         >
       </div>
@@ -158,7 +159,7 @@
     <div class="add-layer">
       <span class="name">stack another</span>
       {#each EFFECTS as e (e.kind)}
-        <button class="chip add" title={e.note} onclick={() => ambience.addLayer(e.kind)}
+        <button class="chip add" {@attach tipOf(() => (e.note))} onclick={() => ambience.addLayer(e.kind)}
           >+ {e.label}</button
         >
       {/each}

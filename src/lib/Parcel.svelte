@@ -13,6 +13,7 @@
 -->
 <script lang="ts">
   import type { Parcel } from "./relay";
+  import { tipOf } from "./tipped.svelte";
 
   let { parcel, dir = "in" }: { parcel: Parcel; dir?: "in" | "out" } = $props();
 
@@ -57,9 +58,9 @@
   {#if parcel.landed}
     <div class="landed">
       <span class="lbl">in</span>
-      <span class="path" title={parcel.landed}>{parcel.landed}</span>
+      <span class="path" {@attach tipOf(() => (parcel.landed))}>{parcel.landed}</span>
       {#if dir === "in"}
-        <button type="button" class="copy" onclick={copyPath} title="copy where the files are">
+        <button type="button" class="copy" onclick={copyPath} {@attach tipOf("copy where the files are")}>
           {copied ? "copied" : "copy path"}
         </button>
       {/if}

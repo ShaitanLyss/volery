@@ -96,6 +96,7 @@
   import { ROW_W, WALL, hangOf, planOf, stackAt, type Hang } from "./plates";
   import { railWidth } from "./timeline";
   import { handleOf as cardHandle } from "./relay";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     convs,
@@ -2696,7 +2697,7 @@
           style:width="{GRIP_W}px"
           style:height="{r.h}px"
           style:z-index={Z_CARD - 1}
-          title="drag to change how many cards stand across {r.label}"
+          {@attach tipOf(() => `drag to change how many cards stand across ${r.label}`)}
           role="presentation"
           onpointerdown={(e) => sizeDown(e, r, edge)}
           onpointermove={sizeMove}
@@ -2732,7 +2733,7 @@
       style:left="{r.x + 11}px"
       style:top="{r.y + 8}px"
       style:z-index={Z_CHIP}
-      title="{r.label} — drag to move it, and everything in it"
+      {@attach tipOf(() => `${r.label} — drag to move it, and everything in it`)}
       role="presentation"
     >
       {#if renamingTerr === r.id}
@@ -2781,7 +2782,7 @@
           <button
             class="chip"
             data-state={c.state}
-            title={c.running ? "Running — click to stop" : "Click to start"}
+            {@attach tipOf(() => (c.running ? "Running — click to stop" : "Click to start"))}
             onclick={() => onserver?.(c.id)}
           >
             <i></i>{c.label}
@@ -2823,12 +2824,12 @@
           <button
             class="chip add"
             data-add={r.cwd}
-            title="New conversation in {r.label} — right-click to choose a model"
+            {@attach tipOf(() => `New conversation in ${r.label} — right-click to choose a model`)}
             onclick={() => onadd?.(r.cwd)}>+</button
           >
           <button
             class="chip add"
-            title="New conversation in its own git worktree"
+            {@attach tipOf("New conversation in its own git worktree")}
             onclick={() => {
               branching = r.cwd;
               branchName = "";
@@ -2871,7 +2872,7 @@
                 class:asking={a.arc?.length && arcOpen === r.cwd}
                 disabled={a.idle}
                 style:--p="{a.pct ?? 0}%"
-                title={a.title}
+                {@attach tipOf(() => (a.title))}
                 onclick={() => {
                   /* An arc-bearing chip asks rather than does, and a second
                      press takes the question back. */
@@ -2931,7 +2932,7 @@
           <button
             class="chip lost"
             disabled={adrift.busy}
-            title="{r.project} is not a folder on this machine — click to point it at one"
+            {@attach tipOf(() => `${r.project} is not a folder on this machine — click to point it at one`)}
             onclick={() => void adrift.pick(r.cwd)}
           >
             <i></i>points nowhere — pick a folder
@@ -2945,7 +2946,7 @@
           style:top="{r.y + r.h - 21}px"
           style:z-index={Z_CHIP}
         >
-          <button class="chip rip" title={torn.title} onclick={() => onresolve?.(r.cwd)}>
+          <button class="chip rip" {@attach tipOf(() => (torn.title))} onclick={() => onresolve?.(r.cwd)}>
             <i></i>{torn.label}
           </button>
         </div>
@@ -3180,7 +3181,7 @@
           style:left="{h.x + 11}px"
           style:top="{h.y + 8}px"
           style:z-index={Z_CHIP}
-          title="{h.host}, another wall in this flyway — only what each card is doing travels here, and a prompt to one is sent to {h.host} (space then e e)"
+          {@attach tipOf(() => `${h.host}, another wall in this flyway — only what each card is doing travels here, and a prompt to one is sent to ${h.host} (space then e e)`)}
         >
           {h.host}{unheard(h.host) ? " · not heard from" : ""}
         </div>
@@ -3204,7 +3205,7 @@
           style:left="{r.x + 11}px"
           style:top="{r.y + 8}px"
           style:z-index={Z_CHIP}
-          title="{r.name} on {r.host} (drag to move it; right-click to open a card there, or space then e n)"
+          {@attach tipOf(() => `${r.name} on ${r.host} (drag to move it; right-click to open a card there, or space then e n)`)}
           role="presentation"
           data-section={r.id}
           data-host={r.host}

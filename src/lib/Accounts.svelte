@@ -50,6 +50,7 @@
   import AccountWorth from "./AccountWorth.svelte";
   import { binsOf, readingOf, type WindowReading } from "./equivalence";
   import { readWorth, WORTH_DAYS, type WorthRead } from "./worthread.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   /* `me` is this wall's flyway name and `flying` whether it flies with any
      other wall: the sync line says which wall changed a setting, and keeps
@@ -596,7 +597,7 @@
       <span class="mark">accounts</span>
       <span class="grow"></span>
       {#if note}<span class="said">{note}</span>{/if}
-      <button class="x" onclick={onclose} title="close">✕</button>
+      <button class="x" onclick={onclose} {@attach tipOf("close")}>✕</button>
     </div>
 
     <p class="note">
@@ -716,7 +717,7 @@
                        reaches any arrangement, and there is none of the ambiguity a
                        pair of move-me-a-band-over arrows has about whether it means
                        "join the band below" or "make a new one". -->
-                  <label class="tierset" title="which priority this account is in">
+                  <label class="tierset" {@attach tipOf("which priority this account is in")}>
                     <span class="tierlab">priority</span>
                     <input
                       class="tierin"
@@ -733,16 +734,16 @@
                     class="chip"
                     disabled={i === 0}
                     onclick={() => waterfall.move(account.label, -1)}
-                    title="earlier inside this priority">↑</button>
+                    {@attach tipOf("earlier inside this priority")}>↑</button>
                   <button
                     class="chip"
                     disabled={i === band.rows.length - 1}
                     onclick={() => waterfall.move(account.label, 1)}
-                    title="later inside this priority">↓</button>
+                    {@attach tipOf("later inside this priority")}>↓</button>
                   <button
                     class="chip"
                     onclick={() => waterfall.setEnabled(account.label, !account.enabled)}
-                    title={account.enabled ? "stop using this account" : "use this account again"}
+                    {@attach tipOf(() => (account.enabled ? "stop using this account" : "use this account again"))}
                   >{account.enabled ? "on" : "off"}</button>
                 </div>
 
@@ -767,10 +768,10 @@
                       {@const cap = capOf(account.label, kind)}
                       <label
                         class="cap"
-                        title={(share === null || used === null
+                        {@attach tipOf(() => ((share === null || used === null
                           ? "the account's own percentage, which is what your ceiling is measured against when this wall cannot say how much of it is yours"
                           : `the account is at ${pct(used)}; ${pct(share)} of that is this wall's own work, and your ceiling is measured on it`) +
-                          (ownShare.fault ? " · the share could not be re-read, so this is the last one" : "")}
+                          (ownShare.fault ? " · the share could not be re-read, so this is the last one" : "")))}
                       >
                         <span class="capname">{nameOf(account.label, kind)}</span>
                         <span class="used">
@@ -836,7 +837,7 @@
                     <button
                       class="chip"
                       onclick={() => signIn(account.label)}
-                      title="sign in again, replacing this account's credential"
+                      {@attach tipOf("sign in again, replacing this account's credential")}
                     >
                       sign in again
                     </button>
@@ -979,7 +980,7 @@
               </div>
 
               <div class="caps">
-                <label class="cap" title="what this wall's cards have spent on credits since the first of the month, and where you want that to stop">
+                <label class="cap" {@attach tipOf("what this wall's cards have spent on credits since the first of the month, and where you want that to stop")}>
                   <span class="capname">this month</span>
                   <span class="used">{money(purse.spent)}</span>
                   <span class="of">stop at $</span>
@@ -1014,7 +1015,7 @@
                     class:on={boost.lookId === l.id}
                     role="radio"
                     aria-checked={boost.lookId === l.id}
-                    title={`${l.blurb}${l.legible ? "" : " — asking and failed read less clearly under it"} (space then m l)`}
+                    {@attach tipOf(() => (`${l.blurb}${l.legible ? "" : " — asking and failed read less clearly under it"} (space then m l)`))}
                     onclick={() => {
                       boost.setLook(l.id);
                       say(`boost looks like ${l.label}`);
@@ -1042,7 +1043,7 @@
                 class="chip"
                 disabled={r?.busy}
                 onclick={() => remoteBegin(seat.host, seat.label)}
-                title="start the sign-in on {seat.host} and finish it in this machine's browser"
+                {@attach tipOf(() => `start the sign-in on ${seat.host} and finish it in this machine's browser`)}
               >{r?.url ? "start again" : "sign it in from here"}</button>
             </div>
             {#if r?.url}
@@ -1100,7 +1101,7 @@
           </span>
         {/each}
 
-        <button class="chip" onclick={dismiss} title="stop saying this">ok</button>
+        <button class="chip" onclick={dismiss} {@attach tipOf("stop saying this")}>ok</button>
       </div>
     {/if}
 
@@ -1117,12 +1118,12 @@
       <button
         class="chip"
         onclick={exportAll}
-        title="the order and your caps, to the clipboard — never a credential"
+        {@attach tipOf("the order and your caps, to the clipboard — never a credential")}
       >export</button>
       <button
         class="chip"
         onclick={importAll}
-        title="a waterfall from the clipboard, renamed on a clash and appended to this order"
+        {@attach tipOf("a waterfall from the clipboard, renamed on a clash and appended to this order")}
       >import</button>
     </div>
 

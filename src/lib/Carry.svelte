@@ -27,6 +27,7 @@
   import { adrift, type Portage } from "./portage.svelte";
   import type { Project } from "./skein.svelte";
   import { sayTally } from "./portage";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     carry,
@@ -118,7 +119,7 @@
         {#each nowhere as p (p.id)}
           <li>
             <span class="pname">{p.name}</span>
-            <span class="was" title={p.root_path}>{p.root_path}</span>
+            <span class="was" {@attach tipOf(() => (p.root_path))}>{p.root_path}</span>
             <button
               class="act"
               disabled={carry.busy || adrift.busy}

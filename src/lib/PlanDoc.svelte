@@ -11,6 +11,7 @@
      out of a root, and a plan lives under `~/.claude/plans`, not the project. */
   import { planTitle } from "./gears";
   import { useOpener } from "./paths.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     path,
@@ -39,9 +40,9 @@
   </span>
   <span class="acts">
     {#if open}
-      <button type="button" onclick={() => open(path, "open")} title="read the plan">open</button>
+      <button type="button" onclick={() => open(path, "open")} {@attach tipOf("read the plan")}>open</button>
     {/if}
-    <button type="button" disabled={busy} onclick={onhere} title="leave plan first and build it in this conversation"
+    <button type="button" disabled={busy} onclick={onhere} {@attach tipOf("leave plan first and build it in this conversation")}
       >build it here</button
     >
     <button
@@ -49,7 +50,7 @@
       class="lead"
       disabled={busy}
       onclick={onfresh}
-      title="hand the plan to a new conversation, which starts with only the plan — cheaper than this one's whole context"
+      {@attach tipOf("hand the plan to a new conversation, which starts with only the plan — cheaper than this one's whole context")}
       >build it in a fresh conversation</button
     >
   </span>

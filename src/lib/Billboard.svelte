@@ -34,6 +34,7 @@
   import type { Board } from "./board.svelte";
   import { author, covering, elsewhere, isEmpty, keyOf, reading, since, type Notice } from "./board";
   import { textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -108,7 +109,7 @@
     <span class="tot">{board.notices.length}</span>
     <button
       class="add"
-      title="Put up a notice of your own"
+      {@attach tipOf("Put up a notice of your own")}
       onclick={() => (drafting = !drafting)}>+</button
     >
   </header>
@@ -155,7 +156,7 @@
         <li class:stale={n.stale || n.unheardMs !== null} class:open={opened(k)}>
           <button
             class="row"
-            title={n.body}
+            {@attach tipOf(() => (n.body))}
             onclick={() => (open = opened(k) === (variant === "notes") ? k : null)}
           >
             <span class="mark" class:wall={n.scope === "skein"}></span>
@@ -165,7 +166,7 @@
           </button>
           <button
             class="off"
-            title={off}
+            {@attach tipOf(() => (off))}
             aria-label={off}
             onclick={() => void board.unpost(n.id, n.host)}>×</button
           >

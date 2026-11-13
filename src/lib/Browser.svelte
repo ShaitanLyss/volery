@@ -42,6 +42,7 @@
   } from "./browser";
   import type { Pane, Target } from "./pane.svelte";
   import type { Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let { widget, pane }: { widget: Widget; pane: Pane } = $props();
 
@@ -293,7 +294,7 @@
         <button
           class="act"
           class:on={pane.status.mode === m}
-          title={MODE_NOTE[m]}
+          {@attach tipOf(() => (MODE_NOTE[m]))}
           onclick={() => void pane.mode(m)}
         >
           {m === "window" ? "window" : m === "parked" ? "off-screen" : "headless"}
@@ -308,7 +309,7 @@
            what you chose. -->
       <button
         class="act"
-        title="put the window back on your desktop, for a sign-in that needs it"
+        {@attach tipOf("put the window back on your desktop, for a sign-in that needs it")}
         onclick={() => void pane.show()}
       >
         show window
@@ -317,7 +318,7 @@
     {#if canPark(pane.status)}
       <button
         class="act"
-        title="put the window back off your desktop"
+        {@attach tipOf("put the window back off your desktop")}
         onclick={() => void pane.park()}
       >
         park it
@@ -326,7 +327,7 @@
     {#if pane.status.running && subject}
       <button
         class="act"
-        title="reload the page"
+        {@attach tipOf("reload the page")}
         onclick={() => pane.reload(subject!.id)}
       >
         reload
@@ -338,7 +339,7 @@
            file, and writing it twice is writing it once. -->
       <button
         class="act"
-        title="save these sign-ins so cards that want their own browser do not have to sign in again"
+        {@attach tipOf("save these sign-ins so cards that want their own browser do not have to sign in again")}
         disabled={pane.saving}
         onclick={() => void pane.saveSession()}
       >

@@ -25,6 +25,7 @@
   import { ageOf } from "./chatview";
   import { clock } from "./conversation.svelte";
   import { FILTERS, countsOf, filtered, lineOf, rowsOf, type Filter } from "./projectview";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     skein,
@@ -116,7 +117,7 @@
       </div>
     </div>
     <span class="grow"></span>
-    <button type="button" class="primary" onclick={onnew} title="a new conversation in this folder (ctrl+shift+O)">
+    <button type="button" class="primary" onclick={onnew} {@attach tipOf("a new conversation in this folder (ctrl+shift+O)")}>
       <Icon name="plus" small />new conversation here
     </button>
     {#if onmenu}
@@ -128,7 +129,7 @@
         class="moreb"
         aria-label="more for {project.name}"
         aria-haspopup="menu"
-        title="more for this project — or right-click it in the sidebar"
+        {@attach tipOf("more for this project — or right-click it in the sidebar")}
         onclick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           onmenu({ x: r.right - 220, y: r.bottom + 6 }, e.detail === 0);
@@ -222,11 +223,11 @@
           </button>
         {/each}
         {#each chips as c (c.id)}
-          <button type="button" title={c.title} class:busy={c.state === "running"} onclick={() => void actions.run(project.root_path, c.id)}>
+          <button type="button" {@attach tipOf(() => (c.title))} class:busy={c.state === "running"} onclick={() => void actions.run(project.root_path, c.id)}>
             <Icon name={c.state === "running" ? "stop" : "arrow-r"} />{c.label}{#if c.state === "running"}<span class="note">running</span>{/if}
           </button>
         {/each}
-        <button type="button" onclick={onwall} title="the wall, with this project on it (ctrl+shift+M)">
+        <button type="button" onclick={onwall} {@attach tipOf("the wall, with this project on it (ctrl+shift+M)")}>
           <Icon name="wall" />show it on the wall
         </button>
       </div>

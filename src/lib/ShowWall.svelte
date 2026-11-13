@@ -23,6 +23,7 @@
     type Status,
     type WallCard,
   } from "./showcase";
+  import { tipOf } from "./tipped.svelte";
 
   let viewport = $state<HTMLElement>();
   let vw = $state(0);
@@ -254,7 +255,7 @@
           class="key"
           class:on={only === s}
           onclick={() => (only = only === s ? null : (s as Status))}
-          title={STATUS_SAID[s as Status]}
+          {@attach tipOf(() => (STATUS_SAID[s as Status]))}
         ><i data-st={s}></i>{word}</button
         >
       {/each}

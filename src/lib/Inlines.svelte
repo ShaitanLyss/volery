@@ -22,6 +22,7 @@
   import { whois } from "./whois.svelte";
   import { handleTip, whoIs } from "./whois";
   import type { CardHandle } from "./cards.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     kids,
@@ -258,7 +259,7 @@
         data-path={to.path}
         data-root={files?.root}
         data-dir={dir ? "1" : null}
-        title={hint(to.path, dir, at.symbol)}
+        {@attach tipOf(() => (hint(to.path, dir, at.symbol)))}
         onclick={(e) => go(e, to.path, at)}>{run.text}</button
       >{:else if run.hit}{@render hit(run.hit, run.text)}{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code" && spanHit.has(i)}{@render hit(spanHit.get(i)!, "`" + k.v + "`")}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
         spanPath.get(i)!}{@const to = targetOf(at)!}{@const dir = to.kind === "dir"}<button
@@ -268,7 +269,7 @@
       data-path={to.path}
       data-root={files?.root}
       data-dir={dir ? "1" : null}
-      title={hint(to.path, dir, at.symbol)}
+      {@attach tipOf(() => (hint(to.path, dir, at.symbol)))}
       onclick={(e) => go(e, to.path, at)}><code>{k.v}</code></button
     >{:else}<code>{k.v}</code>{/if}{:else if k.t === "strong"}<strong
       ><Self kids={k.kids} {inLink} /></strong
@@ -283,7 +284,7 @@
       >{/if}{:else if k.t === "link"}<button
       type="button"
       class="link"
-      title={k.href}
+      {@attach tipOf(() => (k.href))}
       onclick={() => onlink?.(k.href)}><Self kids={k.kids} inLink /></button
     >{/if}{/each}
 
@@ -327,7 +328,7 @@
       class:settled={r.kind === "sink" && r.settled}
       data-ref={r.kind}
       data-md={md}
-      title={reflinks?.hover ? undefined : refTip(r)}
+      {@attach tipOf(() => (reflinks?.hover ? undefined : refTip(r)))}
       onpointerenter={(e) => reflinks?.hover?.(r, e.currentTarget)}
       onpointerleave={() => reflinks?.unhover?.()}
       onclick={() => {

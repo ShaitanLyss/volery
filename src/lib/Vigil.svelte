@@ -49,6 +49,7 @@
   import type { Skein } from "./skein.svelte";
   import type { Elsewhere } from "./shadows.svelte";
   import { isComplete } from "./asking";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     presence,
@@ -339,7 +340,7 @@
                 {/if}
                 <span class="grow"></span>
                 <button class="drop" onclick={() => void drop(d)}
-                  title="Take this question off the pile without answering it. The agent was told nothing was decided.">
+                  {@attach tipOf("Take this question off the pile without answering it. The agent was told nothing was decided.")}>
                   not worth answering
                 </button>
               </div>

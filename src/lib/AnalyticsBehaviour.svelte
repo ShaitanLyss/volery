@@ -44,6 +44,7 @@
   import type { BehaviourBundle } from "./analyticsbehaviourread.svelte";
   import { dayLabel } from "./analyticstrace";
   import { count, money } from "./usage";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     bundle,
@@ -225,7 +226,7 @@
           role="tab"
           aria-selected={view === one.key}
           class:on={view === one.key}
-          title={one.said}
+          {@attach tipOf(() => (one.said))}
           onclick={() => (view = one.key)}
         >
           {one.label}
@@ -313,7 +314,7 @@
             {#each strip as day, i (day.day)}
               <div
                 class="bh-day"
-                title={`${day.days > 1 ? `${day.days} days from ${dayLabel(day.day, to)}` : dayLabel(day.day, to)} · ${day.total} ${day.total === 1 ? "card" : "cards"} opened · ${day.person} by a person, ${day.agent} by an agent, ${day.unknown} unknown`}
+                {@attach tipOf(() => (`${day.days > 1 ? `${day.days} days from ${dayLabel(day.day, to)}` : dayLabel(day.day, to)} · ${day.total} ${day.total === 1 ? "card" : "cards"} opened · ${day.person} by a person, ${day.agent} by an agent, ${day.unknown} unknown`))}
               >
                 <!-- Bottom-up: the person's share sits on the baseline and the
                      agent's and nobody's stack above it, which is the order the
@@ -364,7 +365,7 @@
               <h4>project</h4>
               {#each sliceRows(habits.byProject) as slice (slice.label)}
                 <p class="bh-slice">
-                  <span class="bh-slabel" title={slice.label}>{slice.label}</span>
+                  <span class="bh-slabel" {@attach tipOf(() => (slice.label))}>{slice.label}</span>
                   <span class="bh-sbar"><i style:width={`${Math.floor((slice.share ?? 0) * 100)}%`}></i></span>
                   <span class="bh-svalue">{count(slice.value)} · {shareSaid(slice.share)}</span>
                 </p>

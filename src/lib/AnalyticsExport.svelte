@@ -8,6 +8,7 @@
    */
   import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     onclose,
@@ -55,7 +56,7 @@
       <Icon name="file" small />
       <h3 id="ae-head">export a report</h3>
       <span class="ae-grow"></span>
-      <button type="button" class="ae-x" title="close (esc)" aria-label="close" onclick={onclose}>
+      <button type="button" class="ae-x" {@attach tipOf("close (esc)")} aria-label="close" onclick={onclose}>
         <Icon name="x" small />
       </button>
     </header>

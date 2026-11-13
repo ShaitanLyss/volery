@@ -73,6 +73,7 @@
     type VaultState,
   } from "./analyticstrace";
   import type { Presentation } from "./analyticpage";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     reader,
@@ -751,13 +752,13 @@
         {#if !vault}reading…{:else if vault.vaults.length === 0}no vault{:else if unlocked}unlocked{:else}locked{/if}
       </span>
       {#if unlocked && idleLeft !== null}
-        <span class="ap-idle" title="the key drops itself after fifteen minutes without a gesture">
+        <span class="ap-idle" {@attach tipOf("the key drops itself after fifteen minutes without a gesture")}>
           locks in {left(idleLeft)}
         </span>
       {/if}
       <span class="ap-grow"></span>
       {#if vault && vault.vaults.length > 0}
-        <span class="ap-counts" title={Object.entries(bodyCounts).map(([k, v]) => `${k} ${v}`).join(" · ")}>
+        <span class="ap-counts" {@attach tipOf(() => (Object.entries(bodyCounts).map(([k, v]) => `${k} ${v}`).join(" · ")))}>
           {count(bodyCounts.sealed)} sealed · {count(bodyCounts.locked)} locked · {count(bodyCounts.deleted)} forgotten
         </span>
       {/if}
@@ -832,7 +833,7 @@
           type="button"
           class="ap-btn"
           disabled={vaultBusy || vault.locators === 0}
-          title={vault.locators === 0 ? "nothing is waiting" : "seek each waiting transcript line and seal it now"}
+          {@attach tipOf(() => (vault!.locators === 0 ? "nothing is waiting" : "seek each waiting transcript line and seal it now"))}
           onclick={() => void seal()}
         >
           <Icon name="check" small /> seal pending
@@ -858,7 +859,7 @@
           class="ap-btn"
           class:armed={armedForget}
           onclick={() => void forget()}
-          title="delete every sealed body and every hall entry, keeping the counts"
+          {@attach tipOf("delete every sealed body and every hall entry, keeping the counts")}
         >
           {armedForget ? "click again: forget every body" : "forget prompts"}
           {#if armedForget}<kbd>esc</kbd>{/if}
@@ -868,7 +869,7 @@
           class="ap-btn danger"
           class:armed={resetStage > 0}
           onclick={() => void reset()}
-          title="delete the key and every body. there is no recovery"
+          {@attach tipOf("delete the key and every body. there is no recovery")}
         >
           {resetStage === 0 ? "reset vault" : resetStage === 1 ? "click again to be sure" : "last click: there is no recovery"}
         </button>
@@ -919,7 +920,7 @@
     </label>
     <span class="ap-grow"></span>
     <span class="ap-hint inline">search is by kind and project; the words are sealed, so there is no full-text index</span>
-    <button type="button" class="ap-btn" onclick={() => void reload()} title="read the trace again">
+    <button type="button" class="ap-btn" onclick={() => void reload()} {@attach tipOf("read the trace again")}>
       <Icon name="clock" small /> read again
     </button>
   </div>
@@ -964,7 +965,7 @@
                     class="ap-mini"
                     disabled={p.page === 0}
                     onclick={() => (pages = { ...pages, [d.day]: p.page - 1 })}
-                    title="earlier prompts in this day ([ and ] page a selected one)"
+                    {@attach tipOf("earlier prompts in this day ([ and ] page a selected one)")}
                   >newer</button
                   >
                   <button
@@ -972,7 +973,7 @@
                     class="ap-mini"
                     disabled={p.page >= p.pages - 1}
                     onclick={() => (pages = { ...pages, [d.day]: p.page + 1 })}
-                    title="more prompts in this day ([ and ] page a selected one)"
+                    {@attach tipOf("more prompts in this day ([ and ] page a selected one)")}
                   >older</button
                   >
                 {/if}
@@ -998,7 +999,7 @@
                   </span>
                   <span class="c-kind">
                     {effectiveKind(row)}
-                    {#if isCorrected(row)}<em title="kind corrected by hand">*</em>{/if}
+                    {#if isCorrected(row)}<em {@attach tipOf("kind corrected by hand")}>*</em>{/if}
                   </span>
                   <span class="c-len">{lengthLabel(row)}</span>
                   <span class="c-red">{redactionLabel(row)}</span>
@@ -1014,7 +1015,7 @@
             <header class="ap-detail-head">
               <span class="ap-when">{dayLabel(dayKey(selected.at), now)} · {timeOf(selected.at)}</span>
               <span class="ap-grow"></span>
-              <button type="button" class="ap-mini" onclick={closeDetail} title="close the detail (esc)">esc</button>
+              <button type="button" class="ap-mini" onclick={closeDetail} {@attach tipOf("close the detail (esc)")}>esc</button>
             </header>
             <p class="ap-where">
               {cardLabel(selected)} · {selected.project}
@@ -1187,7 +1188,7 @@
                 <button
                   type="button"
                   class="ap-mini"
-                  title="take this out of the hall, keeping the prompt"
+                  {@attach tipOf("take this out of the hall, keeping the prompt")}
                   onclick={() => void unkeep(f)}
                 >remove</button
                 >

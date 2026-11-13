@@ -24,6 +24,7 @@
     type Row,
   } from "./perf";
   import { rowsFor, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -123,7 +124,7 @@
       {/each}
     </div>
     {#if busiest}
-      <p class="busiest" title={busiest.label}>
+      <p class="busiest" {@attach tipOf(() => (busiest.label))}>
         busiest — <b>{busiest.label}</b>
       </p>
     {/if}
@@ -137,7 +138,8 @@
                 class="open"
                 class:on={open === r.key}
                 aria-expanded={open === r.key}
-                title={open === r.key ? "fold" : "what these are"}
+                aria-label={open === r.key ? "fold" : "what these are"}
+                {@attach tipOf(() => (open === r.key ? "fold" : "what these are"))}
                 onclick={() => (open = open === r.key ? null : r.key)}
               ></button>
             {:else}
@@ -147,7 +149,7 @@
               class="row"
               data-role={r.role}
               disabled={!r.reference}
-              title="{r.label} — {r.count} process{r.count === 1 ? '' : 'es'}"
+              {@attach tipOf(() => `${r.label} — ${r.count} process${r.count === 1 ? '' : 'es'}`)}
               onclick={() => reveal(r)}
             >
               <span class="label">{r.label}</span>
@@ -163,14 +165,14 @@
             <ul class="procs">
               {#each members(sample, r.key) as p (p.pid)}
                 <li class="proc" class:orphan={p.orphan}>
-                  <span class="pname" title={p.orphan
+                  <span class="pname" {@attach tipOf(() => (p.orphan
                     ? "its parent is gone — the sweep takes this within the minute"
-                    : `pid ${p.pid}`}>{p.name}</span>
+                    : `pid ${p.pid}`))}>{p.name}</span>
                   <span class="page">{since(p.age)}</span>
                   {#if r.role === "conversation"}
                     <button
                       class="end"
-                      title="end this and anything under it"
+                      {@attach tipOf("end this and anything under it")}
                       onclick={() => meter.end(p.pid)}>end</button>
                   {/if}
                 </li>

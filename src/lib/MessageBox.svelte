@@ -21,6 +21,7 @@
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import type { Composer } from "./composer.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     field,
@@ -99,7 +100,7 @@
         class="toggle"
         class:on={planning}
         aria-pressed={planning}
-        title="plan first — read and propose, change nothing (alt+p)"
+        {@attach tipOf("plan first — read and propose, change nothing (alt+p)")}
         onclick={() => void composer.togglePlan()}
       >
         <Icon name="plan" small />plan first
@@ -113,7 +114,7 @@
       class:idle={empty && !working}
       class:stopping={working && empty}
       disabled={!card || (empty && !working)}
-      title={working && empty ? "stop (esc)" : "send (enter)"}
+      {@attach tipOf(() => (working && empty ? "stop (esc)" : "send (enter)"))}
       aria-label={working && empty ? "stop" : "send"}
     >
       <span class="glyph up" aria-hidden="true"><Icon name="up" /></span>

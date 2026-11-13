@@ -674,7 +674,7 @@ describe("a row's title keeps its room", () => {
     const aside = /\.row \.aside \{([^}]*)\}/.exec(src)?.[1] ?? "";
     expect(aside).toContain("text-overflow: ellipsis");
     expect(aside).toContain("max-width");
-    expect(src).toContain('<span class="aside" title={p.aside}>');
+    expect(src).toContain('<span class="aside" {@attach tipOf(() => (p.aside))}>');
   });
 });
 

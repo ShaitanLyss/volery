@@ -43,6 +43,7 @@
   import StepCard from "./StepCard.svelte";
   import { whois } from "./whois.svelte";
   import { handleTip, shortHandle } from "./whois";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     t,
@@ -341,12 +342,12 @@
       <div class="eyebrow">
         {projectOf(t)}<span class="dot">·</span>{#if onpick}<button
             class="handle"
-            title="go to the card that drew it (or double-click the plate) — {handleTip(shortHandle(t.ownerId))}"
+            {@attach tipOf(() => `go to the card that drew it (or double-click the plate) — ${handleTip(shortHandle(t.ownerId))}`)}
             onclick={(e) => {
               e.stopPropagation();
               onpick?.();
             }}>{owner}</button
-          >{:else}<span title={handleTip(shortHandle(t.ownerId))}>{owner}</span>{/if}
+          >{:else}<span {@attach tipOf(() => (handleTip(shortHandle(t.ownerId))))}>{owner}</span>{/if}
       </div>
       <div class="title">{t.title}</div>
     </div>
@@ -362,7 +363,7 @@
             e.stopPropagation();
             onarchive?.();
           }}
-          title={t.state === "complete" ? "move it to the archive" : "archive it unfinished"}
+          {@attach tipOf(() => (t.state === "complete" ? "move it to the archive" : "archive it unfinished"))}
         >archive</button>
       {/if}
       {#if archive && t.state === "left" && onresume}
@@ -372,7 +373,7 @@
             e.stopPropagation();
             onresume?.();
           }}
-          title="adopt the session that drew it, and carry on from where it stopped"
+          {@attach tipOf("adopt the session that drew it, and carry on from where it stopped")}
         >pick it back up</button>
       {/if}
       {#if archive && t.state === "complete" && onrestore}
@@ -382,7 +383,7 @@
             e.stopPropagation();
             onrestore?.();
           }}
-          title="put it back on the glass, in the stack"
+          {@attach tipOf("put it back on the glass, in the stack")}
         >hang it back up</button>
       {/if}
     </div>

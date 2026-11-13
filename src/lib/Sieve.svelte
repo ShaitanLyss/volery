@@ -37,6 +37,7 @@
     type Kind,
   } from "./sink";
   import type { Sink } from "./sink.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     sink,
@@ -123,7 +124,7 @@
           class:go={toCard && names.has(toCard)}
           disabled={!(toCard && names.has(toCard))}
           onclick={() => toCard && onreveal?.(toCard)}
-          title={toCard && names.has(toCard) ? "go and look at that card" : "that card has closed"}
+          {@attach tipOf(() => (toCard && names.has(toCard) ? "go and look at that card" : "that card has closed"))}
         >
           <span class="line">
             <span class="kind">{i.kind}</span>

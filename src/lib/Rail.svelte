@@ -5,6 +5,7 @@
      what you said differ only in what is collected and how deep an entry sits.
      See outline.ts for why the marks come off the DOM. */
   import type { Mark } from "./outline";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     label,
@@ -65,7 +66,7 @@
             aria-current={i === active ? "true" : undefined}
             style:--depth={m.level}
             onclick={() => onpick(i)}
-            title={m.full}>{m.label}</button
+            {@attach tipOf(() => (m.full))}>{m.label}</button
           >
         </li>
       {/each}

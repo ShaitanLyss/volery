@@ -14,6 +14,7 @@
   import { casts, type Room } from "./cast.svelte";
   import { monitorLabel } from "./cast";
   import Screen from "./Screen.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     onopen,
@@ -60,7 +61,7 @@
     every screen on the flyway
     <span>· click one to open it{onclose ? " · esc to close" : ""}</span>
     {#if onclose}
-      <button class="shut" type="button" title="close (esc)" onclick={onclose}>close</button>
+      <button class="shut" type="button" {@attach tipOf("close (esc)")} onclick={onclose}>close</button>
     {/if}
   </h2>
   {#if cells.length === 0}
@@ -71,7 +72,7 @@
   {:else}
     <div class="grid">
       {#each cells as c (c.key)}
-        <div class="cell" title={`${c.machine} · ${monitorLabel(c.monitor, c.all)}`}>
+        <div class="cell" {@attach tipOf(() => (`${c.machine} · ${monitorLabel(c.monitor, c.all)}`))}>
           <Screen sid={`grid:${c.key}`} screen={c.key} {room} onopen={() => onopen(c.key)} />
         </div>
       {/each}

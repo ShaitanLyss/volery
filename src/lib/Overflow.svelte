@@ -35,6 +35,7 @@
 
   import type { Snippet } from "svelte";
   import { toStudio } from "./layer";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     count,
@@ -139,7 +140,7 @@
     }}
     aria-expanded={open}
     aria-label="{count} more in the header"
-    title="{count} more &mdash; the window is too narrow to draw them across the bar"
+    {@attach tipOf(() => `${count} more &mdash; the window is too narrow to draw them across the bar`)}
   >
     <svg viewBox="0 0 16 4" aria-hidden="true">
       <circle cx="2" cy="2" r="1.35" />

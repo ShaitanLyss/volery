@@ -79,6 +79,7 @@
     type Kind,
   } from "./sink";
   import { textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -259,7 +260,7 @@
     <span class="what">{past ? "settled" : "sink"}</span>
     <button
       class="flip"
-      title={past ? "Back to what is pending" : "What has already been dealt with"}
+      {@attach tipOf(() => (past ? "Back to what is pending" : "What has already been dealt with"))}
       onclick={() => {
         past = !past;
         open = null;
@@ -267,7 +268,7 @@
       }}>{past ? "pending" : "settled"}</button
     >
     <span class="tot">{shown.length}</span>
-    <button class="add" title="Leave something in the sink yourself" onclick={() => (drafting = !drafting)}
+    <button class="add" {@attach tipOf("Leave something in the sink yourself")} onclick={() => (drafting = !drafting)}
       >+</button
     >
   </header>
@@ -364,14 +365,14 @@
                is the sort of thing you only forgive once. -->
           <button
             class="row"
-            title={i.body}
+            {@attach tipOf(() => (i.body))}
             onclick={() => {
               if (editing !== i.id) open = open === i.id ? null : i.id;
             }}
           >
             <span class="glyph">{GLYPH[i.kind]}</span>
             <span class="label">{i.title}</span>
-            {#if i.voices > 1}<span class="voices" title="{i.voices} conversations have met this"
+            {#if i.voices > 1}<span class="voices" {@attach tipOf(() => `${i.voices} conversations have met this`)}
                 >×{i.voices}</span
               >{/if}
             {#if state === "held"}<span class="who">{on}</span>{/if}
@@ -380,14 +381,14 @@
           {#if past}
             <button
               class="off"
-              title="Put this back — it was not actually finished"
+              {@attach tipOf("Put this back — it was not actually finished")}
               aria-label="Put this back"
               onclick={() => void sink.restore(i.id)}>↺</button
             >
           {:else}
             <button
               class="off"
-              title="Settle this — it has been dealt with"
+              {@attach tipOf("Settle this — it has been dealt with")}
               aria-label="Settle this"
               onclick={() => void sink.settle(i.id)}>✓</button
             >

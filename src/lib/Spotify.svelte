@@ -41,6 +41,7 @@
     sayResults,
   } from "./spotify";
   import type { Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let { widget }: { widget: Widget } = $props();
 
@@ -175,7 +176,7 @@
         <img class="art" src={deckState.track.art} alt="" />
       {/if}
       <div class="what">
-        <p class="title" title={deckState.track?.name ?? ""}>
+        <p class="title" {@attach tipOf(() => (deckState.track?.name ?? ""))}>
           {deckState.track?.name ?? (deckState.phase === "idle" ? "nothing playing" : "…")}
         </p>
         <p class="say" class:fault={deckState.phase === "fault"}>{describe(deckState)}</p>
@@ -210,7 +211,7 @@
              busy guard: a cancel that queued behind the thing it cancels would
              never run. There is a three-minute timeout behind it too; this is
              for when you already know. -->
-        <button class="give" onclick={() => void deck.cancelLink()} title="stop waiting for the browser">
+        <button class="give" onclick={() => void deck.cancelLink()} {@attach tipOf("stop waiting for the browser")}>
           give up
         </button>
       {:else if deckState.phase === "fault"}
@@ -227,23 +228,23 @@
              costs the wrong one: `try again` is free when the tunnel was late,
              and `sign in again` is the only thing that mends a dead credential.
              `describe` is already showing librespot's own words above. -->
-        <button class="give" onclick={() => void deck.start()} disabled={deck.busy} title="bring the receiver up again">
+        <button class="give" onclick={() => void deck.start()} disabled={deck.busy} {@attach tipOf("bring the receiver up again")}>
           {deck.busy ? "connecting…" : "try again"}
         </button>
-        <button class="give" onclick={() => deck.link()} disabled={deck.busy} title="sign in to spotify again">
+        <button class="give" onclick={() => deck.link()} disabled={deck.busy} {@attach tipOf("sign in to spotify again")}>
           sign in again
         </button>
       {:else if deckState.phase !== "opening"}
-        <button class="find" class:on={open} onclick={toggleSearch} title="search spotify">
+        <button class="find" class:on={open} onclick={toggleSearch} {@attach tipOf("search spotify")}>
           ⌕
         </button>
       {/if}
       {#if live}
-        <button onclick={() => deck.prev()} title="previous">‹‹</button>
-        <button class="big" onclick={() => deck.playPause()} title={playing ? "pause" : "play"}>
+        <button onclick={() => deck.prev()} {@attach tipOf("previous")}>‹‹</button>
+        <button class="big" onclick={() => deck.playPause()} {@attach tipOf(() => (playing ? "pause" : "play"))}>
           {playing ? "❚❚" : "▶"}
         </button>
-        <button onclick={() => deck.next()} title="next">››</button>
+        <button onclick={() => deck.next()} {@attach tipOf("next")}>››</button>
       {/if}
     </div>
 
@@ -264,7 +265,7 @@
           <ul class="hits" data-scroll>
             {#each deck.hits as hit (hit.uri)}
               <li>
-                <button onclick={() => pick(hit.uri)} title={hit.uri}>
+                <button onclick={() => pick(hit.uri)} {@attach tipOf(() => (hit.uri))}>
                   <span class="kind">{hit.kind}</span>
                   <span class="name">{hit.title}</span>
                   <span class="by">{sayHit(hit)}</span>

@@ -19,6 +19,7 @@
   import { lastMessage, placeGlance } from "./glance";
   import { nameBesideProject } from "./naming";
   import { scopeFiles } from "./paths.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   const card = $derived(glance.card);
   const text = $derived(card ? lastMessage(card.face) : "");
@@ -123,7 +124,7 @@
       <span class="who">{card.where}{name ? ` · ${name}` : ""}</span>
       <span class="grow"></span>
       {#if card.face.working}<span class="note">still working</span>{/if}
-      <button class="x" onclick={() => glance.close()} title="Close (esc)" aria-label="Close"
+      <button class="x" onclick={() => glance.close()} {@attach tipOf("Close (esc)")} aria-label="Close"
         ><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2L2 8" /></svg></button
       >
     </div>

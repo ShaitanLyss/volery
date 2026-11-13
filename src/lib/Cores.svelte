@@ -44,6 +44,7 @@
   } from "./cores";
   import { clock } from "./conversation.svelte";
   import { onOf, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let { widget, meter }: { widget: Widget; meter: Meter } = $props();
 
@@ -111,7 +112,7 @@
   <header>
     <span class="what">{n ? `${n} cores` : "cores"}</span>
     {#if hot !== null}
-      <span class="hot" title="the core doing most of the work">#{hot}</span>
+      <span class="hot" {@attach tipOf("the core doing most of the work")}>#{hot}</span>
     {/if}
     <span class="tot">{say(overall)}</span>
   </header>
@@ -126,7 +127,7 @@
   {:else if showing === "grid"}
     <div class="grid" style:--cols={grid.cols} style:--rows={grid.rows}>
       {#each lanes as lane (lane.core)}
-        <div class="cell" title="core {lane.core} — {say(lane.at)}">
+        <div class="cell" {@attach tipOf(() => `core ${lane.core} — ${say(lane.at)}`)}>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             <!-- Half scale, so a lane has something to be tall against. One
                  rule and not a printed grid: sixteen of these are already
@@ -152,7 +153,7 @@
          drawing cells nobody can read. -->
     <div class="bars">
       {#each load as v, i (i)}
-        <span class="bar" style:--v={Math.min(1, v / 100)} title="core {i} — {say(v)}">
+        <span class="bar" style:--v={Math.min(1, v / 100)} {@attach tipOf(() => `core ${i} — ${say(v)}`)}>
           <span class="fill"></span>
         </span>
       {/each}

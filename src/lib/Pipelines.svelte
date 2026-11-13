@@ -50,6 +50,7 @@
     type RunScope,
   } from "./azdo";
   import { rowsFor, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -152,11 +153,11 @@
          401 would be a window opening itself every twenty seconds. The fault
          keeps its own `title`, since the button truncates at this size. -->
     {#if onkeyring && /refused|no credential/.test(half.fault)}
-      <button class="fault ask" title={half.fault} onclick={() => onkeyring?.()}>
+      <button class="fault ask" {@attach tipOf(() => (half.fault))} onclick={() => onkeyring?.()}>
         {half.fault}<span class="more">— store a token</span>
       </button>
     {:else}
-      <p class="fault" title={half.fault}>{half.fault}</p>
+      <p class="fault" {@attach tipOf(() => (half.fault))}>{half.fault}</p>
     {/if}
   {:else if !shown.length}
     <p class="quiet">
@@ -172,7 +173,7 @@
           class="dot"
           data-tier={tierOf(r)}
           class:going={running(r)}
-          title={why(r)}
+          {@attach tipOf(() => (why(r)))}
           onclick={() => pick(r)}
           aria-label={why(r)}
         ></button>
@@ -190,7 +191,7 @@
                   class="dot"
                   data-tier={tierOf(r)}
                   class:going={running(r)}
-                  title={why(r)}
+                  {@attach tipOf(() => (why(r)))}
                   onclick={() => pick(r)}
                   aria-label={why(r)}
                 ></button>
@@ -207,7 +208,7 @@
              button inside a button is invalid and the browser resolves it by
              swallowing one of them. -->
         <li class="line">
-          <button class="row" data-tier={tierOf(r)} title={why(r)} onclick={() => pick(r)}>
+          <button class="row" data-tier={tierOf(r)} {@attach tipOf(() => (why(r)))} onclick={() => pick(r)}>
             <span class="mark" class:going={running(r)}></span>
             <span class="label">{r.pipeline}</span>
             <span class="ref">{shortRef(r.branch)}</span>
@@ -219,7 +220,7 @@
                keyboard, so `:focus-visible` shows it too. -->
           <button
             class="out"
-            title="open in the browser"
+            {@attach tipOf("open in the browser")}
             aria-label="open {r.pipeline} in the browser"
             onclick={() => onopen(r.url)}
           >

@@ -70,6 +70,7 @@
     type Chunk,
     type Held,
   } from "./jobs";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     conv,
@@ -213,7 +214,7 @@
     class="jobs"
     class:open={!!showing}
     aria-label="background work"
-    title={drawerCap(jobs)}
+    {@attach tipOf(() => (drawerCap(jobs)))}
   >
     <ul class="list">
       {#each jobs as j (j.toolId)}
@@ -223,7 +224,7 @@
             class="cap"
             aria-expanded={showing === j.toolId ? "true" : "false"}
             onclick={() => toggle(j.toolId)}
-            title={showing === j.toolId ? "fold its output away" : "what it is printing"}
+            {@attach tipOf(() => (showing === j.toolId ? "fold its output away" : "what it is printing"))}
           >
             <span class="mark" aria-hidden="true">{showing === j.toolId ? "▾" : "▸"}</span>
             <span class="what">{jobCap(j, clock.t)}</span>

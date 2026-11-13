@@ -17,6 +17,7 @@
   import { providerOf } from "./providers";
   import { turnOf } from "./attach";
   import { chipSaid, modelSaid, presetRows, switchLines } from "./starting";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     card,
@@ -112,7 +113,7 @@
     class="model"
     aria-haspopup="menu"
     aria-expanded={open}
-    title={card ? "the model and how hard it thinks — sends /model and /effort (alt+M)" : "what this conversation opens as (alt+M)"}
+    {@attach tipOf(() => (card ? "the model and how hard it thinks — sends /model and /effort (alt+M)" : "what this conversation opens as (alt+M)"))}
     onclick={() => (open = !open)}
   >
     <span class="full">{chip}</span><span class="short">{short}</span><Icon

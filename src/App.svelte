@@ -286,6 +286,7 @@
     type DockExtent,
   } from "./lib/berth";
   import { homeInsets, spreadPan } from "./lib/span";
+  import { tipOf } from "./lib/tipped.svelte";
 
   const studio = new Studio();
   const skein = new Skein(studio);
@@ -5843,14 +5844,14 @@
       <button
         type="button"
         class="spend"
-        title={spendTitle}
+        {@attach tipOf(() => (spendTitle))}
         onclick={mute ? undefined : () => openAnalytics(undefined, "spend")}
         >${skein.spend.toFixed(2)}</button
       >
     {:else if key === "live"}
       <span class="livecount">{skein.live} live</span>
     {:else if key === "zoom"}
-      <span class="zoom" title="Semantic zoom — wheel; shift+wheel pans">{studio.lod}</span>
+      <span class="zoom" {@attach tipOf("Semantic zoom — wheel; shift+wheel pans")}>{studio.lod}</span>
     {:else}
       {@const b = barButtons.find((x) => x.key === key)}
       {#if b}
@@ -5859,7 +5860,7 @@
           class:on={b.on}
           class:boostbtn={!!b.crest}
           data-adopt={b.adopt && !mute ? true : undefined}
-          title={b.title}
+          {@attach tipOf(() => (b.title))}
           onclick={mute ? undefined : b.press}
           >{#if b.crest}<span class="crest">{@html b.crest}</span>{/if}{b.label}</button
         >
@@ -5886,7 +5887,7 @@
           <button
             class="ghost up"
             onclick={() => void takeUpdate()}
-            title="Download {releases.offer.version} and install it on the way out. Volery will close and come back up.">
+            {@attach tipOf(() => `Download ${releases.offer!.version} and install it on the way out. Volery will close and come back up.`)}>
             {sayOffer(releases.offer)}
           </button>
         {:else if releases.stage === "fetching"}
@@ -5895,14 +5896,14 @@
           <button
             class="ghost up"
             onclick={() => void getCurrentWindow().close()}
-            title="The installer is here. Volery closes and comes back on {releases.offer.version}.">
+            {@attach tipOf(() => `The installer is here. Volery closes and comes back on ${releases.offer!.version}.`)}>
             {READY_LINE}
           </button>
         {:else if releases.stage === "failed"}
           <button
             class="ghost up bad"
             onclick={() => void takeUpdate()}
-            title={releases.note ?? "the download failed"}>update failed &mdash; retry</button>
+            {@attach tipOf(() => (releases.note ?? "the download failed"))}>update failed &mdash; retry</button>
         {/if}
       </span>
     {/if}
@@ -5913,7 +5914,7 @@
       <span
         class="ctl"
         data-fixed
-        title="External control is listening on 127.0.0.1:{control.endpoint.port}"
+        {@attach tipOf(() => `External control is listening on 127.0.0.1:${control.endpoint!.port}`)}
         >control :{control.endpoint.port}</span
       >
     {/if}
@@ -5924,7 +5925,7 @@
       <button
         class="touricon"
         type="button"
-        title="A short tour of what Volery is, and why (space then h)"
+        {@attach tipOf("A short tour of what Volery is, and why (space then h)")}
         aria-label="the tour"
         aria-pressed={showTour}
         onclick={() => (showTour = !showTour)}><Icon name="bird" /></button
@@ -6007,7 +6008,7 @@
       data-fixed
       data-view="chat"
       onclick={() => void switchView("chat")}
-      title="chat view — one conversation at a time (ctrl+shift+M, or space then w v)">chat</button
+      {@attach tipOf("chat view — one conversation at a time (ctrl+shift+M, or space then w v)")}>chat</button
     >
     <button class="open" onclick={pickFolder} disabled={spawning} data-fixed>
       {spawning ? "opening…" : "Open a folder…"}
@@ -6577,7 +6578,7 @@
             class="grip"
             class:on={grip}
             role="presentation"
-            title="drag to resize · double-click to reset"
+            {@attach tipOf("drag to resize · double-click to reset")}
             onpointerdown={gripDown}
             onpointermove={gripMove}
             onpointerup={gripUp}
@@ -6592,7 +6593,7 @@
               class="vgrip"
               class:on={vgrip}
               role="presentation"
-              title="drag to resize · double-click to reset"
+              {@attach tipOf("drag to resize · double-click to reset")}
               onpointerdown={vgripDown}
               onpointermove={vgripMove}
               onpointerup={vgripUp}
@@ -6608,7 +6609,7 @@
             class="moor"
             class:on={mooring?.what === "panel"}
             role="presentation"
-            title="drag to move the panel — left, right, or floating · double-click to put it back (space then w p)"
+            {@attach tipOf("drag to move the panel — left, right, or floating · double-click to put it back (space then w p)")}
             onpointerdown={(e) => moorDown("panel", e)}
             onpointermove={moorMove}
             onpointerup={moorUp}

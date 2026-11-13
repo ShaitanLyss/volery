@@ -36,6 +36,7 @@
 
   import type { Project, Skein } from "./skein.svelte";
   import { changed, gist, LIMIT, lockGist, room, set, tidy } from "./guidance";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     skein,
@@ -228,7 +229,7 @@
       <span class="mark">instructions</span>
       <span class="grow"></span>
       <span class="hint">ctrl+enter saves</span>
-      <button class="x" onclick={leave} title="close">✕</button>
+      <button class="x" onclick={leave} {@attach tipOf("close")}>✕</button>
     </div>
 
     <p class="note">

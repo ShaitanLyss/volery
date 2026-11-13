@@ -26,6 +26,7 @@
     type ToolSort,
     type ToolView,
   } from "./analyticsbehaviour";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     lines,
@@ -107,7 +108,7 @@
             class:bh-num={column.numeric}
             aria-sort={sort === column.key ? (dir === "asc" ? "ascending" : "descending") : "none"}
           >
-            <button type="button" title={`sort by ${column.label}`} onclick={() => head(column)}>
+            <button type="button" {@attach tipOf(() => (`sort by ${column.label}`))} onclick={() => head(column)}>
               {compact ? column.short : column.label}
               {#if sort === column.key}<span class="bh-arrow" aria-hidden="true">{dir === "asc" ? "↑" : "↓"}</span>{/if}
             </button>
@@ -120,13 +121,13 @@
         <tr>
           {#each columns as column (column.key)}
             {#if column.key === "name"}
-              <th scope="row" class="bh-name" title={line.kind === "mcp" ? `mcp · ${line.server}` : line.kind}>
+              <th scope="row" class="bh-name" {@attach tipOf(() => (line.kind === "mcp" ? `mcp · ${line.server}` : line.kind))}>
                 <span class="bh-what">{line.name}</span>
                 {#if view === "tools"}
                   {#if line.server}
                     <span class="bh-server">{line.server}</span>
                   {:else if line.kind === "builtin"}
-                    <span class="bh-server bh-builtin" title="a built-in has no server">built-in</span>
+                    <span class="bh-server bh-builtin" {@attach tipOf("a built-in has no server")}>built-in</span>
                   {:else}
                     <!-- A skill or a subagent is not a built-in with no server:
                          emptiness means the kind, and the kind is said. -->
@@ -135,7 +136,7 @@
                 {/if}
               </th>
             {:else}
-              <td class:bh-num={column.numeric} title={cellTitle(line, column.key)}>{cellOf(line, column.key)}</td>
+              <td class:bh-num={column.numeric} {@attach tipOf(() => (cellTitle(line, column.key)))}>{cellOf(line, column.key)}</td>
             {/if}
           {/each}
         </tr>

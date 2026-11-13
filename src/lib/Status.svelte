@@ -50,6 +50,7 @@
     type Incident,
   } from "./status";
   import { onOf, rowsFor, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -111,7 +112,7 @@
     <span class="dot" style:background={toneOf(grade)}></span>
     <span class="what">claude</span>
     {#if reading}
-      <span class="age" class:stale title={stale ? "the window has been away — this reading is old" : undefined}>
+      <span class="age" class:stale {@attach tipOf(() => (stale ? "the window has been away — this reading is old" : undefined))}>
         {sayAge(reading.at, now)}
       </span>
     {/if}
@@ -124,7 +125,7 @@
          doing exactly what it is for. -->
     <p class="quiet">looking&hellip;</p>
   {:else if !reading.got}
-    <p class="quiet fault" title={reading.fault ?? undefined}>
+    <p class="quiet fault" {@attach tipOf(() => (reading.fault ?? undefined))}>
       could not reach the status page
       <span class="sub"
         >{reading.fault ? clip(reading.fault, 90) : "no answer"}</span
@@ -136,7 +137,7 @@
         {#each rows as r (r.name)}
           <li class="row">
             <span class="mark" style:background={toneOf(r.grade)}></span>
-            <span class="label" title={r.name}>{r.name}</span>
+            <span class="label" {@attach tipOf(() => (r.name))}>{r.name}</span>
             <span class="word" style:color={toneOf(r.grade)}>{r.word}</span>
           </li>
         {/each}
@@ -167,7 +168,7 @@
     {@const note = latestNote(lead)}
     <button
       class="incident"
-      title={why(lead)}
+      {@attach tipOf(() => (why(lead)))}
       style:border-color={toneOf(gradeOfImpact(lead.impact))}
       onclick={() => onopen?.(lead.url)}
     >

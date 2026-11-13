@@ -13,6 +13,7 @@
   import { casts } from "./cast.svelte";
   import Screen from "./Screen.svelte";
   import ScreenGrid from "./ScreenGrid.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let { which }: { which: string } = $props();
 </script>
@@ -28,9 +29,9 @@
             {@const on = casts.floats.some((f) => f.key === which)}
             <button
               class="act"
-              title={on
+              {@attach tipOf(() => (on
                 ? "stop floating it over the conversation (space then r v)"
-                : "keep it floating over the conversation while you read (space then r v)"}
+                : "keep it floating over the conversation while you read (space then r v)"))}
               onclick={() => casts.toggleFloat(which)}>{on ? "unfloat" : "float"}</button
             >
           {/snippet}

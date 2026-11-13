@@ -47,6 +47,7 @@
   import type { Presence } from "./presence.svelte";
   import type { Sketchbook } from "./sketch.svelte";
   import { SOURCES, type SourceId } from "./sketch";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     presence,
@@ -473,7 +474,7 @@
       {#if presence.animate}
         <button
           class="piece"
-          title={spec.about}
+          {@attach tipOf(() => (spec.about))}
           onclick={() => {
             id = nextPiece(id, Math.random());
           }}>{spec.label}</button
@@ -482,7 +483,7 @@
       <button
         class="more"
         class:on={tuning}
-        title="How the wall behaves while you are away"
+        {@attach tipOf("How the wall behaves while you are away")}
         aria-label="away settings"
         onclick={() => (tuning = !tuning)}>&middot;&middot;&middot;</button
       >
@@ -509,14 +510,14 @@
           <button
             class="chip"
             class:on={presence.toys}
-            title="A short puzzle between you and the wall when you come back, if you have been away more than twenty minutes — a word, a derivative, a shape to turn, something to draw"
+            {@attach tipOf("A short puzzle between you and the wall when you come back, if you have been away more than twenty minutes — a word, a derivative, a shape to turn, something to draw")}
             onclick={() => presence.setToys(!presence.toys)}
             >{presence.toys ? "puzzle after a long away" : "no puzzle"}</button
           >
           <button
             class="chip"
             class:on={presence.autoUpdate}
-            title="An away wall may download and install a newer Volery by itself — only when no turn, job, parked question, dev server or workflow would be interrupted"
+            {@attach tipOf("An away wall may download and install a newer Volery by itself — only when no turn, job, parked question, dev server or workflow would be interrupted")}
             onclick={() => presence.setAutoUpdate(!presence.autoUpdate)}
             >{presence.autoUpdate ? "updates while away" : "no updates while away"}</button
           >
@@ -536,7 +537,7 @@
               <button
                 class="chip"
                 class:on={sketchbook.sources.includes(src.id)}
-                title={src.about}
+                {@attach tipOf(() => (src.about))}
                 onclick={() => sketchbook.toggleSource(src.id as SourceId)}>{src.label}</button
               >
             {/each}

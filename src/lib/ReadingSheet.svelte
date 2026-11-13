@@ -23,6 +23,7 @@
   import { CHORDS } from "./leader";
   import { glyphOf } from "./search";
   import Icon from "./Icon.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   type Faces = Omit<ComponentProps<typeof WidgetFace>, "widget" | "onupdate" | "onreading">;
 
@@ -116,7 +117,7 @@
                 role="radio"
                 aria-checked={widget.config[p.key] === o.value}
                 class:on={widget.config[p.key] === o.value}
-                title={`${p.label}: ${o.label}`}
+                {@attach tipOf(() => (`${p.label}: ${o.label}`))}
                 onclick={() => set(p.key, o.value)}>{o.label}</button
               >
             {/each}
@@ -132,11 +133,11 @@
         {/if}
       {/each}
       {#if onhang && widget}
-        <button type="button" class="act" title="hang this reading on the wall, as it is here" onclick={() => onhang(widget.config)}
+        <button type="button" class="act" {@attach tipOf("hang this reading on the wall, as it is here")} onclick={() => onhang(widget.config)}
           ><Icon name="pin" small />on the wall</button
         >
       {/if}
-      <button type="button" class="act close" title="close (esc)" aria-label="close" onclick={onclose}
+      <button type="button" class="act close" {@attach tipOf("close (esc)")} aria-label="close" onclick={onclose}
         ><Icon name="x" small /></button
       >
     </header>

@@ -61,6 +61,7 @@
   import { dropToken, insertAt, runsOf, sizeNote } from "./attach";
   import { dropping, registerBox, type Attachments, type Landing } from "./attach.svelte";
   import { useOpener } from "./paths.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     text = $bindable(""),
@@ -172,7 +173,7 @@
           <button
             class="shot"
             type="button"
-            title="{a.name} — {sizeNote(a)}. Click to take it out of the prompt."
+            {@attach tipOf(() => `${a.name} — ${sizeNote(a)}. Click to take it out of the prompt.`)}
             onclick={() => detach(a.name)}
           >
             <img src={a.thumb} alt="" />
@@ -184,10 +185,10 @@
           </button>
         {:else}
           {@const open = a.kind === "file" ? opener() : null}
-          <span class="shot tile" title="{a.name} — {sizeNote(a)}">
+          <span class="shot tile" {@attach tipOf(() => `${a.name} — ${sizeNote(a)}`)}>
             <span class="glyph" class:dir={a.kind === "file" && a.dir} aria-hidden="true"></span>
             {#if a.kind === "file" && open}
-              <button class="what open" type="button" title="Open {a.path}" onclick={() => open(a.path, "open")}>
+              <button class="what open" type="button" {@attach tipOf(() => `Open ${a.path}`)} onclick={() => open(a.path, "open")}>
                 <span class="who">{a.name}</span>
                 <span class="how">{sizeNote(a)}</span>
               </button>
@@ -197,7 +198,7 @@
                 <span class="how">{sizeNote(a)}</span>
               </span>
             {/if}
-            <button class="off" type="button" title="Take it out of the prompt" onclick={() => detach(a.name)}
+            <button class="off" type="button" {@attach tipOf("Take it out of the prompt")} onclick={() => detach(a.name)}
               >✕</button
             >
           </span>

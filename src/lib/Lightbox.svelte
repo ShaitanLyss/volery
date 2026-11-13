@@ -32,6 +32,7 @@
     type Size,
     type View,
   } from "./zoom";
+  import { tipOf } from "./tipped.svelte";
 
   let { shown }: { shown: Shown } = $props();
 
@@ -206,43 +207,43 @@
       bind:this={dialog}
     >
       <div class="bar">
-        <span class="name" title={lit.name}>{lit.name}</span>
+        <span class="name" {@attach tipOf(() => (lit.name))}>{lit.name}</span>
         <span class="dims">{lit.w} × {lit.h}</span>
-        <span class="readout" title="one picture pixel per screen pixel is 100%">{readout(view.scale)}</span>
+        <span class="readout" {@attach tipOf("one picture pixel per screen pixel is 100%")}>{readout(view.scale)}</span>
         <span class="tools">
           <button
             type="button"
             class:on={isFit(view, box, vp, 1)}
-            title="the whole picture (0)"
+            {@attach tipOf("the whole picture (0)")}
             onclick={() => set(fitView(box, vp, 1))}>fit</button
           >
           <button
             type="button"
             class:on={isActual(view)}
-            title="every pixel it has, one per screen pixel (1)"
+            {@attach tipOf("every pixel it has, one per screen pixel (1)")}
             onclick={() => set(zoomTo(view, 1, centreOf(box), box, vp, 1))}>100%</button
           >
           <button
             type="button"
-            title="closer (+)"
+            {@attach tipOf("closer (+)")}
             aria-label="zoom in"
             onclick={() => set(zoomBy(view, STEP, centreOf(box), box, vp, 1))}>+</button
           >
           <button
             type="button"
-            title="further (−)"
+            {@attach tipOf("further (−)")}
             aria-label="zoom out"
             onclick={() => set(zoomBy(view, 1 / STEP, centreOf(box), box, vp, 1))}>−</button
           >
           {#if lit.go}
-            <button type="button" title="open it in the file viewer" onclick={() => lit.go?.("open")}
+            <button type="button" {@attach tipOf("open it in the file viewer")} onclick={() => lit.go?.("open")}
               >open</button
             >
-            <button type="button" title="show it in Explorer" onclick={() => lit.go?.("reveal")}
+            <button type="button" {@attach tipOf("show it in Explorer")} onclick={() => lit.go?.("reveal")}
               >explorer</button
             >
           {/if}
-          <button type="button" class="shut" title="close (escape)" aria-label="close" onclick={() => shown.close()}
+          <button type="button" class="shut" {@attach tipOf("close (escape)")} aria-label="close" onclick={() => shown.close()}
             >×</button
           >
         </span>

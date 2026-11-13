@@ -54,6 +54,7 @@
     trace,
   } from "./rate";
   import { onOf, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let { widget, ledger }: { widget: Widget; ledger: Ledger } = $props();
 
@@ -226,11 +227,11 @@
       <circle cx={CX} cy={CY} r="4.4" class="hub" />
     </svg>
     <div class="readout">
-      <span class="big" title={whence}>{sayRate(value)}</span><span class="suffix">{unit}</span>
+      <span class="big" {@attach tipOf(() => (whence))}>{sayRate(value)}</span><span class="suffix">{unit}</span>
     </div>
     <div class="foot">
       {#if wantOdometer}<span class="trip">{count(odometer)} these five hours</span>{/if}
-      {#if caption}<span class="rest" title={whence}>{caption}</span>{/if}
+      {#if caption}<span class="rest" {@attach tipOf(() => (whence))}>{caption}</span>{/if}
     </div>
 
   {:else if variant === "bar"}
@@ -238,7 +239,7 @@
          position on a track, and the number beside it. -->
     <div class="linear">
       <div class="figure">
-        <span class="big" title={whence}>{sayRate(value)}</span><span class="suffix">{unit}</span>
+        <span class="big" {@attach tipOf(() => (whence))}>{sayRate(value)}</span><span class="suffix">{unit}</span>
       </div>
       <div class="rail" style:--v={frac}>
         <div class="fill"></div>
@@ -248,7 +249,7 @@
       </div>
       <div class="ends">
         <span>0</span>
-        {#if caption}<span class="rest" title={whence}>{caption}</span>
+        {#if caption}<span class="rest" {@attach tipOf(() => (whence))}>{caption}</span>
         {:else if wantOdometer}<span class="trip">{count(odometer)} this block</span>{/if}
         <span>{sayTick(scale)}</span>
       </div>
@@ -260,7 +261,7 @@
          makes it a face rather than a skin. -->
     <div class="linear">
       <div class="figure">
-        <span class="big" title={whence}>{sayRate(value)}</span><span class="suffix">{unit}</span>
+        <span class="big" {@attach tipOf(() => (whence))}>{sayRate(value)}</span><span class="suffix">{unit}</span>
       </div>
       <svg class="graph" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         {#if area}
@@ -282,7 +283,7 @@
       </svg>
       <div class="ends">
         <span>an hour ago</span>
-        {#if caption}<span class="rest" title={whence}>{caption}</span>
+        {#if caption}<span class="rest" {@attach tipOf(() => (whence))}>{caption}</span>
         {:else if wantOdometer}<span class="trip">{count(odometer)} this block</span>{/if}
         <span>now</span>
       </div>
@@ -295,7 +296,7 @@
       <span class="huge">{sayRate(value)}</span>
       <span class="under-unit">tokens {unit}</span>
       {#if caption}
-        <span class="rest" title={whence}>{caption}</span>
+        <span class="rest" {@attach tipOf(() => (whence))}>{caption}</span>
       {:else if wantOdometer}
         <span class="trip">{count(odometer)} these five hours</span>
       {/if}

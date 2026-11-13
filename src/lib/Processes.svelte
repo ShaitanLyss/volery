@@ -19,6 +19,7 @@
 
   import type { Meter } from "./meter.svelte";
   import { bytes, members, pct, since } from "./perf";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     meter,
@@ -50,8 +51,8 @@
 
 <section class="procs" aria-label="processes">
   <header>
-    <h2 title={title}>{title}</h2>
-    <button class="close" title="close" onclick={onclose}>close</button>
+    <h2 {@attach tipOf(() => (title))}>{title}</h2>
+    <button class="close" {@attach tipOf("close")} onclick={onclose}>close</button>
   </header>
 
   {#if !sample}
@@ -62,14 +63,14 @@
     <ul>
       {#each procs as p (p.pid)}
         <li class:orphan={p.orphan}>
-          <span class="name" title="pid {p.pid}">{p.name}</span>
+          <span class="name" {@attach tipOf(() => `pid ${p.pid}`)}>{p.name}</span>
           <span class="pid">{p.pid}</span>
           <span class="age">{since(p.age)}</span>
           <span class="cpu">{pct(p.cpu, cores)}</span>
           <span class="mem">{bytes(p.mem)}</span>
           <button
             class="end"
-            title="end this process and anything under it"
+            {@attach tipOf("end this process and anything under it")}
             onclick={() => meter.end(p.pid)}>end</button
           >
         </li>

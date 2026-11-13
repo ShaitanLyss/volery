@@ -38,6 +38,7 @@
     type Run,
     type Stage,
   } from "./azdo";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     run,
@@ -113,7 +114,7 @@
          a panel's title bar navigate away is a click nobody meant. -->
     <button
       class="out"
-      title="open on {run.forge === 'github' ? 'github' : 'azure devops'}"
+      {@attach tipOf(() => `open on ${run.forge === 'github' ? 'github' : 'azure devops'}`)}
       aria-label="open in the browser"
       onclick={() => onopen(run.url)}
     >
@@ -123,7 +124,7 @@
         <path d="M11 10.5V13H3V5h2.5" />
       </svg>
     </button>
-    <button class="shut" title="close" aria-label="close" onclick={onclose}>
+    <button class="shut" {@attach tipOf("close")} aria-label="close" onclick={onclose}>
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <path d="M4 4l8 8M12 4l-8 8" />
       </svg>

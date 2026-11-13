@@ -59,6 +59,7 @@
     type View,
   } from "./zoom";
   import { SANDBOX } from "./sandbox";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     panels,
@@ -511,7 +512,7 @@
       <span class="what">{header}</span>
       <span class="grow"></span>
       <span class="hint">{galleryHint(panels)}</span>
-      <button class="x" onclick={onclose} title="Close (Escape)">close</button>
+      <button class="x" onclick={onclose} {@attach tipOf("Close (Escape)")}>close</button>
     </div>
 
     <div class="panels" style:--n={panels.length}>
@@ -554,6 +555,11 @@
                    replaces the frame rather than mutating a `srcdoc` the
                    already-loaded document has moved on from. -->
               {#key docs[i]}
+                <!-- **A frame keeps its `title`**, and it is the one element
+                     this rule does not reach: a title on an iframe is its
+                     accessible name and a browser draws no box for it, so there
+                     is no native tooltip to replace. Everywhere else the title
+                     became `{@attach tipOf(…)}`. -->
                 <iframe
                   title={p.label ?? header}
                   sandbox={SANDBOX}
@@ -642,7 +648,7 @@
                   <button
                     class="act"
                     onclick={() => (live[i] = true)}
-                    title="Runs the design's own script. A script that never returns takes the window with it."
+                    {@attach tipOf("Runs the design's own script. A script that never returns takes the window with it.")}
                   >
                     run its script
                   </button>
@@ -706,26 +712,26 @@
             class="z"
             onclick={() => step(1 / STEP)}
             disabled={isFit(view, stage, PREVIEW_VIEWPORT)}
-            title="Zoom out (−)">−</button
+            {@attach tipOf("Zoom out (−)")}>−</button
           >
           <!-- Against the composed viewport, not against fit: 100% is one
                composed pixel to one screen pixel, which is the size the agent
                was told to design for. A percentage of fit would change meaning
                with the window. -->
           <span class="pc">{readout(view.scale)}</span>
-          <button class="z" onclick={() => step(STEP)} title="Zoom in (+)">+</button>
+          <button class="z" onclick={() => step(STEP)} {@attach tipOf("Zoom in (+)")}>+</button>
           <button
             class="z wide"
             class:on={isFit(view, stage, PREVIEW_VIEWPORT)}
             onclick={() => (view = fitView(stage, PREVIEW_VIEWPORT))}
-            title="The whole design (0)">fit</button
+            {@attach tipOf("The whole design (0)")}>fit</button
           >
           <button
             class="z wide"
             class:on={isActual(view)}
             onclick={() =>
               (view = zoomTo(view, 1, centreOf(stage), stage, PREVIEW_VIEWPORT))}
-            title="Composed size, 1:1 (1)">100%</button
+            {@attach tipOf("Composed size, 1:1 (1)")}>100%</button
           >
         </div>
 
@@ -733,13 +739,13 @@
 
         {#if panels.length > 1 && big !== null}
           <div class="zoom">
-            <button class="z" onclick={() => stepBig(-1)} title="The previous one (←)">‹</button>
+            <button class="z" onclick={() => stepBig(-1)} {@attach tipOf("The previous one (←)")}>‹</button>
             <span class="pc">{big + 1} of {panels.length}</span>
-            <button class="z" onclick={() => stepBig(1)} title="The next one (→)">›</button>
+            <button class="z" onclick={() => stepBig(1)} {@attach tipOf("The next one (→)")}>›</button>
           </div>
         {/if}
 
-        <button class="x" onclick={closeBig} title="Back to the gallery (Escape)">
+        <button class="x" onclick={closeBig} {@attach tipOf("Back to the gallery (Escape)")}>
           back
         </button>
       </div>
@@ -851,7 +857,7 @@
               <button
                 class="act"
                 onclick={() => big !== null && (live[big] = true)}
-                title="Runs the design's own script. A script that never returns takes the window with it."
+                {@attach tipOf("Runs the design's own script. A script that never returns takes the window with it.")}
               >
                 run its script
               </button>

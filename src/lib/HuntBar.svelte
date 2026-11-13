@@ -5,6 +5,7 @@
      opening a find does not reflow the thing being searched. */
   import { MIN_QUERY } from "./hunt";
   import type { Hunting } from "./hunt.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     hunt,
@@ -65,17 +66,17 @@
     type="button"
     class="hstep"
     disabled={hunt.matches === 0}
-    title="previous match — shift+enter"
+    {@attach tipOf("previous match — shift+enter")}
     onclick={() => hunt.step(-1)}>↑</button
   >
   <button
     type="button"
     class="hstep"
     disabled={hunt.matches === 0}
-    title="next match — enter"
+    {@attach tipOf("next match — enter")}
     onclick={() => hunt.step(1)}>↓</button
   >
-  <button type="button" class="hstep" title="close — escape" onclick={close}>×</button>
+  <button type="button" class="hstep" {@attach tipOf("close — escape")} onclick={close}>×</button>
 </div>
 
 <style>

@@ -20,6 +20,7 @@
   import { untrack } from "svelte";
   import type { Front, Item } from "./front.svelte";
   import { cardName } from "./naming";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     front,
@@ -137,10 +138,10 @@
       <span class="t">{heading(it)}</span>
       {#if line(it)}<span class="q">{line(it)}</span>{/if}
       <span class="act">
-        <button type="button" class="btn" onclick={() => onanswer(it.card)} title="open it (alt+↓ goes to the next that needs you)"
+        <button type="button" class="btn" onclick={() => onanswer(it.card)} {@attach tipOf("open it (alt+↓ goes to the next that needs you)")}
           >{it.kind === "ask" ? "answer" : "open"}</button
         >
-        <button type="button" class="btn ghost" onclick={() => later(t.key)} title="it stays in the sidebar">later</button>
+        <button type="button" class="btn ghost" onclick={() => later(t.key)} {@attach tipOf("it stays in the sidebar")}>later</button>
         <span class="grow"></span>
         {#if i === 1 && more}<span class="more">and {more} more</span>{:else}<span class="key">alt ↓</span>{/if}
       </span>

@@ -28,6 +28,7 @@ import {
   type FundingMix,
   type FundingReading,
 } from "./fundings";
+  import { tipOf } from "./tipped.svelte";
 
 let {
   readings,
@@ -168,7 +169,7 @@ function rateSaid(usd: number): string {
               </th>
               <td
                 class="af-num af-money"
-                title={unpriced(r) ? "tokens the price table could not place" : undefined}
+                {@attach tipOf(() => (unpriced(r) ? "tokens the price table could not place" : undefined))}
               >
                 {unpriced(r) ? "unpriced" : money(r.usd)}
               </td>
@@ -225,7 +226,7 @@ function rateSaid(usd: number): string {
               </td>
               <td
                 class="af-num"
-                title={r.kind === "plan"
+                {@attach tipOf(() => (r.kind === "plan"
                   ? session
                     ? `${Math.round(session.points)}% of the 5-hour allowance today${
                         sessionRate
@@ -233,7 +234,7 @@ function rateSaid(usd: number): string {
                           : ""
                       }`
                     : "no five-hour sample covered today"
-                  : "this funding has no allowance window"}
+                  : "this funding has no allowance window"))}
               >
                 {#if r.kind === "plan" && session}
                   <span class="af-pct">{Math.round(session.points)}%</span>
@@ -241,7 +242,7 @@ function rateSaid(usd: number): string {
               </td>
               <td
                 class="af-num"
-                title={r.kind === "plan"
+                {@attach tipOf(() => (r.kind === "plan"
                   ? week
                     ? `${Math.round(week.points)}% of the weekly allowance today${
                         weekRate
@@ -249,7 +250,7 @@ function rateSaid(usd: number): string {
                           : ""
                       }`
                     : "no weekly sample covered today"
-                  : "this funding has no allowance window"}
+                  : "this funding has no allowance window"))}
               >
                 {#if r.kind === "plan" && week}
                   <span class="af-pct">{Math.round(week.points)}%</span>
@@ -269,14 +270,14 @@ function rateSaid(usd: number): string {
                 {total.usd <= 0 && total.tokens > 0 ? "unpriced" : money(total.usd)}
               </td>
               <td class="af-num">{count(total.tokens)}</td>
-              <td class="af-num" title={totalSay}>
+              <td class="af-num" {@attach tipOf(() => (totalSay))}>
                 {#if plans === 1}
                   {@const only = readings.find((r) => r.kind === "plan")!}
                   {@const w = windowOf(only, "session")}
                   {#if w}<span class="af-pct">{Math.round(w.points)}%</span>{/if}
                 {/if}
               </td>
-              <td class="af-num" title={totalSay}>
+              <td class="af-num" {@attach tipOf(() => (totalSay))}>
                 {#if plans === 1}
                   {@const only = readings.find((r) => r.kind === "plan")!}
                   {@const w = windowOf(only, "weekly_all")}

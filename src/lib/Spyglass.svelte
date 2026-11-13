@@ -21,6 +21,7 @@
   import { pieces, shift, splitPath, viewLines, windowAround } from "./finding";
   import type { Finder } from "./finder.svelte";
   import type { Editor } from "./nvim.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let { finder, editor }: { finder: Finder; editor: Editor } = $props();
 
@@ -343,19 +344,19 @@
     >
     <!-- A copy of a file on another wall is that wall's, and the folder it
          is kept in here is a key nobody should have to read. -->
-    <span class="path" title={finder.copyOf ? `on ${finder.copyOf.host}` : finder.root}
+    <span class="path" {@attach tipOf(() => (finder.copyOf ? `on ${finder.copyOf.host}` : finder.root))}
       >{finder.copyOf ? `on ${finder.copyOf.host}` : splitPath(finder.root).name || finder.root}</span
     >
     {#if finder.busy}<span class="run">working</span>{/if}
     {#if finder.literal}
       <span
         class="note"
-        title="ripgrep would not take that as a pattern, so it was searched for literally"
+        {@attach tipOf("ripgrep would not take that as a pattern, so it was searched for literally")}
         >literal</span
       >
     {/if}
     {#if finder.filesTruncated}
-      <span class="note" title="this project has more files than the finder holds"
+      <span class="note" {@attach tipOf("this project has more files than the finder holds")}
         >capped</span
       >
     {/if}
@@ -367,7 +368,7 @@
          open twice. -->
     {#if editor.on}
       {#if editor.others.length}
-        <span class="note" title="editors open in other projects — they may hold unsaved buffers"
+        <span class="note" {@attach tipOf("editors open in other projects — they may hold unsaved buffers")}
           >+{editor.others.length}</span
         >
       {/if}
@@ -379,15 +380,15 @@
       <button
         class="ghost"
         onclick={() => editor.rest()}
-        title="Back to reading it. nvim keeps your buffers (alt+E)">read</button
+        {@attach tipOf("Back to reading it. nvim keeps your buffers (alt+E)")}>read</button
       >
     {:else if finder.sheet && !finder.copyOf && (!finder.sheet.binary || finder.outward)}
       <button
         class="ghost"
         onclick={edit}
-        title={finder.outward
+        {@attach tipOf(() => (finder.outward
           ? "Open it in the application that owns it (e)"
-          : "Edit it in your own nvim (e)"}>{finder.outward ? "open" : "edit"}</button
+          : "Edit it in your own nvim (e)"))}>{finder.outward ? "open" : "edit"}</button
       >
     {/if}
     {#if finder.sheet && !editor.on}
@@ -396,7 +397,7 @@
           class="ghost"
           class:on={!finder.raw}
           onclick={() => finder.toggleRaw()}
-          title="Read it as a document or as its source (ctrl+R)">{readingName}</button
+          {@attach tipOf("Read it as a document or as its source (ctrl+R)")}>{readingName}</button
         >
       {/if}
       <!-- What "back" is depends on where the viewer was opened from, so the
@@ -411,7 +412,7 @@
           : "Back to the results (esc)"}>{finder.alone ? "close" : "results"}</button
       >
     {/if}
-    <button class="x" onclick={() => finder.hide()} title="Put it away (esc)">✕</button>
+    <button class="x" onclick={() => finder.hide()} {@attach tipOf("Put it away (esc)")}>✕</button>
   </header>
 
   {#if editor.on}
@@ -432,7 +433,7 @@
       {#if finder.copyOf}
         <!-- A copy of a file on another wall: named as that wall names it, and
              said to be read-only, since nothing here would reach it. -->
-        <span class="dir" title={finder.copyOf.full}>{finder.copyOf.full}</span>
+        <span class="dir" {@attach tipOf(() => (finder.copyOf!.full))}>{finder.copyOf!.full}</span>
       {:else}
         <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
       {/if}

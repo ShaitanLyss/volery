@@ -34,6 +34,7 @@
   import { shareSaid } from "./analyticsbehaviour";
   import type { CardAllowance } from "./allowancesamples";
   import { count, money } from "./usage";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     life,
@@ -84,14 +85,14 @@
       <p class="cl-now">{nowSaid(model)}</p>
     </div>
     {#if onclose}
-      <button type="button" class="cl-close" title="close (esc)" aria-label="close the card" onclick={onclose}>
+      <button type="button" class="cl-close" {@attach tipOf("close (esc)")} aria-label="close the card" onclick={onclose}>
         <Icon name="x" small />
       </button>
     {/if}
   </header>
 
   <div class="cl-total">
-    <span class="cl-usd" title={model.turns > 0 ? "what its settled turns reported, all time" : undefined}>
+    <span class="cl-usd" {@attach tipOf(() => (model.turns > 0 ? "what its settled turns reported, all time" : undefined))}>
       {model.turns > 0 ? money(model.usd) : ""}
     </span>
     <span class="cl-under">
@@ -117,7 +118,7 @@
           class="cl-seg"
           style:background={colour(one.label, payerOrder)}
           style:flex-grow={Math.max(1, one.tokens)}
-          title={titled(one)}
+          {@attach tipOf(() => (titled(one)))}
         ></span>
       {/each}
     </div>
@@ -148,7 +149,7 @@
             class="cl-seg"
             style:background={colour(one.label, modelOrder)}
             style:flex-grow={Math.max(1, one.tokens)}
-            title={titled(one)}
+            {@attach tipOf(() => (titled(one)))}
           ></span>
         {/each}
       </div>

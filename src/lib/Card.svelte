@@ -77,7 +77,7 @@
   import { clock } from "./conversation.svelte";
   import { glance } from "./glancing.svelte";
   import { hasSaid } from "./glance";
-  import { fullTitle } from "./tipped.svelte";
+  import { fullTitle, tipOf } from "./tipped.svelte";
   import { current, roman } from "./timeline";
   import StepCard from "./StepCard.svelte";
   import type { Timelines } from "./timelines.svelte";
@@ -353,7 +353,7 @@
             class="acct"
             class:loose={conv.bypassCaps && !onCreditsNow}
             class:credits={onCreditsNow}
-            title={providerNow
+            {@attach tipOf(() => (providerNow
               ? `spending ${providerNow}'s own balance — billed per token`
               : onCreditsNow
                 ? conv.creditsHome
@@ -361,7 +361,7 @@
                   : "spending the organisation's api credits — billed per token"
                 : conv.bypassCaps
                   ? `spending the ${acct} account, ignoring the caps you set`
-                  : `spending the ${acct} account`}>{acct}{conv.bypassCaps && !onCreditsNow && !providerNow ? " uncapped" : ""}</span
+                  : `spending the ${acct} account`))}>{acct}{conv.bypassCaps && !onCreditsNow && !providerNow ? " uncapped" : ""}</span
           >
         {/if}
         <!-- Where the card is, when that is not here, and who asked for it
@@ -373,30 +373,30 @@
         {#if conv.elsewhere}
           <span
             class="host"
-            title="this card is on {conv.elsewhere.host} — only what it is doing travels between walls; its transcript stays there"
+            {@attach tipOf(() => `this card is on ${conv.elsewhere!.host} — only what it is doing travels between walls; its transcript stays there`)}
             >on {conv.elsewhere.host}</span
           >
         {/if}
         {#if conv.bornFor}
-          <span class="host" title="opened on this wall because {conv.bornFor} asked for it"
+          <span class="host" {@attach tipOf(() => `opened on this wall because ${conv.bornFor} asked for it`)}
             >from {conv.bornFor}</span
           >
         {/if}
       </span>
       <span class="title" class:provisional={name.provisional}>{name.text}</span>
     </span>
-    <span class="ring" title={ctxSaid(conv.ctx, conv.ctxTokens)}
+    <span class="ring" {@attach tipOf(() => (ctxSaid(conv.ctx, conv.ctxTokens)))}
       ><CtxRing ctx={conv.ctx} dormant={conv.dormant} /></span
     >
     {#if renewMark}
       <!-- The quiet mark Lyss chose over a wall that prompts the card itself
            (2026-11-02): a big coordinator, said in its price, nothing sent.
            Achromatic — it is a suggestion, not a status. -->
-      <span class="renew" title={renewMark} aria-label={renewMark}>↻</span>
+      <span class="renew" {@attach tipOf(() => (renewMark))} aria-label={renewMark}>↻</span>
     {/if}
     </span>
 
-    <span class="act" title={conv.waiting ? waitTitle(conv.waiting, clock.t) : undefined}
+    <span class="act" {@attach tipOf(() => (conv.waiting ? waitTitle(conv.waiting, clock.t) : undefined))}
       ><span class="dot"></span>{label}</span
     >
 
@@ -464,7 +464,7 @@
   {/if}
 
   {#if pinned}
-    <span class="pin" title="Pinned — this position is yours now"></span>
+    <span class="pin" {@attach tipOf("Pinned — this position is yours now")}></span>
   {/if}
 
   <!-- The one thing that says so at `field`, where the card is its ring and the
@@ -474,7 +474,7 @@
        corner from `.pin`, and outside the box like it, so the two cannot meet
        and neither collides with the close control. -->
   {#if conv.aside}
-    <span class="aside" title="Set aside — kept out of what's waiting"></span>
+    <span class="aside" {@attach tipOf("Set aside — kept out of what's waiting")}></span>
   {/if}
 
   <!-- Background work, which is the one state that outlives the turn that made
@@ -487,7 +487,7 @@
   {#if conv.busy}
     <span
       class="jobs"
-      title={conv.jobs.map((j) => j.label).join("\n")}
+      {@attach tipOf(() => (conv.jobs.map((j) => j.label).join("\n")))}
       >{conv.jobs.length > 1 ? conv.jobs.length : ""}</span
     >
   {/if}
@@ -523,7 +523,7 @@
   {#if conv.holding && conv.holding.excess > 0}
     <span
       class="holding"
-      title={`${conv.holding.excess} process${conv.holding.excess === 1 ? "" : "es"} running that this card did not start with (it booted with ${conv.holding.fleet}) — open the performance meter to see and end them`}
+      {@attach tipOf(() => (`${conv.holding!.excess} process${conv.holding!.excess === 1 ? "" : "es"} running that this card did not start with (it booted with ${conv.holding!.fleet}) — open the performance meter to see and end them`))}
       >{conv.holding.excess}</span
     >
   {/if}
@@ -542,7 +542,7 @@
   {#if inbox > 0}
     <span
       class="post"
-      title="{inbox} message{inbox > 1 ? 's' : ''} waiting — delivered when this card wakes"
+      {@attach tipOf(() => `${inbox} message${inbox > 1 ? 's' : ''} waiting — delivered when this card wakes`)}
       >{inbox > 1 ? inbox : ""}</span
     >
   {/if}
@@ -564,7 +564,7 @@
     {@const path = conv.planDoc}
     <button
       class="plan"
-      title="a plan is waiting — {planTitle(path)}"
+      {@attach tipOf(() => `a plan is waiting — ${planTitle(path)}`)}
       onclick={(e) => {
         e.stopPropagation();
         onplan(path);
@@ -593,7 +593,7 @@
         glance.open(conv.id, e.currentTarget.closest(".slot"));
       }}
       aria-label="Read what it last said"
-      title="read what it last said, without selecting it (space then c r)"
+      {@attach tipOf("read what it last said, without selecting it (space then c r)")}
     >
       <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2.5h6v4.2H4.6L3 8.2V6.7H2z" /></svg>
     </button>
@@ -604,7 +604,7 @@
       class="shut"
       onclick={onclose}
       aria-label="Close conversation"
-      title="close (space then c c)"
+      {@attach tipOf("close (space then c c)")}
     >
       <svg viewBox="0 0 10 10" aria-hidden="true"
         ><path d="M2 2l6 6M8 2L2 8" /></svg

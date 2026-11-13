@@ -28,6 +28,7 @@
   } from "./asana";
   import { clock } from "./conversation.svelte";
   import { rowsFor, textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     widget,
@@ -104,12 +105,12 @@
         {@const due = dueReading(t.due, today)}
         {@const chips = chipsOf(t, 1)}
         <li>
-          <button class="row" title={why(t)} onclick={() => onopen(t.url)}>
+          <button class="row" {@attach tipOf(() => (why(t)))} onclick={() => onopen(t.url)}>
             <span class="name" class:done={t.completed}>{t.name}</span>
             <span class="meta">
               {#if t.project}<span class="in">{t.project}</span>{/if}
               {#each chips.shown as f (f.name)}
-                <span class="chip" title={f.name}>{f.value}</span>
+                <span class="chip" {@attach tipOf(() => (f.name))}>{f.value}</span>
               {/each}
               {#if due}
                 <span class="due" class:late={due.late}>{due.text}</span>

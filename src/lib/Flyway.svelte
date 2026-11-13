@@ -31,6 +31,7 @@
     type Wall,
   } from "./flyway";
   import { ACCEPTING_IS_CLOSED, PANEL_SAYS, SOLO_CHORD, soloButton, soloSince } from "./solo";
+  import { tipOf } from "./tipped.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -316,7 +317,7 @@
             class:go={!accepting && !solo}
             disabled={busy || accepting === null}
             onclick={toggle}
-            title="take work from other walls, or stop (a)"
+            {@attach tipOf("take work from other walls, or stop (a)")}
           >
             {accepting ? "stop taking work" : "take work from other walls"}
           </button>
@@ -338,7 +339,7 @@
         {:else}
           <ul class="walls">
             {#each otherWalls(walls) as w (w.host)}
-              <li title={w.reason ?? ""}>
+              <li {@attach tipOf(() => (w.reason ?? ""))}>
                 <div class="who">
                   <code>{w.host}</code>
                   <!-- Only a wall that has gone quiet may be forgotten, and the
@@ -354,7 +355,7 @@
                       class="forget"
                       disabled={busy}
                       onclick={() => forget(w.host)}
-                      title="take {w.host} off the roster — it is learned again if it ever comes back"
+                      {@attach tipOf(() => `take ${w.host} off the roster — it is learned again if it ever comes back`)}
                       aria-label="forget {w.host}">forget</button
                     >
                   {/if}

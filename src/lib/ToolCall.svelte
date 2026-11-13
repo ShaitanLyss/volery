@@ -42,6 +42,7 @@
   import { SEND_TOOL } from "./relay";
   import InlinePicture from "./InlinePicture.svelte";
   import { callSource } from "./showing";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     call,
@@ -196,7 +197,7 @@
     class="head"
     aria-expanded={open ? "true" : "false"}
     onclick={ontoggle}
-    title={open ? "fold the call away" : "what it was called with, and what came back"}
+    {@attach tipOf(() => (open ? "fold the call away" : "what it was called with, and what came back"))}
   >
     <span class="mark" aria-hidden="true">{open ? "▾" : "▸"}</span>
     <span class="tag">{badge}</span>
@@ -380,7 +381,7 @@
                     type="button"
                     class="go"
                     onclick={() => look(go.path, go.line)}
-                    title="Look at {go.path} at line {go.line}"
+                    {@attach tipOf(() => `Look at ${go.path} at line ${go.line}`)}
                     >{part.text}</button
                   >{:else}{part.text}{/if}{/each}</pre>
           {:else}

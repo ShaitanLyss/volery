@@ -19,6 +19,7 @@
     sayWhat,
     type Stale,
   } from "./freshen";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     stale = [],
@@ -75,7 +76,7 @@
     <span class="when" class:live={running}>{sayRun(last, clock.t)}</span>
     <span class="grow"></span>
     {#if last}
-      <button class="fold" onclick={() => (opened = !showItems)} title={showItems ? "fold the list" : "every item of the last run"}
+      <button class="fold" onclick={() => (opened = !showItems)} {@attach tipOf(() => (showItems ? "fold the list" : "every item of the last run"))}
         >{showItems ? "less" : "each"}</button
       >
     {/if}
@@ -83,7 +84,7 @@
       class="run"
       onclick={() => void now()}
       disabled={running || !snap}
-      title="claude update, then every plugin marketplace, then every installed plugin in every scope (space then m u)"
+      {@attach tipOf("claude update, then every plugin marketplace, then every installed plugin in every scope (space then m u)")}
       >{running ? "updating…" : "update claude code & plugins"}</button
     >
   </div>
@@ -93,7 +94,7 @@
       {#each last.items as item, i (i)}
         <li class:bad={item.state === "failed"} class:live={item.state === "running"} class:quiet={item.state === "waiting" || item.state === "skipped"}>
           <span class="what">{sayWhat(item)}</span>
-          <span class="came" title={item.said ?? ""}>{sayCame(item)}</span>
+          <span class="came" {@attach tipOf(() => (item.said ?? ""))}>{sayCame(item)}</span>
         </li>
       {/each}
     </ul>
@@ -101,13 +102,13 @@
 
   {#if stale.length}
     <div class="line stale">
-      <span class="said" title={stale.map((s) => `${s.name}: ${s.why.join(", ")}`).join("\n")}>{sayStale(stale, ready)}</span>
+      <span class="said" {@attach tipOf(() => (stale.map((s) => `${s.name}: ${s.why.join(", ")}`).join("\n")))}>{sayStale(stale, ready)}</span>
       <span class="grow"></span>
       <button
         class="run"
         onclick={() => void restart()}
         disabled={restarting || ready === 0}
-        title="stand down the cards on the old copy that are not in the middle of anything — nothing is lost, and each starts again on the new copy at your next message"
+        {@attach tipOf("stand down the cards on the old copy that are not in the middle of anything — nothing is lost, and each starts again on the new copy at your next message")}
         >{restarting ? "restarting…" : ready === stale.length ? "restart them" : `restart the ${ready} at rest`}</button
       >
     </div>

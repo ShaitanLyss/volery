@@ -51,6 +51,7 @@
     readings,
   } from "./usage";
   import { textOf, variantOf, type Widget } from "./widgets";
+  import { tipOf } from "./tipped.svelte";
 
   let { widget, ledger }: { widget: Widget; ledger: Ledger } = $props();
 
@@ -329,18 +330,18 @@
            the block below this is a fact off the wire rather than an inference,
            and it is the half of the question the percentage does not answer. -->
       {#if soonest && resetIn(soonest, now) !== null}
-        <span class="rolls" title="{windowSaid(soonest)} comes back then">
+        <span class="rolls" {@attach tipOf(() => `${windowSaid(soonest)} comes back then`)}>
           {until(resetIn(soonest, now)!)}
         </span>
       {/if}
     {:else if both.block.resetsIn !== null}
       <!-- The inferred block, and only the block: without the account's answer
            the weekly window resets on a schedule nothing here can see. -->
-      <span class="rolls" title="the five-hour window rolls over then">
+      <span class="rolls" {@attach tipOf("the five-hour window rolls over then")}>
         {left(both.block.resetsIn)}
       </span>
     {:else}
-      <span class="rolls rested" title="nothing said for five hours">rested</span>
+      <span class="rolls rested" {@attach tipOf("nothing said for five hours")}>rested</span>
     {/if}
   </header>
 
@@ -360,9 +361,9 @@
           {#each every as { face, worst, tier, note } (face.label)}
             <div
               class="dial"
-              title={worst
+              {@attach tipOf(() => (worst
                 ? `${face.label} — ${windowWhy(worst, now)}${note ? `, ${note}` : ""}`
-                : `${face.label} — ${face.fault ?? "nothing read yet"}`}
+                : `${face.label} — ${face.fault ?? "nothing read yet"}`))}
             >
               <div class="arc" data-tier={tier} style:--v={share(worst?.used ?? 0, 100)}></div>
               <span class="val" data-tier={tier}>
@@ -376,9 +377,9 @@
         <ul class="rows" class:bars={variant === "bars"}>
           {#each every as { face, worst, tier, note } (face.label)}
             <li
-              title={worst
+              {@attach tipOf(() => (worst
                 ? `${face.label} — ${windowWhy(worst, now)}${note ? `, ${note}` : ""}`
-                : `${face.label} — ${face.fault ?? "nothing read yet"}`}
+                : `${face.label} — ${face.fault ?? "nothing read yet"}`))}
             >
               <span class="row">
                 <span class="label">{face.label}</span>
@@ -405,7 +406,7 @@
     {:else if variant === "rings"}
       <div class="dials">
         {#each windows as w (w.kind + (w.scope ?? ""))}
-          <div class="dial" title={windowWhy(w, now)}>
+          <div class="dial" {@attach tipOf(() => (windowWhy(w, now)))}>
             <div class="arc" data-tier={tierOf(w)} style:--v={share(w.used, 100)}></div>
             <span class="val" data-tier={tierOf(w)}>{pct(w.used)}</span>
             <span class="cap">{windowSaid(w)}</span>
@@ -415,7 +416,7 @@
     {:else}
       <ul class="rows" class:bars={variant === "bars"}>
         {#each windows as w (w.kind + (w.scope ?? ""))}
-          <li title={windowWhy(w, now)}>
+          <li {@attach tipOf(() => (windowWhy(w, now)))}>
             <span class="row">
               <span class="label">{windowSaid(w)}</span>
               {#if resetIn(w, now) !== null}
@@ -439,7 +440,7 @@
   {:else if variant === "rings"}
     <div class="dials">
       {#each rows as r (r.key)}
-        <div class="dial" title={why(r)}>
+        <div class="dial" {@attach tipOf(() => (why(r)))}>
           <div class="arc" style:--v={r.frac}></div>
           <span class="val">{head(r)}</span>
           <span class="cap">{r.key === "block" ? "5 hours" : "7 days"}</span>
@@ -449,7 +450,7 @@
   {:else}
     <ul class="rows" class:bars={variant === "bars"}>
       {#each rows as r (r.key)}
-        <li title={why(r)}>
+        <li {@attach tipOf(() => (why(r)))}>
           <span class="row">
             <span class="label">{r.said}</span>
             <span class="n">{head(r)}</span>
@@ -468,17 +469,17 @@
         <!-- Which subscription is actually taking work, which is the question
              the multi-account face is up to answer and the one thing a column
              of percentages does not say on its own. -->
-        <span class="note" title="the next turn would go here">
+        <span class="note" {@attach tipOf("the next turn would go here")}>
           {nextUp ?? `${every.length} account${every.length === 1 ? "" : "s"}`}
         </span>
       {:else if !managing && ledger.limits?.overage?.enabled}
         <!-- Without this, every window pinned full while work carries on
              reads as a broken instrument rather than as a bill. -->
-        <span class="note" title="spending past the plan's allowance">
+        <span class="note" {@attach tipOf("spending past the plan's allowance")}>
           on extra usage
         </span>
       {:else if gotAllowance}
-        <span class="note" title="read from {faces[0]?.source ?? 'the account'}">
+        <span class="note" {@attach tipOf(() => `read from ${faces[0]?.source ?? 'the account'}`)}>
           {windows.length} window{windows.length === 1 ? "" : "s"}
         </span>
       {/if}
@@ -487,12 +488,12 @@
              the truth as of some minutes ago. Said rather than silently
              redrawn: a stale percentage that looks live is the one way this
              widget can mislead. -->
-        <span class="note odd" title={allowanceFault}>stale</span>
+        <span class="note odd" {@attach tipOf(() => (allowanceFault))}>stale</span>
       {/if}
     {:else if quiet && ledger.ready}
       <span class="note">nothing spent this week</span>
     {:else if top}
-      <span class="note" title="most of the week's {measure === 'cost' ? 'spend' : 'tokens'}">
+      <span class="note" {@attach tipOf(() => `most of the week's ${measure === 'cost' ? 'spend' : 'tokens'}`)}>
         mostly <b>{shortModel(top.model)}</b>
       </span>
     {/if}
@@ -500,7 +501,7 @@
       <!-- Said out loud rather than folded in: a model this build has no rate
            for contributes nothing to the cost, and a total quietly missing a
            model is worse than a total that admits it. -->
-      <span class="note odd" title="a model with no rate in this build">unpriced</span>
+      <span class="note odd" {@attach tipOf("a model with no rate in this build")}>unpriced</span>
     {/if}
   </footer>
 </div>

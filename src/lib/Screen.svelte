@@ -47,6 +47,7 @@
     PRIMARY,
   } from "./cast";
   import { keyInput, pointerInput, releaseAll, wheelAccumulator } from "./castinput";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     sid,
@@ -337,24 +338,24 @@
 <div class="screen" class:driving class:opens={!!onopen}>
   <header>
     <span class="dot" data-state={showing?.state ?? "connecting"}></span>
-    <span class="name" title={`${name.where} · ${name.what}`}>
+    <span class="name" {@attach tipOf(() => (`${name.where} · ${name.what}`))}>
       <span class="where">{name.where}</span>
       <span class="what">{name.what}</span>
     </span>
     <span class="stats">{line}</span>
     {#if watching}
-      <span class="watching" title={watching}>watching</span>
+      <span class="watching" {@attach tipOf(() => (watching))}>watching</span>
     {:else if caveat}
-      <span class="watching" title={caveat}>clicks can miss</span>
+      <span class="watching" {@attach tipOf(() => (caveat))}>clicks can miss</span>
     {/if}
     {#if showing?.state === "ended" || showing?.state === "refused"}
-      <button class="act" title="dial it again" onclick={() => casts.reconnect(sid)}>again</button>
+      <button class="act" {@attach tipOf("dial it again")} onclick={() => casts.reconnect(sid)}>again</button>
     {/if}
     {@render actions?.()}
     {#if !onopen}
       <button
         class="act"
-        title="immersive — the screen fills the window; hold esc to come back (space then r f)"
+        {@attach tipOf("immersive — the screen fills the window; hold esc to come back (space then r f)")}
         disabled={!showing || showing.state !== "live"}
         onclick={() => casts.focus(sid)}>immersive</button
       >

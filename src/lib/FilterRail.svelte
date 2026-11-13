@@ -33,6 +33,7 @@
     valuesOf,
     withDimension,
   } from "./filterrail";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     filter,
@@ -165,7 +166,7 @@
         class="chip"
         class:on={picking === a.dim}
         data-chip={a.dim}
-        title={`${chipSaid(a.dim, a.values)} · click to change it (f reaches these)`}
+        {@attach tipOf(() => (`${chipSaid(a.dim, a.values)} · click to change it (f reaches these)`))}
         onclick={() => (picking === a.dim ? shut() : open(a.dim))}
         onkeydown={(e) => {
           if (e.key === "Backspace" || e.key === "Delete") {
@@ -179,7 +180,7 @@
       <button
         type="button"
         class="x"
-        title={`remove the ${labelOf(a.dim)} filter`}
+        {@attach tipOf(() => (`remove the ${labelOf(a.dim)} filter`))}
         aria-label={`remove the ${labelOf(a.dim)} filter`}
         onclick={() => remove(a.dim)}><Icon name="x" small /></button
       >
@@ -193,7 +194,7 @@
       type="button"
       class="add"
       data-add
-      title="narrow by another dimension"
+      {@attach tipOf("narrow by another dimension")}
       onclick={() => {
         adding = !adding;
         picking = null;
@@ -202,7 +203,7 @@
   {/if}
 
   {#if countOf(filter)}
-    <button type="button" class="clear" title="drop every filter" onclick={() => set({})}>clear</button>
+    <button type="button" class="clear" {@attach tipOf("drop every filter")} onclick={() => set({})}>clear</button>
   {/if}
 
   {#if picking}

@@ -38,6 +38,7 @@
   import PromptBox from "./PromptBox.svelte";
   import SlashPalette from "./SlashPalette.svelte";
   import type { DockSite } from "./berth";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     field,
@@ -292,7 +293,7 @@
     class="moor"
     class:on={grabbing}
     role="presentation"
-    title="drag to move the dock — top, bottom, or floating; the middle of an edge for its whole width, a corner for the width the panel leaves · double-click to put it back (space then w d, space then w a)"
+    {@attach tipOf("drag to move the dock — top, bottom, or floating; the middle of an edge for its whole width, a corner for the width the panel leaves · double-click to put it back (space then w d, space then w a)")}
     onpointerdown={onmoor.down}
     onpointermove={onmoor.move}
     onpointerup={onmoor.up}
@@ -319,14 +320,14 @@
         <button
           class="keep"
           onclick={() => void reclaim(s)}
-          title="Put it in the prompt, aimed at the card it was written to (space then d p)"
+          {@attach tipOf("Put it in the prompt, aimed at the card it was written to (space then d p)")}
           >to its prompt</button
         >
       {/if}
-      <button class="keep" onclick={() => void copyStray(s)} title="Copy it, and let it go (space then d c)"
+      <button class="keep" onclick={() => void copyStray(s)} {@attach tipOf("Copy it, and let it go (space then d c)")}
         >copy</button
       >
-      <button class="keep" onclick={() => replies.forget(s.item)} title="Let it go (space then d x)"
+      <button class="keep" onclick={() => replies.forget(s.item)} {@attach tipOf("Let it go (space then d x)")}
         >drop</button
       >
     </div>
@@ -365,7 +366,7 @@
         class="queued"
         data-ask={barAsk}
         onclick={() => front.openIt()}
-        title="Open what is waiting on you — it stays queued either way (space then d s)"
+        {@attach tipOf("Open what is waiting on you — it stays queued either way (space then d s)")}
       >
         <span class="qdot"></span>
         <span class="qty">{waitingOnYou} waiting</span>
@@ -418,7 +419,7 @@
   {#if shown && !front.shut}
     <div class="under">
       {#if next}
-        <button class="more" onclick={() => front.more()} title="Step to the next thing waiting (space then d n)">
+        <button class="more" onclick={() => front.more()} {@attach tipOf("Step to the next thing waiting (space then d n)")}>
           {waitingOnYou - 1} more waiting on you
         </button>
       {:else if waitingOnYou > 1}
@@ -430,7 +431,7 @@
       <button
         class="fold"
         onclick={() => front.shutIt()}
-        title="Fold it away and see the wall — nothing is answered or lost (space then d s)"
+        {@attach tipOf("Fold it away and see the wall — nothing is answered or lost (space then d s)")}
         >shut ▴</button
       >
     </div>

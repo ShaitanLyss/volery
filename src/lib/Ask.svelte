@@ -44,6 +44,7 @@
     typedYes,
     typedYesWarning,
   } from "./asking";
+  import { tipOf } from "./tipped.svelte";
 
   /* It takes the *ask* rather than the card that is asking, and the second
      surface is why. A question that piled up while the user was away is the
@@ -470,7 +471,7 @@
       <button
         class="goto"
         onclick={() => onselect?.()}
-        title="Select the card that asked, and open its transcript">select it</button
+        {@attach tipOf("Select the card that asked, and open its transcript")}>select it</button
       >
     {/if}
     {#if readable}
@@ -478,7 +479,7 @@
         class="glimpse"
         data-glance
         onclick={() => read(false)}
-        title="Read what it last said, without leaving the question (alt+R, or space then d r)"
+        {@attach tipOf("Read what it last said, without leaving the question (alt+R, or space then d r)")}
         >what it said</button
       >
     {/if}
@@ -488,9 +489,9 @@
     {/if}
     <span
       class="asked"
-      title={parked
+      {@attach tipOf(() => (parked
         ? "When this was asked. It waits until you answer or defer it — there is no deadline"
-        : "This was asked while you were away"}>{waited}</span
+        : "This was asked while you were away"))}>{waited}</span
     >
   </div>
 
@@ -505,7 +506,7 @@
           class:on={i === step && !reviewing}
           class:settled={ask.answers[i] !== null}
           onclick={() => goTo(i)}
-          title={ask.answers[i] ?? q.question}
+          {@attach tipOf(() => (ask.answers[i] ?? q.question))}
         >
           <span class="tick"></span>
           <span class="name">{q.header}</span>
@@ -521,7 +522,7 @@
          side. Each row is the way back into its question. -->
     <div class="review">
       {#each questions as q, i}
-        <button class="pair" onclick={() => goTo(i)} title="Change this answer">
+        <button class="pair" onclick={() => goTo(i)} {@attach tipOf("Change this answer")}>
           <span class="pq">{q.header}</span>
           <!-- Greyed for either stand-in, since neither is a thing the user
                said — and the review sheet's job is to show at a glance which
@@ -571,7 +572,7 @@
             class:chosen={ask.answers[step] === o.label}
             class:lit={selected === i}
             onclick={() => give(o.label)}
-            title={i < 9 ? `${i + 1} selects it, enter gives it` : undefined}
+            {@attach tipOf(() => (i < 9 ? `${i + 1} selects it, enter gives it` : undefined))}
           >
             <span class="lbl">{#if i < 9}<span class="num" aria-hidden="true">{i + 1}</span>{/if}{refs.say(o.label, filesRoot)}</span>
             {#if o.detail}<span class="det">{refs.say(o.detail, filesRoot)}</span>{/if}
@@ -588,13 +589,13 @@
           class="nav"
           onclick={() => move(-1)}
           disabled={step === 0}
-          title="The question before this one">←</button
+          {@attach tipOf("The question before this one")}>←</button
         >
         <button
           class="nav"
           onclick={() => move(1)}
           disabled={step === questions.length - 1}
-          title="The question after this one">→</button
+          {@attach tipOf("The question after this one")}>→</button
         >
       {/if}
       <!-- A `PromptBox`, as every input that speaks to an agent is: a picture
@@ -626,13 +627,13 @@
         <button
           class="nav skip"
           onclick={skip}
-          title="Pass over this one — the agent is told it is not an answer and not permission"
+          {@attach tipOf("Pass over this one — the agent is told it is not an answer and not permission")}
           >skip</button
         >
         <button
           class="nav yours"
           onclick={decide}
-          title="Hand this decision to the agent — a real answer, said on purpose"
+          {@attach tipOf("Hand this decision to the agent — a real answer, said on purpose")}
           >you decide</button
         >
       {/if}
@@ -641,7 +642,7 @@
           class="nav"
           onclick={() => void defer()}
           disabled={deferring}
-          title="Answer this later — it goes to the pile of queued questions and the agent is told nothing was decided (alt+D · read the pile with space then p)"
+          {@attach tipOf("Answer this later — it goes to the pile of queued questions and the agent is told nothing was decided (alt+D · read the pile with space then p)")}
           >defer</button
         >
       {/if}

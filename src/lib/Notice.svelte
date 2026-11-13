@@ -17,6 +17,7 @@
   import { stood } from "./presence";
   import { nameBesideProject } from "./naming";
   import { isCloseKey, noticeWords, type Notice } from "./notice";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     notice,
@@ -146,7 +147,7 @@
       <button
         class="goto"
         onclick={() => onselect?.()}
-        title="Select the card this is about, and open its transcript">select it</button
+        {@attach tipOf("Select the card this is about, and open its transcript")}>select it</button
       >
     {/if}
     <span class="grow"></span>
@@ -186,13 +187,13 @@
     <button
       class="btn ack"
       onclick={ack}
-      title="Take it down without a word (enter on an empty reply)">acknowledge</button
+      {@attach tipOf("Take it down without a word (enter on an empty reply)")}>acknowledge</button
     >
     {#if onclosecard}
       <button
         class="btn ack"
         onclick={closeCard}
-        title="Close the card this is about — asks first if it is working (ctrl+shift+W in the reply box)"
+        {@attach tipOf("Close the card this is about — asks first if it is working (ctrl+shift+W in the reply box)")}
         >close</button
       >
     {/if}

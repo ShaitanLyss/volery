@@ -30,6 +30,7 @@
   import { stateOf, whence } from "./sink";
   import type { Sink } from "./sink.svelte";
   import type { Board } from "./board.svelte";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     reference,
@@ -120,11 +121,11 @@
       <button
         type="button"
         class="ghost"
-        title="copy {reference.kind === 'commit' ? reference.short : reference.key}, to paste to an agent"
+        {@attach tipOf(() => `copy ${reference.kind === 'commit' ? reference.short : reference.key}, to paste to an agent`)}
         onclick={copyId}>copy id</button
       >
       {#if onpage}
-        <button type="button" class="ghost" title="Open its page" onclick={() => onpage(reference)}>open page</button>
+        <button type="button" class="ghost" {@attach tipOf("Open its page")} onclick={() => onpage(reference)}>open page</button>
       {/if}
       <button type="button" class="ghost" aria-label="Close" onclick={onclose}>close</button>
     </header>

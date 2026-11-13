@@ -19,6 +19,7 @@
   import { diagramAuthorScope, diagrams } from "./drawing.svelte";
   import { fenceMarkdown, type Drawn } from "./diagram";
   import type { Block } from "./markdown";
+  import { tipOf } from "./tipped.svelte";
 
   let { block }: { block: Extract<Block, { t: "code" }> } = $props();
 
@@ -110,7 +111,7 @@
           type="button"
           class="flip"
           aria-pressed={source}
-          title={source ? "draw it as the diagram" : "read the mermaid it was drawn from"}
+          {@attach tipOf(() => (source ? "draw it as the diagram" : "read the mermaid it was drawn from"))}
           onclick={() => (source = !source)}>{source ? "diagram" : "source"}</button
         >{/if}
     </div>

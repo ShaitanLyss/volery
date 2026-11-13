@@ -49,6 +49,7 @@
   import type { StripTile } from "./analyticstiles";
   import type { Exchange, FundingMix, FundingReading } from "./fundings";
   import type { CardAllowance } from "./allowancesamples";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     window: win,
@@ -299,7 +300,7 @@
 <div class="an-body">
   <div class="an-strip" aria-label="the live strip">
     {#each strip as tile (tile.key)}
-      <div class="an-tile" class:off={tile.off} title={tile.title}>
+      <div class="an-tile" class:off={tile.off} {@attach tipOf(() => (tile.title))}>
         <span class="an-tile-label">{tile.label}</span>
         <span class="an-tile-value">{tile.value}</span>
         <span class="an-tile-note">{tile.note}</span>
@@ -340,7 +341,7 @@
       class="an-btn"
       class:on={table}
       aria-pressed={table}
-      title="the same numbers as a table (t)"
+      {@attach tipOf("the same numbers as a table (t)")}
       onclick={toggleTable}
       ><Icon name={table ? "wave" : "list"} small />{table ? "chart" : "table"}</button
     >

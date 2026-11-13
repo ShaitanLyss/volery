@@ -16,6 +16,7 @@
   import type { CardHandle } from "./cards.svelte";
   import type { Window } from "./limits";
   import { lowOf, outOf } from "./allowance";
+  import { tipOf } from "./tipped.svelte";
 
   let {
     card,
@@ -47,7 +48,7 @@
         <button
           type="button"
           class="link"
-          title="the waiting messages come back to the message box (esc)"
+          {@attach tipOf("the waiting messages come back to the message box (esc)")}
           onclick={() => void card.do("stop")}>take it back</button
         >
       {/if}

@@ -50,6 +50,7 @@
   import { Sources } from "./sources.svelte";
   import { DEFAULT_GROUP, checkLine, groupOf, nameFault, sourceReading, step, whereLine } from "./sources";
   import { invoke } from "@tauri-apps/api/core";
+  import { tipOf } from "./tipped.svelte";
 
   /** What `provider_reading` answers: the account's own balance, the wall's
    *  spend since the cap started, and the cap. Balance and fault are exclusive —
@@ -449,12 +450,12 @@
             tabindex="0"
             role="group"
             aria-label={row.name}
-            title="j/k move · enter changes it · c checks it · x forgets it · a adds one"
+            {@attach tipOf("j/k move · enter changes it · c checks it · x forgets it · a adds one")}
             onkeydown={(e) => rowKey(e, row.name, i)}
           >
             <div class="head">
               <span class="name">{row.name}</span>
-              <span class="reading" data-tone={reading.tone} title={reading.line}>{reading.line}</span>
+              <span class="reading" data-tone={reading.tone} {@attach tipOf(() => (reading.line))}>{reading.line}</span>
             </div>
             <p class="aside where">{whereLine(row)}</p>
             {#if checked}
@@ -491,13 +492,13 @@
                 <button class="act go" disabled={busy} onclick={() => void change(row.name)}>
                   {busy ? "storing…" : "store it"}
                 </button>
-                <button class="act" disabled={busy} onclick={() => shut(row.name)} title="leave it (escape)">
+                <button class="act" disabled={busy} onclick={() => shut(row.name)} {@attach tipOf("leave it (escape)")}>
                   leave it
                 </button>
               </div>
             {:else}
               <div class="pair">
-                <button class="act" disabled={busy} onclick={() => edit(row.name)} title="change it (enter)">
+                <button class="act" disabled={busy} onclick={() => edit(row.name)} {@attach tipOf("change it (enter)")}>
                   change it
                 </button>
                 {#if row.held}
@@ -505,7 +506,7 @@
                     class="act"
                     disabled={busy}
                     onclick={() => void sources.verify(row.name)}
-                    title="check it (c)"
+                    {@attach tipOf("check it (c)")}
                   >
                     check it
                   </button>
@@ -514,7 +515,7 @@
                   class="act"
                   disabled={busy}
                   onclick={() => void sources.forget(row.name)}
-                  title="forget it (x)"
+                  {@attach tipOf("forget it (x)")}
                 >
                   forget it
                 </button>
