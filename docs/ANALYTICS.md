@@ -4332,8 +4332,9 @@ tokens would have cost at API prices, the percentage is how much of the plan wen
   `% of the 5-hour` and `% of the weekly`. Its total is the title bar's figure, by construction:
   both come from the one `spend_fundings` answer the wall holds, which the room reads through an
   accessor rather than a read of its own. A second read there is how the block came to sit at
-  open-time money beside a total that moves. Credits and provider rows say `no window` in the
-  percentage columns, never 0: a provider has no allowance window to be a percentage of.
+  open-time money beside a total that moves. Credits and provider rows leave the percentage
+  columns empty, never 0: a provider has no allowance window to be a percentage of, and a word
+  saying so reads as a reading of a kind.
 - **The exchange** is in the percentage cell's hover, not printed in the cell, and it appears
   only when the attribution can compute it: "1% ≈ $0.0014 of modeled work, measured over the
   last eight days". It is measured over the allowance instances the room reads, not over the
@@ -4342,11 +4343,13 @@ tokens would have cost at API prices, the percentage is how much of the plan wen
   the money is this wall's settled turns and the rate is the account window's modeled work, so
   a reader adding the two would be adding different scopes. The reverse reading is the row's
   own percentage: today's dollars answer as a fraction of the window.
-- **A cell that cannot be read says so in words**: `not read` for a plan whose samples did not
-  cover the day, `no window` for a funding that has none, `unpriced` for tokens the price table
-  could not place, `no window` on a total row with no subscription at all, `not summed` on one
-  with more than one. Never a zero, and a window the samples covered that did not move is a real
-  `0%` rather than `not read`: the row exists, with zero points.
+- **A cell with nothing to say says nothing.** A plan whose samples did not cover the day, a
+  funding with no window, a total row with no subscription at all or with more than one: all of
+  them are an empty cell, not a word and not a dash (Lyss, 2026-11-13). The reason is on the
+  hover, where somebody asking the question reaches it and where it does not read as a reading.
+  Never a zero either, and a window the samples covered that did not move is a real `0%`: the
+  row exists, with zero points. `unpriced` stays said, because it is a fact about the money
+  rather than an absence of one.
 
 ### 21.5 What is deliberately absent
 
