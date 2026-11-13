@@ -305,7 +305,10 @@
     elsewhere.standDown();
     casts.standDown();
   };
-  solo.left = () => elsewhere.standUp();
+  solo.left = () => {
+    elsewhere.standUp();
+    casts.standUp();
+  };
   solo.attach();
   /* Every card a gesture can reach, on this wall and on the others, as one
      kind of thing (`cards.svelte.ts`). What it borrows from here is the
@@ -919,16 +922,14 @@
    *  typing is the failure the hold rule exists to prevent, and the switch is
    *  reversible in one press so it does not need a plate (`solo.md`). */
   async function toggleSolo() {
-    if (!solo.on) {
-      const typed = replies.farTyped();
-      if (typed.length) {
-        skein.fault = `not while you are typing to ${typed[0].about} — send it or clear it first, then fly solo`;
-        return;
-      }
+    const moved = await solo.set(!solo.on);
+    /* The half-typed-reply refusal lives in `Solo.set`, so the panel and the
+       control surface cannot forget it; this only has to draw it. */
+    if (!moved) {
+      if (solo.fault) skein.fault = solo.fault;
+      return;
     }
-    await solo.set(!solo.on);
-    if (solo.fault) skein.fault = solo.fault;
-    else leader.say(solo.on ? "flying solo — the books still report" : "flying with the others again");
+    leader.say(solo.on ? "flying solo — the books still report" : "flying with the others again");
   }
 
   async function togglePresence() {
@@ -6145,7 +6146,7 @@
     {/key}
   {/if}
   {#if showFlyway}
-    <Flyway onclose={() => (showFlyway = false)} />
+    <Flyway {solo} onclose={() => (showFlyway = false)} />
   {/if}
   {#if showTour}
     <Showcase onclose={() => (showTour = false)} />

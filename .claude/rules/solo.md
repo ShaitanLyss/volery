@@ -1,8 +1,10 @@
 ---
 paths:
   - "src/lib/solo.ts"
-  - "src/lib/Solo.svelte"
-  - "src-tauri/src/flyway/solo.rs"
+  - "src/lib/solo.svelte.ts"
+  - "src/lib/SoloPlate.svelte"
+  - "src-tauri/src/flyway/here.rs"
+  - "src-tauri/src/flyway/link.rs"
   - "src-tauri/flyway-core/src/fleet.rs"
 ---
 
@@ -120,7 +122,7 @@ the keyboard. A solo wall whose own cards ask still asks her here.
 ### The plate in the empty strip
 
 The left strip where the other walls' sections normally stand holds a small panel,
-rather than an empty gap that reads as a failure. `Solo.svelte`, at the head of the
+rather than an empty gap that reads as a failure. `SoloPlate.svelte`, at the head of the
 strip, one column wide, dotted border like another wall's region and no drop shadow: it
 is a note about the flyway's absence, not a card.
 

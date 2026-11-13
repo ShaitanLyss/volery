@@ -365,6 +365,12 @@ pub async fn subscribe(
     if link.tenure.is_closed() {
         return Err("this wall has left the flyway".into());
     }
+    /* **No frame is received while solo**, and the gate is here rather than in
+       the drawing (`solo.md`, *Two fabrics*): a surface that forgot to hide a
+       remote monitor must still not be able to open one. */
+    if link.solo_here() {
+        return Err(link.solo_refusal("screens"));
+    }
     let peer = link.peer_for(host).await?;
     let sid = link.media.next_sid.fetch_add(1, Ordering::Relaxed) + 1;
     let (tx, rx) = oneshot::channel();
@@ -737,7 +743,7 @@ impl Hosting {
             return;
         }
         /* Fresh, every time: the switch may have been turned off a second ago. */
-        if let Err(why) = fc::may_show(link.takes_work(), &self.me) {
+        if let Err(why) = fc::may_show(link.takes_work(), link.solo_here(), &self.me) {
             self.say(fc::K_CTL, sid, &Ctl::Refused { why }.to_body());
             return;
         }
@@ -856,7 +862,7 @@ impl Hosting {
             n = n.wrapping_add(1);
             if n % 4 == 0 && !link.takes_work() {
                 let sids: Vec<u32> = self.sessions.lock().map(|s| s.keys().copied().collect()).unwrap_or_default();
-                let why = fc::may_show(false, &self.me).err().unwrap_or_default();
+                let why = fc::may_show(false, link.solo_here(), &self.me).err().unwrap_or_default();
                 for sid in sids {
                     self.say(fc::K_CTL, sid, &Ctl::Refused { why: why.clone() }.to_body());
                     self.end(sid);

@@ -148,6 +148,33 @@ export function buildLine(w: Built, mine: string): string {
   }
 }
 
+/** The walls that cannot show this one as flying solo.
+ *
+ *  An older build never reads `Facts::solo`, so it does what it already did for
+ *  an away wall: it files rather than parks (right), and it draws this wall as
+ *  *not taking work* (not right, and not its fault). The panel says which
+ *  walls those are, because "why does it not say solo there" is otherwise a
+ *  question with no answer anywhere (`.claude/rules/solo.md`, *Compatibility*).
+ *
+ *  Empty when every other wall here speaks the word — the ordinary case between
+ *  two current builds — and empty on a wall with no build at all, which
+ *  `buildStanding` reads as `unsaid` and so is listed (the honest reading: an
+ *  older wall says nothing). */
+export function tooOldForSolo(rows: (Built & { host: string })[], mine: string): string[] {
+  return rows
+    .filter((w) => !w.me && (buildStanding(w, mine) === "unsaid" || buildStanding(w, mine) === "behind"))
+    .map((w) => w.host)
+    .filter(Boolean);
+}
+
+/** That list as one line, or nothing. */
+export function tooOldForSoloLine(hosts: string[]): string {
+  if (!hosts.length) return "";
+  if (hosts.length === 1)
+    return `${hosts[0]} runs an older volery — it will show this wall as not taking work rather than as flying solo`;
+  return `${hosts.length} walls here run an older volery and will show this wall as not taking work rather than as flying solo`;
+}
+
 /** The short form for a heading that has no room: only an older build, since the
  *  rest is not something to act on at a glance. */
 export function olderTag(w: Built | undefined, mine: string): string {

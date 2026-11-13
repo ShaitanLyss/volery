@@ -146,6 +146,15 @@ class Casts {
    *  view itself (`view.svelte.ts`), since where a vignette sits is about
    *  this window and not about the wall. */
   floats = $state<Float[]>(readFloats());
+  /** Flying solo (`solo.svelte.ts`): no monitor list from another wall is
+   *  held, no frame is asked for, and nothing floating at a remote screen is
+   *  drawn — while the floats themselves stay where they were put. */
+  solo = $state(false);
+
+  /** The vignettes to draw: all of them, or only this machine's while solo. */
+  get floatsShown(): Float[] {
+    return this.solo ? this.floats.filter((f) => !parseScreen(f.key).host) : this.floats;
+  }
   /** Whether each session's tile drives (`cast.ts::drivableAt`), as its tile
    *  decided it — immersive borrows the session and must not take the keys
    *  for a screen its tile only watches. */
@@ -309,18 +318,25 @@ class Casts {
    *  returns this machine's monitors alone, so the grid, chat view's sheet and
    *  the picker all follow with no second filter. */
   standDown() {
+    this.solo = true;
     this.elsewhere = [];
     for (const [id, live] of [...this.#live]) {
       if (parseScreen(live.key).host) this.detach(id);
     }
-    const kept = this.floats.filter((f) => !parseScreen(f.key).host);
-    if (kept.length !== this.floats.length) {
-      this.floats = kept;
-      saveFloats(this.floats);
-    }
+    /* **The vignettes are kept, not deleted.** They are where the tile was, and
+       the design's promise is that a remote tile returns to its place; the
+       first cut filtered them out of `floats` and saved, so a chat-view
+       vignette was gone for good (a review finding). `floatsShown` is what
+       stops drawing them while the shutter is down. */
     /* `all` is every screen, so it stays up and now offers only this machine's;
        a named remote screen has nothing left to show and the sheet closes. */
     if (this.sheet && this.sheet !== "all" && parseScreen(this.sheet).host) this.sheet = null;
+  }
+
+  /** And flying again: the next roster answers with the other walls' screens,
+   *  and the vignettes left in place are drawn where they were. */
+  standUp() {
+    this.solo = false;
   }
 
   /** The tile now shows a different screen. */
@@ -500,6 +516,15 @@ class Casts {
     type Row = { host: string; me: boolean; screens?: Monitor[] };
     const take = (rows: Row[]) => {
       if (!Array.isArray(rows)) return;
+      /* **Flying solo holds no other wall's monitors, whatever the roster
+         says.** The roster is a book and keeps crossing every tick, so a
+         `standDown` that only emptied the list would be refilled seconds later
+         and the grid, the sheet and the picker would offer screens that
+         `cast_open` now refuses (a review finding). */
+      if (this.solo) {
+        this.elsewhere = [];
+        return;
+      }
       this.elsewhere = rows
         .filter((r) => !r.me && Array.isArray(r.screens) && r.screens.length > 0)
         .map((r) => ({ host: r.host, name: r.host, monitors: r.screens ?? [] }));

@@ -14,6 +14,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { Listeners } from "./listeners";
+import { replies } from "./replies.svelte";
 import { soloSince } from "./solo";
 
 type Setup = { solo?: boolean; soloSince?: number | null };
@@ -78,18 +79,36 @@ export class Solo {
     }
   }
 
-  /** The switch itself. Never optimistic: the setting is Rust's, and a fault
-   *  is drawn rather than a state the wall does not have. */
-  async set(on: boolean) {
+  /** The switch itself, and **the one place the half-typed reply is guarded**.
+   *
+   *  Every surface goes through here — the chord, the panel's button and its
+   *  `s` key, the plate, the control surface — because the first cut had the
+   *  guard in the chord alone and the other two then took the far card down
+   *  with somebody's words in its dock (a review finding, 2026-11-13). Losing
+   *  what you were typing is the failure the hold rule exists to prevent
+   *  (`.claude/rules/solo.md`, *Entering*).
+   *
+   *  Never optimistic: the setting is Rust's, and a fault is drawn rather than
+   *  a state the wall does not have. Returns whether the state moved. */
+  async set(on: boolean): Promise<boolean> {
     this.fault = null;
+    if (on) {
+      const typed = replies.farTyped();
+      if (typed.length) {
+        this.fault = `not while you are typing to ${typed[0].about} — send it or clear it first, then fly solo`;
+        return false;
+      }
+    }
     try {
       await invoke("flyway_set_solo", { on });
       await this.refresh();
+      return this.on === on;
     } catch (e) {
       this.fault = typeof e === "string" ? e : e instanceof Error ? e.message : String(e ?? "");
       /* The state did not move, so the wall is right and only the switch is
          behind — refresh anyway in case it moved and the answer was lost. */
       await this.refresh();
+      return false;
     }
   }
 

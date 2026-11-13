@@ -101,7 +101,7 @@ use tokio::sync::Mutex;
 use super::act::{self, ActMsg};
 use super::analytics::AnalyticsMsg;
 use super::boards::{self, BoardMsg, Boards};
-use super::cards::{Arrived, Cards};
+use super::cards::{Arrived, Cards, CardsMsg};
 use super::fleet::{self, Act, Answer, Deliver, Facts, Fleet, FleetMsg, Origin, Outcome, PromptRequest, Refusal, Request, Spawn, Standing};
 use super::frame::Frame;
 use super::here;
@@ -607,7 +607,14 @@ impl Link {
     /// Read rather than cached, so the switch takes effect on the next frame
     /// with nothing to notify.
     fn solo_here(&self) -> bool {
-        self.store().and_then(|s| s.0.lock().ok().map(|c| here::solo(&c))).unwrap_or(false)
+        /* **A store that cannot be read reads as solo.** The losing direction
+           for a privacy switch is the one that keeps talking, and a wall whose
+           database is missing or wedged has no state to be honest about — the
+           books fail with it, and the plate says so. */
+        match self.store() {
+            Some(s) => s.0.lock().map(|c| here::solo(&c)).unwrap_or(true),
+            None => true,
+        }
     }
 
     /// The sentence a peer is told when it asks a solo wall for something that
@@ -629,6 +636,15 @@ impl Link {
     /// words that name the solo, and nothing is sent.
     fn solo_there(&self, host: &str) -> bool {
         self.fleet.lock().ok().and_then(|f| f.entry(host).map(|e| e.facts.solo)).unwrap_or(false)
+    }
+
+    /// Whether a cards frame names a host the roster says is flying solo. A
+    /// snapshot can outrun the announcement it was sent beside, and the roster
+    /// is the book: a solo wall's cards are history, whatever arrives.
+    fn cards_from_solo(&self, m: &CardsMsg) -> bool {
+        match m {
+            CardsMsg::Cards { host, .. } => self.solo_there(host),
+        }
     }
 
     fn solo_there_refusal(host: &str) -> String {
@@ -897,7 +913,10 @@ impl Link {
             let mut out = Vec::new();
             if current {
                 if let Ok(f) = self.fleet.lock() {
-                    out.extend(f.open(now).into_iter().map(Frame::Fleet));
+                    /* **The roster alone**, not `open`: its gossip is this
+                       wall's unanswered asks and answers, and saying one again
+                       would deliver it after the switch. */
+                    out.extend(f.open_roster(now).into_iter().map(Frame::Fleet));
                 }
             }
             return Ok(out);
@@ -1052,7 +1071,7 @@ impl Link {
                     fleet_spoke = true;
                     self.hear(m, from);
                 }
-                Frame::Cards(m) if !solo => {
+                Frame::Cards(m) if !solo && !self.cards_from_solo(&m) => {
                     let got = self.cards.lock().ok().and_then(|mut c| c.on(m, now));
                     if let Some(a) = got {
                         self.emit_cards(a);
@@ -1230,7 +1249,7 @@ impl Link {
                     fleet_spoke = true;
                     out.extend(self.hear(m, from.as_deref()).into_iter().map(Frame::Fleet));
                 }
-                Frame::Cards(m) if who.current && !solo => {
+                Frame::Cards(m) if who.current && !solo && !self.cards_from_solo(&m) => {
                     let got = self.cards.lock().ok().and_then(|mut c| c.on(m, now));
                     if let Some(a) = got {
                         self.emit_cards(a);
@@ -1343,10 +1362,24 @@ impl Link {
            than out of `Fleet::on` keeps this one concern in one place; a solo
            wall re-says it every tick and a second drop is a no-op. */
         if let FleetMsg::Roster { walls, .. } = &m {
-            if let Ok(mut c) = self.cards.lock() {
-                for w in walls.iter().filter(|w| w.wall.facts.solo) {
-                    c.depart(&w.wall.host);
+            let solo: Vec<String> =
+                walls.iter().filter(|w| w.wall.facts.solo).map(|w| w.wall.host.clone()).collect();
+            if !solo.is_empty() {
+                if let Ok(mut c) = self.cards.lock() {
+                    for host in &solo {
+                        c.depart(host);
+                    }
                 }
+                /* **And its billboard**, which is the other place one wall's
+                   work reaches another. Left up it would be drawn as current
+                   for the whole weekend — a solo wall is heard, so the
+                   three-days-unheard hiding never applies to it. */
+                if let Ok(mut b) = self.boards.lock() {
+                    for host in &solo {
+                        b.forget(host);
+                    }
+                }
+                crate::board::heard_from_afar(&self.app);
             }
         }
         let facts = self.facts();
@@ -1397,6 +1430,13 @@ impl Link {
     /// tool call waits on; the sentence arrives when the answer does.
     pub fn ask_spawn(self: &Arc<Self>, r: Request) -> Result<mpsc::Receiver<String>, String> {
         let now = self.now();
+        /* `open-a-card-there` is on the design's own list of what stops, and it
+           is the dearest thing on it — a card with a turn and its money on the
+           far machine. Refused on the asking side first, then for a solo
+           target. */
+        if self.solo_here() {
+            return Err(self.solo_refusal("cards on other walls"));
+        }
         if self.solo_there(&r.to) {
             return Err(Self::solo_there_refusal(&r.to));
         }
@@ -1496,6 +1536,19 @@ impl Link {
     /// a2a4468e's reason: a lid that lifts eight hours on is not when anybody
     /// wanted this to happen.
     pub fn reach_card(self: &Arc<Self>, act: Act, r: PromptRequest, note: Option<String>) -> Result<mpsc::Receiver<String>, String> {
+        /* **Both directions, at the one door every agent's cross-wall verb
+           comes through** (`send`, `send_files`, `recall`, `close`). A wall
+           flying solo sends nothing outward — its own cards go on running, but
+           a message, a recall or a close they ask for is traffic leaving this
+           machine — and a wall that is solo at the other end is named rather
+           than read as closed or too old, which is what the cleared `can` would
+           otherwise make of it. */
+        if self.solo_here() {
+            return Err(self.solo_refusal("messages to other walls"));
+        }
+        if self.solo_there(&r.to) {
+            return Err(Self::solo_there_refusal(&r.to));
+        }
         let keep_ms = fleet::ANSWER_KEPT_MS.max(fleet::patience_for(r.parcel.as_ref()));
         let now = self.now();
         let msg = self
@@ -2026,6 +2079,16 @@ impl Link {
             let m = l.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now));
             answer(l, m);
         };
+
+        /* **Nothing reaches a card here while the shutter is down**, and this
+           is the door that needed it most: `may_reach` lets an answer through
+           whatever the switch says, and it lets a child's message through too,
+           both of which would be a turn on a card while the wall is solo. The
+           asker is told why rather than left waiting — the design's rule is
+           that a request is answered, never ignored. */
+        if self.solo_here() {
+            return refuse(self, self.solo_refusal("messages to its cards"));
+        }
 
         let found = self.store().and_then(|store| {
             let conn = store.0.lock().ok()?;
@@ -3008,6 +3071,14 @@ impl Link {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(CARDS_EVERY).await;
             l.cards_due.store(false, Ordering::Release);
+            /* **The switch is read again here, not only at the door.** The
+               publish passed that check a moment before the setting was
+               written, and a snapshot sent after `stand_down_cards` would carry
+               a higher version than the empty one — a peer would put the cards
+               straight back up. */
+            if l.solo_here() {
+                return;
+            }
             let Some(m) = l.cards.lock().ok().and_then(|c| c.say(l.now())) else { return };
             for host in l.known_current() {
                 l.push(host, vec![Frame::Cards(m.clone())]);

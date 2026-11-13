@@ -361,7 +361,16 @@ pub fn split(events: &[Input]) -> (Vec<u8>, Vec<u8>) {
 /// fresh on every session open, and no second one. Seen and driven are one
 /// decision: a wall that lets another open cards on it has already let it run
 /// anything, and a screen is a smaller thing than that.
-pub fn may_show(takes_work: bool, me: &str) -> Result<(), String> {
+pub fn may_show(takes_work: bool, solo: bool, me: &str) -> Result<(), String> {
+    if solo {
+        /* Named apart from the switch: the switch's own value is kept for the
+           return, and telling somebody to turn it on would be telling them to
+           do something that changes nothing while the shutter is down. */
+        return Err(format!(
+            "{me} is flying solo — its accounts, allowance and usage still report, but its screens \
+             do not cross until it flies with the others again"
+        ));
+    }
     if takes_work {
         Ok(())
     } else {
@@ -915,9 +924,15 @@ mod tests {
 
     #[test]
     fn a_wall_shows_its_screens_exactly_when_it_takes_work() {
-        assert!(may_show(true, "AU-LT-285").is_ok());
-        let why = may_show(false, "AU-LT-285").unwrap_err();
+        assert!(may_show(true, false, "AU-LT-285").is_ok());
+        let why = may_show(false, false, "AU-LT-285").unwrap_err();
         assert!(why.contains("AU-LT-285") && why.contains("take work from other walls"));
+        /* A solo wall names the solo, not the switch: its switch keeps its
+           value for the return, so telling somebody to turn it on would be
+           telling them to do something that changes nothing now. */
+        let why = may_show(true, true, "AU-LT-285").unwrap_err();
+        assert!(why.contains("AU-LT-285") && why.contains("flying solo"), "{why}");
+        assert!(!why.contains("turn on"), "{why}");
         let m = crate::screen::Monitor {
             id: "0:0".into(),
             name: "panel".into(),
