@@ -535,7 +535,14 @@ use rules::{Measure, Period, PeriodKeys, Scope};
 
 static BOOK: OnceLock<Option<rules::Book>> = OnceLock::new();
 
-fn book() -> Option<&'static rules::Book> {
+/// The price book, for the one other place that writes a dollar down.
+///
+/// **The ingest prices an agent's cost as it folds it** (§4.4), because a cost
+/// is a fact about a date and a reader that recomputed it would move last
+/// March every time a rate changed. That makes two callers of one table and one
+/// function, which is the bargain: `rules::price` is the rule, and neither
+/// caller may grow its own.
+pub(crate) fn book() -> Option<&'static rules::Book> {
     BOOK.get_or_init(|| rules::parse_book(PRICING)).as_ref()
 }
 

@@ -18,7 +18,13 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { asSessionFacts, asToolTotals, type SessionFact } from "./analyticsbehaviour";
+import {
+  asAgents,
+  asSessionFacts,
+  asToolTotals,
+  type AgentRecord,
+  type SessionFact,
+} from "./analyticsbehaviour";
 import { asInvalidateRows, type InvalidateRow } from "./analyticswork";
 import { asActionWindow, type ActionWindow } from "./acts";
 import type { ToolTotal } from "./analytics";
@@ -47,6 +53,11 @@ export type BehaviourBundle = {
   changesUnread: boolean;
   /** The same for the gestures. */
   actionsUnread: boolean;
+  /** The subagents the wall recorded in the window (§4.4), with the cost they
+   *  were billed at the time. Empty on a wall that has folded none yet. */
+  agents: AgentRecord[];
+  /** The same for the agents. */
+  agentsUnread: boolean;
 };
 
 /** Everything the behaviour tab asks of the wall, in one value. The component
@@ -83,12 +94,21 @@ export async function readBehaviourWindow(from: number, to: number): Promise<Beh
   } catch {
     actionsUnread = true;
   }
+  let agents: AgentRecord[] = [];
+  let agentsUnread = false;
+  try {
+    agents = asAgents(await invoke<unknown>("agent_facts", { from, to }));
+  } catch {
+    agentsUnread = true;
+  }
   return {
     tools: asToolTotals(tools),
     sessions: asSessionFacts(sessions),
     changes,
     actions,
+    agents,
     changesUnread,
     actionsUnread,
+    agentsUnread,
   };
 }

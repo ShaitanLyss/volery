@@ -1182,6 +1182,7 @@ pub fn run() {
             analytics::allowance_costs,
             analytics::note_actions,
             analytics::action_facts,
+            analytics::agent_facts,
             analytics::write_report,
             analytics::work_facts,
             analytics::work_series,

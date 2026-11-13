@@ -757,3 +757,89 @@ export function dayBuckets(days: readonly SpawnDay[], max = 52): DayBucket[] {
   }
   return out;
 }
+
+/* ── the recorded agents (§4.4) ─────────────────────────────────────────────*/
+
+/** One `analytics_agent` row: a subagent the wall watched, with **the cost it
+ *  was billed at the time**. It is not recomputed anywhere in the front end,
+ *  which is what makes a reading of last March stay true when a rate changes. */
+export type AgentRecord = {
+  agent: string;
+  session: string;
+  parentAgent: string;
+  depth: number;
+  kind: string;
+  profile: string;
+  requestedModel: string;
+  startedAt: number;
+  endedAt: number | null;
+  turns: number;
+  costUsd: number;
+  account: string;
+  provider: string;
+};
+
+export function asAgents(raw: unknown): AgentRecord[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AgentRecord[] = [];
+  for (const one of raw) {
+    const r = obj(one);
+    if (!r) continue;
+    const agent = str(r.agent);
+    const startedAt = num(r.startedAt);
+    if (!agent || !(startedAt > 0)) continue;
+    const end = r.endedAt === null || r.endedAt === undefined ? null : num(r.endedAt);
+    out.push({
+      agent,
+      session: str(r.session),
+      parentAgent: str(r.parentAgent),
+      depth: num(r.depth),
+      kind: str(r.kind),
+      /* A profile the wall never saw is `unknown` at the face rather than an
+         empty cell that reads as a rendering fault. */
+      profile: str(r.profile),
+      requestedModel: str(r.requestedModel),
+      startedAt,
+      endedAt: end,
+      turns: num(r.turns),
+      costUsd: num(r.costUsd),
+      account: str(r.account),
+      provider: str(r.provider),
+    });
+  }
+  return out;
+}
+
+/** One line of the profile table: every agent that ran as `scout`, summed. An
+ *  agent whose spawning call the wall never found is its own `unknown` line
+ *  rather than guessed into a profile. */
+
+export type ProfileLine = {
+  profile: string;
+  agents: number;
+  turns: number;
+  cost: number;
+  /** The kinds seen under this profile, so `task` and `subagent` do not blend
+   *  into one word with no way to tell which it was. */
+  kinds: string[];
+};
+
+export function profileLines(rows: readonly AgentRecord[]): ProfileLine[] {
+  const by = new Map<string, ProfileLine & { kindSet: Set<string> }>();
+  for (const r of rows) {
+    const key = r.profile || "unknown";
+    let line = by.get(key);
+    if (!line) {
+      line = { profile: key, agents: 0, turns: 0, cost: 0, kinds: [], kindSet: new Set() };
+      by.set(key, line);
+    }
+    line.agents += 1;
+    line.turns += r.turns;
+    line.cost += r.costUsd;
+    if (r.kind) line.kindSet.add(r.kind);
+  }
+  return [...by.values()]
+    .map(({ kindSet, ...line }) => ({ ...line, kinds: [...kindSet].sort() }))
+    .sort((a, b) => b.cost - a.cost || b.turns - a.turns || a.profile.localeCompare(b.profile));
+}
+

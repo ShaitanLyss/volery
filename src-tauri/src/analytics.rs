@@ -2427,17 +2427,659 @@ fn write_chunk(
     }
     counts.sessions = session_rows.len() as i64;
 
-    /* 7. The moves, after the session rows so `affected` counts this session
+    /* 7. The agents (§4.4). **A subagent's cost is written down here, priced
+          at the rate in force at each of its requests**, and that is the whole
+          reason the column exists: a reading that recomputed it would move the
+          past every time a price changed, and the fine facts it would be summed
+          from are pruned at ninety days while these rows are kept. The rule is
+          `spend::rules::price`, the same function the spend read uses, so the
+          two cannot grow apart. A model the table does not know contributes
+          nothing rather than a zero, which is the same bargain the read makes
+          with `unpriced`. */
+    let mut agent_rows: Vec<AgentRow> = Vec::new();
+    if !facts.is_empty() {
+        let info = &prior.spawn;
+        let mut inputs: Vec<AgentInput> = Vec::new();
+        for (k, (s, _identity)) in &facts {
+            if k.agent.is_empty() {
+                continue;
+            }
+            let billed = crate::spend::rules::billed_model(&k.model, &k.provider);
+            let cost = crate::spend::book()
+                .and_then(|b| {
+                    crate::spend::rules::price(
+                        b,
+                        billed,
+                        k.at,
+                        s.input,
+                        s.output,
+                        s.cache_read,
+                        s.write_5m,
+                        s.write_1h,
+                    )
+                })
+                .unwrap_or(0.0);
+            inputs.push(AgentInput {
+                session: k.session.clone(),
+                agent: k.agent.clone(),
+                parent_agent: k.parent_agent.clone(),
+                depth: k.depth,
+                at: k.at,
+                requests: s.requests,
+                account: k.account.clone(),
+                provider: k.provider.clone(),
+                cost_usd: cost,
+            });
+        }
+        agent_rows = agents_of(&inputs, info);
+        write_agents(&tx, host, &agent_rows)?;
+    }
+
+    /* 8. The moves, after the session rows so `affected` counts this session
           too: a switch is a fact about how many cards were working, and the
           card that moved is one of them. */
     counts.invalidations += write_switches(&tx, host, &switches)?;
 
-    /* 8. Which days moved, for the digest refresh after the commit. */
-    counts.days = touched_days(&hours, &session_rows, now);
+    /* 9. Which days moved, for the digest refresh after the commit. */
+    counts.days = touched_days(&hours, &session_rows, &agent_rows, now);
 
     tx.commit().map_err(|e| format!("analytics: commit: {e}"))?;
     Ok(counts)
 }
+
+/* ── the agents (§4.4) ─────────────────────────────────────────────────────*/
+
+/* LIFT-BEGIN agents
+ *
+ * `tools/lift-agents.ts` compiles this block, with the real `analytics_agent`
+ * table lifted out of `store.rs`, and runs its assertions against an in-memory
+ * SQLite. `cargo test` cannot link on a machine with no MSVC, and the
+ * arithmetic here is the kind no reading can check: whether a second chunk adds
+ * to an agent or replaces it, and whether a spawn the wall cannot find leaves a
+ * hole or a guess. */
+
+/// What one subagent's requests add up to inside one chunk. **The cost is
+/// priced by the caller**, at the fact's own instant, because the rate in force
+/// is a fact about a date and this module has no business reading a price.
+#[derive(Clone, Debug)]
+pub struct AgentInput {
+    pub session: String,
+    pub agent: String,
+    pub parent_agent: String,
+    pub depth: i64,
+    pub at: i64,
+    pub requests: i64,
+    pub account: String,
+    pub provider: String,
+    pub cost_usd: f64,
+}
+
+/// One row of `analytics_agent`, as this chunk knows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentRow {
+    pub agent: String,
+    pub session: String,
+    pub parent_agent: String,
+    pub depth: i64,
+    pub kind: String,
+    pub profile: String,
+    pub requested_model: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub turns: i64,
+    pub cost_usd: f64,
+    pub account: String,
+    pub provider: String,
+}
+
+/// How long a profile name may be. A `subagent_type` is a word (`scout`,
+/// `review`); anything longer is not one, and it is drawn in a table.
+const PROFILE_KEEP: usize = 64;
+
+/// What the call that spawned a subagent knew: which tool made it, the profile
+/// it asked for (the `subagent_type` a person reads as `scout` or `review`),
+/// and the model it requested, which the face compares against what ran.
+#[derive(Clone, Debug, Default)]
+pub struct SpawnInfo {
+    pub tool: String,
+    pub profile: String,
+    pub requested_model: String,
+}
+
+/// A tool call's own name, in §4.4's three words. An agent is spawned by
+/// `Agent` or `Task`, and a `Workflow`'s own children are the third kind;
+/// anything else that carries a child id is drawn as a subagent rather than
+/// dropped, because most of one is better than none.
+pub fn agent_kind(tool: &str) -> &'static str {
+    match tool {
+        "Task" => "task",
+        "Workflow" => "workflow",
+        _ => "subagent",
+    }
+}
+
+/// Fold a chunk's subagent facts into one row per agent.
+///
+/// **`turns` is the request count**, and that is the only boundary a subagent's
+/// transcript has: a card's turn is opened by a prompt and closed by a result,
+/// while a subagent is a run of requests under one id. `ended_at` is the end of
+/// the bucket it was last seen in rather than the instant it stopped, because a
+/// five-minute bucket is all the fine tier records.
+pub fn agents_of(inputs: &[AgentInput], info: &HashMap<(String, String), SpawnInfo>) -> Vec<AgentRow> {
+    let mut rows: std::collections::BTreeMap<(String, String), AgentRow> = Default::default();
+    for i in inputs {
+        if i.agent.is_empty() {
+            continue;
+        }
+        let key = (i.session.clone(), i.agent.clone());
+        let known = info.get(&key);
+        let row = rows.entry(key).or_insert_with(|| AgentRow {
+            agent: i.agent.clone(),
+            session: i.session.clone(),
+            parent_agent: i.parent_agent.clone(),
+            depth: i.depth,
+            kind: known.map(|k| agent_kind(&k.tool).to_string()).unwrap_or_default(),
+            profile: known.map(|k| k.profile.clone()).unwrap_or_default(),
+            requested_model: known.map(|k| k.requested_model.clone()).unwrap_or_default(),
+            started_at: i.at,
+            ended_at: i.at + BUCKET_MS,
+            turns: 0,
+            cost_usd: 0.0,
+            account: i.account.clone(),
+            provider: i.provider.clone(),
+        });
+        row.started_at = row.started_at.min(i.at);
+        row.ended_at = row.ended_at.max(i.at + BUCKET_MS);
+        row.turns += i.requests;
+        row.cost_usd += i.cost_usd;
+        /* A parent or a depth a later bucket proves is kept; the empty string
+           and the zero are "not proven", not a value. */
+        if row.parent_agent.is_empty() && !i.parent_agent.is_empty() {
+            row.parent_agent = i.parent_agent.clone();
+        }
+        row.depth = row.depth.max(i.depth);
+        if row.account == "unknown" && i.account != "unknown" {
+            row.account = i.account.clone();
+        }
+        if row.provider == "unknown" && i.provider != "unknown" {
+            row.provider = i.provider.clone();
+        }
+    }
+    rows.into_values().collect()
+}
+
+/// Write them. **Additive, exactly like the facts beside them**: the chunk's
+/// records are already deduped by `usage_seen`, so a row written twice is a
+/// chunk folded twice, and what it adds is nothing.
+pub fn write_agents(
+    conn: &Connection,
+    host: &str,
+    rows: &[AgentRow],
+) -> Result<usize, String> {
+    /* **The conflict target is the table's whole primary key**, `(agent_id,
+       session, host)`. Naming two of the three matches no unique constraint and
+       SQLite refuses the statement at prepare, which would have failed every
+       analytics pass and rolled back the facts with it.
+       **And `MAX` propagates NULL.** `ended_at` is nullable, so a row from a
+       peer can carry none; bare `MAX(NULL, x)` is NULL, which would leave that
+       agent still-running in every window and every day for ever. The inner
+       `COALESCE` is the whole of that fix. */
+    let mut sql = conn
+        .prepare(
+            "INSERT INTO analytics_agent
+               (agent_id, session, host, parent_agent, depth, kind, requested_model, profile,
+                started_at, ended_at, turns, cost_usd, account, provider)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+             ON CONFLICT(agent_id, session, host) DO UPDATE SET
+               started_at = MIN(started_at, excluded.started_at),
+               ended_at = MAX(COALESCE(ended_at, excluded.ended_at), excluded.ended_at),
+               turns = turns + excluded.turns,
+               cost_usd = cost_usd + excluded.cost_usd,
+               depth = MAX(depth, excluded.depth),
+               parent_agent = CASE WHEN parent_agent = '' THEN excluded.parent_agent ELSE parent_agent END,
+               kind = CASE WHEN excluded.kind <> '' THEN excluded.kind ELSE kind END,
+               profile = CASE WHEN excluded.profile <> '' THEN excluded.profile ELSE profile END,
+               requested_model = CASE WHEN excluded.requested_model <> ''
+                                      THEN excluded.requested_model ELSE requested_model END,
+               account = CASE WHEN account = 'unknown' THEN excluded.account ELSE account END,
+               provider = CASE WHEN provider = 'unknown' THEN excluded.provider ELSE provider END",
+        )
+        .map_err(|e| format!("analytics: agents: {e}"))?;
+    let mut written = 0;
+    for r in rows {
+        /* **Every text a face draws goes through the one cap and the one
+           scrub.** These three come from a tool call's JSON, so a model can
+           put anything in them; the wire clips them again in `canon_agent`,
+           which is the second layer rather than the only one. */
+        let kind = crate::clip::keep(if r.kind.is_empty() { "subagent" } else { &r.kind }, 32).kept;
+        let profile = crate::clip::keep(&r.profile, PROFILE_KEEP).kept;
+        let requested = crate::clip::keep(&r.requested_model, 64).kept;
+        written += sql
+            .execute(params![
+                r.agent,
+                r.session,
+                host,
+                r.parent_agent,
+                r.depth,
+                kind,
+                requested,
+                profile,
+                r.started_at,
+                r.ended_at,
+                r.turns,
+                r.cost_usd,
+                r.account,
+                r.provider
+            ])
+            .map_err(|e| format!("analytics: agents: {e}"))? as usize;
+    }
+    Ok(written)
+}
+
+/// Who spawned each subagent, read from both places it can be.
+///
+/// **Two sources because neither is whole.** `tool_fact` holds a call an
+/// earlier pass folded, and `tool_pending` holds one whose result has arrived
+/// but whose turn has not. Neither holds a foreground call whose result is
+/// still in flight, and that is the common case: the child id arrives only in
+/// the result, which one pass writes *after* the chunks that fold the agent's
+/// requests. That gap is `repair_agents`'s job, not this function's.
+///
+/// **Scoped to the batch's sessions.** This runs with the store's one mutex
+/// held, and unscoped it is a scan of every tool call ever recorded, once per
+/// chunk of a deep pass.
+fn spawn_info_for(
+    conn: &Connection,
+    sessions: &[String],
+) -> Result<HashMap<(String, String), SpawnInfo>, String> {
+    if sessions.is_empty() {
+        return Ok(HashMap::new());
+    }
+    /* **Scoped to the batch's sessions, because this runs inside the store's
+       one mutex.** Unscoped, it is a scan of every tool call ever recorded,
+       once per chunk of a deep first pass, which is the freeze the chunking
+       exists to prevent. This is a set of indexed lookups proportional to the
+       batch. */
+    let mut out: HashMap<(String, String), SpawnInfo> = HashMap::new();
+    let marks = (1..=sessions.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    for sql in [
+        format!(
+            "SELECT session, child_agent, tool, target, requested_model
+               FROM tool_pending WHERE child_agent <> '' AND session IN ({marks})"
+        ),
+        format!(
+            "SELECT session, child_agent, tool, target, requested_model
+               FROM tool_fact WHERE child_agent <> '' AND session IN ({marks})"
+        ),
+    ] {
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("analytics: agents: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(sessions.iter()), |r| {
+                Ok((
+                    (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                    SpawnInfo {
+                        tool: r.get(2)?,
+                        profile: r.get(3)?,
+                        requested_model: r.get(4)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("analytics: agents: {e}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| format!("analytics: agents: {e}"))?;
+        for (key, info) in rows {
+            out.entry(key).or_insert(info);
+        }
+    }
+    Ok(out)
+}
+
+/// **Fill in what was not known when the row was written.**
+///
+/// A foreground `Agent` call's child id arrives only in the call's *result*,
+/// and one pass writes the requests, then the calls, then the results. So the
+/// chunk that folds a subagent's requests cannot know which profile spawned it:
+/// on the pass that sees both, the id is not written yet, and by the next pass
+/// the agent's requests are all `usage_seen`. Without this, every foreground
+/// subagent would be `unknown` for ever, which is the column the whole feature
+/// exists to fill.
+///
+/// Only rows whose profile is empty are touched, so it converges: once a profile
+/// is written the row stops matching.
+fn repair_agents(
+    conn: &Connection,
+    agents: &[(String, String)],
+    sessions: &[String],
+) -> Result<usize, String> {
+    if agents.is_empty() {
+        return Ok(0);
+    }
+    let info = spawn_info_for(conn, sessions)?;
+    let mut sql = conn
+        .prepare(
+            "UPDATE analytics_agent SET kind = ?3, profile = ?4, requested_model = ?5
+              WHERE session = ?1 AND agent_id = ?2 AND profile = ''",
+        )
+        .map_err(|e| format!("analytics: agents: {e}"))?;
+    let mut written = 0;
+    for (session, agent) in agents {
+        let Some(known) = info.get(&(session.clone(), agent.clone())) else {
+            continue;
+        };
+        let profile = crate::clip::keep(&known.profile, PROFILE_KEEP).kept;
+        if profile.is_empty() {
+            continue;
+        }
+        let model = crate::clip::keep(&known.requested_model, 64).kept;
+        written += sql
+            .execute(params![
+                session,
+                agent,
+                agent_kind(&known.tool),
+                profile,
+                model
+            ])
+            .map_err(|e| format!("analytics: agents: {e}"))? as usize;
+    }
+    Ok(written)
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+
+    const NOW: i64 = 1_764_000_000_000;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            /* **This is the table the store has after its rungs carry it**,
+               and the lift checks it against `store.rs` character for character
+               before it compiles anything. It was restated with a two-column
+               key once and passed every assertion while the real writer's
+               conflict target named two of the real key's three columns, which
+               SQLite refuses at prepare. */
+            "CREATE TABLE analytics_agent (
+                 agent_id        TEXT NOT NULL,
+                 session         TEXT NOT NULL,
+                 host            TEXT NOT NULL,
+                 parent_agent    TEXT NOT NULL DEFAULT '',
+                 depth           INTEGER NOT NULL DEFAULT 0,
+                 kind            TEXT NOT NULL DEFAULT 'subagent',
+                 requested_model TEXT NOT NULL DEFAULT '',
+                 started_at      INTEGER NOT NULL,
+                 ended_at        INTEGER,
+                 turns           INTEGER NOT NULL DEFAULT 0,
+                 cost_usd        REAL NOT NULL DEFAULT 0,
+                 account         TEXT NOT NULL DEFAULT 'unknown',
+                 provider        TEXT NOT NULL DEFAULT 'unknown',
+                 profile         TEXT NOT NULL DEFAULT '',
+                 PRIMARY KEY (agent_id, session, host)
+             );
+             /* The five columns `spawn_info` reads; the real tables are wider. */
+             CREATE TABLE tool_pending (
+                 session TEXT NOT NULL, child_agent TEXT NOT NULL DEFAULT '',
+                 tool TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
+                 requested_model TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE tool_fact (
+                 session TEXT NOT NULL, child_agent TEXT NOT NULL DEFAULT '',
+                 tool TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
+                 requested_model TEXT NOT NULL DEFAULT ''
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn input(at: i64, requests: i64, cost: f64) -> AgentInput {
+        AgentInput {
+            session: "s1".into(),
+            agent: "a1".into(),
+            parent_agent: String::new(),
+            depth: 1,
+            at,
+            requests,
+            account: "lyss".into(),
+            provider: "claude".into(),
+            cost_usd: cost,
+        }
+    }
+
+    fn spawn(tool: &str, profile: &str, model: &str) -> HashMap<(String, String), SpawnInfo> {
+        let mut m = HashMap::new();
+        m.insert(
+            ("s1".to_string(), "a1".to_string()),
+            SpawnInfo {
+                tool: tool.into(),
+                profile: profile.into(),
+                requested_model: model.into(),
+            },
+        );
+        m
+    }
+
+    fn row(conn: &Connection) -> (i64, i64, i64, f64, String, String, String) {
+        conn.query_row(
+            "SELECT turns, started_at, ended_at, cost_usd, kind, profile, parent_agent
+               FROM analytics_agent WHERE agent_id = 'a1' AND session = 's1'",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_chunk_is_one_row_per_agent_spanning_its_buckets() {
+        let rows = agents_of(
+            &[input(NOW, 3, 0.10), input(NOW + BUCKET_MS, 2, 0.05)],
+            &spawn("Agent", "scout", "claude-opus-5-5"),
+        );
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.turns, 5);
+        assert_eq!(r.started_at, NOW);
+        assert_eq!(r.ended_at, NOW + 2 * BUCKET_MS);
+        assert!((r.cost_usd - 0.15).abs() < 1e-9);
+        assert_eq!(r.kind, "subagent");
+        assert_eq!(r.profile, "scout");
+        assert_eq!(r.requested_model, "claude-opus-5-5");
+    }
+
+    #[test]
+    fn a_second_chunk_adds_to_the_row_rather_than_replacing_it() {
+        let conn = db();
+        let first = agents_of(&[input(NOW, 3, 0.10)], &spawn("Agent", "scout", ""));
+        write_agents(&conn, "wall", &first).unwrap();
+        let second = agents_of(&[input(NOW + 10 * BUCKET_MS, 2, 0.05)], &spawn("Agent", "scout", ""));
+        write_agents(&conn, "wall", &second).unwrap();
+        let (turns, started, ended, cost, _, profile, _) = row(&conn);
+        assert_eq!(turns, 5);
+        assert_eq!(started, NOW);
+        assert_eq!(ended, NOW + 11 * BUCKET_MS);
+        assert!((cost - 0.15).abs() < 1e-9);
+        assert_eq!(profile, "scout");
+    }
+
+    /// A spawn the wall cannot find is a **hole, not a guess**: the kind falls
+    /// to the column's own `subagent`, the profile stays empty, and the row
+    /// still says what it cost. The alternative was inventing `scout`.
+    #[test]
+    fn an_unfound_spawn_leaves_a_hole() {
+        let conn = db();
+        let rows = agents_of(&[input(NOW, 1, 0.02)], &HashMap::new());
+        assert_eq!(rows[0].kind, "");
+        assert_eq!(rows[0].profile, "");
+        write_agents(&conn, "wall", &rows).unwrap();
+        let (_, _, _, _, kind, profile, _) = row(&conn);
+        assert_eq!(kind, "subagent");
+        assert_eq!(profile, "");
+    }
+
+    #[test]
+    fn a_parent_and_a_depth_once_proven_are_kept() {
+        let conn = db();
+        let mut first = input(NOW, 1, 0.0);
+        first.parent_agent = String::new();
+        first.depth = 0;
+        write_agents(&conn, "wall", &agents_of(&[first], &HashMap::new())).unwrap();
+        let mut later = input(NOW + BUCKET_MS, 1, 0.0);
+        later.parent_agent = "parent".into();
+        later.depth = 2;
+        write_agents(&conn, "wall", &agents_of(&[later], &HashMap::new())).unwrap();
+        let (_, _, _, _, _, _, parent) = row(&conn);
+        assert_eq!(parent, "parent");
+        let depth: i64 = conn
+            .query_row(
+                "SELECT depth FROM analytics_agent WHERE agent_id = 'a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(depth, 2);
+    }
+
+    #[test]
+    fn an_unknown_funding_is_replaced_by_a_known_one() {
+        let conn = db();
+        let mut first = input(NOW, 1, 0.0);
+        first.account = "unknown".into();
+        first.provider = "unknown".into();
+        write_agents(&conn, "wall", &agents_of(&[first], &HashMap::new())).unwrap();
+        let mut later = input(NOW + BUCKET_MS, 1, 0.0);
+        later.account = "tx-team".into();
+        later.provider = "deepseek".into();
+        write_agents(&conn, "wall", &agents_of(&[later], &HashMap::new())).unwrap();
+        let (account, provider): (String, String) = conn
+            .query_row(
+                "SELECT account, provider FROM analytics_agent WHERE agent_id = 'a1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((account.as_str(), provider.as_str()), ("tx-team", "deepseek"));
+    }
+
+    #[test]
+    fn a_tasks_kind_is_task_and_a_workflows_is_workflow() {
+        assert_eq!(agent_kind("Task"), "task");
+        assert_eq!(agent_kind("Workflow"), "workflow");
+        assert_eq!(agent_kind("Agent"), "subagent");
+        assert_eq!(agent_kind("something new"), "subagent");
+    }
+
+    /// **Both places, because neither is whole.** A call an earlier pass folded
+    /// lives in `tool_fact`; one this pass has not reached is still pending.
+    #[test]
+    fn a_spawn_is_found_on_either_side() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO tool_fact (session, child_agent, tool, target, requested_model)
+             VALUES ('s1', 'a1', 'Task', 'review', 'claude-sonnet-5-5')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_pending (session, child_agent, tool, target, requested_model)
+             VALUES ('s1', 'a2', 'Agent', 'scout', '')",
+            [],
+        )
+        .unwrap();
+        let info = spawn_info_for(&conn, &["s1".to_string()]).unwrap();
+        assert_eq!(info.get(&("s1".into(), "a1".into())).unwrap().tool, "Task");
+        assert_eq!(info.get(&("s1".into(), "a2".into())).unwrap().profile, "scout");
+        /* Scoped: another session's spawn is not this batch's business. */
+        conn.execute(
+            "INSERT INTO tool_pending (session, child_agent, tool, target, requested_model)
+             VALUES ('s2', 'a3', 'Agent', 'review', '')",
+            [],
+        )
+        .unwrap();
+        let scoped = spawn_info_for(&conn, &["s1".to_string()]).unwrap();
+        assert!(!scoped.contains_key(&("s2".into(), "a3".into())));
+    }
+
+    /// **The foreground case.** A subagent's chunk is written before the call's
+    /// result has landed, so its profile is empty; the repair runs after the
+    /// results and fills it. Without this the table would say `unknown` for
+    /// every agent that ever ran, which is the column the feature is for.
+    #[test]
+    fn a_row_waiting_on_its_call_is_repaired() {
+        let conn = db();
+        let rows = agents_of(&[input(NOW, 3, 0.2)], &HashMap::new());
+        write_agents(&conn, "wall", &rows).unwrap();
+        let (_, _, _, _, kind, profile, _) = row(&conn);
+        assert_eq!((kind.as_str(), profile.as_str()), ("subagent", ""));
+        /* The result lands, naming the child. */
+        conn.execute(
+            "INSERT INTO tool_pending (session, child_agent, tool, target, requested_model)
+             VALUES ('s1', 'a1', 'Agent', 'scout', 'claude-opus-5-5')",
+            [],
+        )
+        .unwrap();
+        let n = repair_agents(
+            &conn,
+            &[("s1".to_string(), "a1".to_string())],
+            &["s1".to_string()],
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let (_, _, _, _, kind, profile, _) = row(&conn);
+        assert_eq!((kind.as_str(), profile.as_str()), ("subagent", "scout"));
+        let model: String = conn
+            .query_row(
+                "SELECT requested_model FROM analytics_agent WHERE agent_id = 'a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, "claude-opus-5-5");
+        /* And it converges: a second repair touches nothing. */
+        assert_eq!(
+            repair_agents(&conn, &[("s1".into(), "a1".into())], &["s1".into()]).unwrap(),
+            0
+        );
+        /* The turns and the cost were not disturbed by the repair. */
+        assert_eq!(row(&conn).0, 3);
+    }
+
+    /// The other half of the contract: an agent whose call the wall never finds
+    /// stays empty rather than being repaired into a guess.
+    #[test]
+    fn a_repair_with_no_call_leaves_the_row_alone() {
+        let conn = db();
+        write_agents(&conn, "wall", &agents_of(&[input(NOW, 1, 0.0)], &HashMap::new())).unwrap();
+        assert_eq!(
+            repair_agents(&conn, &[("s1".into(), "a1".into())], &["s1".into()]).unwrap(),
+            0
+        );
+        assert_eq!(row(&conn).5, "");
+    }
+
+    #[test]
+    fn a_card_own_requests_are_not_agents() {
+        let mut card = input(NOW, 4, 0.5);
+        card.agent = String::new();
+        assert!(agents_of(&[card], &HashMap::new()).is_empty());
+    }
+}
+
+/* LIFT-END agents */
 
 /// The key of one `prompt_hour` row. Its grain is §17's, and it is *wider* than
 /// `usage_hour`'s in one place: `kind` is a dimension here, so the mix, the
@@ -4423,6 +5065,15 @@ fn flush(
         };
         counts.results += written;
     }
+    /* **After the results, because that is when a foreground spawn becomes
+       knowable.** The child id arrives in the call's result, and the chunks
+       above ran before it landed; this fills the profile on the rows already
+       written. One extra lock for the batch, only when it held agents. */
+    if !agents.is_empty() {
+        let spawned: Vec<String> = agents.iter().map(|(s, _)| s.clone()).collect();
+        let conn = conns.lock().map_err(|_| "the store is wedged".to_string())?;
+        repair_agents(&conn, &agents, &spawned)?;
+    }
     /* A receipt is a fact of its own and waits for no turn (§3.9). */
     for part in batch.receipts.chunks(chunk.max(1)) {
         let written = {
@@ -4543,6 +5194,10 @@ struct Prior {
     identity: HashMap<String, Option<String>>,
     /// `(session, agent)` → the parent and depth a previous pass proved.
     agents: HashMap<(String, String), Option<(String, i64)>>,
+    /// `(session, agent)` → the call that spawned it, for the profile a
+    /// subagent's row carries. Read once here rather than per chunk, so the
+    /// store's mutex is held for the batch and not for the table.
+    spawn: HashMap<(String, String), SpawnInfo>,
 }
 
 impl Prior {
@@ -4573,6 +5228,7 @@ impl Prior {
         Ok(Prior {
             identity,
             agents: known,
+            spawn: spawn_info_for(conn, sessions)?,
         })
     }
 }
@@ -5182,15 +5838,25 @@ fn day_start_of(day: &str) -> Result<i64, String> {
 /// Bounded by the fine tier's own retention, since a record older than that is
 /// never written, and by a hard ceiling so a row with an impossible
 /// `started_at` costs a hundred reads rather than twenty thousand.
-fn touched_days(hours: &HashMap<HourKey, Sums>, sessions: &[SessionWrite], now: i64) -> BTreeSet<String> {
+fn touched_days(
+    hours: &HashMap<HourKey, Sums>,
+    sessions: &[SessionWrite],
+    agents: &[AgentRow],
+    now: i64,
+) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for k in hours.keys() {
         out.insert(day_key(k.hour));
     }
     let floor = now - FINE_KEEP_MS;
-    for s in sessions {
-        let from = s.started_at.max(floor).min(now);
-        let to = if s.ended_at > 0 { s.ended_at.min(now) } else { now }.max(from);
+    /* **Three sidecars, not two.** A session spans its requests; an agent runs
+       inside one, and its `ended_at` is the end of the bucket it was last seen
+       in, which at midnight is the *next* day. A day reached only by that spill
+       would never be refreshed, so its digest would be missing or stale and the
+       manifest would not advertise the agents it holds. */
+    let span = |started: i64, ended: i64, out: &mut BTreeSet<String>| {
+        let from = started.max(floor).min(now);
+        let to = if ended > 0 { ended.min(now) } else { now }.max(from);
         let mut at = from - from.rem_euclid(DAY_MS);
         for _ in 0..400 {
             if at > to {
@@ -5199,6 +5865,12 @@ fn touched_days(hours: &HashMap<HourKey, Sums>, sessions: &[SessionWrite], now: 
             out.insert(day_key(at));
             at += DAY_MS;
         }
+    };
+    for s in sessions {
+        span(s.started_at, s.ended_at, &mut out);
+    }
+    for a in agents {
+        span(a.started_at, a.ended_at, &mut out);
     }
     out
 }
@@ -6895,6 +7567,86 @@ pub struct SessionFact {
 
 pub const SESSION_FACT_CAP: usize = 20_000;
 
+/// One recorded subagent (§4.4), as a window reads it. The cost is the number
+/// written when it was folded, priced at its own dates, and is **not**
+/// recomputed here: that is the whole point of storing it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFact {
+    pub agent: String,
+    pub session: String,
+    pub parent_agent: String,
+    pub depth: i64,
+    pub kind: String,
+    pub profile: String,
+    pub requested_model: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub turns: i64,
+    pub cost_usd: f64,
+    pub account: String,
+    pub provider: String,
+}
+
+/// Agents that overlap the window, by the same rule the sessions use: one that
+/// was still running at the window's edge belongs to what the window counts.
+pub fn agent_fact_rows(conn: &Connection, from: i64, to: i64) -> Result<Vec<AgentFact>, String> {
+    if to <= from {
+        return Err(format!(
+            "analytics: a window ending at {to} does not start after {from}"
+        ));
+    }
+    const CAP: usize = 5_000;
+    let mut stmt = conn
+        .prepare(
+            "SELECT agent_id, session, parent_agent, depth, kind, profile, requested_model,
+                    started_at, ended_at, turns, cost_usd, account, provider
+               FROM analytics_agent
+              WHERE started_at < ?2 AND COALESCE(ended_at, ?2) > ?1
+              ORDER BY started_at
+              LIMIT ?3",
+        )
+        .map_err(|e| format!("analytics: agents: {e}"))?;
+    let rows = stmt
+        .query_map(params![from, to, CAP as i64 + 1], |r| {
+            Ok(AgentFact {
+                agent: r.get(0)?,
+                session: r.get(1)?,
+                parent_agent: r.get(2)?,
+                depth: r.get(3)?,
+                kind: r.get(4)?,
+                profile: r.get(5)?,
+                requested_model: r.get(6)?,
+                started_at: r.get(7)?,
+                ended_at: r.get(8)?,
+                turns: r.get(9)?,
+                cost_usd: r.get(10)?,
+                account: r.get(11)?,
+                provider: r.get(12)?,
+            })
+        })
+        .map_err(|e| format!("analytics: agents: {e}"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| format!("analytics: agents: {e}"))?;
+    if rows.len() > CAP {
+        return Err(format!(
+            "analytics: that window holds more than {CAP} agents, so it is refused rather than \
+             truncated: ask for a narrower one"
+        ));
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+pub async fn agent_facts(app: AppHandle, from: i64, to: i64) -> Result<Vec<AgentFact>, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        agent_fact_rows(&conn, from, to)
+    })
+    .await?
+}
+
 /// One `analytics_session` row off a reader, in the column order both queries
 /// below select. Shared so a card's life and a window cannot disagree about
 /// what a session row is.
@@ -8404,18 +9156,27 @@ mod action_tests {
     #[test]
     fn a_view_is_not_a_card() {
         let conn = db();
+        /* **The chord is the one that shipped.** `space n a` targets
+           `analytics`, which is a panel's name and not a card, and folding it
+           in drew a card called `analytic` with no visits at all (found in a
+           lab on 2026-11-13). */
         note_action_rows(
             &conn,
             "wall",
-            &[note(NOW, "view", "chat", 1), note(NOW, "click", "", 4)],
+            &[
+                note(NOW, "view", "chat", 1),
+                note(NOW, "leader", "analytics", 1),
+                note(NOW, "click", "", 4),
+            ],
             &[],
             NOW,
         )
         .unwrap();
         let w = action_window(&conn, NOW, NOW + MIN, ACTION_MINUTE_MS, NOW).unwrap();
         assert!(w.cards.is_empty());
-        /* And the counts are still there for the rate. */
+        /* And the counts are still there for the rate and the kinds. */
         assert!(w.series.iter().any(|s| s.kind == "view"));
+        assert!(w.series.iter().any(|s| s.kind == "leader"));
     }
 
     #[test]
@@ -12282,7 +13043,7 @@ mod tests {
             turns: 3,
             endings_json: "{}".into(),
         };
-        let days = touched_days(&HashMap::new(), std::slice::from_ref(&s), start + 2 * DAY_MS);
+        let days = touched_days(&HashMap::new(), std::slice::from_ref(&s), &[], start + 2 * DAY_MS);
         assert_eq!(days.len(), 3, "{days:?}");
         assert!(days.contains(&day));
         assert!(days.contains(&crate::flyway::analytics::day_key(start + DAY_MS)));
@@ -12304,7 +13065,7 @@ mod tests {
             },
             Sums::default(),
         );
-        let days = touched_days(&hours, &[], start);
+        let days = touched_days(&hours, &[], &[], start);
         assert_eq!(
             days.iter().next().map(String::as_str),
             Some(crate::flyway::analytics::day_key(start - 40 * DAY_MS).as_str())

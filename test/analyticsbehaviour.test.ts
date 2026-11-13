@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ATTRIBUTION_GAP,
+  asAgents,
   asSessionFacts,
   asToolTotals,
   bytesSaid,
@@ -14,6 +15,7 @@ import {
   habitSaid,
   isSwap,
   latencySaid,
+  profileLines,
   rateSaid,
   serverPoints,
   shareSaid,
@@ -584,5 +586,79 @@ describe("saying it", () => {
     expect(buckets.every((b) => b.days >= 1 && b.days <= Math.ceil(366 / 52))).toBe(true);
     /* Few days are themselves: a week draws seven bars, labelled by day. */
     expect(dayBuckets(days.slice(0, 7), 52).map((b) => b.days)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+  });
+});
+
+describe("the recorded agents", () => {
+  const raw = [
+    {
+      agent: "a1",
+      session: "s1",
+      parentAgent: "",
+      depth: 1,
+      kind: "subagent",
+      profile: "scout",
+      requestedModel: "",
+      startedAt: 1000,
+      endedAt: 2000,
+      turns: 4,
+      costUsd: 0.5,
+      account: "lyss",
+      provider: "claude",
+    },
+    {
+      agent: "a2",
+      session: "s1",
+      parentAgent: "",
+      depth: 1,
+      kind: "subagent",
+      profile: "scout",
+      requestedModel: "claude-sonnet-5-5",
+      startedAt: 3000,
+      endedAt: null,
+      turns: 2,
+      costUsd: 0.25,
+      account: "lyss",
+      provider: "claude",
+    },
+    {
+      agent: "a3",
+      session: "s2",
+      parentAgent: "a1",
+      depth: 2,
+      kind: "task",
+      profile: "",
+      requestedModel: "",
+      startedAt: 4000,
+      endedAt: 5000,
+      turns: 1,
+      costUsd: 0,
+      account: "unknown",
+      provider: "unknown",
+    },
+  ];
+
+  test("a row that will not parse is dropped rather than drawn", () => {
+    const got = asAgents([...raw, { agent: "", startedAt: 1 }, { agent: "x", startedAt: null }]);
+    expect(got).toHaveLength(3);
+    /* An open agent keeps a null end rather than reading as finished at zero. */
+    expect(got[1]!.endedAt).toBeNull();
+  });
+
+  test("profiles are summed, and an unfound spawn is `unknown` rather than guessed", () => {
+    const lines = profileLines(asAgents(raw));
+    expect(lines.map((l) => l.profile)).toEqual(["scout", "unknown"]);
+    expect(lines[0]!.agents).toBe(2);
+    expect(lines[0]!.turns).toBe(6);
+    expect(lines[0]!.cost).toBeCloseTo(0.75, 10);
+    /* The kinds travel with the line, so `task` and `subagent` do not blend
+       into one word with no way to tell which it was. */
+    expect(lines[1]!.kinds).toEqual(["task"]);
+  });
+
+  test("the cost is what was written down, never recomputed", () => {
+    /* The row's number is summed; nothing here has a rate table to multiply a
+       token by, which is the point of storing it at fold time. */
+    expect(profileLines(asAgents(raw)).reduce((sum, l) => sum + l.cost, 0)).toBeCloseTo(0.75, 10);
   });
 });

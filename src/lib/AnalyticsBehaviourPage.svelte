@@ -24,6 +24,7 @@
     msSaid,
     rateSaid,
     shareSaid,
+    profileLines,
     serverPoints,
     toolKpis,
     toolLines,
@@ -66,6 +67,16 @@
   }
 
   const kpis = $derived(toolKpis(bundle.tools));
+  const agentLines = $derived(profileLines(bundle.agents));
+  const agentTotals = $derived.by(() => {
+    let turns = 0;
+    let cost = 0;
+    for (const r of bundle.agents) {
+      turns += r.turns;
+      cost += r.costUsd;
+    }
+    return { turns, cost };
+  });
   const toolList = $derived(toolLines(bundle.tools, "tools"));
   const serverList = $derived(toolLines(bundle.tools, "servers"));
   const skillList = $derived(toolLines(bundle.tools, "skills"));
@@ -332,6 +343,51 @@
         {ATTRIBUTION_GAP}, so this is the invoked half only. Adding it to what the kit attributed would
         answer neither question.
       </p>
+
+      <h3>recorded</h3>
+      {#if bundle.agentsUnread}
+        <p class="bhp-nothing">
+          The recorded agents could not be read for this window, so this table is missing rather than
+          empty.
+        </p>
+      {:else if agentLines.length === 0}
+        <p class="bhp-nothing">
+          No subagent was recorded in this window. A wall that has not folded one since this reading
+          began says so here, and an empty table would claim it looked and found none.
+        </p>
+      {:else}
+        <p class="bhp-small">
+          {count(bundle.agents.length)} {bundle.agents.length === 1 ? "agent" : "agents"}, with{" "}
+          {count(agentTotals.turns)} turns and {money(agentTotals.cost)} across this window. The cost
+          is the price when the agent ran, written down as it folded, so a rate that changes later
+          does not move what last month cost.
+        </p>
+        <table class="bhp-cards">
+          <thead>
+            <tr>
+              <th>profile</th>
+              <th>agents</th>
+              <th>turns</th>
+              <th>cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each agentLines as line (line.profile)}
+              <tr>
+                <td>
+                  {line.profile}
+                  {#if line.kinds.length > 0}
+                    <span class="bhp-kinds">{line.kinds.join(", ")}</span>
+                  {/if}
+                </td>
+                <td>{line.agents}</td>
+                <td>{count(line.turns)}</td>
+                <td>{line.cost > 0 ? money(line.cost) : "unpriced"}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
     </section>
 
     <section class="bhp-section">
@@ -721,6 +777,12 @@
   }
   .bhp-cards tbody tr:last-child td {
     border-bottom: 0;
+  }
+  .bhp-kinds {
+    margin-left: 6px;
+    color: var(--paper-faint);
+    font-family: var(--cv-ui, var(--util));
+    font-size: 10px;
   }
 
   @media (max-width: 1080px) {

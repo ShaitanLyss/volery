@@ -885,8 +885,8 @@ a commit made in a terminal emits nothing this app can hear.
 ### 3.10 The person's own actions
 
 A second subject beside tokens and allowance: **what the person did**, not what the money did.
-It answers questions the money cannot — how often you change conversation, how often you stop
-a turn, how many deliberate gestures a minute — and it is the only table here whose subject
+It answers questions the money cannot (how often you change conversation, how often you stop
+a turn, how many deliberate gestures a minute), and it is the only table here whose subject
 is the hand rather than the agent.
 
 `action_fact`, keyed on a **minute bucket**:
@@ -906,8 +906,8 @@ in one minute is one row whose `count` a sparkline reads directly.
 
 **A minute cannot hold an order, and the order is what a switch is.** A→B→A inside ten
 seconds is one row per card in the table above, sorted by an id that means nothing, and the
-twenty-second floor can never see the return. So five kinds — `focus`, `send`, `interrupt`,
-`spawn`, `close` — are also written to `action_mark`, one row per event at **the instant it
+twenty-second floor can never see the return. So five kinds (`focus`, `send`, `interrupt`,
+`spawn`, `close`) are also written to `action_mark`, one row per event at **the instant it
 happened**. A mark kind is written twice, deliberately: once as a count, so it reaches the
 rates and the three-year rollup, and once as a mark, so the sequence survives. The two cannot
 disagree because both come from the same line of the collector.
@@ -932,7 +932,7 @@ idle days prunes its minute rows without ever running anything that would have r
 `click`, `command`, `leader`, `view`, `open`, `close`, `spawn`, `move`, `rename`, `search`,
 `pause`, `resume`. Nothing types: a send is a mark, never its words, and a draft, a prompt and
 a keystroke are all outside what this table can hold. `open`, `close` and `spawn` are in the
-vocabulary and deliberately not emitted — `analytics_session` already records all three with
+vocabulary and deliberately not emitted: `analytics_session` already records all three with
 their project and their opener, and a second row for one event is two sources for one fact.
 
 **Where the nine gestures enter, and why there are so few places.** An instrument every
@@ -1283,6 +1283,31 @@ card (conversation, account, provider)
   machine), which is why section 4 resolves the owner per session rather than per file. Their
   records carry `agentId`, `model`, `effort` and `version`, so the attribution below the session
   needs nothing from the parent file.
+
+**As built (2026-11-13).** `write_chunk`'s transaction gains a step that folds every agent's
+facts into one `analytics_agent` row, and it writes the **cost at fold time**: each request is
+priced through `spend::rules::price` with the model the funding actually bills (`billed_model`),
+at that request's own instant. That is the decision worth recording. A cost recomputed at read
+time would move last March every time a rate changed, and the fine facts it would be summed from
+are pruned at ninety days while these rows are kept, so an agent from a year ago would read as
+free. Two callers now apply one price (`spend::book` is `pub(crate)` for this), which is the
+bargain: the rule is `rules::price`, and neither caller may grow its own.
+
+Four details fell out of the build and are worth knowing:
+
+- **`turns` is the request count.** A card's turn is opened by a prompt and closed by a result;
+  a subagent is a run of requests under one id, and that is the only boundary its transcript
+  has. `ended_at` is the end of the bucket it was last seen in, because a five-minute bucket is
+  all the fine tier records.
+- **The spawning call is read from `tool_pending` and `tool_fact` both.** Reading only the
+  second would leave most agents on a fresh wall with no profile and no kind, since their own
+  chunk is folded before the turn that spawned them.
+- **A spawn the wall cannot find leaves a hole.** The kind falls back to the column's own
+  `subagent`, the profile stays empty and the face says `unknown`; the cost is still there.
+- **The write is additive**, like the facts beside it: the chunk's records are deduped by
+  `usage_seen`, so a row written twice adds nothing. `started_at` takes the minimum, `ended_at`
+  the maximum, `depth` the greatest proven one, and a text field is filled only where it is
+  empty or `unknown`.
 
 ---
 
@@ -2377,7 +2402,7 @@ tab offer the spend tab's year: a year of hours x tools x projects is hundreds o
 rows for dozens of groups.
 
 **And a fifth section: your hands** (§3.10), which is the only part of this page that is about
-the person rather than the agents. It reads `action_facts` over the same span — four figures
+the person rather than the agents. It reads `action_facts` over the same span: four figures
 (actions a minute, context switches an hour, the median stay, the interrupt rate), a strip of
 the gesture rate with one bar per bucket, and a table per card busiest first. The proportions
 are counted in `acts.ts`, so a rule changed there changes every face that draws it.
@@ -2399,6 +2424,10 @@ What the drawing does **not** do, and why:
   nothing records what the kit attributed, so the skills and agents views draw the invoked half
   and say the other is missing rather than offering a switch with one side empty (sink
   `[5a01695e]`).
+- **The recorded agents are the other reading**, and they are deliberately *not* folded into the
+  invoked list: one counts the `Agent` calls a card made, the other counts the subagents that
+  ran under a profile, and adding them would be two names for one number. The cost beside a
+  profile is the price when the agent ran, not a today's-price sum (§4.4).
 - **The scatter's p95 is estimated from the hourly bands.** The rollup is kept where the
   per-call facts are pruned at ninety days, so a percentile over months cannot be exact by
   construction; every face that draws one labels it.
@@ -3685,7 +3714,7 @@ Each phase is useful on its own and commits on its own.
     frame's action sidecar and its digest), which is what turns "actions this minute" from a
     local reading into one person's day across three machines. It waits because the wire's
     sidecars are a union merge with one owner per day, and adding a fourth one changes every
-    day's digest — a change worth making against a settled vocabulary rather than beside it.
+    day's digest, a change worth making against a settled vocabulary rather than beside it.
 
 The order is chosen so that phase 2 starts recording before anything can make the record
 incomplete, and phase 9 is allowed to be wrong for a while without costing history. Phase 1

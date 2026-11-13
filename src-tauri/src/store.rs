@@ -4171,11 +4171,12 @@ fn migrate_v71(conn: &Connection) -> Result<(), String> {
 /// hour rows it describes carry their own instants.
 ///
 /// **`analytics_agent.profile` is the one non-rollup column here**, and it is
-/// the column the ingest's agent writer will fill: the live reading needs to say
-/// *which* agent is working (`scout`, `review`) and not merely how many (§4.4).
-/// It lands now because the day's agent sidecar on the wire carries it, and a
-/// field ahead of the store is a field two walls disagree about. Nothing writes
-/// it yet, locally or from a peer.
+/// the column the ingest's agent writer fills: the reading needs to say *which*
+/// agent ran (`scout`, `review`) and not merely how many (§4.4). It landed with
+/// this rung because the day's agent sidecar on the wire carries it, and a
+/// field ahead of the store is a field two walls disagree about; the writer
+/// followed it (`analytics::write_agents`), and a peer's rows arrive through
+/// `merge_day` with the value the owner sent.
 fn migrate_v72(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"

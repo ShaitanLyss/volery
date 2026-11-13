@@ -20,6 +20,7 @@ import type { Fact, HourFact, ToolTotal, UsageRow } from "./analytics";
 import type { BehaviourBundle, BehaviourReader } from "./analyticsbehaviourread.svelte";
 import type { SessionFact } from "./analyticsbehaviour";
 import type { ActionMark, ActionSeriesRow, ActionSlice, ActionWindow } from "./acts";
+import type { AgentRecord } from "./analyticsbehaviour";
 import type { CardLife, LifeSpend } from "./analyticslife";
 import type { LifeReader } from "./analyticsliferead.svelte";
 import type { AllowanceCost, AllowanceSample } from "./allowancesamples";
@@ -688,6 +689,8 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
       },
       changesUnread: false,
       actionsUnread: false,
+      agents: [],
+      agentsUnread: false,
     };
 
   const random = rng(Math.floor(span / 60_000) + 7);
@@ -834,7 +837,16 @@ export function fixtureBehaviour(req: { since: number; until: number }, mode: Fi
       provenance: "receipt",
     },
   ];
-  return { tools, sessions, changes, actions: fixtureActions(since, until), changesUnread: false, actionsUnread: false };
+  return {
+    tools,
+    sessions,
+    changes,
+    actions: fixtureActions(since, until),
+    agents: fixtureAgents(since, until),
+    changesUnread: false,
+    actionsUnread: false,
+    agentsUnread: false,
+  };
 }
 
 /** The gesture window the behaviour page's band draws from (§3.10).
@@ -929,6 +941,43 @@ function fixtureActions(since: number, until: number): ActionWindow {
     cards: cardsOut,
     hosts,
   };
+}
+
+/** The subagents the wall recorded, so the profile band has something to draw.
+ *  One asked for a model, which the row records even though nothing draws it
+ *  yet, and one has no profile because its spawning call was never found. */
+function fixtureAgents(since: number, until: number): AgentRecord[] {
+  const span = Math.max(60_000, until - since);
+  const at = (f: number) => Math.round(since + span * f);
+  const row = (
+    agent: string,
+    profile: string,
+    f: number,
+    minutes: number,
+    turns: number,
+    cost: number,
+    requestedModel = "",
+  ): AgentRecord => ({
+    agent,
+    session: "s1",
+    parentAgent: "",
+    depth: 1,
+    kind: profile ? "subagent" : "",
+    profile,
+    requestedModel,
+    startedAt: at(f),
+    endedAt: at(f) + minutes * 60_000,
+    turns,
+    costUsd: cost,
+    account: "lyss",
+    provider: "claude",
+  });
+  return [
+    row("ag-scout-1", "scout", 0.12, 14, 9, 1.42),
+    row("ag-scout-2", "scout", 0.44, 21, 12, 2.05),
+    row("ag-review-1", "review", 0.63, 8, 5, 0.86, "claude-sonnet-5-5"),
+    row("ag-loose-1", "", 0.81, 3, 2, 0.11),
+  ];
 }
 
 /** The preview's behaviour reader: `?tab=behaviour` drives the same component
