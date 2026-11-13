@@ -6862,16 +6862,23 @@ fn observe_history(conns: &Mutex<Connection>, host: &str, now: i64) -> Result<Co
 
 /* ── the read the room makes (§11) ──────────────────────────────────────── */
 
-/// The widest span the fine tier answers a room's chart from.
+/// The widest span the fine tier answers a room's chart from: **its whole
+/// retention** (`FINE_KEEP_MS`), not a payload judgement.
 ///
-/// §9.3 puts the boundary at the fine tier's whole retention, which is right
-/// for a query layer that can afford to ask. The room draws at most two hundred
-/// points, so a week of five-minute rows is two thousand rows of JSON carried
-/// over the IPC for sixteen of them to reach the screen. Forty-eight hours is
-/// the point where the fine tier still costs less than the hourly one answers
-/// with too little: a day of five-minute points is 288 rows, and the hourly
-/// rollup cannot see an hour's shape at all.
-pub const FINE_WINDOW_MS: i64 = 48 * 60 * 60 * 1000;
+/// It was forty-eight hours, chosen against the JSON a week of five-minute rows
+/// costs over the IPC, and that bound was doing the wrong kind of work: it
+/// changed *which population* answered as a span crossed it, so a day framed at
+/// 24 hours and the same day inside 7 days read differently (Lyss, 2026-11-13,
+/// twice: the curves, then the totals). A reading that narrows when you ask for
+/// more is data loss wearing a performance argument.
+///
+/// The cost it was defending against is real and is paid differently now: a
+/// wide fine read is bounded by `ROW_CAP` and `BYTE_CAP`, which refuse with a
+/// reason rather than truncating, and the fix for a genuinely heavy wall is to
+/// fold in SQL at the grain the room draws (with the rate's own epoch in the
+/// key, so a bucket straddling a price change still prices correctly). See
+/// §9.3, which is where that lands.
+pub const FINE_WINDOW_MS: i64 = FINE_KEEP_MS;
 
 /// What one answer may carry, and the reason both bounds exist: a span is data
 /// the front end asks for, so a hand-written request, a clock jump or a wall

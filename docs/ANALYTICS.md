@@ -328,7 +328,11 @@ was contradicting itself, because it was: same hours, same filters, half the mon
 what there is: `query_window`'s fine arm carries the hours it has no facts for as **coarse
 rows**, counted in `Window::coarse` and named by the face (`five-minute facts here, other walls
 by the hour`). The rule underneath is the one to keep: **a reading may be coarser than it
-claims, and may not be narrower than it says.** `tool_hour` carries a compact latency
+claims, and may not be narrower than it says.** That is the same rule that retired the 48-hour line: the fine tier
+now answers its whole retention, and only a span past ninety days reads hours. A span decides
+the grain the chart is drawn at (`roomBucket`) and never which facts exist — with server-side
+folding at the drawn grain as the next step, since a heavy wall's ninety days of five-minute
+rows are bounded today by `ROW_CAP` rather than by a design. `tool_hour` carries a compact latency
 histogram (`ms_under_50`, `_200`, `_1s`, `_5s`, `_over_5s`) instead of only `ms_total`, because
 a mean cannot produce a p95 and a p95 is the reading that names a slow server. A percentile
 over months is an estimate from those buckets, labelled as one; an exact p50/p95 is a 90-day

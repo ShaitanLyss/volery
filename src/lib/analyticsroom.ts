@@ -50,10 +50,17 @@ import { HOUR, count } from "./usage";
 
 /* ── which tier answers ────────────────────────────────────────────────────*/
 
-/** The widest span read from the five-minute facts. The matching constant is
- *  `analytics.rs::FINE_WINDOW_MS`, and the two are the same number on purpose:
- *  the command refuses a wider fine request rather than answering it slowly. */
-export const FINE_WINDOW_MS = 48 * HOUR;
+/** The widest span read from the five-minute facts: **their whole retention**,
+ *  which is what `analytics.rs::FINE_WINDOW_MS` is now too.
+ *
+ *  It was forty-eight hours, and that bound changed the *population* as a span
+ *  crossed it — a day at 24 hours read this wall's requests, the same day inside
+ *  7 days read the fleet's hours — so the same Friday read differently in two
+ *  windows (Lyss, 2026-11-13). **A reading may be coarser than it claims and may
+ *  not be narrower than it says**; the grain a wide span is drawn at is the
+ *  room's `roomBucket`, which is a decision about pixels rather than about which
+ *  facts exist. */
+export const FINE_WINDOW_MS = 90 * 24 * HOUR;
 
 export type WindowTier = "fine" | "hourly";
 

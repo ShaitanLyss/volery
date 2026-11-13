@@ -107,13 +107,20 @@ describe("which tier answers", () => {
 
   test("a span becomes two instants and one tier", () => {
     const now = 1_700_000_000_000;
-    expect(windowRequest("7d", now)).toEqual({ since: now - 7 * DAY, until: now, fine: false });
     expect(windowRequest("24h", now)).toEqual({ since: now - DAY, until: now, fine: true });
+    /* Fine all the way to the tier's retention: a span may change the grain the
+       chart is drawn at, and never which facts answer. It used to change both,
+       so a day framed at 24 hours and the same day inside 7 days disagreed. */
+    expect(windowRequest("7d", now)).toEqual({ since: now - 7 * DAY, until: now, fine: true });
+    expect(windowRequest("90d", now)).toEqual({ since: now - 90 * DAY, until: now, fine: true });
+    /* Past the retention there are no facts left to read, so the rollups
+       answer, and the face says so. */
+    expect(windowRequest("1y", now).fine).toBe(false);
   });
 
   test("a span that is not a span falls back to the week rather than to nothing", () => {
     const now = 1_700_000_000_000;
-    expect(windowRequest("banana", now)).toEqual({ since: now - 7 * DAY, until: now, fine: false });
+    expect(windowRequest("banana", now)).toEqual({ since: now - 7 * DAY, until: now, fine: true });
     expect(DEFAULT_SPAN).toBe("7d");
   });
 
@@ -540,12 +547,18 @@ describe("the fixture", () => {
   test("a fine request draws five-minute facts, an hourly one hourly rows", () => {
     const fine = fixtureWindow(windowRequest("24h", now));
     const wide = fixtureWindow(windowRequest("7d", now));
+    /* Both within the retention, so both are facts; only the grain differs,
+       and that is `roomBucket`'s decision rather than the read's. */
     expect(fine.tier).toBe("fine");
-    expect(wide.tier).toBe("hourly");
+    expect(wide.tier).toBe("fine");
     expect(fine.rows.length).toBeGreaterThan(0);
     expect(wide.rows.length).toBeGreaterThan(0);
     for (const row of fine.rows) expect("at" in row).toBe(true);
-    for (const row of wide.rows) expect("hour" in row).toBe(true);
+    for (const row of wide.rows) expect("at" in row).toBe(true);
+
+    const rolled = fixtureWindow(windowRequest("1y", now));
+    expect(rolled.tier).toBe("hourly");
+    for (const row of rolled.rows) expect("hour" in row).toBe(true);
   });
 
   test("it is deterministic, so two screenshots differ only by the clock", () => {
