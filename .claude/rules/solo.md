@@ -13,8 +13,8 @@ left strip holds a small panel with the switch; one switch closes the whole flyw
 
 ### The failure this exists for
 
-A weekend, the personal laptop. The work laptop's cards, prompts, questions and notices
-should not be here. Leaving the flyway works and is the wrong door: it drops the key,
+A weekend, the personal laptop. The work laptop's cards, prompts, questions, notices and
+screens should not be here. Leaving the flyway works and is the wrong door: it drops the key,
 and with it the account settings, the allowance readings, the usage rollups and the
 live spend. Away works and is wrong in the other direction: it is a claim about *the
 person*, and the fleet goes on drawing this wall's cards, sending it questions,
@@ -37,7 +37,7 @@ The flyway carries two kinds of thing, and the whole rule is the line between th
 - **the traffic** — cards; prompts and everything that rides them (pictures, files,
   answers, recalls, closes, acts, moves, an open-a-card-there); questions; notices;
   confirmations; the filed pile; the billboard; the sink; transcripts; files; pictures;
-  screens.
+  and screens — the monitors a wall advertises and every frame behind them.
 
 **Flying solo keeps the books and stops the traffic, in both directions.** A surface
 added tomorrow is placed by asking which fabric it belongs to, not by appending to a
@@ -85,7 +85,13 @@ and every window; analytics rollups and the day pull; live spend; the burn rate 
   pile; Monday is where it is answered.
 - **The billboard and the sink** — neither said nor read. They are the two places where
   one wall's work narrative reaches another.
-- **Transcripts, files, pictures, screens** — no tail, no look, no see, no cast.
+- **Transcripts, files and pictures** — no tail, no look, no see.
+- **Screens** — no monitor list published, and no frame received. Every remote screen
+  surface comes down: the wall widget, chat view's screens group and sheet, the all-screens
+  grid, vignettes and immersive. The cast hub drops its remote subscriptions, and a frame
+  already in flight is abandoned. This wall's own monitors are untouched; the grid and the
+  sheet offer only them while solo. A remote tile's position on the wall or the glass is
+  kept, and the tile returns on flying again.
 - **Remote spawn** — the wall withholds the workplace facts (cards, territories,
   credentials, screens) and announces no capability, so every remote verb is refused
   before it is attempted.
@@ -117,10 +123,10 @@ strip, one column wide, dotted border like another wall's region and no drop sha
 is a note about the flyway's absence, not a card.
 
 It carries: the heading `flying solo`; `solo since friday 18:04` in mono; one plain
-sentence — *Your accounts, allowance and usage still sync. No cards, questions or
-notices cross.*; the button `fly with the others`; and the chord. When cards here were
-opened by another wall it adds one line: *2 cards here were opened from another wall and
-keep running.*
+sentence — *Your accounts, allowance and usage still sync. No cards, questions, notices
+or screens cross.*; the button `fly with the others`; and the chord. When cards here
+were opened by another wall it adds one line: *2 cards here were opened from another
+wall and keep running.*
 
 It is not a card: no focus, no pick, no carry, no menu, no glass, no Tab. The button and
 the chord are its gestures. It scales with the wall; at a zoom where it cannot be read,
@@ -141,8 +147,9 @@ so it lives only where the furniture does.
 ### The flyway panel
 
 A section above *work from other walls*, because it is the larger boundary: the heading
-`flying solo`; the state and its start; the plain sentence about what stays on;
-`fly solo` / `fly with the others`; `space then i s`. While solo, *work from other walls*
+`flying solo`; the state and its start; the plain sentence about what stays on — *accounts,
+allowance, usage and analytics stay; cards, questions, notices, screens, boards and sinks
+do not cross*; `fly solo` / `fly with the others`; `space then i s`. While solo, *work from other walls*
 says it is closed anyway, whatever that switch is set to.
 
 The chord is in the *I'm …* family beside `ia`, because solo is a claim about where you
@@ -153,6 +160,12 @@ constraint.
 
 - **The remote queue comes down.** Remote questions and notices leave the dock, their
   sheets close, their attention rows go, the strip empties.
+- **A remote screen comes down rather than freezing.** A tile onto another machine has
+  nothing behind it once the traffic is closed, so it is not left showing a dead last
+  frame: the widget, a vignette, an immersive session, a cell in the all-screens grid and
+  a row in chat view's screens group all go. A drive in progress is released first, as
+  leaving a tile always does, so no key is held down on a machine nobody is watching.
+  This wall's own monitors keep drawing, and positions are kept for the return.
 - **A half-typed reply is never taken.** If the dock holds words typed into a far card's
   answer, the switch refuses in words, naming the card and its wall; no dialog. Losing
   what you were typing is the failure the hold rule exists to prevent.
@@ -177,7 +190,7 @@ Called *flying again*, not *coming back*, because coming back is away's word.
   the shutter. The pile is hers, and flying again means the fleet is back, backlog
   included.
 - The stored glass spots for shadows are kept through the solo and return with the
-  sections.
+  sections; a remote screen's tile returns to its place too.
 - **No schedule.** A time-based auto-lift would be Volery deciding where she is, the one
   thing `away.md` refuses to let a card do. Solo is a claim the person makes and
   unmakes. *Until Monday* is what she means, not what the wall should infer.
@@ -218,5 +231,9 @@ Two frozen labs (`lab a`, `lab b --peer a`), one card each:
    not leaving.
 4. A card on B tries `send` to A's card by its old handle: refused at the door with the
    solo named.
-5. A flies again: the sections return, the stored glass spot is where it was, and B's
+5. Before A flies solo, a remote screen of B is up on A's wall and one of A's own monitors
+   is up beside it. On solo the remote tile comes down and stops its session; the local
+   monitor keeps drawing; the all-screens grid on A offers only A's monitors. Flying again
+   returns the remote tile to its place.
+6. A flies again: the sections return, the stored glass spot is where it was, and B's
    still-waiting filed question appears in A's pile.
