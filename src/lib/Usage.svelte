@@ -198,7 +198,12 @@
    *  week that has run out is rust whatever `tierOf` makes of it, because a
    *  ceiling *you* set is a ceiling at 60% and only that side knows your caps. */
   const every = $derived(
-    faces.map((f) => {
+    (() => {
+      /* The share lives in a plain map, so the version is what this depends on
+         — or the ceiling here can lag the figure the wall is blocking on. */
+      void ownShare.version;
+      return faces;
+    })().map((f) => {
       const spoke = f.account
         ? speaksWith(f.account, f.windows, f.credits, ownShare.list(f.account.label))
         : { window: binding(f.windows), ceiling: null };

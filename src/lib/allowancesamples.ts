@@ -407,10 +407,15 @@ export function spansOf(
   instances: readonly WindowInstance[],
   buckets: readonly CostBucket[],
   account: string,
+  /** The caller has already sorted them. `ownPoints` walks one account's kinds
+   *  in a loop and sorts once for all of them, where this is called per kind —
+   *  and the list can be the full `ALLOWANCE_COST_CAP` of fifty thousand rows,
+   *  copied and sorted for each. */
+  ordered = false,
 ): DeltaSpan[] {
   const spans: DeltaSpan[] = [];
   const mine = instances.filter((i) => i.account === account);
-  const sorted = [...buckets].sort((a, b) => a.at - b.at);
+  const sorted = ordered ? buckets : [...buckets].sort((a, b) => a.at - b.at);
   for (const one of mine) {
     for (let i = 1; i < one.points.length; i++) {
       const from = one.points[i - 1].at;
@@ -770,12 +775,15 @@ export function ownPoints(
     if (isSentinel(one.account) || one.scope !== "") continue;
     kinds.set(`${one.account}\u0000${one.kind}`, { account: one.account, kind: one.kind });
   }
+  /* Sorted once for every account and kind rather than once per pair: this is
+     the expensive half of the fold, and it runs on the main thread each pass. */
+  const ordered = [...costs].sort((a, b) => a.at - b.at);
   const out: OwnPoints[] = [];
   for (const { account, kind } of kinds.values()) {
     const mine = instances.filter(
       (i) => i.account === account && i.kind === kind && i.scope === "",
     );
-    const spans = spansOf(mine, costs, account);
+    const spans = spansOf(mine, ordered, account, true);
     let points = 0;
     let moved = 0;
     let priced = 0;
@@ -822,11 +830,17 @@ export function ownUses(
     if (!one) continue;
     out.push({
       ...row,
+      /* **Buckets that overlap the window, not only ones that start inside
+         it.** `spansOf` credits any bucket whose five-minute width overlaps
+         the first interval, so one beginning a minute before the window is
+         part of the share — and a flag taken only over buckets that start
+         inside would then say this wall did nothing about a window it
+         demonstrably moved. */
       worked: costs.some(
         (c) =>
           c.account === row.account &&
-          c.at >= one.from &&
-          c.at <= one.to &&
+          c.at < one.to &&
+          c.at + FINE_BUCKET_MS > one.from &&
           (c.requests > 0 || c.inTok + c.outTok + c.cacheRead + c.write5m + c.write1h > 0),
       ),
       used: one.last,

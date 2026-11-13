@@ -109,3 +109,18 @@ describe("the share the wall keeps", () => {
     expect(ownUses(samples([0, 10], { scope: "Opus" }), costs())).toEqual([]);
   });
 });
+
+/* A bucket that begins before the window still overlaps it, and `spansOf`
+   credits exactly those — so the flag has to be taken over the same buckets or
+   it says this wall did nothing about a window it demonstrably moved. */
+describe("a bucket that straddles the opening of a window", () => {
+  test("counts as work in that window", () => {
+    const [got] = ownUses(samples([10, 20]), costs(NOW - 2 * MIN));
+    expect(got!.worked).toBe(true);
+  });
+
+  test("and one from well before it does not", () => {
+    const [got] = ownUses(samples([10, 20]), costs(NOW - 30 * MIN));
+    expect(got!.worked).toBe(false);
+  });
+});

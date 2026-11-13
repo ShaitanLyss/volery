@@ -288,6 +288,13 @@ export class Waterfall {
     this.#busy = true;
     let missed = false;
     try {
+      /* **Your own share of each window, first.** Two reads of this wall's own
+         tables, with no network in them, so it can be handed to the door before
+         the endpoint is asked — and it must be, because the door is what a
+         roused card's resume prompt and a drained inbox meet, and those arrive
+         at launch, inside the seconds `read_allowances` spends on the wire. A
+         pass that fails at the endpoint still leaves the note standing. */
+      await ownShare.refresh();
       const answers = await invoke<RawAllowance[]>("read_allowances", { labels });
       const now = Date.now();
       const next: Record<string, Allowance> = {};
@@ -307,14 +314,6 @@ export class Waterfall {
       for (const a of answers) {
         if (a.report) this.#note(samplesOf(a.label, a.report));
       }
-      /* **And your own share of each window, which the caps are measured on.**
-         Read here because this is the one place readings already change —
-         measuring a cap at every send would cost two table reads a send, and
-         measuring it never is what the wall used to do. Awaited, so a decision
-         taken after this pass (`#asked`, `releaseHeld`) uses the share that
-         belongs to the reading it just took; a failed read keeps the last one,
-         which is `keptThrough`'s bargain one layer out. */
-      await ownShare.refresh(now);
       missed = answers.some((a) => !a.report);
     } catch (err) {
       /* The call itself failed, so there is nothing per account to keep or drop

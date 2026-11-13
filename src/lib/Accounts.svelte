@@ -767,9 +767,10 @@
                       {@const cap = capOf(account.label, kind)}
                       <label
                         class="cap"
-                        title={share === null || used === null
+                        title={(share === null || used === null
                           ? "the account's own percentage, which is what your ceiling is measured against when this wall cannot say how much of it is yours"
-                          : `the account is at ${pct(used)}; ${pct(share)} of that is this wall's own work, and your ceiling is measured on it`}
+                          : `the account is at ${pct(used)}; ${pct(share)} of that is this wall's own work, and your ceiling is measured on it`) +
+                          (ownShare.fault ? " · the share could not be re-read, so this is the last one" : "")}
                       >
                         <span class="capname">{nameOf(account.label, kind)}</span>
                         <span class="used">

@@ -9,6 +9,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(test)]
+use serde_json::json;
+
 /// One account-window's share, as the front end measured it.
 ///
 /// **Everything the comparison needs travels in the note**, including the
@@ -38,7 +41,15 @@ pub struct Share {
 }
 
 /// What the front end notes, one row per account and window kind.
+///
+/// **`camelCase`, because the payload is written in TypeScript.** Without it
+/// `resetsAt` is an unknown field serde drops on the floor and `#[serde(default)]`
+/// fills the gap with `None`, so the rolled-window guard below can never fire
+/// and the door enforces a note about the window before the current one. Found
+/// by deserialising the real payload rather than by reading the struct; the
+/// lift holds it now. This is CLAUDE.md's Tauri-arg-name trap one layer in.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Note {
     pub account: String,
     pub kind: String,
@@ -59,23 +70,37 @@ pub struct Note {
 /// held on somebody else's usage is the exact complaint the share exists to
 /// answer. It is only the clamp, because a share cannot exceed the whole.
 ///
-/// Three states, and the difference between them is the point:
+/// Three states, in this order, and the order is the bug the first cut had:
 ///
-/// - **`worked: Some(false)`** — this wall spent nothing in this window. Its
-///   share is zero, whatever the account reads, so a ceiling of 50 does not
-///   hold the first prompt of a five-hour window because somebody else filled
-///   it. A ceiling of **0** still refuses, which is what a cap of zero means.
-/// - **`priced: 0`** — this wall worked and no request under the window could
-///   be priced, so the share is unknown rather than zero and the door does not
-///   pretend to a figure it does not have. The front end falls back to the
-///   account's own percentage in exactly this case, and it does so on its side;
-///   see `ownshare.rs` on why the two are allowed to differ here and nowhere
-///   else.
-/// - **otherwise** — the share, clamped to the window.
+/// 1. **A priced share** — the figure, clamped to the window. **This is tested
+///    first**, because a reading that exists beats a `worked` flag computed over
+///    a slightly different span of the same window: the flag is taken over the
+///    buckets that *start* inside the window and the share over the buckets that
+///    *overlap* it, so a card working across a boundary has a real reading and a
+///    false flag. Letting the flag win read such a window as untouched, which
+///    under-blocks in all four readers at once.
+/// 2. **`worked: Some(false)`** — this wall spent nothing in this window. Its
+///    share is zero, whatever the account reads, so a ceiling of 50 does not
+///    hold the first prompt of a five-hour window because somebody else filled
+///    it. A ceiling of **0** still refuses, which is what a cap of zero means.
+/// 3. **Anything else** — this wall worked and no request under the window could
+///    be priced, so the share is unknown rather than zero. **The account's own
+///    percentage stands in, exactly as it does on the front end**
+///    (`accounts.ts::shareFor`), and the note carries that figure so the two
+///    doors cannot decide differently: the door's whole purpose is the paths
+///    that never met the front end, and a door that allowed what the composer
+///    held would be that walk-around in the other direction.
 ///
 /// `None` for a window with no cap of yours (`capFor`'s rule: a cap of 100 or
 /// more is not a cap), and for one whose reset has already passed, since a note
-/// two minutes old can describe the window before the one being judged.
+/// can describe the window before the one being judged.
+///
+/// **A capped kind with no note row at all is the one case the door cannot
+/// judge** — a scoped window, which `ownPoints` leaves out because one cap on a
+/// kind cannot be compared against two scopes of it. The front end falls back to
+/// the account's figure for those; the door has no figure to fall back to and
+/// lets the prompt through. Narrow, stated, and on the side that does not refuse
+/// work somebody asked for.
 pub fn refusal(caps: &Value, shares: &[Share], now: i64) -> Option<(String, f64, f64)> {
     for share in shares {
         let Some(cap) = caps.get(&share.kind).and_then(Value::as_f64) else {
@@ -87,10 +112,13 @@ pub fn refusal(caps: &Value, shares: &[Share], now: i64) -> Option<(String, f64,
         if share.resets_at.is_some_and(|t| t <= now) {
             continue;
         }
-        let points = match share.worked {
-            Some(false) => 0.0,
-            _ if !(share.priced > 0.0) || !share.points.is_finite() => continue,
-            _ => share.points.max(0.0).min(share.used.max(0.0)),
+        let points = if share.priced > 0.0 && share.points.is_finite() {
+            share.points.max(0.0).min(share.used.max(0.0))
+        } else if share.worked == Some(false) {
+            0.0
+        } else {
+            /* Unknown: the account's own figure, as the front end reads it. */
+            share.used.max(0.0)
         };
         if points >= cap {
             return Some((share.kind.clone(), points, cap));
@@ -121,7 +149,6 @@ pub fn refusal_said(label: &str, kind: &str, points: f64, cap: f64) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
     const SOON: i64 = 4_000_000_000_000;
 
     fn share(kind: &str, points: f64, priced: f64, used: f64) -> Share {
@@ -164,12 +191,51 @@ mod tests {
         assert!(refusal(&json!({ "session": 0 }), &[none], 1).is_some());
     }
 
-    /// Unpriced is unknown, and an unknown share may not hold work back.
+    /// Unpriced is unknown, and unknown reads the account's own figure — the
+    /// same fallback the front end makes. A door that allowed what the composer
+    /// held would be the walk-around in the other direction.
     #[test]
-    fn a_share_with_nothing_priced_is_not_a_measurement() {
+    fn an_unknown_share_falls_back_to_the_accounts_own_figure() {
         let unknown = Share { priced: 0.0, ..share("session", 0.0, 0.0, 70.0) };
-        assert!(refusal(&json!({ "session": 50 }), &[unknown], 1).is_none());
+        assert!(refusal(&json!({ "session": 50 }), &[unknown], 1).is_some());
+        let quiet = Share { priced: 0.0, ..share("session", 0.0, 0.0, 20.0) };
+        assert!(refusal(&json!({ "session": 50 }), &[quiet], 1).is_none());
+        /* And nothing at all is nothing to judge, which is the narrow case the
+           doc names: a capped kind the note has no row for. */
         assert!(refusal(&json!({ "session": 50 }), &[], 1).is_none());
+    }
+
+    /// A priced reading beats a `worked` flag taken over a narrower span: the
+    /// flag is computed over buckets that *start* in the window and the share
+    /// over buckets that *overlap* it, so a card working across a boundary has
+    /// both a real reading and a false flag. Letting the flag win read that
+    /// window as untouched in all four readers at once.
+    #[test]
+    fn a_real_reading_outranks_a_flag_from_a_narrower_span() {
+        let both = Share { worked: Some(false), ..share("session", 55.0, 4.0, 70.0) };
+        assert!(refusal(&json!({ "session": 50 }), &[both], 1).is_some());
+    }
+
+    /// **The payload is written in TypeScript**, so the struct has to take
+    /// `resetsAt`. Without that the field is dropped as unknown, the rolled
+    /// guard below never fires, and the door enforces a note about the window
+    /// before the current one. Pinned against the exact shape `notes()` sends.
+    #[test]
+    fn the_note_is_read_off_the_camel_case_payload_the_wall_sends() {
+        let payload = json!([{
+            "account": "lyss",
+            "kind": "session",
+            "points": 55.0,
+            "priced": 4.0,
+            "worked": true,
+            "used": 70.0,
+            "resetsAt": 1_234_i64
+        }]);
+        let notes: Vec<Note> = serde_json::from_value(payload).expect("the wall's own payload");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].resets_at, Some(1_234));
+        assert_eq!(notes[0].worked, Some(true));
+        assert_eq!(notes[0].used, 70.0);
     }
 
     /// A note two minutes old can describe the window before this one.

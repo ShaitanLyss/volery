@@ -2118,3 +2118,19 @@ describe("a share of nothing is not a share that cannot be read", () => {
     );
   });
 });
+
+/* A `worked` flag and a priced reading can disagree when they are taken over
+   slightly different spans of the same window. The reading wins; letting the
+   flag win read a window with ten points in it as untouched, in every reader at
+   once. */
+describe("a real reading outranks the worked flag", () => {
+  test("a priced share with a false flag is still the share", () => {
+    const self = [{ kind: "session", points: 55, moved: 70, priced: 4, worked: false }];
+    expect(shareFor(win({ kind: "session", used: 70 }), self)).toEqual({ points: 55, own: true });
+  });
+
+  test("and the flag still answers when there is nothing priced", () => {
+    const self = [{ kind: "session", points: 0, moved: 0, priced: 0, worked: false }];
+    expect(shareFor(win({ kind: "session", used: 70 }), self)).toEqual({ points: 0, own: true });
+  });
+});

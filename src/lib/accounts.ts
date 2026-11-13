@@ -292,10 +292,10 @@ export type SelfUse = {
 /** What the cap is compared against for one window: your share where it is
  *  known, the account's own figure where it is not.
  *
- *  `Math.min` because your share can never exceed the whole. It is a sanity
- *  clamp on a figure that arrives from several walls' arithmetic, not a rule:
- *  a share above the account's own percentage is a reading that has drifted,
- *  and the smaller of the two cannot make a cap fire early.
+ *  `Math.min` because your share can never exceed the whole. It is a guard on a
+ *  figure computed from two reads taken seconds apart, not a rule: a share
+ *  above the account's own percentage is one that has drifted, in the beat where
+ *  the account rolls and the share has not yet.
  *
  *  **Exported because the panel draws this exact figure.** It had its own copy
  *  for an afternoon and that is the shape of the bug rather than a tidiness
@@ -310,14 +310,21 @@ export function shareFor(
   const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
   const mine = self.find((s) => s.kind === w.kind);
   if (mine === undefined) return { points: used, own: false };
+  /* **A real reading first, then the flag.** `worked` is taken over the buckets
+     that *overlap* the window and the share over the same ones, but the two can
+     still be computed from different spans of the same window, and a flag that
+     beat a reading read a window with ten points in it as untouched — in every
+     reader at once, in the direction that under-blocks. */
+  if (mine.priced > 0 && Number.isFinite(mine.points)) {
+    return { points: Math.min(Math.max(0, mine.points), used), own: true };
+  }
   /* **Nothing to report and cannot report are different**, and only the first
      is a share of zero. A window that opened while this wall slept, or the
      first prompt of a five-hour window, is a window this wall has spent nothing
-     of, however full somebody else has it. `worked === false` is that case, and
-     reading it as unknown is what held a prompt on the other person's usage. */
+     of, however full somebody else has it. Reading it as unknown is what held a
+     prompt on the other person's usage. */
   if (mine.worked === false) return { points: 0, own: true };
-  if (!(mine.priced > 0) || !Number.isFinite(mine.points)) return { points: used, own: false };
-  return { points: Math.min(Math.max(0, mine.points), used), own: true };
+  return { points: used, own: false };
 }
 
 function measuredFor(w: Window, self: readonly SelfUse[]): number {
@@ -473,7 +480,7 @@ export function availableAt(blockers: Blocker[]): number | null {
 }
 
 /** How spent this account is, as a fraction of what it is *allowed* to spend:
- *  the tightest window, `used / capFor(...)`, taken as the max across every
+ *  the tightest window, `share / capFor(...)`, taken as the max across every
  *  window `blockersFor` walks. 0 is untouched, 1 is at its ceiling.
  *
  *  This is the balancer inside a tier, and it is deliberately not the raw
