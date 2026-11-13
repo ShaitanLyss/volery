@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
+import { coherentRlibs, depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
 
 const LIVE = "src-tauri/flyway-core/src/live.rs";
 const FRAME = "src-tauri/flyway-core/src/frame.rs";
@@ -67,6 +67,7 @@ function run(exe: string): ReturnType<typeof spawnSync> {
 }
 
 try {
+  const borrowed = coherentRlibs(["serde", "serde_json"]);
   const build = spawnSync(
     "rustc",
     [
@@ -78,9 +79,9 @@ try {
       "-A",
       "dead_code",
       "--extern",
-      `serde=${newestRlib("serde")}`,
+      `serde=${borrowed.serde}`,
       "--extern",
-      `serde_json=${newestRlib("serde_json")}`,
+      `serde_json=${borrowed.serde_json}`,
       "-L",
       `dependency=${DEPS}`,
       "-L",

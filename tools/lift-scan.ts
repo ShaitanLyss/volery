@@ -53,7 +53,7 @@
  * right about the braces and nothing else.
  */
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** What `scan` carries between lines, plus what it noticed about the last one. */
@@ -351,4 +351,83 @@ export function newestRlib(name: string): string {
     .sort((a, b) => b.t - a.t);
   if (!hit.length) throw new Error(`no lib${name}-*.rlib in ${dir} — has the crate been built?`);
   return join(dir, hit[0].n);
+}
+
+/** **A set of rlibs from one build.** `newestRlib` chooses each crate
+ *  independently, and that is wrong as soon as one crate depends on another:
+ *  the same version of `serde_core` is compiled more than once when two
+ *  dependents ask for different features, and `serde` picked from one build
+ *  beside `serde_json` from the other gives
+ *  `the trait bound Facts: serde::Serialize is not satisfied` — two
+ *  instances of one trait, which reads like a missing derive. Found on
+ *  2026-11-13, after a clean build left the newest of each on opposite sides.
+ *
+ *  Cargo already records which instance each crate was built against, in
+ *  `target/debug/.fingerprint/<name>-<hash>/lib-<name>.json`'s `deps` — the
+ *  directory name *is* the artifact hash. So the newest candidate of the first
+ *  name is taken, and every other name gets its newest candidate whose shared
+ *  dependencies have the same hashes; if none fits, the next candidate of the
+ *  first name is tried. Loud when nothing does, for `newestRlib`'s reason: a
+ *  wrong set must not link something subtly other.
+ *
+ *  Names with no dependency in common (a proc-macro and a runtime crate) are
+ *  simply newest, which is what the pair needed them to be. */
+export function coherentRlibs(names: string[]): Record<string, string> {
+  const dir = depsDir();
+  const prints = join(dir, "..", ".fingerprint");
+  const cands = names.map((name) => {
+    const re = new RegExp(`^lib${name}-[0-9a-f]+\\.rlib$`);
+    return readdirSync(dir)
+      .filter((n) => re.test(n))
+      .map((n) => ({ name, file: join(dir, n), deps: printDeps(prints, name, n) }))
+      .sort((a, b) => statSync(b.file).mtimeMs - statSync(a.file).mtimeMs);
+  });
+  names.forEach((name, i) => {
+    if (!cands[i]!.length) throw new Error(`no lib${name}-*.rlib in ${dir} — has the crate been built?`);
+  });
+  /* `build_script_build` is each crate's *own* script, so the two crates
+     disagree about it by construction — it is not a shared dependency and
+     matching on it rejects every pair. */
+  const share = (a: Map<string, number>, b: Map<string, number>) => {
+    for (const [k, v] of a) {
+      if (k === "build_script_build") continue;
+      if (b.has(k) && b.get(k) !== v) return false;
+    }
+    return true;
+  };
+  for (const head of cands[0]!) {
+    const picked: Record<string, string> = { [head.name!]: head.file };
+    const deps = new Map(head.deps);
+    let ok = true;
+    for (let i = 1; i < cands.length && ok; i++) {
+      const hit = cands[i]!.find((c) => share(deps, c.deps));
+      if (!hit) ok = false;
+      else {
+        picked[hit.name!] = hit.file;
+        for (const [k, v] of hit.deps) deps.set(k, v);
+      }
+    }
+    if (ok) return picked;
+  }
+  throw new Error(
+    `no set of ${names.join(", ")} rlibs in ${dir} was built together — the tree may hold two builds' ` +
+      `artifacts; \`cargo build\` once, or remove the superseded hashes`,
+  );
+}
+
+/** A crate's recorded dependencies, `name -> fingerprint hash`, read from the
+ *  fingerprint file beside its artifact. Missing is an empty map: a crate built
+ *  without one still links, and two unknown sets must not be claimed to agree. */
+function printDeps(prints: string, name: string, rlib: string): Map<string, number> {
+  const hash = rlib.slice(name.length + 4, -5);
+  const out = new Map<string, number>();
+  try {
+    const j = JSON.parse(readFileSync(join(prints, `${name}-${hash}`, `lib-${name}.json`), "utf8")) as {
+      deps?: [number, string, boolean, number][];
+    };
+    for (const d of j.deps ?? []) out.set(d[1], d[3]);
+  } catch {
+    /* not recorded for this unit — no claim either way */
+  }
+  return out;
 }

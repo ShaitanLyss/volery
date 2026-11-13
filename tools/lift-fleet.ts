@@ -29,7 +29,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
+import { coherentRlibs, depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
 
 /* Every one of these is the flyway's core crate's since 2026-11-09 (`docs/PHONE.md`,
    M1), where `fleet.rs` reaches them as `crate::clean`, `crate::screen`,
@@ -108,6 +108,7 @@ const exe = join(dir, "lifted.exe");
 writeFileSync(file, lift);
 
 try {
+  const borrowed = coherentRlibs(["serde", "serde_json"]);
   const build = spawnSync(
     "rustc",
     [
@@ -119,9 +120,9 @@ try {
       "-A",
       "dead_code",
       "--extern",
-      `serde=${rlibOf("serde")}`,
+      `serde=${borrowed.serde}`,
       "--extern",
-      `serde_json=${rlibOf("serde_json")}`,
+      `serde_json=${borrowed.serde_json}`,
       "-L",
       `dependency=${DEPS}`,
       "-L",
