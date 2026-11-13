@@ -466,6 +466,9 @@
        than anything the brief says. `line.text` is untouched — the envelope is
        what went to the CLI and what the replay is matched on. -->
   {@const said = line.kind === "you" && isHandoverPrompt(line.text) ? handoverBody(line.text) : line.text}
+  <!-- A prompt sent with a parcel carries the manifest in its words; the
+       plate is drawn out of it and the body is the words alone. -->
+  {@const pc = line.kind === "you" ? parcelOf(said) : { body: said, parcel: null }}
   {#if line.kind === "tool" && line.call}
     <!-- A call is openable: closed it is the line it always was, open it is
          every argument the model wrote and what came back. No `data-nav`, like
@@ -529,7 +532,7 @@
              these are, so it is announced rather than hidden from assistive
              tech (found in review). -->
         <span class="skeinmark">skein</span>
-        <DiagramScope><Markdown blocks={parseMarkdown(said)} nav={false} /></DiagramScope>
+        <DiagramScope><Markdown blocks={parseMarkdown(pc.body)} nav={false} /></DiagramScope>
       {:else if line.kind === "you"}
         <!-- The rail already has this prompt as one place (`you said`), and the
              headings inside it are marks in what was *said* rather than places
@@ -538,7 +541,7 @@
              to a line inside a `.line.you` — `nav={false}` only saves the
              run-in `lead` mark being computed, since `Markdown.svelte` writes
              `data-nav` on headings and list items regardless. -->
-        <DiagramScope><Markdown blocks={parseMarkdown(said)} nav={false} /></DiagramScope>
+        <DiagramScope><Markdown blocks={parseMarkdown(pc.body)} nav={false} /></DiagramScope>
       {:else}
         {line.text}
       {/if}
@@ -669,6 +672,9 @@
           <img src={s.thumb} alt={s.name} {@attach tipOf(() => (s.name))} />
         {/each}
       </div>
+    {/if}
+    {#if pc.parcel}
+      <div class="pplate"><ParcelPlate parcel={pc.parcel} dir="out" /></div>
     {/if}
   {/if}
 {/snippet}
