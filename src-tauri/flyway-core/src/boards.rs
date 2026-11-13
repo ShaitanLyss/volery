@@ -312,6 +312,13 @@ impl Boards {
     pub fn forget(&mut self, host: &str) {
         self.theirs.remove(host);
     }
+
+    /// Every wall's picture let go at once — flying solo, where the billboard
+    /// is neither said nor read (`solo.md`). A picture held from before the
+    /// shutter would go on being drawn.
+    pub fn forget_everyone(&mut self) {
+        self.theirs.clear();
+    }
 }
 
 /// The notices that fit one picture, and how many did not.

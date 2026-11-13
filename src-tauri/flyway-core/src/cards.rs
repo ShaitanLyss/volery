@@ -172,6 +172,14 @@ impl Cards {
         self.theirs.remove(host);
     }
 
+    /// Every peer's snapshot let go at once — flying solo, where nothing of
+    /// another wall's work is drawn (`solo.md`). **Not `depart`**: no version
+    /// is remembered, because a peer publishes only when its cards change and
+    /// the very same snapshot must be drawn again when the wall flies again.
+    pub fn forget_everyone(&mut self) {
+        self.theirs.clear();
+    }
+
     /// A wall said it is leaving: its cards come down, and a snapshot of its
     /// that was already on the way does not put them back. `forget` is not this
     /// — a quiet wall that wakes up re-says the same snapshot, which must be

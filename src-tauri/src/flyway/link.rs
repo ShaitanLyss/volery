@@ -3830,26 +3830,20 @@ pub async fn flyway_set_solo(app: AppHandle, on: bool) -> Result<(), String> {
                 l.nobody_answered(&id);
             }
             /* And what it held from the others is let go, so nothing is drawn
-               from a conversation this wall is not taking part in. `forget`, not
-               `depart`: a peer publishes a snapshot only when its cards change,
-               so an unchanged wall sends the same version for days — and
-               `depart` would remember it and refuse that same snapshot when this
-               wall flies again. Nothing is coming from that direction while we
-               are solo, so there is no straggler for `depart` to guard against. */
-            let others: Vec<String> =
-                l.fleet.lock().map(|f| f.roster().map(|e| e.host.clone()).collect()).unwrap_or_default();
+               from a conversation this wall is not taking part in. **Not
+               `depart`**: a peer publishes a snapshot only when its cards
+               change, so an unchanged wall sends the same version for days —
+               and `depart` would remember it and refuse that same snapshot when
+               this wall flies again. Nothing is coming from that direction
+               while we are solo, so there is no straggler to guard against. */
             if let Ok(mut c) = l.cards.lock() {
-                for host in &others {
-                    c.forget(host);
-                }
+                c.forget_everyone();
             }
             /* And their billboards, for the same reason: a board is one of the
                two places a wall's work reaches another, and a picture held from
                before the shutter would go on being drawn. */
             if let Ok(mut b) = l.boards.lock() {
-                for host in &others {
-                    b.forget(host);
-                }
+                b.forget_everyone();
             }
             crate::board::heard_from_afar(&l.app);
         }
