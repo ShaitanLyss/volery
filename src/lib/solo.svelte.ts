@@ -14,7 +14,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { Listeners } from "./listeners";
-import { replies } from "./replies.svelte";
 import { soloSince } from "./solo";
 
 type Setup = { solo?: boolean; soloSince?: number | null };
@@ -79,26 +78,21 @@ export class Solo {
     }
   }
 
-  /** The switch itself, and **the one place the half-typed reply is guarded**.
+  /** The switch itself — **one path for every surface**: the chord, the
+   *  panel's button and its `s` key, the plate, the control surface.
    *
-   *  Every surface goes through here — the chord, the panel's button and its
-   *  `s` key, the plate, the control surface — because the first cut had the
-   *  guard in the chord alone and the other two then took the far card down
-   *  with somebody's words in its dock (a review finding, 2026-11-13). Losing
-   *  what you were typing is the failure the hold rule exists to prevent
-   *  (`.claude/rules/solo.md`, *Entering*).
+   *  **A half-typed reply does not hold it shut.** The rule it serves is that
+   *  a reply is never *lost* (`solo.md`, *Entering*), and taking the far card
+   *  down leaves the words where they were kept: the dock's *not sent* strip,
+   *  with copy, drop and *to its prompt* once its card is back. Refusing was
+   *  the first cut, and it made the shutter unreachable for a reply to a
+   *  question that had already gone — Lyss met it on 2026-11-13 with a card she
+   *  could not find anywhere, and asked for the switch to go through.
    *
    *  Never optimistic: the setting is Rust's, and a fault is drawn rather than
    *  a state the wall does not have. Returns whether the state moved. */
   async set(on: boolean): Promise<boolean> {
     this.fault = null;
-    if (on) {
-      const typed = replies.farTyped();
-      if (typed.length) {
-        this.fault = `not while you are typing to ${typed[0].about} — send it or clear it first, then fly solo`;
-        return false;
-      }
-    }
     try {
       await invoke("flyway_set_solo", { on });
       await this.refresh();

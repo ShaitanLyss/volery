@@ -62,17 +62,6 @@ class Keeping {
     return textUnder(this.#all, item);
   }
 
-  /** Every reply with words in it that is aimed at a card on another wall —
-   *  what flying solo must not take, since the switch brings those cards down
-   *  (`.claude/rules/solo.md`). A shadow's id is `elsewhere:<host>:<card>`, so
-   *  the card is how a far one is told apart; `about` is the words the refusal
-   *  names it by. */
-  farTyped(): { text: string; about: string }[] {
-    return Object.values(this.#all)
-      .filter((r) => r.text.trim().length > 0 && r.card.startsWith("elsewhere:"))
-      .map((r) => ({ text: r.text, about: r.about }));
-  }
-
   /** The item was answered, or you took it down: its reply is done with. */
   forget(item: string) {
     if (this.#sending.includes(item)) this.#sending = this.#sending.filter((i) => i !== item);

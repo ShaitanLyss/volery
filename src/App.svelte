@@ -918,14 +918,11 @@
    *  whether anything was waiting and sets `showing` itself, so the one place
    *  that decides it is the one place that knows. */
   /** **Flying solo** — the one switch that closes the flyway's traffic while
-   *  its books keep reporting. Refused in words, never a dialog, when the dock
-   *  holds a half-typed reply to a card on another wall: losing what you were
-   *  typing is the failure the hold rule exists to prevent, and the switch is
-   *  reversible in one press so it does not need a plate (`solo.md`). */
+   *  its books keep reporting. A half-typed reply does not hold it shut: the
+   *  words stay in the dock's *not sent* strip, which is where the rule that
+   *  they are never lost is kept (`solo.md`, *Entering*). */
   async function toggleSolo() {
     const moved = await solo.set(!solo.on);
-    /* The half-typed-reply refusal lives in `Solo.set`, so the panel and the
-       control surface cannot forget it; this only has to draw it. */
     if (!moved) {
       if (solo.fault) skein.fault = solo.fault;
       return;

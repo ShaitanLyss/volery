@@ -170,9 +170,13 @@ constraint.
   a row in chat view's screens group all go. A drive in progress is released first, as
   leaving a tile always does, so no key is held down on a machine nobody is watching.
   This wall's own monitors keep drawing, and positions are kept for the return.
-- **A half-typed reply is never taken.** If the dock holds words typed into a far card's
-  answer, the switch refuses in words, naming the card and its wall; no dialog. Losing
-  what you were typing is the failure the hold rule exists to prevent.
+- **A half-typed reply is never taken, and it does not hold the switch shut either.** Taking
+  the far card down leaves the words where they were kept — the dock's *not sent* strip,
+  with copy, drop, and *to its prompt* once its card is back — so nothing is lost. **It
+  refused at first, and that was wrong**: on 2026-11-13 Lyss tried to fly solo and was
+  stopped by a reply to a question from `eos` on `AU-LT-285` that she could not find
+  anywhere, which is a shutter made unreachable by something already gone. The rule the
+  guard served is *never lost*, and keeping the words keeps it.
 - **An answer already sent is the far wall's.** Solo stops what has not left.
 - **A held answer to a filed question stays held** and goes when the wall flies again.
   It is an answer she gave; the card was told it would arrive as a message, and the
