@@ -1895,7 +1895,10 @@ the first draft and is not true of the decided cadence.
 
 **As built (2026-11-13), and it is the two-second frame rather than `Now` in the roster.**
 `flyway_core::live` carries one frame, `live`, with a host, a timestamp, tokens, dollars and
-requests **per minute**, and the card and agent counts. `link.rs` beats it every
+requests **per minute**, and (since schema v75) the sender's machine. The card counts are not
+on this frame: they are on the roster's announcement, which every wall already sends, and
+copying them here was one sentence of this note being wrong rather than a field the frame
+ever had. `link.rs` beats it every
 `BEAT_EVERY_MS` (two seconds) through `push`, which is the existing fire-and-forget exchange,
 so a beat can never queue in front of a prompt and is abandoned rather than retried when it is
 slow. The front end notes its own beat with `flyway_note_live` once a second while the panel is
@@ -3459,11 +3462,11 @@ CREATE TABLE machine_fact (
   mem_total     INTEGER,
   gpu           REAL,
   gpu_mem       INTEGER,
-  disk_read     REAL,
-  disk_write    REAL,
+  disk_read     INTEGER,
+  disk_write    INTEGER,
   disk_free     INTEGER,
-  net_rx        REAL,
-  net_tx        REAL,
+  net_rx        INTEGER,
+  net_tx        INTEGER,
   procs         INTEGER,
   cards         INTEGER,
   cards_working INTEGER,
@@ -3830,7 +3833,8 @@ Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
 `tool_pending(session)`, `turn(agent_session_id, ended_at)`, `turn(conversation_id, ended_at)`,
 `work_fact(at)`, `work_fact(card, at)`, `work_fact(project, at)`, `work_hour(hour)`,
 `invalidate_fact(at)`, `invalidate_fact(tree, at)`, `allowance_fact(account, at)`,
-`machine_fact(at)`,
+`machine_fact`'s `(at, host)` primary key, which is the index every read uses
+(the list below is otherwise built indexes; this one needs none),
 `usage_hour(hour)`, `tool_hour(hour)`, `host_build(host, from_at)`, `prompt_fact(at)`,
 `prompt_fact(kind, at)`, `prompt_fact(card)`, `prompt_hour(hour)`.
 
@@ -3884,7 +3888,9 @@ Each phase is useful on its own and commits on its own.
 7. **Machine facts.** **Built**: the v75 table, the minute recorder, PDH for the GPU, the
    on-demand two-second reading, the switch, and the block in the room with the fleet's
    readings beside its spend. **Not built**: VRAM (needs a DXGI device), `procs` (the meter's
-   process walk is the only count, by §6.3), and a machine page of its own.
+   process walk is the only count, by §6.3), a machine page of its own, and §6.3's two-second
+   in-memory ring for a live machine graph — the on-demand reading is used only for the beat,
+   so no surface draws the hardware finer than the minute it is recorded at.
 8. **Flyway history and the live fleet.** **Built**: hourly rollups, the manifest keyed by
    owner, the day pull, the two-second `live` frame carrying its sender's machine, and the
    fine pull. **Not built**: the sealed prompt archive with its per-peer switch and

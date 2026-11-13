@@ -25,13 +25,18 @@
 //!
 //! ### Two cadences, one sampler
 //!
-//! - **Sixty seconds into `machine_fact`**, always while the wall is recording.
-//!   The switch is `machine_record`, set from the wall; off means neither the
-//!   row nor the counters.
+//! - **Sixty seconds into `machine_fact`**, only while the wall is recording.
+//!   The switch is `machine_record`, set from the wall, and off means no row and
+//!   no counter refresh for the history's sake. The recorder waits a full
+//!   interval before its first row: it starts before any window exists, so a
+//!   row at the top of the loop would be recorded against a switch the page has
+//!   not had the chance to set yet.
 //! - **On demand, at most every [`LIVE_MS`]**, while an analytics view is open.
 //!   The live panel asks `machine_now` and the flyway beat carries what it
 //!   answered, so every wall on the fleet draws every machine. The reading is
-//!   *not* recorded at this cadence and does not touch the history.
+//!   *not* recorded at this cadence and does not touch the history — and it is
+//!   **not governed by the recording switch**, which is a decision about this
+//!   disk rather than about whether a watching wall may see its machine.
 //!
 //! The two share one `System`, one `Disks` and one `Networks` because all three
 //! are deltas between refreshes: two samplers would halve each other's rates.
@@ -623,20 +628,27 @@ pub fn rows(
     };
     let mut stmt = conn.prepare(sql).map_err(|e| format!("machine: {e}"))?;
     fn one(r: &rusqlite::Row<'_>) -> rusqlite::Result<Sample> {
+        /* **One float reader for both branches.** A raw row holds INTEGER
+           bytes; a folded row's `AVG(...)` is REAL, and rusqlite refuses to
+           read a REAL into an `i64` — which `.ok().flatten()` turned into
+           `None`, so the default seven-day span drew memory, network and disk
+           throughput as "not read" while the rows held them (found in review).
+           `f64` accepts both, and every figure here is far inside its exact
+           range. */
         let f = |i: usize| r.get::<_, Option<f64>>(i).ok().flatten();
-        let n = |i: usize| r.get::<_, Option<i64>>(i).ok().flatten();
+        let n = |i: usize| f(i).map(|v| v.max(0.0).round() as u64);
         Ok(Sample {
             at: r.get(0)?,
             cpu: f(1).map(|v| v as f32),
-            mem_used: n(2).map(|v| v as u64),
-            mem_total: n(3).map(|v| v as u64),
+            mem_used: n(2),
+            mem_total: n(3),
             gpu: f(4).map(|v| v as f32),
-            gpu_mem: n(5).map(|v| v as u64),
-            disk_read: n(6).map(|v| v as u64),
-            disk_write: n(7).map(|v| v as u64),
-            disk_free: n(8).map(|v| v as u64),
-            net_rx: n(9).map(|v| v as u64),
-            net_tx: n(10).map(|v| v as u64),
+            gpu_mem: n(5),
+            disk_read: n(6),
+            disk_write: n(7),
+            disk_free: n(8),
+            net_rx: n(9),
+            net_tx: n(10),
             procs: n(11).map(|v| v as u32),
             cards: n(12).map(|v| v as u32),
             cards_working: n(13).map(|v| v as u32),
@@ -669,8 +681,14 @@ pub fn rows(
 /// machine is not being read at all, not that the rows are hidden.
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || loop {
+        /* **The first row waits a full minute, and that is the switch's
+           correctness rather than a detail.** The thread starts in `setup`,
+           before any window exists, and the front end's stored choice arrives
+           only once the page runs — so a row written at the top of the first
+           iteration is a row recorded against an explicit opt-out. A launch
+           row is worth nothing to a ninety-day history. */
+        std::thread::sleep(std::time::Duration::from_millis(RECORD_EVERY_MS));
         let Some(machine) = app.try_state::<Machine>() else {
-            std::thread::sleep(std::time::Duration::from_millis(RECORD_EVERY_MS));
             continue;
         };
         if machine.recording() {
@@ -686,7 +704,6 @@ pub fn start(app: AppHandle) {
                 }
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(RECORD_EVERY_MS));
     });
 }
 
@@ -732,5 +749,36 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         assert!(rows(&conn, "h", 10, 10, 60_000).is_err());
         assert!(rows(&conn, "h", 11, 10, 60_000).is_err());
+    }
+
+    /// **A folded row carries its gauges.** `AVG(...)` is REAL and a raw row's
+    /// bytes are INTEGER; a reader that took only one of the two turned the
+    /// default seven-day span's memory, network and disk throughput into `None`
+    /// — "not read" over rows that held them (found in review). The assertion
+    /// is that a bucket read answers `Some` for each of the averaged columns.
+    #[test]
+    fn a_folded_row_keeps_the_columns_average_turns_real() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE machine_fact (
+               at INTEGER NOT NULL, host TEXT NOT NULL, cpu REAL, mem_used INTEGER,
+               mem_total INTEGER, gpu REAL, gpu_mem INTEGER, disk_read INTEGER,
+               disk_write INTEGER, disk_free INTEGER, net_rx INTEGER, net_tx INTEGER,
+               procs INTEGER, cards INTEGER, cards_working INTEGER, worktrees INTEGER,
+               PRIMARY KEY (at, host));
+             INSERT INTO machine_fact VALUES
+               (0, 'h', 10.0, 8589934592, 34359738368, 5.0, NULL, 100, 200, 400000000000, 1000, 500, NULL, 3, 1, 1),
+               (60000, 'h', 30.0, 8589934592, 34359738368, 9.0, NULL, 300, 400, 390000000000, 3000, 700, NULL, 3, 0, 1);",
+        )
+        .unwrap();
+        let got = rows(&conn, "h", 0, 120_000, 120_000).unwrap();
+        assert_eq!(got.len(), 1);
+        let one = &got[0];
+        assert!(one.cpu.is_some());
+        assert!(one.mem_used.is_some(), "AVG(mem_used) is REAL and must still read");
+        assert!(one.disk_read.is_some(), "AVG(disk_read) is REAL and must still read");
+        assert!(one.net_rx.is_some(), "AVG(net_rx) is REAL and must still read");
+        assert_eq!(one.disk_free, Some(390_000_000_000), "free space takes the bucket's low");
+        assert!(one.cards_working.is_some());
     }
 }
