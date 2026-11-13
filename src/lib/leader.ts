@@ -151,6 +151,10 @@ export type Verb =
   | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" | "expand" | "auto" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" | "new" }
+  /** Open the system's own picker and feed what it names into the focused
+   *  card's draft, as a drop would — a parcel to a card on another wall, an
+   *  attachment to one here. */
+  | { kind: "attach" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
   | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" | "freshen" }
@@ -180,6 +184,11 @@ export type Chord = { keys: string; label: string; verb: Verb };
 export const CHORDS: readonly Chord[] = [
   { keys: "ff", label: "find file", verb: { kind: "find", mode: "files" } },
   { keys: "fw", label: "grep", verb: { kind: "find", mode: "grep" } },
+  /* `fa` in the file family: the system's own picker, which feeds the same
+     plan a drop does — a parcel to a card on another wall, a path to one
+     here. The one gesture a mouse has (dropping files) and the keyboard had
+     not. */
+  { keys: "fa", label: "attach a file", verb: { kind: "attach" } },
   { keys: "ts", label: "synth", verb: { kind: "toy", toy: "synth" } },
   /* The puzzles the away gate puts in your way, available without being away.
      They were built to mark a boundary on the way back to work, and that is a

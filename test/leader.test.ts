@@ -303,6 +303,7 @@ describe("the which-key hint", () => {
       { keys: "dx", label: "unsent reply: drop it" },
       { keys: "ee", label: "a card on another wall" },
       { keys: "en", label: "a new card in this section, there" },
+      { keys: "fa", label: "attach a file" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "gg", label: "this grouping on the glass / back" },
@@ -377,6 +378,7 @@ describe("the which-key hint", () => {
 
   test("one letter in, it offers only what is left to press", () => {
     expect(offers("f")).toEqual([
+      { keys: "a", label: "attach a file" },
       { keys: "f", label: "find file" },
       { keys: "w", label: "grep" },
     ]);

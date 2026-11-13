@@ -193,7 +193,7 @@
     mergeDraft,
     type Draft,
   } from "./lib/drafts";
-  import { Attachments, boxAt, dropping, listenDrops } from "./lib/attach.svelte";
+  import { Attachments, boxAt, dropping, listenDrops, takeInto } from "./lib/attach.svelte";
   import { insertAt } from "./lib/attach";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
@@ -891,6 +891,7 @@
       if (why) skein.fault = why;
     }
     else if (verb.kind === "reading") openReading(verb.widget);
+    else if (verb.kind === "attach") void attachFiles();
     else if (verb.toy === "synth") synth.show();
     /* The rest of the shelf is the away gate's puzzles, opened on purpose
        rather than met on the way back to work. Same surface, `mode="play"` —
@@ -5218,6 +5219,27 @@
       return;
     }
     void c.do(verb);
+  }
+
+  /** `space f a`: the system's own picker, handed to the focused card's box
+   *  exactly as a drop is — the box decides parcel or attachment, so the two
+   *  gestures share one plan. Runs in either view, since the draft is the
+   *  window's and the `prompt` box is whichever view is up. */
+  async function attachFiles() {
+    const target = card;
+    if (!target) {
+      skein.fault = "no card has the focus";
+      return;
+    }
+    if (!target.scripts) {
+      skein.fault = "a chat card has no project to receive files — drop them on a project card";
+      return;
+    }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ multiple: true, directory: false, title: "attach files" });
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (!paths.length) return;
+    await takeInto("prompt", paths);
   }
 
   /** Let a pinned card flow again — the right-click's "let it flow again",

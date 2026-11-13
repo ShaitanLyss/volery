@@ -700,6 +700,17 @@ export function boxAt(x: number, y: number): { el: Element; target: DropTarget; 
   return el && n ? { el, target: n, where: "end" } : null;
 }
 
+/** Hand paths to a named box, as a drop onto it would — the box's own `take`
+ *  decides parcel or attachment, so a chord (`space f a`) reaches the same
+ *  plan a drop does. Answers whether there was a box to take it. */
+export async function takeInto(name: string, paths: readonly string[]): Promise<boolean> {
+  const el = named.get(name);
+  const target = el ? boxes.get(el) : undefined;
+  if (!target || !(target.accepts?.() ?? true)) return false;
+  await target.take([...paths], "end");
+  return true;
+}
+
 /* ── the drafts that are not the dock's ──────────────────────────────────────
  *
  * A question's answer and a notice's reply keep their words in `replies`,

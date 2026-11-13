@@ -154,6 +154,8 @@ export function familyOf(e: Entry): Family {
       return "toy";
     case "find":
       return "find";
+    case "attach":
+      return "card";
   }
 }
 
@@ -200,6 +202,8 @@ export function glyphOf(e: Entry): IconName {
     case "grouping":
     case "elsewhere":
       return "wall";
+    case "attach":
+      return "file";
   }
 }
 
