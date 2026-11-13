@@ -33,6 +33,7 @@
     saySynced,
     sayTier,
     sayUnmeasured,
+    shareFor,
     sayUnsigned,
     creditsWaiting,
     CREDITS_WAIT,
@@ -327,16 +328,18 @@
 
   /** How much of that window is *yours*, or null where the wall cannot measure
    *  it — which is the account's figure standing in, exactly as the cap's own
-   *  arithmetic falls back (`accounts.ts::SelfUse`).
+   *  arithmetic falls back (`accounts.ts::shareFor`, which is the one
+   *  definition and is asked here rather than copied).
    *
    *  Drawn because the ceiling beside it is measured on this and not on the
    *  account's percentage: a shared account reading 70% under a 50% cap with
    *  nothing said about it is a panel arguing with itself. */
   function shareOf(label: string, kind: string): number | null {
-    const one = ownShare.list(label).find((s) => s.kind === kind);
-    if (one === undefined || !(one.priced > 0)) return null;
-    const used = usedOf(label, kind);
-    return used === null ? null : Math.min(one.points, used);
+    const a = waterfall.allowances[label];
+    const w = a?.ok ? a.windows.find((x) => x.kind === kind) : null;
+    if (!w) return null;
+    const got = shareFor(w, ownShare.list(label));
+    return got.own ? got.points : null;
   }
 
   function nameOf(label: string, kind: string): string {

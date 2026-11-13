@@ -16,6 +16,7 @@ import {
   importAccounts,
   mergeAccounts,
   ordered,
+  shareFor,
   overrunFor,
   overrunNote,
   CAP_MARGIN,
@@ -2058,5 +2059,30 @@ describe("the hard stop past the cap", () => {
        rather than only that this one stopped. */
     expect(said).not.toContain("—");
     expect(said).toContain("the next one waits");
+  });
+});
+
+/* The figure the panel draws beside the ceiling has to be the figure the wall
+   measures, or a row reading 20% under a cap of 50 that has in fact fired reads
+   as a cap that does not work. One function, asked by both. */
+describe("the share the face draws", () => {
+  const own = (points: number, priced = 4) => [{ kind: "session", points, moved: 70, priced }];
+
+  test("is your own where it is measured, and says so", () => {
+    expect(shareFor(win({ kind: "session", used: 70 }), own(20))).toEqual({ points: 20, own: true });
+  });
+
+  /* And where it cannot be measured it is the account's figure *labelled as
+     such*, so the face draws no "of 70%" beside a number that is the 70%. */
+  test("is the account's own where it is not, and says that too", () => {
+    expect(shareFor(win({ kind: "session", used: 70 }), own(0, 0))).toEqual({
+      points: 70,
+      own: false,
+    });
+    expect(shareFor(win({ kind: "session", used: 70 }), [])).toEqual({ points: 70, own: false });
+  });
+
+  test("and never exceeds the window it is a share of", () => {
+    expect(shareFor(win({ kind: "session", used: 30 }), own(80)).points).toBe(30);
   });
 });

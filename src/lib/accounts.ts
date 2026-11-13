@@ -288,12 +288,28 @@ export type SelfUse = {
  *  `Math.min` because your share can never exceed the whole. It is a sanity
  *  clamp on a figure that arrives from several walls' arithmetic, not a rule:
  *  a share above the account's own percentage is a reading that has drifted,
- *  and the smaller of the two cannot make a cap fire early. */
-function measuredFor(w: Window, self: readonly SelfUse[]): number {
+ *  and the smaller of the two cannot make a cap fire early.
+ *
+ *  **Exported because the panel draws this exact figure.** It had its own copy
+ *  for an afternoon and that is the shape of the bug rather than a tidiness
+ *  problem: a row saying 20% beside a ceiling the wall was measuring at 34%
+ *  reads as a cap that does not work, and nothing anywhere would report it.
+ *  `own` says which of the two the number is, so the face can draw "20% of 70%"
+ *  only when it is genuinely a share. */
+export function shareFor(
+  w: Window,
+  self: readonly SelfUse[],
+): { points: number; own: boolean } {
   const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
   const mine = self.find((s) => s.kind === w.kind);
-  if (mine === undefined || !(mine.priced > 0) || !Number.isFinite(mine.points)) return used;
-  return Math.min(Math.max(0, mine.points), used);
+  if (mine === undefined || !(mine.priced > 0) || !Number.isFinite(mine.points)) {
+    return { points: used, own: false };
+  }
+  return { points: Math.min(Math.max(0, mine.points), used), own: true };
+}
+
+function measuredFor(w: Window, self: readonly SelfUse[]): number {
+  return shareFor(w, self).points;
 }
 
 /** How far past your own ceiling a *running* turn may get before the wall ends
