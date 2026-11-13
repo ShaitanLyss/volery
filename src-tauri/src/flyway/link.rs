@@ -622,6 +622,22 @@ impl Link {
         )
     }
 
+    /// Whether `host` has announced it is flying solo. **The asker's side of
+    /// the shutter**: a solo wall is heard, so every gate here would let a
+    /// request through and leave the far wall to refuse it with a sentence
+    /// about its switch, which is not what happened. Refused from here, in
+    /// words that name the solo, and nothing is sent.
+    fn solo_there(&self, host: &str) -> bool {
+        self.fleet.lock().ok().and_then(|f| f.entry(host).map(|e| e.facts.solo)).unwrap_or(false)
+    }
+
+    fn solo_there_refusal(host: &str) -> String {
+        format!(
+            "{host} is flying solo — its accounts, allowance and usage still report, but nothing of \
+             its cards crosses until it flies with the others again"
+        )
+    }
+
     /// Directories that are Skein's own rather than anybody's territory.
     fn own_dirs(&self) -> Vec<std::path::PathBuf> {
         let Some(store) = self.store() else {
@@ -1381,6 +1397,9 @@ impl Link {
     /// tool call waits on; the sentence arrives when the answer does.
     pub fn ask_spawn(self: &Arc<Self>, r: Request) -> Result<mpsc::Receiver<String>, String> {
         let now = self.now();
+        if self.solo_there(&r.to) {
+            return Err(Self::solo_there_refusal(&r.to));
+        }
         let (msg, note) = {
             let mut f = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
             /* Read off the same entry the ask is about to be judged against, so
@@ -1880,6 +1899,9 @@ impl Link {
     /// `flyway:prompt-answer`, keyed on the request id the front end minted.
     fn send_person(self: &Arc<Self>, act: Act, r: PromptRequest) -> Result<(), String> {
         let now = self.now();
+        if self.solo_there(&r.to) {
+            return Err(Self::solo_there_refusal(&r.to));
+        }
         let msg = self
             .fleet
             .lock()
@@ -2398,6 +2420,13 @@ impl Link {
         let quiet = e.quiet_for(now);
         if quiet > fleet::QUIET_AFTER_MS as u64 {
             return Err(fleet::Unsendable::Quiet { host: host.into(), for_ms: quiet }.reason());
+        }
+        /* **A solo wall is heard and takes no part**, so every door that
+           reaches for one of its cards stops here, on this side, in words that
+           name the solo — nothing is sent to be refused there, and a person is
+           told the real reason rather than that the wall is closed. */
+        if e.facts.solo {
+            return Err(Self::solo_there_refusal(host));
         }
         let can = e.facts.can.iter().any(|c| c == word);
         drop(f);
@@ -3741,6 +3770,12 @@ pub async fn flyway_set_accepting(app: AppHandle, on: bool) -> Result<(), String
 /// state is on screen and the very next thing she does is expect it to hold.
 #[tauri::command]
 pub async fn flyway_set_solo(app: AppHandle, on: bool) -> Result<(), String> {
+    /* There is no flyway to be solo from: a wall with no key is already taking
+       no part in the conversations, and a state nothing can be read against
+       would be a plate and a mark about nothing (`.claude/rules/solo.md`). */
+    if on && !super::key::held() {
+        return Err("this wall is not in a flyway, so there is nothing to be solo from".into());
+    }
     {
         let a = app.clone();
         crate::off_main(move || {

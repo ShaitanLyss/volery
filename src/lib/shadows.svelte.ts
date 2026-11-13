@@ -1104,6 +1104,17 @@ export class Elsewhere {
    *  for what the link already holds — the next exchange would bring the same
    *  thing a tick later, and the wall should not stand empty until then. */
   standUp() {
+    /* **Say the whole set again, now.** The publishing effect offers a snapshot
+       only when it would draw differently, and the entering wall said an empty
+       one — so an unchanged fleet would never be sent again and its cards would
+       stay off every peer until something happened to change. This is the one
+       change that is a change because the *switch* moved, so it is made here
+       rather than by a clock. */
+    this.#offered = null;
+    this.#offer(
+      this.#skein.convs.map((c) => digestOf(this.#sourceOf(c))),
+      usable(waterfall.list).map((a) => a.label),
+    );
     void invoke<RosterRow[]>("flyway_roster").then((r) => this.#heard(r)).catch(() => {});
     void invoke<{ host: string; ageMs: number; quietMs: number; snapshot: unknown }[]>("flyway_remote_cards")
       .then((all) => {
