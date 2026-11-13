@@ -25,6 +25,7 @@
  * belongs here as a verb. Design: `.claude/rules/elsewhere.md`, "one card
  * handle". */
 
+import { invoke } from "@tauri-apps/api/core";
 import type { Conversation, PendingAsk } from "./conversation.svelte";
 import type { Elsewhere, Shadow } from "./shadows.svelte";
 import type { Skein } from "./skein.svelte";
@@ -89,6 +90,9 @@ export interface CardHandle {
   carries(turn: Turn): Can;
   /** Say something to it. */
   say(text: string, turn: Turn): Promise<void>;
+  /** Hand it a parcel — files and folders dropped on it, as a copy. `null`
+   *  means the send left; a string is the refusal, said with the tiles kept. */
+  sendParcel(text: string, paths: string[]): Promise<string | null>;
   /** Rewrite a message it is keeping before it goes. Only a card here: another
    *  wall's queue is its own, and this wall holds no handle on it. */
   editQueued(key: string, text: string): void;
@@ -371,6 +375,17 @@ export class LocalCard implements CardHandle {
       fromOutbox(ticket);
     }
   }
+  async sendParcel(text: string, paths: string[]): Promise<string | null> {
+    let landed: { manifest: string; landed: string };
+    try {
+      landed = await invoke<{ manifest: string; landed: string }>("parcel_local", { card: this.conv.id, paths });
+    } catch (err) {
+      return String(err);
+    }
+    const message = text.trim() ? `${text.trim()}\n\n${landed.manifest}` : landed.manifest;
+    await this.#skein.send(this.conv, message, undefined, { yours: true });
+    return null;
+  }
   stir() {
     this.#skein.stir(this.conv);
   }
@@ -565,6 +580,9 @@ export class RemoteCard implements CardHandle {
   }
   async say(text: string, turn: Turn) {
     await this.#walls.send(this.shadow, text, turn);
+  }
+  async sendParcel(text: string, paths: string[]): Promise<string | null> {
+    return this.#walls.sendParcel(this.shadow, text, paths);
   }
   stir() {}
   /* Its queue is kept on its own wall — the words are in that wall's store,

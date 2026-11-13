@@ -1769,6 +1769,29 @@ export class Elsewhere {
     }
   }
 
+  /** Hand a card on another wall a parcel — files and folders dropped on it
+   *  (docs/PARCEL-DROP.md). The line is drawn pending until the far wall lands
+   *  the files and its card has the sentence, then `flyway:prompt-answer`
+   *  settles it; a refusal returns its words, with the tiles kept. */
+  async sendParcel(s: Shadow, text: string, paths: string[]): Promise<string | null> {
+    const id = crypto.randomUUID();
+    s.sent.push({ id, text, at: Date.now(), state: "queued" });
+    this.#byPrompt.set(id, s);
+    if (s.face.unheard) {
+      const span = Number.isFinite(s.quietMs) ? ` for ${spanOf(s.quietMs / 1000)}` : "";
+      this.#fold(id, { kind: "unsent", why: `${s.host} has not been heard from${span} — nothing was sent` });
+      return `${s.host} has not been heard from${span}`;
+    }
+    try {
+      await invoke("flyway_parcel", { id, to: s.host, card: s.card, text, paths });
+      return null;
+    } catch (e) {
+      const why = String(e) || "the link would not take it";
+      this.#fold(id, { kind: "unsent", why });
+      return why;
+    }
+  }
+
   /** Ask the card's own wall to close it, as a person — which that wall
    *  allows whatever its switch says (`fleet::may_reach`). The card stays drawn
    *  until the wall's next snapshot drops it; a refusal or a link that would not

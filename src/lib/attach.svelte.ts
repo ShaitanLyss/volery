@@ -10,6 +10,7 @@ import {
   isDocument,
   mediaTypeOf,
   nameFromFile,
+  parcelTotals,
   pastedName,
   planFor,
   scaleTo,
@@ -21,6 +22,8 @@ import {
   type Bytes,
   type Carried,
   type FileRef,
+  type Parcel,
+  type ParcelLeft,
   type Picture,
   type MediaType,
   type Reach,
@@ -29,6 +32,18 @@ import {
 
 /** What `inspect_paths` answers for one path (`attachments.rs`). */
 type Inspected = { path: string; name: string; dir: boolean; size: number | null; picture: boolean; staged: boolean };
+
+/** A parcel's summary for the strip above the field: the total across the
+ *  top-level things still in the draft, and what was left out, from the last
+ *  measure. `files` and `bytes` are re-derived from the list on every read, so
+ *  taking a tile out shrinks the total; `left` keeps the lines whose top-level
+ *  folder is still present. */
+export type ParcelSummary = {
+  files: number;
+  bytes: number;
+  left: ParcelLeft[];
+  leftMore: number;
+};
 
 /** The images hanging off one draft — the bytes, the decoding, and the scaling.
  *
@@ -91,6 +106,26 @@ export class Attachments {
 
   get any(): boolean {
     return this.list.length > 0;
+  }
+
+  /** The parcel's summary for the strip: the total across the top-level things
+   *  still mentioned, and what was left out, whose top-level folder is still in
+   *  the draft. Null when the draft holds no parcel. `files` and `bytes` are
+   *  re-derived, so taking a tile out shrinks the total. */
+  get parcel(): ParcelSummary | null {
+    const tops = this.list.filter((a): a is Parcel => a.kind === "parcel");
+    if (!tops.length) return null;
+    const { files, bytes } = parcelTotals(tops);
+    const kept = new Set(tops.filter((t) => t.dir).map((t) => t.name));
+    const first = tops[0]!;
+    const left = first.left.filter((l) => kept.has(l.path.split("/")[0] ?? ""));
+    return { files, bytes, left, leftMore: first.leftMore };
+  }
+
+  /** The top-level source paths of the parcel still in the draft, in order —
+   *  what the send re-gathers from. */
+  get parcelPaths(): string[] {
+    return this.list.filter((a): a is Parcel => a.kind === "parcel").map((p) => p.path);
   }
 
   /** Hand the whole list over — a card switch parking it, or handing it back. */
@@ -175,6 +210,40 @@ export class Attachments {
       this.busy = false;
     }
     return out;
+  }
+
+  /** Measure what `paths` mean as a parcel against `caps` and hold it: a chip
+   *  and a tile per top-level thing, the total and the left-out lines beside
+   *  them. Nothing is copied — the send gathers again. A refusal is said and
+   *  returns no tokens, so the draft keeps whatever it had. */
+  async fromParcel(paths: readonly string[], caps: "here" | "afar"): Promise<string[]> {
+    this.busy = true;
+    try {
+      let s: { tops: { name: string; path: string; dir: boolean; files: number; bytes: number; secret: boolean }[]; left: ParcelLeft[]; left_more: number };
+      try {
+        s = await invoke("parcel_measure", { paths, caps });
+      } catch (err) {
+        this.refused = String(err);
+        return [];
+      }
+      const tops: Parcel[] = s.tops.map((t) => ({
+        kind: "parcel",
+        id: `a${++this.#seq}`,
+        name: t.name,
+        path: t.path,
+        dir: t.dir,
+        files: t.files,
+        bytes: t.bytes,
+        secret: t.secret,
+        left: s.left,
+        leftMore: s.left_more,
+      }));
+      this.list = [...this.list, ...tops];
+      this.refused = null;
+      return tops.map((t) => tokenFor(t.name));
+    } finally {
+      this.busy = false;
+    }
   }
 
   /** What a paste puts in the draft: the words that came with it, and the
