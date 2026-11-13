@@ -82,7 +82,7 @@
     shots={field.shots}
     name="prompt"
     accepts={() => !!card}
-    parcel={() => (card?.remote ? { caps: "afar" } : null)}
+    parcel={() => (card?.remote ? { caps: "afar", can: !!card.remote.parcel } : null)}
     oncaret={(c) => (field.caret = c)}
     onkeydown={composer.key}
     oninput={composer.edited}

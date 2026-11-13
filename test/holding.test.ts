@@ -268,7 +268,7 @@ describe("a message waiting for the turn to finish", () => {
        for (found in review). */
     const skein = readFileSync("src/lib/skein.svelte.ts", "utf8");
     expect(skein).toContain(
-      "conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own })",
+      "conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own, note: opts.note })",
     );
     expect(skein).toContain("behind.get(c.id) ?? false");
     /* And the sender's reading is what the line wears, not one taken after the

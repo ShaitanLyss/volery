@@ -102,6 +102,7 @@ import type { Deferred } from "./presence";
 import type { Notice } from "./notice";
 import { Attachments, attachedIn, turnFrom } from "./attach.svelte";
 import { MANIFEST, manifestEntry, readManifest, turnOf, type Attachment, type Carried, type FileRef, type Turn } from "./attach";
+import type { Parcel } from "./relay";
 
 const SECTIONS_KEY = "skein.sections.v1";
 
@@ -181,6 +182,9 @@ export type RosterRow = {
   /** It announced `files`: it pulls a prompt's files from the wall that sent
    *  them (`attachments::CAN_FILES`). */
   files?: boolean;
+  /** It announced `parcel`: it lands a person's dropped files and folders as a
+   *  parcel (`fleet::CAN_PARCEL`). Absent from an older wall, which is a no. */
+  parcel?: boolean;
   /** It opens an empty card a person here asks for (`flyway/opening.rs`) —
    *  what a section's menu reads to offer one. Absent from an older build. */
   opens?: boolean;
@@ -676,6 +680,8 @@ export class Shadow {
       /* The same for files, which the owning wall pulls from this one
          (`flyway_fetch`). */
       files: !!row && !row.older && row.files === true,
+      /* And a parcel, which the owning wall lands (`fleet::CAN_PARCEL`). */
+      parcel: !!row && !row.older && row.parcel === true,
     };
   }
   /** The accounts its wall can put it on, by label — what `put it on…`
@@ -1773,9 +1779,9 @@ export class Elsewhere {
    *  (docs/PARCEL-DROP.md). The line is drawn pending until the far wall lands
    *  the files and its card has the sentence, then `flyway:prompt-answer`
    *  settles it; a refusal returns its words, with the tiles kept. */
-  async sendParcel(s: Shadow, text: string, paths: string[]): Promise<string | null> {
+  async sendParcel(s: Shadow, text: string, paths: string[], parcel?: Parcel): Promise<string | null> {
     const id = crypto.randomUUID();
-    s.sent.push({ id, text, at: Date.now(), state: "queued" });
+    s.sent.push({ id, text, at: Date.now(), state: "queued", ...(parcel ? { parcel } : {}) });
     this.#byPrompt.set(id, s);
     if (s.face.unheard) {
       const span = Number.isFinite(s.quietMs) ? ` for ${spanOf(s.quietMs / 1000)}` : "";
@@ -2025,7 +2031,7 @@ export class Elsewhere {
     conv.note(`sent from ${p.from.host}`);
     let sent = false;
     try {
-      sent = await this.#skein.send(conv, turn?.text ?? p.text, turn);
+      sent = await this.#skein.send(conv, turn?.text ?? p.text, turn, { note: `sent from ${p.from.host}` });
     } catch {
       sent = false;
     }

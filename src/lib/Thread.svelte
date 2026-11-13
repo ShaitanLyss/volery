@@ -673,8 +673,13 @@
         {/each}
       </div>
     {/if}
-    {#if pc.parcel}
-      <div class="pplate"><ParcelPlate parcel={pc.parcel} dir="out" /></div>
+    <!-- A parcel's plate. Sent from here it is carried on the line while it
+         travels (`line.parcel`); received it is read out of the sentence it
+         came with (`pc.parcel`), which is the one place the direction is known. -->
+    {#if line.parcel}
+      <div class="pplate"><ParcelPlate parcel={line.parcel} dir="out" /></div>
+    {:else if pc.parcel}
+      <div class="pplate"><ParcelPlate parcel={pc.parcel} dir={line.note?.startsWith("sent from") ? "in" : "out"} /></div>
     {/if}
   {/if}
 {/snippet}

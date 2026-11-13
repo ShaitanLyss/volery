@@ -714,6 +714,30 @@ export function parcelTotals(list: readonly Parcel[]): { files: number; bytes: n
   return { files, bytes };
 }
 
+/** The plate drawn under a sent parcel, before the far wall has said where it
+ *  landed (`docs/PARCEL-DROP.md`): the total, each top-level thing, and the
+ *  target wall. `relay.ts::Parcel` is the same shape the manifest reads back
+ *  as, so one component draws both; only the `landed` path is still unknown. */
+export function parcelPlate(
+  tops: readonly Parcel[],
+  files: number,
+  bytes: number,
+  left: readonly ParcelLeft[],
+  leftMore: number,
+  to: string,
+): import("./relay").Parcel {
+  return {
+    files: files === 1 ? "1 file" : `${files} files`,
+    size: mb(bytes),
+    landed: "",
+    to,
+    sent: tops.map((t) => ({ name: t.name, dir: t.dir, detail: sizeNote(t), secret: t.secret })),
+    left: [...left],
+    sentMore: 0,
+    leftMore,
+  };
+}
+
 /** Take an image out of the draft by taking its token out of the sentence.
  *
  *  The `✕` on a chip and backspacing over the token are the *same* act, and

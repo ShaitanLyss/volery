@@ -82,9 +82,10 @@
     name?: string;
     accepts?: () => boolean;
     /** When this box's target turns a drop into a parcel — a card on another
-     *  wall — and against which caps. `null` means an ordinary attachment (a
-     *  path on this wall). */
-    parcel?: () => { caps: "here" | "afar" } | null;
+     *  wall — and against which caps. `can` is whether that wall lands a parcel
+     *  (`fleet::CAN_PARCEL`); an older wall falls back to an ordinary
+     *  attachment. `null` means an ordinary attachment (a path on this wall). */
+    parcel?: () => { caps: "here" | "afar"; can: boolean } | null;
     oncaret?: (caret: number) => void;
     tint?: Snippet;
     inkClass?: string;
@@ -173,7 +174,7 @@
         take: async (paths, where, links = [], refused = []) => {
           const pt = parcel?.() ?? null;
           const tokens = paths.length
-            ? pt
+            ? pt && pt.can
               ? await shots.fromParcel(paths, pt.caps)
               : await shots.fromPaths(paths)
             : [];

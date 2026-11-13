@@ -439,6 +439,9 @@ export type Remote = {
   /** Whether that wall announced `files` — that it pulls a prompt's files from
    *  this one and writes them on its own disk (`attachments::CAN_FILES`). */
   files?: boolean;
+  /** Whether that wall announced `parcel` — that it lands a person's dropped
+   *  files and folders as a parcel (`fleet::CAN_PARCEL`). Absent is no. */
+  parcel?: boolean;
 };
 
 /** The verbs on offer for a card. `null` for a card on this wall means all of

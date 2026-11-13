@@ -71,6 +71,7 @@ import type { WakeFrom } from "./waiting";
 import { gistOf, type Gist, type GistHeld, type GistSource, type GistTimeline } from "./gist";
 import { isOwnPrompt } from "./own";
 import { planOf, type Plan, type Timeline } from "./timeline";
+import type { Parcel } from "./relay";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
  *  newer wall's digest is drawn from whatever fields this build understands. */
@@ -1021,6 +1022,9 @@ export type Sent = {
    *  again (`afar.ts::HeldAnswer`) — not a send that is late, so not read as
    *  one that never left. */
   held?: boolean;
+  /** The plate of a parcel this send carried, drawn under the line at once —
+   *  before the far wall has said where it landed (`docs/PARCEL-DROP.md`). */
+  parcel?: Parcel;
 };
 
 export type SentEvent =
@@ -1817,6 +1821,9 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
            far wall's copy of them rather than joining it — they are the same
            pictures, and two strips under one prompt would read as two sends. */
         if (w.sent.shots?.length) line.shots = w.sent.shots;
+        /* The same for a parcel's plate: this wall's own reading wins over the
+           far wall's copy, so the plate keeps its direction (sent) here. */
+        if (w.sent.parcel) line.parcel = w.sent.parcel;
       }
       out.push(line);
       continue;
@@ -1831,6 +1838,7 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
          stays pending, and the receipt is what says where it actually is. */
       state: r.look === "failed" ? "failed" : "pending",
       ...(w.sent.shots?.length ? { shots: w.sent.shots } : {}),
+      ...(w.sent.parcel ? { parcel: w.sent.parcel } : {}),
     });
   }
   return out;

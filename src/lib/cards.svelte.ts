@@ -91,8 +91,10 @@ export interface CardHandle {
   /** Say something to it. */
   say(text: string, turn: Turn): Promise<void>;
   /** Hand it a parcel — files and folders dropped on it, as a copy. `null`
-   *  means the send left; a string is the refusal, said with the tiles kept. */
-  sendParcel(text: string, paths: string[]): Promise<string | null>;
+   *  means the send left; a string is the refusal, said with the tiles kept.
+   *  `parcel` is the plate drawn while it travels (a remote card's); a card
+   *  here draws its plate from the manifest that lands in the sentence. */
+  sendParcel(text: string, paths: string[], parcel?: import("./relay").Parcel): Promise<string | null>;
   /** Rewrite a message it is keeping before it goes. Only a card here: another
    *  wall's queue is its own, and this wall holds no handle on it. */
   editQueued(key: string, text: string): void;
@@ -375,7 +377,7 @@ export class LocalCard implements CardHandle {
       fromOutbox(ticket);
     }
   }
-  async sendParcel(text: string, paths: string[]): Promise<string | null> {
+  async sendParcel(text: string, paths: string[], _parcel?: import("./relay").Parcel): Promise<string | null> {
     let landed: { manifest: string; landed: string };
     try {
       landed = await invoke<{ manifest: string; landed: string }>("parcel_local", { card: this.conv.id, paths });
@@ -581,8 +583,8 @@ export class RemoteCard implements CardHandle {
   async say(text: string, turn: Turn) {
     await this.#walls.send(this.shadow, text, turn);
   }
-  async sendParcel(text: string, paths: string[]): Promise<string | null> {
-    return this.#walls.sendParcel(this.shadow, text, paths);
+  async sendParcel(text: string, paths: string[], parcel?: import("./relay").Parcel): Promise<string | null> {
+    return this.#walls.sendParcel(this.shadow, text, paths, parcel);
   }
   stir() {}
   /* Its queue is kept on its own wall — the words are in that wall's store,

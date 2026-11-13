@@ -65,6 +65,11 @@
         </button>
       {/if}
     </div>
+  {:else if parcel.to}
+    <div class="landed">
+      <span class="lbl">to</span>
+      <span class="path" {@attach tipOf(() => (parcel.to ?? ""))}>{parcel.to}</span>
+    </div>
   {/if}
   {#if leftCount}
     <details class="left">

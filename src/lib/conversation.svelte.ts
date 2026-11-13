@@ -107,6 +107,7 @@ import { WAITING_TO_SEND, heldFromRow, isQueuedSpawn, type Held, type HeldItem }
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isHandoverPrompt, isRelayPrompt, isWakePrompt, relayCap } from "./relay";
+import type { Parcel } from "./relay";
 import { answerNote } from "./asking";
 import { owesYou } from "./notice";
 import type { Answers, AskQuestion } from "./asking";
@@ -215,6 +216,10 @@ export type Line = {
    *  the path the CLI injected was not one. On a `shell` it is the whole cap
    *  `bang.ts::runCap` wrote — the command, the line count and how it ended. */
   note?: string;
+  /** The plate of a parcel this line carried, drawn under it (`Parcel.svelte`).
+   *  Set on a send this wall made before the far wall has said where it landed;
+   *  once it lands, the far wall's own copy carries the manifest in the words. */
+  parcel?: Parcel;
   /** On a `you` line, whether the process has it yet: `pending` is drawn but
    *  not yet acknowledged, `failed` never reached one, and absent is the normal
    *  case — the wire echoed it back. `held` is the card keeping it until an
@@ -2260,7 +2265,7 @@ export class Conversation {
   echo(
     text: string,
     wire?: { echo: string; shots?: { name: string; thumb: string }[] },
-    opts: { behindTurn?: boolean; own?: boolean } = {},
+    opts: { behindTurn?: boolean; own?: boolean; note?: string } = {},
   ) {
     const idle = !this.working;
     this.#push("you", text, "pending");
@@ -2268,6 +2273,7 @@ export class Conversation {
     line.awaited = true;
     if (opts.behindTurn) line.behindTurn = true;
     if (opts.own) line.own = true;
+    if (opts.note) line.note = opts.note;
     this.#drawnAt.set(line, Date.now());
     /* Only when it differs, so the ordinary prompt keeps one string and
        `#echoOf`'s fallback is never reading a copy that could drift. */

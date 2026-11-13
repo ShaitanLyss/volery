@@ -32,7 +32,7 @@ import type { Skein } from "./skein.svelte";
 import type { CardHandle } from "./cards.svelte";
 import type { Field } from "./field.svelte";
 import type { Bang } from "./bang.svelte";
-import type { Turn } from "./attach";
+import { parcelPlate, type Parcel, type Turn } from "./attach";
 import {
   completeAt,
   completionFor,
@@ -441,7 +441,16 @@ export class Composer {
     if (field.shots.parcel) {
       const one = reach.length === 1 ? reach[0]! : null;
       if (!one) return field.refuse();
-      const why = await one.sendParcel(text.trim(), field.shots.parcelPaths);
+      /* A card on another wall has no manifest in its sentence, so the plate
+         is made here and drawn while it travels — total and target, the far
+         wall fills in where it landed. A card here reads its plate off the
+         manifest that lands in the sentence. */
+      const summary = field.shots.parcel;
+      const tops = field.shots.list.filter((a): a is Parcel => a.kind === "parcel");
+      const plate = one.remote
+        ? parcelPlate(tops, summary.files, summary.bytes, summary.left, summary.leftMore, one.remote.host)
+        : undefined;
+      const why = await one.sendParcel(text.trim(), field.shots.parcelPaths, plate);
       if (why !== null) {
         skein.fault = why;
         field.shots.refused = why;

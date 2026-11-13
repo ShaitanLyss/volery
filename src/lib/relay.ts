@@ -368,6 +368,9 @@ export type Parcel = {
   files: string;
   size: string;
   landed: string;
+  /** The wall this parcel is going to, on the wall that sent it — the pending
+   *  plate's "target", before the far wall says where it landed. */
+  to?: string;
   sent: ParcelSent[];
   left: ParcelLeft[];
   /** Past what the block spells out: `+ … · N more` and `- … · N more left out`. */

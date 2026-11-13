@@ -5353,7 +5353,7 @@ export class Skein {
     conv: Conversation,
     text: string,
     turn?: Turn,
-    opts: { yours?: boolean; own?: boolean } = {},
+    opts: { yours?: boolean; own?: boolean; note?: string } = {},
   ): Promise<boolean> {
     /* Read *before* `echo`, which opens the turn for a card that was idle.
        Asking after would answer "yes, working" for the very prompt being sent
@@ -5368,7 +5368,7 @@ export class Skein {
        wall's manners rather than the person's day (§3.10). What was said is
        not recorded — a send is a mark, never a word. */
     if (opts.yours) acts.note("send", conv.id);
-    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own });
+    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots }, { behindTurn, own: opts.own, note: opts.note });
     const sent = await this.#route(conv, text, turn, { ...opts, behindTurn });
     /* A model switch carries its usual effort with it — see `effortForModel`.
        Sent as a second prompt of its own because `/effort` is the CLI's and the
