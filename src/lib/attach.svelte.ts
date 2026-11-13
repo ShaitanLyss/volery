@@ -167,6 +167,7 @@ export class Attachments {
    *  in the order they arrived. */
   async fromFiles(files: readonly File[]): Promise<string[]> {
     const out: string[] = [];
+    if (this.#noMixed(false)) return out;
     this.busy = true;
     try {
       for (const f of files) {
@@ -189,6 +190,7 @@ export class Attachments {
    *  attached as its path, which is what the agent is handed. */
   async fromPaths(paths: readonly string[]): Promise<string[]> {
     const out: string[] = [];
+    if (this.#noMixed(false)) return out;
     this.busy = true;
     try {
       let seen: Inspected[];
@@ -212,11 +214,27 @@ export class Attachments {
     return out;
   }
 
+  /** One send has one carrier: a parcel and a pasted picture or an attached
+   *  file do not go together, and the drop is where the mistake is made, so it
+   *  is refused there with the draft kept. */
+  #noMixed(parcel: boolean): boolean {
+    const has = parcel ? this.list.some((a) => a.kind !== "parcel") : this.parcel !== null;
+    if (has) {
+      this.refused = parcel
+        ? "a picture or a file is already attached — one send has one carrier; drop the files instead of a picture"
+        : "a parcel already holds the files — one send has one carrier; drop them instead of pasting a picture";
+      return true;
+    }
+    return false;
+  }
+
   /** Measure what `paths` mean as a parcel against `caps` and hold it: a chip
    *  and a tile per top-level thing, the total and the left-out lines beside
    *  them. Nothing is copied — the send gathers again. A refusal is said and
    *  returns no tokens, so the draft keeps whatever it had. */
   async fromParcel(paths: readonly string[], caps: "here" | "afar"): Promise<string[]> {
+    if (this.#noMixed(true)) return [];
+    this.busy = true;
     this.busy = true;
     try {
       let s: { tops: { name: string; path: string; dir: boolean; files: number; bytes: number; secret: boolean }[]; left: ParcelLeft[]; left_more: number };
