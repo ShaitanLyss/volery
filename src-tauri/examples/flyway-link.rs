@@ -260,6 +260,9 @@ async fn main() {
                 title: None,
                 model: Some("sonnet".into()),
                 effort: None,
+                /* A Claude card: the provider's name travels when one is named,
+                   and this ask names none (providers.md). */
+                provider: None,
                 needs: Vec::new(),
                 worktree: None,
                 worktree_base: None,
