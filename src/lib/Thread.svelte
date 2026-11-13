@@ -732,10 +732,10 @@
 )}
   {@const long = body.length > LETTER_LONG}
   {@const one = who.length === 1 ? who[0].card : null}
-  /* A letter this conversation sent is its own prose, so a fence in it is
-     reported to this card; one it received is the sender's, reported to the
-     sender when it is a card on this wall and to nobody when it is not (its
-     hook runs on its own wall). */
+  <!-- A letter this conversation sent is its own prose, so a fence in it is
+       reported to this card; one it received is the sender's, reported to the
+       sender when it is a card on this wall and to nobody when it is not (its
+       hook runs on its own wall). -->
   {@const of =
     dir === "out" ? ofReadingCard() : one && !one.readable.elsewhere ? one.readable.id : null}
   <div class="letter" class:out={dir === "out"} data-nav="msg">
