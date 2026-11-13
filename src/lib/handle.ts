@@ -292,6 +292,7 @@ export const HANDLE_CROSSING: { readonly [K in keyof CardHandle]-?: Crossing } =
   do: "crosses",
   carries: "crosses",
   say: "crosses",
+  sendParcel: "crosses",
   editQueued: {
     stays:
       "the queue a mid-turn prompt waits in is in the card's own wall's store, so the words are not here to rewrite — a card elsewhere can be sent to, but its waiting messages are changed where they wait",

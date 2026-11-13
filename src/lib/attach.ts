@@ -208,8 +208,34 @@ export type Bytes = {
   bytes: number;
 };
 
+/** One thing left out of a parcel, and why. `path` is relative to the landing
+ *  folder, `/`-separated, with the top-level name as its first segment. */
+export type ParcelLeft = { path: string; why: string };
+
+/** One top-level thing a person dropped as a parcel: a file or a folder,
+ *  measured on drop (`parcel::gather`) so its count, size and any secret are
+ *  answerable before the send. The whole set's left-out lines ride on every
+ *  top of one parcel, so parking a draft keeps them with the chip. */
+export type Parcel = {
+  kind: "parcel";
+  id: string;
+  /** The chip's word and the tile's name — the name it lands under. */
+  name: string;
+  /** The top-level path as dropped (absolute), for the send's re-gather. */
+  path: string;
+  dir: boolean;
+  files: number;
+  bytes: number;
+  /** A secret-shaped file named directly, so sent and flagged. */
+  secret: boolean;
+  /** What the parcel left out, from the measure — the same snapshot on every
+   *  top of one parcel. Absent on a restored draft, which re-measures at send. */
+  left: ParcelLeft[];
+  leftMore: number;
+};
+
 /** Anything attached to a draft. */
-export type Attachment = Picture | FileRef | Bytes;
+export type Attachment = Picture | FileRef | Bytes | Parcel;
 
 /** One block of a user turn, exactly as `supervisor::user_envelope` writes it. */
 export type Block =
@@ -261,7 +287,7 @@ export type Carried = { name: string; mediaType: MediaType; data: string };
  *  PDF for a card that cannot be given a path. */
 type Inline = { name: string; mediaType: string; data: string };
 
-const inline = (a: Attachment): a is Picture | Bytes => a.kind !== "file";
+const inline = (a: Attachment): a is Picture | Bytes => a.kind === "picture" || a.kind === "bytes";
 
 /** The turn a sentence and its attachments make: cut once at the tokens, and
  *  every reading of the cut taken from that one cut.
@@ -293,7 +319,7 @@ export function turnOf(
     carried: kept.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data })),
     text: said,
     files: reach.afar
-      ? stillIn(said, list.filter((a): a is FileRef | Bytes => a.kind !== "picture"))
+      ? stillIn(said, list.filter((a): a is FileRef | Bytes => a.kind === "file" || a.kind === "bytes"))
       : [],
   };
 }
@@ -340,14 +366,14 @@ export function planFor(
   const claim: FileRef[] = [];
   const used = stillIn(text, list);
   for (const a of used) {
-    if (a.kind === "picture") continue;
+    if (a.kind === "picture" || a.kind === "parcel") continue;
     if (a.kind === "bytes" && a.bytes > MAX_FILE_BYTES) {
       return { write, read, claim, refused: `${a.name} is ${mb(a.bytes)} — the most one attachment may be is ${mb(MAX_FILE_BYTES)}` };
     }
   }
   if (reach.afar) return { write, read, claim, refused: null };
   for (const a of used) {
-    if (a.kind === "picture") continue;
+    if (a.kind === "picture" || a.kind === "parcel") continue;
     if (!reach.chat) {
       if (a.kind === "bytes") write.push(a);
       if (a.kind === "file" && a.staged) claim.push(a);
@@ -668,10 +694,24 @@ export function sizeNote(a: Attachment): string {
     return a.size === null ? "sent as its path" : `${mb(a.size)} · sent as its path`;
   }
   if (a.kind === "bytes") return `${mb(a.bytes)}${isDocument(a.mediaType, a.name) ? " · pdf" : ""}`;
+  if (a.kind === "parcel") {
+    return a.dir ? `${a.files} ${a.files === 1 ? "file" : "files"} · ${mb(a.bytes)}` : mb(a.bytes);
+  }
   const kb = a.bytes < 1024 * 1024
     ? `${Math.max(1, Math.round(a.bytes / 1024))} KB`
     : `${(a.bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${a.w}×${a.h} · ${kb}${a.scaled ? " · scaled" : ""}`;
+}
+
+/** A parcel's total across the top-level things still in the draft. */
+export function parcelTotals(list: readonly Parcel[]): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  for (const p of list) {
+    files += p.files;
+    bytes += p.bytes;
+  }
+  return { files, bytes };
 }
 
 /** Take an image out of the draft by taking its token out of the sentence.

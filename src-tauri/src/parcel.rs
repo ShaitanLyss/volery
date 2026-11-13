@@ -1005,6 +1005,19 @@ pub fn afar_line(carried: &Carried, host: &str) -> String {
  * secret row lands on the receiving card's chronicle, where the files are.
  */
 
+/// One top-level entry of `Summary`, with the source path beside it — the
+/// front end re-gathers from these at the send, so the measure and the send
+/// must agree on which path each name came from.
+#[derive(serde::Serialize)]
+pub struct SummaryTop {
+    pub name: String,
+    pub path: String,
+    pub dir: bool,
+    pub files: usize,
+    pub bytes: u64,
+    pub secret: bool,
+}
+
 /// What `parcel_measure` answers: the summary the strip above the field draws,
 /// gathered against the right caps but never copied. The front end reads the
 /// secret-shaped names off `tops`.
@@ -1012,9 +1025,25 @@ pub fn afar_line(carried: &Carried, host: &str) -> String {
 pub struct Summary {
     pub files: usize,
     pub bytes: u64,
-    pub tops: Vec<Top>,
+    pub tops: Vec<SummaryTop>,
     pub left: Vec<Left>,
     pub left_more: usize,
+}
+
+/// The resolved, deduplicated top-level source paths, in the order `gather`
+/// pushes `tops` — `gather` already validated them, so this only re-reads the
+/// same dedup, and nothing can disagree about which name goes with which path.
+fn named_paths(paths: &[String], base: &Path) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for raw in paths {
+        if let Ok(real) = resolve(raw, base) {
+            if seen.insert(key(&real)) {
+                out.push(real.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out
 }
 
 /// What `parcel_local` answers once the files are copied into the card's own
@@ -1040,7 +1069,14 @@ pub async fn parcel_measure(paths: Vec<String>, caps: String) -> Result<Summary,
         if p.items.is_empty() {
             return Err(NOTHING.into());
         }
-        Ok(Summary { files: p.items.len(), bytes: p.bytes(), tops: p.tops, left: p.left, left_more: p.left_more })
+        let sources = named_paths(&paths, &base);
+        let tops = p
+            .tops
+            .into_iter()
+            .zip(sources)
+            .map(|(t, path)| SummaryTop { name: t.name, path, dir: t.dir, files: t.files, bytes: t.bytes, secret: t.secret })
+            .collect();
+        Ok(Summary { files: p.items.len(), bytes: p.bytes(), tops, left: p.left, left_more: p.left_more })
     })
     .await?
 }

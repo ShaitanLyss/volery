@@ -58,7 +58,7 @@
    * the dock's. */
   import { tick, untrack, type Snippet } from "svelte";
   import type { HTMLTextareaAttributes } from "svelte/elements";
-  import { dropToken, insertAt, runsOf, sizeNote } from "./attach";
+  import { dropToken, insertAt, runsOf, sizeNote, type Parcel } from "./attach";
   import { dropping, registerBox, type Attachments, type Landing } from "./attach.svelte";
   import { useOpener } from "./paths.svelte";
   import { tipOf } from "./tipped.svelte";
@@ -69,6 +69,7 @@
     el = $bindable(),
     name,
     accepts,
+    parcel,
     oncaret,
     tint,
     inkClass = "",
@@ -80,6 +81,10 @@
     el?: HTMLTextAreaElement;
     name?: string;
     accepts?: () => boolean;
+    /** When this box's target turns a drop into a parcel — a card on another
+     *  wall — and against which caps. `null` means an ordinary attachment (a
+     *  path on this wall). */
+    parcel?: () => { caps: "here" | "afar" } | null;
     oncaret?: (caret: number) => void;
     tint?: Snippet;
     inkClass?: string;
@@ -103,6 +108,20 @@
    *  while something is attached: transparent glyphs cost an IME its visible
    *  composition, which is worth paying only on a draft with a chip to show. */
   const marked = $derived(!tint && shots.any);
+
+  /* A parcel's reading for the strip above the field: the total, one tile per
+     top-level thing, the inverted secret line and the folded left-out list. */
+  const carrier = $derived(shots.parcel);
+  const parcelTops = $derived(shots.list.filter((a): a is Parcel => a.kind === "parcel"));
+  const secretTops = $derived(parcelTops.filter((t) => t.secret));
+
+  const words = (n: number, one: string) => (n === 1 ? `1 ${one}` : `${n} ${one}s`);
+  const fmt = (n: number): string => {
+    const KB = 1024;
+    if (n < KB) return `${n} B`;
+    if (n < KB * KB) return `${(n / KB).toFixed(1)} KB`;
+    return `${(n / (KB * KB)).toFixed(1)} MB`;
+  };
 
   /** Put something into the sentence where the caret is (or on the end), with
    *  the spacing a person would have typed, and leave the caret after it. */
@@ -152,7 +171,12 @@
       {
         accepts,
         take: async (paths, where, links = [], refused = []) => {
-          const tokens = paths.length ? await shots.fromPaths(paths) : [];
+          const pt = parcel?.() ?? null;
+          const tokens = paths.length
+            ? pt
+              ? await shots.fromParcel(paths, pt.caps)
+              : await shots.fromPaths(paths)
+            : [];
           place([...tokens, ...links], where);
           if (refused.length) shots.refused = refused.join(" · ");
         },
@@ -165,8 +189,46 @@
 <div class="box" data-attach data-attach-name={name ?? null} class:dropping={dropping.over !== null && dropping.over === boxEl} bind:this={boxEl} {@attach register}>
   <!-- Above the field, so the pictures sit between whatever heads the surface
        and the sentence that refers to them, and the field never moves as you
-       type. Drawn only when there is something in it. -->
-  {#if shots.any}
+       type. Drawn only when there is something in it. A parcel draws its own
+       strip: the total, a tile per top-level thing, the inverted secret line
+       and the folded left-out list. -->
+  {#if carrier}
+    <div class="parcel">
+      <p class="parcel-head">
+        {words(carrier.files, "file")} · {fmt(carrier.bytes)} · as a parcel — they land in its own folder
+      </p>
+      <div class="shots">
+        {#each parcelTops as a (a.id)}
+          <span class="shot tile parcel-tile" class:secret={a.secret} title="{a.name} — {sizeNote(a)}">
+            <span class="glyph" class:dir={a.dir} aria-hidden="true"></span>
+            <span class="what">
+              <span class="who">{a.name}</span>
+              <span class="how">{sizeNote(a)}</span>
+            </span>
+            <button class="off" type="button" title="Take it out of the parcel" onclick={() => detach(a.name)}
+              >✕</button
+            >
+          </span>
+        {/each}
+      </div>
+      {#if secretTops.length}
+        <p class="parcel-secret">
+          {words(secretTops.length, "secret-shaped file")} sent because {secretTops.length === 1 ? "it was" : "they were"} named. Never printed.
+        </p>
+      {/if}
+      {#if carrier.left.length || carrier.leftMore}
+        <details class="parcel-left">
+          <summary
+            >{words(carrier.left.length + carrier.leftMore, "thing")} left out</summary
+          >
+          {#each carrier.left as l (l.path)}
+            <div class="left-line">{l.path} — {l.why}</div>
+          {/each}
+          {#if carrier.leftMore}<div class="left-line">… {carrier.leftMore} more left out</div>{/if}
+        </details>
+      {/if}
+    </div>
+  {:else if shots.any}
     <div class="shots">
       {#each shots.list as a (a.id)}
         {#if a.kind === "picture"}
@@ -426,6 +488,55 @@
   }
   .shot:hover .off {
     color: var(--paper);
+  }
+  /* A parcel's strip: the total and the carrier, then the same tiles a file
+     gets, with a named secret flagged in inverted ink (the plate's own flag). */
+  .parcel {
+    margin-bottom: 0.4rem;
+  }
+  .parcel-head {
+    margin: 0 0 0.3rem;
+    font-family: var(--util);
+    font-size: 0.68rem;
+    color: var(--paper-mute);
+  }
+  .parcel-tile.secret {
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--paper);
+  }
+  .parcel-tile.secret .how,
+  .parcel-tile.secret .off {
+    color: var(--ink);
+    opacity: 0.75;
+  }
+  .parcel-tile.secret:hover {
+    border-color: var(--ink);
+  }
+  .parcel-secret {
+    margin: 0 0 0.35rem;
+    padding: 0.25rem 0.4rem;
+    border-radius: 3px;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--util);
+    font-size: 0.68rem;
+    font-weight: 600;
+  }
+  .parcel-left {
+    margin: 0 0 0.35rem;
+    font-family: var(--util);
+    font-size: 0.68rem;
+    color: var(--paper-mute);
+  }
+  .parcel-left summary {
+    cursor: pointer;
+  }
+  .left-line {
+    margin-top: 0.2rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .refused {
     margin: 0 0 0.35rem;

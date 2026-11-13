@@ -531,6 +531,7 @@
     shots={field.shots}
     name="prompt"
     accepts={() => !!card || targets.length > 0}
+    parcel={() => (card?.remote ? { caps: "afar" } : null)}
     oncaret={(c) => (field.caret = c)}
     tint={field.banging ? bangTint : undefined}
     inkClass={field.banging ? "shell" : ""}

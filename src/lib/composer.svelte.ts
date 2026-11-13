@@ -434,6 +434,24 @@ export class Composer {
        because what an attachment becomes depends on where it goes
        (`Attachments.turnFor`). Anything that cannot go is refused here, with
        the draft kept and the reason said beside it. */
+    /* A parcel goes to one card, never a gathering, and never through the
+       prompt path — the files are the parcel's (`docs/PARCEL-DROP.md`), so the
+       tiles say where and the send is the parcel's own. A refusal keeps the
+       tiles and the sentence. */
+    if (field.shots.parcel) {
+      const one = reach.length === 1 ? reach[0]! : null;
+      if (!one) return field.refuse();
+      const why = await one.sendParcel(text.trim(), field.shots.parcelPaths);
+      if (why !== null) {
+        skein.fault = why;
+        field.shots.refused = why;
+        return field.refuse();
+      }
+      field.put("");
+      field.at = 0;
+      return;
+    }
+
     const one = reach.length === 1 ? reach[0]! : null;
     if (one) {
       const turn = await field.shots.turnFor(text, one.reach, one.id);
