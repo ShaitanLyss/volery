@@ -268,7 +268,7 @@
               <ul class="nums">
                 <li><span class="lab">requests</span><span class="val">{count(model?.kpis.requests ?? 0)}</span></li>
                 <li><span class="lab">cards</span><span class="val">{count(model?.kpis.cards ?? 0)}</span></li>
-                <li><span class="lab">cache</span><span class="val">{model?.kpis.cacheShare === null || model?.kpis.cacheShare === undefined ? "—" : `${Math.round(model.kpis.cacheShare)}%`}</span></li>
+                <li><span class="lab">cache</span><span class="val">{model?.kpis.cacheShare === null || model?.kpis.cacheShare === undefined ? "" : `${Math.round(model.kpis.cacheShare)}%`}</span></li>
               </ul>
             {/if}
           </section>

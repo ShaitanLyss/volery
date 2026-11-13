@@ -58,7 +58,7 @@
       {#if cycle.on}
         <path d={arcPath(C, C, R, fraction * 360)} class="fill" />
       {/if}
-      <text x={C} y={C - 8} class="inner">{cycle.on ? span(left) : "—"}</text>
+      <text x={C} y={C - 8} class="inner">{cycle.on ? span(left) : ""}</text>
       <text x={C} y={C + 34} class="under">{cycle.on ? phase.number : ""}</text>
     </svg>
   {:else if variant === "beads"}
@@ -70,10 +70,10 @@
         <span class="bead" data-bead={bead}></span>
       {/each}
     </div>
-    <div class="beads-time">{cycle.on ? span(left) : "—"}</div>
+    <div class="beads-time">{cycle.on ? span(left) : ""}</div>
     <div class="tally">{total === 1 ? "one done" : `${total} done`}</div>
   {:else}
-    <div class="digits">{cycle.on ? span(left) : "—"}</div>
+    <div class="digits">{cycle.on ? span(left) : ""}</div>
   {/if}
 
   <div class="foot">

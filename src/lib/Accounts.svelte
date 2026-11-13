@@ -767,7 +767,7 @@
                       >
                         <span class="capname">{nameOf(account.label, kind)}</span>
                         <span class="used">
-                          {share === null ? (used === null ? "—" : pct(used)) : pct(share)}
+                          {share === null ? (used === null ? "" : pct(used)) : pct(share)}
                           {#if share !== null && used !== null && Math.round(share) !== Math.round(used)}
                             <span class="of"> of {pct(used)}</span>
                           {/if}
@@ -778,7 +778,7 @@
                           type="number"
                           min="0"
                           max="100"
-                          placeholder="—"
+                          placeholder=""
                           value={cap ?? ""}
                           onchange={(e) => setCap(account.label, kind, e.currentTarget.value)}
                         />
@@ -972,7 +972,7 @@
                     type="number"
                     min="0"
                     step="1"
-                    placeholder="—"
+                    placeholder=""
                     value={purse.budget ?? ""}
                     onchange={(e) => setBudget(e.currentTarget)}
                     onkeydown={(e) => {

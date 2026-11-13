@@ -186,7 +186,7 @@
       </svg>
       <div class="ends">
         <span>{textOf(widget, "span", "minute") === "long" ? "5 min" : "1 min"} ago</span>
-        <span class="key">busiest {hot === null ? "—" : say(Math.max(...load))}</span>
+        <span class="key">busiest {hot === null ? "" : say(Math.max(...load))}</span>
         <span>now</span>
       </div>
     </div>

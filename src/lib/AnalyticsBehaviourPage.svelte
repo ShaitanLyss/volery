@@ -130,7 +130,7 @@
    *  as *you did nothing*: a year averages a working day out to almost nothing,
    *  and `0.0` is the one number that looks like a broken instrument. */
   const apmSaid = $derived.by(() => {
-    if (hand?.apm == null) return "—";
+    if (hand?.apm == null) return "";
     if (hand.apm > 0 && hand.apm < 0.05) return "<0.1";
     return hand.apm.toFixed(1);
   });
@@ -150,7 +150,7 @@
     { label: "results", value: bytesSaid(kpis.bytes), note: "returned to the agents" },
     {
       label: "apportioned cost",
-      value: kpis.cost > 0 ? money(kpis.cost) : "—",
+      value: kpis.cost > 0 ? money(kpis.cost) : "",
       note: kpis.cost > 0 ? "from the turns that made the calls" : "no turn claimed these calls",
     },
   ]);
@@ -470,7 +470,7 @@
           <div class="bhp-figure">
             <span class="bhp-flabel">interrupted</span>
             <span class="bhp-fvalue">
-              {hand.interrupts === null ? "—" : rateSaid(hand.interrupts.share)}
+              {hand.interrupts === null ? "" : rateSaid(hand.interrupts.share)}
             </span>
             <span class="bhp-fnote">
               {hand.interrupts === null
@@ -518,7 +518,7 @@
                   <!-- A stay is folded from the order, which the hour tier does
                        not keep: a column of zeros here would be a wrong answer
                        drawn where a missing one is honest. -->
-                  <td>{hand.coarse || hand.capped ? "—" : duration(row.dwellMs)}</td>
+                  <td>{hand.coarse || hand.capped ? "" : duration(row.dwellMs)}</td>
                 </tr>
               {/each}
             </tbody>

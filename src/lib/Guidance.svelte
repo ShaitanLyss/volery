@@ -244,7 +244,7 @@
           <span class="who">the wall</span>
           <span class="says">
             {#if unsaved.includes("wall")}<i class="edited">edited</i>{/if}
-            {gist(drafts.wall ?? skein.guidance, 34) || "—"}
+            {gist(drafts.wall ?? skein.guidance, 34) || ""}
           </span>
         </button>
 
@@ -255,7 +255,7 @@
             <span class="who" class:quiet={!marked(p)}>{p.name}</span>
             <span class="says">
               {#if unsaved.includes(p.id)}<i class="edited">edited</i>{/if}
-              {gist(drafts[p.id] ?? p.instructions, 34) || "—"}
+              {gist(drafts[p.id] ?? p.instructions, 34) || ""}
             </span>
           </button>
         {/each}

@@ -231,7 +231,7 @@
                   <td>{episodeLabel(e)}</td>
                   <td>{new Date(e.end).toLocaleString("en-GB")}</td>
                   <td>{e.writes > 1 ? `churn, ${count(e.writes)} writes` : "one write"}</td>
-                  <td class="awk-num">{e.measured ? count(e.payers.length) : "—"}</td>
+                  <td class="awk-num">{e.measured ? count(e.payers.length) : ""}</td>
                   <td class="awk-num">{e.measured ? money(e.usd ?? 0) : "unmeasured"}</td>
                 </tr>
               {:else}

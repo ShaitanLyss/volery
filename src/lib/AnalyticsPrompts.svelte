@@ -718,15 +718,15 @@
   }
 
   function lengthSaid(n: number | null): string {
-    return n === null ? "—" : `${count(n)} words`;
+    return n === null ? "" : `${count(n)} words`;
   }
 
   function rateSaid(rate: number | null): string {
-    return rate === null ? "—" : pct(rate * 100);
+    return rate === null ? "" : pct(rate * 100);
   }
 
   function perPrompt(n: number | null): string {
-    return n === null ? "—" : n.toFixed(1);
+    return n === null ? "" : n.toFixed(1);
   }
 
   function selectedKey(): string {

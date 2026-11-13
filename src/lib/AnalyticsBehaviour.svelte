@@ -111,7 +111,7 @@
       /* A window whose calls no turn claimed costs nothing to attribute, and
          `$0` would read as free. The dash matches the table's cost cell. */
       label: "apportioned",
-      value: kpis.cost > 0 ? money(kpis.cost) : "—",
+      value: kpis.cost > 0 ? money(kpis.cost) : "",
       note: kpis.cost > 0 ? "from the turns these calls paid for" : "no turn claimed these calls",
     },
   ]);
@@ -389,13 +389,13 @@
           <div class="bh-figures">
             <p><span>at once, at most</span><b>{habits.peakConcurrent}</b></p>
             <p>
-              <span>at once, on average</span><b>{habits.meanConcurrent === null ? "—" : habits.meanConcurrent.toFixed(1)}</b>
+              <span>at once, on average</span><b>{habits.meanConcurrent === null ? "" : habits.meanConcurrent.toFixed(1)}</b>
             </p>
             <p>
-              <span>agent calls a card</span><b>{habits.fanOut === null ? "—" : habits.fanOut.toFixed(1)}</b>
+              <span>agent calls a card</span><b>{habits.fanOut === null ? "" : habits.fanOut.toFixed(1)}</b>
             </p>
             <p>
-              <span>moves between fundings</span><b>{bundle.changesUnread ? "—" : count(habits.swaps)}</b>
+              <span>moves between fundings</span><b>{bundle.changesUnread ? "" : count(habits.swaps)}</b>
             </p>
           </div>
           {#if bundle.changesUnread}

@@ -92,7 +92,7 @@
 
   <div class="cl-total">
     <span class="cl-usd" title={model.turns > 0 ? "what its settled turns reported, all time" : undefined}>
-      {model.turns > 0 ? money(model.usd) : "—"}
+      {model.turns > 0 ? money(model.usd) : ""}
     </span>
     <span class="cl-under">
       {count(model.turns)} {model.turns === 1 ? "settled turn" : "settled turns"}

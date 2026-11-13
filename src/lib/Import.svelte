@@ -63,9 +63,9 @@
    *  ago" is arithmetic you have to do backwards, where "3 jun" is a day you
    *  either recall or do not. Lowercase, like the rest of the prose here. */
   function ago(iso: string | null): string {
-    if (!iso) return "—";
+    if (!iso) return "";
     const at = Date.parse(iso);
-    if (Number.isNaN(at)) return "—";
+    if (Number.isNaN(at)) return "";
     const secs = Math.max(0, (clock.t - at) / 1000);
     if (secs < 90) return "just now";
     const mins = Math.round(secs / 60);

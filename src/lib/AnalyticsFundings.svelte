@@ -8,12 +8,15 @@
  *
  * **A percentage is per account and per window kind and is never totalled
  * across either.** The total row carries money and tokens, which do add; its
- * percentage cells say "not summed" unless there is exactly one plan account,
- * where the total *is* that account.
+ * percentage cells are drawn only when the total *is* one account.
  *
- * A cell that cannot be read says why in words, never a zero: "no window" for a
- * funding that has none, "not read" for a plan whose samples did not cover the
- * day. `$0.00` with tokens behind it is "unpriced" for the same reason (§9.1).
+ * **A cell with nothing to say says nothing.** A funding with no window, a plan
+ * whose samples did not cover the day, a total that is two accounts' points
+ * added as though they were one currency: all of them are an empty cell, never
+ * a dash and never a word. The reason is on the hover, where somebody who is
+ * asking the question reaches it, and where it does not read as a reading.
+ * A zero is still drawn where a zero is real; `$0.00` with tokens behind it is
+ * "unpriced" for the same reason (§9.1).
  *
  * Pure drawing: the fold is `fundings.ts`, the read is the shell's.
  */
@@ -50,7 +53,9 @@ let opened = $state<string | null>(null);
  *  effective rate, which is an average across the models the day used. */
 function classSaid(tokens: number, usd: number): string {
   const rate = tokens > 0 ? `$${((usd / tokens) * 1e6).toFixed(2)}/M` : "";
-  return `${count(tokens)} · ${usd > 0 ? money(usd) : "—"}${rate ? ` · ${rate}` : ""}`;
+  /* Nothing priced is nothing said, not a dash: the count is the reading and
+     the money is simply not available for that class. */
+  return [`${count(tokens)}`, usd > 0 ? money(usd) : "", rate].filter((p) => p !== "").join(" · ");
 }
 
 const total = $derived.by(() => {
@@ -232,8 +237,6 @@ function rateSaid(usd: number): string {
               >
                 {#if r.kind === "plan" && session}
                   <span class="af-pct">{Math.round(session.points)}%</span>
-                {:else}
-                  <span class="af-none">{r.kind === "plan" ? "not read" : "no window"}</span>
                 {/if}
               </td>
               <td
@@ -250,8 +253,6 @@ function rateSaid(usd: number): string {
               >
                 {#if r.kind === "plan" && week}
                   <span class="af-pct">{Math.round(week.points)}%</span>
-                {:else}
-                  <span class="af-none">{r.kind === "plan" ? "not read" : "no window"}</span>
                 {/if}
               </td>
             </tr>
@@ -269,25 +270,17 @@ function rateSaid(usd: number): string {
               </td>
               <td class="af-num">{count(total.tokens)}</td>
               <td class="af-num" title={totalSay}>
-                {#if plans === 0}
-                  <span class="af-none">no window</span>
-                {:else if plans === 1}
+                {#if plans === 1}
                   {@const only = readings.find((r) => r.kind === "plan")!}
                   {@const w = windowOf(only, "session")}
-                  <span class="af-pct">{w ? `${Math.round(w.points)}%` : "not read"}</span>
-                {:else}
-                  <span class="af-none">not summed</span>
+                  {#if w}<span class="af-pct">{Math.round(w.points)}%</span>{/if}
                 {/if}
               </td>
               <td class="af-num" title={totalSay}>
-                {#if plans === 0}
-                  <span class="af-none">no window</span>
-                {:else if plans === 1}
+                {#if plans === 1}
                   {@const only = readings.find((r) => r.kind === "plan")!}
                   {@const w = windowOf(only, "weekly_all")}
-                  <span class="af-pct">{w ? `${Math.round(w.points)}%` : "not read"}</span>
-                {:else}
-                  <span class="af-none">not summed</span>
+                  {#if w}<span class="af-pct">{Math.round(w.points)}%</span>{/if}
                 {/if}
               </td>
             </tr>
@@ -473,10 +466,6 @@ function rateSaid(usd: number): string {
   }
   .af-pct {
     color: var(--paper);
-  }
-  .af-none {
-    font-size: 10px;
-    color: var(--paper-mute);
   }
   .af-foot {
     margin: 7px 0 0;

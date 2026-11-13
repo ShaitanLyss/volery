@@ -152,7 +152,7 @@
       <span class="al-dim">over five</span>
     </span>
     <span class="al-now">
-      {rate1 ? (rate1.usd > 0 ? `${money(rate1.usd * 60)}/h` : "unpriced") : "—"}
+      {rate1 ? (rate1.usd > 0 ? `${money(rate1.usd * 60)}/h` : "unpriced") : ""}
       <span class="al-dim">at this rate</span>
     </span>
     <span class="al-fleet">

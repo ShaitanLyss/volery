@@ -29,7 +29,7 @@
   } = $props();
 
   function dollars(v: number | null): string {
-    return v === null ? "—" : money(v);
+    return v === null ? "" : money(v);
   }
 </script>
 
@@ -104,7 +104,7 @@
                 ? "no merged artifact in this window, so there is no divisor"
                 : "no spend was attributed to this card"
               : "cost divided by merged pull requests and merge commits"}
-          >{card.costPerMerged === null ? "—" : money(card.costPerMerged)}</td>
+          >{card.costPerMerged === null ? "" : money(card.costPerMerged)}</td>
           <td
             class="wk-num"
             title={card.costPerCommit === null
@@ -112,7 +112,7 @@
                 ? "no commit in this window, so there is no divisor"
                 : "no spend was attributed to this card"
               : "cost divided by commits"}
-          >{card.costPerCommit === null ? "—" : money(card.costPerCommit)}</td>
+          >{card.costPerCommit === null ? "" : money(card.costPerCommit)}</td>
         </tr>
       {/each}
     </tbody>

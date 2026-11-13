@@ -360,7 +360,7 @@
             >
               <div class="arc" data-tier={tier} style:--v={share(worst?.used ?? 0, 100)}></div>
               <span class="val" data-tier={tier}>
-                {worst ? pct(worst.used) : "—"}
+                {worst ? pct(worst.used) : ""}
               </span>
               <span class="cap">{face.label}</span>
             </div>
@@ -380,7 +380,7 @@
                   <span class="when">{until(resetIn(worst, now)!)}</span>
                 {/if}
                 <span class="n" data-tier={tier}>
-                  {worst ? pct(worst.used) : "—"}
+                  {worst ? pct(worst.used) : ""}
                 </span>
               </span>
               {#if variant === "bars"}
