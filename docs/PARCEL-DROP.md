@@ -200,3 +200,39 @@ secret-shaped file:
    folder on the ground still opens a card.
 6. A parcel that lands puts its plate under the message on both walls, with the landing path
    on the receiving side.
+
+## What the two labs found
+
+Driven on two frozen labs, both walls on this build, 2026-11-13. The six beats passed. One
+real bug was found and fixed (`900cdcc`, `flyway/link.rs`): a person's parcel attached to an
+`ask_user` answer, a notice reply or a deferred answer matched the plain answer arm first, so
+the words were delivered and the files were silently dropped while the sender was told
+`taken`. The answer arms now step aside when `d.parcel` is set, the parcel arm lands the
+files and routes the answer, and its chat-card refusal is reached. Verified live: an answer
+with `answer.txt` landed at `from-you-1/answer.txt`, the ask closed, and the far agent read
+the answer with its manifest and landing path.
+
+Four findings, not fixed, for a decision:
+
+1. **The sender's plate never settles.** `send_person` is fire-and-forget and the `taken`
+   answer carries no landing path, so the sender stays *sent with it / to host* while the
+   receiver shows the folder. The answer must carry the landing directory.
+2. **A late far-wall refusal loses the draft and the tiles.** `send_person` returns `Ok`
+   once pushed; an `accepting` refusal arrives later as `refused`, after the composer has
+   cleared. The design's "a refusal comes back to the draft" holds only for synchronous
+   refusals (solo, quiet, no flyway). The send has to park on acceptance the way the agent's
+   `send_files` does, or the refusal has to find the draft.
+3. **A received person's parcel, restored from history, reads *sent with it* on the
+   receiver.** Direction lives in the flyway event, not in the words, so the history fold
+   cannot tell a relayed person's prompt from one typed there. This is the mark hazard
+   `relay.md` records; a mark in the words would let the history fold draw the direction.
+4. **Escape does not revert a face drop.** The tile's ✕ does. The handler records nothing to
+   revert to; it should hold the draft before the drop and put it back on Escape.
+
+And one gap: the front end still offers a parcel strip for a remote chat card, because the
+carrier never sees the card kind. The honest fix is a carrier that can say "refuse", so the
+strip does not appear and the drop is refused in one line.
+
+Two paths were not separately driven: a parcel in a notice reply (it shares the guarded path
+and the fix above), and the far wall's refusal through `land_parcel` (reachable, not driven
+end to end). The lab screenshots are in `.scratch-c76b1368/`.
