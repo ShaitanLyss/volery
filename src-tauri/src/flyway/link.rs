@@ -3229,6 +3229,7 @@ impl Link {
                     opens: e.facts.can.iter().any(|c| c == super::opening::WORD),
                     pictures: e.facts.can.iter().any(|c| c == fleet::CAN_PICTURES),
                     files: e.facts.can.iter().any(|c| c == crate::attachments::CAN_FILES),
+                    parcel: e.facts.can.iter().any(|c| c == fleet::CAN_PARCEL),
                     rate: e.facts.rate,
                     wants_rate: e.facts.wants_rate,
                     build: e.facts.build.clone(),
@@ -3646,6 +3647,9 @@ pub struct RosterRow {
     /// It announced `files` — `Remote.files`: it pulls a prompt's files from
     /// the wall that sent them (`flyway_fetch`).
     files: bool,
+    /// It announced `parcel` — `Remote.parcel`: it lands a person's dropped
+    /// files and folders as a parcel (`fleet::CAN_PARCEL`).
+    parcel: bool,
     /// It opens a card a person here asks for with no brief
     /// (`opening::WORD`) — what a section's menu reads to offer one.
     opens: bool,
@@ -4140,8 +4144,25 @@ pub async fn flyway_parcel(
     let wall = app.state::<crate::store::Store>().1.clone();
     crate::off_main(move || {
         let base = std::path::PathBuf::new(); // a drop names absolute paths
-        let parcel = crate::parcel::gather(&paths, &base, &crate::parcel::AFAR)
-            .and_then(|p| crate::parcel::stage(&wall, &to, &card, &p))?;
+        let gathered = crate::parcel::gather(&paths, &base, &crate::parcel::AFAR)?;
+        /* A secret-shaped file sent is flagged on the *sending* wall too, where
+           the person who dropped it will see the row (docs/PARCEL-DROP.md):
+           there is no card behind a person, so the row is a wall-level one. */
+        let secrets: Vec<String> = gathered.secrets().iter().map(|s| s.to_string()).collect();
+        if !secrets.is_empty() {
+            crate::chronicle::note(
+                &app,
+                None,
+                "volery",
+                "note",
+                &format!(
+                    "sent {} to a card on {to}",
+                    crate::parcel::count(secrets.len(), "secret-shaped file")
+                ),
+                &secrets.join(", "),
+            );
+        }
+        let parcel = crate::parcel::stage(&wall, &to, &card, &gathered)?;
         let text = if text.trim().is_empty() { crate::parcel::BARE.to_string() } else { text };
         l.send_prompt(PromptRequest {
             id,

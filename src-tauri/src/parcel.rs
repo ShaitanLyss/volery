@@ -129,7 +129,7 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
-fn count(n: usize, one: &str) -> String {
+pub fn count(n: usize, one: &str) -> String {
     if n == 1 {
         format!("1 {one}")
     } else {
@@ -1105,6 +1105,17 @@ pub async fn parcel_local(app: AppHandle, card: String, paths: Vec<String>) -> R
                 &card,
                 "note",
                 &format!("received {} from you", count(secrets.len(), "secret-shaped file")),
+                &secrets.join(", "),
+            );
+            /* And the *sending* wall, where the drop was made: a person has no
+               card for a row to hang off, so this one is wall-level
+               (docs/PARCEL-DROP.md). */
+            crate::chronicle::note(
+                &app,
+                None,
+                "volery",
+                "note",
+                &format!("sent {} to a card here", count(secrets.len(), "secret-shaped file")),
                 &secrets.join(", "),
             );
         }
