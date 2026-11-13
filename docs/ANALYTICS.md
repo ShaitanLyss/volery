@@ -317,7 +317,18 @@ the second, and folding it into the first would have meant a token row per tool 
 **The hourly tier keeps the dimensions that survive three years, and no more.** `effort` and
 `cli` are carried; `card`, `session` and `agent` are not, because a three-year rollup keyed by
 session is a rollup of every conversation ever taken. So card-level questions stop at the fine
-tier's 90 days, and the face says which tier answered. `tool_hour` carries a compact latency
+tier's 90 days, and the face says which tier answered.
+
+**And a span must not change the population, which it did.** The fine tier is written by this
+wall's own ingest; the hourly tier is the rollup that a peer's merged days land in. So a
+24-hour window was answered from `usage_fact` alone — one machine's spend — while the same day
+inside a 7-day window was answered from `usage_hour` and showed two. The chart looked like it
+was contradicting itself, because it was: same hours, same filters, half the money (Lyss,
+2026-11-13). A peer's per-request detail does not travel and cannot be invented, so the hour is
+what there is: `query_window`'s fine arm carries the hours it has no facts for as **coarse
+rows**, counted in `Window::coarse` and named by the face (`five-minute facts here, other walls
+by the hour`). The rule underneath is the one to keep: **a reading may be coarser than it
+claims, and may not be narrower than it says.** `tool_hour` carries a compact latency
 histogram (`ms_under_50`, `_200`, `_1s`, `_5s`, `_over_5s`) instead of only `ms_total`, because
 a mean cannot produce a p95 and a p95 is the reading that names a slow server. A percentile
 over months is an estimate from those buckets, labelled as one; an exact p50/p95 is a 90-day

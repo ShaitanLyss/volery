@@ -65,7 +65,14 @@
   }: {
     /** The window that came back. Its bounds are the axis; its rows are not
      *  read here, since the series are already built from them. */
-    window: { since: number; until: number; tier: "fine" | "hourly"; rows: unknown[] };
+    window: {
+      since: number;
+      until: number;
+      tier: "fine" | "hourly";
+      /** Rows an hour answered for, in a window otherwise read from requests. */
+      coarse?: number;
+      rows: unknown[];
+    };
     /** Built once by the shell and shared with the page. */
     series: RoomSeries[];
     measure: RoomMeasure;
@@ -493,7 +500,7 @@
       <dt>measure</dt>
       <dd>{measure === "usd_modeled" ? "modeled spend" : "every token kind"}</dd>
       <dt>source</dt>
-      <dd>{tierSaid(win.tier)}</dd>
+      <dd>{tierSaid(win.tier, win.coarse)}</dd>
       <dt>bucket</dt>
       <dd>{bucket} · {count(times.length)} recorded</dd>
       {#if split}

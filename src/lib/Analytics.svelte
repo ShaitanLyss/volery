@@ -1221,7 +1221,7 @@
           {:else if tabNow === "behaviour"}
             {spanSaid} · tools, servers, skills and habits
           {:else}
-            {spanSaid} · {tierSaid(loaded?.tier ?? tier)}
+            {spanSaid} · {tierSaid(loaded?.tier ?? tier, loaded?.coarse ?? 0)}
             {#if loaded && loaded.rows.length > 0}· {count(loaded.rows.length)} rows{/if}
           {/if}
         </p>

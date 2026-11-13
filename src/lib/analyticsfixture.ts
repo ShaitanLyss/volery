@@ -84,12 +84,13 @@ export function fixtureWindow(req: WindowRequest, mode: FixtureMode = "normal"):
   const base = { tier, since: req.since, until: req.until } as const;
 
   if (mode === "empty") {
-    return { ...base, rows: [], cards: 0, first: null, recorded: 0 };
+    return { ...base, rows: [], coarse: 0, cards: 0, first: null, recorded: 0 };
   }
   if (mode === "quiet") {
     return {
       ...base,
       rows: [],
+      coarse: 0,
       cards: 0,
       first: req.since - 26 * 24 * HOUR,
       recorded: 184_920,
@@ -182,6 +183,7 @@ export function fixtureWindow(req: WindowRequest, mode: FixtureMode = "normal"):
   return {
     ...base,
     rows,
+    coarse: 0,
     cards: Math.max(1, Math.round(span / (6 * HOUR))),
     first,
     recorded: rows.length + 12_400,

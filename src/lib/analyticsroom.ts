@@ -125,6 +125,10 @@ export type AnalyticsWindow = {
   /** Rows the query layer folds. A row that cannot be read is dropped rather
    *  than folded as a zero. */
   rows: UsageRow[];
+  /** Rows in a *fine* answer that came from an hour instead of a request —
+   *  another wall's, whose per-request detail does not travel. Zero on the
+   *  hourly tier, which is coarse throughout. */
+  coarse: number;
   /** Cards whose session overlaps the window. */
   cards: number;
   /** The earliest instant the store holds, or null when nothing is recorded.
@@ -193,7 +197,16 @@ function asRow(raw: unknown): UsageRow | null {
 export function asWindow(raw: unknown): AnalyticsWindow {
   const now = Date.now();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { tier: "hourly", since: now, until: now, rows: [], cards: 0, first: null, recorded: 0 };
+    return {
+      tier: "hourly",
+      since: now,
+      until: now,
+      rows: [],
+      coarse: 0,
+      cards: 0,
+      first: null,
+      recorded: 0,
+    };
   }
   const r = raw as Record<string, unknown>;
   const since = num(r.since) ?? now;
@@ -206,6 +219,7 @@ export function asWindow(raw: unknown): AnalyticsWindow {
     since,
     until,
     rows,
+    coarse: Math.max(0, Math.trunc(num(r.coarse) ?? 0)),
     cards: Math.max(0, Math.trunc(num(r.cards) ?? 0)),
     first: num(r.first),
     recorded: Math.max(0, Math.trunc(num(r.recorded) ?? 0)),
@@ -601,9 +615,15 @@ export function emptinessOf(window: AnalyticsWindow): Emptiness | null {
 }
 
 /** How much the answer cost, said under the title, so a room with a 12 MB
- *  window in it says why it took a moment. */
-export function tierSaid(tier: WindowTier): string {
-  return tier === "fine" ? "five-minute facts" : "hourly rollups";
+ *  window in it says why it took a moment.
+ *
+ *  **And which part of it is coarse.** A fine window carries another wall's
+ *  hours as well as this wall's requests, because a peer's per-request detail
+ *  does not travel. That is what makes a day framed at 24 hours agree with the
+ *  same day inside a 7-day window instead of reading as half the spend. */
+export function tierSaid(tier: WindowTier, coarse = 0): string {
+  if (tier !== "fine") return "hourly rollups";
+  return coarse > 0 ? "five-minute facts here, other walls by the hour" : "five-minute facts";
 }
 
 /** A sparkline's polyline, in a 100×22 box.

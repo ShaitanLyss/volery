@@ -6971,6 +6971,11 @@ pub struct Window {
     pub since: i64,
     pub until: i64,
     pub rows: Vec<Row>,
+    /// Rows in a *fine* answer that came from an hour rather than a request —
+    /// another wall's, whose per-request detail does not travel. Drawn where
+    /// its hour is, and said out loud by the face. Always zero on the hourly
+    /// tier, which is coarse throughout.
+    pub coarse: i64,
     /// Cards whose session overlaps the window (`analytics_session.card_id`).
     /// Facts carry a session, not a card, and the hourly tier carries neither,
     /// so this is read off the session table at any span.
@@ -7006,6 +7011,34 @@ const HOUR_SQL: &str = "SELECT hour, host, account, provider, model, effort, cli
                          WHERE hour >= ?1 AND hour < ?2
                          ORDER BY hour";
 
+/// **The hours a fine window cannot see, and must not silently drop.**
+///
+/// The two tiers are not two resolutions of one population: `usage_fact` is
+/// written by this wall's own ingest, and `usage_hour` is the rollup that
+/// peers' days merge into. So a 24-hour window read from the facts showed one
+/// machine's spend while the same day inside a 7-day window showed two — the
+/// same hours, a different population, and the difference read as the chart
+/// contradicting itself (Lyss, 2026-11-13: *"same graph and filters, only
+/// difference is first is 7 days and second is 24 hour … why aren't they
+/// showing the same data"*).
+///
+/// A peer's per-request detail does not travel and cannot be invented, so the
+/// hour is what there is. This emits it as a coarse row in the fine window, so
+/// the totals agree whatever span they are framed in, and `Window::coarse`
+/// says how much of the answer came from an hour rather than a request.
+const ORPHAN_HOURS_SQL: &str = "SELECT h.hour, h.host, h.account, h.provider, h.model, h.effort,
+                                       h.cli, h.source, h.project, h.provenance, h.in_tok,
+                                       h.out_tok, h.cache_read, h.write_5m, h.write_1h,
+                                       h.requests, h.usd_reported
+                                  FROM usage_hour h
+                                 WHERE h.hour >= ?1 AND h.hour < ?2
+                                   AND NOT EXISTS (
+                                         SELECT 1 FROM usage_fact f
+                                          WHERE f.host = h.host
+                                            AND f.at >= h.hour
+                                            AND f.at < h.hour + 3600000)
+                                 ORDER BY h.hour";
+
 fn over_cap(tier: &str) -> String {
     format!(
         "this window needs more than {ROW_CAP} rows from the {tier} tier; ask for a shorter span"
@@ -7033,6 +7066,9 @@ pub(crate) fn query_window(
 
     let tier = if fine { "fine" } else { "hourly" };
     let mut rows: Vec<Row> = Vec::new();
+    /* How many rows an hour answered for, in a window otherwise read from
+       requests. */
+    let mut coarse: i64 = 0;
 
     if fine {
         let mut stmt = conn.prepare(FINE_SQL).map_err(|e| format!("analytics: read facts: {e}"))?;
@@ -7069,6 +7105,40 @@ pub(crate) fn query_window(
                 write_1h: r.get(19).map_err(|e| e.to_string())?,
                 requests: r.get(20).map_err(|e| e.to_string())?,
                 usd_reported: r.get(21).map_err(|e| e.to_string())?,
+            }));
+        }
+        /* And the hours nobody here made a fact for: another wall's, rolled up
+           and merged, which a window framed short would otherwise be missing
+           entirely. Coarse, counted, and drawn where its hour is. */
+        let mut crude = conn
+            .prepare(ORPHAN_HOURS_SQL)
+            .map_err(|e| format!("analytics: read orphan hours: {e}"))?;
+        let mut got = crude
+            .query(params![since, until])
+            .map_err(|e| format!("analytics: read orphan hours: {e}"))?;
+        while let Some(r) = got.next().map_err(|e| format!("analytics: read orphan hours: {e}"))? {
+            if rows.len() == ROW_CAP {
+                return Err(over_cap(tier));
+            }
+            coarse += 1;
+            rows.push(Row::Hour(HourRow {
+                hour: r.get(0).map_err(|e| e.to_string())?,
+                host: r.get(1).map_err(|e| e.to_string())?,
+                account: r.get(2).map_err(|e| e.to_string())?,
+                provider: r.get(3).map_err(|e| e.to_string())?,
+                model: r.get(4).map_err(|e| e.to_string())?,
+                effort: r.get(5).map_err(|e| e.to_string())?,
+                cli: r.get(6).map_err(|e| e.to_string())?,
+                source: r.get(7).map_err(|e| e.to_string())?,
+                project: r.get(8).map_err(|e| e.to_string())?,
+                provenance: r.get(9).map_err(|e| e.to_string())?,
+                in_tok: r.get(10).map_err(|e| e.to_string())?,
+                out_tok: r.get(11).map_err(|e| e.to_string())?,
+                cache_read: r.get(12).map_err(|e| e.to_string())?,
+                write_5m: r.get(13).map_err(|e| e.to_string())?,
+                write_1h: r.get(14).map_err(|e| e.to_string())?,
+                requests: r.get(15).map_err(|e| e.to_string())?,
+                usd_reported: r.get(16).map_err(|e| e.to_string())?,
             }));
         }
     } else {
@@ -7159,6 +7229,7 @@ pub(crate) fn query_window(
         since,
         until,
         rows,
+        coarse,
         cards,
         first,
         recorded,
@@ -10110,6 +10181,44 @@ mod tests {
         let wide = query_window(&conn, now - 7 * 24 * 3_600_000, now, false).unwrap();
         assert_eq!(wide.tier, "hourly");
         assert_eq!(wide.rows.len(), 1);
+    }
+
+    /// **The same hours, read at two spans, hold the same spend.** The fine
+    /// tier is this wall's own requests; the hourly tier is the rollup peers'
+    /// days merge into. A 24-hour window therefore used to show one machine's
+    /// work while the same day inside a 7-day window showed two, and the chart
+    /// read as contradicting itself (Lyss, 2026-11-13). The hours a fine window
+    /// has no facts for come back as coarse rows instead of vanishing.
+    #[test]
+    fn a_fine_window_carries_the_hours_it_has_no_facts_for() {
+        let conns = Mutex::new(db());
+        let line = request(now_ms() - 60_000, "claude-opus-5-5", 1000);
+        write(&conns, "here", &batch(&[line]), now_ms()).unwrap();
+        let conn = conns.lock().unwrap();
+        let now = now_ms();
+        /* Another wall's hour, with no fine rows to go with it. */
+        let hour = hour_of(now - 60_000);
+        conn.execute(
+            "INSERT INTO usage_hour (hour, host, account, provider, model, effort, cli, source,
+                                     project, provenance, in_tok, out_tok, cache_read,
+                                     write_5m, write_1h, requests, usd_reported)
+             VALUES (?1, 'elsewhere', 'someone', 'anthropic', 'claude-opus-5-5', '', '', '',
+                     '', 'transcript', 500, 0, 0, 0, 0, 7, 0.0)",
+            params![hour],
+        )
+        .unwrap();
+
+        let fine = query_window(&conn, now - 3_600_000, now, true).unwrap();
+        assert_eq!(fine.tier, "fine");
+        assert_eq!(fine.coarse, 1, "the other wall's hour is carried, and counted");
+        assert_eq!(fine.rows.len(), 2);
+        /* This wall's own hour is *not* duplicated: it has facts, so the hour
+           row it also wrote stays out of the answer. */
+        assert_eq!(fine.rows.iter().filter(|r| matches!(r, Row::Hour(_))).count(), 1);
+
+        let hourly = query_window(&conn, now - 3_600_000, now, false).unwrap();
+        assert_eq!(hourly.coarse, 0, "the hourly tier is coarse throughout");
+        assert_eq!(hourly.rows.len(), 2);
     }
 
     #[test]
