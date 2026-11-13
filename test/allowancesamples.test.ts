@@ -9,6 +9,8 @@ import {
   daySpend,
   FINE_BUCKET_MS,
   instancesOf,
+  ownPoints,
+  ownTotal,
   samplesOf,
   spansOf,
   type AllowanceCost,
@@ -659,5 +661,73 @@ describe("what one card carried of a window", () => {
   test("another account's window is not this card's", () => {
     const got = cardAllowance("a", [instance("session", [10, 20])], [bucket("tx-team", "a", 1000)], NOW, NOW + HOUR);
     expect(got).toEqual([]);
+  });
+});
+
+describe("this wall's own share of a window", () => {
+  const bucket = (card: string, inTok: number): AllowanceCost => ({
+    at: NOW,
+    host: "studio",
+    session: `s-${card}`,
+    account: "lyss",
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    provenance: "transcript",
+    card,
+    inTok,
+    outTok: 0,
+    cacheRead: 0,
+    write5m: 0,
+    write1h: 0,
+    requests: 1,
+  });
+  const session = (used: number[]): WindowInstance => ({
+    account: "lyss",
+    kind: "session",
+    scope: "",
+    resetsAt: NOW + 3_600_000,
+    from: NOW,
+    to: NOW + (used.length - 1) * 10 * 60_000,
+    first: used[0]!,
+    last: used[used.length - 1]!,
+    delta: used[used.length - 1]! - used[0]!,
+    points: used.map((u, i) => ({ at: NOW + i * 10 * 60_000, used: u })),
+    hosts: ["studio"],
+  });
+
+  test("is the movement the wall's facts explain, not the whole counter", () => {
+    /* Ten points moved over one interval with facts under it. */
+    const [got] = ownPoints([session([10, 20])], costBucketsOf([bucket("a", 1000)]));
+    expect(got).toEqual({ account: "lyss", kind: "session", points: 10, moved: 10 });
+  });
+
+  /* The whole point of the number: somebody else's usage moves the same
+     counter, and it is the intervals with no facts under them. */
+  test("leaves what no fact explains out of the share", () => {
+    const two = session([10, 15, 20]);
+    /* Facts in the first interval only: the second's delta is somebody else's. */
+    const [got] = ownPoints([two], [
+      { at: NOW, host: "studio", account: "lyss", cost: 0.1 },
+    ]);
+    expect(got!.points).toBe(5);
+    expect(got!.moved).toBe(10);
+  });
+
+  test("a subscription sentinel has no window to share", () => {
+    const one = { ...session([10, 20]), account: "@credits" };
+    expect(ownPoints([one], [])).toEqual([]);
+  });
+
+  test("the fleet sum says when it is partial", () => {
+    const mine = [{ account: "lyss", kind: "session", points: 0, moved: 40 }];
+    const got = ownTotal(mine, [{ account: "lyss", kind: "session", points: 10, moved: 10 }]);
+    expect(got.points).toBe(10);
+    expect(got.moved).toBe(50);
+    expect(got.partial).toBe(true);
+  });
+
+  test("a whole sum is not partial", () => {
+    const mine = [{ account: "lyss", kind: "session", points: 12, moved: 12 }];
+    expect(ownTotal(mine, []).partial).toBe(false);
   });
 });

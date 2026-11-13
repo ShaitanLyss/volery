@@ -18,6 +18,7 @@
  */
 
 import {
+  attribute,
   attributedCost,
   isSentinel,
   modeledUsd,
@@ -671,4 +672,81 @@ export function cardAllowance(
   return [...out.values()]
     .map((r) => ({ ...r, share: r.moved > 0 ? r.points / r.moved : null }))
     .sort((a, b) => b.points - a.points);
+}
+
+/* ── what this wall's own work explains (§5.3, §21.1) ──────────────────────*/
+
+/** The points of an account's window movement that **this wall's own facts
+ *  explain**, per account and window kind.
+ *
+ *  It is `residualOf`'s `attributed` half, read per window kind, and it is the
+ *  number a cap has to be measured against if the account is shared with
+ *  somebody who is not on the flyway: their usage moves the same counter, and a
+ *  ceiling meant for *your* share must not count it. Summing these across a
+ *  fleet gives "our own usage", and what is left of the movement is genuinely
+ *  somebody else's rather than merely another wall's.
+ *
+ *  `moved` is the movement the same intervals carried, so a reading can say
+ *  "34 of 50" against the cap and "of 62 moved" against the account. */
+export type OwnPoints = {
+  account: string;
+  kind: string;
+  /** Points the wall's own facts explain. */
+  points: number;
+  /** Points the account moved while it was watching, across those intervals. */
+  moved: number;
+};
+
+/** **This wall's own share**, per account and kind, over the samples it holds.
+ *
+ *  Only an account with a subscription has a window, so a provider sentinel
+ *  contributes nothing here. A window that moved with no priced fact under it
+ *  contributes to `moved` and not to `points`, which is exactly the asymmetry
+ *  the residual names. */
+export function ownPoints(
+  instances: readonly WindowInstance[],
+  costs: readonly CostBucket[],
+): OwnPoints[] {
+  const kinds = new Map<string, { account: string; kind: string }>();
+  for (const one of instances) {
+    if (isSentinel(one.account)) continue;
+    kinds.set(`${one.account}\u0000${one.kind}`, { account: one.account, kind: one.kind });
+  }
+  const out: OwnPoints[] = [];
+  for (const { account, kind } of kinds.values()) {
+    const mine = instances.filter((i) => i.account === account && i.kind === kind);
+    const spans = spansOf(mine, costs, account);
+    let points = 0;
+    let moved = 0;
+    for (const span of spans) {
+      moved += span.delta;
+      points += attribute(span.delta, span.facts, account).attributed;
+    }
+    out.push({ account, kind, points, moved });
+  }
+  return out.sort((a, b) => b.moved - a.moved || a.account.localeCompare(b.account) || a.kind.localeCompare(b.kind));
+}
+
+/** The same figure summed over every wall that has said one, this wall's
+ *  included. A wall not heard from contributes nothing, so the sum says
+ *  whether it is complete rather than pretending it is (§15). */
+export function ownTotal(
+  mine: readonly OwnPoints[],
+  theirs: readonly OwnPoints[],
+): { points: number; moved: number; partial: boolean } {
+  let points = 0;
+  let moved = 0;
+  for (const one of mine) {
+    points += one.points;
+    moved += one.moved;
+  }
+  for (const one of theirs) {
+    points += one.points;
+    moved += one.moved;
+  }
+  /* Partial when this wall's own reading is missing for anything it holds a
+     window for: a sample with no facts under it is the residual's hole and the
+     cap's blind spot alike. */
+  const partial = mine.some((one) => one.moved > 0 && one.points === 0);
+  return { points, moved, partial };
 }
