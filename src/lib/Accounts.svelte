@@ -600,7 +600,7 @@
     </div>
 
     <p class="note">
-      Work falls through these in priority order — a whole priority is spent before the next one
+      Work falls through these in priority order: a whole priority is spent before the next one
       is touched. Accounts sharing a priority share the work: whichever has spent least of its
       allowance takes the next turn, so they run down together. A cap is <b>yours</b>: it is
       measured on this wall's own work, so somebody else's 20% of a shared account does not eat

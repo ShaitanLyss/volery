@@ -1346,7 +1346,7 @@ export function sayBlocked(blockers: Blocker[]): string {
  *  concrete and stays true: the waterfall means being held for the previous
  *  band implies being held for every band before that. */
 export function sayTier(count: number, above: number | null): string {
-  const shared = count > 1 ? "shared — whichever is least spent takes the next turn" : "";
+  const shared = count > 1 ? "shared: whichever is least spent takes the next turn" : "";
   if (above === null) return shared || "takes the work first";
   const after = `held back until priority ${above} is spent`;
   return shared ? `${shared}, and ${after}` : after;
