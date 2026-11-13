@@ -49,6 +49,7 @@ import {
   DIGEST_V,
   digestOf,
   faceOf,
+  historyMarkOf,
   idleOf,
   keepHost,
   withoutWall,
@@ -628,8 +629,7 @@ export class Shadow {
    *  each time its wall said anything about any card. */
   historyMark = $derived(this.#historyMark());
   #historyMark(): string {
-    const d = this.digest;
-    return [this.id, d.said, d.doing, d.restingSince, this.working, this.face.unheard].join("\u0000");
+    return historyMarkOf(this.id, this.digest, this.working, this.face.unheard);
   }
   /** `historyMark` without the activity: what a pin of this card's last
    *  message re-reads its conversation on (`Saying.svelte`). A derived for
@@ -981,6 +981,7 @@ export class Elsewhere {
       owed: c.owed,
       timeline: this.#skein.timelines.liveFor(c.id),
       lines: c.lines,
+      dropped: c.dropped,
       jobs: c.jobs,
       pendingWakes: c.pendingWakes,
       asks: c.asks,

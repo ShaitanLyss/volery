@@ -702,8 +702,16 @@ column; when to read again) is three optional fields of `Readable` (`elsewhere`,
   argument that already lets an answer to a parked question through.
 - **Refreshed off the snapshot, not a clock.** While the panel is open, `Transcript`'s history
   effect re-reads whenever `Shadow.historyMark` changes — when the card's settled last line, its
-  activity (`doing` — the only field a run of tool calls with nothing said between them moves),
-  its resting moment or `working` changes, and when its wall is heard again. A `$derived` string,
+  activity, its resting moment, `working`, its wall being heard again, or `lineCount` changes.
+  **`lineCount` is the one that moves when nothing is said**, and it is there because `doing`
+  was assumed to be: `describeTool` prints the same string for the same tool on the same file
+  (`editing link.rs`, one clipped cargo line), and assigning an equal string to `$state`
+  notifies nobody. So a turn that is a run of one tool — a compile, a suite, an edit-and-build
+  loop — moved no field of the mark at all, the panel never re-read, and the card looked frozen
+  while its context ring climbed on the same snapshot (sink `0cbbced8`). It is a count of every
+  line the conversation has ever held (`lines.length` plus `Conversation.dropped`, so it does
+  not saturate at the three-hundred-line window), which is the fact that moves on a tool result.
+  A `$derived` string,
   **not a getter**: `digest` is replaced on every snapshot, and a getter would hand the effect
   that signal, so a snapshot that moved *another* card would pull this one's conversation over
   the link again. A read refused while the wall was quiet is not the last word (found in review:
@@ -719,6 +727,16 @@ Demonstrated 2026-10-08 between two walls of one build (`lab`, `lab2`): a card o
 file and answered in markdown; opening its shadow's panel on lab drew the prompt, the folded
 `Read` (opening onto the path and the file's six lines) and the heading and bold list. A
 second turn on lab2 appeared in lab's open panel on its own, 3 → 6 lines.
+
+**And again 2026-11-13 for the field that was missing**, on `lab a` and `lab b --peer a` with
+the case staged by `feed` so no turn was spent: an open panel on the shadow reading 4 folded
+lines, then one `Bash` call added to the card with the same command and nothing said between
+them. `said` stayed `building it`, `doing` stayed `cargo build -p skein --lib`, and the
+panel went 4 → 5. Both readers are gated on the mark (`needsRead` and `shouldWarm`'s
+`stale`), so a read that happens with `said`, `doing`, `working` and `unheard` byte-identical
+either side of it can only be `lineCount`. The old mark was those four and `restingSince`,
+none of which this press moved — stated as arithmetic on the observation, not as a run
+against an older build.
 
 ### Its pictures and its files, read where you are (2026-10-22)
 

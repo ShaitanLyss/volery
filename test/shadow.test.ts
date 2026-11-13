@@ -8,6 +8,7 @@ import {
   digestOf,
   faceOf,
   GIVE_UP_MS,
+  historyMarkOf,
   idleOf,
   LAND_WITHIN_MS,
   landingNow,
@@ -76,6 +77,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
       { kind: "tool", text: "reading x" },
       { kind: "text", text: "done — the ring no longer pegs" },
     ],
+    dropped: 0,
     jobs: [],
     pendingWakes: [],
     asks: [],
@@ -114,6 +116,7 @@ describe("making a digest", () => {
       holding: null,
       timeline: null,
       said: "done — the ring no longer pegs",
+      lineCount: 4,
       jobs: 0,
       wakes: [],
       asks: [],
@@ -229,6 +232,49 @@ describe("making a digest", () => {
     const b = digestOf(source({ ctx: 0.41234 }));
     expect(sameCards([a], [b])).toBe(true);
     expect(sameCards([a], [digestOf(source({ ctx: 0.5 }))])).toBe(false);
+  });
+
+  /* Sink 0cbbced8: a turn that was a run of one tool — an edit of one file, a
+     compile — moved neither `said` nor `doing`, so the far panel's mark never
+     changed and it stopped re-reading through exactly the stretch where lines
+     were landing. The card looked frozen while its ctx ring climbed. */
+  describe("a conversation growing without a word being said", () => {
+    const running = {
+      working: true,
+      activity: "running cargo build -p skein",
+      restingSince: null,
+    };
+    const before = digestOf(source(running));
+    const after = digestOf(
+      source({
+        ...running,
+        lines: [...source().lines, { kind: "tool", text: "Finished `dev` profile …" }],
+      }),
+    );
+
+    test("is a change, even with the same words and the same activity", () => {
+      expect(after.said).toBe(before.said);
+      expect(after.doing).toBe(before.doing);
+      expect(sameCards([before], [after])).toBe(false);
+    });
+
+    test("moves the panel's mark", () => {
+      expect(historyMarkOf("c1", after, true, false)).not.toBe(historyMarkOf("c1", before, true, false));
+    });
+
+    test("counts the lines that fell off the front, so it never saturates", () => {
+      const full = source({ lines: source().lines, dropped: 4_200 });
+      expect(digestOf(full).lineCount).toBe(4_204);
+    });
+
+    /* A wall from before the field sends nothing, and zero is the constant
+       that leaves its panels behaving as they did — not a new freeze pointed
+       the other way. */
+    test("a wall that never sent the count reads as a constant", () => {
+      const raw = JSON.parse(JSON.stringify({ v: 1, at: 5_000, cards: [before] }));
+      delete raw.cards[0].lineCount;
+      expect(readDigest(raw.cards[0])?.lineCount).toBe(0);
+    });
   });
 
   test("planning is the gear, said as a flag", () => {

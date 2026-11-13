@@ -133,6 +133,22 @@ export type CardDigest = Gist & {
    *  The settled last message rather than the one streaming, since streaming
    *  changes per token and the face is not worth a snapshot per token. */
   said: string;
+  /** How many lines the card's conversation has **ever** held — `lines.length`
+   *  plus the ones that fell off the front of its three-hundred-line window,
+   *  so it only ever goes up.
+   *
+   *  This is what a far panel's read is gated on, and every other fact here
+   *  answers a different question: `said` moves only when the agent speaks and
+   *  `doing` only when the activity string changes. A turn that is a run of one
+   *  tool — a compile, a suite, an edit of one file — moves neither, so the
+   *  tool result that landed was invisible over there and its panel froze for
+   *  as long as the run lasted while the ctx ring climbed on the same snapshot
+   *  (sink 0cbbced8). A count rather than a flag because it must not saturate,
+   *  which is the window's failure and why `dropped` is added to it here.
+   *
+   *  A wall from before this field sends none, which reads as a constant zero:
+   *  that is today's behaviour rather than a new fault. */
+  lineCount: number;
   /** Background jobs still running. */
   jobs: number;
   /** The wakes the card is waiting on, soonest first — `Conversation.pendingWakes`,
@@ -301,6 +317,9 @@ export type DigestSource = GistSource & {
   unacknowledged: boolean;
   restingSince: number | null;
   lines: readonly { kind: string; text: string }[];
+  /** How many lines have fallen off the front of that array — `Conversation.dropped`,
+   *  which is what keeps `lineCount` moving past the cap. */
+  dropped: number;
   jobs: readonly unknown[];
   /** `Conversation.pendingWakes` — off no clock, which is why it rather than
    *  `waiting`. */
@@ -376,6 +395,7 @@ export function digestOf(c: DigestSource): CardDigest {
     doing: capText(steadyDoing(c), DOING_CAP),
     restingSince: c.working ? null : c.restingSince,
     said: capText(lastSaid(c.lines), SAID_CAP),
+    lineCount: c.lines.length + c.dropped,
     jobs: c.jobs.length,
     wakes: c.pendingWakes
       .slice(0, WAKES_CAP)
@@ -400,6 +420,26 @@ export function digestOf(c: DigestSource): CardDigest {
       ? { host: c.parent.host ? capText(c.parent.host, TITLE_CAP) : null, card: capText(c.parent.card, ID_CAP) }
       : null,
   };
+}
+
+/** What a far panel keys its read of a card's conversation on: it reads when it
+ *  opens and again whenever this changes. Pure and here rather than inside
+ *  `Shadow`, so the one invariant it carries can be asserted.
+ *
+ *  `lineCount` is the half that keeps it honest. `said` moves only when the
+ *  agent speaks and `doing` only when the activity string changes, so a run of
+ *  one tool moved neither and the far panel stopped re-reading through exactly
+ *  the stretch where lines were landing — a compile that takes ten minutes, an
+ *  edit-and-build loop of one file. The count moves on every line, including a
+ *  tool result, which is the change the panel was missing. `unheard` is in it
+ *  so a read refused while the wall was quiet is not the last word. */
+export function historyMarkOf(
+  id: string,
+  d: Pick<CardDigest, "said" | "doing" | "restingSince" | "lineCount">,
+  working: boolean,
+  unheard: boolean,
+): string {
+  return [id, d.said, d.doing, d.restingSince, working, unheard, d.lineCount].join("\u0000");
 }
 
 /** A question as it travels: its words, capped, and whether a design or a file
@@ -683,6 +723,12 @@ export function readDigest(raw: unknown): CardDigest | null {
     doing: str(r.doing, DOING_CAP),
     restingSince: stamp(r.restingSince),
     said: str(r.said, SAID_CAP),
+    /* A wall that sends nothing here is one from before the field, and zero is
+       the constant that leaves its panels behaving exactly as they did. */
+    lineCount:
+      typeof r.lineCount === "number" && Number.isFinite(r.lineCount)
+        ? Math.max(0, Math.floor(r.lineCount))
+        : 0,
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
     wakes: readWakes(r.wakes),
     asks: readAsks(r.asks),
