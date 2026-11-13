@@ -321,6 +321,63 @@ goes rust, and `sayCeiling` puts three words in the tooltip saying whose ceiling
 it was. The bypass is *not* a parameter there — it belongs to a card, and a widget
 reading an account is not one. `.claude/rules/usage.md` has the face's half.
 
+### A cap is on your own share, not on the account
+
+Lyss, 2026-11-13: *"someone saying ok you can use 50% of my account, if they do
+20%, it shouldn't interfere with my 50%"*. The account's percentage is
+everybody's, so a ceiling meant for your share was being spent by somebody
+else's work. Every reader of a cap now takes the share this wall's own facts
+explain (`accounts.ts::SelfUse`) and measures the ceiling on that: `blockersFor`,
+`spentOf`, `standingOf` and `choose`. The server's ceiling is untouched by it —
+a subscription refused for everybody is refused for you too.
+
+**It is already a fleet figure, which is why this needed no protocol.** A
+window's movement is divided among the priced facts under it
+(`analytics.ts::attribute`), and the facts *and* the samples both travel the
+flyway, so a card on the other laptop is in this wall's own tables and counts
+towards its own share. Nothing is published, and a wall that has been offline
+understates its share rather than pretending to one.
+
+- **The current instance only** (`allowancesamples.ts::currentOnly`). Four
+  five-hour windows in a day add up the way a day's percentage does, which is
+  right for a day and four times the scale of the reading a cap is compared
+  against.
+- **A hole is not a zero, and `priced` is what tells them apart.** A window that
+  moved with nothing priced under it has no share Volery can compute, and
+  reading that as "you have spent nothing" is a cap that never fires. So the
+  account's own figure stands in until there is a priced fact to divide by,
+  which is the old behaviour arriving only where the new one cannot answer.
+- **The panel draws the share beside the ceiling** (`shareOf`, "20% of 70%"),
+  because a shared account at 70% under a cap of 50 with nothing said about it
+  is a panel arguing with itself.
+
+#### Two halves, because a percentage is only read between turns
+
+The door refuses the **next** turn at the ceiling. A turn already on the wire
+has spent what it spent, so `overrunFor` ends a card still working past your
+share by more than `CAP_MARGIN` (10 points), once per window, on the wall's tick
+(`Skein.enforceCaps`). It only ever fires where the share is measured: ending a
+turn on somebody else's usage would be the exact complaint the share answers.
+`CAP_MARGIN` is a constant rather than a fifth synced register because the thing
+it protects is a matter of tens of points and the register ladder is there if it
+ever needs to be a preference.
+
+#### The door, and why it compares rather than computes
+
+A cap enforced only where the front end sends is a cap a relay, a wake and a
+queue drained at spawn walk around — the argument the spending cap next to it
+already makes. So `deliver_blocks` asks `ownshare::cap_refusal`, and the front
+end notes its measured share to Rust (`note_own`) on every read. **Rust does no
+arithmetic**: two implementations of "how much of this window is yours" would
+drift, and the drift would show as a wall holding work back over a figure the
+panel drew differently.
+
+The note is a rate, not a fact — at most two minutes old. Inside a window usage
+only accumulates, so a stale note understates, and an absent one is the old
+behaviour exactly. `ownshare::share` is the pure half and is lifted
+(`tools/lift-ownshare.ts`), since `cargo test` cannot link on a machine with no
+MSVC.
+
 ### The bypass is per card, and it only moves your own ceiling
 
 A card can be told to ignore the caps. It then measures every account against
