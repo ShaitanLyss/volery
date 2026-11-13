@@ -71,10 +71,6 @@ pub enum LiveMsg {
         usd: f64,
         /// Requests per minute over the same window.
         requests: f64,
-        /// Cards working on that wall right now.
-        cards: i64,
-        /// Agents working under them right now, where the wall can see them.
-        agents: i64,
     },
 }
 
@@ -86,23 +82,13 @@ pub enum LiveMsg {
 /// would look dark to every peer for a reason nothing reports. Zero is a quiet
 /// reading, which is the honest direction to fail in for a figure nobody acts
 /// on.
-pub fn beat(
-    host: &str,
-    at: i64,
-    tokens: f64,
-    usd: f64,
-    requests: f64,
-    cards: i64,
-    agents: i64,
-) -> LiveMsg {
+pub fn beat(host: &str, at: i64, tokens: f64, usd: f64, requests: f64) -> LiveMsg {
     LiveMsg::Live {
         host: clip::keep(host, HOST_KEEP).kept,
         at,
         tokens: finite(tokens),
         usd: finite(usd),
         requests: finite(requests),
-        cards: cards.max(0),
-        agents: agents.max(0),
     }
 }
 
@@ -120,7 +106,7 @@ mod tests {
 
     #[test]
     fn a_beat_says_its_own_word_and_round_trips() {
-        let one = beat("AU-LT-285", 1_764_000_000_000, 12_500.0, 0.42, 3.0, 4, 7);
+        let one = beat("AU-LT-285", 1_764_000_000_000, 12_500.0, 0.42, 3.0);
         let raw = serde_json::to_string(&one).unwrap();
         assert!(raw.contains("\"msg\":\"live\""), "{raw}");
         let back: crate::frame::Frame = serde_json::from_str(&raw).unwrap();
@@ -132,18 +118,10 @@ mod tests {
     /// wall looks dark for no reason. Zeros are a quiet wall, which is honest.
     #[test]
     fn a_number_that_is_not_one_is_sent_as_quiet() {
-        let one = beat("w", 1, f64::NAN, f64::INFINITY, -3.0, -1, -2);
+        let one = beat("w", 1, f64::NAN, f64::INFINITY, -3.0);
         match one {
-            LiveMsg::Live {
-                tokens,
-                usd,
-                requests,
-                cards,
-                agents,
-                ..
-            } => {
+            LiveMsg::Live { tokens, usd, requests, .. } => {
                 assert_eq!((tokens, usd, requests), (0.0, 0.0, 0.0));
-                assert_eq!((cards, agents), (0, 0));
             }
         }
     }
@@ -151,7 +129,7 @@ mod tests {
     #[test]
     fn a_host_is_capped_like_every_other_one() {
         let long = "h".repeat(HOST_KEEP + 40);
-        match beat(&long, 1, 0.0, 0.0, 0.0, 0, 0) {
+        match beat(&long, 1, 0.0, 0.0, 0.0) {
             LiveMsg::Live { host, .. } => assert_eq!(host.chars().count(), HOST_KEEP),
         }
     }

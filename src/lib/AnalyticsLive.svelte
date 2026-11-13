@@ -33,8 +33,6 @@
     tokens: number;
     usd: number;
     requests: number;
-    cards: number;
-    agents: number;
   };
 
   let {
@@ -81,8 +79,6 @@
         tokens: 0,
         usd: 0,
         requests: 0,
-        cards: 0,
-        agents: 0,
         wants: false,
       }).catch(() => {});
     };
@@ -117,8 +113,6 @@
       tokens: totals.tokens,
       usd: totals.usd,
       requests: totals.requests,
-      cards: 0,
-      agents: 0,
       wants: true,
     }).catch(() => {});
   });
@@ -187,7 +181,6 @@
           <span class="al-num">{liveSaid(row.tokens)}</span>
           <span class="al-dim">
             {row.usd > 0 ? money(row.usd) : "unpriced"}/min
-            {#if row.cards > 0}· {row.cards} card{row.cards === 1 ? "" : "s"}{/if}
             {#if row.age > STALE_AFTER}· {Math.round(row.age / 1000)}s old{/if}
           </span>
         </li>

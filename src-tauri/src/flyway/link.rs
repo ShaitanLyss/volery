@@ -3613,14 +3613,12 @@ pub fn flyway_note_live(
     tokens: f64,
     usd: f64,
     requests: f64,
-    cards: i64,
-    agents: i64,
     wants: bool,
 ) {
     if let Some(l) = current(&app) {
         let at = l.now();
         if let Ok(mut live) = l.live.lock() {
-            *live = Some(super::live::beat(&l.me, at, tokens, usd, requests, cards, agents));
+            *live = Some(super::live::beat(&l.me, at, tokens, usd, requests));
         }
         l.wants_live.store(wants, Ordering::Release);
     }
