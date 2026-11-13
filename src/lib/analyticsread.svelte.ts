@@ -11,10 +11,29 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { asWindow, windowRequest, type AnalyticsWindow } from "./analyticsroom";
+import { BUCKET_MS, bucketOf } from "./analytics";
+import { asWindow, roomBucket, windowRequest, type AnalyticsWindow } from "./analyticsroom";
+
+/** **The grain is asked for, and folded in SQL.**
+ *
+ *  A span decides how many points the chart draws and never which facts exist,
+ *  so the server is told the width to fold to rather than being left to ship
+ *  every five-minute row for a ninety-day window. The anchor travels with it
+ *  because a day here is a *local* day: a bucket starting at the local midnight
+ *  containing the window is the one the chart will draw, and folding to UTC
+ *  days first would split one local day across two rows.
+ *
+ *  `roomBucket` is the same function the chart draws with, so the fold and the
+ *  drawing cannot disagree about the grain. */
+function grain(since: number, until: number, fine: boolean): { bucket: number; anchor: number } {
+  const at = roomBucket(Math.max(0, until - since), fine ? "fine" : "hourly");
+  return { bucket: BUCKET_MS[at], anchor: bucketOf(since, at) };
+}
 
 export async function readAnalyticsWindow(span: string, now: number): Promise<AnalyticsWindow> {
-  const raw = await invoke<unknown>("analytics_window", windowRequest(span, now));
+  const here = windowRequest(span, now);
+  const { bucket, anchor } = grain(here.since, here.until, here.fine);
+  const raw = await invoke<unknown>("analytics_window", { ...here, bucket, anchor });
   return asWindow(raw);
 }
 
@@ -30,10 +49,14 @@ export async function readAnalyticsWindow(span: string, now: number): Promise<An
 export async function readAnalyticsBefore(span: string, now: number): Promise<AnalyticsWindow> {
   const here = windowRequest(span, now);
   const width = Math.max(0, here.until - here.since);
+  const since = here.since - width;
+  const { bucket, anchor } = grain(since, here.since, here.fine);
   const raw = await invoke<unknown>("analytics_window", {
-    since: here.since - width,
+    since,
     until: here.since,
     fine: here.fine,
+    bucket,
+    anchor,
   });
   return asWindow(raw);
 }

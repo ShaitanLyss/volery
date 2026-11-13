@@ -7011,6 +7011,42 @@ const FINE_SQL: &str = "SELECT at, host, session, agent, parent_agent, depth, mo
                          WHERE at >= ?1 AND at < ?2
                          ORDER BY at";
 
+/// The same rows, folded to the grain the chart is drawn at.
+///
+/// **A span decides the grain and not the population**, so a wide window is
+/// answered by the same facts at a coarser bucket rather than by a different
+/// table. That is what makes ninety days readable on a busy wall: the rows a
+/// chart of ninety day-points needs are ninety a dimension, not fifty thousand.
+///
+/// **The anchor is the front end's**, because a day here is a local day.** The
+/// query layer's `bucketOf` starts a day at *local* midnight, which is not an
+/// epoch multiple for any zone with an odd offset — Sydney's is +11, so its
+/// midnight is 13:00 UTC — and folding to UTC days first would then split one
+/// local day's spend across two rows. So the caller sends the start of the
+/// bucket containing its window and every row lands where the chart will draw
+/// it, with no second bucketing anywhere.
+///
+/// Three dimensions cannot survive the fold and are left empty in the answer:
+/// `session`, `agent` and `depth`. A group of an hour is not a conversation,
+/// and *a reading may be coarser than it claims and may not be narrower than
+/// it says* — so saying so is the price of folding.
+///
+/// **The model stays in the key**, because the price is a fact about the model
+/// and folding two models into one bucket would price them at one rate. A
+/// bucket that *straddles a date when a rate changed* is priced at its own
+/// start, which is the one approximation the fold makes and the reason the
+/// grain is coarse only where the chart is coarse too.
+const FINE_FOLD_SQL: &str = "SELECT ?4 + ((at - ?4) / ?3) * ?3 AS bucket,
+                                   host, model, effort, cli, source, account, account_identity,
+                                   provider, project, provenance,
+                                   SUM(in_tok), SUM(out_tok), SUM(cache_read), SUM(write_5m),
+                                   SUM(write_1h), SUM(requests), SUM(usd_reported)
+                              FROM usage_fact
+                             WHERE at >= ?1 AND at < ?2
+                             GROUP BY bucket, host, model, effort, cli, source, account,
+                                      account_identity, provider, project, provenance
+                             ORDER BY bucket";
+
 const HOUR_SQL: &str = "SELECT hour, host, account, provider, model, effort, cli, source,
                                project, provenance, in_tok, out_tok, cache_read, write_5m,
                                write_1h, requests, usd_reported
@@ -7060,6 +7096,22 @@ pub(crate) fn query_window(
     until: i64,
     fine: bool,
 ) -> Result<Window, String> {
+    query_window_at(conn, since, until, fine, None)
+}
+
+/// The same read, folded to a grain the caller names: `(width, anchor)` in
+/// milliseconds, where `anchor` is the start of the bucket containing `since`.
+///
+/// A width at or under the fact's own five minutes changes nothing, so a
+/// caller can pass its bucket unconditionally and a narrow window is answered
+/// row for row.
+pub(crate) fn query_window_at(
+    conn: &Connection,
+    since: i64,
+    until: i64,
+    fine: bool,
+    fold: Option<(i64, i64)>,
+) -> Result<Window, String> {
     if until <= since {
         return Err("the window is empty: it ends before it starts".to_string());
     }
@@ -7070,6 +7122,11 @@ pub(crate) fn query_window(
             FINE_WINDOW_MS / HOUR_MS
         ));
     }
+    /* A fold finer than the facts is not a fold, and an anchor in the future of
+       the window would push every row before its own bucket. Both degrade to
+       the row-for-row read rather than to an error: the caller asked for a
+       grain, and the facts' own grain is the finest honest answer to that. */
+    let fold = fold.filter(|(w, anchor)| *w > 5 * 60 * 1000 && *anchor <= since);
 
     let tier = if fine { "fine" } else { "hourly" };
     let mut rows: Vec<Row> = Vec::new();
@@ -7077,7 +7134,45 @@ pub(crate) fn query_window(
        requests. */
     let mut coarse: i64 = 0;
 
-    if fine {
+    if fine && fold.is_some() {
+        let (width, anchor) = fold.unwrap();
+        let mut stmt =
+            conn.prepare(FINE_FOLD_SQL).map_err(|e| format!("analytics: fold facts: {e}"))?;
+        let mut got = stmt
+            .query(params![since, until, width, anchor])
+            .map_err(|e| format!("analytics: fold facts: {e}"))?;
+        while let Some(r) = got.next().map_err(|e| format!("analytics: fold facts: {e}"))? {
+            if rows.len() == ROW_CAP {
+                return Err(over_cap(tier));
+            }
+            rows.push(Row::Fine(FineRow {
+                at: r.get(0).map_err(|e| e.to_string())?,
+                host: r.get(1).map_err(|e| e.to_string())?,
+                /* A group of an hour is not a conversation, an agent or a depth
+                   in the tree. Empty rather than invented. */
+                session: String::new(),
+                agent: String::new(),
+                parent_agent: String::new(),
+                depth: 0,
+                model: r.get(2).map_err(|e| e.to_string())?,
+                effort: r.get(3).map_err(|e| e.to_string())?,
+                cli: r.get(4).map_err(|e| e.to_string())?,
+                source: r.get(5).map_err(|e| e.to_string())?,
+                account: r.get(6).map_err(|e| e.to_string())?,
+                account_identity: r.get(7).map_err(|e| e.to_string())?,
+                provider: r.get(8).map_err(|e| e.to_string())?,
+                project: r.get(9).map_err(|e| e.to_string())?,
+                provenance: r.get(10).map_err(|e| e.to_string())?,
+                in_tok: r.get(11).map_err(|e| e.to_string())?,
+                out_tok: r.get(12).map_err(|e| e.to_string())?,
+                cache_read: r.get(13).map_err(|e| e.to_string())?,
+                write_5m: r.get(14).map_err(|e| e.to_string())?,
+                write_1h: r.get(15).map_err(|e| e.to_string())?,
+                requests: r.get(16).map_err(|e| e.to_string())?,
+                usd_reported: r.get(17).map_err(|e| e.to_string())?,
+            }));
+        }
+    } else if fine {
         let mut stmt = conn.prepare(FINE_SQL).map_err(|e| format!("analytics: read facts: {e}"))?;
         let mut got = stmt
             .query(params![since, until])
@@ -7274,11 +7369,17 @@ pub async fn analytics_window(
     since: i64,
     until: i64,
     fine: bool,
+    // The grain to fold to, in milliseconds, and the start of the bucket
+    // containing `since` — the chart's own, so a local day stays one row.
+    // Absent is the facts' own grain.
+    bucket: Option<i64>,
+    anchor: Option<i64>,
 ) -> Result<Window, String> {
     crate::off_main(move || {
         let store = app.state::<Store>();
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-        query_window(&conn, since, until, fine)
+        let fold = bucket.zip(anchor);
+        query_window_at(&conn, since, until, fine, fold)
     })
     .await?
 }
@@ -10226,6 +10327,63 @@ mod tests {
         let hourly = query_window(&conn, now - 3_600_000, now, false).unwrap();
         assert_eq!(hourly.coarse, 0, "the hourly tier is coarse throughout");
         assert_eq!(hourly.rows.len(), 2);
+    }
+
+    /// **A fold keeps every token and loses only the dimensions that cannot
+    /// survive it.** A ninety-day window is read at a day's grain rather than
+    /// as fifty thousand five-minute rows, and the two readings of the same
+    /// hour must agree about what it cost.
+    #[test]
+    fn a_folded_window_says_the_same_spend_at_a_coarser_grain() {
+        let conns = Mutex::new(db());
+        let base = hour_of(now_ms() - 7_200_000) + 60_000;
+        let lines: Vec<String> = (0..6)
+            .map(|i| request(base + i * 30 * 1000, "claude-opus-5-5", 10))
+            .collect();
+        write(&conns, "here", &batch(&lines), now_ms()).unwrap();
+        let conn = conns.lock().unwrap();
+        let now = now_ms();
+        let since = now - 24 * 3_600_000;
+
+        let raw = query_window(&conn, since, now, true).unwrap();
+        let anchor = since - (since % 3_600_000);
+        let folded = query_window_at(&conn, since, now, true, Some((3_600_000, anchor))).unwrap();
+
+        let tokens = |w: &Window| -> i64 {
+            w.rows
+                .iter()
+                .map(|r| match r {
+                    Row::Fine(f) => f.in_tok + f.out_tok + f.cache_read + f.write_5m + f.write_1h,
+                    Row::Hour(h) => h.in_tok + h.out_tok + h.cache_read + h.write_5m + h.write_1h,
+                })
+                .sum()
+        };
+        let requests = |w: &Window| -> i64 {
+            w.rows
+                .iter()
+                .map(|r| match r {
+                    Row::Fine(f) => f.requests,
+                    Row::Hour(h) => h.requests,
+                })
+                .sum()
+        };
+        assert_eq!(tokens(&folded), tokens(&raw), "the fold lost no token");
+        assert_eq!(requests(&folded), requests(&raw), "and no request");
+        assert!(folded.rows.len() <= raw.rows.len(), "and it is not more rows");
+
+        /* Every folded row starts on a bucket of the caller's own grain, which
+           is what keeps a local day one row. */
+        for r in &folded.rows {
+            if let Row::Fine(f) = r {
+                assert_eq!((f.at - anchor) % 3_600_000, 0, "a row off its own bucket");
+                assert!(f.session.is_empty(), "an hourly group is not a conversation");
+            }
+        }
+
+        /* A grain at or under the facts' own is not a fold: the caller can pass
+           its bucket unconditionally. */
+        let same = query_window_at(&conn, since, now, true, Some((60_000, anchor))).unwrap();
+        assert_eq!(same.rows.len(), raw.rows.len());
     }
 
     #[test]
