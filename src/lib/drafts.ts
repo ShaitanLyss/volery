@@ -1,4 +1,4 @@
-import { dropToken, stillIn, tokenFor, uniqueName, type Attachment, type FileRef } from "./attach";
+import { dropToken, stillIn, tokenFor, uniqueName, type Attachment, type FileRef, type Parcel } from "./attach";
 
 /** What you have typed and not yet sent, per card — the words and the pictures.
  *
@@ -161,13 +161,17 @@ function withoutShots(d: Draft): string {
  *  (sink c2f56f0d): it is a path, not the bytes behind it, so keeping it writes
  *  nothing private anywhere — and losing it would take a word out of the
  *  sentence you wrote. Not a *staged* one, whose bytes wait in a folder the
- *  next load sweeps. */
-function keepsAcross(a: Attachment): a is FileRef {
-  return a.kind === "file" && !a.staged;
+ *  next load sweeps. A parcel is the same shape, and its paths travel too
+ *  (`docs/PARCEL-DROP.md`): what is lost is the gathered summary, re-gathered
+ *  at the send, and not the sentence or the things it named. */
+function keepsAcross(a: Attachment): a is FileRef | Parcel {
+  return (a.kind === "file" && !a.staged) || a.kind === "parcel";
 }
 
-/** A file kept with a draft: enough to put the chip back. */
-export type KeptFile = { name: string; path: string; dir: boolean };
+/** A file kept with a draft: enough to put the chip back. A parcel's kept
+ *  entry carries `parcel`, so the restore knows to make a parcel rather than
+ *  a file of it — its counts and left-out lines are re-gathered at the send. */
+export type KeptFile = { name: string; path: string; dir: boolean; parcel?: boolean };
 
 /** Where the files ride in the keeping: a key no card id can be (ids are
  *  uuids, the wall is `""`), holding an object — which a build from before it
@@ -192,7 +196,12 @@ export function encodeKept(entries: readonly (readonly [string, Draft])[]): stri
     if (used && used + text.length > KEEP_BUDGET) break;
     kept[id] = text;
     used += text.length;
-    const these = stillIn(text, d.shots.filter(keepsAcross)).map((f) => ({ name: f.name, path: f.path, dir: f.dir }));
+    const these = stillIn(text, d.shots.filter(keepsAcross)).map((f) => ({
+      name: f.name,
+      path: f.path,
+      dir: f.dir,
+      ...(f.kind === "parcel" ? { parcel: true } : {}),
+    }));
     if (these.length) files[id] = these;
   }
   if (Object.keys(files).length) kept[KEPT_FILES] = files;
@@ -216,7 +225,13 @@ export function decodeKeptFiles(raw: string | null): Record<string, KeptFile[]> 
     if (!Array.isArray(list)) continue;
     const ok = list.filter(
       (f): f is KeptFile =>
-        !!f && typeof f.name === "string" && !!f.name && typeof f.path === "string" && !!f.path && typeof f.dir === "boolean",
+        !!f &&
+        typeof f.name === "string" &&
+        !!f.name &&
+        typeof f.path === "string" &&
+        !!f.path &&
+        typeof f.dir === "boolean" &&
+        (f.parcel === undefined || typeof f.parcel === "boolean"),
     );
     if (ok.length) out[id] = ok;
   }
@@ -230,7 +245,7 @@ export function withoutGoneFiles(d: Draft, gone: (path: string) => boolean): { d
   let text = d.text;
   let dropped = 0;
   const shots = d.shots.filter((a) => {
-    if (a.kind !== "file" || !gone(a.path)) return true;
+    if ((a.kind !== "file" && a.kind !== "parcel") || !gone(a.path)) return true;
     text = dropToken(text, a.name);
     dropped += 1;
     return false;
@@ -424,15 +439,24 @@ export class Drafts {
     for (const [id, text] of Object.entries(kept)) {
       if (!text) continue;
       /* Only a file the sentence still names comes back as a chip; a keeping
-         edited by hand cannot make one appear with no token. */
-      const shots: FileRef[] = stillIn(text, files[id] ?? []).map((f) => ({
-        kind: "file",
-        id: `kept${++n}`,
-        name: f.name,
-        path: f.path,
-        dir: f.dir,
-        size: null,
-      }));
+         edited by hand cannot make one appear with no token. A parcel comes
+         back as a parcel, its counts re-gathered at the send. */
+      const shots: Attachment[] = stillIn(text, files[id] ?? []).map((f) =>
+        f.parcel
+          ? {
+              kind: "parcel",
+              id: `kept${++n}`,
+              name: f.name,
+              path: f.path,
+              dir: f.dir,
+              files: f.dir ? 0 : 1,
+              bytes: 0,
+              secret: false,
+              left: [],
+              leftMore: 0,
+            }
+          : { kind: "file", id: `kept${++n}`, name: f.name, path: f.path, dir: f.dir, size: null },
+      );
       this.#parked.set(id, { text, shots });
     }
   }
@@ -452,7 +476,7 @@ export class Drafts {
   /** Every path a parked draft names, for that check. */
   paths(): string[] {
     const out = new Set<string>();
-    for (const d of this.#parked.values()) for (const a of d.shots) if (a.kind === "file") out.add(a.path);
+    for (const d of this.#parked.values()) for (const a of d.shots) if (a.kind === "file" || a.kind === "parcel") out.add(a.path);
     return [...out];
   }
 

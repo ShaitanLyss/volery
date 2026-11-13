@@ -194,6 +194,7 @@
     type Draft,
   } from "./lib/drafts";
   import { Attachments, boxAt, dropping, listenDrops } from "./lib/attach.svelte";
+  import { insertAt } from "./lib/attach";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
   import { Solo } from "./lib/solo.svelte";
@@ -1803,6 +1804,31 @@
           skein.fault = d.refused[0] ?? "a link goes into a prompt — drop it on the dock";
         }
         return;
+      }
+
+      /* A drop on a card's face is a hand-off to that card: the parcel is
+         staged in its own draft, it comes forward, and Enter sends — a parcel
+         on either wall, since the intent is *give this card the files*. A chat
+         card has no project to receive one, so it is refused in one line. */
+      const faceEl = (document.elementFromPoint(p.x, p.y) as HTMLElement | null)?.closest<HTMLElement>("[data-conv], [data-shadow]");
+      if (faceEl) {
+        const id = faceEl.getAttribute("data-conv") ?? faceEl.getAttribute("data-shadow");
+        const card = cards.find(id);
+        if (card) {
+          if (!card.scripts) {
+            skein.fault = "a chat card has no project to receive a hand-off — drop it on a project card";
+            return;
+          }
+          focusCard(card);
+          await tick();
+          const tokens = await field.shots.fromParcel(d.paths, card.remote ? "afar" : "here");
+          if (tokens.length) {
+            let text = field.text;
+            for (const t of tokens) text = insertAt(text, null, t).text;
+            field.put(text);
+          }
+          return;
+        }
       }
 
       const sorted = await invoke<{ dirs: string[]; images: string[] }>(
