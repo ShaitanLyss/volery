@@ -2143,7 +2143,11 @@ impl Link {
                it goes the way a person's prompt does: to the front end, which
                answers `flyway_prompt_answer`. Only a person's: an agent on
                another wall has no business clearing this wall's queue. */
-            Act::Prompt if crate::notice::afar(d.answers.as_deref()).is_some() => {
+            /* A parcel carrying a notice id falls past every `answers` arm to
+               the person-parcel arm below (`d.parcel.is_some()`), which lands the
+               files *and* routes the notice — the arms between land nothing and
+               would drop the parcel silently (`docs/PARCEL-DROP.md`). */
+            Act::Prompt if crate::notice::afar(d.answers.as_deref()).is_some() && d.parcel.is_none() => {
                 if d.asked_by.card.is_some() {
                     return refuse(self, "a notice is taken down by a person, not by another card".into());
                 }
@@ -2178,7 +2182,7 @@ impl Link {
                (`Elsewhere.#take`, `Vigil.svelte`'s `deliver`). The claim is what
                makes an answer from two walls one answer, so it is made there, on
                the machine holding the row, and nowhere else. A person's only. */
-            Act::Prompt if crate::presence::afar(d.answers.as_deref()).is_some() => {
+            Act::Prompt if crate::presence::afar(d.answers.as_deref()).is_some() && d.parcel.is_none() => {
                 if d.asked_by.card.is_some() {
                     return refuse(self, "a question is answered by a person, not by another card".into());
                 }
@@ -2212,7 +2216,7 @@ impl Link {
                the sentence as the dock would and answers the parked call
                through `answer_ask` — once this wall has said the question may
                take one. */
-            Act::Prompt if d.answers.is_some() && !d.pictures.is_empty() => {
+            Act::Prompt if d.answers.is_some() && !d.pictures.is_empty() && d.parcel.is_none() => {
                 let ask_id = d.answers.clone().unwrap_or_default();
                 if d.asked_by.card.is_some() {
                     return refuse(self, "a question is answered by a person, not by another card".into());
@@ -2239,7 +2243,7 @@ impl Link {
                     },
                 );
             }
-            Act::Prompt if d.answers.is_some() => {
+            Act::Prompt if d.answers.is_some() && d.parcel.is_none() => {
                 let ask_id = d.answers.clone().unwrap_or_default();
                 let outcome = crate::ask::answer_from_afar(&self.app, &row.id, &ask_id, &d.text);
                 let m = self.fleet.lock().ok().and_then(|mut f| match &outcome {
