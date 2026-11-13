@@ -496,6 +496,14 @@ impl Link {
             };
         };
         match m {
+            /* A card moving in is arriving work and a conversation changing
+               machines, so a solo wall takes neither — refused before a byte of
+               it is read. A settlement of a move already in flight is still
+               answered below: a card that exists nowhere is the one outcome
+               this exchange must make impossible. */
+            MoveMsg::MoveOffer { id, .. } | MoveMsg::MovePart { id, .. } if self.solo_here() => {
+                Some(no(&id, self.solo_refusal("cards moving here")))
+            }
             MoveMsg::MoveOffer { id, card } => Some(self.offered(from, &id, card).unwrap_or_else(|why| no(&id, why))),
             MoveMsg::MovePart { id, index, text } => Some(self.part(from, &id, index, text).unwrap_or_else(|why| no(&id, why))),
             MoveMsg::MoveSettled { id, card, ok, why } => Some(self.settled(from, &id, &card, ok, why.map(|w| scrub(&w)))),

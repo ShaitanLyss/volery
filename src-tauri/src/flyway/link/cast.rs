@@ -197,10 +197,13 @@ impl Link {
     }
 
     /// The take-work switch, read now (`act.rs` reads it the same way).
+    /// **A solo wall does not take work**, whatever the switch says — the
+    /// switch's own value is kept so it is back as it was on flying again, but
+    /// no session, spawn or prompt is let through while the shutter is down.
     fn takes_work(&self) -> bool {
         self.app
             .try_state::<Store>()
-            .and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c)))
+            .and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c) && !here::solo(&c)))
             .unwrap_or(false)
     }
 

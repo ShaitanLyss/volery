@@ -270,6 +270,23 @@ pub struct Facts {
     /// direction to be wrong in: an `away` field would have read an older wall
     /// as present, and parked a question for nobody.
     pub present: bool,
+    /// This wall is flying solo: the flyway's books are kept and its traffic is
+    /// stopped in both directions (`.claude/rules/solo.md`). A fact of its own
+    /// beside `present`, rather than folded into it, for two reasons.
+    ///
+    /// **`present` alone would be enough to behave correctly** — a solo wall is
+    /// not somewhere a question can be asked, so it says `present: false` and
+    /// an older peer files rather than parks, which is what it already does for
+    /// an away wall. That is why the outage direction is safe: a wall from
+    /// before this sends nothing, which reads `false`.
+    ///
+    /// **What it adds is the reason, so the roster can be honest.** A peer on
+    /// this build draws *solo — flying alone; its accounts and spend still
+    /// report* rather than pretending she is absent from a machine she is
+    /// sitting at, and drops the solo wall's cards the moment the word arrives
+    /// (see `Cards::on`'s caller): a wall that stops publishing its cards would
+    /// otherwise leave stale ones drawn on every peer for ever.
+    pub solo: bool,
     /// How fast this machine is burning tokens: per minute, over the last ten
     /// minutes, as its own transcripts say (`rate.ts::rateAt`, the burn-rate
     /// widget's reading). `None` when nothing here is reading them — which is
@@ -336,10 +353,16 @@ pub const BUILD_ANNOUNCED_FROM: &str = "0.75.0";
 /// roster's own reading of quiet, so a wall quiet for this is quiet for
 /// `walls`, for a prompt and for a shadow's face at the same moment. This wall
 /// is never counted — its own switch is the other half of the question.
+///
+/// **A solo wall is skipped.** It is heard and its books still report, but it
+/// is not taking part in the conversations, so it is no more a place she can be
+/// asked than an away wall is. It says `present: false` too, so this only
+/// decides a wall that somehow claimed both; the safe reading there is not
+/// present.
 pub fn present_elsewhere<'a>(roster: impl IntoIterator<Item = &'a Entry>, me: &str, now: i64) -> bool {
-    roster
-        .into_iter()
-        .any(|e| e.host != me && e.facts.present && e.quiet_for(now) <= QUIET_AFTER_MS as u64)
+    roster.into_iter().any(|e| {
+        e.host != me && e.facts.present && !e.facts.solo && e.quiet_for(now) <= QUIET_AFTER_MS as u64
+    })
 }
 
 /// The credentials a card may say it needs (`Ask::needs`, `spawn`'s `needs`),
@@ -4110,6 +4133,33 @@ mod tests {
         assert!(json.contains("\"present\":true"), "{json}");
         let older: Facts = serde_json::from_str("{\"accepting\":true}").unwrap();
         assert!(!older.present);
+    }
+
+    /// A wall flying solo is heard and is not somewhere she can be asked
+    /// (`.claude/rules/solo.md`): it is the same answer as away, with a reason.
+    /// Its books still report — that is what makes it not a departure.
+    #[test]
+    fn a_solo_wall_is_heard_and_is_no_place_she_can_be_asked() {
+        let mut me = Node::new("lap", open_facts());
+        me.f.announce(Facts { present: true, ..open_facts() }, 0);
+        let mut solo = open_facts();
+        solo.present = true;
+        solo.solo = true;
+        me.hear(statement("weekend", 1, solo.clone(), None, 0), 0);
+        assert!(
+            !present_elsewhere(me.f.roster(), "lap", 1_000),
+            "a solo wall is not somewhere a question can be parked"
+        );
+        /* And it is not quiet, not gone, and its numbers are still read. */
+        let e = me.f.entry("weekend").expect("a solo wall is on the roster");
+        assert!(e.quiet_for(1_000) <= QUIET_AFTER_MS as u64);
+        assert!(e.facts.solo);
+
+        /* The fact is a word of its own, and absent on an older wall's frame. */
+        let json = serde_json::to_string(&solo).unwrap();
+        assert!(json.contains("\"solo\":true"), "{json}");
+        let older: Facts = serde_json::from_str("{\"accepting\":true}").unwrap();
+        assert!(!older.solo, "a wall from before this is not solo");
     }
 
     /// A spawn answered "opened" now carries whether the far wall queued it,

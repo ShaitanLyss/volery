@@ -48,6 +48,11 @@ impl Link {
         if card.is_empty() {
             return refuse("no card was named".into());
         }
+        /* A solo wall reads nothing for another wall: its files, pictures and
+           paths are the traffic this switch stops, in both directions. */
+        if self.solo_here() {
+            return refuse(self.solo_refusal("files and pictures"));
+        }
         let Some(store) = self.store() else {
             return refuse(format!("{} is still starting", self.me));
         };
@@ -126,6 +131,11 @@ async fn ready_for(
     let (host, card) = (host.trim().to_string(), card.trim().to_string());
     if host.is_empty() || card.is_empty() {
         return Err("no card was named".into());
+    }
+    /* A solo wall reads no other wall's files, pictures or paths — the traffic
+       this switch stops, in both directions. */
+    if l.solo_here() {
+        return Err(l.solo_refusal("files and pictures"));
     }
     let check = l.clone();
     let h = host.clone();

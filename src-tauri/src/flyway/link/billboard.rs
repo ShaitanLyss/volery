@@ -76,6 +76,14 @@ impl Link {
     /// orchestrator's `unpost` reaches its workers on the other machine in about
     /// a second rather than at the next exchange.
     pub(crate) fn board_changed(self: &Arc<Self>) {
+        /* The billboard is one of the two places where one wall's work
+           narrative reaches another (`.claude/rules/solo.md`), so a solo wall
+           neither says it nor reads it. A local post is still posted — the
+           board on this wall works exactly as it would with no flyway — and
+           the first exchange after the shutter lifts says it again. */
+        if self.solo_here() {
+            return;
+        }
         if self.board_due.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -124,6 +132,9 @@ impl Link {
     /// too old (`reachable`), never queued: a takedown landing when a lid lifts
     /// hours later would be a decision about a board nobody has looked at since.
     pub fn unpost_there(self: &Arc<Self>, host: &str, notice: &str, by: Option<Taker>, confirm: bool) -> Result<Reply, String> {
+        if self.solo_here() {
+            return Err(self.solo_refusal("notices on the billboard"));
+        }
         self.reachable(
             host,
             boards::WORD,

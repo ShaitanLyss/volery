@@ -333,6 +333,9 @@ pub(super) async fn leave(app: AppHandle) -> Result<(), String> {
     if let Some(store) = app.try_state::<crate::store::Store>() {
         if let Ok(conn) = store.0.lock() {
             let _ = here::clear_setting(&conn, here::KNOWN_WALLS);
+            /* There is no flyway to be solo from, and a rejoin must not
+               silently start closed (`.claude/rules/solo.md`). */
+            let _ = here::clear_setting(&conn, here::SOLO);
         }
     }
     let link = state.link.lock().map_err(|_| "the flyway is wedged".to_string())?.take();

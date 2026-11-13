@@ -36,6 +36,11 @@ pub const FLEET_VERSION: &str = "fleet_version";
 pub const CARDS_VERSION: &str = "cards_version";
 pub const BOARD_VERSION: &str = "board_version";
 pub const ACCEPTING: &str = "accepting";
+/// When this wall started flying solo, in ms on its own clock — absent while it
+/// is not. `.claude/rules/solo.md`: the flyway's books are kept and its traffic
+/// is stopped, in both directions. A setting rather than a column, for
+/// `KNOWN_WALLS`' reason: no migration, and only this wall reads it.
+pub const SOLO: &str = "SOLO";
 pub const BOUND_LIVE: &str = "bound_live";
 pub const BOUND_HOUR: &str = "bound_hour";
 
@@ -170,6 +175,20 @@ pub fn unlearn_wall(
 /// flyway must not thereby become somewhere anybody can open a card.
 pub fn accepting(conn: &Connection) -> bool {
     setting(conn, ACCEPTING).as_deref() == Some("1")
+}
+
+/// When this wall started flying solo, or `None` when it is flying with the
+/// others. **The instant, not a flag**, because the plate says *solo since
+/// friday 18:04* and the only moment that is worth saying is when it started.
+/// A value that does not parse is not solo: the direction that loses the fact
+/// rather than inventing a state nobody asked for.
+pub fn solo_since(conn: &Connection) -> Option<i64> {
+    setting(conn, SOLO).and_then(|v| v.parse::<i64>().ok()).filter(|ms| *ms > 0)
+}
+
+/// Whether this wall is flying solo now.
+pub fn solo(conn: &Connection) -> bool {
+    solo_since(conn).is_some()
 }
 
 /// This wall's own bounds on arriving work. Absent means none, for the reason
@@ -673,6 +692,27 @@ mod tests {
             params![id, project, if closed { Some(1) } else { None }],
         )
         .unwrap();
+    }
+
+    /// Flying solo is an instant, absent while it is off: the plate says *solo
+    /// since friday 18:04*, and a value that does not parse is not solo — the
+    /// direction that loses the fact rather than inventing a state.
+    #[test]
+    fn solo_is_the_instant_it_started_and_nothing_else() {
+        let conn = db();
+        assert_eq!(solo_since(&conn), None, "a wall that never flew solo is not");
+        assert!(!solo(&conn));
+        set_setting(&conn, SOLO, "1760000000000").unwrap();
+        assert_eq!(solo_since(&conn), Some(1_760_000_000_000));
+        assert!(solo(&conn));
+        set_setting(&conn, SOLO, "not a clock").unwrap();
+        assert_eq!(solo_since(&conn), None, "a value that does not parse is not solo");
+        set_setting(&conn, SOLO, "0").unwrap();
+        assert_eq!(solo_since(&conn), None, "no instant is no solo");
+        set_setting(&conn, SOLO, "-5").unwrap();
+        assert_eq!(solo_since(&conn), None);
+        clear_setting(&conn, SOLO).unwrap();
+        assert_eq!(solo_since(&conn), None);
     }
 
     #[test]

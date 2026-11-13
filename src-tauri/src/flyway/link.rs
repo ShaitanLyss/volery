@@ -600,6 +600,28 @@ impl Link {
         self.app.try_state::<Store>()
     }
 
+    /// Whether this wall is flying solo right now, read fresh from the store.
+    /// **The one question every door asks** (`.claude/rules/solo.md`): the
+    /// traffic stops in both directions while the books keep reporting, and a
+    /// door that forgot would be the weekend failing where it cannot be seen.
+    /// Read rather than cached, so the switch takes effect on the next frame
+    /// with nothing to notify.
+    fn solo_here(&self) -> bool {
+        self.store().and_then(|s| s.0.lock().ok().map(|c| here::solo(&c))).unwrap_or(false)
+    }
+
+    /// The sentence a peer is told when it asks a solo wall for something that
+    /// would cross a conversation. Named, never silent: a far card waiting on
+    /// an answer that is never coming is the failure the whole switch exists to
+    /// avoid, on the side that cannot see the switch.
+    fn solo_refusal(&self, what: &str) -> String {
+        format!(
+            "{} is flying solo — its accounts, allowance and usage still report, but {what} do not \
+             cross until it flies with the others again",
+            self.me
+        )
+    }
+
     /// Directories that are Skein's own rather than anybody's territory.
     fn own_dirs(&self) -> Vec<std::path::PathBuf> {
         let Some(store) = self.store() else {
@@ -619,7 +641,7 @@ impl Link {
         let own = self.own_dirs();
         let own: Vec<&std::path::Path> = own.iter().map(|p| p.as_path()).collect();
         let in_flight = self.opening.lock().map(|o| o.len() as u32).unwrap_or(0);
-        let (mut f, open) = {
+        let (mut f, open, solo_since) = {
             let Ok(conn) = store.0.lock() else {
                 return Facts::default();
             };
@@ -655,7 +677,7 @@ impl Link {
                     .collect(),
                 ..Facts::default()
             };
-            (f, here::open_cards(&conn))
+            (f, here::open_cards(&conn), here::solo_since(&conn))
         };
         let sup = self.app.state::<crate::supervisor::Supervisor>();
         f.cards_live = open.len() as u32;
@@ -675,6 +697,30 @@ impl Link {
         (f.holds, f.lacks) = crate::creds::holdings();
         (f.build, f.dev) = super::this_build();
         f.screens = super::cast::announced_screens(f.accepting, self.media.screens());
+        /* **Flying solo withholds the workplace and keeps the books**, and it
+           does it here, at the one place the wall says what it is, rather than
+           by each surface remembering to look. The books — the roster entry,
+           `allowance_used`, `rate`/`wants_rate`, `build`/`dev` and the accounts
+           and analytics frames — are left exactly as they are, which is the
+           whole point of the switch. What goes is every fact another wall would
+           use to *decide something about this one*: its projects, its cards,
+           its credentials, its monitors, and the claim to take work. `present`
+           goes false so an older peer files rather than parks, and `solo` goes
+           true so this build's peer can say why. */
+        if solo_since.is_some() {
+            f.solo = true;
+            f.present = false;
+            f.accepting = false;
+            f.territories.clear();
+            f.can.clear();
+            f.cards_live = 0;
+            f.cards_working = 0;
+            f.remote_live = 0;
+            f.remote_last_hour = 0;
+            f.holds.clear();
+            f.lacks.clear();
+            f.screens.clear();
+        }
         f
     }
 
@@ -824,6 +870,22 @@ impl Link {
     /// else.
     fn greeting(&self, current: bool) -> Result<Vec<Frame>, String> {
         let now = self.now();
+        /* **Solo: the books are the whole greeting.** The roster goes, and with
+           it the announcement that says `present: false` and `solo: true` — the
+           one frame an older peer needs to file rather than park. What does not
+           go is the sink's hello, this wall's cards, or its board: those are the
+           traffic, said to nobody until the shutter lifts. `greeting_for` still
+           adds the accounts and the rollup manifest above this, which is the
+           half that must keep crossing. */
+        if self.solo_here() {
+            let mut out = Vec::new();
+            if current {
+                if let Ok(f) = self.fleet.lock() {
+                    out.extend(f.open(now).into_iter().map(Frame::Fleet));
+                }
+            }
+            return Ok(out);
+        }
         let watermark = {
             let store = self.store().ok_or("the store is unavailable")?;
             let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
@@ -880,17 +942,22 @@ impl Link {
             self.left_for(host);
             /* A prompt with pictures never rides the greeting (`fleet::gossip`),
                so it is said again here, on an exchange of its own, for as long
-               as it is unanswered and could still be acted on. */
-            let pictured = self.fleet.lock().map(|f| f.pictured_for(self.now(), host)).unwrap_or_default();
-            for (id, m) in pictured {
-                self.push_pictured(host.to_string(), id, m);
+               as it is unanswered and could still be acted on. Nothing is owed
+               while solo: `flyway_set_solo` has already settled this wall's
+               own waits, so there is no pictured prompt left to say. */
+            if !self.solo_here() {
+                let pictured = self.fleet.lock().map(|f| f.pictured_for(self.now(), host)).unwrap_or_default();
+                for (id, m) in pictured {
+                    self.push_pictured(host.to_string(), id, m);
+                }
             }
         }
         let (news, theirs) = self.take(back, Some(host));
 
         /* The push the answer showed is owed. See the module note: this is
-           the half that makes the sink travel both ways. */
-        if let Some(watermark) = theirs {
+           the half that makes the sink travel both ways — and it is the sink,
+           so a solo wall neither says it nor asks for it. */
+        if let Some(watermark) = theirs.filter(|_| !self.solo_here()) {
             let lacking = {
                 let store = self.store().ok_or("the store is unavailable")?;
                 let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
@@ -938,11 +1005,21 @@ impl Link {
     /// wall's watermark if it said one.
     fn take(self: &Arc<Self>, frames: Vec<Frame>, from: Option<&str>) -> (usize, Option<BTreeMap<String, u64>>) {
         let now = self.now();
+        /* **Flying solo takes none of the traffic** (`.claude/rules/solo.md`).
+           The books arrive as `Fleet` (roster), `Accounts`, `Analytics` and
+           `Live`, and every one of those is folded below unchanged — the
+           shutter is around the conversations, not around the numbers. What is
+           dropped is every frame that would put another wall's work into this
+           one: the sink, the cards and the board. Dropped rather than stored
+           and hidden, because a board notice read here would be a card's
+           coordination arriving at a machine taking no part in it. */
+        let solo = self.solo_here();
         let mut news = 0;
         let mut theirs = None;
         let mut fleet_spoke = false;
         for f in frames {
             match f {
+                Frame::Sink(_) if solo => {}
                 Frame::Sink(Msg::Hello { watermark, .. }) => theirs = Some(watermark),
                 Frame::Sink(Msg::Events { events }) => {
                     if let Some(store) = self.store() {
@@ -959,12 +1036,13 @@ impl Link {
                     fleet_spoke = true;
                     self.hear(m, from);
                 }
-                Frame::Cards(m) => {
+                Frame::Cards(m) if !solo => {
                     let got = self.cards.lock().ok().and_then(|mut c| c.on(m, now));
                     if let Some(a) = got {
                         self.emit_cards(a);
                     }
                 }
+                Frame::Cards(_) => {}
                 /* A tail is only ever read by the exchange that asked for it
                    (`read_tail`), which takes it out before this sees the rest. */
                 Frame::Tail(_) => {}
@@ -974,6 +1052,7 @@ impl Link {
                 /* And a look's (`read_look`), an act's (`read_act`), a see's
                    (`read_see`) and a steward's (`read_steward`). */
                 Frame::Look(_) | Frame::Act(_) | Frame::See(_) | Frame::Steward(_) => {}
+                Frame::Board(_) if solo => {}
                 Frame::Board(m @ BoardMsg::Board { .. }) => self.on_board(m),
                 Frame::Accounts(m) => self.on_accounts(m, from),
                 /* Rollups (§8.2): a manifest to compare against, or a day to
@@ -1109,10 +1188,16 @@ impl Link {
     fn answer(self: &Arc<Self>, heard: Vec<Frame>, who: Dialler) -> Vec<Frame> {
         let now = self.now();
         let from = self.who_is(&heard, who);
+        /* The other direction of `take`'s gate: a solo wall answers the books
+           and nothing else, so it neither tells nor is told the sink, the
+           cards, the board, or a question's files. What it *does* answer is
+           `Fleet` (the roster), `Accounts` and `Analytics` — kept whole. */
+        let solo = self.solo_here();
         let mut out = Vec::new();
         let mut fleet_spoke = false;
         for f in heard {
             match f {
+                Frame::Sink(_) if solo => {}
                 Frame::Sink(m) => {
                     let Some(store) = self.store() else { continue };
                     let Ok(conn) = store.0.lock() else { continue };
@@ -1129,12 +1214,13 @@ impl Link {
                     fleet_spoke = true;
                     out.extend(self.hear(m, from.as_deref()).into_iter().map(Frame::Fleet));
                 }
-                Frame::Cards(m) if who.current => {
+                Frame::Cards(m) if who.current && !solo => {
                     let got = self.cards.lock().ok().and_then(|mut c| c.on(m, now));
                     if let Some(a) = got {
                         self.emit_cards(a);
                     }
                 }
+                Frame::Cards(_) => {}
                 /* A card moving between walls, answered on the same stream —
                    `moves.rs`. */
                 Frame::Move(m) if who.current => {
@@ -1149,6 +1235,7 @@ impl Link {
                 Frame::Look(LookMsg::Look { id, card, ask, want }) if who.current => {
                     out.push(Frame::Look(self.look_here(&id, &card, &ask, &want, from.as_deref())));
                 }
+                Frame::Board(_) if solo => {}
                 Frame::Board(m @ BoardMsg::Board { .. }) if who.current => self.on_board(m),
                 Frame::Accounts(m) if who.current => self.on_accounts(m, from.as_deref()),
                 /* One owner's day, read out of this wall's store for a wall
@@ -1163,25 +1250,30 @@ impl Link {
                 /* A notice of this wall's taken down from another — decided
                    here, against this wall's own ladder (`board.rs`). Not gated
                    by "take work from other walls": it starts nothing. */
-                Frame::Board(m @ BoardMsg::Unpost { .. }) if who.current => {
+                Frame::Board(m @ BoardMsg::Unpost { .. }) if who.current && !solo => {
                     if let Some(r) = self.unpost_here(m, from.as_deref()) {
                         out.push(Frame::Board(r));
                     }
                 }
+                Frame::Board(_) => {}
                 _ => {}
             }
         }
         if who.current {
             /* Answered in kind, as `Hello` is: the dialler gets this wall's
-               cards in the same exchange it sent its own. */
-            if let Some(c) = self.cards.lock().ok().and_then(|c| c.say(now)) {
-                out.push(Frame::Cards(c));
-            }
-            /* And this wall's board, said after anything above was answered —
-               so an `unpost` it just carried out leaves the asker's copy in the
-               same exchange. */
-            if let Some(b) = self.board_say() {
-                out.push(Frame::Board(b));
+               cards in the same exchange it sent its own — unless it is flying
+               solo, in which case it has said it has none and says nothing more
+               until it flies again. */
+            if !solo {
+                if let Some(c) = self.cards.lock().ok().and_then(|c| c.say(now)) {
+                    out.push(Frame::Cards(c));
+                }
+                /* And this wall's board, said after anything above was answered
+                   — so an `unpost` it just carried out leaves the asker's copy
+                   in the same exchange. */
+                if let Some(b) = self.board_say() {
+                    out.push(Frame::Board(b));
+                }
             }
             /* And its accounts, to a wall that says them (`accounting.rs`). */
             out.extend(self.accounts_for(from.as_deref()));
@@ -1225,6 +1317,22 @@ impl Link {
     /// the serving side to send back to the wall that sent it.
     fn hear(self: &Arc<Self>, m: FleetMsg, from: Option<&str>) -> Vec<FleetMsg> {
         let now = self.now();
+        /* A wall that says it is flying solo stops publishing its cards, so the
+           snapshot this wall holds for it would otherwise be drawn for ever —
+           the one correctness trap in `.claude/rules/solo.md`. Take it off the
+           moment the word arrives, exactly as a goodbye does: `Cards::depart`
+           remembers the version, so a snapshot already on its way from before
+           the solo cannot put the cards back, and the first one published after
+           it flies again is newer and is. Reading it off the announcement rather
+           than out of `Fleet::on` keeps this one concern in one place; a solo
+           wall re-says it every tick and a second drop is a no-op. */
+        if let FleetMsg::Roster { walls, .. } = &m {
+            if let Ok(mut c) = self.cards.lock() {
+                for w in walls.iter().filter(|w| w.wall.facts.solo) {
+                    c.depart(&w.wall.host);
+                }
+            }
+        }
         let facts = self.facts();
         let reply = match self.fleet.lock() {
             Ok(mut f) => f.on(m, now, &facts),
@@ -2218,6 +2326,12 @@ impl Link {
         if card.is_empty() {
             return said(None, Some("no card was named".into()));
         }
+        /* A solo wall takes no part in the conversations, so it lends no
+           transcript. Answered rather than ignored: the far panel is waiting on
+           this id, and silence would leave it reading *still loading*. */
+        if self.solo_here() {
+            return said(None, Some(self.solo_refusal("transcripts")));
+        }
         let local = crate::store::uuid_v4();
         let (tx, rx) = tokio::sync::oneshot::channel();
         if let Ok(mut t) = self.tails.lock() {
@@ -2351,6 +2465,13 @@ impl Link {
                 self.me
             )));
         };
+        /* Solo refuses every verb, the person's included — a close or a stop is
+           a gesture on a conversation, and the conversation is not taking part.
+           Before `act::gate`, which lets a person's verbs through whatever the
+           take-work switch says. */
+        if self.solo_here() {
+            return said(Err(self.solo_refusal("gestures on its cards")));
+        }
         let accepting = self.store().and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c))).unwrap_or(false);
         if let Err(why) = act::gate(&verb, from_card.as_deref(), accepting, &self.me) {
             return said(Err(why));
@@ -2414,6 +2535,9 @@ impl Link {
         if transcript.is_empty() {
             return said(None, Some("nothing was said".into()));
         }
+        if self.solo_here() {
+            return said(None, Some(self.solo_refusal("plans and the cards they would run on")));
+        }
         let Some(host) = from else {
             return said(None, Some(format!(
                 "{} could not tell which wall asked — it may not have heard from yours yet; try again in a minute",
@@ -2468,6 +2592,9 @@ impl Link {
             crate::clean::scrub(text.trim()).chars().take(steward::TRANSCRIPT_MOST).collect();
         if text.is_empty() {
             return said(None, Some("nothing was said".into()));
+        }
+        if self.solo_here() {
+            return said(None, Some(self.solo_refusal("the steward")));
         }
         let Some(host) = from else {
             return said(None, Some(format!(
@@ -2527,6 +2654,9 @@ impl Link {
             answer,
             why,
         });
+        if self.solo_here() {
+            return said(None, Some(self.solo_refusal("plans and the gestures that carry them out")));
+        }
         let Some(host) = from else {
             return said(None, Some(format!(
                 "{} could not tell which wall asked — it may not have heard from yours yet; try again in a minute",
@@ -2637,6 +2767,18 @@ impl Link {
     /// part — an answer reads at most `look::BUDGET` of file, which is a disk
     /// read rather than a wait on anything.
     fn look_here(&self, id: &str, card: &str, ask: &str, want: &[look::Want], from: Option<&str>) -> LookMsg {
+        /* What a question shows is served to a wall reading one of this wall's
+           cards, and a solo wall has none drawn elsewhere. Refused with a
+           reason, since the far panel is waiting on this id. */
+        if self.solo_here() {
+            return LookMsg::Looked {
+                id: id.to_string(),
+                args: None,
+                files: vec![],
+                parts: vec![],
+                why: Some(self.solo_refusal("what its questions show")),
+            };
+        }
         /* A stage is a prompt's files this wall is holding for the card's own
            wall to pull (`attachments::stage_outbound`), served exactly as a
            question's files are. */
@@ -2789,7 +2931,34 @@ impl Link {
 
     /* ── the cards ─────────────────────────────────────────────────────────── */
 
+    /// One last snapshot saying this wall has no cards, published on the way
+    /// into solo. The front end stops publishing while solo and the peers drop
+    /// the cards on `Facts.solo`; this is the third lock, for a peer that reads
+    /// a snapshot a tick before it reads the fact. The shape is the front
+    /// end's (`{ cards, accounts }`), written here rather than asked for, so
+    /// the switch cannot depend on a window that might not answer.
+    fn stand_down_cards(self: &Arc<Self>) {
+        let now = self.now();
+        let said = {
+            let Ok(mut c) = self.cards.lock() else { return };
+            if c.publish(serde_json::json!({ "at": now, "cards": [], "accounts": [] }), now).is_err() {
+                return;
+            }
+            c.say(now)
+        };
+        let Some(m) = said else { return };
+        for host in self.known_current() {
+            self.push(host, vec![Frame::Cards(m.clone())]);
+        }
+    }
+
     fn publish_cards(self: &Arc<Self>, snapshot: Value) -> Result<(), String> {
+        /* While solo this wall publishes no cards at all: what a peer would
+           draw is a conversation it is not taking part in. `stand_down_cards`
+           has already said the empty set, and this refuses everything after. */
+        if self.solo_here() {
+            return Ok(());
+        }
         let now = self.now();
         let version = {
             let mut c = self.cards.lock().map_err(|_| "the cards are wedged".to_string())?;
@@ -2907,6 +3076,7 @@ impl Link {
                     wants_rate: e.facts.wants_rate,
                     build: e.facts.build.clone(),
                     dev: e.facts.dev,
+                    solo: e.facts.solo,
                     screens: e.facts.screens.clone(),
                 }
             })
@@ -3331,6 +3501,10 @@ pub struct RosterRow {
     build: String,
     /// A debug build, a lab or `tauri dev` (`Facts::dev`).
     dev: bool,
+    /// Flying solo (`Facts::solo`) — heard and taking no part in the
+    /// conversations. A wall from before this reads as `false`, which is what
+    /// its silence already meant.
+    solo: bool,
     /// Its monitors, as `Facts::screens` says them — empty unless it takes
     /// work. What the screen picker lists for that machine.
     screens: Vec<crate::cast::Monitor>,
@@ -3342,6 +3516,10 @@ pub struct Setup {
     accepting: bool,
     bound_live: Option<u32>,
     bound_hour: Option<u32>,
+    /// Flying solo now, and since when — what the plate, the flyway panel and
+    /// the chrome mark read.
+    solo: bool,
+    solo_since: Option<i64>,
 }
 
 /* ── the commands ─────────────────────────────────────────────────────────── */
@@ -3513,7 +3691,14 @@ pub async fn flyway_setup(app: AppHandle) -> Result<Setup, String> {
         let store = app.state::<Store>();
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
         let b = here::bound(&conn);
-        Ok(Setup { accepting: here::accepting(&conn), bound_live: b.live, bound_hour: b.per_hour })
+        let since = here::solo_since(&conn);
+        Ok(Setup {
+            accepting: here::accepting(&conn),
+            bound_live: b.live,
+            bound_hour: b.per_hour,
+            solo: since.is_some(),
+            solo_since: since,
+        })
     })
     .await?
 }
@@ -3543,6 +3728,99 @@ pub async fn flyway_set_accepting(app: AppHandle, on: bool) -> Result<(), String
     /* Not awaited: a tick dials every peer, and a sleeping one holds it for
        the exchange's whole timeout — the switch must not. */
     tauri::async_runtime::spawn(pull(app));
+    Ok(())
+}
+
+/// **Flying solo** (`.claude/rules/solo.md`): stop the flyway's traffic in both
+/// directions while its books keep reporting. A person's switch, and the whole
+/// of it is the one setting `here::SOLO` — every door reads it, so nothing has
+/// to be pushed into a second place and nothing is missed by not being on a
+/// list.
+///
+/// Announced at once, like `flyway_set_accepting`, for the same reason: the
+/// state is on screen and the very next thing she does is expect it to hold.
+#[tauri::command]
+pub async fn flyway_set_solo(app: AppHandle, on: bool) -> Result<(), String> {
+    {
+        let a = app.clone();
+        crate::off_main(move || {
+            let store = a.state::<Store>();
+            let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+            if on {
+                /* The start instant, not a flag: the plate says *solo since
+                   friday 18:04*, and that is the only moment worth saying. */
+                here::set_setting(&conn, here::SOLO, &crate::store::now().to_string())
+            } else {
+                here::clear_setting(&conn, here::SOLO)
+            }
+        })
+        .await??;
+    }
+    crate::chronicle::note(
+        &app,
+        None,
+        "volery",
+        "note",
+        if on {
+            "this wall is flying solo — its accounts, allowance and usage still report; its cards, questions and screens do not cross"
+        } else {
+            "this wall is flying with the others again"
+        },
+        "the flyway switch",
+    );
+    /* Not awaited, for `flyway_set_accepting`'s reason: a tick dials every
+       peer and a sleeping one holds it for the exchange's whole timeout. The
+       dials are also how a wall that has just flown again gets its peers'
+       cards back — each exchange's greeting is answered with a snapshot. */
+    tauri::async_runtime::spawn(pull(app.clone()));
+    if let Some(l) = current(&app) {
+        if on {
+            /* One last snapshot saying this wall has no cards. A peer drops
+               them on `Facts.solo` anyway, and this is belt and braces for a
+               peer that hears the snapshot a tick before the fact. */
+            let l2 = l.clone();
+            let _ = crate::off_main(move || l2.stand_down_cards()).await;
+            /* What this wall was waiting on across the flyway will not come
+               while it is solo: settled now, so no card's tool call stands
+               parked for a weekend and no prompt draws as waiting for ever. */
+            let pending: Vec<String> = l
+                .waiting
+                .lock()
+                .map(|w| w.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .chain(l.prompts_out.lock().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default())
+                .collect();
+            for id in pending {
+                l.nobody_answered(&id);
+            }
+            /* And what it held from the others is let go, so nothing is drawn
+               from a conversation this wall is not taking part in. `forget`, not
+               `depart`: a peer publishes a snapshot only when its cards change,
+               so an unchanged wall sends the same version for days — and
+               `depart` would remember it and refuse that same snapshot when this
+               wall flies again. Nothing is coming from that direction while we
+               are solo, so there is no straggler for `depart` to guard against. */
+            let others: Vec<String> =
+                l.fleet.lock().map(|f| f.roster().map(|e| e.host.clone()).collect()).unwrap_or_default();
+            if let Ok(mut c) = l.cards.lock() {
+                for host in &others {
+                    c.forget(host);
+                }
+            }
+            /* And their billboards, for the same reason: a board is one of the
+               two places a wall's work reaches another, and a picture held from
+               before the shutter would go on being drawn. */
+            if let Ok(mut b) = l.boards.lock() {
+                for host in &others {
+                    b.forget(host);
+                }
+            }
+            crate::board::heard_from_afar(&l.app);
+        }
+        l.emit_roster();
+    }
+    let _ = app.emit("flyway:solo", on);
     Ok(())
 }
 
@@ -3657,6 +3935,9 @@ pub async fn flyway_prompt(
     if text.trim().is_empty() {
         return Err("an empty prompt is nothing to send".into());
     }
+    if l.solo_here() {
+        return Err(l.solo_refusal("prompts to other walls"));
+    }
     /* An answer may carry pictures and files as a prompt may — the owning
        wall hands it to its front end to fetch and cut (`afar_may_attach`) —
        and is checked here as a prompt is. */
@@ -3689,6 +3970,9 @@ pub async fn flyway_close(app: AppHandle, id: String, to: String, card: String) 
     let Some(l) = current(&app) else {
         return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
     };
+    if l.solo_here() {
+        return Err(l.solo_refusal("gestures on other walls' cards"));
+    }
     crate::off_main(move || {
         l.send_person(
             Act::Close,
@@ -3756,6 +4040,9 @@ pub async fn flyway_tail(app: AppHandle, host: String, card: String) -> Result<O
     if host.is_empty() || card.is_empty() {
         return Err("no card was named".into());
     }
+    if l.solo_here() {
+        return Err(l.solo_refusal("transcripts"));
+    }
     /* The roster's lock off the main thread, for `flyway_publish_cards`'s
        reason; the exchange itself is network, and awaits rather than blocks. */
     let check = l.clone();
@@ -3801,6 +4088,9 @@ pub async fn flyway_act(app: AppHandle, host: String, card: String, verb: String
     };
     if !act::is_id(&card) {
         return Err("that is not a card another wall would know".into());
+    }
+    if l.solo_here() {
+        return Err(l.solo_refusal("gestures on other walls' cards"));
     }
     let check = l.clone();
     let (h, v) = (host.clone(), verb.clone());
@@ -3873,6 +4163,9 @@ pub async fn flyway_look(app: AppHandle, host: String, card: String, ask: String
     let (host, card, ask) = (host.trim().to_string(), card.trim().to_string(), ask.trim().to_string());
     if host.is_empty() || card.is_empty() || ask.is_empty() {
         return Err("no question was named".into());
+    }
+    if l.solo_here() {
+        return Err(l.solo_refusal("what another wall's questions show"));
     }
     let check = l.clone();
     let h = host.clone();
@@ -4043,6 +4336,9 @@ pub async fn flyway_open(
 ) -> Result<String, String> {
     crate::off_main(move || {
         let link = current(&app).ok_or("this wall is not on a flyway, so there is no other wall to open a card on")?;
+        if link.solo_here() {
+            return Err(link.solo_refusal("cards on other walls"));
+        }
         link.ask_open(&host, &project, model.as_deref(), effort.as_deref(), provider.as_deref())
     })
     .await?
@@ -4054,6 +4350,9 @@ pub async fn flyway_open(
 pub async fn flyway_move(app: AppHandle, id: String, host: String) -> Result<String, String> {
     crate::off_main(move || {
         let link = current(&app).ok_or("this wall is not on a flyway, so there is no other wall to move a card to")?;
+        if link.solo_here() {
+            return Err(link.solo_refusal("cards moving to another machine"));
+        }
         link.move_out(&id, &host)
     })
     .await?

@@ -1072,6 +1072,7 @@ pub fn run() {
             flyway::link::flyway_forget,
             flyway::link::flyway_setup,
             flyway::link::flyway_set_accepting,
+            flyway::link::flyway_set_solo,
             flyway::link::flyway_set_bound,
             flyway::link::flyway_publish_cards,
             flyway::link::flyway_remote_cards,
