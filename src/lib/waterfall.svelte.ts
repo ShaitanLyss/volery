@@ -26,6 +26,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { samplesOf, type AllowanceSample } from "./allowancesamples";
+import { ownShare } from "./ownshare.svelte";
 import {
   type AfarSeat,
   choose,
@@ -298,6 +299,14 @@ export class Waterfall {
       for (const a of answers) {
         if (a.report) this.#note(samplesOf(a.label, a.report));
       }
+      /* **And your own share of each window, which the caps are measured on.**
+         Read here because this is the one place readings already change —
+         measuring a cap at every send would cost two table reads a send, and
+         measuring it never is what the wall used to do. Awaited, so a decision
+         taken after this pass (`#asked`, `releaseHeld`) uses the share that
+         belongs to the reading it just took; a failed read keeps the last one,
+         which is `keptThrough`'s bargain one layer out. */
+      await ownShare.refresh(now);
       missed = answers.some((a) => !a.report);
     } catch (err) {
       /* The call itself failed, so there is nothing per account to keep or drop
@@ -390,7 +399,15 @@ export class Waterfall {
    *  should aim its retry at, since a poll cannot see a spend cap and so cannot
    *  be what releases one. */
   next(opts: { bypass?: boolean; stickTo?: string | null } = {}): Choice {
-    return choose(this.list, this.#overlaid(Date.now()), { ...opts, overage: this.overage });
+    return choose(this.list, this.#overlaid(Date.now()), {
+      ...opts,
+      overage: this.overage,
+      /* Your own share, so a cap on a shared account is a cap on *your* work —
+         `accounts.ts::SelfUse`. Read from the one place that computes it rather
+         than threaded through every caller, so a surface cannot be handed the
+         reading without it. */
+      self: (label: string) => ownShare.list(label),
+    });
   }
 
   /** Whether an account's usage credits may be spent: boost mode, and nothing
@@ -406,7 +423,13 @@ export class Waterfall {
    *  without the refusal overlay (`next` and `stateOf` carry that), with boost
    *  deciding the credits. */
   standing(account: Account, bypass = false): Standing {
-    return standingOf(account, this.allowances[account.label], bypass, this.overage);
+    return standingOf(
+      account,
+      this.allowances[account.label],
+      bypass,
+      this.overage,
+      ownShare.list(account.label),
+    );
   }
 
   /** Whether the reading in hand is good enough to move a card onto `label`
@@ -422,7 +445,13 @@ export class Waterfall {
   stateOf(label: string, bypass = false): "ready" | "blocked" | "unusable" {
     const acct = this.list.find((a) => a.label === label);
     if (!acct) return "unusable";
-    return standingOf(acct, this.#overlaid(Date.now())[label], bypass, this.overage).state;
+    return standingOf(
+      acct,
+      this.#overlaid(Date.now())[label],
+      bypass,
+      this.overage,
+      ownShare.list(label),
+    ).state;
   }
 
   /** The readings with every standing refusal laid over them; see `next`. */

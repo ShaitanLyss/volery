@@ -25,6 +25,7 @@ import {
   type Choice,
 } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
+import { ownShare } from "./ownshare.svelte";
 import { acts } from "./acts.svelte";
 import { freshening } from "./freshening.svelte";
 import { currentCli, runRow, staleCards, type Run as FreshRun, type Stale } from "./freshen";
@@ -4191,7 +4192,7 @@ export class Skein {
     const allowance = waterfall.allowances[from];
     if (!acct) return "that account is no longer in the order";
     if (!allowance?.ok) return allowance?.fault ?? "that account could not be asked about";
-    const blockers = blockersFor(acct, allowance.windows, conv.bypassCaps);
+    const blockers = blockersFor(acct, allowance.windows, conv.bypassCaps, false, ownShare.list(from));
     return blockers.length > 0 ? sayBlocked(blockers) : "that account stopped taking work";
   }
 

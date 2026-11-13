@@ -252,6 +252,50 @@ export function capFor(account: Account, kind: string, bypass: boolean): number 
   return cap;
 }
 
+/** How much of a window's movement **your own work** explains, as a reading a
+ *  cap can be measured against.
+ *
+ *  A cap is a decision about *your* share of an account, and the account's own
+ *  percentage is everybody's share: a manager granting somebody 50% of a
+ *  subscription does not mean "stop when the two of you together reach 50". So
+ *  where this is known the cap is measured on it, and where it is not the
+ *  account's figure stands in as before.
+ *
+ *  `priced` is the whole of what makes it a reading rather than a hole. Points
+ *  come from dividing a window's movement among the priced facts under it, so
+ *  with no priced fact there is nothing to divide and `points` is zero for a
+ *  reason that has nothing to do with you having spent nothing. Zero movement
+ *  is not enough on its own either, for the mirror reason: a window nobody
+ *  sampled has not been seen to move, which is not the same as not moving.
+ *
+ *  Structural rather than imported: `allowancesamples.ts::OwnPoints` fills it,
+ *  and policy should take the fact rather than the module that computes it. */
+export type SelfUse = {
+  /** The window kind this is a share of — the same vocabulary `caps` uses. */
+  kind: string;
+  /** Points of the movement your facts explain, in the window's own unit. */
+  points: number;
+  /** Points the window moved while it was being sampled. */
+  moved: number;
+  /** Modeled dollars under that movement: the evidence that `points` is a
+   *  reading. Zero means nothing priced was seen. */
+  priced: number;
+};
+
+/** What the cap is compared against for one window: your share where it is
+ *  known, the account's own figure where it is not.
+ *
+ *  `Math.min` because your share can never exceed the whole. It is a sanity
+ *  clamp on a figure that arrives from several walls' arithmetic, not a rule:
+ *  a share above the account's own percentage is a reading that has drifted,
+ *  and the smaller of the two cannot make a cap fire early. */
+function measuredFor(w: Window, self: readonly SelfUse[]): number {
+  const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
+  const mine = self.find((s) => s.kind === w.kind);
+  if (mine === undefined || !(mine.priced > 0) || !Number.isFinite(mine.points)) return used;
+  return Math.min(Math.max(0, mine.points), used);
+}
+
 /** Every window standing in the way of new work on this account.
  *
  *  A window counts as the server's when it is at or past 100, or when the
@@ -280,9 +324,16 @@ export function blockersFor(
   windows: Window[],
   bypass: boolean,
   credits = false,
+  /** Your own share of each window, where the wall can measure it (`SelfUse`).
+   *  Empty is the old behaviour exactly: the account's figure, which is
+   *  everybody's. */
+  self: readonly SelfUse[] = [],
 ): Blocker[] {
   const out: Blocker[] = [];
   for (const w of windows) {
+    /* The server's ceiling is the account's, not yours: a shared subscription
+       refused for everybody is refused for you too, and no share of it changes
+       that. Only your own cap is measured on your own work. */
     if (w.used >= 100 || REJECTED.has(w.severity.toLowerCase())) {
       if (!credits) {
         out.push({ window: w, by: "server", resetsAt: w.resetsAt });
@@ -290,7 +341,7 @@ export function blockersFor(
       }
     }
     const cap = capFor(account, w.kind, bypass);
-    if (cap < 100 && w.used >= cap) {
+    if (cap < 100 && measuredFor(w, self) >= cap) {
       out.push({ window: w, by: "you", resetsAt: w.resetsAt });
     }
   }
@@ -354,11 +405,15 @@ export function spentOf(
   account: Account,
   allowance: Allowance | undefined,
   bypass: boolean,
+  /** Your own share, on the same terms `blockersFor` takes it: the balancer has
+   *  to divide by the same numerator the door reads, or a tier would prefer the
+   *  account it is about to refuse. */
+  self: readonly SelfUse[] = [],
 ): number {
   if (!allowance || !allowance.ok) return 0;
   let worst = 0;
   for (const w of allowance.windows) {
-    const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
+    const used = measuredFor(w, self);
     const cap = capFor(account, w.kind, bypass);
     const spent = cap <= 0 ? 1 : used / cap;
     if (spent > worst) worst = spent;
@@ -718,6 +773,8 @@ export function standingOf(
   /** Whether usage credits may be spent at all — boost mode, and nothing else
    *  (`covers`). False by default, so a caller that forgets it spends nothing. */
   overage = false,
+  /** Your own share of each window, on `blockersFor`'s terms. */
+  self: readonly SelfUse[] = [],
 ): Standing {
   const label = account.label;
   if (!account.enabled) return { state: "unusable", label, why: "switched off" };
@@ -742,12 +799,13 @@ export function standingOf(
   if (!allowance.ok) return { state: "ready", label, unmeasured: allowance.fault };
 
   const credits = overage && covers(allowance.overage);
-  const blockers = blockersFor(account, allowance.windows, bypass, credits);
+  const blockers = blockersFor(account, allowance.windows, bypass, credits, self);
   if (blockers.length === 0) {
     /* Ready, and whether the plan is what pays. Asked of the same rule with the
        credits taken away, so "on credits" means exactly "would be blocked by
        the server without them" and cannot drift from it. */
-    const billed = credits && blockersFor(account, allowance.windows, bypass, false).length > 0;
+    const billed =
+      credits && blockersFor(account, allowance.windows, bypass, false, self).length > 0;
     return billed ? { state: "ready", label, onCredits: true } : { state: "ready", label };
   }
   return { state: "blocked", label, blockers, availableAt: availableAt(blockers) };
@@ -1030,15 +1088,25 @@ export type Choice =
 export function choose(
   accounts: Account[],
   allowances: Record<string, Allowance>,
-  opts: { bypass?: boolean; stickTo?: string | null; overage?: boolean } = {},
+  opts: {
+    bypass?: boolean;
+    stickTo?: string | null;
+    overage?: boolean;
+    /** Your own share per account, asked by label. Absent is the old behaviour:
+     *  every account's cap measured on the account's own figure. */
+    self?: (label: string) => readonly SelfUse[];
+  } = {},
 ): Choice {
   const bypass = opts.bypass ?? false;
   const stickTo = opts.stickTo ?? null;
+  const selfOf = opts.self ?? (() => []);
 
   const list = ordered(accounts);
   if (list.length === 0) return { kind: "none", why: "no accounts are set up" };
 
-  const standings = list.map((a) => standingOf(a, allowances[a.label], bypass, opts.overage ?? false));
+  const standings = list.map((a) =>
+    standingOf(a, allowances[a.label], bypass, opts.overage ?? false, selfOf(a.label)),
+  );
 
   /* Ahead of the waterfall, and only ever for an account that is genuinely
      ready — a card sticks to an account it is allowed to be on, not to one it
@@ -1079,7 +1147,7 @@ export function choose(
     for (let i = 0; i < list.length; i++) {
       const account = list[i]!;
       if (standings[i]!.state !== "ready" || account.priority !== tier) continue;
-      const spent = spentOf(account, allowances[account.label], bypass);
+      const spent = spentOf(account, allowances[account.label], bypass, selfOf(account.label));
       if (spent < least) {
         least = spent;
         pick = account;

@@ -210,6 +210,31 @@ export function instancesOf(samples: readonly AllowanceSample[]): WindowInstance
   return out.sort((a, b) => a.from - b.from || a.account.localeCompare(b.account) || a.kind.localeCompare(b.kind));
 }
 
+/** The newest instance of every window: what each one is at *now*.
+ *
+ *  `instancesOf` keeps every instance ever sampled, because a closed one's
+ *  deltas are history the residual needs. That is the wrong list for any
+ *  question about the present, and the two that ask differ in scope:
+ *  `bindingOf` wants the one window closest to a stop, and `ownPoints` wants a
+ *  figure per window kind. Both need the same filter, so it is one function.
+ *
+ *  **Summing across instances is right for a day and wrong for a cap.** Four
+ *  five-hour windows in a day add up the way a day's percentage does (§21.2),
+ *  but a cap on a five-hour window is a ceiling on *that window*, and a share
+ *  summed over four of them is four times the scale of the reading it is
+ *  compared against. This is the list that keeps the two apart. */
+export function currentOnly(instances: readonly WindowInstance[]): WindowInstance[] {
+  const latest = new Map<string, WindowInstance>();
+  for (const one of instances) {
+    const key = keyOf(one);
+    const held = latest.get(key);
+    if (held === undefined || one.to > held.to) latest.set(key, one);
+  }
+  return [...latest.values()].sort(
+    (a, b) => a.account.localeCompare(b.account) || a.kind.localeCompare(b.kind),
+  );
+}
+
 /** The window the wall is closest to being stopped by, right now.
  *
  *  Across every account and every window kind: the highest reading on an
@@ -695,6 +720,12 @@ export type OwnPoints = {
   points: number;
   /** Points the account moved while it was watching, across those intervals. */
   moved: number;
+  /** Modeled dollars under those intervals. **This is what makes `points` a
+   *  reading rather than a hole**: with nothing priced there is nothing to
+   *  divide the movement among, so `points` is zero for a reason that says
+   *  nothing about how much of the window was yours. `accounts.ts::SelfUse`
+   *  is the same fact one layer out, where the cap reads it. */
+  priced: number;
 };
 
 /** **This wall's own share**, per account and kind, over the samples it holds.
@@ -718,11 +749,13 @@ export function ownPoints(
     const spans = spansOf(mine, costs, account);
     let points = 0;
     let moved = 0;
+    let priced = 0;
     for (const span of spans) {
       moved += span.delta;
       points += attribute(span.delta, span.facts, account).attributed;
+      priced += attributedCost(span.delta, span.facts, account);
     }
-    out.push({ account, kind, points, moved });
+    out.push({ account, kind, points, moved, priced });
   }
   return out.sort((a, b) => b.moved - a.moved || a.account.localeCompare(b.account) || a.kind.localeCompare(b.kind));
 }
@@ -731,8 +764,8 @@ export function ownPoints(
  *  included. A wall not heard from contributes nothing, so the sum says
  *  whether it is complete rather than pretending it is (§15). */
 export function ownTotal(
-  mine: readonly OwnPoints[],
-  theirs: readonly OwnPoints[],
+  mine: readonly Pick<OwnPoints, "points" | "moved">[],
+  theirs: readonly Pick<OwnPoints, "points" | "moved">[],
 ): { points: number; moved: number; partial: boolean } {
   let points = 0;
   let moved = 0;

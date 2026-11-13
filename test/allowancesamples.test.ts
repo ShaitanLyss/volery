@@ -6,6 +6,7 @@ import {
   bindingOf,
   cardAllowance,
   costBucketsOf,
+  currentOnly,
   daySpend,
   FINE_BUCKET_MS,
   instancesOf,
@@ -698,7 +699,36 @@ describe("this wall's own share of a window", () => {
   test("is the movement the wall's facts explain, not the whole counter", () => {
     /* Ten points moved over one interval with facts under it. */
     const [got] = ownPoints([session([10, 20])], costBucketsOf([bucket("a", 1000)]));
-    expect(got).toEqual({ account: "lyss", kind: "session", points: 10, moved: 10 });
+    expect(got).toEqual({ account: "lyss", kind: "session", points: 10, moved: 10, priced: got!.priced });
+    expect(got!.priced).toBeGreaterThan(0);
+  });
+
+  /* What makes the figure a reading rather than a hole: no priced fact means
+     there was nothing to divide the movement among, and a cap reading that as
+     "you have spent nothing" would never fire (`accounts.ts::SelfUse`). */
+  test("says what was priced, so a zero can be told from a gap", () => {
+    expect(ownPoints([session([10, 20])], [])[0]!.priced).toBe(0);
+    const [priced] = ownPoints([session([10, 20])], [{ at: NOW, host: "s", account: "lyss", cost: 2 }]);
+    expect(priced!.priced).toBe(2);
+  });
+
+  test("only the current instance is what a cap is measured on", () => {
+    /* Four five-hour windows in a day add up the way a day's percentage does,
+       which is four times the scale of the reading a cap compares against. */
+    const first = session([0, 10]);
+    const second: WindowInstance = {
+      ...session([0, 5]),
+      resetsAt: first.resetsAt + 5 * 60 * 60_000,
+      from: first.to + 60_000,
+      to: first.to + 11 * 60_000,
+      points: [
+        { at: first.to + 60_000, used: 0 },
+        { at: first.to + 11 * 60_000, used: 5 },
+      ],
+    };
+    expect(currentOnly([first, second])).toEqual([second]);
+    /* And `.to` is what decides it, not the order they arrive in. */
+    expect(currentOnly([second, first])).toEqual([second]);
   });
 
   /* The whole point of the number: somebody else's usage moves the same

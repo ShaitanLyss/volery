@@ -15,6 +15,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { waterfall } from "./waterfall.svelte";
+  import { ownShare } from "./ownshare.svelte";
   import Freshen from "./Freshen.svelte";
   import type { Stale } from "./freshen";
   import {
@@ -324,6 +325,20 @@
     return a.windows.find((w) => w.kind === kind)?.used ?? null;
   }
 
+  /** How much of that window is *yours*, or null where the wall cannot measure
+   *  it — which is the account's figure standing in, exactly as the cap's own
+   *  arithmetic falls back (`accounts.ts::SelfUse`).
+   *
+   *  Drawn because the ceiling beside it is measured on this and not on the
+   *  account's percentage: a shared account reading 70% under a 50% cap with
+   *  nothing said about it is a panel arguing with itself. */
+  function shareOf(label: string, kind: string): number | null {
+    const one = ownShare.list(label).find((s) => s.kind === kind);
+    if (one === undefined || !(one.priced > 0)) return null;
+    const used = usedOf(label, kind);
+    return used === null ? null : Math.min(one.points, used);
+  }
+
   function nameOf(label: string, kind: string): string {
     const a = waterfall.allowances[label];
     const w = a?.ok ? a.windows.find((x) => x.kind === kind) : null;
@@ -581,8 +596,10 @@
     <p class="note">
       Work falls through these in priority order — a whole priority is spent before the next one
       is touched. Accounts sharing a priority share the work: whichever has spent least of its
-      allowance takes the next turn, so they run down together. A cap is <b>yours</b>: the
-      account's own limit still applies underneath it, and nothing here can spend past that.
+      allowance takes the next turn, so they run down together. A cap is <b>yours</b>: it is
+      measured on this wall's own work, so somebody else's 20% of a shared account does not eat
+      into it. The account's own limit still applies underneath, and nothing here can spend past
+      that.
     </p>
 
     <!-- ── the machine ───────────────────────────────────────────────── -->
@@ -740,10 +757,21 @@
                   <div class="caps">
                     {#each capKinds(account.label) as kind (kind)}
                       {@const used = usedOf(account.label, kind)}
+                      {@const share = shareOf(account.label, kind)}
                       {@const cap = capOf(account.label, kind)}
-                      <label class="cap">
+                      <label
+                        class="cap"
+                        title={share === null || used === null
+                          ? "the account's own percentage, which is what your ceiling is measured against when this wall cannot say how much of it is yours"
+                          : `the account is at ${pct(used)}; ${pct(share)} of that is this wall's own work, and your ceiling is measured on it`}
+                      >
                         <span class="capname">{nameOf(account.label, kind)}</span>
-                        <span class="used">{used === null ? "—" : pct(used)}</span>
+                        <span class="used">
+                          {share === null ? (used === null ? "—" : pct(used)) : pct(share)}
+                          {#if share !== null && used !== null && Math.round(share) !== Math.round(used)}
+                            <span class="of"> of {pct(used)}</span>
+                          {/if}
+                        </span>
                         <span class="of">stop at</span>
                         <input
                           class="capin"

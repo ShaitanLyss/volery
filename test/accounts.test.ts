@@ -1899,3 +1899,108 @@ describe("which windows an event actually named", () => {
     expect(observedKinds(odd).size).toBe(0);
   });
 });
+
+/* Lyss, 2026-11-13: *"someone saying ok you can use 50% of my account, if they
+   do 20%, it shouldn't interfere with my 50%"*. A cap is a ceiling on your own
+   work, and the account's percentage is everybody's — so where the wall can
+   measure your share, that is what the ceiling is compared against. */
+describe("a cap is measured on your own share", () => {
+  const self = (over: { points?: number; moved?: number; priced?: number; used?: number }) => [
+    {
+      kind: "session",
+      points: over.points ?? 0,
+      moved: over.moved ?? 0,
+      priced: over.priced ?? 0,
+    },
+  ];
+
+  test("somebody else's usage does not stop you", () => {
+    /* The account is at 70 because another person is using it. You have spent
+       20 of your capped 50. */
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 70 })];
+    expect(blockersFor(a, windows, false, false, self({ points: 20, moved: 70, priced: 4 }))).toEqual(
+      [],
+    );
+  });
+
+  test("and your own share reaching the cap does", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 70 })];
+    const got = blockersFor(a, windows, false, false, self({ points: 50, moved: 70, priced: 4 }));
+    expect(got.map((b) => b.by)).toEqual(["you"]);
+  });
+
+  test("your own zero is a real zero, not a hole", () => {
+    /* The account moved while we watched and every point of it was priced: our
+       facts carried none of it, so the cap is untouched however full the
+       account is. This is the case the fallback must not swallow. */
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 90 })];
+    expect(blockersFor(a, windows, false, false, self({ points: 0, moved: 90, priced: 9 }))).toEqual(
+      [],
+    );
+  });
+
+  test("with nothing priced it falls back to the account's own figure", () => {
+    /* No modeled cost under the movement means there is nothing to divide it
+       among, so the share is unknown rather than zero — and an unknown share
+       must not read as "you have spent nothing". Today's behaviour stands. */
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 70 })];
+    const got = blockersFor(a, windows, false, false, self({ points: 0, moved: 70, priced: 0 }));
+    expect(got.map((b) => b.by)).toEqual(["you"]);
+  });
+
+  test("no reading at all is the old behaviour exactly", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 70 })];
+    expect(blockersFor(a, windows, false).map((b) => b.by)).toEqual(["you"]);
+  });
+
+  test("a share cannot exceed the account it is a share of", () => {
+    /* Arithmetic from several walls can drift; the account's own percentage is
+       an upper bound on any part of it, and the smaller of the two cannot make
+       a cap fire early. */
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 30 })];
+    expect(blockersFor(a, windows, false, false, self({ points: 80, moved: 30, priced: 3 }))).toEqual(
+      [],
+    );
+  });
+
+  test("the server's ceiling is the account's, share or no share", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    const windows = [win({ kind: "session", used: 100 })];
+    const got = blockersFor(a, windows, false, false, self({ points: 5, moved: 100, priced: 10 }));
+    expect(got.map((b) => b.by)).toEqual(["server"]);
+  });
+
+  test("the balancer divides by the same numerator", () => {
+    /* A tier that measured the cap on the account's figure while the door
+       measured it on yours would keep preferring the account it was about to
+       refuse. */
+    const a = acct("lyss", { caps: { session: 50 } });
+    expect(spentOf(a, spent(70), false, self({ points: 20, moved: 70, priced: 4 }))).toBeCloseTo(
+      0.4,
+    );
+    expect(spentOf(a, spent(70), false)).toBeCloseTo(1.4);
+  });
+
+  test("a standing is ready over a shared account you are under", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    const self5 = self({ points: 15, moved: 70, priced: 4 });
+    expect(standingOf(a, spent(70), false, false, self5).state).toBe("ready");
+    expect(standingOf(a, spent(70), false).state).toBe("blocked");
+  });
+
+  test("and the chooser is handed it by label", () => {
+    const a = acct("lyss", { caps: { session: 50 } });
+    const one = { lyss: spent(70) };
+    const got = choose([a], one, {
+      self: (label: string) => (label === "lyss" ? self({ points: 15, moved: 70, priced: 4 }) : []),
+    });
+    expect(got.kind).toBe("use");
+    expect(choose([a], one).kind).toBe("hold");
+  });
+});
