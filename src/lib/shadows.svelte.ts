@@ -100,7 +100,7 @@ import {
 } from "./afar";
 import type { Deferred } from "./presence";
 import type { Notice } from "./notice";
-import { Attachments, attachedIn, turnFrom } from "./attach.svelte";
+import { Attachments, attachedIn, forgetAttachments, parcelPathsOf, turnFrom } from "./attach.svelte";
 import { MANIFEST, manifestEntry, readManifest, turnOf, type Attachment, type Carried, type FileRef, type Turn } from "./attach";
 import type { Parcel } from "./relay";
 
@@ -1417,8 +1417,22 @@ export class Elsewhere {
       this.#fold(id, { kind: "unsent", why: `${s.host} has not been heard from — nothing was sent` });
       return;
     }
-    /* What was attached across the sheet goes with it, as with a prompt —
-       the owning wall fetches and cuts it (`#gather`, `afar_may_attach`). */
+    /* A parcel dropped into the answer goes as a parcel, exactly as one dropped
+       into the dock does (`docs/PARCEL-DROP.md`) — the owning wall lands it and
+       hands its agent the answer with the manifest. Otherwise what was attached
+       across the sheet goes as a prompt's attachments do (`#gather`,
+       `afar_may_attach`). */
+    const parcels = said === undefined ? parcelPathsOf(`ask:${sheet.askId}`) : [];
+    if (parcels.length) {
+      s.answering = [...s.answering, sheet.askId];
+      try {
+        await invoke("flyway_parcel", { id, to: s.host, card: s.card, text, paths: parcels, answers: sheet.askId });
+        forgetAttachments(`ask:${sheet.askId}`);
+      } catch (e) {
+        this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
+      }
+      return;
+    }
     const carrying = said === undefined ? await this.#carrying(s, text, `ask:${sheet.askId}`) : { text };
     if ("refused" in carrying) {
       this.#fold(id, { kind: "unsent", why: carrying.refused });
@@ -1682,6 +1696,35 @@ export class Elsewhere {
     const d = s.digest.notices.find((x) => `${s.id}:${x.id}` === n.id);
     if (!d) return false;
     const { answers, text } = noticeAnswer(d, reply);
+    /* A parcel in the reply is a parcel, as it is in the dock. It carries its
+       own message, so a reply with no words still says what it is — which an
+       acknowledgement (no words, no parcel) never does. */
+    const parcels = parcelPathsOf(`notice:${n.id}`);
+    if (parcels.length) {
+      const id = crypto.randomUUID();
+      const said = reply.trim() || "files for you — the list is below";
+      s.sent.push({ id, text: said, at: Date.now(), state: "queued" });
+      this.#byPrompt.set(id, s);
+      if (s.face.unheard) {
+        const why = `${s.host} has not been heard from — nothing was sent`;
+        this.#fold(id, { kind: "unsent", why });
+        this.#skein.fault = `that notice is on ${s.host}: ${why}`;
+        return false;
+      }
+      const outcome = new Promise<boolean>((resolve) => {
+        this.#byNotice.set(id, { shadow: s, notice: d.id, resolve });
+      });
+      s.acking = [...s.acking, d.id];
+      try {
+        await invoke("flyway_parcel", { id, to: s.host, card: s.card, text: said, paths: parcels, answers });
+        forgetAttachments(`notice:${n.id}`);
+      } catch (e) {
+        const why = String(e) || "the link would not take it";
+        this.#noticed(id, "refused", why);
+        this.#fold(id, { kind: "unsent", why });
+      }
+      return outcome;
+    }
     /* A reply carries what was attached to it, as a prompt does. */
     const carrying = reply.trim() ? await this.#carrying(s, text, `notice:${n.id}`) : { text };
     if ("refused" in carrying) {

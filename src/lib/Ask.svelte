@@ -606,6 +606,7 @@
       <PromptBox
         bind:text={free}
         shots={attachmentsOf(draftKey, item)}
+        to={() => card || null}
         rows={1}
         oninput={() => {
           warned = null;

@@ -16,6 +16,7 @@
   import { GATE_AFTER_MS, lasted } from "./lib/presence";
   import { cardByHandle } from "./lib/chatview";
   import { provideCardLinks } from "./lib/cardlinks.svelte";
+  import { carrierFor, provideCarrier } from "./lib/carrier.svelte";
   import { provideRefLinks } from "./lib/reflinks.svelte";
   import RefSheet from "./lib/RefSheet.svelte";
   import RefPeek from "./lib/RefPeek.svelte";
@@ -2766,6 +2767,13 @@
      `test/finding.test.ts`, which fails on a component that renders prose and
      has made no decision about whose it is. See `paths.svelte.ts`. */
   provideFileNavigation(goToPath, () => null);
+
+  /* And what a drop of files becomes, answered by the card it is aimed at: a
+     path on this wall, a parcel to another (`carrier.svelte.ts`,
+     `docs/PARCEL-DROP.md`). Ambient, so the dock, chat view's box, a question's
+     answer and a notice's reply all take the same drop without any of them being
+     told it exists. */
+  provideCarrier((id) => carrierFor(cards.find(id)?.remote ?? null));
 
   /* And the link beside it, which needs no scope at all: there is one thing a
      markdown link can mean in a window with no address bar and no back button,

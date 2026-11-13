@@ -743,6 +743,15 @@ export function attachedIn(family: string): Attachment[] {
     .flatMap(([, l]) => l.list);
 }
 
+/** The parcel paths across one reply's fields — a question's answer or a
+ *  notice's reply that holds a parcel goes as a parcel, as a prompt does
+ *  (`docs/PARCEL-DROP.md`). Empty when the reply carries none. */
+export function parcelPathsOf(family: string): string[] {
+  return attachedIn(family)
+    .filter((a): a is Parcel => a.kind === "parcel")
+    .map((p) => p.path);
+}
+
 /** Let a reply's attachments go: it was sent, or taken down. */
 export function forgetAttachments(family: string): void {
   for (const k of [...keptLists.keys()]) {

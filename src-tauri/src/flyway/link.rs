@@ -2343,6 +2343,15 @@ impl Link {
                                         &secrets.join(", "),
                                     );
                                 }
+                                /* A parcel dropped into a question's answer or a
+                                   notice's reply carries the id of what it answers,
+                                   so it lands *and* is delivered as that answer
+                                   (`docs/PARCEL-DROP.md`) — the front end then
+                                   hands it over through the same channels a
+                                   words-only answer takes. */
+                                let notice = crate::notice::afar(d.answers.as_deref()).map(str::to_string);
+                                let deferred = crate::presence::afar(d.answers.as_deref()).map(str::to_string);
+                                let answers = d.answers.clone().filter(|_| notice.is_none() && deferred.is_none());
                                 if let Ok(mut p) = w.prompts_in.lock() {
                                     p.insert((host.clone(), request.clone()), now);
                                 }
@@ -2353,10 +2362,10 @@ impl Link {
                                         from: PromptFrom { host, card: None },
                                         card: row.id.clone(),
                                         text: body,
-                                        notice: None,
+                                        notice,
                                         pictures: Vec::new(),
-                                        answers: None,
-                                        deferred: None,
+                                        answers,
+                                        deferred,
                                     },
                                 );
                                 None
@@ -4151,6 +4160,7 @@ pub async fn flyway_parcel(
     card: String,
     text: String,
     paths: Vec<String>,
+    answers: Option<String>,
 ) -> Result<(), String> {
     let Some(l) = current(&app) else {
         return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
@@ -4187,7 +4197,9 @@ pub async fn flyway_parcel(
             to,
             card,
             text,
-            answers: None,
+            /* Set when the parcel answers a question or takes a notice down —
+               the reply box is a parcel target too (`docs/PARCEL-DROP.md`). */
+            answers,
             title: None,
             project: None,
             pictures: Vec::new(),

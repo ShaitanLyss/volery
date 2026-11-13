@@ -165,6 +165,7 @@
     <PromptBox
       bind:text={() => reply, (v) => replies.put(key, v, about)}
       shots={attachmentsOf(key)}
+      to={() => notice.conversationId}
       rows={1}
       placeholder={words.placeholder}
       onkeydown={(e) => {
