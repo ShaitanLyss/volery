@@ -126,7 +126,15 @@ export class Waterfall {
    *  and everything downstream (`next`, `choose`, the hold) reads it as it
    *  reads a real one, which is the point: what is under test is the hold,
    *  not the reading. `null` takes it down and reads the real registry again. */
-  standIn(accounts: { label: string; windows: Report["windows"] }[] | null) {
+  standIn(
+    accounts: {
+      label: string;
+      windows: Report["windows"];
+      /** The ceilings to stand in with, so a capped account can be looked at
+       *  with no store behind it (`accounts-preview.ts`). */
+      caps?: Record<string, number>;
+    }[] | null,
+  ) {
     if (!accounts) {
       this.#standIn = false;
       void this.refresh();
@@ -138,7 +146,7 @@ export class Waterfall {
       priority: 1,
       rank: i,
       enabled: true,
-      caps: {},
+      caps: a.caps ?? {},
       signedIn: true,
       lapsed: false,
     }));
