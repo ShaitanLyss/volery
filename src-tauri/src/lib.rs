@@ -1061,6 +1061,8 @@ pub fn run() {
             flyway::link::flyway_linked,
             flyway::link::flyway_roster,
             flyway::link::flyway_note_rate,
+            flyway::link::flyway_note_live,
+            flyway::link::flyway_live,
             flyway::link::flyway_forget,
             flyway::link::flyway_setup,
             flyway::link::flyway_set_accepting,

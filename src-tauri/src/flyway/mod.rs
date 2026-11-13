@@ -65,8 +65,8 @@
    provider table; the disk). Everything else below is the wiring — it reads
    the store, emits to the front end, or spawns. */
 pub use flyway_core::{
-    accounts, analytics, boards, cards, cast, directory, fleet, frame, look, moving, seal, session, steward, sync,
-    tail, wire,
+    accounts, analytics, boards, cards, cast, directory, fleet, frame, live, look, moving, seal, session, steward,
+    sync, tail, wire,
 };
 
 pub mod act;

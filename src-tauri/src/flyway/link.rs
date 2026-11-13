@@ -148,6 +148,9 @@ const BACKOFF_MAX_MS: i64 = 5 * 60_000;
 /// so a burst of changes is one push carrying the last of them.
 const CARDS_EVERY: Duration = Duration::from_secs(1);
 
+/// How often a wall with an analytics view open says its live beat (§20.1).
+const LIVE_EVERY: Duration = Duration::from_millis(flyway_core::live::BEAT_EVERY_MS as u64);
+
 /// How long a wall asked for a card's conversation waits for its own front end
 /// to make it. The asker's whole exchange is bounded at twenty seconds
 /// (`wire.rs`), dial included, so this has to be well inside that or the
@@ -240,6 +243,14 @@ pub struct Link {
     /// under an id minted here.
     stewards: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Value, String>>>>,
     cards_due: AtomicBool,
+    /// This wall's latest live beat, as its front end last noted it
+    /// (`flyway_note_live`), and whether a view is open here to want one
+    /// (§8.3, §20.1).
+    live: StdMutex<Option<super::live::LiveMsg>>,
+    wants_live: AtomicBool,
+    /// Every peer's latest beat, by host. Ephemeral by design: nothing here is
+    /// stored and nothing survives a reload.
+    peer_live: StdMutex<HashMap<String, super::live::LiveMsg>>,
     /// What every other wall's billboard says, and the version this wall's
     /// own is said under (`boards.rs`, `link/billboard.rs`).
     boards: StdMutex<Boards>,
@@ -434,6 +445,9 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         acts: StdMutex::new(HashMap::new()),
         stewards: StdMutex::new(HashMap::new()),
         cards_due: AtomicBool::new(false),
+        live: StdMutex::new(None),
+        wants_live: AtomicBool::new(false),
+        peer_live: StdMutex::new(HashMap::new()),
         boards: StdMutex::new(Boards::new(&me, board_v)),
         board_due: AtomicBool::new(false),
         afar_accounts: StdMutex::new(accounting::Afar::default()),
@@ -506,6 +520,17 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         tick_until_closed(&listing.tenure, super::directory::EVERY, || {
             let l = listing.clone();
             async move { l.consult_directory().await }
+        })
+        .await;
+    });
+    /* The live beat on a loop of its own (§20.1): two seconds, while an
+       analytics view is open here, and silent otherwise. Its own exchange
+       through `push`, so a beat can never queue in front of a prompt. */
+    let beating = link.clone();
+    tauri::async_runtime::spawn(async move {
+        tick_until_closed(&beating.tenure, LIVE_EVERY, || {
+            let l = beating.clone();
+            async move { l.beat_live() }
         })
         .await;
     });
@@ -904,7 +929,7 @@ impl Link {
                     l.left_for(&host);
                     l.take(back, Some(&host));
                 }
-                Err(e) => log::debug!("flyway: a push to {host} did not land (the tick will say it again): {e}"),
+                Err(e) => log::debug!("flyway: a push to {host} did not land: {e}"),
             }
         });
     }
@@ -955,6 +980,28 @@ impl Link {
                    store. An ask arriving here is answered by `answer`, never
                    taken. */
                 Frame::Analytics(m) => self.on_analytics(m, from),
+                /* The live beat (§8.3): a rate, kept only until the next one
+                   arrives. It is never stored, never retried and never asked
+                   for again, so a lost beat is a reading a couple of seconds
+                   older rather than a hole. */
+                Frame::Live(m) => {
+                    if let super::live::LiveMsg::Live { host, .. } = &m {
+                        let rows = if let Ok(mut l) = self.peer_live.lock() {
+                            l.insert(host.clone(), m.clone());
+                            let mut rows: Vec<super::live::LiveMsg> = l.values().cloned().collect();
+                            rows.sort_by_key(live_at);
+                            rows
+                        } else {
+                            Vec::new()
+                        };
+                        /* The whole set rather than the one that moved: a panel
+                           that has just opened is drawing from the same event,
+                           and a delta would make it keep state of its own. */
+                        if !rows.is_empty() {
+                            let _ = self.app.emit("flyway:live", &rows);
+                        }
+                    }
+                }
                 /* An unpost's answer is read by the exchange that asked
                    (`unpost_there`); an ask is only ever answered, never taken. */
                 Frame::Board(_) => {}
@@ -2771,6 +2818,23 @@ impl Link {
         Ok(())
     }
 
+    /// Say this wall's live beat to every peer (§8.3, §20.1).
+    ///
+    /// **Only while a view is open here**, which is the whole of what keeps an
+    /// idle flyway at zero traffic: the front end notes `wants` with the beat,
+    /// and a wall nobody is looking at says nothing. A beat is a rate rather
+    /// than a count, so one that does not land costs a reading a couple of
+    /// seconds old and never a hole somebody has to notice.
+    fn beat_live(self: &Arc<Self>) {
+        if !self.wants_live.load(Ordering::Acquire) || self.tenure.is_closed() {
+            return;
+        }
+        let Some(beat) = self.live.lock().ok().and_then(|l| l.clone()) else { return };
+        for host in self.known_current() {
+            self.push(host, vec![Frame::Live(beat.clone())]);
+        }
+    }
+
     /// Walls on the roster that speak the current language and are not quiet.
     fn known_current(&self) -> Vec<String> {
         let now = self.now();
@@ -3326,6 +3390,51 @@ pub fn flyway_note_rate(app: AppHandle, rate: Option<u64>, wants: bool) {
         if let Ok(mut r) = l.rate.lock() {
             *r = (rate, wants);
         }
+    }
+}
+
+/// This wall's live beat, and whether an analytics view is open here to want
+/// one (§8.3, §20.1).
+///
+/// **Noted, not asked for.** The front end already folds every request off the
+/// event stream, so Rust is told a rate rather than made to compute one; and a
+/// wall with no view open says `wants: false`, which is the whole of what keeps
+/// an idle flyway at zero traffic.
+#[tauri::command]
+pub fn flyway_note_live(
+    app: AppHandle,
+    tokens: f64,
+    usd: f64,
+    requests: f64,
+    cards: i64,
+    agents: i64,
+    wants: bool,
+) {
+    if let Some(l) = current(&app) {
+        let at = l.now();
+        if let Ok(mut live) = l.live.lock() {
+            *live = Some(super::live::beat(&l.me, at, tokens, usd, requests, cards, agents));
+        }
+        l.wants_live.store(wants, Ordering::Release);
+    }
+}
+
+/// Every peer's latest live beat, oldest reading first.
+///
+/// Read on open and then kept current by the `flyway:live` event, so a panel
+/// can draw the fleet the moment it opens and move with it after.
+#[tauri::command]
+pub fn flyway_live(app: AppHandle) -> Vec<super::live::LiveMsg> {
+    let Some(l) = current(&app) else { return Vec::new() };
+    let mut rows: Vec<super::live::LiveMsg> =
+        l.peer_live.lock().map(|m| m.values().cloned().collect()).unwrap_or_default();
+    rows.sort_by(|a, b| live_at(a).cmp(&live_at(b)));
+    rows
+}
+
+fn live_at(m: &super::live::LiveMsg) -> i64 {
+    match m {
+        super::live::LiveMsg::Live { at, .. } => *at,
     }
 }
 

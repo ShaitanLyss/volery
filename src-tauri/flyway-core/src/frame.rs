@@ -48,6 +48,7 @@ use super::analytics::AnalyticsMsg;
 use super::boards::BoardMsg;
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
+use super::live::LiveMsg;
 use super::look::LookMsg;
 use super::moving::MoveMsg;
 use super::seeing::SeeMsg;
@@ -96,6 +97,10 @@ pub enum Frame {
     /// with a wall that announces the word; an ask and its answer ride one
     /// exchange of their own and are never gossiped.
     Analytics(AnalyticsMsg),
+    /// A wall saying what it is spending right now (`live.rs`, §8.3, §20.1):
+    /// an exchange of its own every two seconds, while an analytics view is
+    /// open somewhere, abandoned rather than retried when it is slow.
+    Live(LiveMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -154,6 +159,7 @@ const KNOWN: &[&str] = &[
     "see", "seen",
     "steward", "stewarded", "confirm", "general",
     "analytics", "analytics_ask", "analytics_day",
+    "live",
 ];
 
 #[cfg(test)]
@@ -374,6 +380,7 @@ mod tests {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
         }
         written.extend(crate::analytics::TAGS.map(str::to_string));
+        written.extend(crate::live::TAGS.map(str::to_string));
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();

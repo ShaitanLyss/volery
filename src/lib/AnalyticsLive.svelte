@@ -18,10 +18,24 @@
    * fleet half is not connected rather than drawing one machine and calling it
    * the fleet.
    */
+  import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { clock } from "./conversation.svelte";
   import { live } from "./live.svelte";
   import { byHost, liveSaid, perMinute, stripOf, totalsIn } from "./live";
   import { money } from "./usage";
+
+  /** One wall's beat, as `flyway_live` and `flyway:live` carry it (§20.1). */
+  type Beat = {
+    msg: "live";
+    host: string;
+    at: number;
+    tokens: number;
+    usd: number;
+    requests: number;
+    cards: number;
+    agents: number;
+  };
 
   let {
     /** This wall's name, off the roster; empty until the flyway answers. */
@@ -30,6 +44,49 @@
 
   const MINUTE = 60_000;
   const WINDOW = 5 * MINUTE;
+  /** Three beats is a link that is not working; two lost in a row is a blip. */
+  const STALE_AFTER = 6_000;
+
+  /** Every other wall's last beat. Kept here rather than in the collector
+   *  because it is not a sample this wall took: it is what another machine said
+   *  about itself, and it is never folded into this wall's own rate. */
+  let peers = $state<Beat[]>([]);
+  let unlisten: UnlistenFn | null = null;
+
+  /* **Only while this panel is up.** The beat is what wakes the other machines,
+     so a wall with nobody looking must stop saying it: the note carries
+     `wants`, and the teardown says false. */
+  $effect(() => {
+    let gone = false;
+    void (async () => {
+      try {
+        const rows = await invoke<Beat[]>("flyway_live");
+        if (!gone) peers = rows;
+        const off = await listen<Beat[]>("flyway:live", (e) => {
+          if (!gone) peers = e.payload ?? [];
+        });
+        if (gone) off();
+        else unlisten = off;
+      } catch {
+        /* No wall behind this page (the browser preview), or the link is down:
+           the local half still draws, and the fleet half says it has heard
+           nothing rather than drawing one machine as the fleet. */
+      }
+    })();
+    return () => {
+      gone = true;
+      unlisten?.();
+      unlisten = null;
+      void invoke("flyway_note_live", {
+        tokens: 0,
+        usd: 0,
+        requests: 0,
+        cards: 0,
+        agents: 0,
+        wants: false,
+      }).catch(() => {});
+    };
+  });
 
   const now = $derived(Math.floor(clock.t / 1000) * 1000);
   const from = $derived(now - WINDOW);
@@ -47,8 +104,40 @@
   const rate1 = $derived(
     perMinute(totalsIn(live.samples, now - MINUTE, now), now - MINUTE, now),
   );
+
+  /* **This wall's own beat, noted while the panel is up.** It is a rate rather
+     than a count, so a beat that never lands costs a reading and not a fact,
+     and a peer that misses one sees a two-second-old line instead of a hole.
+     An effect on the wall's second is exactly one note a second. */
+  $effect(() => {
+    void now;
+    void live.version;
+    const totals = totalsIn(live.samples, now - MINUTE, now);
+    void invoke("flyway_note_live", {
+      tokens: totals.tokens,
+      usd: totals.usd,
+      requests: totals.requests,
+      cards: 0,
+      agents: 0,
+      wants: true,
+    }).catch(() => {});
+  });
+
   const bars = $derived(stripOf(live.samples, from, now, 60));
   const top = $derived(Math.max(1, ...bars));
+
+  /** The fleet lines, aged. **A beat's age is drawn and never interpolated**:
+   *  two points two seconds apart and two thirty seconds apart joined by the
+   *  same line are the same lie at different resolutions, so a stale wall keeps
+   *  its last reading and says how old it is. */
+  const fleetRows = $derived(
+    peers
+      .map((p) => ({ ...p, age: Math.max(0, now - p.at) }))
+      .sort((a, b) => b.tokens - a.tokens || a.host.localeCompare(b.host)),
+  );
+  const fleetTotal = $derived(
+    fleetRows.reduce((a, p) => a + (p.age <= STALE_AFTER ? p.tokens : 0), 0),
+  );
 </script>
 
 <section class="al" aria-label="usage arriving now">
@@ -67,10 +156,12 @@
       <span class="al-dim">at this rate</span>
     </span>
     <span class="al-fleet">
-      {#if rows.length === 0}
-        nothing is arriving
+      {#if fleetRows.length === 0}
+        {rows.length === 0 ? "nothing is arriving" : "no other wall heard"}
       {:else}
-        {rows.length === 1 ? "one machine" : `${rows.length} machines`}
+        fleet {liveSaid(fleetTotal)}{#if fleetRows.some((p) => p.age > STALE_AFTER)}
+          <span class="al-stale">some lines are old</span>
+        {/if}
       {/if}
     </span>
   </header>
@@ -81,13 +172,24 @@
     {/each}
   </div>
 
-  {#if rows.length > 0}
+  {#if rows.length > 0 || fleetRows.length > 0}
     <ul class="al-rows">
       {#each rows as row (row.host)}
         <li>
           <span class="al-name">{row.label}</span>
           <span class="al-num">{liveSaid((row.totals.tokens / WINDOW) * MINUTE)}</span>
           <span class="al-dim">{row.totals.usd > 0 ? money(row.totals.usd) : "unpriced"} over five</span>
+        </li>
+      {/each}
+      {#each fleetRows as row (row.host)}
+        <li class:stale={row.age > STALE_AFTER}>
+          <span class="al-name">{row.host}</span>
+          <span class="al-num">{liveSaid(row.tokens)}</span>
+          <span class="al-dim">
+            {row.usd > 0 ? money(row.usd) : "unpriced"}/min
+            {#if row.cards > 0}· {row.cards} card{row.cards === 1 ? "" : "s"}{/if}
+            {#if row.age > STALE_AFTER}· {Math.round(row.age / 1000)}s old{/if}
+          </span>
         </li>
       {/each}
     </ul>
@@ -162,5 +264,13 @@
   }
   .al-num {
     font-variant-numeric: tabular-nums;
+  }
+  .al-rows li.stale .al-name,
+  .al-rows li.stale .al-num {
+    color: var(--paper-faint);
+  }
+  .al-stale {
+    margin-left: 6px;
+    color: var(--paper-faint);
   }
 </style>

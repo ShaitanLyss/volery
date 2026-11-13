@@ -1848,6 +1848,24 @@ missed frame is a small gap and not an invented line. **With no analytics view o
 do not exist**, and the roster is the whole cost; the "no requests at all" claim was true of
 the first draft and is not true of the decided cadence.
 
+**As built (2026-11-13), and it is the two-second frame rather than `Now` in the roster.**
+`flyway_core::live` carries one frame, `live`, with a host, a timestamp, tokens, dollars and
+requests **per minute**, and the card and agent counts. `link.rs` beats it every
+`BEAT_EVERY_MS` (two seconds) through `push`, which is the existing fire-and-forget exchange,
+so a beat can never queue in front of a prompt and is abandoned rather than retried when it is
+slow. The front end notes its own beat with `flyway_note_live` once a second while the panel is
+up, and says `wants: false` on teardown, which is the whole of what keeps an idle flyway at
+zero traffic. Peers' beats are kept in memory only, exposed by `flyway_live` on open and by the
+`flyway:live` event after, and a wall whose beat is older than three beats is drawn faint with
+its age rather than dropped.
+
+**A rate, not a count.** What crosses is tokens and dollars per minute over the sender's own
+last minute, so a beat lost on the way costs a reading two seconds old and never leaves a hole
+that has to be reconciled. And the local half does not wait for the flyway at all: every
+request this wall's cards make is folded off the event stream, priced, and drawn as a
+five-minute strip with a per-minute and a per-five rate. The fleet lines are that reading, two
+seconds behind, per machine.
+
 ### 8.4 Fine history on demand
 
 The synced grain is hourly. A view that wants 5-minute resolution for a day on another machine
