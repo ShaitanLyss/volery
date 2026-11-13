@@ -98,6 +98,15 @@ export type Held = {
   why: string;
   until: number | null;
   waiting: "allowance" | "turn" | "admission";
+  /** Set where the wait is a plan's pace rather than a window being full
+   *  (`pace.ts` §14). Nothing is persisted for it: it is a consequence of the
+   *  reason, and the first release pass after a restart re-holds with it.
+   *
+   *  It exists for one reader — `Skein.#releasePass` — because a pace is
+   *  computed from the readings already in hand and has no account to find room
+   *  on, so a wall holding only paced work owes the allowance endpoint no
+   *  network read at all. */
+  paced?: boolean;
 };
 
 /** How a queued spawn's `why` begins — Rust writes it (`admit::verdict`). It is

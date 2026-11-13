@@ -27,6 +27,7 @@ import Tooltip from "./lib/Tooltip.svelte";
 import { waterfall } from "./lib/waterfall.svelte";
 import { ownShare } from "./lib/ownshare.svelte";
 import type { AllowanceCost, AllowanceSample } from "./lib/allowancesamples";
+import { standWorth } from "./lib/worthread.svelte";
 
 const NOW = Date.UTC(2026, 10, 13, 3, 0, 0);
 const MIN = 60_000;
@@ -100,6 +101,39 @@ const costs: AllowanceCost[] = [0, 10, 20].map((step) => ({
 }));
 
 ownShare.settle(samples, costs);
+
+/* **How fast the five-hour windows fill (§14.6), made up.** A window every five
+   hours for a week, the last day's filling in half the time of the ones before
+   it, so the line, the sparkline and the "filling faster" warning can all be
+   looked at. The reading is what the panel folds from `allowance_samples`, which
+   the preview has no store to answer, so it is stood in like the registry. */
+const winSamples: AllowanceSample[] = [];
+for (let i = 34; i >= 1; i--) {
+  const resetsAt = NOW - i * 5 * HOUR + 2 * HOUR;
+  const opened = resetsAt - 5 * HOUR;
+  const hours = i <= 5 ? 1.2 : 2.3;
+  for (const [frac, used] of [[0.3, 30], [0.7, 70], [1, 100]] as const) {
+    winSamples.push({
+      at: opened + frac * hours * HOUR,
+      host: "studio",
+      account: "lyss",
+      kind: "session",
+      scope: "",
+      used,
+      resetsAt,
+      severity: "normal",
+      plan: "max",
+      source: "poll",
+    });
+  }
+}
+standWorth({
+  since: NOW - 28 * 24 * HOUR,
+  until: NOW,
+  samples: winSamples,
+  window: null,
+  fault: "the preview has no hourly facts",
+});
 
 mount(Accounts, {
   target: document.getElementById("app")!,

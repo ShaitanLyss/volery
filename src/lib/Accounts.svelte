@@ -51,6 +51,20 @@
   import AccountWorth from "./AccountWorth.svelte";
   import { binsOf, readingOf, type WindowReading } from "./equivalence";
   import { readWorth, WORTH_DAYS, type WorthRead } from "./worthread.svelte";
+  import { instancesOf } from "./allowancesamples";
+  import {
+    fillSaidLine,
+    fillShort,
+    fillsOf,
+    fillTrend,
+    fillTrends,
+    fillWarning,
+    trendSaid,
+    trendable,
+    type Fill,
+    type FillTrend,
+  } from "./fill";
+  import { sparkPoints } from "./analyticsroom";
   import { tipOf } from "./tipped.svelte";
 
   /* `me` is this wall's flyway name and `flying` whether it flies with any
@@ -145,9 +159,27 @@
     return out;
   });
 
-  const listeners = new Listeners();
-
   const now = $derived(Date.now());
+
+  /** How fast each five-hour window filled (§14.6), folded from the same read
+   *  as the worth rows — no second query, and no clock: it is rebuilt when
+   *  that read or the registry changes. */
+  const fills = $derived.by(() => fillsOf(instancesOf(worth?.samples ?? []), now));
+  const fillBy = $derived.by(() => {
+    const out = new Map<string, Fill[]>();
+    for (const f of fills) out.set(f.account, [...(out.get(f.account) ?? []), f]);
+    return out;
+  });
+  const trends = $derived(fillTrends(fills, waterfall.list.map((a) => a.label), now));
+  /** The accounts whose window is filling materially faster than the week
+   *  before. A reading, not an alarm: the sentence names both causes. */
+  const fillingFaster = $derived(
+    waterfall.list
+      .map((a) => ({ account: a.label, said: fillWarning(a.label, trends.get(a.label) ?? fillTrend([], now)) }))
+      .filter((w): w is { account: string; said: string } => w.said !== null),
+  );
+
+  const listeners = new Listeners();
 
   function say(word: string) {
     note = word;
@@ -616,6 +648,24 @@
       that.
     </p>
 
+    <!-- **A rate that changed, said where the windows are.** This is the one
+         reading on the page that is about a trend rather than a level, and the
+         house voice keeps it to a sentence: which account, what it was, what it
+         is, and the two things that could have caused it. It cannot tell a
+         smaller allowance from heavier work, and says so instead of picking. -->
+    {#if fillingFaster.length > 0}
+      <p
+        class="fillwarn"
+        {@attach tipOf("the five-hour window is being used up faster than it was. this reading cannot tell a smaller allowance from heavier work; it can only say the rate changed, which is when either is worth a look.")}
+      >
+        <span class="fillwarnmark">filling faster</span>
+        <span>{fillingFaster[0]!.said}</span>
+        {#if fillingFaster.length > 1}
+          <span class="dim">· and {fillingFaster.length - 1} more account{fillingFaster.length > 2 ? "s" : ""}</span>
+        {/if}
+      </p>
+    {/if}
+
     <!-- ── the machine ───────────────────────────────────────────────── -->
     <div class="cli" class:bad={waterfall.claude?.state === "missing"}>
       {#if !waterfall.claude}
@@ -812,6 +862,39 @@
                       <span class="dim">no windows read yet</span>
                     {/each}
                   </div>
+
+                  <!-- **How fast the five-hour window is being used up
+                       (§14.6).** A different sentence from the ceiling above it:
+                       the ceiling says how full the window is, this says how
+                       long a whole one takes. A window that never fills inside
+                       its own five hours reads past five, which is the honest
+                       answer to "do I even complete a window". -->
+                  {@const mine = fillBy.get(account.label) ?? []}
+                  {#if mine.length > 0}
+                    {@const latest = mine[mine.length - 1]!}
+                    {@const trend = trends.get(account.label) ?? null}
+                    {@const spark = mine.filter(trendable).slice(-24).map((f) => f.hours!)}
+                    <p
+                      class="fill"
+                      class:fast={trend?.verdict === "faster"}
+                      {@attach tipOf(
+                        () =>
+                          `how long this account's 5-hour window takes to be used up at the rate it is going. a window that does not fill inside its own five hours reads past 5h, which is what it means for one not to be completed.` +
+                          (trend ? " " + (trendSaid(trend) ?? "") : ""),
+                      )}
+                    >
+                      <span class="fillname">5-hour window</span>
+                      <span class="fillwhen">{fillSaidLine(latest)}</span>
+                      {#if trend && fillShort(trend)}
+                        <span class="dim">· {fillShort(trend)}</span>
+                      {/if}
+                      {#if spark.length > 1}
+                        <svg class="fillspark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true">
+                          <polyline points={sparkPoints(spark)} vector-effect="non-scaling-stroke" />
+                        </svg>
+                      {/if}
+                    </p>
+                  {/if}
 
                   <!-- **Pacing (§14).** A cap is a wall; a plan is a gradient:
                        it holds the *next* turn once the week is going to run
@@ -1487,6 +1570,57 @@
      above it: it is a different kind of statement (what the window is worth,
      not what is left of it) and a hairline is the whole of what this wall uses
      to say so. */
+  /* How fast the five-hour window fills. Indented with the ceilings and the
+     plan because it is a reading of the same window, and in the util face
+     because it is an instrument rather than prose. The one hue on it is the
+     duration, and only where the trend is faster: that is status, and a line
+     that colours a steady reading teaches nobody to look. */
+  .fill {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.2rem 0.45rem;
+    margin: 0.35rem 0 0;
+    padding-left: 1.5ch;
+    font-family: var(--util);
+    font-size: 0.7rem;
+    color: var(--paper-mute);
+  }
+  .fillname {
+    color: var(--paper-dim);
+  }
+  .fill.fast .fillwhen {
+    color: var(--st-ask);
+  }
+  .fillspark {
+    width: 7ch;
+    height: 1.25em;
+    overflow: visible;
+    align-self: center;
+  }
+  .fillspark polyline {
+    fill: none;
+    stroke: var(--paper-faint);
+    stroke-width: 1.2;
+  }
+  /* The one line about a trend rather than a level. Amber, because it is a
+     reading that wants a look rather than a fault, and because the wall's
+     colour is status everywhere else too. */
+  .fillwarn {
+    margin: 0;
+    padding: 0.3rem 0.5rem;
+    border-left: 2px solid var(--st-ask);
+    background: color-mix(in srgb, var(--st-ask) 8%, transparent);
+    font-family: var(--util);
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: var(--paper-mute);
+  }
+  .fillwarnmark {
+    margin-right: 0.5ch;
+    color: var(--st-ask);
+  }
+
   .worths {
     margin: 0.5rem 0 0 1.5ch;
     padding-top: 0.4rem;

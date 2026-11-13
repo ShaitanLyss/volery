@@ -4,6 +4,7 @@ import {
   holdsNew,
   NO_PLAN,
   paceFor,
+  paceHold,
   paceSaid,
   paceTier,
   planOf,
@@ -148,6 +149,24 @@ describe("the reading, and what it asks the wall to do", () => {
     const got = paceFor({ plan: NO_PLAN, window: { from: FROM, reset: RESET }, used: 95, rate: 1, now: midWeek });
     expect(got.over).toBe(true);
     expect(holdsNew(NO_PLAN, got)).toBe(false);
+  });
+});
+
+describe("the hold a plan puts on new work", () => {
+  const plan = { ...NO_PLAN, on: true };
+  const midWeek = at(3.5);
+  const reading = (used: number, rate: number | null = null) =>
+    paceFor({ plan, window: { from: FROM, reset: RESET }, used, rate, now: midWeek });
+
+  test("is the plan's sentence and the week's reset, when the plan is holding", () => {
+    const hold = paceHold(plan, reading(99, 0.004 / DAY), RESET);
+    expect(hold?.why).toContain("paced:");
+    expect(hold?.until).toBe(RESET);
+  });
+
+  test("is nothing at all when the plan is off or the week has room", () => {
+    expect(paceHold(NO_PLAN, reading(99, 0.004 / DAY), RESET)).toBeNull();
+    expect(paceHold(plan, reading(20, 0), RESET)).toBeNull();
   });
 });
 

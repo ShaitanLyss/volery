@@ -989,11 +989,6 @@ export class Conversation {
     this.working || this.busy ? [] : pending([...this.wakes, ...this.subscriptions, ...sessionWakes(this.timers)], this.turnEndedAt),
   );
 
-  /** The wake this card is waiting on, if it is — from either clock, read the
-   *  same way. Null while it is working or running background work: what it has
-   *  armed for later is not what it is doing now. See `waiting.ts`. */
-  waiting = $derived(readWaiting(this.pendingWakes, clock.t, wallHold.now));
-
   /** A job reported in, and no turn followed.
    *
    *  The sentence above says the agent "will be woken by the notification", and
@@ -1370,6 +1365,18 @@ export class Conversation {
    *  still allowed, rather than moving back the moment a better-ranked one
    *  frees up and paying the uncached re-read twice. */
   accountLabel = $state<string | null>(null);
+
+  /** The wake this card is waiting on, if it is — from either clock, read the
+   *  same way. Null while it is working or running background work: what it has
+   *  armed for later is not what it is doing now. See `waiting.ts`.
+   *
+   *  Declared below `accountLabel` rather than beside `pendingWakes` because a
+   *  plan's hold is applied to the account the card is on, and a field read
+   *  above its own declaration is a class-initialisation error rather than a
+   *  lazy read. */
+  waiting = $derived(
+    readWaiting(this.pendingWakes, clock.t, wallHold.now, this.accountLabel ?? null),
+  );
 
   /** While `accountLabel` is `@credits`: the account the card left, which it
    *  goes back to when that has room (`credits.ts::route`). Null otherwise, and

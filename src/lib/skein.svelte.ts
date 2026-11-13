@@ -2157,7 +2157,15 @@ export class Skein {
    *  admitting it — the window reset, another account free, or nothing else
    *  working. */
   #queueSpawn(conv: Conversation, prompt: string, queued: Queued) {
-    const item = this.#hold(conv, prompt, undefined, queued.why, queued.until, true);
+    const item = this.#hold(
+      conv,
+      prompt,
+      undefined,
+      queued.why,
+      queued.until,
+      true,
+      queued.reason === "pace",
+    );
     conv.held = { ...conv.held!, waiting: "admission" };
     /* `own`: a queued spawn's words are the brief an agent wrote, not the
        person's — the same claim the store row makes (`origin: "skein"`), so the
@@ -4044,6 +4052,21 @@ export class Skein {
     const choice = await this.#asked(() => this.#decide(conv), conv.accountLabel);
 
     if (choice.kind === "use") {
+      /* **The plan's hold, and it is not a blocker.** A pace says the account
+         it would spend is being spent too fast (§14), which is a reason to hold
+         this prompt that is not a window being full: it clears on the wall's
+         own tick, and a bypass ignores it exactly as it ignores a cap. Applied
+         here rather than in `choose`, because a pace that moved work onto
+         another account would be spending the reserve to keep to the plan.
+         Never a turn in flight: this runs before a send, not during one. */
+      const paced = conv.bypassCaps ? null : waterfall.holdOf(choice.label);
+      if (paced) {
+        const item =
+          text !== null ? this.#hold(conv, text, turn, paced.why, paced.until, own, true) : null;
+        if (text === null) conv.activity = paced.why;
+        conv.echoHeld(item, conv.held?.why ?? paced.why);
+        return false;
+      }
       if (choice.label !== conv.accountLabel) await this.#shift(conv, choice);
       return true;
     }
@@ -4479,6 +4502,7 @@ export class Skein {
     why: string,
     until: number | null,
     own: boolean,
+    paced = false,
   ): HeldItem {
     const item = this.#heldItem(conv, text, turn, own);
     conv.held = {
@@ -4486,6 +4510,7 @@ export class Skein {
       why,
       until,
       waiting: "allowance",
+      ...(paced ? { paced: true as const } : {}),
     };
     conv.activity = why;
     /* Written here, at the edge where the hold begins, rather than at shutdown.
@@ -4603,9 +4628,10 @@ export class Skein {
   /** Still held, for a new reason or a new time: the queue stays exactly as it
    *  is, and the timer is aimed again. A held card whose countdown had stopped
    *  would read as one that had been forgotten. */
-  #reHold(conv: Conversation, why: string, until: number | null) {
+  #reHold(conv: Conversation, why: string, until: number | null, paced = false) {
     if (!conv.held) return;
-    conv.held = { ...conv.held, why, until, waiting: "allowance" };
+    const { paced: _was, ...rest } = conv.held;
+    conv.held = { ...rest, why, until, waiting: "allowance", ...(paced ? { paced: true as const } : {}) };
     conv.activity = why;
     this.#writeHold(conv);
     this.#aimHold(conv, until);
@@ -4685,8 +4711,12 @@ export class Skein {
     /* A fresh reading before deciding. The whole reason a card is held is that
        an allowance was full, and releasing against a three-minute-old figure is
        how a card gets woken in order to be refused. Rust's floor makes this
-       cheap when it has just been asked. */
-    await waterfall.poll();
+       cheap when it has just been asked.
+       **Except for a pace**, which is computed from the readings already in
+       hand and has no window to find room on — a plan that spans days would
+       otherwise ask the allowance endpoint once a minute for days, against a
+       cadence `usage.md` sets at three and a server that answers `429`. */
+    if (this.convs.some((c) => c.held && !c.held.paced)) await waterfall.poll();
     /* And Rust told what that reading admits, before a queued spawn asks it. */
     await this.#noteAllowance(true);
     let sent = this.#releasedRounds;
@@ -4754,13 +4784,42 @@ export class Skein {
       {
         bypass: decide(null, true),
         asked: waterfall.list.map((a) => ({ account: a.label, decision: decide(a.label) })),
+        /* The plans, read whole rather than through a decision: a pace belongs
+           to the account it is stored with. Rust holds a spawn on the account
+           it would land on and a wake on the account its card is on, which is
+           the same split `wallHold` makes for the face. */
+        plans: waterfall.paced(),
       },
     );
     if (!force && this.#notedManaging === true && sameFacts(this.#noted, facts)) return;
     this.#noted = facts;
-    /* The same fact for the faces: a wake the wall is holding is not late. */
-    const hold = facts.held ? { until: facts.until } : null;
-    if (hold?.until !== wallHold.now?.until || !hold !== !wallHold.now) wallHold.now = hold;
+    /* The same fact for the faces: a wake the wall is holding is not late. A
+       pace is carried per account, because `admit::held_for` weighs a wake on
+       the account its card is on, not on the wall's landing account. */
+    const hold = facts.held
+      ? { spent: true, until: facts.until, paced: [], landing: facts.landing }
+      : facts.plans.length
+        ? {
+            spent: false,
+            until: null,
+            paced: facts.plans.map((p) => ({ account: p.account, until: p.until })),
+            landing: facts.landing,
+          }
+        : null;
+    const samePace = (hold?.paced ?? [])
+      .map((p) => `${p.account}:${p.until ?? ""}`)
+      .join("|") === (wallHold.now?.paced ?? [])
+      .map((p) => `${p.account}:${p.until ?? ""}`)
+      .join("|");
+    if (
+      hold?.until !== wallHold.now?.until ||
+      !hold?.spent !== !wallHold.now?.spent ||
+      (hold?.landing ?? null) !== (wallHold.now?.landing ?? null) ||
+      !samePace ||
+      !hold !== !wallHold.now
+    ) {
+      wallHold.now = hold;
+    }
     this.#notedManaging = true;
     await invoke("note_allowance", {
       held: facts.held,
@@ -4771,6 +4830,11 @@ export class Skein {
       spent: facts.spent,
       resetsAt: facts.resetsAt,
       asked: facts.asked,
+      /* The whole key set of `AllowanceFacts`, and `plans` is the one that
+         proved why: Tauri drops an argument the command does not name, so a
+         missing key here is not an error but `None` in Rust — the gate stayed
+         up on the face and inert in the process (found in review). */
+      plans: facts.plans,
     }).catch(() => {});
   }
 
@@ -4837,13 +4901,25 @@ export class Skein {
          re-deriving it from a summary made for a card with no bypass. With no
          accounts managed there is nothing to hand, and Rust reads nothing. */
       const facet = this.#managing ? facetOf(this.#decide(conv), (label) => this.#looked(label)) : null;
-      const still = await invoke<Queued | null>("admit_now", { id: conv.id, facet }).catch(() =>
-        conv.held?.waiting === "admission" ? { why: conv.held.why, until: conv.held.until } : null,
+      const still = await invoke<Queued | null>("admit_now", { id: conv.id, facet }).catch((): Queued | null =>
+        conv.held?.waiting === "admission"
+          ? {
+              why: conv.held.why,
+              until: conv.held.until,
+              ...(conv.held.paced ? { reason: "pace" as const } : {}),
+            }
+          : null,
       );
       if (!conv.held || conv.held.waiting !== "admission") return;
       if (still) {
-        if (still.why !== conv.held.why || still.until !== conv.held.until) {
-          conv.held = { ...conv.held, why: still.why, until: still.until };
+        const paced = still.reason === "pace";
+        if (still.why !== conv.held.why || still.until !== conv.held.until || paced !== !!conv.held.paced) {
+          conv.held = {
+            ...conv.held,
+            why: still.why,
+            until: still.until,
+            paced: paced || undefined,
+          };
           conv.activity = still.why;
           this.#writeHold(conv);
           this.#aimHold(conv, still.until);
@@ -4865,6 +4941,18 @@ export class Skein {
       if (choice.kind === "none") {
         if (conv.held.why !== NO_ACCOUNT_HELD) this.#reHold(conv, NO_ACCOUNT_HELD, null);
         return;
+      }
+      /* A plan holding the account this round would spend (`pace.ts` §14).
+         Checked here, before the round is lifted out of the queue, so the
+         sentence it was waiting under is the one it keeps — the same reason the
+         two arms above are here. `#settleAccount` asks it again further down
+         for a send that never went through this path. */
+      if (choice.kind === "use" && !conv.bypassCaps) {
+        const paced = waterfall.holdOf(choice.label);
+        if (paced) {
+          this.#reHold(conv, paced.why, paced.until, true);
+          return;
+        }
       }
     }
     const { round } = nextRound(conv.held.queue);
@@ -4941,11 +5029,22 @@ export class Skein {
       if (!settled) {
         this.#inFlight.delete(conv.id);
         const now = conv.held?.queue ?? [];
+        /* **The reason, re-read after the decision that refused it.** A
+           `#settleAccount` that has to ask the waterfall (`#asked`) can take a
+           fresh reading, so the pace this round met may have begun in the
+           await, after the cheap check above said there was none. Recomputed
+           here — a local read of the same ring — so the card keeps the plan's
+           sentence rather than the generic allowance one, and `paced` stays set
+           so the next release pass does not poll the endpoint for a plan. */
+        const fresh = this.#managing && !onProvider(conv.accountLabel) ? this.#decide(conv) : null;
+        const pace =
+          fresh?.kind === "use" && !conv.bypassCaps ? waterfall.holdOf(fresh.label) : null;
         conv.held = {
           queue: [...whole.map((p) => p.item), ...now],
-          why: conv.held?.waiting === "allowance" ? conv.held.why : HOLD_LINE,
-          until: conv.held?.waiting === "allowance" ? conv.held.until : null,
+          why: pace?.why ?? (conv.held?.waiting === "allowance" ? conv.held.why : HOLD_LINE),
+          until: pace?.until ?? (conv.held?.waiting === "allowance" ? conv.held.until : null),
           waiting: "allowance",
+          ...(pace ? { paced: true as const } : {}),
         };
         this.#writeHold(conv);
         return;

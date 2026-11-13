@@ -315,8 +315,10 @@ anyway. The woken turn never reached a model, and the card got the confusing "at
 the turn before never reached a model" note in exchange for its wake. So `serve_due` asks
 `admit::held_for` first, per wake. While the wall says no account, and no credits with boost
 on, would take a turn, **that wake is not taken**: the row stays due, and the first tick after
-the wall has room serves it. Per wake, because a card bypassing your caps is held only by the
-server's ceiling (`heldBypass`, the same decision made with the caps ignored). That is `turns.md`'s rule for the nudge ("a deferred nudge is put back, not
+the wall has room serves it. The same is true of a card whose own account's plan is holding new
+work (`admit::held_at`'s pace arm). Per wake, because a card bypassing your caps is held only by
+the server's ceiling (`heldBypass`, the same decision made with the caps ignored), and ignores
+the pace for the same reason. That is `turns.md`'s rule for the nudge ("a deferred nudge is put back, not
 dropped") carried to the prompt Rust writes on its own initiative. The DELETE is still the
 claim, so nothing about once-only changed.
 
@@ -327,7 +329,10 @@ claim, so nothing about once-only changed.
 - **The face says it.** `waiting.ts::readWaiting` takes the wall's hold (`wallhold.svelte.ts`).
   A due wake from the wall's own table reads `waiting — its wake is held for allowance until
   15:40` instead of `should have woken at … · 4m ago`, and is never `late`, so the card stays
-  grey rather than warming to amber over a wait that is the wall's doing. The CLI's own
+  grey rather than warming to amber over a wait that is the wall's doing. **A plan's hold is
+  weighed per account** (`accounts.md`, *A plan's pace*), so the same line reads `held by the
+  plan until …` for a card on a paced account, and a card with no account of its own is
+  weighed where the wall would land a new one, the fallback `held_at` makes. The CLI's own
   schedules (`CronCreate`, `ScheduleWakeup`) are not held. They fire inside the process
   whatever the wall thinks, so they can still be late.
 - **Paced on release.** A tick still serves every wake that came due during the hold — one turn

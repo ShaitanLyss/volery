@@ -129,6 +129,25 @@ describe("what one decision for a new card amounts to", () => {
     expect(sameFacts(asked, { ...asked, asked: [{ ...asked.asked[0]!, spent: 0.9 }] })).toBe(false);
     expect(sameFacts(asked, { ...asked, heldBypass: true })).toBe(false);
   });
+
+  /** A pace is noted by which accounts and until when. The sentence carries a
+   *  percentage that moves every few minutes, and rewriting the note because a
+   *  numeral moved is a write that changes nothing the wall will do. */
+  test("a pace is a change of account or of time, not of sentence", () => {
+    const base = { ...NOTHING_KNOWN, plans: [{ account: "x", why: "paced: at 71%", until: 9 }] };
+    expect(sameFacts(NOTHING_KNOWN, base)).toBe(false);
+    expect(sameFacts(base, { ...base, plans: [{ account: "x", why: "paced: at 72%", until: 9 }] })).toBe(true);
+    expect(sameFacts(base, { ...base, plans: [{ account: "x", why: "paced: at 71%", until: 10 }] })).toBe(false);
+    expect(sameFacts(base, { ...base, plans: [{ account: "y", why: "paced: at 71%", until: 9 }] })).toBe(false);
+    expect(sameFacts(base, { ...base, plans: [] })).toBe(false);
+  });
+
+  test("the plans the wall is holding are carried as told", () => {
+    const f = allowanceFacts({ kind: "use", label: "tx-team", home: null, why: "ladder" }, lookup, {
+      plans: [{ account: "tx-team", why: "paced: the week is at 71%", until: 9_000 }],
+    });
+    expect(f.plans).toEqual([{ account: "tx-team", why: "paced: the week is at 71%", until: 9_000 }]);
+  });
 });
 
 describe("a queued spawn is known again after a restart", () => {
@@ -142,6 +161,35 @@ describe("a queued spawn is known again after a restart", () => {
     expect(rust).toContain(`"${QUEUED_SPAWN}`);
     expect(isQueuedSpawn("held — every account is spent")).toBe(false);
     expect(isQueuedSpawn(null)).toBe(false);
+  });
+
+  /** **Tauri drops an argument the command does not name**, so a fact left out
+   *  of this payload is not an error anywhere: it is `None` in Rust, and the
+   *  gate goes inert while the face still draws it. `plans` shipped that way
+   *  for an afternoon and only a review caught it. */
+  test("every fact is in the note", () => {
+    const ts = readFileSync(new URL("../src/lib/skein.svelte.ts", import.meta.url), "utf8");
+    const at = ts.indexOf('invoke("note_allowance"');
+    const end = ts.indexOf("}).catch", at);
+    /* A slice to a terminator that is not there runs to the end of the file,
+       where `held:` and `until:` recur in later code and the guard would pass
+       with the payload missing them (found in review). */
+    expect(at).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(at);
+    const call = ts.slice(at, end);
+    for (const key of [
+      "held",
+      "until",
+      "heldBypass",
+      "untilBypass",
+      "landing",
+      "spent",
+      "resetsAt",
+      "asked",
+      "plans",
+    ]) {
+      expect(call).toContain(`${key}:`);
+    }
   });
 
   /** The threshold is Lyss's (2026-11-02), in one place. */

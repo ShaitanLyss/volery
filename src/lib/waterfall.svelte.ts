@@ -27,7 +27,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { samplesOf, type AllowanceSample } from "./allowancesamples";
 import { ownShare } from "./ownshare.svelte";
-import type { Plan } from "./pace";
+import { paceFor, paceHold, planOf, rateOver, type PaceHold, type Plan } from "./pace";
 import {
   type AfarSeat,
   choose,
@@ -46,7 +46,7 @@ import {
   type Refusal,
   type Standing,
 } from "./accounts";
-import type { Report } from "./limits";
+import type { Report, Window } from "./limits";
 import { purse } from "./purse.svelte";
 
 /** Three minutes, the same reasoning `ledger.svelte.ts` sets out at length: a
@@ -78,6 +78,46 @@ const EVERY = 180_000;
  *  well would be two clocks disagreeing about one, which is the trap
  *  `Ledger.#askAllowance` names. */
 const SOON = 65_000;
+
+/* ── pacing (§14) ─────────────────────────────────────────────────────────
+ *
+ * The reading a plan is set against is the weekly window's own percentage, and
+ * the rate behind "will the week run out" is measured over the last few hours
+ * of it. `pace.ts` has the arithmetic; this is only where its inputs live.
+ */
+
+/** How far back the projection's rate is measured. **Six hours, and it is a
+ *  judgement rather than a fact.** Long enough that one burst does not decide
+ *  a week's projection, short enough that the figure is today's rate rather
+ *  than last week's: a quiet Monday morning after a heavy Sunday should not
+ *  project a week that runs out, and six hours is past both. */
+const RECENT_MS = 6 * 3_600_000;
+
+/** A week, for the plan's line. The endpoint's weekly window resets seven days
+ *  after it opens, so the reset the reading carries is enough to place `from`. */
+const WEEK_MS = 7 * 24 * 3_600_000;
+
+/** How many readings one account's week is kept at. At the three-minute poll
+ *  that is a day and a half, and the observer's stream events can be denser;
+ *  `RECENT_MS` is what the rate actually reads, so this is only a bound. */
+const WEEK_POINTS = 512;
+
+/** The window a plan is measured against: the account's whole week, not a
+ *  model-scoped one. A plan is a decision about the subscription's allowance,
+ *  and a scoped week (the Opus lane full, the Haiku lane empty) is a window
+ *  inside it rather than the budget itself — so where an account has only
+ *  scoped weeks there is no budget to pace, and the reading says nothing rather
+ *  than pacing the whole subscription to one model's lane. */
+function weekOf(allowance: Allowance | undefined): Window | null {
+  if (!allowance?.ok) return null;
+  return allowance.windows.find((w) => w.group === "weekly" && !w.scope) ?? null;
+}
+
+/** One reading of an account's week: when it was taken, what it read, and the
+ *  reset it belongs to. The reset is what closes a series, so a roll is exact
+ *  rather than inferred from a fall — the wire reports lower figures inside one
+ *  window (see `allowancesamples.ts`). */
+type WeekPoint = { at: number; used: number; reset: number };
 
 /** What `find_claude` answers. Mirrors `claude.rs::Presence`. */
 export type Presence =
@@ -119,6 +159,16 @@ export class Waterfall {
    *  `SOON` and `#retime`. */
   #timer: ReturnType<typeof setTimeout> | null = null;
   #busy = false;
+
+  /** Label → the points the weekly window has been read at, for the
+   *  projection's rate. Plain rather than `$state`: it feeds a decision asked
+   *  for on demand (`holdOf`), never a face, and a ring that invalidated a
+   *  whole wall every time a percentage moved would buy nothing. */
+  #weeks = new Map<string, WeekPoint[]>();
+  /** Accounts whose stored samples have been read back into `#weeks` once this
+   *  session, so a launch keeps yesterday's rate rather than starting from
+   *  nothing. */
+  #seeded = new Set<string>();
 
   /** The control surface's stand-in for a registry and its readings: an
    *  allowance spent without spending one (`control.svelte.ts`, the
@@ -311,6 +361,10 @@ export class Waterfall {
         );
       }
       this.allowances = next;
+      /* Kept for the plan's rate (§14), and seeded from the wall's own record
+         the first time so a launch does not start with no rate at all. */
+      this.#bookWeeks(next);
+      void this.#seed(Object.keys(next));
       /* Noted for the analytics room (§3.3): the poll already exists, so this
          is the sample it becomes rather than a second reader. Fire and forget:
          a sample that could not be written is replaced by the next pass, and a
@@ -347,6 +401,9 @@ export class Waterfall {
     const next = observed(this.allowances[label], info, Date.now());
     if (!next || !next.ok) return;
     this.allowances = { ...this.allowances, [label]: next };
+    /* A request's own headers are a reading like any other, and a rate wants
+       them: the poll is three minutes apart, a busy card's stream is not. */
+    this.#bookWeeks({ [label]: next });
     /* **Only the windows the event itself named.** `observed` merges the event's
        windows with the ones held from the last poll, and the held ones were
        read up to three minutes ago — noting them at this instant would claim a
@@ -362,6 +419,134 @@ export class Waterfall {
   #note(samples: AllowanceSample[]) {
     if (samples.length === 0) return;
     void invoke("note_allowance_samples", { samples }).catch(() => {});
+  }
+
+  /* ── the plan, and the hold it puts on new work ─────────────────────────── */
+
+  /** What this account's plan says about new work right now, or null where it
+   *  says nothing (`pace.ts::paceHold`).
+   *
+   *  Read on demand rather than kept as a rune, and that is the whole reason it
+   *  can be consulted from a send: `Skein.#settleAccount` asks it before every
+   *  prompt, `#noteAllowance` asks it for Rust once a minute, and both get the
+   *  same answer from the same arithmetic. **Never asked of a provider card**:
+   *  a balance is not a week.
+   *
+   *  No reading, no reset, or a reset already past is no hold. The first is the
+   *  measured rule `nearness` already states — a hold decided on a reading
+   *  nobody took would be a guess wearing a number — and the last is a stale
+   *  reading of a week that has since rolled, which the next pass replaces. */
+  holdOf(label: string, now = Date.now()): PaceHold | null {
+    const account = this.list.find((a) => a.label === label);
+    if (!account) return null;
+    const plan = planOf(account.plan);
+    if (!plan.on) return null;
+    const week = weekOf(this.allowances[label]);
+    const reset = week?.resetsAt ?? null;
+    if (!week || reset === null || reset <= now) return null;
+    const rate = rateOver(this.#weeks.get(label) ?? [], now - RECENT_MS);
+    const pace = paceFor({
+      plan,
+      window: { from: reset - WEEK_MS, reset },
+      used: week.used,
+      rate,
+      now,
+    });
+    return paceHold(plan, pace, reset);
+  }
+
+  /** Every account whose plan is holding new work, as Rust is told it. */
+  paced(now = Date.now()): (PaceHold & { account: string })[] {
+    const out: (PaceHold & { account: string })[] = [];
+    for (const a of this.list) {
+      const hold = this.holdOf(a.label, now);
+      if (hold) out.push({ account: a.label, ...hold });
+    }
+    return out;
+  }
+
+  /** Keep one reading of an account's week, for the rate.
+   *
+   *  Four things are deliberate. **A reading already held is not added
+   *  again** — a failed poll hands back the same reading with the same `at`,
+   *  and a ring full of copies would flatten the rate towards nothing. **The
+   *  ring is kept in time order**, because the backfill below arrives *after*
+   *  the live reading and appending it would put the launch's history behind
+   *  today's point, where the last-point rate would never see it. **A changed
+   *  reset closes the series**, so the points before it describe a week that is
+   *  over and go; a fall inside one week is a reading taken low, not a roll
+   *  (`allowancesamples.ts` has the measurement). And the ring is bounded by
+   *  the span the rate reads, because nothing older can be evidence about
+   *  today. */
+  #put(label: string, at: number, used: number, reset: number) {
+    if (!Number.isFinite(at) || !Number.isFinite(used) || !(reset > 0)) return;
+    const ring = (this.#weeks.get(label) ?? []).slice();
+    if (ring.some((p) => p.at === at)) return;
+    ring.push({ at, used, reset });
+    ring.sort((a, b) => a.at - b.at);
+    const fresh: WeekPoint[] = [];
+    for (const p of ring) {
+      const prev = fresh[fresh.length - 1];
+      /* One second, the tolerance `allowancesamples.ts::sameReset` keeps: the
+         server restamps a reset by a few hundred milliseconds between reads. */
+      if (prev && Math.abs(prev.reset - p.reset) > 1_000) fresh.length = 0;
+      fresh.push(p);
+    }
+    const newest = fresh[fresh.length - 1]!.at;
+    this.#weeks.set(
+      label,
+      fresh.filter((p) => p.at >= newest - 2 * RECENT_MS).slice(-WEEK_POINTS),
+    );
+  }
+
+  #bookWeeks(readings: Record<string, Allowance>) {
+    for (const [label, allowance] of Object.entries(readings)) {
+      const week = weekOf(allowance);
+      if (!allowance.ok || !week || week.resetsAt === null) continue;
+      this.#put(label, allowance.at, week.used, week.resetsAt);
+    }
+  }
+
+  /** Read the stored samples back once per account, so a rate is available at
+   *  launch instead of three minutes after the second poll.
+   *
+   *  **The samples already exist** — every pass notes them (`#note`) — so this
+   *  is reading the wall's own record rather than keeping a second one in
+   *  memory across restarts. One query for the wall, filtered here to the
+   *  accounts and the window the current reading names.
+   *
+   *  **Marked seeded only once the query has answered**, and only for accounts
+   *  that had a week to seed against: a reading that is a fault at launch is
+   *  the reserve account `accounts.md` describes, and marking it would cost it
+   *  a rate for the rest of the session. A query that fails marks nothing and
+   *  is asked again on the next pass; until then `holdOf` reads the ring as it
+   *  is, which is the reading without a rate rather than a hold decided on
+   *  nothing. */
+  async #seed(labels: readonly string[]) {
+    /* A label whose reading is a fault retries on a later pass; one whose
+       reading is fine but has no unscoped week (a scoped-only account) is
+       marked anyway, or it would re-ask this query every three minutes for a
+       rate there is nothing to compute from. */
+    const missing = labels.filter((l) => !this.#seeded.has(l) && this.allowances[l]?.ok === true);
+    if (missing.length === 0) return;
+    const now = Date.now();
+    let rows: { at: number; account: string; kind: string; scope: string | null; used: number; resetsAt: number | null }[];
+    try {
+      rows = await invoke("allowance_samples", { from: now - RECENT_MS, to: now });
+    } catch {
+      return;
+    }
+    for (const r of rows) {
+      if (!missing.includes(r.account)) continue;
+      const week = weekOf(this.allowances[r.account]);
+      if (!week || r.resetsAt === null) continue;
+      /* `""` and `null` are one window: the sample writer stores an absent
+         scope as an empty string (`samplesOf`), and comparing the two
+         spellings would seed nothing at all. */
+      if (r.kind !== week.kind || (r.scope ?? "") !== (week.scope ?? "")) continue;
+      this.#put(r.account, r.at, r.used, r.resetsAt);
+    }
+    for (const l of missing) this.#seeded.add(l);
   }
 
   /** Accounts the server has refused, until when, and how many times running.

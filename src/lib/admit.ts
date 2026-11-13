@@ -1,5 +1,6 @@
 import { capFor, shareFor, type Account, type Allowance, type SelfUse } from "./accounts";
 import { CREDITS, type Decision } from "./credits";
+import type { PaceHold } from "./pace";
 
 /** What the wall tells Rust about its allowance, so a spawn, a wake and a
  *  stop notice can be weighed without asking the webview (`admit.rs`).
@@ -36,15 +37,26 @@ export type AllowanceFacts = {
   resetsAt: number | null;
   /** A card asked onto each account, and where it really lands. */
   asked: AskedFacet[];
+  /** The accounts whose own plan is holding new work right now (`pace.ts`
+   *  §14), with the sentence and the week's reset. **A pace has no account to
+   *  find room on**, so it is not a fifth kind of blocker: it is a reason the
+   *  admission gate holds that clears on the wall's own tick, not on a window
+   *  coming back. `admit.rs` only reads this. */
+  plans: PlanHold[];
 };
+
+/** One account's pace, as Rust is told it (`admit::Planned`). */
+export type PlanHold = PaceHold & { account: string };
 
 /** Where one card lands and how near that is (`admit::Facet`). */
 export type Facet = { landing: string | null; spent: number | null; resetsAt: number | null };
 export type AskedFacet = Facet & { account: string };
 
 /** What Rust says about a new card that is not to start yet
- *  (`admit::Queued`): the face's line, and when it starts at the latest. */
-export type Queued = { why: string; until: number | null };
+ *  (`admit::Queued`): the face's line, when it starts at the latest, and —
+ *  where the wait is a plan's pace — that it is one, so a release pass knows
+ *  there is no account reading it would need to go and fetch. */
+export type Queued = { why: string; until: number | null; reason?: "pace" };
 
 /** How long the front end leaves between two held prompts it releases on its
  *  own, once there is more than one — `admit::RELEASE_GAP_MS`, held equal by a
@@ -60,6 +72,7 @@ export const NOTHING_KNOWN: AllowanceFacts = {
   untilBypass: null,
   ...EMPTY,
   asked: [],
+  plans: [],
 };
 
 /** How close an account's **five-hour** window is to its ceiling.
@@ -125,7 +138,15 @@ export function facetOf(d: Decision, lookup: (label: string) => Looked | null): 
 export function allowanceFacts(
   plain: Decision,
   lookup: (label: string) => Looked | null,
-  more: { bypass?: Decision; asked?: { account: string; decision: Decision }[] } = {},
+  more: {
+    bypass?: Decision;
+    asked?: { account: string; decision: Decision }[];
+    /** The accounts whose plan is holding new work (`Skein.#noteAllowance`).
+     *  Read whole rather than derived from a decision: a plan belongs to the
+     *  account it is stored with, whether or not the ladder would land a card
+     *  there. */
+    plans?: readonly PlanHold[];
+  } = {},
 ): AllowanceFacts {
   const bypass = more.bypass ?? plain;
   return {
@@ -135,6 +156,7 @@ export function allowanceFacts(
     untilBypass: bypass.kind === "hold" ? bypass.until : null,
     ...facetOf(plain, lookup),
     asked: (more.asked ?? []).map((a) => ({ account: a.account, ...facetOf(a.decision, lookup) })),
+    plans: (more.plans ?? []).map((p) => ({ ...p })),
   };
 }
 
@@ -147,7 +169,14 @@ function sameFacet(a: Facet, b: Facet): boolean {
 }
 
 /** Whether two notes say the same thing — so the wall writes to Rust when the
- *  fact changes, and on the sweep's minute to keep it from going stale. */
+ *  fact changes, and on the sweep's minute to keep it from going stale.
+ *
+ *  **A pace is compared by which accounts and until when, not by its
+ *  sentence.** The sentence carries the week's percentage, which moves a whole
+ *  point every few minutes, and rewriting a note because a numeral moved is a
+ *  write that changes nothing the wall will do. The sentence Rust holds is the
+ *  one from when the hold began, and a reading that is minutes old is exactly
+ *  what the hold was decided on. */
 export function sameFacts(a: AllowanceFacts | null, b: AllowanceFacts): boolean {
   return (
     a !== null &&
@@ -157,6 +186,8 @@ export function sameFacts(a: AllowanceFacts | null, b: AllowanceFacts): boolean 
     a.untilBypass === b.untilBypass &&
     sameFacet(a, b) &&
     a.asked.length === b.asked.length &&
-    a.asked.every((x, i) => x.account === b.asked[i]!.account && sameFacet(x, b.asked[i]!))
+    a.asked.every((x, i) => x.account === b.asked[i]!.account && sameFacet(x, b.asked[i]!)) &&
+    a.plans.length === b.plans.length &&
+    a.plans.every((x, i) => x.account === b.plans[i]!.account && x.until === b.plans[i]!.until)
   );
 }

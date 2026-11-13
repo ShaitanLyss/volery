@@ -1,7 +1,9 @@
 ---
 paths:
   - "src/lib/accounts.ts"
+  - "src/lib/pace.ts"
   - "src/lib/waterfall.svelte.ts"
+  - "src-tauri/src/admit.rs"
   - "src/lib/Accounts.svelte"
   - "src-tauri/src/accounts.rs"
   - "src-tauri/src/claude.rs"
@@ -582,6 +584,75 @@ over a prompt that existed nowhere but in a line drawn as though it had been
 sent. `echoFailed` is what says a send never left, and it is what that arm always
 meant.
 
+### A plan's pace, which is a hold and not a blocker
+
+`docs/ANALYTICS.md` §14 is the design; this is what building it taught. **A cap is a wall and
+a pace is a gradient**: a cap says may I start work at a percentage, where a pace asks whether
+the week will make it to its reset. One is a property of a window; the other of the account's
+own week, stored with the account (`account.plan`, schema rung 74) and synced to every wall as
+a fifth register.
+
+**It is deliberately not in `blockersFor`.** That function answers which window is preventing
+work, and everything downstream treats its answer as an account being spent: the waterfall
+would move cards off it and onto another subscription. Spending the reserve to keep to a plan
+is the opposite of what a plan is for. So the pace goes into the **admission gate** instead,
+where the wall already has a wall-global reason to hold (`admit.rs`), and a paced account
+still reads as ready in the panel.
+
+**Two questions, two answers, and the split is the design.** A spawn is weighed on the account
+it would *land* on (`verdict`'s facet, its `landing`), because that is the subscription the
+work would spend. A wake is weighed on the account the card is *on* (`held_for` passes the
+label), because a wake does not reroute. That is why the note carries a list of plans rather
+than folding a pace into each facet: the facet answers "where would this land", the plan list
+answers "who is holding their own week back".
+
+**Its release is the wall's own tick, and it may not poll.** Every other hold ends when an
+account finds room; a pace has no such account, so `#holdSweep` — the minute sweep that already
+exists for a blocker naming no reset — is what lets it go. **And that sweep skips
+`waterfall.poll()` when every held card is paced** (`Held.paced`): the pace is computed from
+the readings already in hand, so a plan spanning days would otherwise ask the allowance
+endpoint once a minute for days, against a cadence `usage.md` sets at three and a server that
+answers `429`. A paced *spawn* carries the flag too, from Rust's `Queued.reason`.
+
+**Nothing in flight is ever stopped.** The gate is asked before a send, a spawn and a wake; a
+prompt typed into a working card joins the queue behind the turn and is re-checked when that
+turn ends. A bypass ignores the pace exactly as it ignores your caps (Rust's `bypass` arm in
+both `verdict` and `held_at`, and `conv.bypassCaps` in `#settleAccount`), and Escape drops it
+like any other hold because it is the same `#dropHold`.
+
+**Three things went wrong on the way, and each is worth keeping.** A paced spawn's `why` must
+still begin `queued — ` — that prefix is how a hold read back off the store is known to be a
+spawn's (`holding.ts::isQueuedSpawn`), so Rust prefixes it to `paceNote` rather than inventing
+a second vocabulary. A restored hold loses `paced` (nothing is persisted for it), so the first
+release pass after a restart polls once and then re-holds with it — a transient cost, not a
+missing behaviour. And the face had to learn the difference: `wallHold` now carries the paced
+accounts alongside the spent wall, and `waiting.ts` says *held by the plan* where it used to
+say *for allowance*, or a paced wake would read as an account problem and bloom amber.
+
+### How fast the window fills, which the gauge cannot say
+
+`docs/ANALYTICS.md` §14.6. The five-hour gauge answers *how full*; it resets four times a day
+and always reads something, so it cannot answer *how fast this account is being spent*. That
+is one number per window — hours to consume a whole one, from the level against the window's
+own opening — and it is comparable across weeks, which is what makes a trend out of it.
+
+- **It is folded from the same 28-day read as the worth rows**, so it costs no second query,
+  and drawn under the ceilings with a sparkline of the last day's windows.
+- **The warning is a rate, not a level, and names both causes.** A smaller allowance and
+  heavier work read identically from here, so the sentence says either could be it. It fires
+  at a 15% fall in the median against the week before, on three windows each side, and is
+  amber rather than rust because it asks for a look rather than reporting a fault.
+- **`instancesOf` had to be fixed for it, and the fix reaches the residual too.** The wire's
+  `rate_limit_event` can report a lower percentage for the same window a second after a higher
+  one (measured 2026-11-13: 14 then 11, 19 then 14, one reset), and the module treated every
+  dip as a roll. It now closes on a moved reset, and on a fall large enough to be a roll
+  rather than a counter read low, and keeps the high-water mark. Every reader of instances
+  benefits: the residual was summing fragments of an instance, and the strip was drawing
+  instances that never existed.
+- **Nothing here is a measurement of another machine.** The samples are the account's, so
+  turns on a laptop count, but a window the wall was not running for contributes no fill at
+  all: the reading goes missing rather than low, which is the direction a trend can survive.
+
 ### A queue, not a slot — and one round when it goes
 
 Lyss, 2026-10-16: *"something typed or done by the user should never be lost."*
@@ -653,6 +724,9 @@ is that **a window is monotonic inside its own reset.** Usage only accumulates
 until the window rolls, so a percentage read ten minutes ago is a *floor* on what
 the percentage is now rather than a guess at it: an account the reading puts past
 your cap is certainly still past it, and one it puts at 40% is at *at least* 40%.
+The wire can report a point low — two edges a beat apart disagree about one
+window, `allowancesamples.ts` has the measurement — and the floor survives that
+wobble because the underlying count still only rises.
 The only error it can make is under-blocking, which is the direction this module
 already accepts and states on `spentOf`. So keeping the figure can only move the
 answer towards the truth.

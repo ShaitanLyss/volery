@@ -31,7 +31,18 @@ export type WorthRead = {
   fault: string;
 };
 
+/** A reading to answer with instead of the wall, for the browser preview
+ *  (`accounts.html`): the same seam `waterfall.standIn` is, and for the same
+ *  reason — the panel's readings have to be lookable with no store behind
+ *  them. */
+let standing: WorthRead | null = null;
+
+export function standWorth(read: WorthRead | null) {
+  standing = read;
+}
+
 export async function readWorth(now: number): Promise<WorthRead> {
+  if (standing) return standing;
   const until = Math.floor(now / 60_000) * 60_000;
   const since = until - WORTH_SPAN_MS;
   const [samples, window] = await Promise.allSettled([

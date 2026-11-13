@@ -175,6 +175,21 @@ export function paceNote(pace: Pace): string {
   );
 }
 
+/** The hold a plan puts on new work: the sentence a held card wears, and the
+ *  latest it can be holding (`until`, the window's reset). The wall asks again
+ *  every minute, and lets go the moment the plan does, so the reset is a
+ *  backstop rather than a promise.
+ *
+ *  **A hold is one object, computed once.** `admit.rs` is told these per
+ *  account and never re-decides them; a second copy of `holdsNew` in Rust
+ *  would be the drift `accounts.ts` warns about every time a decision crosses
+ *  an `emit`. */
+export type PaceHold = { why: string; until: number };
+
+export function paceHold(plan: Plan, pace: Pace, reset: number): PaceHold | null {
+  return holdsNew(plan, pace) ? { why: paceNote(pace), until: reset } : null;
+}
+
 /** How a pace reads on a face: quiet under the line, warm on it, rust past it. */
 export function paceTier(pace: Pace): "calm" | "warm" | "urgent" {
   if (pace.projected > 1) return "urgent";

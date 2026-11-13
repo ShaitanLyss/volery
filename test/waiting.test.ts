@@ -252,4 +252,41 @@ describe("a wake the wall is holding for allowance", () => {
     const free = readWaiting([wake(now - 5 * 60_000)], now, null)!;
     expect(free.lateS).not.toBeNull();
   });
+
+  /** A plan belongs to one account, so unlike a spent wall it holds only the
+   *  cards on it — and it says so in its own words, because a window being full
+   *  is not what is holding them. */
+  test("a plan holds the cards on its account, and no others", () => {
+    const now = 10 * 60_000;
+    const hold = {
+      spent: false,
+      until: null,
+      paced: [{ account: "tx-team", until: now + 3 * 24 * 60 * MIN }],
+    };
+    const on = readWaiting([wake(now - 5 * 60_000)], now, hold, "tx-team")!;
+    expect(on.lateS).toBeNull();
+    expect(on.held).toEqual({ until: now + 3 * 24 * 60 * MIN, paced: true });
+    expect(waitLine(on, now)).toContain("held by the plan until");
+    expect(waitTitle(on, now)).toContain("allowance plan");
+
+    const off = readWaiting([wake(now - 5 * 60_000)], now, hold, "personal")!;
+    expect(off.held).toBeUndefined();
+    expect(off.lateS).not.toBeNull();
+  });
+
+  /** A card with no account of its own is weighed where the wall would put a
+   *  new one — the fallback `admit::held_at` makes — so the face says held
+   *  rather than late about a wake the wall is deliberately not firing. */
+  test("a card on no account follows the wall's landing account", () => {
+    const now = 10 * 60_000;
+    const hold = {
+      spent: false,
+      until: null,
+      paced: [{ account: "tx-team", until: now + 3 * 24 * 60 * MIN }],
+      landing: "tx-team",
+    };
+    const w = readWaiting([wake(now - 5 * 60_000)], now, hold, null)!;
+    expect(w.lateS).toBeNull();
+    expect(w.held?.paced).toBe(true);
+  });
 });

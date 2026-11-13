@@ -37,6 +37,21 @@
 //!   account is working. Running work finishes before new work starts, which is
 //!   what keeps a window from ending with N half-done contexts that all re-pay
 //!   their cache writes at once.
+//! - **A plan's pace holds new work too, and it is not a blocker.** Pacing
+//!   (`pace.ts` §14) is a decision about how fast a week may be spent, and it
+//!   arrives here as one hold per account (`Planned`) rather than as a fifth
+//!   kind of blocker: a pace belongs to the account it is stored with, and
+//!   putting it into the waterfall would make an account look spent and move
+//!   cards to another one, which spends the reserve to keep to the plan.
+//!   `verdict` weighs it on the account the work would land on; `held_at` on
+//!   the account the card's own wake would run on.
+//!
+//!   **It has its own release, and it is the wall's tick.** Every other hold
+//!   here ends when an account finds room; a pace has no such account, so the
+//!   front end asks again every minute and lets go the moment the plan does
+//!   (`Skein.#holdSweep`). A bypass ignores it exactly as it ignores a cap, and
+//!   Escape drops it like any hold (`#dropHold`). Nothing in flight is stopped:
+//!   the gate is asked before a send, a spawn and a wake, never during a turn.
 //!
 //! **A reading too old to trust admits everything.** The front end re-notes
 //! every minute (`Skein.#holdSweep`) and whenever the waterfall moves; a wall
@@ -137,6 +152,18 @@ pub struct Asked {
     pub facet: Facet,
 }
 
+/// One account whose plan is holding new work (`pace.ts::PaceHold`), as the
+/// front end sent it. `why` is that module's sentence, read by a person rather
+/// than a model — `admit.rs` never builds one.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Planned {
+    pub account: String,
+    pub why: String,
+    /// The week's reset, epoch ms: the latest the plan can be holding.
+    pub until: Option<i64>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Noted {
     /// No account — and no credits, with boost on — would take a new card.
@@ -151,6 +178,8 @@ pub struct Noted {
     pub plain: Facet,
     /// A card asked onto each registered account.
     pub asked: Vec<Asked>,
+    /// The accounts whose own plan is holding new work, and until when.
+    pub plans: Vec<Planned>,
     /// When this was noted, on this clock.
     pub at: i64,
 }
@@ -181,8 +210,17 @@ pub fn note_allowance(
     spent: Option<f64>,
     resets_at: Option<i64>,
     asked: Option<Vec<Asked>>,
+    plans: Option<Vec<Planned>>,
 ) {
-    let noted = noted_from(held, until, held_bypass, until_bypass, Facet { landing, spent, resets_at }, asked);
+    let noted = noted_from(
+        held,
+        until,
+        held_bypass,
+        until_bypass,
+        Facet { landing, spent, resets_at },
+        asked,
+        plans,
+    );
     if let Ok(mut h) = state.0.lock() {
         h.ever = true;
         h.noted = Some(noted);
@@ -197,6 +235,7 @@ fn noted_from(
     until_bypass: Option<i64>,
     plain: Facet,
     asked: Option<Vec<Asked>>,
+    plans: Option<Vec<Planned>>,
 ) -> Noted {
     Noted {
         held,
@@ -214,8 +253,29 @@ fn noted_from(
             .map(|a| Asked { account: a.account.trim().to_string(), facet: clean_facet(a.facet) })
             .filter(|a| !a.account.is_empty())
             .collect(),
+        /* The sentence is one the front end made and this file only repeats on a
+           face, so it is scrubbed and cut rather than trusted — the `clip` rule
+           for a text nobody here wrote. A hold with nothing to say is dropped:
+           the account being held is the fact, and a blank sentence would put
+           one on the wall with no reason under it. */
+        plans: plans
+            .unwrap_or_default()
+            .into_iter()
+            .take(32)
+            .map(|p| Planned {
+                account: p.account.trim().to_string(),
+                why: crate::clip::preview(&crate::clean::scrub(p.why.trim()), 240),
+                until: p.until,
+            })
+            .filter(|p| !p.account.is_empty() && !p.why.is_empty())
+            .collect(),
         at: crate::store::now(),
     }
+}
+
+/// The plan holding this account, if one is.
+fn plan_for<'a>(n: &'a Noted, account: &str) -> Option<&'a Planned> {
+    n.plans.iter().find(|p| p.account == account)
 }
 
 /// The wall has no accounts to manage, or has stopped managing them.
@@ -240,6 +300,11 @@ pub struct Queued {
     pub why: String,
     /// When it starts at the latest, if anything named a time.
     pub until: Option<i64>,
+    /// `pace` where the wait is a plan rather than a spent window. The front
+    /// end draws both from `why`, and the release pass uses this to know it
+    /// owes the allowance endpoint no reading (`Skein.#releasePass`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 /// Admit a new card, or say why it waits. Pure, so the rule is asserted.
@@ -268,12 +333,27 @@ pub fn verdict(
         return Some(Queued {
             why: "queued — every account is spent, so it starts when one has room".into(),
             until,
+            reason: None,
         });
     }
     let facet = given
         .or_else(|| prefer.and_then(|p| n.asked.iter().find(|a| a.account == p)).map(|a| &a.facet))
         .unwrap_or(&n.plain);
-    let (spent, landing) = (facet.spent?, facet.landing.as_deref()?);
+    let landing = facet.landing.as_deref()?;
+    /* The plan, before the window's nearness: a paced account is not full, and
+       "no account has room" would be the wrong sentence for a wall that has
+       plenty of room and has decided not to spend it this fast. A bypassed card
+       spends past the plan as it spends past your caps. */
+    if !bypass {
+        if let Some(p) = plan_for(n, landing) {
+            return Some(Queued {
+                why: format!("queued — {}", p.why),
+                until: p.until.filter(|t| *t > now),
+                reason: Some("pace"),
+            });
+        }
+    }
+    let spent = facet.spent?;
     if spent < CEILING {
         return None;
     }
@@ -290,6 +370,7 @@ pub fn verdict(
     Some(Queued {
         why: format!("queued — {landing} is {pct}% into its five hours, so {others} first"),
         until: facet.resets_at.filter(|t| *t > now),
+        reason: None,
     })
 }
 
@@ -411,16 +492,31 @@ pub async fn admit_now(app: AppHandle, id: String, facet: Option<Facet>) -> Resu
 /// `bypass` is the card's own: a card ignoring your caps is held only by the
 /// server's ceiling, so its wake goes as soon as any account has room by the
 /// server's reckoning, whatever your caps say for every other card.
-pub fn held_at(ever: bool, born: i64, noted: Option<&Noted>, bypass: bool, now: i64) -> Option<Option<i64>> {
+pub fn held_at(
+    ever: bool,
+    born: i64,
+    noted: Option<&Noted>,
+    bypass: bool,
+    /* The account the card's own wake would run on, where it has one. */
+    prefer: Option<&str>,
+    now: i64,
+) -> Option<Option<i64>> {
     if !ever {
         return (now.saturating_sub(born) < FIRST_WORD_MS).then_some(None);
     }
     let n = noted.filter(|n| now.saturating_sub(n.at) <= STALE_MS)?;
     if bypass {
-        n.held_bypass.then_some(n.until_bypass)
-    } else {
-        n.held.then_some(n.until)
+        return n.held_bypass.then_some(n.until_bypass);
     }
+    if n.held {
+        return Some(n.until);
+    }
+    /* A plan is applied to the account it belongs to, and a card on none is
+       weighed where the wall would put a new card — the same fallback
+       `verdict` makes. No plan for that label is no hold: a pace never
+       invents one for an account that has none. */
+    let label = prefer.or(n.plain.landing.as_deref())?;
+    plan_for(n, label).map(|p| p.until.filter(|t| *t > now))
 }
 
 /// Whether the wall would hold a turn written into `card` now — its bypass
@@ -433,11 +529,14 @@ pub fn held_for(app: &AppHandle, card: &str) -> Option<Option<i64>> {
         return None;
     }
     let (ever, born, n) = heard(app)?;
-    let bypass = app
+    let (bypass, prefer) = app
         .try_state::<crate::store::Store>()
-        .and_then(|s| s.0.lock().ok().map(|c| bypass_of(&c, card)))
-        .unwrap_or(false);
-    held_at(ever, born, n.as_ref(), bypass, crate::store::now())
+        .and_then(|s| {
+            let conn = s.0.lock().ok()?;
+            Some((bypass_of(&conn, card), crate::store::account_of(&conn, card)))
+        })
+        .unwrap_or((false, None));
+    held_at(ever, born, n.as_ref(), bypass, prefer.as_deref(), crate::store::now())
 }
 
 #[cfg(test)]
@@ -513,7 +612,7 @@ mod tests {
         let q = verdict(Some(&held), None, None, false, on_tx(0), 2_000).expect("queued");
         assert!(q.why.contains("every account is spent"), "{}", q.why);
         assert_eq!(q.until, Some(9_000));
-        assert_eq!(held_at(true, 0, Some(&held), false, 2_000), Some(Some(9_000)));
+        assert_eq!(held_at(true, 0, Some(&held), false, None, 2_000), Some(Some(9_000)));
     }
 
     /// Held by your caps and not by the server's: a card bypassing the caps is
@@ -521,8 +620,8 @@ mod tests {
     #[test]
     fn a_bypassed_card_is_held_only_by_the_server() {
         let caps = Noted { held: true, until: Some(9_000), held_bypass: false, at: 1_000, ..Default::default() };
-        assert_eq!(held_at(true, 0, Some(&caps), false, 2_000), Some(Some(9_000)));
-        assert_eq!(held_at(true, 0, Some(&caps), true, 2_000), None);
+        assert_eq!(held_at(true, 0, Some(&caps), false, None, 2_000), Some(Some(9_000)));
+        assert_eq!(held_at(true, 0, Some(&caps), true, None, 2_000), None);
         assert_eq!(verdict(Some(&caps), None, None, true, on_tx(9), 2_000), None);
     }
 
@@ -530,7 +629,7 @@ mod tests {
     /// with everyone else, rather than waking them into a spent wall.
     #[test]
     fn a_missing_bypass_reading_holds_like_the_plain_one() {
-        let noted = noted_from(true, Some(5), None, None, Facet::default(), None);
+        let noted = noted_from(true, Some(5), None, None, Facet::default(), None, None);
         assert!(noted.held_bypass);
         assert_eq!(noted.until_bypass, Some(5));
     }
@@ -542,8 +641,8 @@ mod tests {
         assert_eq!(verdict(None, None, None, false, on_tx(9), 2_000), None);
         let held = Noted { held: true, held_bypass: true, at: 0, ..Default::default() };
         assert_eq!(verdict(Some(&held), None, None, false, on_tx(9), STALE_MS + 1), None);
-        assert_eq!(held_at(true, 0, Some(&held), false, STALE_MS + 1), None);
-        assert_eq!(held_at(true, 0, None, false, 0), None);
+        assert_eq!(held_at(true, 0, Some(&held), false, None, STALE_MS + 1), None);
+        assert_eq!(held_at(true, 0, None, false, None, 0), None);
     }
 
     /// At launch, before the webview has said anything, every wake that came
@@ -552,11 +651,11 @@ mod tests {
     /// only for `FIRST_WORD_MS`, after which silence is room as ever.
     #[test]
     fn a_wall_that_has_not_spoken_yet_holds_briefly() {
-        assert_eq!(held_at(false, 1_000, None, false, 1_000 + FIRST_WORD_MS - 1), Some(None));
-        assert_eq!(held_at(false, 1_000, None, true, 1_000 + 5), Some(None));
-        assert_eq!(held_at(false, 1_000, None, false, 1_000 + FIRST_WORD_MS), None);
+        assert_eq!(held_at(false, 1_000, None, false, None, 1_000 + FIRST_WORD_MS - 1), Some(None));
+        assert_eq!(held_at(false, 1_000, None, true, None, 1_000 + 5), Some(None));
+        assert_eq!(held_at(false, 1_000, None, false, None, 1_000 + FIRST_WORD_MS), None);
         /* A forget is the wall speaking: no accounts, nothing to hold on. */
-        assert_eq!(held_at(true, 1_000, None, false, 1_005), None);
+        assert_eq!(held_at(true, 1_000, None, false, None, 1_005), None);
     }
 
     /// Credits, or a wall with nothing measured: no account to be near a
@@ -573,6 +672,97 @@ mod tests {
         let q = verdict(Some(&n(0.9)), None, None, false, on_tx(1), 20_000).expect("queued");
         assert_eq!(q.until, None);
         assert!(q.why.contains("the card already working on it finishes"), "{}", q.why);
+    }
+
+    /// A plan holding this account (`pace.ts::PaceHold`), with the wall's
+    /// landing on `tx-team` and nothing they need to finish first.
+    fn paced_noted(account: &str, until: i64) -> Noted {
+        Noted {
+            plain: facet(0.2),
+            plans: vec![Planned {
+                account: account.into(),
+                why: "paced: the week is at 71% against a plan of 55% by now".into(),
+                until: Some(until),
+            }],
+            at: 1_000,
+            ..Default::default()
+        }
+    }
+
+    /// A pace is a reason to hold that is not a window being full, and its
+    /// sentence says so: "no account has room" would be false about a wall
+    /// with room that has decided not to spend it this fast.
+    #[test]
+    fn a_pace_holds_a_spawn_on_the_account_it_belongs_to() {
+        let noted = paced_noted("tx-team", 10_000);
+        let q = verdict(Some(&noted), None, None, false, on_tx(0), 2_000).expect("queued");
+        assert!(q.why.starts_with("queued — paced:"), "{}", q.why);
+        assert_eq!(q.until, Some(10_000));
+        assert_eq!(q.reason, Some("pace"));
+    }
+
+    /// A plan belongs to its account. A card asked onto one without a plan is
+    /// not held, and a wake is weighed on the account it would spend.
+    #[test]
+    fn a_pace_belongs_to_its_account_and_not_to_the_wall() {
+        let mut noted = paced_noted("tx-team", 10_000);
+        noted.asked = vec![Asked {
+            account: "personal".into(),
+            facet: Facet { landing: Some("personal".into()), spent: Some(0.2), resets_at: Some(5_000) },
+        }];
+        assert_eq!(verdict(Some(&noted), None, Some("personal"), false, on_tx(0), 2_000), None);
+        assert_eq!(held_at(true, 0, Some(&noted), false, Some("personal"), 2_000), None);
+        assert_eq!(
+            held_at(true, 0, Some(&noted), false, Some("tx-team"), 2_000),
+            Some(Some(10_000))
+        );
+        /* A card with no account is weighed where the wall would put a new one. */
+        assert_eq!(held_at(true, 0, Some(&noted), false, None, 2_000), Some(Some(10_000)));
+    }
+
+    /// A pacing system a bypass cannot overrule on the afternoon that matters
+    /// is one nobody leaves on.
+    #[test]
+    fn a_bypassed_card_spends_past_the_plan() {
+        let noted = paced_noted("tx-team", 10_000);
+        assert_eq!(verdict(Some(&noted), None, None, true, on_tx(0), 2_000), None);
+        assert_eq!(held_at(true, 0, Some(&noted), true, Some("tx-team"), 2_000), None);
+    }
+
+    /// A spent window is the immediate blocker; a plan is the longer wait, and
+    /// saying "paced" about a wall with nothing left would name the wrong one.
+    #[test]
+    fn a_spent_wall_speaks_before_a_plan() {
+        let mut noted = paced_noted("tx-team", 10_000);
+        (noted.held, noted.until) = (true, Some(9_000));
+        let q = verdict(Some(&noted), None, None, false, on_tx(0), 2_000).expect("queued");
+        assert!(q.why.contains("every account is spent"), "{}", q.why);
+        assert_eq!(q.reason, None);
+    }
+
+    /// A reset already past is not a time to offer, and the hold is still a
+    /// hold: the next reading replaces it.
+    #[test]
+    fn a_pace_whose_week_has_rolled_offers_no_time() {
+        let noted = paced_noted("tx-team", 1_500);
+        let q = verdict(Some(&noted), None, None, false, on_tx(0), 2_000).expect("queued");
+        assert_eq!(q.until, None);
+        assert_eq!(held_at(true, 0, Some(&noted), false, Some("tx-team"), 2_000), Some(None));
+    }
+
+    /// The sentence comes from the front end, so it is scrubbed and a plan with
+    /// nothing to say is dropped rather than held on a blank face.
+    #[test]
+    fn a_plan_with_nothing_to_say_is_dropped_and_its_sentence_scrubbed() {
+        let plans = vec![
+            Planned { account: " a ".into(), why: "paced: a\u{0}b".into(), until: Some(5) },
+            Planned { account: "b".into(), why: "   ".into(), until: Some(5) },
+            Planned { account: " ".into(), why: "paced".into(), until: Some(5) },
+        ];
+        let noted = noted_from(false, None, None, None, Facet::default(), None, Some(plans));
+        assert_eq!(noted.plans.len(), 1);
+        assert_eq!(noted.plans[0].account, "a");
+        assert!(!noted.plans[0].why.contains('\u{0}'), "{:?}", noted.plans[0].why);
     }
 
     /// The parent waiting on its queued child, and the grandparent waiting on

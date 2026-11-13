@@ -382,9 +382,15 @@ was reading the window.
 
 **The rule, and it is Lyss's:** a new card **queues** when the **five-hour window** of the
 account it would land on is past **85%** of its ceiling (`admit::CEILING`) **and some other card
-is mid-turn on that same account**. Otherwise it starts. Running work finishes before new work
-starts. That is what stops a window ending with N half-done contexts that all re-pay their cache
-writes at the same reset.
+is mid-turn on that same account**, or when that account's **plan is holding new work**
+(`pace.ts`, §14.1–14.3: the week is being spent faster than the line allows). Otherwise it starts.
+Running work finishes before new work starts. That is what stops a window ending with N
+half-done contexts that all re-pay their cache writes at the same reset.
+
+The pace is weighed on the account the card would **land** on, the same facet the nearness is,
+and a per-card bypass ignores it exactly as it ignores a cap. It is not a blocker: the account
+still reads ready, and nothing here moves the card to another subscription to keep to the plan
+(`accounts.md`, *A plan's pace*).
 
 **Which window, and whose work, is the half the first cut got wrong** (review of 0.94, findings
 2 and 3). The number was chosen against the five hours — "roughly 45 minutes of a busy wall's
@@ -407,7 +413,9 @@ the account and the ladder lands somewhere else.
   arithmetic with the window kept so its reset is known). It notes that to Rust through
   `note_allowance`, `quit::note_busy`'s shape: every minute on the hold sweep, on a rate-limit
   event, on a refusal and on `accounts:changed`. `admit::verdict` is the only place 85% is
-  written, and `test/admit.test.ts` holds that the TypeScript never names it.
+  written, and `test/admit.test.ts` holds that the TypeScript never names it. The note also
+  carries the accounts whose plan is holding new work (`plans`), read whole rather than through
+  a decision — a plan belongs to the account it is stored with.
 - **And the same summary for a card asked onto each account** (`asked`). A spawn naming an
   `account` lands there while it has room (`stickTo`), so that is the account its admission is
   weighed on — not wherever a card with no preference would go. At release the queued card is
@@ -424,11 +432,13 @@ the account and the ladder lands somewhere else.
   card. Nobody is left to finish first, and holding it would only wait for a reset that nothing
   is spending towards.
 - **The card opens anyway, with its brief held** (Lyss's choice over a hidden queue).
-  `SpawnAsked.queued` carries `{why, until}` and `openSpawned` holds the brief through the
-  ordinary `#hold` instead of sending it: the line drawn held, the reason on the face,
-  persisted in `held_prompt`, and Escape drops it. `Held.waiting` is `"admission"`, and after a
-  restart a queued spawn is recognised by its words (`holding.ts::QUEUED_SPAWN`, which Rust
-  writes), since `held_why` is stored and `waiting` is not.
+  `SpawnAsked.queued` carries `{why, until, reason}` and `openSpawned` holds the brief through
+  the ordinary `#hold` instead of sending it: the line drawn held, the reason on the face,
+  persisted in `held_prompt`, and Escape drops it. `reason: "pace"` is set where the wait is a
+  plan rather than a spent window, and `Held.paced` is what the release pass reads to know it
+  owes the allowance endpoint no reading. `Held.waiting` is `"admission"`, and after a restart
+  a queued spawn is recognised by its words (`holding.ts::QUEUED_SPAWN`, which Rust writes),
+  since `held_why` is stored and `waiting` is not.
 - **It is let go by Rust's say-so, not the waterfall's.** By every reading the account still
   has room, so `#releaseCard` would release it at once. An admission hold instead asks
   `admit_now(id, facet)` (off the main thread, since it takes the supervisor's lock) after

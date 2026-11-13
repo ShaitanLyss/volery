@@ -115,15 +115,35 @@ export type Waiting = {
   lateS: number | null;
   /** The others, soonest first, for the tooltip. */
   rest: readonly Wake[];
-  /** Due, and held by the wall because every account is spent (`admit.rs`):
-   *  the wake stays due and fires once one has room, so it is not late — and
-   *  the face says what it is waiting on instead. `until` is the first door,
-   *  where one is known. */
-  held?: { until: number | null };
+  /** Due, and held by the wall (`admit.rs`): the wake stays due and fires once
+   *  the reason clears, so it is not late — and the face says what it is
+   *  waiting on instead. `until` is the reset, where one is known; `paced` says
+   *  the reason is a plan rather than every account being spent, because the
+   *  two want different sentences. */
+  held?: { until: number | null; paced?: boolean };
 };
 
-/** Every account spent, as the wall last said (`Skein.#noteAllowance`). */
-export type WallHold = { until: number | null } | null;
+/** What the wall is holding work behind, as it last said
+ *  (`Skein.#noteAllowance`).
+ *
+ *  An account being spent and a pace are carried apart because they are
+ *  weighed apart: a spent wall holds every wake on it, where a plan belongs to
+ *  one account and holds only the cards on that one. */
+export type WallHold = {
+  /** Every account is spent, so the wall's own wakes wait for one to have
+   *  room. Absent reads as *yes*: this object meant exactly that before a pace
+   *  could hold anything, and holding is the direction that loses nothing. */
+  spent?: boolean;
+  /** When the first door opens, where one named a time. */
+  until: number | null;
+  /** The accounts whose plan is holding new work now, and until when. */
+  paced?: readonly { account: string; until: number | null }[];
+  /** The account a new card would land on. **The fallback the gate makes**:
+   *  `admit::held_at` weighs a card with no account of its own where the wall
+   *  would put a new one, so the face must match that account's plan or a wake
+   *  the wall is deliberately holding would be drawn as late. */
+  landing?: string | null;
+} | null;
 
 /** Past its time, how long before a wake that has not woken anything is late. */
 export const LATE_AFTER_S = 60;
@@ -174,13 +194,27 @@ export function waitingOf(wakes: readonly Wake[], endedAt: number, now: number):
 /** The same, over a list `pending` already chose — so a caller can hold that
  *  list apart from the clock. The digest does: which wakes are pending changes
  *  on an event, and how late one is changes every second. */
-export function readWaiting(pend: readonly Wake[], now: number, wallHold: WallHold = null): Waiting | null {
+export function readWaiting(
+  pend: readonly Wake[],
+  now: number,
+  wallHold: WallHold = null,
+  /** The account the card is on, so a plan is applied to the cards it spends.
+   *  A wake is not moved to another account by its hold, so this is the account
+   *  the turn would have run on. */
+  account: string | null = null,
+): Waiting | null {
   const [first, ...rest] = pend;
   if (!first) return null;
   /* Only the wall's own wakes are held — the CLI's schedules fire in the
      process whatever the wall thinks of the allowance — and only once due,
      since before its time a wake is waiting on its time, not on an account. */
-  const held = wallHold !== null && first.from === "wall" && first.at !== null && first.at <= now;
+  const due = wallHold !== null && first.from === "wall" && first.at !== null && first.at <= now;
+  const spent = due && wallHold.spent !== false;
+  /* A card with no account of its own is weighed where the wall would put a new
+     one, which is the fallback `admit::held_at` makes. */
+  const label = account ?? wallHold?.landing ?? null;
+  const plan = due && label !== null ? wallHold.paced?.find((p) => p.account === label) : undefined;
+  const held = spent || plan !== undefined;
   return {
     at: first.at,
     note: first.note,
@@ -189,7 +223,9 @@ export function readWaiting(pend: readonly Wake[], now: number, wallHold: WallHo
     count: rest.length + 1,
     lateS: held ? null : lateFor(first.at, now),
     rest,
-    ...(held ? { held: { until: wallHold.until } } : {}),
+    ...(held
+      ? { held: { until: spent ? wallHold.until : (plan?.until ?? null), ...(spent ? {} : { paced: true }) } }
+      : {}),
   };
 }
 
@@ -238,6 +274,15 @@ export function waitLine(w: Waiting, now: number): string {
   }
   if (w.at === null) return "waiting — on a schedule";
   if (w.held) {
+    /* A plan and a spent wall want different sentences: one clears when the
+       week's line catches up or the week rolls, the other when an account has
+       room. Saying "for allowance" about a pace would name a window that is
+       not what is holding it. */
+    if (w.held.paced) {
+      return w.held.until !== null && w.held.until > now
+        ? `waiting — its wake is held by the plan until ${clockOf(w.held.until, now)}`
+        : "waiting — its wake is held by the plan";
+    }
     return w.held.until !== null && w.held.until > now
       ? `waiting — its wake is held for allowance until ${clockOf(w.held.until, now)}`
       : "waiting — its wake is held until an account has room";
@@ -266,7 +311,9 @@ function said(w: { at: number | null; note: string; from: WakeFrom; on?: string 
 /** The tooltip: why, in the card's own words, for each wake it is waiting on. */
 export function waitTitle(w: Waiting, now: number): string {
   const head = w.held
-    ? "this card's wake is due, and the wall is holding it because every account is spent — it fires once one has room, rather than into a turn that could not reach a model"
+    ? w.held.paced
+      ? "this card's wake is due, and the account's allowance plan is holding it — it fires when the week is back on the plan or the plan is turned off, rather than into a turn that would spend ahead of it"
+      : "this card's wake is due, and the wall is holding it because every account is spent — it fires once one has room, rather than into a turn that could not reach a model"
     : w.lateS !== null
       ? "this card armed a wake that has not woken it — nothing has happened since its time"
       : w.from === "event"

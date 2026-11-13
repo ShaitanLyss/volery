@@ -1330,8 +1330,11 @@ Four details fell out of the build and are worth knowing:
 
 This is the core idea, so it is written out.
 
-An allowance window is monotonic inside its own reset. It only goes up until it rolls. That
-gives us three properties no transcript can give:
+An allowance window is monotonic inside its own reset. It only goes up until it rolls.
+**The counter is; a single reading is not.** The wire's per-request `rate_limit_event` can
+report a lower figure a second after a higher one for the same window (measured 2026-11-13: 14
+then 11, 19 then 14, one reset), so an instance keeps the high-water mark and closes on a moved
+reset rather than on any fall. That still gives us three properties no transcript can give:
 
 1. **The total is exact.** The last sample minus the first sample of a window instance is what
    the account actually spent, whatever caused it.
@@ -2994,10 +2997,31 @@ What this build carries, and what it deliberately does not:
 
 ---
 
-## 14. Pacing: the future goal
+## 14. Pacing: the plan, and the hold it puts on new work
 
-Not built in the first release, but the facts it needs are the ones the rest of this design
-stores, so the design is shaped to make it a view rather than a second subsystem.
+**Built**, in the shape below, with two gaps named at the end of §14.3. The facts it needs
+were already stored, so it landed as a reader and one gate rather than a second subsystem,
+which is what this section was shaped for.
+
+### 14.0 As built, in one place
+
+- **The plan** is `pace.ts`'s `Plan` (`on`, `mode`, `threshold`), stored per account
+  (`account.plan`, schema rung 74) and synced to every wall on the flyway as a fifth register
+  named `plan` (`flyway-core/src/accounts.rs`). The curve is linear: `expectedAt` is the
+  fraction of the week between its opening and its reset. The other shapes §14.1 allows are
+  not built, and the stored plan is opaque so they cost a reader rather than a migration.
+- **The reading** is `Waterfall.holdOf`, from the weekly window's own `used`, the plan, and a
+  rate over the account's last six hours of readings. Those readings are the wall's own
+  allowance samples: kept in a ring as they arrive (the three-minute poll and each card's
+  `rate_limit_event`), and read back once per account at launch so a fresh wall has a rate
+  rather than starting from nothing.
+- **The hold** is `paceHold` → `Skein.#noteAllowance` → `admit::Planned` → `verdict` and
+  `held_at`. A paced landing queues a spawn with `reason: "pace"`; a paced account holds that
+  account's wakes; a typed send is held in `#settleAccount` and re-checked in `#releaseCard`,
+  so a round already out is never interrupted.
+- **The face** says the plan's sentence, not an account's: the card's `why` is `paceNote`, the
+  wake's line is `waiting.ts`'s "held by the plan until …", and the dock distinguishes the two
+  by the same words.
 
 ### 14.1 The plan
 
@@ -3045,20 +3069,34 @@ already has a wall-global reason.
 **And it needs a release path of its own, because the gate's existing one is account-driven.**
 `admit` releases a held prompt when an account finds room; a pace hold has no account to find
 room, so it would sit until something unrelated moved. The pace release is the wall's own tick:
-the projection is recomputed from the latest allowance samples once a second while anything is
-held, and the hold is released when the projection falls back under the threshold, when the
-weekly `resets_at` passes, or when the person raises the plan or turns it off. The hold carries
-`reason: pace` and `until: min(next recompute, resets_at)`, and the same one-minute sweep that
-covers a blocker with no named reset covers it. The dock says *paced until the week resets* to
-distinguish it from *no account has room*.
+`#holdSweep` recomputes from the readings already in hand every minute while anything is held,
+and a hold is released when the plan stops holding, when the weekly `resets_at` passes, or when
+the person raises the plan or turns it off. The hold carries `reason: pace` and the week's reset
+as its `until`; the dock says *paced until the week resets* to distinguish it from *no account
+has room*. **And that tick costs no request**: because a pace is computed rather than fetched,
+a wall holding only paced work skips the allowance poll `#releasePass` otherwise makes, so a
+plan spanning days does not ask the endpoint once a minute for days (`usage.md` sets the polite
+cadence at three).
 
 **It must never stop a turn in flight.** A paused turn loses the context it just paid to
 build, and the whole point of pacing is to spend less, not to spend badly.
 
 **It must be escapable in one gesture.** Escape on a paced card drops the hold and returns
 your words to the draft, the same gesture and the same meaning an account hold already has. A
-boost or a bypass ignores the pace exactly as it ignores a cap. A pacing system that cannot be
+per-card bypass ignores the pace exactly as it ignores a cap. A pacing system that cannot be
 overruled on the afternoon that matters is one nobody leaves on.
+
+**Boost is not a third override, and the first draft of this sentence said it was.** Routing
+around a pace would put a card on credits, which is a bill rather than a decision to spend the
+week faster, and the routing layer is the one place a pace must not appear (above). What boost
+does do is already right: an account whose own credits cover a send is one `route` moves the
+card off, so it is not spending the paced week at all, and a paced account with room holds it
+like any other card.
+
+**Still missing, and both are readings rather than decisions.** The plan's line is not yet
+drawn on the room's chart, so the hold and the reading it comes from are seen in two places
+instead of one; and there is no advice beyond the sentence a held card wears. Neither changes
+what the gate does.
 
 ### 14.4 The five-hour window is not a budget
 
@@ -3075,6 +3113,51 @@ weekly gets the plan.
   accounts. The honest claim is *smoothing*, not *saving*.
 - It cannot know that tomorrow will be heavier than the plan. The plan is a decision, and a
   decision is allowed to be wrong; the view shows the error rather than hiding it.
+
+### 14.6 How fast the five-hour window is used, which is a different question
+
+Lyss, 2026-11-13: *"how fast do I use a 5 hour window, over time … if I notice a trend of me
+using the 5 hour window ever faster, that would be a good indicator of either claude secretly
+reducing allowance, or my workflow becoming less and less optimized."*
+
+**The measure is hours to consume a whole window.** For one instance of the five-hour window:
+its opening is `resets_at − 5h`, and its readings are cumulative from that opening, so a level
+reached at a known instant gives the window's average rate without needing the samples from its
+first minute.
+
+```text
+fill = time it crossed 100                 (a window that filled)
+     = observed × 100 / level              (one that had not, by the time it was last seen)
+```
+
+A window used up in an hour reads `1h`; one that would take six reads `6h`, and that direction
+is the point: a window that does not fill inside its own five hours says the wall does not
+usually run into it at all. `fill.ts` holds the arithmetic, pure and tested.
+
+**The trend is the median of the day against the week before it**, and it needs three windows
+on each side before it says anything. Medians rather than means because one mad afternoon is
+not a change in how a subscription is spent; closed windows only, because an open one is a
+projection that moves every time a turn lands. It warns when the recent median is 15% or more
+below the earlier one — above what a different mix of workdays does, below what a real change
+in an allowance would be.
+
+**It cannot tell the two causes apart, and must not pretend to.** A smaller allowance and
+heavier work are the same reading from here; the sentence names both and picks neither. What
+it can do is bound the claim honestly:
+
+- the rate is a window's *average*, so a slow start and a fast end read as one number;
+- a window already full when the wall first looked is timed at that first look, so its fill is
+  a lower bound on the time it took;
+- the samples only exist from schema v71, so a wall upgraded into this has no history until
+  it has run for a while — and the trend says *not enough windows yet* rather than nothing;
+- a gap in which the wall was not running is a gap in the samples, not a quiet window. A
+  window nobody sampled contributes no fill, which is the right direction: the reading goes
+  missing rather than low.
+
+Drawn in `Accounts.svelte` under the ceilings of the account it belongs to, with a sparkline of
+the last day's windows and one amber line at the top of the panel where the trend is faster.
+The room's strip is the natural place for a full chart later; the panel is where the windows
+and the plan already are, so the reading and the decision sit together.
 
 ---
 
@@ -3757,7 +3840,10 @@ Each phase is useful on its own and commits on its own.
    pull, `Now`, the two-second `live` frame, and the sealed prompt archive with its per-peer
    switch and tombstones.
 9. **Reports.** The second entry, the asset, the exporter, anonymization; the hall opt-in.
-10. **Pacing.** The plan curve, the measures, the advice, the opt-in holds.
+10. **Pacing.** **Built**: the linear plan stored per account and synced, the measures
+    (`pace.ts`, fed from the allowance samples), and the opt-in holds through the admission
+    gate (`admit.rs::Planned`), which is where §14.0 records it. **Not built**: other plan
+    shapes, the advice, and the plan line on the room's chart.
 11. **The persistent live channel**, when the live tool feed exists to justify it. Specified in
     section 20.1, deliberately not before.
 12. **The person's own actions** (§3.10), schema v73. **Built**, on one wall: the minute

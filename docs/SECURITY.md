@@ -238,8 +238,8 @@ stop. That argument holds for a person watching. It does not hold for a wall dri
 while nobody is in front of it.
 
 **What exists now.** `admit.rs` queues a spawn when the landing account's five-hour window is
-past 85% and another card is mid-turn on that account. That bounds spend near a limit, not
-fan-out.
+past 85% and another card is mid-turn on that account, or when that account's pacing plan is
+holding new work. That bounds spend near a limit and under a plan, not fan-out.
 
 **What to do.** Re-enable `MAX_LIVE` at every generation for cards opened over the flyway, or
 add a per-wall admission count that a remote key cannot exceed. Keep the local wall's

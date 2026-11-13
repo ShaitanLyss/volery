@@ -6,11 +6,15 @@
  * the endpoints are known (§5.1). A straight line would invent a rate for the
  * interval.
  *
- * A window is monotonic inside its own reset, which is the whole of what makes
- * this arithmetic worth anything: the last sample minus the first of an
- * instance is what the account actually spent, whatever caused it. A drop, or a
- * `resets_at` that moved, closes the instance and opens the next; nothing is
- * carried across.
+ * A window is monotonic inside its own reset **in truth, but not in every
+ * reading**: the wire's `rate_limit_event` carries the percentage one request
+ * saw, and two edges a beat apart report a lower figure for the same window
+ * (measured 2026-11-13 on this wall's own samples: 14 then 11, 19 then 14, one
+ * reset). So an instance closes on a moved reset, and on a fall large enough to
+ * be a roll rather than a counter read low, and the level it keeps is the
+ * high-water mark. That is the whole of what makes the arithmetic worth
+ * anything: the last sample minus the first of an instance is what the account
+ * spent, whatever caused it, and nothing is carried across a roll.
  *
  * Pure and directly tested. The attribution arithmetic itself is
  * `analytics.ts::residualOf`; this file only builds its input from samples and
@@ -142,10 +146,19 @@ export type WindowInstance = {
   resetsAt: number | null;
   from: number;
   to: number;
-  /** `used` at the first and last sample. */
+  /** `used` at the first sample, and the highest reading after it.
+   *
+   *  **The high, not the last.** A window is cumulative and the wire is not:
+   *  a `rate_limit_event` carries the percentage as one request saw it, and
+   *  two edges a beat apart report a lower figure for the same instant (measured
+   *  on this wall's own samples, 2026-11-13: 14% then 11%, 19% then 14%, inside
+   *  one window whose reset never moved). A counter can be read low; it cannot
+   *  be read high. So `last` is the high-water mark, and a dip is never a
+   *  window giving usage back. */
   first: number;
   last: number;
-  /** The sum of the positive steps. A roll never contributes one. */
+  /** The window's rise: every step above the previous high. A roll never
+   *  contributes one, and a wobble does not count twice. */
   delta: number;
   /** The step curve itself, for a sparkline: each sample's instant and value. */
   points: { at: number; used: number }[];
@@ -164,13 +177,34 @@ function sameReset(a: number | null, b: number | null): boolean {
   return Math.abs(a - b) <= RESET_TOLERANCE_MS;
 }
 
+/** How far a reading must fall for it to be a roll rather than a counter read
+ *  low. **Measured, not chosen:** over the samples this wall had on 2026-11-13,
+ *  the wire's dips inside one window are 1 to 5 points (14 then 11, 19 then 14),
+ *  and a roll takes the level back towards zero. Fifteen is clear of the noise
+ *  and cheap to be wrong about: merging a genuine roll that closed a window
+ *  under 15% (a quiet window nobody was going to hit a cap on) costs the next
+ *  window at most those points, where splitting a wobble costs every reading
+ *  after it a phantom instance. */
+const ROLL_DROP = 15;
+
 /** Every window instance the samples describe, oldest first.
  *
- *  **A negative step or a moved reset closes the instance.** The next sample
- *  opens a new one, and the delta starts again from its own first reading:
- *  nothing is carried across a roll. A sample naming no reset is one instance
- *  for its window: it contributes no delta and is never carried across a sample
- *  with a real reset. */
+ *  **A moved reset closes the instance**, and so does a fall large enough to be
+ *  a roll. The next sample opens a new one and the delta starts again from its
+ *  own first reading, so nothing is carried across a roll.
+ *
+ *  **A small dip does not close it, and used to.** The rule was written on the
+ *  premise that a shown window only goes up, and the `rate_limit_event` path
+ *  breaks it: it carries the percentage one request saw, and two edges a beat
+ *  apart report a lower figure for the same window (14 then 11, 19 then 14,
+ *  same reset). Every dip therefore opened a new instance, which made `delta` a
+ *  fraction of the real rise, split the model on a counter read low, and filled
+ *  the strip with instances that never existed. `last` is the high-water mark
+ *  instead, and a reading below it contributes nothing rather than starting a
+ *  window.
+ *
+ *  A sample naming no reset is one instance for its window: it contributes no
+ *  delta and is never carried across a sample with a real reset. */
 export function instancesOf(samples: readonly AllowanceSample[]): WindowInstance[] {
   const sorted = [...samples].sort((a, b) => a.at - b.at);
   const out: WindowInstance[] = [];
@@ -178,10 +212,12 @@ export function instancesOf(samples: readonly AllowanceSample[]): WindowInstance
   for (const s of sorted) {
     const key = keyOf(s);
     const current = open.get(key);
-    const rolled =
+    if (
       current !== undefined &&
-      (s.used < current.last || !sameReset(s.resetsAt, current.resetsAt));
-    if (rolled) open.delete(key);
+      (!sameReset(s.resetsAt, current.resetsAt) || s.used < current.last - ROLL_DROP)
+    ) {
+      open.delete(key);
+    }
     let one = open.get(key);
     if (!one) {
       one = {
@@ -202,7 +238,7 @@ export function instancesOf(samples: readonly AllowanceSample[]): WindowInstance
       continue;
     }
     one.delta += Math.max(0, s.used - one.last);
-    one.last = s.used;
+    one.last = Math.max(one.last, s.used);
     one.to = s.at;
     one.points.push({ at: s.at, used: s.used });
     if (s.host && !one.hosts.includes(s.host)) one.hosts.push(s.host);

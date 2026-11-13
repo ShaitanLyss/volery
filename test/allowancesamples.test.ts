@@ -461,6 +461,25 @@ describe("a window that has rolled", () => {
     expect(instances.length).toBe(2);
     expect(bindingOf(instances, NOW)!.last).toBe(4);
   });
+
+  /* The stream path carries the percentage one request saw, and two edges a
+     beat apart report a lower one for the same window — measured 2026-11-13 on
+     this wall's own samples (14 then 11, 19 then 14, one reset). That is not a
+     window giving usage back, and treating it as a roll split every instance
+     the feature had. */
+  test("a dip is a counter read low, not a roll", () => {
+    const got = instancesOf([
+      sample({ at: NOW - 30 * 60_000, used: 7 }),
+      sample({ at: NOW - 20 * 60_000, used: 14 }),
+      sample({ at: NOW - 15 * 60_000, used: 11 }),
+      sample({ at: NOW - 10 * 60_000, used: 16 }),
+      sample({ at: NOW, used: 19 }),
+    ]);
+    expect(got.length).toBe(1);
+    expect(got[0]!.last).toBe(19);
+    expect(got[0]!.delta).toBe(12, "the rise, and a wobble does not count twice");
+    expect(got[0]!.points.map((p) => p.used)).toEqual([7, 14, 11, 16, 19]);
+  });
 });
 
 describe("the gesture tile", () => {
