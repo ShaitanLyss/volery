@@ -28,7 +28,7 @@ A machine's monitor, live and drivable, on the wall and in chat view. `docs/SCRE
 contract the four lanes build against (the bytes, the adaptive table, who owns which file);
 this is why the webview half is shaped as it is.
 
-**One boundary reaches this subsystem: flying solo.** `solo.md` (design, unbuilt) stops the
+**One boundary reaches this subsystem: flying solo.** `solo.md` stops the
 flyway's traffic while keeping its books, and screens are traffic. While a wall is solo it
 publishes no monitor list and receives no frame; every remote surface — the widget, chat
 view's screens group and sheet, the all-screens grid, vignettes, immersive — comes down,

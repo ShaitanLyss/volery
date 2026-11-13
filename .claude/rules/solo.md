@@ -8,8 +8,10 @@ paths:
 
 # Flying solo: the flyway's books without its traffic
 
-**Design, unbuilt** (2026-11-13). Decided with Lyss: the word is *flying solo*; the empty
-left strip holds a small panel with the switch; one switch closes the whole flyway.
+Decided with Lyss: the word is *flying solo*; the empty left strip holds a small panel with
+the switch; one switch closes the whole flyway. The design below was written 2026-11-13 and
+built the same day; *What building it found* at the end is the half the design could not
+have known.
 
 ### The failure this exists for
 
@@ -237,3 +239,54 @@ Two frozen labs (`lab a`, `lab b --peer a`), one card each:
    returns the remote tile to its place.
 6. A flies again: the sections return, the stored glass spot is where it was, and B's
    still-waiting filed question appears in A's pile.
+
+### What building it found
+
+**The gate is one setting read at every door, not a filter on a frame.** `here::SOLO` is the
+instant solo started (absent while off). `Link::solo_here()` reads it fresh; every inbound
+fold (`take`, `answer`), every blocking exchange (`tail_here`, `act_here`, `see_here`,
+`look_here`, the stewards, moves) and every outbound one (`greeting`, `dial`,
+`publish_cards`, `board_changed`, `flyway_prompt`/`close`/`act`/`tail`/`look`/`open`/`move`)
+asks it. `Facts.solo` is the announcement; `Facts::present` goes false with it, so an older
+peer files rather than parks (the word it already knows), and `solo` lets a peer on this
+build say why.
+
+**A request never reaches a solo wall to be refused there.** A solo wall is *heard*, so every
+gate on the asking side — quiet, accepting — would let it through, and the far wall would
+answer with a sentence about its switch. `Link::solo_there` reads the target's own
+announcement, and `send_person`, `ask_spawn` and `reachable` refuse there in words that name
+the solo. Nothing is queued for the shutter to lift: a prompt delivered Monday would be a turn
+on a card running with the machine in its hands.
+
+**The cards are the one correctness trap, and it needed both directions.** A wall that stops
+publishing leaves stale cards drawn on every peer for ever, so peers drop a host's cards the
+moment its announcement says `solo` (`Link::hear`, through `Cards::depart`, so a snapshot
+still on its way from before cannot put them back) and the switch says one empty snapshot on
+the way in. The solo wall clears what it held with `Cards::forget`, **not `depart`**: a peer
+publishes only when its cards change, so an unchanged wall re-says the same version for days
+and `depart` would refuse that very snapshot when this wall flies again.
+
+**And flying again has to say the whole set again.** The publishing effect offers a snapshot
+only when it would draw differently, and the wall said an empty one on entering — so an
+unchanged fleet would never have been sent, and its cards would have stayed off every peer
+until some card happened to change. `Elsewhere.standUp` clears what was last offered and
+offers the whole set as the switch moves, which is a change because the *switch* moved.
+
+**A wall with no key is refused the switch**, so a plate and a mark about nothing cannot be
+put up.
+
+**Where it is drawn:** the plate is at the head of the strip `standElsewhere` would have used
+(`solo.ts::plateSpot`, the same arithmetic, tested against `layout`), one column wide, dotted
+and unshadowed, with no `data-conv`/`data-section` so it is bare ground to every wall gesture.
+Chat view has no strip: the state is its header's icon-only mark, the panel and the absence
+of the remote rows from the sidebar. The flyway button in the wall's bar wears `solo` and
+stays in the bar.
+
+**Driven between two frozen labs.** A's shadow of B and B's shadow of A both went on A flying
+solo; A's roster kept hearing B (14ms) and B's kept hearing A, drawn `solo`; the plate's own
+button and `space i s` both flew again, and B's shadow of A returned with it. The plate was
+found by `[data-plate="solo"]`, the panel's section by `[data-solo]` and the mark by its
+title. **Not driven:** the screens teardown end to end (it needs the cast host or a real
+monitor; `Casts.standDown` and the widget's `drawn` are the code, and `cast.md` holds the
+contract), a remote `ask_user` filing on its own wall during the solo, and an older peer's
+snapshot being dropped at the door rather than drawn.
