@@ -572,6 +572,22 @@ describe("a prompt sent while the card was working", () => {
     expect(h.lines[0].kind).toBe("relay");
   });
 
+  /* A person's parcel from another wall wears, off disk, the introduction the
+     live fold gives it — nothing but the words says which way it travelled
+     (`docs/PARCEL-DROP.md`, `parcel::manifest_signed`). Both folds must draw
+     the plate's direction from the same text. */
+  test("a person's parcel from another wall is introduced, as it was live", () => {
+    const text = [
+      "moved the notes over",
+      "",
+      "[skein parcel] 1 file · 13 B · from lab-b · in C:\\w\\from-you-1",
+      "+ notes.txt · 13 B",
+    ].join("\n");
+    const h = foldTranscript(jsonl(user(text)));
+    expect(h.lines[0].kind).toBe("you");
+    expect(h.lines[0].note).toBe("sent from lab-b");
+  });
+
   /* Twenty-odd other attachment kinds are real machinery -- 7199
      `total_tokens_reminder` and 1947 `hook_success` on this machine alone --
      and folding one of those would be far worse than the bug being fixed. */

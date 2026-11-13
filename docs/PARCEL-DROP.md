@@ -212,27 +212,55 @@ files and routes the answer, and its chat-card refusal is reached. Verified live
 with `answer.txt` landed at `from-you-1/answer.txt`, the ask closed, and the far agent read
 the answer with its manifest and landing path.
 
-Four findings, not fixed, for a decision:
+### The five gaps, settled (2026-11-13)
 
-1. **The sender's plate never settles.** `send_person` is fire-and-forget and the `taken`
-   answer carries no landing path, so the sender stays *sent with it / to host* while the
-   receiver shows the folder. The answer must carry the landing directory.
-2. **A late far-wall refusal loses the draft and the tiles.** `send_person` returns `Ok`
-   once pushed; an `accepting` refusal arrives later as `refused`, after the composer has
-   cleared. The design's "a refusal comes back to the draft" holds only for synchronous
-   refusals (solo, quiet, no flyway). The send has to park on acceptance the way the agent's
-   `send_files` does, or the refusal has to find the draft.
-3. **A received person's parcel, restored from history, reads *sent with it* on the
-   receiver.** Direction lives in the flyway event, not in the words, so the history fold
-   cannot tell a relayed person's prompt from one typed there. This is the mark hazard
-   `relay.md` records; a mark in the words would let the history fold draw the direction.
-4. **Escape does not revert a face drop.** The tile's ✕ does. The handler records nothing to
-   revert to; it should hold the draft before the drop and put it back on Escape.
+Each was fixed and then driven again on two frozen labs, both walls on this build.
 
-And one gap: the front end still offers a parcel strip for a remote chat card, because the
-carrier never sees the card kind. The honest fix is a carrier that can say "refuse", so the
-strip does not appear and the drop is refused in one line.
+1. **The sender's plate settles.** `Outcome::Opened` grew `landed`, the receiver keeps the
+   folder in `landed_in` from the moment the files are written until its front end says the
+   card has the message, and the answer that settles the send carries it. The sender's
+   `Sent.parcel` merges it, so the plate under the line reads *in …* as the receiver's does
+   instead of staying *to host*. Absent on every other answer and skipped when empty, so an
+   older wall reads the same frame it always did. Seen on a folder and on a file:
+   `beat1-landed-A.png`, `beat6-plate-A.png`.
+2. **A refusal returns the draft.** `flyway_parcel` now waits for the far wall's answer
+   (`send_person_held`, bounded by `fleet::patience_for`), and the composer takes the draft
+   whole, clears, then puts the sentence and the tiles back on the answer's `Err`. A wall
+   that simply stops answering is not a refusal, so past the bound the send answers `Ok` and
+   the line's own reading says it does not know. Driven with the far wall's switch off, the
+   refusal arriving after the send had left: `fix2-refused-draft.png`.
+3. **A restored parcel keeps its direction.** The manifest header carries `from <wall>`,
+   placed before `in <path>` so a reader that does not know the field still reads the path
+   the same way. `relay.ts::parcelOf` reads it, `history.ts` gives the restored line the
+   introduction note the live fold gives it, and the plate's verb is decided by either — so
+   the two folds agree about a message neither of them typed here. After a full reload, with
+   the transcript read off disk: `fix3-restored-B.png` still says *came with it*.
+4. **Escape reverts a face drop.** The drop holds the draft it replaced; Escape puts it back
+   while the tiles' ✕ keeps working as it did, and only while the line is still the one the
+   drop made, so a draft written into afterwards is never thrown away. `beat4-face-staged-A.png`
+   then `fix4-escape-A.png`. The first cut compared the held draft's card against `focused`,
+   which is the card's `Conversation` and therefore null on another wall; it compares the
+   focused handle now.
+5. **A remote chat card refuses the parcel strip.** `carrierFor` takes the card's `Reach`
+   and answers *refuse*, so nothing is measured, no strip appears, and the drop is refused in
+   one line beside the field (`fix5-chat-refused-A.png`) — the same sentence a face drop on a
+   chat card already gave.
 
-Two paths were not separately driven: a parcel in a notice reply (it shares the guarded path
-and the fix above), and the far wall's refusal through `land_parcel` (reachable, not driven
-end to end). The lab screenshots are in `.scratch-c76b1368/`.
+**And the two paths the e2e did not drive.** A parcel in a remote notice reply was staged in
+the notice's own box (`notice-reply-strip-A.png`) and sent as the follow-up
+(`notice-reply-sent-A.png`), the card's line carrying the manifest and its plate reading
+*came with it*. The far wall's refusal through `land_parcel` is now unreachable from the
+interface by design — item 5 is the door that closes — so it was driven by invoking the
+command the front end itself calls, against a remote chat card: *untitled is a chat card: it
+has no tools that can open a file*, synchronously, which is item 2's parking arriving on the
+second lock.
+
+Two smaller things were found while driving. A pending plate said *1 KB* for a 13 B file
+where the receiver's own plate (built by `parcel.rs`) said *13 B*, so the two ends of one
+parcel disagreed about what went — a tile now reads bytes under a kilobyte. And a `#[test]`
+an earlier commit had left on the wrong function in `fleet.rs` was put back, where
+`an_ask_opens_a_card_and_the_asker_hears_which` had been running as nothing at all.
+
+The six beats re-ran green on both labs, and this run's screenshots are in
+`.scratch-1f4638eb/` on the machine that drove them; the first run's are in
+`.scratch-c76b1368/`.
