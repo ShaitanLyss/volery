@@ -1676,10 +1676,12 @@ impl Fleet {
         /* A person's prompt only: an agent's message, a recall and a close
            never carry one, whatever the request says. */
         let pictures = if act == Act::Prompt && r.from_card.is_none() { r.pictures } else { Vec::new() };
-        /* An agent's message only, and only to a wall that lands one: a wall
+        /* An agent's `send_files`, or a person's dropped files and folders
+           (docs/PARCEL-DROP.md) — and only to a wall that lands one: a wall
            from before parcels would read the field as absent and hand the card
-           the words about files it never got. */
-        let parcel = if act == Act::Prompt && r.from_card.is_some() { r.parcel } else { None };
+           the words about files it never got. A person's plain prompt still
+           carries none. */
+        let parcel = if act == Act::Prompt { r.parcel } else { None };
         if parcel.is_some() && !there.facts.can.iter().any(|c| c == CAN_PARCEL) {
             return Err(Unsendable::Older { host: r.to, what: CAN_PARCEL });
         }
@@ -3687,7 +3689,7 @@ mod tests {
         };
         let older: Vec<String> = can_now().into_iter().filter(|c| c != CAN_PARCEL).collect();
         let mut lap = Fleet::new("lap", 0);
-        lap.on(statement("desk", 1, Facts { can: older, ..open_facts() }, None, 0), 0, &open_facts());
+        lap.on(statement("desk", 1, Facts { can: older.clone(), ..open_facts() }, None, 0), 0, &open_facts());
         assert!(matches!(lap.reach(Act::Prompt, req("p1"), 10), Err(Unsendable::Older { what: CAN_PARCEL, .. })));
 
         let mut lap = Fleet::new("lap", 0);
@@ -3698,10 +3700,19 @@ mod tests {
         /* Past a message's patience, and still waited for. */
         assert!(lap.prune(10 + GIVE_UP_MS + 1_000).is_empty());
 
-        /* A person's prompt never carries one, whatever the request says. */
+        /* A person's dropped files are a parcel too (docs/PARCEL-DROP.md), so
+           `from_card: None` carries one where a plain prompt carries none. */
         let person = PromptRequest { parcel: Some(carried.clone()), ..prompt_req("p3", "desk", "card-9") };
         let m = lap.reach(Act::Prompt, person, 10).unwrap();
+        assert_eq!(Fleet::new("desk", 0).on(m, 10, &open_facts()).deliver[0].parcel.as_ref(), Some(&carried));
+        /* A person's prompt with no parcel in it still carries none. */
+        let plain = prompt_req("p4", "desk", "card-9");
+        let m = lap.reach(Act::Prompt, plain, 10).unwrap();
         assert_eq!(Fleet::new("desk", 0).on(m, 10, &open_facts()).deliver[0].parcel, None);
+        /* And a person's parcel is refused by a wall that does not land one. */
+        let mut old_lap = Fleet::new("lap", 0);
+        old_lap.on(statement("desk", 1, Facts { can: older, ..open_facts() }, None, 0), 0, &open_facts());
+        assert!(matches!(old_lap.reach(Act::Prompt, PromptRequest { parcel: Some(carried.clone()), ..prompt_req("p5", "desk", "card-9") }, 10), Err(Unsendable::Older { what: CAN_PARCEL, .. })));
     }
 
     /// A recall's answer is for one card: it reaches the asker with no more in
