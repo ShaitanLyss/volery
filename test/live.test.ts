@@ -1,187 +1,95 @@
-/* Drives the real `claude` binary with Skein's exact flags and runs the actual
- * events through the actual classifier. Slow (real API turns) and excluded from
- * the default `bun test` run — see package.json.
- *
- * This is the test that proves the four-tier detector works on real output
- * rather than on output I imagined. */
+/* The live reading's arithmetic. Small, and every part of it is a number the
+ * eye will read as a fact about the last minute, so each one is checked rather
+ * than trusted. */
 
-import { expect, test, describe } from "bun:test";
-import { endingFor, type Ending } from "../src/lib/classify";
+import { describe, expect, test } from "bun:test";
+import { byHost, liveSaid, perMinute, stripOf, totalsIn, type LiveSample } from "../src/lib/live";
 
-const CWD = "C:\\atelier\\skein";
-const TURN_MS = 180_000;
+const NOW = 1_764_000_000_000;
+const MINUTE = 60_000;
 
-/** The exact argv supervisor.rs builds. Kept in sync by hand — if this drifts,
- *  the test stops testing what ships. */
-function argv(sessionId: string, extra: string[] = []) {
-  return [
-    "claude",
-    "--print",
-    "--input-format", "stream-json",
-    "--output-format", "stream-json",
-    "--verbose",
-    "--include-partial-messages",
-    "--replay-user-messages",
-    "--forward-subagent-text",
-    "--dangerously-skip-permissions",
-    "--session-id", sessionId,
-    ...extra,
-  ];
-}
+const sample = (over: Partial<LiveSample> = {}): LiveSample => ({
+  at: NOW,
+  host: "",
+  model: "claude-sonnet-5-5",
+  inTok: 0,
+  outTok: 0,
+  cacheRead: 0,
+  write: 0,
+  usd: 0.01,
+  ...over,
+});
 
-type Outcome = {
-  ending: Ending;
-  detail: string | null;
-  text: string;
-  tools: string[];
-  sawThinkingDelta: boolean;
-  sawTextDelta: boolean;
-  ctxTokens: number;
-};
-
-async function runTurn(prompt: string, extra: string[] = []): Promise<Outcome> {
-  const proc = Bun.spawn(argv(crypto.randomUUID(), extra), {
-    cwd: CWD,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
+describe("what landed in a window", () => {
+  test("sums the four classes and counts the requests", () => {
+    const got = totalsIn(
+      [sample({ inTok: 10, outTok: 20, cacheRead: 300, write: 40 }), sample({ inTok: 5 })],
+      NOW - MINUTE,
+      NOW + MINUTE,
+    );
+    expect(got.requests).toBe(2);
+    expect(got.tokens).toBe(375);
+    expect(got.usd).toBeCloseTo(0.02, 9);
   });
 
-  let stderrText = "";
-  void (async () => {
-    const r = proc.stderr.getReader();
-    const d = new TextDecoder();
-    try {
-      for (;;) {
-        const { done, value } = await r.read();
-        if (done) break;
-        stderrText += d.decode(value, { stream: true });
-      }
-    } catch {}
-  })();
+  test("the window is half open, so a sample on its edge is in exactly one of two adjacent windows", () => {
+    const rows = [sample({ at: NOW, inTok: 100 })];
+    expect(totalsIn(rows, NOW - MINUTE, NOW).tokens).toBe(0);
+    expect(totalsIn(rows, NOW, NOW + MINUTE).tokens).toBe(100);
+  });
 
-  proc.stdin.write(
-    JSON.stringify({
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text: prompt }] },
-    }) + "\n",
-  );
-  proc.stdin.flush();
+  test("a model the table could not place is counted as unpriced, never as free money", () => {
+    const got = totalsIn([sample({ usd: null, outTok: 500 })], NOW - 1, NOW + 1);
+    expect(got.usd).toBe(0);
+    expect(got.unpriced).toBe(500);
+    expect(got.tokens).toBe(500);
+  });
+});
 
-  const turnText: string[] = [];
-  const tools: string[] = [];
-  let sawAskTool = false;
-  let sawThinkingDelta = false;
-  let sawTextDelta = false;
-  let ctxTokens = 0;
-  let result: any = null;
+describe("the rate", () => {
+  test("is per minute, whatever the window's width", () => {
+    const totals = { requests: 2, tokens: 1_200, usd: 0.24, unpriced: 0 };
+    expect(perMinute(totals, NOW, NOW + MINUTE)!.tokens).toBeCloseTo(1_200, 6);
+    expect(perMinute(totals, NOW, NOW + 2 * MINUTE)!.tokens).toBeCloseTo(600, 6);
+  });
 
-  const reader = proc.stdout.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  const deadline = setTimeout(() => proc.kill(), TURN_MS - 5_000);
+  test("a window with no width is no reading rather than a slow one", () => {
+    expect(perMinute({ requests: 0, tokens: 0, usd: 0, unpriced: 0 }, NOW, NOW)).toBeNull();
+  });
+});
 
-  outer: for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop() ?? "";
-    for (const l of lines) {
-      if (!l.trim()) continue;
-      let ev: any;
-      try { ev = JSON.parse(l); } catch { continue; }
+describe("by machine", () => {
+  test("busiest first, and a machine with nothing in the window is absent", () => {
+    const rows = [
+      sample({ host: "laptop", inTok: 100 }),
+      sample({ host: "desk", inTok: 900 }),
+      sample({ host: "gone", inTok: 5_000, at: NOW - 10 * MINUTE }),
+    ];
+    const got = byHost(rows, NOW - MINUTE, NOW + MINUTE);
+    expect(got.map((r) => r.host)).toEqual(["desk", "laptop"]);
+  });
+});
 
-      if (ev.type === "stream_event") {
-        const d = ev.event?.delta;
-        if (d?.type === "thinking_delta") sawThinkingDelta = true;
-        if (d?.type === "text_delta") sawTextDelta = true;
-      }
-      if (ev.type === "assistant") {
-        for (const b of ev.message?.content ?? []) {
-          if (b.type === "text" && b.text?.trim()) turnText.push(b.text);
-          if (b.type === "tool_use") {
-            tools.push(b.name);
-            if (b.name === "AskUserQuestion" || b.name === "ExitPlanMode") sawAskTool = true;
-          }
-        }
-        const u = ev.message?.usage;
-        if (u) {
-          ctxTokens =
-            (u.input_tokens ?? 0) +
-            (u.cache_read_input_tokens ?? 0) +
-            (u.cache_creation_input_tokens ?? 0) +
-            (u.output_tokens ?? 0);
-        }
-      }
-      if (ev.type === "result") { result = ev; break outer; }
-    }
-  }
-  clearTimeout(deadline);
-  proc.kill();
+describe("the strip", () => {
+  test("a quiet column is a zero, so a lull draws as ground", () => {
+    const rows = [sample({ at: NOW + 1_000, inTok: 50 })];
+    const bars = stripOf(rows, NOW, NOW + 60_000, 6);
+    expect(bars).toHaveLength(6);
+    expect(bars[0]).toBe(50);
+    expect(bars.slice(1)).toEqual([0, 0, 0, 0, 0]);
+  });
 
-  if (!result) {
-    throw new Error(`no result event. stderr:\n${stderrText.slice(0, 800)}`);
-  }
+  test("a sample at the end of the window belongs to no column of it", () => {
+    const bars = stripOf([sample({ at: NOW + 60_000, inTok: 50 })], NOW, NOW + 60_000, 6);
+    expect(bars.reduce((a, b) => a + b, 0)).toBe(0);
+  });
+});
 
-  const text = turnText.join("\n");
-  const { ending, detail } = endingFor(result, text, sawAskTool);
-  return { ending, detail, text, tools, sawThinkingDelta, sawTextDelta, ctxTokens };
-}
-
-describe("the detector, against real turns", () => {
-  test(
-    "a statement ending ⇒ 'ok'",
-    async () => {
-      const o = await runTurn(
-        "Reply with exactly the word: done. No punctuation, no question, nothing else.",
-      );
-      console.log("  text:", JSON.stringify(o.text.slice(0, 120)));
-      expect(o.ending).toBe("ok");
-    },
-    TURN_MS,
-  );
-
-  test(
-    "a question ending ⇒ 'question'",
-    async () => {
-      const o = await runTurn(
-        "Ask me exactly one short question about this repository, and make the " +
-          "question the very last thing in your reply. Do not answer it yourself.",
-      );
-      console.log("  text:", JSON.stringify(o.text.slice(-120)));
-      expect(o.ending).toBe("question");
-    },
-    TURN_MS,
-  );
-
-  test(
-    "an API failure ⇒ 'error'",
-    async () => {
-      const o = await runTurn("hi", ["--model", "claude-does-not-exist-9"]);
-      console.log("  detail:", o.detail);
-      expect(o.ending).toBe("error");
-    },
-    TURN_MS,
-  );
-
-  test(
-    "a tool-using turn reports real work and real context",
-    async () => {
-      const o = await runTurn(
-        "Read package.json and reply with just the version. Be terse.",
-      );
-      console.log(
-        "  tools:", o.tools.join(", "),
-        "| ctx:", o.ctxTokens,
-        "| thinking:", o.sawThinkingDelta,
-        "| text:", o.sawTextDelta,
-      );
-      expect(o.tools).toContain("Read");
-      // The ring must have something real to draw, and it must be sane.
-      expect(o.ctxTokens).toBeGreaterThan(1000);
-      expect(o.ctxTokens).toBeLessThan(200_000);
-    },
-    TURN_MS,
-  );
+describe("saying a rate", () => {
+  test("says thousands and millions, and quiet for nothing", () => {
+    expect(liveSaid(0)).toBe("quiet");
+    expect(liveSaid(420)).toBe("420 tok/min");
+    expect(liveSaid(12_500)).toBe("12.5k tok/min");
+    expect(liveSaid(2_400_000)).toBe("2.40M tok/min");
+  });
 });

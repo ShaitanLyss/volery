@@ -32,6 +32,8 @@ import {
   type VaultMode,
 } from "./lib/analyticsfixture";
 import { windowRequest, type AnalyticsWindow } from "./lib/analyticsroom";
+import { live } from "./lib/live.svelte";
+import { seedLive } from "./lib/analyticsfixture";
 
 const asked = new URLSearchParams(location.search);
 const mode: FixtureMode = asked.has("empty") ? "empty" : asked.has("quiet") ? "quiet" : "normal";
@@ -150,6 +152,7 @@ if (asked.has("report")) {
     },
   });
 } else {
+  seedLive(live, Date.now());
   mount(Analytics, {
     target: document.getElementById("app")!,
     props: {
@@ -173,6 +176,9 @@ if (asked.has("report")) {
       prompts: fixturePromptReader(mode, vault),
       work: fixtureWorkReader(mode),
       behaviour: fixtureBehaviourReader(mode),
+      /* The live panel is fed by the event stream, which a preview has none of,
+         so it is seeded with five minutes of made-up traffic. It is the one
+         reading on this page that cannot come from a fixture reader. */
       onclose: () => location.reload(),
       read: async (span: string, now: number): Promise<AnalyticsWindow> =>
         fixtureWindow(windowRequest(span, now), mode),

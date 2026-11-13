@@ -1600,3 +1600,29 @@ export function fixtureAllowanceCosts(from: number, to: number): AllowanceCost[]
   }
   return out;
 }
+
+/** Five minutes of made-up traffic for the live panel, which on a wall is fed
+ *  by the event stream and has no fixture reader. Bursty on purpose: a flat
+ *  line would not show that the strip is drawn at all. */
+export function seedLive(
+  into: { note: (host: string, model: string, usage: Record<string, number>, at: number) => void },
+  now: number,
+): void {
+  const models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"];
+  for (let i = 0; i < 90; i++) {
+    const at = now - 5 * 60_000 + i * 3_333;
+    const busy = Math.max(0, Math.sin((i / 90) * Math.PI));
+    if (busy < 0.1) continue;
+    into.note(
+      i % 7 === 0 ? "QUEERISFREEDOM" : "",
+      models[i % models.length]!,
+      {
+        input_tokens: Math.round(200 * busy),
+        output_tokens: Math.round(40 * busy),
+        cache_read_input_tokens: Math.round(18_000 * busy),
+        cache_creation_input_tokens: Math.round(900 * busy),
+      },
+      at,
+    );
+  }
+}

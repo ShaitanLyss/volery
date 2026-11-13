@@ -99,6 +99,7 @@ import {
   type Compaction,
 } from "./compaction";
 import { costStep, priceOf } from "./usage";
+import { live } from "./live.svelte";
 import { providerOf, providerModel } from "./providers";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
@@ -3367,6 +3368,12 @@ export class Conversation {
             (u.cache_read_input_tokens ?? 0) +
             (u.cache_creation_input_tokens ?? 0) +
             (u.output_tokens ?? 0);
+          /* **The live reading's one source.** This is the place that already
+             reads a request's own usage, so the ephemeral roll is noted here
+             and nowhere else: a second caller is the same request counted
+             twice. The host is empty because this stream only ever carries
+             this wall's cards, and the face resolves the name off the roster. */
+          live.note("", ev.message?.model ?? this.model, u, Date.now());
         }
         if (ev.message?.model) this.#adoptModel(ev.message.model, false);
         /* After the id, never before it: adopting narrows or widens the window,

@@ -44,6 +44,7 @@
   import type { Bucket } from "./analytics";
   import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
   import AnalyticsFundings from "./AnalyticsFundings.svelte";
+  import AnalyticsLive from "./AnalyticsLive.svelte";
   import type { CardLife } from "./analyticslife";
   import type { StripTile } from "./analyticstiles";
   import type { Exchange, FundingMix, FundingReading } from "./fundings";
@@ -310,6 +311,8 @@
       </div>
     {/each}
   </div>
+
+  <AnalyticsLive />
 
   <AnalyticsFundings readings={funding.readings} exchange={funding.exchange} mix={funding.mix} />
 
