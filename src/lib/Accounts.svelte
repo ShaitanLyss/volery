@@ -790,6 +790,15 @@
                           onchange={(e) => setCap(account.label, kind, e.currentTarget.value)}
                         />
                         <span class="pc">%</span>
+                        <!-- **Zero is not "unset", and it reads like a number
+                             until something says otherwise.** Lyss, 2026-11-13:
+                             an account came back and nothing would use it, and
+                             the answer was a ceiling she had set to 0 and read
+                             as no ceiling. Blank is no ceiling; zero is a wall
+                             across every card on the account. -->
+                        {#if cap === 0}
+                          <span class="capzero">never: no card starts on this account</span>
+                        {/if}
                       </label>
                     {:else}
                       <span class="dim">no windows read yet</span>
@@ -1447,6 +1456,12 @@
   }
   .pc {
     color: var(--paper-faint);
+  }
+  /* Not faint: this is the difference between a ceiling and a wall, and a row
+     with a 0 in it looks exactly like a row with an ordinary number in it. */
+  .capzero {
+    color: var(--paper-mute);
+    font-size: 10.5px;
   }
 
   .looks {

@@ -46,6 +46,17 @@ waterfall.standIn([
     ],
   },
   {
+    /* A ceiling of zero, which is a wall across the account rather than "no
+       ceiling": the state that sent Lyss looking for a reason nothing would
+       use an account that had just come back. */
+    label: "personal",
+    caps: { session: 0 },
+    windows: [
+      { kind: "session", group: "session", used: 40, severity: "normal", resetsAt: NOW + HOUR, scope: null, active: true },
+      { kind: "weekly_all", group: "weekly", used: 8, severity: "normal", resetsAt: NOW + 72 * HOUR, scope: null, active: false },
+    ],
+  },
+  {
     label: "tx-team",
     windows: [
       { kind: "session", group: "session", used: 20, severity: "normal", resetsAt: NOW + 2 * HOUR, scope: null, active: true },
