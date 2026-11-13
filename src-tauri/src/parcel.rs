@@ -997,6 +997,85 @@ pub fn afar_line(carried: &Carried, host: &str) -> String {
     line
 }
 
+/* ── a person's parcel ───────────────────────────────────────────────────────
+ *
+ * A person dropping files and folders onto a card gets a parcel, held to the
+ * same walk an agent's `send_files` is (docs/PARCEL-DROP.md). There is no card
+ * behind the person, so a landing signs as `you` — `from-you-<n>` — and the
+ * secret row lands on the receiving card's chronicle, where the files are.
+ */
+
+/// What `parcel_measure` answers: the summary the strip above the field draws,
+/// gathered against the right caps but never copied. The front end reads the
+/// secret-shaped names off `tops`.
+#[derive(serde::Serialize)]
+pub struct Summary {
+    pub files: usize,
+    pub bytes: u64,
+    pub tops: Vec<Top>,
+    pub left: Vec<Left>,
+    pub left_more: usize,
+}
+
+/// What `parcel_local` answers once the files are copied into the card's own
+/// folder: the manifest the prompt carries and where it landed.
+#[derive(serde::Serialize)]
+pub struct LocalLand {
+    pub manifest: String,
+    pub landed: String,
+}
+
+/// Measure what `paths` means as a parcel against `caps`, without copying
+/// anything — the strip's summary, asked on drop so a folder's contents, its
+/// left-out lines and any secret are answerable while they can still be
+/// changed. A refusal (a cap, a link named directly, a share, nothing to send)
+/// is the `Err`, and nothing has been written. `caps` is `"afar"` for a card on
+/// another wall, anything else is this wall's.
+#[tauri::command]
+pub async fn parcel_measure(paths: Vec<String>, caps: String) -> Result<Summary, String> {
+    let caps = if caps == "afar" { AFAR } else { HERE };
+    crate::off_main(move || {
+        let base = std::path::PathBuf::new(); // a drop names absolute paths
+        let p = gather(&paths, &base, &caps)?;
+        if p.items.is_empty() {
+            return Err(NOTHING.into());
+        }
+        Ok(Summary { files: p.items.len(), bytes: p.bytes(), tops: p.tops, left: p.left, left_more: p.left_more })
+    })
+    .await?
+}
+
+/// A person's parcel to a card on this wall: gather against `HERE`, land it in
+/// that card's own folder under `from-you-<n>`, and answer the manifest the
+/// front end then sends with the sentence (`Skein.send`). A refusal returns
+/// nothing written, and the tiles are handed back to the draft.
+#[tauri::command]
+pub async fn parcel_local(app: AppHandle, card: String, paths: Vec<String>) -> Result<LocalLand, String> {
+    let wall = app.state::<crate::store::Store>().1.clone();
+    crate::off_main(move || {
+        let base = std::path::PathBuf::new();
+        let parcel = gather(&paths, &base, &HERE)?;
+        if parcel.items.is_empty() {
+            return Err(NOTHING.into());
+        }
+        let into = landing(&crate::attachments::card_dir(&wall, &card), "you")
+            .map_err(|e| format!("could not make a folder in that card's own folder: {e}"))?;
+        land(&parcel, &into)?;
+        let secrets = parcel.secrets();
+        if !secrets.is_empty() {
+            crate::chronicle::note_card(
+                &app,
+                &card,
+                "note",
+                &format!("received {} from you", count(secrets.len(), "secret-shaped file")),
+                &secrets.join(", "),
+            );
+        }
+        Ok(LocalLand { manifest: manifest(&parcel, &into.display().to_string()), landed: into.display().to_string() })
+    })
+    .await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1071,6 +1150,14 @@ mod tests {
         land(&p, &into).unwrap();
         assert_eq!(fs::read_to_string(into.join(".env-2")).unwrap(), "2");
         assert!(landing(&d.join("land"), "ccec3736").unwrap().ends_with("from-ccec3736-2"));
+    }
+
+    #[test]
+    fn a_persons_parcel_lands_under_from_you() {
+        let d = scratch("you");
+        let into = landing(&d.join("land"), "you").unwrap();
+        assert!(into.ends_with("from-you-1"), "{into:?}");
+        assert!(landing(&d.join("land"), "you").unwrap().ends_with("from-you-2"));
     }
 
     #[test]

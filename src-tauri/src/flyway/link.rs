@@ -2315,6 +2315,63 @@ impl Link {
                 };
                 answer(self, m);
             }
+            /* A person's dropped files and folders (docs/PARCEL-DROP.md): the
+               files are pulled and landed in the card's own folder under
+               `from-you-<n>`, then the card is handed the sentence and the
+               manifest the way a person's prompt is — to the front end
+               (`flyway:prompt`), which sends it and answers
+               `flyway_prompt_answer`, with the same parking and receipt. On a
+               task, since a parcel is megabytes and this is the serving task. */
+            Act::Prompt if d.asked_by.card.is_none() && d.parcel.is_some() => {
+                let l = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    let parcel = d.parcel.clone().unwrap_or_else(|| unreachable!());
+                    let landed = l.land_parcel(&host, &d.card, "you", &row, &parcel).await;
+                    let w = l.clone();
+                    let m = crate::off_main(move || -> Option<FleetMsg> {
+                        let now = w.now();
+                        match landed {
+                            Ok((block, _into)) => {
+                                let body = format!("{}\n\n{block}", crate::parcel::unmark(&d.text));
+                                let secrets: Vec<String> = parcel.parcel().secrets().iter().map(|s| s.to_string()).collect();
+                                if !secrets.is_empty() {
+                                    crate::chronicle::note_card(
+                                        &w.app,
+                                        &row.id,
+                                        "note",
+                                        &format!("received {} from a person on {host}", secrets.len()),
+                                        &secrets.join(", "),
+                                    );
+                                }
+                                if let Ok(mut p) = w.prompts_in.lock() {
+                                    p.insert((host.clone(), request.clone()), now);
+                                }
+                                let _ = w.app.emit(
+                                    "flyway:prompt",
+                                    PromptHere {
+                                        id: request,
+                                        from: PromptFrom { host, card: None },
+                                        card: row.id.clone(),
+                                        text: body,
+                                        notice: None,
+                                        pictures: Vec::new(),
+                                        answers: None,
+                                        deferred: None,
+                                    },
+                                );
+                                None
+                            }
+                            Err(why) => w.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now)),
+                        }
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(m) = m {
+                        l.route(&[m], None);
+                    }
+                });
+            }
             /* From a person at another wall's dock: the front end sends it as
                though typed here, introduced, and answers `flyway_prompt_answer`.
                Its pictures are checked again here, on the machine whose card
@@ -4053,6 +4110,50 @@ pub async fn flyway_prompt(
             project: None,
             pictures,
             parcel: None,
+        })
+    })
+    .await?
+}
+
+/// A person's dropped files and folders to a card on another wall
+/// (docs/PARCEL-DROP.md): gathered against `AFAR`, staged for that wall to pull,
+/// and sent with `from_card: None` — the far wall lands it in the card's own
+/// folder and hands the card the sentence and the manifest. `Ok` means it is on
+/// its way; `flyway:prompt-answer` says what became of it. Refused at once when
+/// that wall is quiet, unknown, or too old to land a parcel (`fleet::CAN_PARCEL`),
+/// with nothing copied.
+#[tauri::command]
+pub async fn flyway_parcel(
+    app: AppHandle,
+    id: String,
+    to: String,
+    card: String,
+    text: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let Some(l) = current(&app) else {
+        return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
+    };
+    if l.solo_here() {
+        return Err(l.solo_refusal("dropping files on other walls' cards"));
+    }
+    let wall = app.state::<crate::store::Store>().1.clone();
+    crate::off_main(move || {
+        let base = std::path::PathBuf::new(); // a drop names absolute paths
+        let parcel = crate::parcel::gather(&paths, &base, &crate::parcel::AFAR)
+            .and_then(|p| crate::parcel::stage(&wall, &to, &card, &p))?;
+        let text = if text.trim().is_empty() { crate::parcel::BARE.to_string() } else { text };
+        l.send_prompt(PromptRequest {
+            id,
+            from_card: None,
+            to,
+            card,
+            text,
+            answers: None,
+            title: None,
+            project: None,
+            pictures: Vec::new(),
+            parcel: Some(parcel),
         })
     })
     .await?
