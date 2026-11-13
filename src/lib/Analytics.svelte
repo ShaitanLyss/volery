@@ -73,7 +73,9 @@
   import {
     exchangesOf,
     fundingReadings,
+    mixOf,
     type Exchange,
+    type FundingMix,
     type FundingReading,
     type FundingRow,
   } from "./fundings";
@@ -716,6 +718,13 @@
   );
   const fundingExchange = $derived(
     fundingRowsToday === null ? [] : exchangesOf(instances, costBuckets ?? [], fundingRowsToday),
+  );
+  /* What the day's tokens were made of, per funding (§21.1). Read from the same
+     fine rows the residual uses, folded over the day the money is counted on.
+     Quantised to the minute for the reason the exchange is: the price of a
+     cache read does not move between two ticks. */
+  const fundingMix = $derived(
+    costRows === null ? null : mixOf(costRows, dayStart(fundAt), fundAt),
   );
 
   const spanSaid = $derived(SPANS.find((s) => s.span === span)?.said ?? span);
@@ -1517,7 +1526,7 @@
         title={`${spanSaid} · ${measureSaid}${split ? ` · ${splitSaid}` : ""}`}
         bucket={bucket}
         strip={strip ?? []}
-        funding={{ readings: fundingRowsToday, exchange: fundingExchange }}
+        funding={{ readings: fundingRowsToday, exchange: fundingExchange, mix: fundingMix }}
         card={card && cardInRoom ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard } : undefined}
       />
     {:else}

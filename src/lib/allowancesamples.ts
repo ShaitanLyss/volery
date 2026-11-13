@@ -308,15 +308,24 @@ export function asAllowanceCosts(raw: unknown): AllowanceCost[] {
  *  and unknown in dollars, so they stay out of the denominator rather than
  *  being counted at zero, which would make an unknown model look free and the
  *  residual smaller than it is. */
-export function costBucketsOf(rows: readonly AllowanceCost[]): CostBucket[] {
+/** **The rows a money reading may count.** A transcript and a backfilled `turn`
+ *  row can describe the same session-hour, and the finer source wins: counting
+ *  both is the double-count §7.4 exists to prevent. Exported because the
+ *  per-class mix needs the same decision, and two copies of it would disagree
+ *  about a day's total by the overlap. */
+export function preferredCostRows(rows: readonly AllowanceCost[]): AllowanceCost[] {
   const fine = new Set(
     rows
       .filter((r) => r.provenance === "transcript")
       .map((r) => `${r.session}\u0000${Math.floor(r.at / 3_600_000)}`),
   );
-  const kept = rows.filter(
+  return rows.filter(
     (r) => r.provenance === "transcript" || !fine.has(`${r.session}\u0000${Math.floor(r.at / 3_600_000)}`),
   );
+}
+
+export function costBucketsOf(rows: readonly AllowanceCost[]): CostBucket[] {
+  const kept = preferredCostRows(rows);
   const merged = new Map<string, CostBucket>();
   for (const r of kept) {
     const fact: Fact = {

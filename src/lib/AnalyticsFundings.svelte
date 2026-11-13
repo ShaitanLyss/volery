@@ -19,18 +19,39 @@
  */
 
 import { count, money } from "./usage";
-import { fundingSaid, type Exchange, type FundingReading } from "./fundings";
+import {
+  fundingSaid,
+  type Exchange,
+  type FundingMix,
+  type FundingReading,
+} from "./fundings";
 
 let {
   readings,
   exchange,
+  mix,
 }: {
   /** `null` is a read that failed; `[]` is a day with nothing settled in it. */
   readings: readonly FundingReading[] | null;
   /** Dollars at api rates per allowance point, per account and kind. Empty
    *  when the attribution could not be computed; a rate is never invented. */
   exchange: readonly Exchange[];
+  /** The day's tokens by class, per funding label (§21.1). `null` is a failed
+   *  read, which the panel says rather than drawing four empty rows. */
+  mix: readonly FundingMix[] | null;
 } = $props();
+
+/** The funding whose breakdown is pinned open. A hover shows it; a click or a
+ *  keyboard's Enter keeps it up, which is what makes the trace reachable
+ *  without a pointer. */
+let opened = $state<string | null>(null);
+
+/** What a cell's hover says about one class: the count, what it cost, and the
+ *  effective rate, which is an average across the models the day used. */
+function classSaid(tokens: number, usd: number): string {
+  const rate = tokens > 0 ? `$${((usd / tokens) * 1e6).toFixed(2)}/M` : "";
+  return `${count(tokens)} · ${usd > 0 ? money(usd) : "—"}${rate ? ` · ${rate}` : ""}`;
+}
 
 const total = $derived.by(() => {
   const rows = readings ?? [];
@@ -61,6 +82,13 @@ const totalSay = $derived(
       ? "one subscription, so the day's percentage is that account's"
       : "not summed: two accounts' points are not the same currency",
 );
+
+/** A label's breakdown, or null where the read failed or the funding's facts
+ *  are not in the day the money is counted on (a card whose turn settled after
+ *  midnight, a plan whose work happened elsewhere). */
+function mixOfLabel(all: readonly FundingMix[] | null, label: string): FundingMix | null {
+  return all?.find((m) => m.label === label) ?? null;
+}
 
 function windowOf(r: FundingReading, kind: string): { kind: string; points: number } | null {
   return r.windows.find((w) => w.kind === kind) ?? null;
@@ -125,6 +153,7 @@ function rateSaid(usd: number): string {
             {@const week = windowOf(r, "weekly_all")}
             {@const sessionRate = rateOf(r.label, "session")}
             {@const weekRate = rateOf(r.label, "weekly_all")}
+            {@const one = mixOfLabel(mix, r.label)}
             <tr>
               <th scope="row" class="af-name">
                 <span class="af-label">{fundingSaid(r.label, r.kind)}</span>
@@ -138,7 +167,57 @@ function rateSaid(usd: number): string {
               >
                 {unpriced(r) ? "unpriced" : money(r.usd)}
               </td>
-              <td class="af-num">{count(r.tokens)}</td>
+              <!-- **15M of what.** A raw total is mostly cache reads, and the
+                   same count can be a dollar or hundreds; the trace is one
+                   hover away rather than four columns wider, and it works from
+                   the keyboard because the cell takes focus. -->
+              <td class="af-num">
+                <!-- A button rather than a span: it reveals something, it takes
+                     focus, and it can be pinned open with the same gesture a
+                     keyboard uses. -->
+                <button
+                  type="button"
+                  class="af-mix"
+                  aria-expanded={opened === r.label}
+                  aria-describedby={one ? `af-tip-${r.label}` : undefined}
+                  onclick={() => (opened = opened === r.label ? null : r.label)}
+                  onblur={() => (opened === r.label ? (opened = null) : undefined)}
+                >
+                  {count(r.tokens)}
+                  {#if one}
+                    <span class="af-tip" role="tooltip" id={`af-tip-${r.label}`}>
+                      <span class="af-tip-head">tokens today, priced as the day ran</span>
+                      <span class="af-tip-row"
+                        ><span>input</span><span>{classSaid(one.input.tokens, one.input.usd)}</span></span
+                      >
+                      <span class="af-tip-row"
+                        ><span>output</span><span>{classSaid(one.output.tokens, one.output.usd)}</span></span
+                      >
+                      <span class="af-tip-row"
+                        ><span>cache read</span><span>{classSaid(one.cacheRead.tokens, one.cacheRead.usd)}</span
+                        ></span
+                      >
+                      <span class="af-tip-row"
+                        ><span>cache write</span><span
+                          >{classSaid(one.cacheWrite.tokens, one.cacheWrite.usd)}</span
+                        ></span
+                      >
+                      <!-- The trace's own total, so the four rows add up on the
+                           face. It is the fine tier's reading of the same day
+                           and can differ from the cell's figure, which is the
+                           settlement table's; a difference is a turn no
+                           transcript was read for, not a rounding. -->
+                      <span class="af-tip-row af-tip-total"
+                        ><span>all four</span><span>{classSaid(one.tokens, one.usd)}</span></span
+                      >
+                      <span class="af-tip-foot">
+                        {count(one.weight)} input-token equivalents
+                        {#if one.unpriced > 0}· {count(one.unpriced)} unpriced{/if}
+                      </span>
+                    </span>
+                  {/if}
+                </button>
+              </td>
               <td
                 class="af-num"
                 title={r.kind === "plan"
@@ -261,8 +340,12 @@ function rateSaid(usd: number): string {
     font-size: 11.5px;
     color: var(--paper-mute);
   }
+  /* **Not a scroller, and that is deliberate.** `overflow-x: auto` computes its
+     other axis to `auto` too, so a scroller here would clip the token panel
+     that hangs under the cell. The table has five short columns and fits; a
+     room dragged narrower compresses it rather than hiding the trace. */
   .af-wrap {
-    overflow-x: auto;
+    overflow: visible;
   }
   .af-table {
     width: 100%;
@@ -312,6 +395,78 @@ function rateSaid(usd: number): string {
   .af-num {
     text-align: right !important;
     white-space: nowrap;
+  }
+
+  /* The tokens cell and its trace (§21.1). The button is the cell's own
+     reading, drawn as text: it is interactive only because it reveals
+     something, so it carries no chrome until it is hovered or focused. */
+  .af-mix {
+    position: relative;
+    display: inline-block;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: help;
+    border-bottom: 1px dotted var(--edge);
+  }
+  .af-mix:hover,
+  .af-mix:focus-visible {
+    color: var(--paper);
+    border-bottom-color: var(--paper-mute);
+    outline: none;
+  }
+  .af-tip {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 20;
+    width: max-content;
+    min-width: 250px;
+    padding: 9px 11px 8px;
+    text-align: left;
+    background: var(--raised);
+    border: 1px solid var(--edge);
+    border-radius: 7px;
+    box-shadow: 0 12px 28px rgb(0 0 0 / 42%);
+    color: var(--paper-dim);
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: nowrap;
+  }
+  .af-mix:hover .af-tip,
+  .af-mix:focus-visible .af-tip,
+  .af-mix[aria-expanded="true"] .af-tip {
+    display: block;
+  }
+  .af-tip-head {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--paper-mute);
+    font-size: 10px;
+    letter-spacing: 0.03em;
+  }
+  .af-tip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    font-variant-numeric: tabular-nums;
+  }
+  .af-tip-row > span:first-child {
+    color: var(--paper-mute);
+  }
+  .af-tip-total {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--edge);
+    color: var(--paper);
+  }
+  .af-tip-foot {
+    display: block;
+    margin-top: 3px;
+    color: var(--paper-mute);
   }
   .af-money {
     color: var(--paper);

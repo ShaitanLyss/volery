@@ -46,7 +46,7 @@
   import AnalyticsFundings from "./AnalyticsFundings.svelte";
   import type { CardLife } from "./analyticslife";
   import type { StripTile } from "./analyticstiles";
-  import type { Exchange, FundingReading } from "./fundings";
+  import type { Exchange, FundingMix, FundingReading } from "./fundings";
 
   let {
     window: win,
@@ -80,7 +80,14 @@
     /** The day split by who paid (§21): the title bar's figure, the account's
      *  windows, and the exchange between them. `readings` is null when that read
      *  failed, which the block says in words. */
-    funding: { readings: readonly FundingReading[] | null; exchange: readonly Exchange[] };
+    funding: {
+      readings: readonly FundingReading[] | null;
+      exchange: readonly Exchange[];
+      /** The day's tokens by class, per funding label. `null` is a read that
+       *  failed, which the tokens cell says rather than drawing an empty
+       *  breakdown. */
+      mix: readonly FundingMix[] | null;
+    };
     /** A card opened from its own row or `<space> n a` (§11.10). It is the
      *  inspector's first block, above the bucket, because the room has exactly
      *  one column on the right and two panels called inspector is one too
@@ -295,7 +302,7 @@
     {/each}
   </div>
 
-  <AnalyticsFundings readings={funding.readings} exchange={funding.exchange} />
+  <AnalyticsFundings readings={funding.readings} exchange={funding.exchange} mix={funding.mix} />
 
   <div class="an-main" class:with-card={!!card}>
 <section class="an-canvas" aria-label={table ? "the window as a table" : "the window over time"} tabindex="-1" bind:this={canvas}>

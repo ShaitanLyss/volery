@@ -30,7 +30,14 @@
 
 import { isSentinel } from "./analytics";
 import { CREDITS } from "./credits";
-import { attributedCostOf, type CostBucket, type WindowInstance } from "./allowancesamples";
+import {
+  attributedCostOf,
+  preferredCostRows,
+  type AllowanceCost,
+  type CostBucket,
+  type WindowInstance,
+} from "./allowancesamples";
+import { CACHE_READ, WRITE_1H, WRITE_5M, rateAt } from "./usage";
 
 /** Where a turn's money came from.
  *
@@ -266,4 +273,90 @@ function obj(v: unknown): Record<string, unknown> | null {
 }
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+/* ── what the tokens were made of (§21.1) ───────────────────────────────────*/
+
+/** One class of token, and what it cost at API rates. */
+export type MixClass = { tokens: number; usd: number };
+
+/** A funding's day, broken into the four kinds of token and their prices.
+ *
+ *  **This is the answer to "15M of what".** A raw total is 90% cache reads on a
+ *  working day, so the same 15M can be about a dollar or a few hundred. The
+ *  row's dollars stay the CLI's own figure; this is the model's reading of the
+ *  same work, priced per class at each fact's own instant. */
+export type FundingMix = {
+  label: string;
+  input: MixClass;
+  output: MixClass;
+  cacheRead: MixClass;
+  cacheWrite: MixClass;
+  tokens: number;
+  usd: number;
+  /** The same day in **input-token equivalents**: each class's dollars divided
+   *  by the input rate it was charged, so one number can be compared with
+   *  another day's. Cache reads are a hundredth of the count here. */
+  weight: number;
+  /** Tokens whose model the table could not place. They are counted and say so
+   *  rather than being priced at zero, the same bargain `unpriced` strikes. */
+  unpriced: number;
+};
+
+const zeroClass = (): MixClass => ({ tokens: 0, usd: 0 });
+
+/** The day's tokens, by class, per funding label.
+ *
+ *  `from`/`to` are the day's edges: the shell reads the fine tier for the day
+ *  and this keeps the rows inside it, because the read's own window is wider
+ *  (it is the residual's). */
+export function mixOf(
+  rows: readonly AllowanceCost[],
+  from: number,
+  to: number,
+): FundingMix[] {
+  const by = new Map<string, FundingMix>();
+  for (const r of preferredCostRows(rows)) {
+    if (r.at < from || r.at >= to) continue;
+    const rate = rateAt(r.model, r.at);
+    let mix = by.get(r.account);
+    if (!mix) {
+      mix = {
+        label: r.account,
+        input: zeroClass(),
+        output: zeroClass(),
+        cacheRead: zeroClass(),
+        cacheWrite: zeroClass(),
+        tokens: 0,
+        usd: 0,
+        weight: 0,
+        unpriced: 0,
+      };
+      by.set(r.account, mix);
+    }
+    const tokens = r.inTok + r.outTok + r.cacheRead + r.write5m + r.write1h;
+    mix.tokens += tokens;
+    if (!rate) {
+      mix.unpriced += tokens;
+      continue;
+    }
+    const perM = 1e6;
+    const inUsd = (r.inTok * rate.input) / perM;
+    const outUsd = (r.outTok * rate.output) / perM;
+    const readUsd = (r.cacheRead * rate.input * (rate.cacheRead ?? CACHE_READ)) / perM;
+    const writeUsd = ((r.write5m * WRITE_5M + r.write1h * WRITE_1H) * rate.input) / perM;
+    mix.input.tokens += r.inTok;
+    mix.input.usd += inUsd;
+    mix.output.tokens += r.outTok;
+    mix.output.usd += outUsd;
+    mix.cacheRead.tokens += r.cacheRead;
+    mix.cacheRead.usd += readUsd;
+    mix.cacheWrite.tokens += r.write5m + r.write1h;
+    mix.cacheWrite.usd += writeUsd;
+    const usd = inUsd + outUsd + readUsd + writeUsd;
+    mix.usd += usd;
+    /* Weight is per row, because each row carries its own input rate. */
+    mix.weight += rate.input > 0 ? usd / (rate.input / perM) : 0;
+  }
+  return [...by.values()].sort((a, b) => b.usd - a.usd || a.label.localeCompare(b.label));
 }

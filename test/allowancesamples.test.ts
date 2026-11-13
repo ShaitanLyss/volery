@@ -15,6 +15,7 @@ import {
   type CostBucket,
 } from "../src/lib/allowancesamples";
 import { stripModel, weekResidual } from "../src/lib/analyticstiles";
+import { mixOf } from "../src/lib/fundings";
 
 const HOUR = 3_600_000;
 
@@ -475,5 +476,80 @@ describe("the gesture tile", () => {
     expect(tile.value).toBe("0");
     expect(tile.off).toBe(false);
     expect(tile.note).toContain("nothing yet");
+  });
+});
+
+describe("what the tokens were made of", () => {
+  const cost = (over: Partial<AllowanceCost> = {}): AllowanceCost => ({
+    at: NOW,
+    host: "studio",
+    session: "s1",
+    account: "lyss",
+    provider: "claude",
+    model: "claude-sonnet-5-5",
+    provenance: "transcript",
+    inTok: 0,
+    outTok: 0,
+    cacheRead: 0,
+    write5m: 0,
+    write1h: 0,
+    requests: 1,
+    ...over,
+  });
+
+  /* Sonnet 5.5 is $2 in, $10 out, cache reads at 0.05x input, writes at 1.25x.
+     One million of each is 2 + 10 + 0.10 + 2.5 = $14.60, and the four classes
+     are priced apart rather than as a flat count. */
+  test("the four classes are priced apart, at their own rates", () => {
+    const [mix] = mixOf(
+      [cost({ inTok: 1_000_000, outTok: 1_000_000, cacheRead: 1_000_000, write5m: 1_000_000 })],
+      NOW - 1,
+      NOW + 1,
+    );
+    expect(mix!.input.usd).toBeCloseTo(2, 6);
+    expect(mix!.output.usd).toBeCloseTo(10, 6);
+    expect(mix!.cacheRead.usd).toBeCloseTo(0.1, 6);
+    expect(mix!.cacheWrite.usd).toBeCloseTo(2.5, 6);
+    expect(mix!.usd).toBeCloseTo(14.6, 6);
+    expect(mix!.tokens).toBe(4_000_000);
+  });
+
+  /* The whole point of the reading: a cache-heavy million and an output-heavy
+     million are the same count and wildly different money. */
+  test("the weight is the count in input-token equivalents", () => {
+    const [cache] = mixOf([cost({ cacheRead: 14_400_000, inTok: 250_000, outTok: 115_000 })], NOW - 1, NOW + 1);
+    /* 0.5 + 1.15 + 1.44 = 3.09, and at $2/M that is 1.545M input equivalents. */
+    expect(cache!.weight).toBeCloseTo(1_545_000, 0);
+    expect(cache!.weight).toBeLessThan(cache!.tokens);
+  });
+
+  test("a row outside the day is not counted in it", () => {
+    const got = mixOf([cost({ at: NOW - 2 * HOUR })], NOW - 1, NOW + 1);
+    expect(got).toEqual([]);
+  });
+
+  test("a model the table cannot place is counted as unpriced, not as free", () => {
+    const [mix] = mixOf([cost({ model: "no-such-model-9" })], NOW - 1, NOW + 1);
+    expect(mix!.input.usd).toBe(0);
+    expect(mix!.tokens).toBe(0);
+    /* Nothing was in the row, so nothing is unpriced either: the row itself is
+       counted through its own tokens. */
+    const [withTokens] = mixOf([cost({ model: "no-such-model-9", outTok: 5_000 })], NOW - 1, NOW + 1);
+    expect(withTokens!.unpriced).toBe(5_000);
+    expect(withTokens!.usd).toBe(0);
+  });
+
+  test("a transcript and a turn row for one session-hour are counted once", () => {
+    const rows = [
+      cost({ inTok: 1_000 }),
+      cost({ inTok: 9_000, provenance: "turn" }),
+    ];
+    const [mix] = mixOf(rows, NOW - 1, NOW + 1);
+    expect(mix!.tokens).toBe(1_000);
+  });
+
+  test("two fundings are two breakdowns", () => {
+    const got = mixOf([cost(), cost({ account: "api", inTok: 1_000 })], NOW - 1, NOW + 1);
+    expect(got.map((m) => m.label).sort()).toEqual(["api", "lyss"]);
   });
 });
