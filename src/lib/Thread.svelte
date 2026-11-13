@@ -679,7 +679,11 @@
     {#if line.parcel}
       <div class="pplate"><ParcelPlate parcel={line.parcel} dir="out" /></div>
     {:else if pc.parcel}
-      <div class="pplate"><ParcelPlate parcel={pc.parcel} dir={line.note?.startsWith("sent from") ? "in" : "out"} /></div>
+      <!-- Two readings of the same fact: the note the live fold puts on a
+           prompt handed over from another wall, and — for a person's parcel —
+           the wall the manifest itself says it came from, which is the only
+           one of the two a transcript read back off disk can still see. -->
+      <div class="pplate"><ParcelPlate parcel={pc.parcel} dir={line.note?.startsWith("sent from") || pc.parcel.from ? "in" : "out"} /></div>
     {/if}
   {/if}
 {/snippet}

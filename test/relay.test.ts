@@ -386,6 +386,19 @@ describe("a parcel that came with a message", () => {
     expect(p.parcel?.sent.length).toBe(3);
     expect(p.body.startsWith("you sent me this earlier:")).toBe(true);
   });
+  test("a person's parcel from another wall says so, and the path still reads", () => {
+    /* `parcel.rs::manifest_signed` puts `from <wall>` before `in <path>` so a
+       reader that does not know the field still reads the landing path the
+       same way. This is the direction a restored transcript has and the live
+       flyway event does not (`docs/PARCEL-DROP.md`). */
+    const signed = MANIFEST.replace(" · in C:\\w", " · from lab-b · in C:\\w");
+    const p = parcelOf("moved them over\n\n" + signed).parcel;
+    expect(p?.from).toBe("lab-b");
+    expect(p?.landed).toBe("C:\\w\\attachments\\c1\\from-ccec3736-1");
+    expect(p?.size).toBe("3.2 KB");
+    /* A parcel that landed here has no such field, and draws as one sent. */
+    expect(parcelOf(MANIFEST).parcel?.from).toBeUndefined();
+  });
   test("a message with none is unchanged", () => {
     expect(parcelOf("just words")).toEqual({ body: "just words", parcel: null });
     /* The mark quoted mid-line is prose, not a parcel. */

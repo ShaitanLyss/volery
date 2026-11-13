@@ -16,7 +16,7 @@
   import { GATE_AFTER_MS, lasted } from "./lib/presence";
   import { cardByHandle } from "./lib/chatview";
   import { provideCardLinks } from "./lib/cardlinks.svelte";
-  import { carrierFor, provideCarrier } from "./lib/carrier.svelte";
+  import { CHAT_REFUSAL, carrierFor, provideCarrier } from "./lib/carrier.svelte";
   import { provideRefLinks } from "./lib/reflinks.svelte";
   import RefSheet from "./lib/RefSheet.svelte";
   import RefPeek from "./lib/RefPeek.svelte";
@@ -204,7 +204,7 @@
     type Draft,
   } from "./lib/drafts";
   import { Attachments, boxAt, dropping, listenDrops, takeInto } from "./lib/attach.svelte";
-  import { insertAt } from "./lib/attach";
+  import { insertAt, type Attachment } from "./lib/attach";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
   import { Solo } from "./lib/solo.svelte";
@@ -1754,6 +1754,14 @@
     });
   });
 
+  /* A hand-off staged by a drop on a card's face, held so Escape can put the
+   * draft back (`docs/PARCEL-DROP.md`). It is deliberately the field's own
+   * draft that is kept rather than a copy of the dropped paths: what goes back
+   * is the sentence and the tiles as they were, which is what "reversible"
+   * means. `after` is the line the drop made, so a draft typed into since is
+   * yours and Escape does not throw it away. */
+  let faceDrop = $state<{ card: string; text: string; after: string; shots: Attachment[] } | null>(null);
+
   /* Throw things at the wall and it works out what you meant. A drop on any
      input that speaks to an agent attaches to it — a picture inline, any other
      file or a folder as its path — and that is one question asked of the DOM
@@ -1827,16 +1835,23 @@
         const card = cards.find(id);
         if (card) {
           if (!card.scripts) {
-            skein.fault = "a chat card has no project to receive a hand-off — drop it on a project card";
+            skein.fault = CHAT_REFUSAL;
             return;
           }
           focusCard(card);
           await tick();
+          /* The draft as it was, held before the drop touches it: Escape puts
+             this back, so the hand-off is reversible rather than a slip you
+             have to undo a tile at a time. A card that already had something
+             attached refuses the mix at the measure (`one send has one
+             carrier`), which is the same refusal a paste into a parcel gets. */
+          const before = { card: card.id, text: field.text, shots: [...field.shots.list] };
           const tokens = await field.shots.fromParcel(d.paths, card.remote ? "afar" : "here");
           if (tokens.length) {
             let text = field.text;
             for (const t of tokens) text = insertAt(text, null, t).text;
             field.put(text);
+            faceDrop = { ...before, after: text };
           }
           return;
         }
@@ -2773,7 +2788,10 @@
      `docs/PARCEL-DROP.md`). Ambient, so the dock, chat view's box, a question's
      answer and a notice's reply all take the same drop without any of them being
      told it exists. */
-  provideCarrier((id) => carrierFor(cards.find(id)?.remote ?? null));
+  provideCarrier((id) => {
+    const card = cards.find(id);
+    return card ? carrierFor(card.remote, card.reach) : null;
+  });
 
   /* And the link beside it, which needs no scope at all: there is one thing a
      markdown link can mean in a window with no address bar and no back button,
@@ -4670,6 +4688,20 @@
         return;
       if (isTyping(e.target)) {
         (e.target as HTMLElement).blur();
+        return;
+      }
+      /* A face drop staged a parcel in this card's own draft, and Escape is the
+         way back out of it — the hand-off is reversible in one press, as the
+         design promises (`docs/PARCEL-DROP.md`). Only while the draft is still
+         the one the drop made: once you have written in it those are your words
+         and Escape means what it always meant. The tile's ✕ does not depend on
+         this, which is why the branch failing is never a trap. */
+      if (faceDrop && faceDrop.card === focused?.id && field.shots.parcel && field.text === faceDrop.after) {
+        const back = faceDrop;
+        faceDrop = null;
+        field.shots.put(back.shots);
+        field.put(back.text);
+        e.preventDefault();
         return;
       }
       /* A running turn is the innermost thing of all, so it is the first thing

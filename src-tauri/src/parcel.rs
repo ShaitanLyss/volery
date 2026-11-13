@@ -664,8 +664,22 @@ pub const PARCEL_MARK: &str = "[skein parcel]";
 /// `-` left out, fields split on ` · `, so `relay.ts::parcelOf` can draw it as a
 /// plate and an agent can read it as a list.
 pub fn manifest(parcel: &Parcel, landed: &str) -> String {
+    manifest_signed(parcel, landed, None)
+}
+
+/// The same manifest, with who it came from said in the header when it was a
+/// person on another wall (`docs/PARCEL-DROP.md`).
+///
+/// This is the one place the *words* carry a parcel's direction. The flyway
+/// event knows it, and a transcript read back off disk knows only the text — so
+/// a restored session drew a received parcel as *sent with it*, because the
+/// direction lived in a field nothing writes down. The field is placed **before**
+/// `in`, so a reader that does not know it still reads the landing path exactly
+/// as it always did (the path is the rest of the line from `in`).
+pub fn manifest_signed(parcel: &Parcel, landed: &str, from: Option<&str>) -> String {
+    let signed = from.map(|f| format!(" · from {f}")).unwrap_or_default();
     let mut s = format!(
-        "{PARCEL_MARK} {} · {} · in {landed}\n",
+        "{PARCEL_MARK} {} · {}{signed} · in {landed}\n",
         count(parcel.items.len(), "file"),
         size(parcel.bytes()),
     );
@@ -1466,6 +1480,11 @@ mod tests {
         let m = manifest(&p, "C:/w/from-ab-1");
         let lines: Vec<&str> = m.lines().collect();
         assert_eq!(lines[0], "[skein parcel] 0 files · 0 B · in C:/w/from-ab-1");
+        /* A person's parcel from another wall says where it came from, and
+           **before** the landing path, so a reader that does not know the field
+           still reads the path the same way (`relay.ts::parcelOf`). */
+        let signed = manifest_signed(&p, "C:/w/from-you-1", Some("lab-b"));
+        assert_eq!(signed.lines().next().unwrap(), "[skein parcel] 0 files · 0 B · from lab-b · in C:/w/from-you-1");
         assert_eq!(lines[1], "+ memory/ · 14 files · 40.0 KB");
         assert_eq!(lines[2], "+ CLAUDE.md · 3.0 KB");
         assert_eq!(lines[3], "- memory/.env · secret-shaped — name it directly to send it");

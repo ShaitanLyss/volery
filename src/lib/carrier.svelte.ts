@@ -23,10 +23,26 @@
  * Plain `.ts` would do, but it is provided at the root and read inside
  * components the same way `paths.svelte.ts` is, so it sits beside it. */
 
+import type { Reach } from "./attach";
 import type { Remote } from "./handle";
 
+/** What a drop to one card becomes: the parcel's caps and whether that wall
+ *  lands one, the ordinary carrier (null), or a refusal said beside the box.
+ *
+ *  Refusal is a third answer rather than a null because it is not the box
+ *  forgetting something — it is the target having no shape this gesture fits.
+ *  A remote chat card has no project to receive a hand-off, so a parcel to it
+ *  is refused in one line exactly as an agent's parcel is, and selecting *no*
+ *  carrier would attach it as a path its agent cannot open instead. */
+export type Placing = { caps: "afar"; can: boolean } | { refuse: string };
+
 /** How a drop reaches the card with this id, or null for the ordinary carrier. */
-export type Carrier = (card: string) => { caps: "afar"; can: boolean } | null;
+export type Carrier = (card: string) => Placing | null;
+
+/** The same sentence a drop on a chat card's *face* gives (`App.svelte`): the
+ *  two gestures are one refusal. */
+export const CHAT_REFUSAL =
+  "a chat card has no project to receive a hand-off — drop it on a project card";
 
 let provided: Carrier = () => null;
 
@@ -35,19 +51,28 @@ export function provideCarrier(c: Carrier): void {
   provided = c;
 }
 
-/** What a drop to `card` becomes — the parcel's caps and whether that wall
- *  lands one, or null for a path. Read by `PromptBox` on every drop. */
-export function carrierTo(card: string | null | undefined): { caps: "afar"; can: boolean } | null {
+/** What a drop to `card` becomes — read by `PromptBox` on every drop. */
+export function carrierTo(card: string | null | undefined): Placing | null {
   return card ? provided(card) : null;
 }
 
-/** The carrier the root would provide for a card with this `remote` — the whole
- *  decision, pure, so `App.svelte` wires it in one line and a test can hold it.
+/** The carrier the root would provide for a card with this `remote` and
+ *  `reach` — the whole decision, pure, so `App.svelte` wires it in one line and
+ *  a test can hold it.
  *
  *  Only a card on another wall is a parcel. A card here (`remote` null) is a
  *  path in the sentence, which its agent reads with its own tools — a copy into
- *  its folder would be work it did not ask for. A wall from before parcels
- *  (`can` false) is the ordinary carrier too, and the strip says so. */
-export function carrierFor(remote: Remote | null): { caps: "afar"; can: boolean } | null {
-  return remote ? { caps: "afar", can: !!remote.parcel } : null;
+ *  its folder would be work it did not ask for, and a local chat card keeps its
+ *  own carriage (`Reach`, a PDF read in and the rest refused by the send). A
+ *  wall from before parcels (`can` false) is the ordinary carrier too, and the
+ *  strip falls back to it saying so.
+ *
+ *  **A remote chat card refuses**, and that is `reach.chat` rather than the
+ *  digest's kind read here again: `CardHandle.reach` is the one place a card
+ *  says what it can take, and a surface asking a second field would be a second
+ *  answer that can disagree. */
+export function carrierFor(remote: Remote | null, reach: Reach | null): Placing | null {
+  if (!remote) return null;
+  if (reach?.chat) return { refuse: CHAT_REFUSAL };
+  return { caps: "afar", can: !!remote.parcel };
 }

@@ -1021,6 +1021,15 @@ pub enum Outcome {
         card: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         queued: Option<String>,
+        /// Where a person's parcel landed on the wall that answered
+        /// (`docs/PARCEL-DROP.md`): the folder under that card's own directory,
+        /// as a path on *that* machine. Absent for every other answer, and
+        /// skipped when there is nothing to say, so an older wall reads the same
+        /// frame it always did — and a newer one settles the sender's plate,
+        /// which until it was here stayed *to host* for ever while the receiver
+        /// showed the folder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        landed: Option<String>,
     },
     Refused { refusal: Refusal },
     /// A recall's answer: the last things that card said, oldest first, off
@@ -1041,6 +1050,11 @@ pub enum Outcome {
 /// megabyte into an agent's context because nothing on this side checked.
 pub const RECALL_MOST: usize = 6;
 pub const RECALL_CHARS: usize = 24_000;
+
+/// The longest landing path an answer carries. Windows' own ceiling for a path
+/// is 32,767 wide and 260 in the ordinary spelling, so this bounds a broken
+/// wall's answer without ever cutting a real one.
+const MAX_LANDED: usize = 1024;
 
 /// The one reply an ask gets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1720,7 +1734,21 @@ impl Fleet {
 
     /// The card a `Deliver` was for has the prompt.
     pub fn taken(&mut self, asked_by: &str, request: &str, card: &str, now: i64) -> Option<FleetMsg> {
-        self.settle_from(true, asked_by, request, Outcome::Opened { card: card.to_string(), queued: None }, now)
+        self.taken_landed(asked_by, request, card, None, now)
+    }
+
+    /// The same, where the prompt was a person's parcel and the files landed:
+    /// the answer carries the folder they went into (`docs/PARCEL-DROP.md`), so
+    /// the wall that sent it can settle its own plate with where they are.
+    pub fn taken_landed(
+        &mut self,
+        asked_by: &str,
+        request: &str,
+        card: &str,
+        landed: Option<String>,
+        now: i64,
+    ) -> Option<FleetMsg> {
+        self.settle_from(true, asked_by, request, Outcome::Opened { card: card.to_string(), queued: None, landed }, now)
     }
 
     /// The card a `Deliver` was for could not be given it.
@@ -1758,7 +1786,7 @@ impl Fleet {
         queued: Option<String>,
         now: i64,
     ) -> Option<FleetMsg> {
-        self.settle(asked_by, request, Outcome::Opened { card: card.to_string(), queued }, now)
+        self.settle(asked_by, request, Outcome::Opened { card: card.to_string(), queued, landed: None }, now)
     }
 
     /// The card a `Spawn` asked for could not be opened.
@@ -2370,7 +2398,15 @@ fn clean_ask(a: Ask) -> Ask {
 
 fn clean_answer(a: Answer) -> Answer {
     let outcome = match a.outcome {
-        Outcome::Opened { card, queued } => Outcome::Opened { card: sc(&card), queued: queued.map(|q| sc(&q)) },
+        Outcome::Opened { card, queued, landed } => Outcome::Opened {
+            card: sc(&card),
+            queued: queued.map(|q| sc(&q)),
+            /* A path, so it is not cut on a boundary — capping one mid-way
+               makes it name nothing. Scrubbed, and capped only where no real
+               folder can reach (`MAX_PATH`), since a broken wall's answer must
+               not be a paragraph on a person's plate. */
+            landed: landed.map(|l| sc(&l).chars().take(MAX_LANDED).collect()),
+        },
         Outcome::Refused { refusal: Refusal::CouldNotStart { reason } } => {
             Outcome::Refused { refusal: Refusal::CouldNotStart { reason: sc(&reason) } }
         }
@@ -2864,9 +2900,6 @@ mod tests {
         assert!(me.f.entry("lap").is_some(), "`on` cannot tell a forged goodbye from a real one");
     }
 
-    /// An ask, a card, an answer: the whole round trip, and the card knows
-    /// who asked for it.
-    #[test]
     /// A solo wall's greeting is the roster and nothing else: `open`'s gossip
     /// is every unanswered ask still held, and saying one again would deliver
     /// it *after* the switch (`.claude/rules/solo.md`, "nothing is queued").
@@ -2888,6 +2921,9 @@ mod tests {
         assert!(matches!(solo[0], FleetMsg::Roster { greeting: true, .. }));
     }
 
+    /// An ask, a card, an answer: the whole round trip, and the card knows
+    /// who asked for it.
+    #[test]
     fn an_ask_opens_a_card_and_the_asker_hears_which() {
         let mut lap = Node::new("lap", open_facts());
         let mut desk = Node::new("desk", open_facts());
@@ -2909,7 +2945,7 @@ mod tests {
         lap.hear(answer, 2_100);
         assert_eq!(lap.answered.len(), 1);
         assert_eq!(lap.answered[0].by, "desk");
-        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card-on-desk".into(), queued: None });
+        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card-on-desk".into(), queued: None, landed: None });
     }
 
     /// **A repeated ask opens one card.** Arriving twice from the transport,
@@ -2935,7 +2971,7 @@ mod tests {
         let said = desk.hear(retry, 30_000);
         assert_eq!(desk.spawns.len(), 1, "answered, a repeat is still not a card");
         assert!(
-            matches!(&said[..], [FleetMsg::Answer { answer, .. }] if answer.outcome == Outcome::Opened { card: "card-on-desk".into(), queued: None }),
+            matches!(&said[..], [FleetMsg::Answer { answer, .. }] if answer.outcome == Outcome::Opened { card: "card-on-desk".into(), queued: None, landed: None }),
             "but the answer is said again, since the asker evidently lost it: {said:?}"
         );
         lap.hear_all(said, 30_000);
@@ -2959,12 +2995,12 @@ mod tests {
         let mut lap = Node::new("lap", open_facts());
         lap.hear(announced("desk", 1, 0, 0), 0);
         lap.f.ask(request("r1", "desk", skein()), 0).unwrap();
-        let theirs = Answer { request: "r1".into(), by: "desk".into(), asked_by: "server".into(), outcome: Outcome::Opened { card: "c-server".into(), queued: None } };
-        let mine = Answer { request: "r1".into(), by: "desk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "c-lap".into(), queued: None } };
+        let theirs = Answer { request: "r1".into(), by: "desk".into(), asked_by: "server".into(), outcome: Outcome::Opened { card: "c-server".into(), queued: None, landed: None } };
+        let mine = Answer { request: "r1".into(), by: "desk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "c-lap".into(), queued: None, landed: None } };
         lap.hear(FleetMsg::Answer { answer: theirs, age_ms: 0 }, 10);
         lap.hear(FleetMsg::Answer { answer: mine, age_ms: 0 }, 10);
         assert_eq!(lap.answered.len(), 1);
-        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "c-lap".into(), queued: None });
+        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "c-lap".into(), queued: None, landed: None });
     }
 
     /// Two different asks in one frame, a bound with room for one. The facts
@@ -3110,7 +3146,7 @@ mod tests {
         assert!(matches!(lap.f.ask(request("r1", "desk", skein()), ASK_TTL_MS + 1), Err(Unsendable::Expired { .. })));
 
         lap.f.ask(request("r2", "desk", skein()), 0).unwrap();
-        let answer = Answer { request: "r2".into(), by: "desk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "c".into(), queued: None } };
+        let answer = Answer { request: "r2".into(), by: "desk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "c".into(), queued: None, landed: None } };
         lap.hear(FleetMsg::Answer { answer, age_ms: 0 }, 10);
         match lap.f.ask(request("r2", "desk", skein()), 20) {
             Err(e @ Unsendable::AlreadyAnswered { .. }) => assert!(e.reason().contains("opened it as card c")),
@@ -3141,7 +3177,7 @@ mod tests {
         let passed = server.hear(answer, 2_000);
         lap.hear_all(passed, 2_000);
         assert_eq!(lap.answered.len(), 1);
-        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card-on-desk".into(), queued: None });
+        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card-on-desk".into(), queued: None, landed: None });
     }
 
     /// The hazard `ASK_TTL_MS` exists for: an ask left with a relay while its
@@ -3300,7 +3336,7 @@ mod tests {
                 request: "r1".into(),
                 by: "desk".into(),
                 asked_by: "lap".into(),
-                outcome: Outcome::Opened { card: "c".into(), queued: None },
+                outcome: Outcome::Opened { card: "c".into(), queued: None, landed: None },
             },
             age_ms: 0,
         };
@@ -3329,10 +3365,10 @@ mod tests {
         let mut lap = Node::new("lap", open_facts());
         lap.hear(announced("desk", 1, 0, 0), 0);
         lap.f.ask(request("r1", "desk", skein()), 0).unwrap();
-        let answer = Answer { request: "r1".into(), by: "de\u{7}sk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "ca\u{0}rd".into(), queued: None } };
+        let answer = Answer { request: "r1".into(), by: "de\u{7}sk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "ca\u{0}rd".into(), queued: None, landed: None } };
         lap.hear(FleetMsg::Answer { answer, age_ms: 0 }, 10);
         assert_eq!(lap.answered[0].by, "desk");
-        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card".into(), queued: None });
+        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card".into(), queued: None, landed: None });
     }
 
     fn prompt_req(id: &str, to: &str, card: &str) -> PromptRequest {
@@ -3767,7 +3803,7 @@ mod tests {
         let answer = desk.taken("lap", "p1", "card-9", 30).unwrap();
         let back = lap.on(answer, 40, &open_facts());
         assert_eq!(back.answered.len(), 1);
-        assert_eq!(back.answered[0].outcome, Outcome::Opened { card: "card-9".into(), queued: None });
+        assert_eq!(back.answered[0].outcome, Outcome::Opened { card: "card-9".into(), queued: None, landed: None });
 
         /* And a repeat after the answer says the answer again, not the prompt. */
         let late = desk.on(m, 50, &open_facts());
@@ -4209,11 +4245,11 @@ mod tests {
     /// the frame it always did, and its frame reads here as not queued.
     #[test]
     fn a_queued_spawn_says_so_and_an_older_frame_still_reads() {
-        let started = Outcome::Opened { card: "c".into(), queued: None };
+        let started = Outcome::Opened { card: "c".into(), queued: None, landed: None };
         assert_eq!(serde_json::to_value(&started).unwrap(), serde_json::json!({ "outcome": "opened", "card": "c" }));
         let older: Outcome = serde_json::from_value(serde_json::json!({ "outcome": "opened", "card": "c" })).unwrap();
         assert_eq!(older, started);
-        let queued = Outcome::Opened { card: "c".into(), queued: Some("queued — x is 90% into its five hours".into()) };
+        let queued = Outcome::Opened { card: "c".into(), queued: Some("queued — x is 90% into its five hours".into()), landed: None };
         let back: Outcome = serde_json::from_value(serde_json::to_value(&queued).unwrap()).unwrap();
         assert_eq!(back, queued);
     }

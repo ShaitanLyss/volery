@@ -1029,7 +1029,10 @@ export type Sent = {
 
 export type SentEvent =
   | { kind: "left" }
-  | { kind: "answer"; outcome: "taken" | "refused"; why?: string }
+  /** `landed` is where a person's parcel went on the far wall, when its card
+   *  took it — the answer's own field, so the plate under the line settles from
+   *  *to host* to *in …* as the receiver's does (`docs/PARCEL-DROP.md`). */
+  | { kind: "answer"; outcome: "taken" | "refused"; why?: string; landed?: string }
   /** The link would not take it at all — the wall is quiet or unknown. */
   | { kind: "unsent"; why: string };
 
@@ -1046,7 +1049,14 @@ export function advance(s: Sent, ev: SentEvent): Sent {
       return s.state === "queued" ? { ...s, state: "left" } : s;
     case "answer":
       return ev.outcome === "taken"
-        ? { ...s, state: "taken", why: undefined }
+        ? {
+            ...s,
+            state: "taken",
+            why: undefined,
+            /* The plate travels *to* the wall until that wall says where the
+               files went; once it has, the plate reads like the receiver's. */
+            ...(ev.landed && s.parcel ? { parcel: { ...s.parcel, landed: ev.landed, to: undefined } } : {}),
+          }
         : { ...s, state: "refused", why: ev.why || "refused" };
     case "unsent":
       return { ...s, state: "refused", why: ev.why };

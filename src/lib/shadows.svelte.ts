@@ -860,12 +860,20 @@ export class Elsewhere {
     l.keep(listen<{ host: string | null }>("flyway:left", (e) => this.#left(e.payload?.host ?? null)));
     l.keep(listen<{ id: string }>("flyway:prompt-left", (e) => this.#fold(this.#lineOf(e.payload.id), { kind: "left" })));
     l.keep(
-      listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) => {
-        if (this.#closed(e.payload.id, e.payload.outcome, e.payload.why)) return;
-        if (this.#filedSettled(e.payload.id, e.payload.outcome, e.payload.why)) return;
-        this.#noticed(e.payload.id, e.payload.outcome, e.payload.why);
-        this.#fold(e.payload.id, { kind: "answer", outcome: e.payload.outcome, why: e.payload.why });
-      }),
+      listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string; landed?: string }>(
+        "flyway:prompt-answer",
+        (e) => {
+          if (this.#closed(e.payload.id, e.payload.outcome, e.payload.why)) return;
+          if (this.#filedSettled(e.payload.id, e.payload.outcome, e.payload.why)) return;
+          this.#noticed(e.payload.id, e.payload.outcome, e.payload.why);
+          this.#fold(e.payload.id, {
+            kind: "answer",
+            outcome: e.payload.outcome,
+            why: e.payload.why,
+            ...(e.payload.landed ? { landed: e.payload.landed } : {}),
+          });
+        },
+      ),
     );
     l.keep(
       listen<{

@@ -228,6 +228,17 @@ pub struct Link {
     prompts_out: StdMutex<HashMap<String, PromptOut>>,
     /// Prompts handed to cards here, by the asker's host and request id.
     prompts_in: StdMutex<HashMap<(String, String), i64>>,
+    /// Where a person's parcel landed, by the asker's host and request id —
+    /// read back when the front end says the card took it, so the answer that
+    /// settles the sender's plate carries the folder (`docs/PARCEL-DROP.md`).
+    /// An entry a failed delivery never claims goes when its ask does, since
+    /// the map is bounded by the requests that ever landed.
+    landed_in: StdMutex<HashMap<(String, String), String>>,
+    /// Person's parcels sent from here, parked until the far wall answers —
+    /// by request id, with the channel `flyway_parcel` is waiting on. A
+    /// person's *prompt* is fire and forget; a parcel is held so a refusal is
+    /// synchronous at the send, where the composer can hand the draft back.
+    parcel_held: StdMutex<HashMap<String, mpsc::Sender<Result<(), String>>>>,
     /// Prompts with pictures being written right now (`push_pictured`).
     pictured_out: StdMutex<std::collections::HashSet<String>>,
     /// Conversations another wall asked for, parked until this wall's front
@@ -440,6 +451,8 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         rate: StdMutex::new((None, false)),
         prompts_out: StdMutex::new(HashMap::new()),
         prompts_in: StdMutex::new(HashMap::new()),
+        landed_in: StdMutex::new(HashMap::new()),
+        parcel_held: StdMutex::new(HashMap::new()),
         pictured_out: StdMutex::new(std::collections::HashSet::new()),
         tails: StdMutex::new(HashMap::new()),
         acts: StdMutex::new(HashMap::new()),
@@ -1582,17 +1595,32 @@ impl Link {
 
     /// One of this wall's asks has been answered.
     fn answered(&self, a: Answer) {
+        /* A person's parcel is parked on this answer (`send_person_held`), so
+           it is settled before the early return below. Only a refusal is an
+           `Err` at the composer: a refusal is the one outcome that hands the
+           draft back, and anything else means the far wall has it. */
+        let held = self.parcel_held.lock().ok().and_then(|mut h| h.remove(&a.request));
+        if let Some(tx) = held {
+            let res = match &a.outcome {
+                Outcome::Refused { refusal } => Err(prompt_why(refusal, &a.by)),
+                _ => Ok(()),
+            };
+            let _ = tx.send(res);
+        }
         if let Some(p) = self.prompts_out.lock().ok().and_then(|mut o| o.remove(&a.request)) {
             let _ = p;
-            let (outcome, why) = match &a.outcome {
-                Outcome::Refused { refusal } => ("refused", Some(prompt_why(refusal, &a.by))),
+            let (outcome, why, landed) = match &a.outcome {
+                Outcome::Refused { refusal } => ("refused", Some(prompt_why(refusal, &a.by)), None),
                 /* A person's prompt is only ever answered `Opened`; anything
-                   else that is not a refusal still means the far wall took it. */
-                Outcome::Opened { .. } | Outcome::Said { .. } => ("taken", None),
+                   else that is not a refusal still means the far wall took it.
+                   `landed` is where a person's parcel went, when it carried
+                   files and the far wall said (`docs/PARCEL-DROP.md`). */
+                Outcome::Opened { landed, .. } => ("taken", None, landed.clone()),
+                Outcome::Said { .. } => ("taken", None, None),
             };
             let _ = self.app.emit(
                 "flyway:prompt-answer",
-                PromptAnswered { id: a.request.clone(), by: a.by.clone(), outcome, why },
+                PromptAnswered { id: a.request.clone(), by: a.by.clone(), outcome, why, landed },
             );
             return;
         }
@@ -1650,7 +1678,7 @@ impl Link {
             };
             let _ = self.app.emit(
                 "flyway:prompt-answer",
-                PromptAnswered { id: request.to_string(), by: p.to, outcome: "refused", why: Some(why) },
+                PromptAnswered { id: request.to_string(), by: p.to, outcome: "refused", why: Some(why), landed: None },
             );
             return;
         }
@@ -1946,6 +1974,46 @@ impl Link {
     /// an unknown host, a quiet one, or this wall.
     fn send_prompt(self: &Arc<Self>, r: PromptRequest) -> Result<(), String> {
         self.send_person(Act::Prompt, r)
+    }
+
+    /// A person's dropped files and folders, **held until the far wall
+    /// answers** (`docs/PARCEL-DROP.md`). A person's prompt is fire and forget;
+    /// a parcel is not, because the design's promise is that a refused send
+    /// comes back to the draft with its tiles, and an `accepting` refusal
+    /// arrives after the composer would have cleared. So this parks on the same
+    /// answer a card's `send_files` does (`reach.rs`), bounded by
+    /// `fleet::patience_for` — the far wall's own patience with a parcel it is
+    /// pulling in full — and the invoke the composer awaits returns the refusal
+    /// as an `Err` while the words and the tiles are still in the field.
+    ///
+    /// A wall that simply stops answering is *not* a refusal: past the bound
+    /// this answers `Ok`, and the line's own reading says it does not know,
+    /// which is the honest thing and the same thing a prompt gets.
+    fn send_person_held(self: &Arc<Self>, r: PromptRequest) -> Result<(), String> {
+        let patience = Duration::from_millis(fleet::patience_for(r.parcel.as_ref()).max(0) as u64);
+        let (tx, rx) = mpsc::channel();
+        let id = r.id.clone();
+        self.parcel_held
+            .lock()
+            .map_err(|_| "the flyway is wedged".to_string())?
+            .insert(id.clone(), tx);
+        if let Err(why) = self.send_person(Act::Prompt, r) {
+            if let Ok(mut h) = self.parcel_held.lock() {
+                h.remove(&id);
+            }
+            return Err(why);
+        }
+        let got = rx.recv_timeout(patience);
+        if let Ok(mut h) = self.parcel_held.lock() {
+            h.remove(&id);
+        }
+        match got {
+            Ok(res) => res,
+            /* Nobody answered in the far wall's own patience: it may still
+               arrive, so this is not a refusal and must not hand the draft back
+               as one. The sent line's reading already says it does not know. */
+            Err(_) => Ok(()),
+        }
     }
 
     /// A person's prompt or close, one path: both are answered through
@@ -2266,7 +2334,7 @@ impl Link {
                 tauri::async_runtime::spawn(async move {
                     let from = d.asked_by.card.clone().unwrap_or_default();
                     let parcel = d.parcel.clone().unwrap_or_else(|| unreachable!());
-                    let landed = l.land_parcel(&host, &d.card, &from, &row, &parcel).await;
+                    let landed = l.land_parcel(&host, &d.card, &from, None, &row, &parcel).await;
                     /* Handing it over is store and stdin work, so it goes where
                        blocking work goes. A delivery refused after landing takes
                        the folder back: the sender is told it was refused, and
@@ -2330,12 +2398,20 @@ impl Link {
                 let l = self.clone();
                 tauri::async_runtime::spawn(async move {
                     let parcel = d.parcel.clone().unwrap_or_else(|| unreachable!());
-                    let landed = l.land_parcel(&host, &d.card, "you", &row, &parcel).await;
+                    let landed = l.land_parcel(&host, &d.card, "you", Some(&host), &row, &parcel).await;
                     let w = l.clone();
                     let m = crate::off_main(move || -> Option<FleetMsg> {
                         let now = w.now();
                         match landed {
-                            Ok((block, _into)) => {
+                            Ok((block, into)) => {
+                                /* Where it landed, kept until the front end says
+                                   the card has the message — the answer that
+                                   settles the sender's plate carries it, since
+                                   `taken` alone left that plate reading *to
+                                   host* for ever (`docs/PARCEL-DROP.md`). */
+                                if let Ok(mut l) = w.landed_in.lock() {
+                                    l.insert((host.clone(), request.clone()), into.display().to_string());
+                                }
                                 let body = format!("{}\n\n{block}", crate::parcel::unmark(&d.text));
                                 let secrets: Vec<String> = parcel.parcel().secrets().iter().map(|s| s.to_string()).collect();
                                 if !secrets.is_empty() {
@@ -2440,17 +2516,15 @@ impl Link {
 
     /// The front end's report on a prompt it was handed: taken, or why not.
     fn prompt_settled(self: &Arc<Self>, asked_by: &str, request: &str, outcome: Result<String, String>) {
-        let was = self
-            .prompts_in
-            .lock()
-            .ok()
-            .and_then(|mut p| p.remove(&(asked_by.to_string(), request.to_string())));
+        let key = (asked_by.to_string(), request.to_string());
+        let was = self.prompts_in.lock().ok().and_then(|mut p| p.remove(&key));
         if was.is_none() {
             return;
         }
+        let landed = self.landed_in.lock().ok().and_then(|mut l| l.remove(&key));
         let now = self.now();
         let m = self.fleet.lock().ok().and_then(|mut f| match &outcome {
-            Ok(card) => f.taken(asked_by, request, card, now),
+            Ok(card) => f.taken_landed(asked_by, request, card, landed, now),
             Err(why) => f.refused(asked_by, request, why, now),
         });
         if let Some(m) = m {
@@ -2964,6 +3038,10 @@ impl Link {
         host: &str,
         address: &str,
         from: &str,
+        /* The wall a *person* sent it from, so the manifest's words carry the
+           direction a restored transcript cannot otherwise recover; `None` for
+           a card's parcel, whose relay envelope already names the sender. */
+        signed: Option<&str>,
         row: &crate::store::RosterRow,
         parcel: &crate::parcel::Carried,
     ) -> Result<(String, std::path::PathBuf), String> {
@@ -3033,7 +3111,7 @@ impl Link {
                 return Err(format!("the files did not all arrive, so none were kept: {why}"));
             }
         }
-        Ok((crate::parcel::manifest(&parcel.parcel(), &into.display().to_string()), into))
+        Ok((crate::parcel::manifest_signed(&parcel.parcel(), &into.display().to_string(), signed), into))
     }
 
     /// Pull one parked question from `host`, every file whole — or as far as
@@ -3321,7 +3399,7 @@ impl Link {
 /// The sentence the asking card reads.
 fn receipt(a: &Answer, w: &Waiter, me: &str) -> String {
     match &a.outcome {
-        Outcome::Opened { card, queued } => {
+        Outcome::Opened { card, queued, .. } => {
             let handle = crate::relay::handle_of(card);
             let mut called = match &w.title {
                 Some(t) => format!(" It is called {t:?} until it names itself."),
@@ -3559,6 +3637,11 @@ struct PromptAnswered {
     /// not the agent having answered — or `refused`.
     outcome: &'static str,
     why: Option<String>,
+    /// Where a person's parcel landed on the far wall, when the card took it
+    /// (`docs/PARCEL-DROP.md`). Nothing for a prompt, or for a wall that read
+    /// an older request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    landed: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -4152,10 +4235,18 @@ pub async fn flyway_prompt(
 /// A person's dropped files and folders to a card on another wall
 /// (docs/PARCEL-DROP.md): gathered against `AFAR`, staged for that wall to pull,
 /// and sent with `from_card: None` — the far wall lands it in the card's own
-/// folder and hands the card the sentence and the manifest. `Ok` means it is on
-/// its way; `flyway:prompt-answer` says what became of it. Refused at once when
-/// that wall is quiet, unknown, or too old to land a parcel (`fleet::CAN_PARCEL`),
-/// with nothing copied.
+/// folder and hands the card the sentence and the manifest.
+///
+/// **This waits for that wall's answer** (`send_person_held`), unlike a prompt:
+/// the design promises that a refused send comes back to the draft with its
+/// tiles, and the `accepting` refusal arrives too late for a composer that has
+/// already cleared. `Ok` is acceptance — the card has it, or is being woken with
+/// it first — and `Err` is the refusal in a person's words, said while the
+/// draft is still in the field to receive them. A wall that stops answering is
+/// neither: past the far wall's own patience this answers `Ok`, and the line's
+/// reading says it does not know. Refused at once when that wall is quiet,
+/// unknown, solo or too old to land a parcel (`fleet::CAN_PARCEL`), with nothing
+/// copied.
 #[tauri::command]
 pub async fn flyway_parcel(
     app: AppHandle,
@@ -4195,7 +4286,11 @@ pub async fn flyway_parcel(
         }
         let parcel = crate::parcel::stage(&wall, &to, &card, &gathered)?;
         let text = if text.trim().is_empty() { crate::parcel::BARE.to_string() } else { text };
-        l.send_prompt(PromptRequest {
+        /* Held, not fired: a refusal that reaches the composer after it has
+           cleared cannot hand the tiles back, and the design promises it does.
+           Everything before this point is local, so a refusal said here is a
+           refusal with nothing copied that stayed anywhere. */
+        l.send_person_held(PromptRequest {
             id,
             from_card: None,
             to,

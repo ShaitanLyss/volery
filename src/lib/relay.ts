@@ -371,6 +371,13 @@ export type Parcel = {
   /** The wall this parcel is going to, on the wall that sent it — the pending
    *  plate's "target", before the far wall says where it landed. */
   to?: string;
+  /** The wall a *person* sent this from, when it arrived on this one — read
+   *  out of the manifest's own header (`parcel::manifest_signed`). It is the
+   *  direction, in the words, and that is the whole point of it being here:
+   *  the flyway event knows which way a parcel went, and a session read back
+   *  off disk knows only the text, so without this a restored transcript drew
+   *  a received parcel as *sent with it*. */
+  from?: string;
   sent: ParcelSent[];
   left: ParcelLeft[];
   /** Past what the block spells out: `+ … · N more` and `- … · N more left out`. */
@@ -394,11 +401,16 @@ export function parcelOf(text: string): { body: string; parcel: Parcel | null } 
   for (let i = lines.length - 1; i >= 0 && at === -1; i--) if (lines[i].startsWith(PARCEL_MARK)) at = i;
   if (at === -1) return { body: text, parcel: null };
   const head = lines[at].slice(PARCEL_MARK.length).trim().split(" · ");
+  /* `from <wall>` sits before `in <path>` on purpose, so a reader that does
+     not know the field still reads the landing path the same way — it is the
+     rest of the line from `in` onward. */
+  const fromAt = head.findIndex((f) => f.startsWith("from "));
   const landedAt = head.findIndex((f) => f.startsWith("in "));
   const parcel: Parcel = {
     files: head[0] ?? "",
     size: landedAt > 1 ? head[1] : "",
     landed: landedAt === -1 ? "" : head.slice(landedAt).join(" · ").slice(3),
+    ...(fromAt === -1 ? {} : { from: head[fromAt]!.slice(5) }),
     sent: [],
     left: [],
     sentMore: 0,

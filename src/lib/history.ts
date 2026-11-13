@@ -54,7 +54,7 @@
 
 import { answerNote } from "./asking";
 import { isOwnPrompt } from "./own";
-import { isHandoverPrompt, isRelayPrompt, relayCap } from "./relay";
+import { isHandoverPrompt, isRelayPrompt, parcelOf, relayCap } from "./relay";
 import {
   SKEIN_ASK_TOOL,
   compactNote,
@@ -217,6 +217,15 @@ export function foldTranscript(
        go through the same two functions, which is the seam this file exists to
        avoid. */
     if (isRelayPrompt(text)) return push("relay", text, relayCap(text));
+    /* A person's parcel from another wall wears, off disk, the introduction the
+       live fold gives it: `#take` notes `sent from <host>` on the line as it is
+       handed over, and that note is in no field a session file keeps. Without
+       this the two folds disagreed about the same message — the live one read
+       *came with it*, the restored one *sent with it*, because the direction
+       lives in the flyway event and the words are all a transcript has
+       (`docs/PARCEL-DROP.md`, `parcel::manifest_signed`). */
+    const carried = parcelOf(text).parcel;
+    if (carried?.from) return push("you", text, `sent from ${carried.from}`);
     /* And Skein's own prompts, which a session file records with nothing
        marking them — see `own.ts`. Without this a restored card draws its
        resumed-turn prompt, its nudge and its briefs as something you typed. */

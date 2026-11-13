@@ -450,14 +450,31 @@ export class Composer {
       const plate = one.remote
         ? parcelPlate(tops, summary.files, summary.bytes, summary.left, summary.leftMore, one.remote.host)
         : undefined;
-      const why = await one.sendParcel(text.trim(), field.shots.parcelPaths, plate);
-      if (why !== null) {
-        skein.fault = why;
-        field.shots.refused = why;
-        return field.refuse();
-      }
+      const paths = field.shots.parcelPaths;
+      /* **Taken and cleared before the send, because the send waits for the
+         far wall to accept the parcel** — a refusal that arrives after the
+         composer has cleared has nowhere to put the tiles back
+         (`docs/PARCEL-DROP.md`, the late-refusal finding). Taken *whole*, so
+         what comes back on a refusal is exactly what left: the sentence and
+         the tiles. Clearing first is also what keeps a word typed during the
+         wait from being wiped by the clear a moment later. */
+      const sent = field.text;
+      const held = field.shots.take();
       field.put("");
       field.at = 0;
+      const why = await one.sendParcel(sent.trim(), paths, plate);
+      if (why !== null) {
+        /* An empty draft gets the parcel back exactly. A draft written into
+           meanwhile keeps those words — they are newer than the send — and the
+           refusal is said beside it, with the failed line still in the
+           transcript to copy from. */
+        if (!field.text && field.shots.list.length === 0) {
+          field.put(sent);
+          field.shots.put(held);
+        } else field.shots.refused = why;
+        skein.fault = why;
+        return field.refuse();
+      }
       return;
     }
 

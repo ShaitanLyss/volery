@@ -174,13 +174,16 @@
         accepts,
         take: async (paths, where, links = [], refused = []) => {
           const pt = carrierTo(to?.());
-          const tokens = paths.length
-            ? pt && pt.can
-              ? await shots.fromParcel(paths, pt.caps)
-              : await shots.fromPaths(paths)
-            : [];
+          let tokens: string[] = [];
+          if (paths.length) {
+            /* A target with no shape for this gesture says so where the drop
+               was made and nothing is attached — a remote chat card is the
+               case (`carrier.svelte.ts::carrierFor`). */
+            if (pt && "refuse" in pt) shots.refused = pt.refuse;
+            else tokens = pt && pt.can ? await shots.fromParcel(paths, pt.caps) : await shots.fromPaths(paths);
+          }
           place([...tokens, ...links], where);
-          if (refused.length) shots.refused = refused.join(" · ");
+          if (refused.length) shots.refused = shots.refused ?? refused.join(" · ");
         },
       },
       name,
