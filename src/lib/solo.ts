@@ -22,6 +22,12 @@ export const PLATE_SAYS =
 export const PANEL_SAYS =
   "accounts, allowance, usage and analytics stay; cards, questions, notices, screens, boards and sinks do not cross";
 
+/** What still crosses, said out loud rather than implied — the switch is not a
+ *  privacy guarantee, and `.claude/rules/solo.md` says the panel says so and
+ *  names the door that is. */
+export const PANEL_LEAKS =
+  "the roster, this wall's build, its allowance, spend and burn rate still cross — they are the numbers, not the work. If those must not cross either, leave the flyway.";
+
 /** The button that puts the shutter down, and the one that lifts it. */
 export function soloButton(on: boolean): string {
   return on ? "fly with the others" : "fly solo";

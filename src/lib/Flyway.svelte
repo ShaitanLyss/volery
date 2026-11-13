@@ -26,13 +26,16 @@
     nothingHeard,
     ownBuildLine,
     otherWalls,
+    tooOldForSolo,
+    tooOldForSoloLine,
     wallLine,
     worthJoining,
     type Wall,
   } from "./flyway";
-  import { ACCEPTING_IS_CLOSED, PANEL_SAYS, SOLO_CHORD, soloButton, soloSince } from "./solo";
+  import { ACCEPTING_IS_CLOSED, PANEL_LEAKS, PANEL_SAYS, SOLO_CHORD, soloButton, soloSince } from "./solo";
+  import type { Solo } from "./solo.svelte";
 
-  let { onclose }: { onclose: () => void } = $props();
+  let { onclose, solo }: { onclose: () => void; solo: Solo } = $props();
 
   let held = $state<boolean | null>(null);
   let host = $state("");
@@ -46,11 +49,6 @@
      `flyway/here.rs` reads anything but a yes as no. */
   let accepting = $state<boolean | null>(null);
   let walls = $state<Wall[]>([]);
-  /* Flying solo: the shutter that keeps the flyway's books and stops its
-     traffic. Read from the same `flyway_setup` the switch beside it comes from,
-     so the panel cannot show one state and act on another. */
-  let solo = $state(false);
-  let since = $state<number | null>(null);
 
   async function ask() {
     try {
@@ -61,18 +59,14 @@
          key and syncs nothing. `flyway_linked` is the second question. */
       linked = await invoke<boolean>("flyway_linked");
       if (held) {
-        const setup = await invoke<{ accepting: boolean; solo: boolean; soloSince: number | null }>("flyway_setup");
+        const setup = await invoke<{ accepting: boolean }>("flyway_setup");
         accepting = setup.accepting;
-        solo = !!setup.solo;
-        since = setup.soloSince ?? null;
         walls = await invoke<Wall[]>("flyway_roster");
       } else {
         /* Not in a flyway, so no wall to list — and nothing left over from the
            one just left, which `leave` used to leave drawn until a restart. */
         walls = [];
         accepting = null;
-        solo = false;
-        since = null;
       }
     } catch (e) {
       fault = flywayError(e);
@@ -88,21 +82,24 @@
     const off = listen<Wall[]>("flyway:roster", (e) => (walls = e.payload));
     return () => void off.then((f) => f());
   });
-  /* The chord throws the shutter while the panel is up, so the section has to
-     hear it rather than keep the state it read when it opened. */
-  $effect(() => {
-    const off = listen<boolean>("flyway:solo", () => void ask());
-    return () => void off.then((f) => f());
-  });
 
   const toggle = () =>
     act(async () => {
       await invoke("flyway_set_accepting", { on: !accepting });
     });
 
+  /* Through the instance, not the command: the half-typed-reply refusal lives
+     in `Solo.set` so no surface can take a far card down under somebody's
+     words (`.claude/rules/solo.md`, *Entering*). */
+  /** The walls that cannot show this one as solo, in one line or none. */
+  const olderThanSolo = $derived(
+    tooOldForSoloLine(tooOldForSolo(otherWalls(walls), mineOf(walls))),
+  );
+
   const toggleSolo = () =>
     act(async () => {
-      await invoke("flyway_set_solo", { on: !solo });
+      await solo.set(!solo.on);
+      if (solo.fault) fault = solo.fault;
     });
 
   /* `a` throws the switch while the panel is up and nothing is being typed —
@@ -288,32 +285,34 @@
       <!-- The shutter, above the switch it outranks: it is the larger boundary,
            and while it is down every other wall is closed to this one whatever
            that switch says. -->
-      <section data-solo={solo ? "on" : "off"}>
+      <section data-solo={solo.on ? "on" : "off"}>
         <h3>flying solo</h3>
-        {#if solo}<p class="since">{soloSince(since)}</p>{/if}
+        {#if solo.on}<p class="since">{soloSince(solo.since)}</p>{/if}
         <p class="aside">{PANEL_SAYS}</p>
         <div class="pair">
           <button
             class="act"
-            class:go={!solo}
+            class:go={!solo.on}
             disabled={busy}
             onclick={toggleSolo}
-            title="{soloButton(solo)} (s)"
+            title="{soloButton(solo.on)} (s)"
           >
-            {soloButton(solo)}
+            {soloButton(solo.on)}
           </button>
         </div>
+        {#if olderThanSolo}<p class="aside">{olderThanSolo}</p>{/if}
+        <p class="aside">{PANEL_LEAKS}</p>
         <p class="aside">
           <code>{SOLO_CHORD}</code> from anywhere. Leaving the flyway ends it.
         </p>
       </section>
       <section>
         <h3>work from other walls</h3>
-        <p class="aside">{solo ? ACCEPTING_IS_CLOSED : acceptingReading(accepting)}</p>
+        <p class="aside">{solo.on ? ACCEPTING_IS_CLOSED : acceptingReading(accepting)}</p>
         <div class="pair">
           <button
             class="act"
-            class:go={!accepting && !solo}
+            class:go={!accepting && !solo.on}
             disabled={busy || accepting === null}
             onclick={toggle}
             title="take work from other walls, or stop (a)"

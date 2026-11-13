@@ -91,6 +91,11 @@ impl Link {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(CARDS_EVERY).await;
             l.board_due.store(false, Ordering::Release);
+            /* Read again here for `publish_cards`' reason: the post passed the
+               check a moment before the shutter went down. */
+            if l.solo_here() {
+                return;
+            }
             let Some(m) = l.board_say() else { return };
             for host in l.known_current() {
                 l.push(host, vec![Frame::Board(m.clone())]);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { layout, REGION_GAP, regionWidth } from "../src/lib/layout";
-import { wallLine, type Wall } from "../src/lib/flyway";
+import { tooOldForSolo, tooOldForSoloLine, wallLine, type Wall } from "../src/lib/flyway";
 import { CHORDS } from "../src/lib/leader";
 import {
   ACCEPTING_IS_CLOSED,
@@ -117,6 +117,42 @@ describe("a peer's roster line", () => {
 
   test("an ordinary wall is unchanged", () => {
     expect(wallLine(wall(false))).toContain("not taking work from other walls");
+  });
+});
+
+describe("which walls cannot show this one as solo", () => {
+  const at = (host: string, build: string, me = false): Wall => ({
+    host,
+    me,
+    quietMs: 0,
+    standing: "open",
+    reason: null,
+    cardsLive: 0,
+    cardsWorking: 0,
+    allowanceUsed: null,
+    territories: [],
+    older: false,
+    build,
+  });
+
+  test("every wall on this build means nothing to say", () => {
+    const rows = [at("me", "0.133.0", true), at("desk", "0.133.0")];
+    expect(tooOldForSolo(rows, "0.133.0")).toEqual([]);
+    expect(tooOldForSoloLine([])).toBe("");
+  });
+
+  test("an older or unspeaking wall is named, and the sentence says what it will draw", () => {
+    const rows = [at("me", "0.133.0", true), at("desk", "0.120.0"), at("old", "")];
+    const hosts = tooOldForSolo(rows, "0.133.0");
+    expect(hosts.sort()).toEqual(["desk", "old"]);
+    const line = tooOldForSoloLine(hosts);
+    expect(line).toContain("older volery");
+    expect(line).toContain("not taking work rather than as flying solo");
+  });
+
+  test("one wall is said in the singular", () => {
+    expect(tooOldForSoloLine(["desk"])).toContain("desk runs an older volery");
+    expect(tooOldForSoloLine(["desk"])).not.toContain("walls here");
   });
 });
 

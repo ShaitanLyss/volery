@@ -51,7 +51,7 @@
   }
 </script>
 
-{#each casts.floats as f (f.key)}
+{#each casts.floatsShown as f (f.key)}
   {@const s = casts.showing[`float:${f.key}`]}
   <div
     class="vignette"

@@ -1513,12 +1513,22 @@ impl Fleet {
     /// What to say on connect: everything this wall knows that is still worth
     /// saying. Whoever receives it answers with what this wall lacked.
     pub fn open(&self, now: i64) -> Vec<FleetMsg> {
-        let mut out = vec![FleetMsg::Roster {
-            walls: self.roster.values().map(|e| heard(e, now)).collect(),
-            greeting: true,
-        }];
+        let mut out = self.open_roster(now);
         out.extend(self.gossip(now));
         out
+    }
+
+    /// The roster alone, and nothing to act on. **What a wall flying solo
+    /// greets with** (`.claude/rules/solo.md`): `open`'s gossip is every
+    /// unanswered ask and every answer this wall still holds, and a solo wall
+    /// saying one again would cross *after* the switch — a prompt delivered
+    /// once the shutter is down is exactly what "nothing is queued" exists to
+    /// prevent. The roster is the book that must keep crossing.
+    pub fn open_roster(&self, now: i64) -> Vec<FleetMsg> {
+        vec![FleetMsg::Roster {
+            walls: self.roster.values().map(|e| heard(e, now)).collect(),
+            greeting: true,
+        }]
     }
 
     /// This wall's own prompts with pictures in them that `peer` has not
@@ -2855,6 +2865,27 @@ mod tests {
     /// An ask, a card, an answer: the whole round trip, and the card knows
     /// who asked for it.
     #[test]
+    /// A solo wall's greeting is the roster and nothing else: `open`'s gossip
+    /// is every unanswered ask still held, and saying one again would deliver
+    /// it *after* the switch (`.claude/rules/solo.md`, "nothing is queued").
+    #[test]
+    fn a_solo_greeting_is_the_roster_without_the_asks_it_still_holds() {
+        let mut lap = Node::new("lap", open_facts());
+        let mut desk = Node::new("desk", open_facts());
+        desk.f.announce(desk.here.clone(), 0);
+        converse(&mut lap, &mut desk, 0);
+        lap.f.ask(request("r1", "desk", skein()), 1_000).unwrap();
+        /* The full greeting carries it again, which is why it cannot be the
+           solo one. */
+        assert!(
+            lap.f.open(1_100).iter().any(|m| matches!(m, FleetMsg::Ask { .. })),
+            "an outstanding ask rides the ordinary greeting"
+        );
+        let solo = lap.f.open_roster(1_100);
+        assert_eq!(solo.len(), 1, "the roster alone");
+        assert!(matches!(solo[0], FleetMsg::Roster { greeting: true, .. }));
+    }
+
     fn an_ask_opens_a_card_and_the_asker_hears_which() {
         let mut lap = Node::new("lap", open_facts());
         let mut desk = Node::new("desk", open_facts());
