@@ -81,6 +81,7 @@
     type FundingRow,
   } from "./fundings";
   import { stripModel, weekResidual, type FleetReading } from "./analyticstiles";
+  import { planOf, planWeeksOf } from "./pace";
   import { anonymizeReport, reportModel } from "./analyticsreport";
   import { writeReportFile } from "./analyticsreport.svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -703,6 +704,17 @@
   const liveActs = $derived.by(() => {
     void at;
     return acts.thisMinute;
+  });
+
+  /* The week against the plan (§14.3): one chart per account that has one,
+   * folded from the samples this surface already reads and the registry the
+   * wall already holds. Minute-quantised like the other folds whose inputs
+   * move on a poll, and empty on a wall where nobody set a plan. */
+  const planAt = $derived(Math.floor(at / 60_000) * 60_000);
+  const planWeeks = $derived.by(() => {
+    if (tabNow !== "spend" || waterfall.list.length === 0) return [];
+    const plans = new Map(waterfall.list.map((a) => [a.label, planOf(a.plan)]));
+    return planWeeksOf(instances, (label) => plans.get(label) ?? null, planAt);
   });
 
   const strip = $derived(
@@ -1544,6 +1556,8 @@
         title={`${spanSaid} · ${measureSaid}${split ? ` · ${splitSaid}` : ""}`}
         bucket={bucket}
         strip={strip ?? []}
+        plans={planWeeks}
+        planNow={planAt}
         funding={{ readings: fundingRowsToday, exchange: fundingExchange, mix: fundingMix }}
         card={card && cardInRoom
           ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard, carry: cardCarry }

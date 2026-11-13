@@ -21,6 +21,8 @@
  * hour and a week are never added to each other by accident.
  */
 
+import type { WindowInstance } from "./allowancesamples";
+
 /** Which weekly window this is about. One, named, always. */
 export type PlanWindow = {
   /** When the window opened. A week before it resets. */
@@ -28,6 +30,19 @@ export type PlanWindow = {
   /** When it rolls. */
   reset: number;
 };
+
+export const HOUR_MS = 3_600_000;
+
+/** A week, which is the plan's own width: the endpoint resets the weekly
+ *  window seven days after it opens, so its reset places its opening. */
+export const WEEK_MS = 7 * 24 * HOUR_MS;
+
+/** How far back the projection's rate is measured. **Six hours, and it is a
+ *  judgement rather than a fact.** Long enough that one burst does not decide a
+ *  week's projection, short enough that the figure is today's rate rather than
+ *  last week's. The gate's ring and the room's chart both measure here, so the
+ *  hold and the drawing cannot disagree about what the week is doing. */
+export const RATE_MS = 6 * HOUR_MS;
 
 /** What a person chose. Stored with the account (`conversation`'s registry),
  *  never with a view: a plan is a decision about spending, and the same person
@@ -173,6 +188,78 @@ export function paceNote(pace: Pace): string {
     `paced: the week is at ${now}% against a plan of ${plan}% by now, and at this rate it ` +
     `lands at ${land}% by the reset. new work waits; nothing running is stopped.`
   );
+}
+
+/* ── the picture: a week, its plan, and where it is heading ──────────────── */
+
+/** One account's week, as the room draws it: the readings the week has taken,
+ *  the line the plan set, and where the recent rate puts the reset. */
+export type PlanWeek = {
+  account: string;
+  /** When the week opened, and when it rolls. */
+  opened: number;
+  reset: number;
+  /** The current instance's readings, oldest first, as percentages. */
+  points: readonly { at: number; used: number }[];
+  /** The week's last reading, 0–100+. */
+  used: number;
+  expected: number;
+  projected: number;
+  pace: Pace;
+  /** Whether the plan is holding new work right now — the same answer the gate
+   *  gives, drawn so the picture and the wall say one thing. */
+  holding: boolean;
+};
+
+/** Every account with a plan and a week still running, for the room (§14.3).
+ *
+ *  **The plan's own line and the week's own readings, on one chart.** The line
+ *  is `expectedAt` from the window's opening to its reset; the readings are
+ *  what the account did; the projection carries the recent rate to the reset.
+ *  The question the picture answers is "am I going to make it", which is why
+ *  the projection is drawn even when it leaves the box: a week heading past
+ *  100% is the interesting case, and clamping it to the edge without saying so
+ *  would hide the one thing the chart exists to show.
+ *
+ *  Reads nothing: the caller hands in the folded instances and the account's
+ *  plan. A plan for an account whose week is not in the samples is not drawn,
+ *  because there is no line to put it against. */
+export function planWeeksOf(
+  instances: readonly WindowInstance[],
+  planOf: (account: string) => Plan | null,
+  now: number,
+): PlanWeek[] {
+  const out: PlanWeek[] = [];
+  for (const one of instances) {
+    if (one.kind !== "weekly_all" || one.resetsAt === null) continue;
+    const reset = one.resetsAt;
+    if (reset <= now) continue;
+    const plan = planOf(one.account);
+    /* Off is not a plan: the curve of a decision nobody made is not a line to
+       draw a week against. */
+    if (!plan?.on) continue;
+    const opened = reset - WEEK_MS;
+    const points = one.points.filter((p) => p.at >= opened && p.at <= reset);
+    const pace = paceFor({
+      plan,
+      window: { from: opened, reset },
+      used: one.last,
+      rate: rateOver(points, now - RATE_MS),
+      now,
+    });
+    out.push({
+      account: one.account,
+      opened,
+      reset,
+      points,
+      used: one.last,
+      expected: pace.expected,
+      projected: pace.projected,
+      pace,
+      holding: holdsNew(plan, pace),
+    });
+  }
+  return out.sort((a, b) => a.account.localeCompare(b.account));
 }
 
 /** The hold a plan puts on new work: the sentence a held card wears, and the

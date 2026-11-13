@@ -34,6 +34,7 @@ import {
 import { windowRequest, type AnalyticsWindow } from "./lib/analyticsroom";
 import { live } from "./lib/live.svelte";
 import { seedLive } from "./lib/analyticsfixture";
+import { waterfall } from "./lib/waterfall.svelte";
 
 const asked = new URLSearchParams(location.search);
 const mode: FixtureMode = asked.has("empty") ? "empty" : asked.has("quiet") ? "quiet" : "normal";
@@ -153,6 +154,14 @@ if (asked.has("report")) {
   });
 } else {
   seedLive(live, Date.now());
+  /* A plan on one account, so the room's week-against-the-plan block can be
+     looked at with no store behind it. `lyss` carries a throttle plan and a
+     week in the fixture samples; `tx-team` has none, which is the wall where
+     the block draws nothing for that account. */
+  waterfall.standIn([
+    { label: "lyss", plan: { on: true, mode: "throttle", threshold: 1.15 }, windows: [] },
+    { label: "tx-team", windows: [] },
+  ]);
   mount(Analytics, {
     target: document.getElementById("app")!,
     props: {

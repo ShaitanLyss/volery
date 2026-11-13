@@ -27,7 +27,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { samplesOf, type AllowanceSample } from "./allowancesamples";
 import { ownShare } from "./ownshare.svelte";
-import { paceFor, paceHold, planOf, rateOver, type PaceHold, type Plan } from "./pace";
+import {
+  paceFor,
+  paceHold,
+  planOf,
+  rateOver,
+  RATE_MS,
+  WEEK_MS,
+  type PaceHold,
+  type Plan,
+} from "./pace";
 import {
   type AfarSeat,
   choose,
@@ -83,23 +92,13 @@ const SOON = 65_000;
  *
  * The reading a plan is set against is the weekly window's own percentage, and
  * the rate behind "will the week run out" is measured over the last few hours
- * of it. `pace.ts` has the arithmetic; this is only where its inputs live.
+ * of it. `pace.ts` has the arithmetic and the two spans (`RATE_MS`, `WEEK_MS`),
+ * so the room's chart measures across exactly what this gate does.
  */
-
-/** How far back the projection's rate is measured. **Six hours, and it is a
- *  judgement rather than a fact.** Long enough that one burst does not decide
- *  a week's projection, short enough that the figure is today's rate rather
- *  than last week's: a quiet Monday morning after a heavy Sunday should not
- *  project a week that runs out, and six hours is past both. */
-const RECENT_MS = 6 * 3_600_000;
-
-/** A week, for the plan's line. The endpoint's weekly window resets seven days
- *  after it opens, so the reset the reading carries is enough to place `from`. */
-const WEEK_MS = 7 * 24 * 3_600_000;
 
 /** How many readings one account's week is kept at. At the three-minute poll
  *  that is a day and a half, and the observer's stream events can be denser;
- *  `RECENT_MS` is what the rate actually reads, so this is only a bound. */
+ *  `RATE_MS` is what the rate actually reads, so this is only a bound. */
 const WEEK_POINTS = 512;
 
 /** The window a plan is measured against: the account's whole week, not a
@@ -444,7 +443,7 @@ export class Waterfall {
     const week = weekOf(this.allowances[label]);
     const reset = week?.resetsAt ?? null;
     if (!week || reset === null || reset <= now) return null;
-    const rate = rateOver(this.#weeks.get(label) ?? [], now - RECENT_MS);
+    const rate = rateOver(this.#weeks.get(label) ?? [], now - RATE_MS);
     const pace = paceFor({
       plan,
       window: { from: reset - WEEK_MS, reset },
@@ -495,7 +494,7 @@ export class Waterfall {
     const newest = fresh[fresh.length - 1]!.at;
     this.#weeks.set(
       label,
-      fresh.filter((p) => p.at >= newest - 2 * RECENT_MS).slice(-WEEK_POINTS),
+      fresh.filter((p) => p.at >= newest - 2 * RATE_MS).slice(-WEEK_POINTS),
     );
   }
 
@@ -532,7 +531,7 @@ export class Waterfall {
     const now = Date.now();
     let rows: { at: number; account: string; kind: string; scope: string | null; used: number; resetsAt: number | null }[];
     try {
-      rows = await invoke("allowance_samples", { from: now - RECENT_MS, to: now });
+      rows = await invoke("allowance_samples", { from: now - RATE_MS, to: now });
     } catch {
       return;
     }

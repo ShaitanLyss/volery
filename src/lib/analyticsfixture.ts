@@ -1519,11 +1519,18 @@ export function fixtureAllowanceSamples(from: number, to: number): AllowanceSamp
       i % 3 === 0 ? "stream" : "poll",
     );
   }
-  /* The week, on each account: slower, and it resets days out. */
+  /* The week, on each account: slower, and it resets days out. **Five quiet
+     days then a busy morning**, so the plan's projection has a recent rate to
+     carry: the week sits under its line and is still heading past it, which is
+     the shape the plan block exists to show. */
   const lyssWeek = now + 1 * 24 * HOUR;
-  const lyssWeekAt = [34, 35.2, 36.5, 38.4, 40, 41, 41.6];
+  const lyssWeekAt = [3, 12, 20, 27, 33, 38];
   for (let i = 0; i < lyssWeekAt.length; i++) {
     push(now - 6 * 24 * HOUR + i * 24 * HOUR, "lyss", "weekly_all", lyssWeekAt[i], lyssWeek);
+  }
+  const lyssBusy = [52, 56, 60, 64, 68, 71, 73];
+  for (let i = 0; i < lyssBusy.length; i++) {
+    push(now - 12 * HOUR + i * 2 * HOUR, "lyss", "weekly_all", lyssBusy[i], lyssWeek, "stream");
   }
   const weekReset = now + 4 * 24 * HOUR;
   for (let i = 0; i < 16; i++) {

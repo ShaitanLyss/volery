@@ -3022,6 +3022,10 @@ which is what this section was shaped for.
 - **The face** says the plan's sentence, not an account's: the card's `why` is `paceNote`, the
   wake's line is `waiting.ts`'s "held by the plan until …", and the dock distinguishes the two
   by the same words.
+- **The picture** is `planWeeksOf` (the same module) → `AnalyticsPlan.svelte`, one chart per
+  account with a plan: the week's readings, the plan's diagonal, and the projection to the
+  reset. It reads the samples the room already folds, so it costs no query, and draws nothing
+  where no plan is on.
 
 ### 14.1 The plan
 
@@ -3093,10 +3097,15 @@ does do is already right: an account whose own credits cover a send is one `rout
 card off, so it is not spending the paced week at all, and a paced account with room holds it
 like any other card.
 
-**Still missing, and both are readings rather than decisions.** The plan's line is not yet
-drawn on the room's chart, so the hold and the reading it comes from are seen in two places
-instead of one; and there is no advice beyond the sentence a held card wears. Neither changes
-what the gate does.
+**The picture is drawn** (`AnalyticsPlan.svelte`, fed by `pace.ts::planWeeksOf`): one chart per
+account with a plan, inside the room, with the week's readings, the plan's line from its
+opening to its reset, and where the recent rate puts the reset. The projection is drawn even
+when it leaves the box, because a week heading past 100% is the interesting case. Both the
+gate and the chart measure their rate over `RATE_MS`, so the hold and the drawing cannot
+disagree about what the week is doing.
+
+**Still missing:** other plan shapes, and any advice beyond the sentence a held card wears.
+Neither changes what the gate does.
 
 ### 14.4 The five-hour window is not a budget
 
@@ -3841,9 +3850,10 @@ Each phase is useful on its own and commits on its own.
    switch and tombstones.
 9. **Reports.** The second entry, the asset, the exporter, anonymization; the hall opt-in.
 10. **Pacing.** **Built**: the linear plan stored per account and synced, the measures
-    (`pace.ts`, fed from the allowance samples), and the opt-in holds through the admission
-    gate (`admit.rs::Planned`), which is where §14.0 records it. **Not built**: other plan
-    shapes, the advice, and the plan line on the room's chart.
+    (`pace.ts`, fed from the allowance samples), the opt-in holds through the admission gate
+    (`admit.rs::Planned`), and the week against the plan drawn in the room
+    (`AnalyticsPlan.svelte`), which is where §14.0 records it. **Not built**: other plan
+    shapes and the advice.
 11. **The persistent live channel**, when the live tool feed exists to justify it. Specified in
     section 20.1, deliberately not before.
 12. **The person's own actions** (§3.10), schema v73. **Built**, on one wall: the minute

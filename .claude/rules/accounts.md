@@ -614,6 +614,11 @@ the readings already in hand, so a plan spanning days would otherwise ask the al
 endpoint once a minute for days, against a cadence `usage.md` sets at three and a server that
 answers `429`. A paced *spawn* carries the flag too, from Rust's `Queued.reason`.
 
+**The room draws it.** `pace.ts::planWeeksOf` folds one chart per account with a plan into the
+analytics room (`AnalyticsPlan.svelte`): the week's readings, the plan's line from its opening
+to its reset, and the projection. It measures its rate over `pace.ts::RATE_MS`, the same span
+the gate's ring uses, so the hold and the drawing cannot disagree about the week.
+
 **Nothing in flight is ever stopped.** The gate is asked before a send, a spawn and a wake; a
 prompt typed into a working card joins the queue behind the turn and is re-checked when that
 turn ends. A bypass ignores the pace exactly as it ignores your caps (Rust's `bypass` arm in

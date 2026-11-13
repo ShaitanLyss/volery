@@ -45,6 +45,8 @@
   import AnalyticsCardLife from "./AnalyticsCardLife.svelte";
   import AnalyticsFundings from "./AnalyticsFundings.svelte";
   import AnalyticsLive from "./AnalyticsLive.svelte";
+  import AnalyticsPlan from "./AnalyticsPlan.svelte";
+  import type { PlanWeek } from "./pace";
   import type { CardLife } from "./analyticslife";
   import type { StripTile } from "./analyticstiles";
   import type { Exchange, FundingMix, FundingReading } from "./fundings";
@@ -61,6 +63,8 @@
     bucket,
     strip,
     funding,
+    plans,
+    planNow,
     card,
   }: {
     /** The window that came back. Its bounds are the axis; its rows are not
@@ -98,6 +102,14 @@
        *  breakdown. */
       mix: readonly FundingMix[] | null;
     };
+    /** The week against the plan (§14.3), one per account that has one. Empty
+     *  on a wall with no plan, where the block draws nothing rather than a
+     *  chart of a decision nobody made. */
+    plans: readonly PlanWeek[];
+    /** The instant the plan charts are drawn at, quantised to the minute by
+     *  the shell: the reading moves a point every few minutes, not every
+     *  second, and `now` in a template would be a stale clock. */
+    planNow: number;
     /** A card opened from its own row or `<space> n a` (§11.10). It is the
      *  inspector's first block, above the bucket, because the room has exactly
      *  one column on the right and two panels called inspector is one too
@@ -319,6 +331,8 @@
       </div>
     {/each}
   </div>
+
+  <AnalyticsPlan weeks={plans} now={planNow} />
 
   <AnalyticsLive />
 

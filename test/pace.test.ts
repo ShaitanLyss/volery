@@ -1,4 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { instancesOf, type AllowanceSample } from "../src/lib/allowancesamples";
+import {
+  planWeeksOf,
+  RATE_MS,
+  WEEK_MS,
+  type Plan,
+} from "../src/lib/pace";
 import {
   expectedAt,
   holdsNew,
@@ -193,5 +200,71 @@ describe("how a pace is said", () => {
     expect(paceTier(one({ used: 99, rate: 0.004 / DAY }))).toBe("urgent");
     expect(paceTier(one({ used: 60 }))).toBe("warm");
     expect(paceTier(one({ used: 20 }))).toBe("calm");
+  });
+});
+
+describe("the week against the plan, as the room draws it", () => {
+  const RESET = Date.UTC(2026, 10, 18, 0, 0, 0);
+  const OPENED = RESET - WEEK_MS;
+  const on: Plan = { ...NO_PLAN, on: true };
+  const sample = (over: Partial<AllowanceSample> & { at: number; used: number }): AllowanceSample => ({
+    host: "studio",
+    account: "tx-team",
+    kind: "weekly_all",
+    scope: "",
+    resetsAt: RESET,
+    severity: "normal",
+    plan: "team",
+    source: "poll",
+    ...over,
+  });
+
+  test("is the window's line, its readings and where the rate puts it", () => {
+    const now = OPENED + 6 * DAY + 2 * HOUR;
+    const samples = [
+      sample({ at: OPENED + DAY, used: 10 }),
+      sample({ at: OPENED + 3 * DAY, used: 30 }),
+      sample({ at: OPENED + 6 * DAY, used: 50 }),
+      sample({ at: OPENED + 6 * DAY + HOUR, used: 52, source: "stream" }),
+    ];
+    const weeks = planWeeksOf(instancesOf(samples), () => on, now);
+    expect(weeks).toHaveLength(1);
+    const w = weeks[0]!;
+    expect(w.account).toBe("tx-team");
+    expect(w.opened).toBe(OPENED);
+    expect(w.reset).toBe(RESET);
+    expect(w.used).toBe(52);
+    expect(w.expected).toBeCloseTo((6 * DAY + 2 * HOUR) / WEEK_MS, 4);
+    expect(w.pace.actual).toBeCloseTo(0.52);
+    expect(w.projected).toBeGreaterThan(0.52);
+    expect(w.holding).toBe(false);
+  });
+
+  test("is only a week that is still running, and only one with a plan", () => {
+    const now = OPENED + 6 * DAY;
+    const samples = [
+      sample({ at: OPENED + 3 * DAY, used: 30 }),
+      sample({ at: OPENED + 3 * DAY, used: 30, kind: "session", resetsAt: now + HOUR }),
+      sample({ at: OPENED + 3 * DAY, used: 30, kind: "weekly_scoped" }),
+    ];
+    expect(planWeeksOf(instancesOf(samples), () => on, now)).toHaveLength(1);
+    expect(planWeeksOf(instancesOf(samples), () => null, now)).toHaveLength(0);
+    expect(planWeeksOf(instancesOf(samples), () => on, RESET + HOUR)).toHaveLength(0);
+    expect(planWeeksOf(instancesOf(samples), () => ({ ...on, on: false }), now)).toHaveLength(0);
+  });
+
+  test("draws the hold the gate would take", () => {
+    const now = OPENED + 6 * DAY + 2 * HOUR;
+    const samples = [
+      sample({ at: OPENED + 6 * DAY, used: 96 }),
+      sample({ at: OPENED + 6 * DAY + HOUR, used: 99, source: "stream" }),
+    ];
+    const w = planWeeksOf(instancesOf(samples), () => on, now)[0]!;
+    expect(w.projected).toBeGreaterThan(1);
+    expect(w.holding).toBe(true);
+  });
+
+  test("measures the rate over the same span the gate does", () => {
+    expect(RATE_MS).toBe(6 * HOUR);
   });
 });
