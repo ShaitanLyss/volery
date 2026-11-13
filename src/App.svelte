@@ -6425,6 +6425,8 @@
       onread={setRead}
       extras={barExtras}
       band={chatBand}
+      {solo}
+      onflyway={() => (showFlyway = true)}
     />
   {/if}
   <!-- Offstage under chat view: hidden, not unmounted, so the switch back is

@@ -69,6 +69,8 @@
   import { cardByHandle } from "./chatview";
   import { view } from "./view.svelte";
   import type { Presence } from "./presence.svelte";
+  import type { Solo } from "./solo.svelte";
+  import { chromeTitle } from "./solo";
   import type { Elsewhere } from "./shadows.svelte";
   import type { Deferred } from "./presence";
   import { answerPutOff, dropPutOff } from "./putoff.svelte";
@@ -110,6 +112,8 @@
     onanalytics,
     extras,
     band,
+    solo = null,
+    onflyway = () => {},
   }: {
     skein: Skein;
     cards: Cards;
@@ -166,6 +170,13 @@
     extras?: Snippet;
     /** The fault line and the drawers, drawn at the head of the sheet. */
     band?: Snippet;
+    /** Flying solo (`solo.svelte.ts`). This view has no left strip, so the
+     *  state is carried by the mark in this header — the same state the wall's
+     *  flyway button wears (`.claude/rules/solo.md`). */
+    solo?: Solo | null;
+    /** The header's solo mark, which opens the flyway panel — where the switch
+     *  and the plain sentences are, exactly as on the wall. */
+    onflyway?: () => void;
   } = $props();
 
   const card = $derived(cards.find(selected));
@@ -860,6 +871,17 @@
       aria-expanded={looking === "actions"}
       onclick={act}><Icon name="bird" /></button
     >
+    {#if solo?.on}
+      <!-- Icon-only, for the reason the tour button is: this header has no
+           room for a word, and the title says the rest. -->
+      <button
+        class="iconbtn solomark"
+        type="button"
+        title={chromeTitle(true)}
+        aria-label="flying solo"
+        onclick={onflyway}><Icon name="globe" /></button
+      >
+    {/if}
     {@render extras?.()}
     {#if card}
       <button
@@ -1283,6 +1305,11 @@
   }
   .iconbtn:hover {
     background: color-mix(in oklab, var(--surface) 80%, transparent);
+    color: var(--paper);
+  }
+  /* The state, not a hover: the mark is brighter than the controls beside it
+     while the shutter is down, as the wall's button wears `solo` in words. */
+  .solomark {
     color: var(--paper);
   }
   .where {
