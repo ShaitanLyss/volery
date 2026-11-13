@@ -55,6 +55,29 @@ pub const TAGS: [&str; 1] = [WORD];
 /// How long a host name may be. The same cap every other host field takes.
 const HOST_KEEP: usize = 80;
 
+/// The machine's own half of a beat (§8.3, `machinefacts.rs`).
+///
+/// **Every field is optional, and that is the rule rather than a wire
+/// convenience**: a counter a wall cannot read is absent, never zero, so a GPU
+/// this build cannot ask about does not draw as an idle one on every other
+/// machine. An older wall sends none of these at all, and the whole struct
+/// defaults to absent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Now {
+    /// The whole machine, 0–100.
+    pub cpu: Option<f32>,
+    pub mem_used: Option<u64>,
+    pub mem_total: Option<u64>,
+    /// The busiest GPU engine, 0–100.
+    pub gpu: Option<f32>,
+    /// Bytes per second over the sender's last sampling interval.
+    pub net_rx: Option<u64>,
+    pub net_tx: Option<u64>,
+    /// Cards on that wall working in a worktree.
+    pub worktrees: Option<u32>,
+}
+
 /// One wall's beat.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "msg", rename_all = "snake_case")]
@@ -71,6 +94,12 @@ pub enum LiveMsg {
         usd: f64,
         /// Requests per minute over the same window.
         requests: f64,
+        /// What that machine's hardware was doing, where it could be read.
+        /// **`default` on the way in**, so a beat from a build before this
+        /// field is a beat that says nothing about its machine rather than a
+        /// frame that fails to parse and leaves the wall dark.
+        #[serde(default)]
+        now: Option<Now>,
     },
 }
 
@@ -82,13 +111,21 @@ pub enum LiveMsg {
 /// would look dark to every peer for a reason nothing reports. Zero is a quiet
 /// reading, which is the honest direction to fail in for a figure nobody acts
 /// on.
-pub fn beat(host: &str, at: i64, tokens: f64, usd: f64, requests: f64) -> LiveMsg {
+pub fn beat(
+    host: &str,
+    at: i64,
+    tokens: f64,
+    usd: f64,
+    requests: f64,
+    now: Option<Now>,
+) -> LiveMsg {
     LiveMsg::Live {
         host: clip::keep(host, HOST_KEEP).kept,
         at,
         tokens: finite(tokens),
         usd: finite(usd),
         requests: finite(requests),
+        now: now.map(clean_now),
     }
 }
 
@@ -100,13 +137,31 @@ fn finite(v: f64) -> f64 {
     }
 }
 
+/// A percentage clamped to its own unit, and dropped rather than sent as a
+/// value that is not a number: the same rule the spend figures follow.
+fn percent(v: Option<f32>) -> Option<f32> {
+    v.filter(|p| p.is_finite()).map(|p| p.clamp(0.0, 100.0))
+}
+
+fn clean_now(now: Now) -> Now {
+    Now {
+        cpu: percent(now.cpu),
+        gpu: percent(now.gpu),
+        mem_used: now.mem_used,
+        mem_total: now.mem_total,
+        net_rx: now.net_rx,
+        net_tx: now.net_tx,
+        worktrees: now.worktrees,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_beat_says_its_own_word_and_round_trips() {
-        let one = beat("AU-LT-285", 1_764_000_000_000, 12_500.0, 0.42, 3.0);
+        let one = beat("AU-LT-285", 1_764_000_000_000, 12_500.0, 0.42, 3.0, None);
         let raw = serde_json::to_string(&one).unwrap();
         assert!(raw.contains("\"msg\":\"live\""), "{raw}");
         let back: crate::frame::Frame = serde_json::from_str(&raw).unwrap();
@@ -118,7 +173,7 @@ mod tests {
     /// wall looks dark for no reason. Zeros are a quiet wall, which is honest.
     #[test]
     fn a_number_that_is_not_one_is_sent_as_quiet() {
-        let one = beat("w", 1, f64::NAN, f64::INFINITY, -3.0);
+        let one = beat("w", 1, f64::NAN, f64::INFINITY, -3.0, None);
         match one {
             LiveMsg::Live { tokens, usd, requests, .. } => {
                 assert_eq!((tokens, usd, requests), (0.0, 0.0, 0.0));
@@ -129,8 +184,71 @@ mod tests {
     #[test]
     fn a_host_is_capped_like_every_other_one() {
         let long = "h".repeat(HOST_KEEP + 40);
-        match beat(&long, 1, 0.0, 0.0, 0.0) {
+        match beat(&long, 1, 0.0, 0.0, 0.0, None) {
             LiveMsg::Live { host, .. } => assert_eq!(host.chars().count(), HOST_KEEP),
+        }
+    }
+
+    /// The machine's half travels with the spend, and a wall that cannot read a
+    /// counter says nothing about it rather than sending a zero.
+    #[test]
+    fn a_beat_carries_the_machine_where_it_can_read_it() {
+        let one = beat(
+            "w",
+            1,
+            10.0,
+            0.0,
+            1.0,
+            Some(Now {
+                cpu: Some(37.5),
+                mem_used: Some(8 << 30),
+                mem_total: Some(32 << 30),
+                gpu: None,
+                net_rx: Some(1_000),
+                net_tx: Some(500),
+                worktrees: Some(2),
+            }),
+        );
+        let raw = serde_json::to_string(&one).unwrap();
+        assert!(raw.contains("\"cpu\":37.5"), "{raw}");
+        assert!(raw.contains("\"gpu\":null"), "{raw}");
+        let back: crate::frame::Frame = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back, crate::frame::Frame::Live(one));
+    }
+
+    /// **A beat from a build before this field is a reading, not a broken
+    /// frame.** The whole point of the optional machine half is that the fleet
+    /// is mixed for months at a time.
+    #[test]
+    fn an_older_beat_without_a_machine_still_parses() {
+        let raw = r#"{"msg":"live","host":"old","at":5,"tokens":1.0,"usd":0.0,"requests":2.0}"#;
+        let back: crate::frame::Frame = serde_json::from_str(raw).unwrap();
+        match back {
+            crate::frame::Frame::Live(LiveMsg::Live { host, now, .. }) => {
+                assert_eq!(host, "old");
+                assert_eq!(now, None);
+            }
+            other => panic!("not a live frame: {other:?}"),
+        }
+    }
+
+    /// A percentage outside its unit, or one that is not a number, is dropped.
+    #[test]
+    fn a_machine_reading_stays_inside_its_own_units() {
+        let one = beat(
+            "w",
+            1,
+            0.0,
+            0.0,
+            0.0,
+            Some(Now { cpu: Some(140.0), gpu: Some(f32::NAN), ..Default::default() }),
+        );
+        match one {
+            LiveMsg::Live { now: Some(now), .. } => {
+                assert_eq!(now.cpu, Some(100.0));
+                assert_eq!(now.gpu, None);
+            }
+            _ => panic!("no machine half"),
         }
     }
 }

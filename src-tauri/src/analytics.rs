@@ -4896,6 +4896,11 @@ fn write_tail(
        goes with the rest, and another wall's copy is that wall's to keep. */
     tx.execute("DELETE FROM allowance_fact WHERE at < ?1", [cutoff])
         .map_err(|e| format!("analytics: prune allowance: {e}"))?;
+    /* The machine series is the same clock: a minute a row, on a wall that is
+       up for weeks, is the other table that must have an end. `machinefacts.rs`
+       writes it and nothing else touches it. */
+    tx.execute("DELETE FROM machine_fact WHERE at < ?1", [cutoff])
+        .map_err(|e| format!("analytics: prune machine: {e}"))?;
     /* The invalidation fine tier keeps the same ninety days, **except the move
        receipts**: an account, provider or model change is a card's history
        rather than a moment, the same distinction `analytics_session` and the

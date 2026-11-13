@@ -223,3 +223,22 @@ export function idleLine(s: MachineStatus): string {
 export function idleSaid(s: MachineStatus): string {
   return idle(s, true);
 }
+
+/** Whether this wall records its own machine series (`docs/ANALYTICS.md` §6).
+ *  Stored per machine rather than synced with the accounts, because it is a
+ *  judgement about this disk and this person's privacy, not a decision about
+ *  spending that should follow her to the other laptop. */
+export const RECORD_KEY = "skein.machine";
+
+/** The menu's line: the knob's name, with the state carried by the menu's own
+ *  mark, as every other machine toggle is. */
+export function recordLine(on: boolean): string {
+  return on ? "record this machine's readings" : "record this machine's readings — paused";
+}
+
+/** And the chord's sentence, which has to say what is now true. */
+export function recordSaid(on: boolean): string {
+  return on
+    ? "recording this machine — a row a minute for ninety days, local only"
+    : "not recording this machine — the history stops here";
+}

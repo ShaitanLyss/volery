@@ -46,7 +46,9 @@
   import AnalyticsFundings from "./AnalyticsFundings.svelte";
   import AnalyticsLive from "./AnalyticsLive.svelte";
   import AnalyticsPlan from "./AnalyticsPlan.svelte";
+  import MachineHistory from "./MachineHistory.svelte";
   import type { PlanWeek } from "./pace";
+  import type { MachineRead } from "./machineread.svelte";
   import type { CardLife } from "./analyticslife";
   import type { StripTile } from "./analyticstiles";
   import type { Exchange, FundingMix, FundingReading } from "./fundings";
@@ -65,6 +67,7 @@
     funding,
     plans,
     planNow,
+    machine,
     card,
   }: {
     /** The window that came back. Its bounds are the axis; its rows are not
@@ -110,6 +113,10 @@
      *  the shell: the reading moves a point every few minutes, not every
      *  second, and `now` in a template would be a stale clock. */
     planNow: number;
+    /** This machine's recorded series over the span (§6), or null where the
+     *  read failed. Empty hides the block: a wall that has just started
+     *  recording has nothing to draw and says nothing rather than a flat line. */
+    machine: MachineRead | null;
     /** A card opened from its own row or `<space> n a` (§11.10). It is the
      *  inspector's first block, above the bucket, because the room has exactly
      *  one column on the right and two panels called inspector is one too
@@ -333,6 +340,8 @@
   </div>
 
   <AnalyticsPlan weeks={plans} now={planNow} />
+
+  <MachineHistory read={machine} span={span} />
 
   <AnalyticsLive />
 

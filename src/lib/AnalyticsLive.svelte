@@ -24,8 +24,11 @@
   import { live } from "./live.svelte";
   import { byHost, liveSaid, perMinute, stripOf, totalsIn } from "./live";
   import { money } from "./usage";
+  import { capacitySaid, type MachineNow } from "./machinefacts";
 
-  /** One wall's beat, as `flyway_live` and `flyway:live` carry it (§20.1). */
+  /** One wall's beat, as `flyway_live` and `flyway:live` carry it (§20.1,
+   *  §8.3). `now` is the sender's machine reading; a beat from a build before
+   *  it is absent rather than zeroed. */
   type Beat = {
     msg: "live";
     host: string;
@@ -33,6 +36,7 @@
     tokens: number;
     usd: number;
     requests: number;
+    now?: MachineNow | null;
   };
 
   let {
@@ -49,6 +53,10 @@
    *  because it is not a sample this wall took: it is what another machine said
    *  about itself, and it is never folded into this wall's own rate. */
   let peers = $state<Beat[]>([]);
+  /** This wall's machine, read beside the beat. The panel is the one reader
+   *  that keeps `machine_now`'s cache fresh while the fleet is watching, and
+   *  the same call is what `flyway_note_live` puts in the beat. */
+  let mine = $state<MachineNow | null>(null);
   let unlisten: UnlistenFn | null = null;
 
   /* **Only while this panel is up.** The beat is what wakes the other machines,
@@ -115,6 +123,13 @@
       requests: totals.requests,
       wants: true,
     }).catch(() => {});
+    /* And this machine's own reading, asked on the same beat. `machine_now` is
+       off the main thread and refreshes the counters at most every two
+       seconds, so a once-a-second ask costs a clone and no sample, and the
+       cache the note above carries is never more than one beat old. */
+    void invoke<MachineNow | null>("machine_now")
+      .then((got) => (mine = got))
+      .catch(() => {});
   });
 
   const bars = $derived(stripOf(live.samples, from, now, 60));
@@ -173,6 +188,7 @@
           <span class="al-name">{row.label}</span>
           <span class="al-num">{liveSaid((row.totals.tokens / WINDOW) * MINUTE)}</span>
           <span class="al-dim">{row.totals.usd > 0 ? money(row.totals.usd) : "unpriced"} over five</span>
+          {#if mine && capacitySaid(mine)}<span class="al-dim">{capacitySaid(mine)}</span>{/if}
         </li>
       {/each}
       {#each fleetRows as row (row.host)}
@@ -183,6 +199,7 @@
             {row.usd > 0 ? money(row.usd) : "unpriced"}/min
             {#if row.age > STALE_AFTER}· {Math.round(row.age / 1000)}s old{/if}
           </span>
+          {#if row.now && capacitySaid(row.now)}<span class="al-dim">{capacitySaid(row.now)}</span>{/if}
         </li>
       {/each}
     </ul>

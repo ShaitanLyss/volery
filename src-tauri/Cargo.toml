@@ -67,7 +67,12 @@ tiny_http = "0.12"
 # their colour and their progress rendering; a PTY makes them behave as they
 # would in your PowerShell. Same ConPTY under the hood that WezTerm uses.
 tauri-plugin-dialog = "2"
-sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
+# `disk` and `network` are on for the machine series (`machinefacts.rs`): free
+# space per fixed volume and bytes over every interface that is not loopback.
+# Both are counter reads, not walks, so the standing rule that analytics never
+# enumerates processes is untouched — the `system` feature alone still gives no
+# process refresh unless something asks for one.
+sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk", "network"] }
 # Azure DevOps over HTTPS. Blocking and small, the same bargain `tiny_http` is:
 # what we need is four GETs, and an async runtime to make them would be the
 # larger dependency by far.
@@ -340,6 +345,11 @@ windows = { version = "0.61", features = [
     # no console, and Rust's own last words — the allocation size that could not
     # be met, on 2026-11-10 — were being written into an invalid handle.
     "Win32_System_Console",
+    # The GPU's own counters (`machinefacts.rs`): `\GPU Engine(*)\Utilization
+    # Percentage` through PDH, chosen over DXGI because it needs no device of
+    # its own and over WMI because WMI is far too slow for a sampler that runs
+    # while agents are on the machine. See §6.2 of `docs/ANALYTICS.md`.
+    "Win32_System_Performance",
     # Whether the session is locked, asked when a card's browser call ends: the
     # input desktop cannot be opened or switched to while the secure desktop
     # holds it. See `screen.rs`.

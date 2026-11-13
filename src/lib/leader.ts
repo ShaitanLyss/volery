@@ -157,7 +157,10 @@ export type Verb =
   | { kind: "attach" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" | "idle" | "boost" | "look" | "freshen" }
+  | {
+      kind: "machine";
+      act: "awake" | "reopen" | "reawaken" | "idle" | "record" | "boost" | "look" | "freshen";
+    }
   | { kind: "bright"; act: "up" | "down" | "reset" }
   | { kind: "screen"; act: "hang" | "immersive" | "all" | "float" }
   | { kind: "reading"; widget: WidgetKind };
@@ -426,6 +429,11 @@ export const CHORDS: readonly Chord[] = [
      questions stopped having a deadline, is the only thing that moves one off
      a forgotten open laptop. `i` for idle, and on by default. */
   { keys: "mi", label: "away when nobody is at the keyboard: on / off", verb: { kind: "machine", act: "idle" } },
+  /* The machine's own history (§6 of the analytics design): a row a minute for
+     ninety days, on this machine only. `f` for facts, and beside the other
+     switches about this machine rather than in the analytics room, because it
+     is a decision about the disk rather than about a reading. */
+  { keys: "mf", label: "record this machine's readings: on / off", verb: { kind: "machine", act: "record" } },
   /* Boost: whether a card whose account runs out carries on with the
      organisation's api credits (`credits.ts`). In `m` because it is a standing
      decision about what this wall may spend, the same sort of thing as staying

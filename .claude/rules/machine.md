@@ -1,8 +1,12 @@
 ---
 paths:
   - "src-tauri/src/machine.rs"
+  - "src-tauri/src/machinefacts.rs"
   - "src/lib/machine.ts"
   - "src/lib/machine.svelte.ts"
+  - "src/lib/machinefacts.ts"
+  - "src/lib/MachineHistory.svelte"
+  - "src/lib/machineread.svelte.ts"
   - "tools/check-machine.ps1"
 ---
 
@@ -195,8 +199,35 @@ longer than Windows itself would take to decide they had gone.
   ladder (`away.md`, *Nobody at the keyboard*). Being on by default is what makes it a backstop at
   all; with the knob off an untouched machine's questions wait for her.
 
+## The machine's own history, and what it owes the fleet
+
+`machinefacts.rs` records what the hardware was doing, which is a different subject from the
+three switches above and from `perf.rs`: the one about *power*, the one about *processes*, and
+this one about *counters*. One sampler behind one mutex (`System`, `Disks`, `Networks` kept
+between reads because every rate is a difference), a row a minute into `machine_fact` while
+the switch is on, and an on-demand reading at most every two seconds while somebody is
+watching. `docs/ANALYTICS.md` §6 has the design and §6.3 the "as built".
+
+- **`procs` is never walked here.** §6.3's rule is that analytics does not enumerate
+  processes; the meter's sample stays the only count, and a row recorded while no meter was up
+  has NULL there rather than a zero that means something else.
+- **A counter that cannot be read is absent, never 0**, and it is absent all the way out: the
+  sampler returns `None`, the beat's `now` omits the field, and `machinefacts.ts` skips it in
+  the sentence. A GPU this build cannot ask about must not draw as an idle one on every wall on
+  the fleet, which is what a zero would do.
+- **The beat carries it, and the reading is cached rather than sampled.** `flyway_note_live`
+  runs on the main thread once a second, so it takes `Machine::cached()`; the live panel's
+  `machine_now` is what refreshes the cache, at most every two seconds. A sysinfo refresh
+  inside the note would put a counter read between a click and the card it was aimed at.
+- **The switch is per machine** (`space m f`, `localStorage` under `skein.machine`), because
+  recording this disk is a judgement about this machine — the opposite call from the caps,
+  which travel with the account because they are a decision about spending.
+
 ## Not built, on purpose
 
 - **AutoAdminLogon**: a clear-text password in the registry, almost certainly blocked by
   policy on a company machine, and a real exposure on one that is not.
 - **A service or a run-without-session task**: needs admin.
+- **VRAM and `procs` in the machine series**: the first needs a DXGI device this process has
+  no other use for, the second is the process walk §6.3 rules out. Both columns exist. Neither
+  is filled, and neither is guessed at.

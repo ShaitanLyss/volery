@@ -82,6 +82,7 @@
   } from "./fundings";
   import { stripModel, weekResidual, type FleetReading } from "./analyticstiles";
   import { planOf, planWeeksOf } from "./pace";
+  import { readMachine, type MachineRead } from "./machineread.svelte";
   import { anonymizeReport, reportModel } from "./analyticsreport";
   import { writeReportFile } from "./analyticsreport.svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -715,6 +716,24 @@
     if (tabNow !== "spend" || waterfall.list.length === 0) return [];
     const plans = new Map(waterfall.list.map((a) => [a.label, planOf(a.plan)]));
     return planWeeksOf(instances, (label) => plans.get(label) ?? null, planAt);
+  });
+
+  /* The machine series over the span (§6). Read when the room opens and when
+   * the span changes, never on a clock: the writer is a row a minute, and the
+   * live panel beside this already says what the machine is doing now. */
+  let machine = $state<MachineRead | null>(null);
+  let machineGen = 0;
+  $effect(() => {
+    void tabNow;
+    const win = loaded;
+    if (tabNow !== "spend" || !win) {
+      machine = null;
+      return;
+    }
+    const mine = ++machineGen;
+    void readMachine(win.since, win.until).then((got) => {
+      if (mine === machineGen) machine = got;
+    });
   });
 
   const strip = $derived(
@@ -1558,6 +1577,7 @@
         strip={strip ?? []}
         plans={planWeeks}
         planNow={planAt}
+        machine={machine}
         funding={{ readings: fundingRowsToday, exchange: fundingExchange, mix: fundingMix }}
         card={card && cardInRoom
           ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard, carry: cardCarry }

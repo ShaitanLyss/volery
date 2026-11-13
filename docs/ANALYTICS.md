@@ -1527,6 +1527,33 @@ The live view therefore has two resolutions of the same truth: a 2-second ring f
 few minutes, and 1-minute rows for everything older. The handover is seamless because both are
 stamped, not counted, which is the rule `Cores.svelte` already follows.
 
+**As built (schema v75, 2026-11-13).** `machinefacts.rs` is one sampler behind one mutex:
+`System`, `Disks` and `Networks` from `sysinfo`, kept between reads because every rate is a
+difference. A thread records a row a minute while the switch is on (`RECORD_EVERY_MS`), and
+an on-demand ask refreshes the same counters at most every two seconds (`LIVE_MS`) without
+writing a row. The live panel asks it once a beat, and the flyway beat carries what it
+answered, so every wall draws every machine (§8.3).
+
+Four things are stated rather than assumed:
+
+- **GPU is PDH**, `\GPU Engine(*)\Utilization Percentage`, the busiest engine rather than a
+  sum: eleven engines at 8% is a GPU at 8% doing eleven things, and the schema's unit is one
+  engine's percentage. A first read is `None` because a rate counter has no value until it has
+  been read twice.
+- **`gpu_mem` is NULL.** It needs a DXGI device, and a second graphics object in this process
+  for a figure nothing has asked for is a cost the design only promised "if it stays cheap".
+  The column exists so filling it later is not a rung.
+- **`procs` is NULL.** §6.3's rule holds: analytics never walks processes. The meter's sample
+  is still the only process count on this wall, and a row recorded while no meter was up says
+  nothing rather than zero.
+- **The switch is per machine.** `machine_record`, set from the ground menu (`space m f`) and
+  stored in `localStorage`, because recording this disk is a judgement about this machine
+  rather than a decision that should follow the person to the other laptop.
+
+`perf.rs` was not reused and the reason is §6.1's: its cost is the process walk, and this
+needs none of it. What *was* borrowed is its discipline — one sampler however many readers,
+counters refreshed only while something asks, and `None` for a counter that could not be read.
+
 ---
 
 ## 7. Ingest
@@ -1883,6 +1910,16 @@ that has to be reconciled. And the local half does not wait for the flyway at al
 request this wall's cards make is folded off the event stream, priced, and drawn as a
 five-minute strip with a per-minute and a per-five rate. The fleet lines are that reading, two
 seconds behind, per machine.
+
+**And since schema v75 the beat carries the machine as well** (`live::Now`): CPU, memory, the
+busiest GPU engine, network in and out, and the worktrees that wall's cards are in. Each field
+is optional and absent when the sender could not read it, which is the same rule the sampler
+keeps: a GPU at 0% and a GPU this build cannot ask about are different facts, and a wall from a
+build before this field sends none of them rather than a zero. The reading comes from
+`machinefacts::Machine::cached()` — not a fresh sample — because `flyway_note_live` runs on the
+main thread once a second; the live panel asks `machine_now` beside it, which is what keeps the
+cache at most one beat old. The fleet line draws each wall's capacity next to its spend, and
+an older sensorless wall draws its spend alone rather than an empty machine.
 
 ### 8.4 Fine history on demand
 
@@ -3844,10 +3881,14 @@ Each phase is useful on its own and commits on its own.
 5. **The prompt trace and the hall.** The page, the kind correction, favourites, tags, the
    evolution view, and the vault's lock/unlock field.
 6. **Widgets and saved views.** The `analytics` kind, pin and open, size intents.
-7. **Machine facts.** CPU, memory, disk, network, cards, worktrees; GPU behind its own probe.
-8. **Flyway history and the live fleet.** Hourly rollups, the manifest keyed by owner, the day
-   pull, `Now`, the two-second `live` frame, and the sealed prompt archive with its per-peer
-   switch and tombstones.
+7. **Machine facts.** **Built**: the v75 table, the minute recorder, PDH for the GPU, the
+   on-demand two-second reading, the switch, and the block in the room with the fleet's
+   readings beside its spend. **Not built**: VRAM (needs a DXGI device), `procs` (the meter's
+   process walk is the only count, by §6.3), and a machine page of its own.
+8. **Flyway history and the live fleet.** **Built**: hourly rollups, the manifest keyed by
+   owner, the day pull, the two-second `live` frame carrying its sender's machine, and the
+   fine pull. **Not built**: the sealed prompt archive with its per-peer switch and
+   tombstones, which is the other half of this phase.
 9. **Reports.** The second entry, the asset, the exporter, anonymization; the hall opt-in.
 10. **Pacing.** **Built**: the linear plan stored per account and synced, the measures
     (`pace.ts`, fed from the allowance samples), the opt-in holds through the admission gate

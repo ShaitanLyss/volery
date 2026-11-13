@@ -3749,8 +3749,25 @@ pub fn flyway_note_live(
 ) {
     if let Some(l) = current(&app) {
         let at = l.now();
+        /* The machine half comes from the cached reading rather than a fresh
+           sample: this command runs every second on the main thread, and
+           refreshing counters here would put a sysinfo call between a click and
+           the card it was aimed at. The live panel asks `machine_now` beside
+           this note, and that is what keeps the cache a beat old at most. */
+        let now = app
+            .try_state::<crate::machinefacts::Machine>()
+            .and_then(|m| m.cached())
+            .map(|s| super::live::Now {
+                cpu: s.cpu,
+                mem_used: s.mem_used,
+                mem_total: s.mem_total,
+                gpu: s.gpu,
+                net_rx: s.net_rx,
+                net_tx: s.net_tx,
+                worktrees: s.worktrees,
+            });
         if let Ok(mut live) = l.live.lock() {
-            *live = Some(super::live::beat(&l.me, at, tokens, usd, requests));
+            *live = Some(super::live::beat(&l.me, at, tokens, usd, requests, now));
         }
         l.wants_live.store(wants, Ordering::Release);
     }

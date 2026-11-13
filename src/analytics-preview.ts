@@ -35,6 +35,8 @@ import { windowRequest, type AnalyticsWindow } from "./lib/analyticsroom";
 import { live } from "./lib/live.svelte";
 import { seedLive } from "./lib/analyticsfixture";
 import { waterfall } from "./lib/waterfall.svelte";
+import { standMachine } from "./lib/machineread.svelte";
+import type { MachineNow } from "./lib/machinefacts";
 
 const asked = new URLSearchParams(location.search);
 const mode: FixtureMode = asked.has("empty") ? "empty" : asked.has("quiet") ? "quiet" : "normal";
@@ -162,6 +164,31 @@ if (asked.has("report")) {
     { label: "lyss", plan: { on: true, mode: "throttle", threshold: 1.15 }, windows: [] },
     { label: "tx-team", windows: [] },
   ]);
+  /* And the machine series, made up: a working day's shape over whatever span
+     the surface asks for, so the block and its sparklines can be looked at with
+     no store behind them. A GPU that peaks for a stretch is the case worth
+     drawing — a flat line reads as a broken reading. */
+  standMachine((from, to) => {
+    const rows: MachineNow[] = [];
+    const step = Math.max(60_000, Math.ceil((to - from) / 720));
+    for (let at = from; at < to; at += step) {
+      const hour = new Date(at).getHours() + new Date(at).getMinutes() / 60;
+      const day = Math.sin(((hour - 6) / 24) * Math.PI * 2);
+      const busy = Math.max(0, day);
+      rows.push({
+        at,
+        cpu: 8 + busy * 62,
+        memUsed: (9 + busy * 7) * 1024 ** 3,
+        memTotal: 32 * 1024 ** 3,
+        gpu: busy > 0.6 ? 30 + busy * 60 : 2,
+        diskFree: (420 - (at - from) / 86_400_000 / 2) * 1024 ** 3,
+        netRx: 40_000 + busy * 900_000,
+        netTx: 12_000 + busy * 220_000,
+        worktrees: 1,
+      });
+    }
+    return rows;
+  });
   mount(Analytics, {
     target: document.getElementById("app")!,
     props: {

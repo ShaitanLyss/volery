@@ -322,6 +322,7 @@ describe("the which-key hint", () => {
       { keys: "ls", label: "plan back in the stack" },
       { keys: "ma", label: "cards left awake come back awake: on / off" },
       { keys: "mb", label: "boost — credits when an account runs out: on / off" },
+      { keys: "mf", label: "record this machine's readings: on / off" },
       { keys: "mi", label: "away when nobody is at the keyboard: on / off" },
       { keys: "ml", label: "boost's look: the next one" },
       { keys: "mr", label: "reopen after a restart: on / off" },
@@ -436,6 +437,7 @@ describe("the which-key hint", () => {
     expect(offers("m")).toEqual([
       { keys: "a", label: "cards left awake come back awake: on / off" },
       { keys: "b", label: "boost — credits when an account runs out: on / off" },
+      { keys: "f", label: "record this machine's readings: on / off" },
       { keys: "i", label: "away when nobody is at the keyboard: on / off" },
       { keys: "l", label: "boost's look: the next one" },
       { keys: "r", label: "reopen after a restart: on / off" },

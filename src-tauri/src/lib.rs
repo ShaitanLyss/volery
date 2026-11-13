@@ -80,6 +80,7 @@ mod limits;
 mod spend;
 mod load;
 mod machine;
+mod machinefacts;
 mod screen;
 pub mod cast;
 mod mcphost;
@@ -689,6 +690,11 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        this wall is open. Above the windows because `machine_status` reads
        what it sets up. See `machine.rs`. */
     machine::arrive(app.handle());
+    /* The machine series (§6): one row a minute while the wall records, off a
+       thread of its own, counting system counters and never a process walk.
+       Started here for `spawn_waker`'s reason — a history that is not recorded
+       is not available later. */
+    machinefacts::start(app.handle().clone());
     /* Hear the display, so a card measuring frames in the browser can be told
        the screen is off. See `screen.rs`. */
     screen::install();
@@ -773,6 +779,10 @@ pub fn run() {
            does, and the reader threads hold an AppHandle rather than a
            subscription. */
         .manage(signin::Signins::default())
+        /* Empty until first asked: the machine's counters, kept between reads
+           because every rate they report is a difference. The sampler is one,
+           however many faces ask for the reading (`machinefacts.rs`). */
+        .manage(machinefacts::Machine::default())
         /* Empty until a performance widget asks: an app with none on the wall
            never enumerates a process. */
         .manage(Meter::default())
@@ -1328,6 +1338,9 @@ pub fn run() {
             update::arm_update,
             machine::machine_status,
             machine::machine_set,
+            machinefacts::machine_now,
+            machinefacts::machine_record,
+            machinefacts::machine_facts,
         ])
         /* A debug build may be told it is a lab wall of its own; see `lab.rs`. */
         .build(lab::assume(tauri::generate_context!()))

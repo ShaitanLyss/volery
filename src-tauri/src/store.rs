@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 74;
+const SCHEMA_VERSION: i64 = 75;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -454,6 +454,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (72, migrate_v72),
     (73, migrate_v73),
     (74, migrate_v74),
+    (75, migrate_v75),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4265,6 +4266,50 @@ fn migrate_v72(conn: &Connection) -> Result<(), String> {
 /// spending and it is the same decision on every machine.
 pub(crate) fn migrate_v74(conn: &Connection) -> Result<(), String> {
     add_column(conn, "account", "plan", "TEXT NOT NULL DEFAULT '{}'")
+}
+
+/// The machine's own history (§3.4): one row a minute, written by the always-on
+/// sampler rather than by the transcript pass, because a machine series is the
+/// only way to answer "was last Tuesday slow because the GPU was pinned" and a
+/// history nobody recorded is not available later.
+///
+/// **Every column but the key is nullable, and that is the rule not laziness.**
+/// A counter this build cannot read is NULL, never 0: a GPU at 0% and a GPU
+/// this build cannot see are different facts, and the face distinguishes them
+/// everywhere (`perf.rs`'s rule, one file over). `procs` is NULL on the rows a
+/// wall records while nothing is asking for a process table, since §6.3's
+/// standing rule is that analytics never walks processes.
+///
+/// It is on the analytics prune's clock (ninety days), so a wall records a
+/// history rather than a log.
+pub(crate) fn migrate_v75(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS machine_fact (
+            at            INTEGER NOT NULL,
+            host          TEXT NOT NULL,
+            cpu           REAL,
+            mem_used      INTEGER,
+            mem_total     INTEGER,
+            gpu           REAL,
+            gpu_mem       INTEGER,
+            disk_read     INTEGER,
+            disk_write    INTEGER,
+            disk_free     INTEGER,
+            net_rx        INTEGER,
+            net_tx        INTEGER,
+            procs         INTEGER,
+            cards         INTEGER,
+            cards_working INTEGER,
+            worktrees     INTEGER,
+            PRIMARY KEY (at, host)
+        );
+        /* No second index: every read is a range on `at`, which the primary
+           key's first column already answers, and one row a minute is the one
+           table here whose write cost would notice a redundant index. */
+        "#,
+    )
+    .map_err(|e| format!("migrate v75: {e}"))
 }
 
 pub(crate) fn migrate_v73(conn: &Connection) -> Result<(), String> {

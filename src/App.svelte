@@ -107,7 +107,16 @@
   import { REAWAKEN_LABEL, reawakenSaid } from "./lib/rousing";
   import { Motion } from "./lib/motion.svelte";
   import { Machine } from "./lib/machine.svelte";
-  import { awakeLine, awakeSaid, idleLine, idleSaid, reopenLine, reopenSaid } from "./lib/machine";
+  import {
+    awakeLine,
+    awakeSaid,
+    idleLine,
+    idleSaid,
+    recordLine,
+    recordSaid,
+    reopenLine,
+    reopenSaid,
+  } from "./lib/machine";
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
   import { Control, type ControlHost } from "./lib/control.svelte";
   import { Voicing } from "./lib/voicing.svelte";
@@ -817,6 +826,8 @@
       } else if (verb.act === "boost") {
         skein.setBoost(!purse.boost);
         leader.say(sayBoost(purse.state, purse.standing()).replace(/ \(space then m b\)$/, ""));
+      } else if (verb.act === "record") {
+        leader.say(recordSaid(machine.setRecording(!machine.recording)));
       } else void flipMachine(verb.act);
     }
     else if (verb.kind === "grouping") groupingChord(verb.act);
@@ -3118,6 +3129,7 @@
                 { id: "machine:awake", label: awakeLine(machine.status), on: machine.status.awake },
                 { id: "machine:reopen", label: reopenLine(machine.status), on: machine.status.reopen },
                 { id: "machine:idle", label: idleLine(machine.status), on: machine.status.idle },
+                { id: "machine:record", label: recordLine(machine.recording), on: machine.recording },
               ]
             : [],
           /* And how the glass follows the screen under it: one layout scaled
@@ -3167,6 +3179,7 @@
           void machine
             .toggle(id.slice(8) as "awake" | "reopen" | "idle")
             .catch((e) => (skein.fault = String(e)));
+        else if (id === "machine:record") leader.say(recordSaid(machine.setRecording(!machine.recording)));
         /* And what the wall tells every card standing on it, one scope out from
            the territory menu's own. */
         else if (id === "guidance") guiding = { focus: null };
