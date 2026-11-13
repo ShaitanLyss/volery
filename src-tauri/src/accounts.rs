@@ -306,6 +306,20 @@ pub struct Seat {
     pub copied: bool,
 }
 
+/// One account's ceilings, `{ "session": 80 }` and friends, or `None` for a
+/// label this wall has no row for.
+///
+/// Read by `ownshare::cap_refusal`, which is the door: `accounts.ts` weighs the
+/// same column when the front end sends, and the two must be reading one fact
+/// rather than two copies of it.
+pub(crate) fn caps_of(conn: &rusqlite::Connection, label: &str) -> Option<serde_json::Value> {
+    let raw: String = conn
+        .query_row("SELECT caps FROM account WHERE label = ?1", [label], |r| r.get(0))
+        .ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed.is_object().then_some(parsed)
+}
+
 /// The label this machine files an account identity under, or `None`.
 ///
 /// `docs/ANALYTICS.md` §4 needs it: a transcript's `session-owner` record names

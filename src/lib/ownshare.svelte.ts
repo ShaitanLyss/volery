@@ -23,6 +23,7 @@
  * than at every send.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import {
   costBucketsOf,
   currentOnly,
@@ -94,9 +95,17 @@ export class OwnShare {
           readAllowanceSamples(from, until),
           readAllowanceCosts(from, until),
         ]);
-        this.settle(samples, costs);
+        const rows = this.settle(samples, costs);
         this.fault = "";
         this.#at = Date.now();
+        /* **And the door is told.** `deliver_blocks` is where a relay, a wake and
+           a queue drained at spawn arrive, and none of them passes through the
+           front end's settling — so the ceiling you set has to be readable on
+           that side (`ownshare.rs`). The share is *sent*, never recomputed
+           there: one definition of what a share is, read by two doors.
+           Fire and forget, because a note that did not land costs a stale
+           comparison for one cadence and the next read sends it again. */
+        void invoke("note_own", { shares: rows }).catch(() => {});
       } catch (err) {
         this.fault = String(err);
       } finally {
@@ -107,8 +116,9 @@ export class OwnShare {
   }
 
   /** The fold, kept apart from the read so a test can hand it fixtures and so
-   *  the arithmetic has one home (`ownPoints`, which is pure and tested). */
-  settle(samples: readonly AllowanceSample[], costs: readonly AllowanceCost[]): void {
+   *  the arithmetic has one home (`ownPoints`, which is pure and tested). It
+   *  keeps the rows and hands them back, and makes no call of its own. */
+  settle(samples: readonly AllowanceSample[], costs: readonly AllowanceCost[]): OwnPoints[] {
     const rows = ownPoints(currentOnly(instancesOf(samples)), costBucketsOf(costs));
     const next = new Map<string, OwnPoints[]>();
     for (const row of rows) {
@@ -117,6 +127,7 @@ export class OwnShare {
       else next.set(row.account, [row]);
     }
     this.#byAccount = next;
+    return rows;
   }
 }
 

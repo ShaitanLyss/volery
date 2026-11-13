@@ -18,6 +18,8 @@ import {
   blockersFor,
   bypassNote,
   covers,
+  overrunFor,
+  overrunNote,
   putOnBlockedNote,
   putOnNote,
   sayBlocked,
@@ -3140,6 +3142,51 @@ export class Skein {
     } catch {
       /* A browser refusing storage is not a reason to have no policy; it is a
          reason for this machine to forget the one you chose. */
+    }
+  }
+
+  /** The last window this card was stopped on, so one window is said once. */
+  #stopped = new Map<string, string>();
+
+  /** **The hard stop.** A card still working past your own ceiling by more than
+   *  `CAP_MARGIN` is interrupted, because a cap is read between turns and a
+   *  turn already on the wire would otherwise spend the rest of the reserve in
+   *  one go.
+   *
+   *  Called from `App.svelte` off the wall's one-second tick and nothing else,
+   *  beside `letRest` and for its reason: the reading it is a function of moves
+   *  on a clock, not on an event.
+   *
+   *  Three things it deliberately does not do. It does not interrupt on the
+   *  *account's* percentage — only on a share this wall can attribute, which is
+   *  `overrunFor`'s own line, so somebody else's twenty percent never ends a
+   *  turn here. It does not touch a bypassed card, which is the standing
+   *  instruction that this work outranks the reserve. And it does not stop the
+   *  same window twice: a card whose turn is already `stopping…` is skipped,
+   *  and a window already announced is not announced again.
+   *
+   *  The next turn needs nothing from this: `blockersFor` is measured on the
+   *  same share, so once the ceiling is passed the door holds every prompt until
+   *  the window rolls or the cap is raised. */
+  enforceCaps() {
+    for (const id of this.#stopped.keys()) {
+      if (!this.#byId.has(id)) this.#stopped.delete(id);
+    }
+    for (const conv of this.convs) {
+      if (!conv.working || conv.dormant) continue;
+      if (conv.activity === "stopping…") continue;
+      const label = conv.accountLabel ?? "";
+      const acct = waterfall.list.find((a) => a.label === label);
+      if (!acct) continue;
+      const allowance = waterfall.allowances[label];
+      if (!allowance?.ok) continue;
+      const over = overrunFor(acct, allowance.windows, conv.bypassCaps, ownShare.list(label));
+      if (over === null) continue;
+      const key = `${label}\u0000${over.window.kind}\u0000${over.window.resetsAt ?? 0}`;
+      if (this.#stopped.get(conv.id) === key) continue;
+      this.#stopped.set(conv.id, key);
+      conv.note(overrunNote(over));
+      void this.stop(conv);
     }
   }
 

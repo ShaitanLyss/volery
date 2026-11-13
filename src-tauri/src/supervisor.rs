@@ -2525,6 +2525,13 @@ pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<De
     if let Some(why) = crate::provider::budget_refusal(app, id) {
         return Err(why);
     }
+    /* And the ceiling you set on an account, on this wall's own share of it
+       (`ownshare.rs`). Here rather than only where the front end sends, for the
+       reason directly above: a relay, a wake and a queue drained at spawn all
+       arrive through this door and none of them settled an account first. */
+    if let Some(why) = crate::ownshare::cap_refusal(app, id) {
+        return Err(why);
+    }
     {
         let sup = app.state::<Supervisor>();
         let mut map = sup.0.lock().unwrap();

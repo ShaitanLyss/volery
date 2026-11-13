@@ -30,6 +30,7 @@ mod aside;
 mod ask;
 mod accounts;
 mod accountsync;
+mod ownshare;
 mod bang;
 mod browser;
 /// Where the `claude` binary is. Public so `examples/slash-probe.rs` can find
@@ -764,6 +765,10 @@ pub fn run() {
            something, and the only place a data key ever lives. */
         .manage(promptvault::PromptVault::default())
         .manage(Control::default())
+        /* Your own share of each account's window, as the door reads it. Empty
+           until the front end has measured one, which is the old behaviour
+           exactly (`ownshare.rs`). */
+        .manage(ownshare::OwnShare::default())
         /* Sign-ins in flight. Nothing to release: a session ends when its child
            does, and the reader threads hold an AppHandle rather than a
            subscription. */
@@ -1061,6 +1066,7 @@ pub fn run() {
             flyway::link::flyway_linked,
             flyway::link::flyway_roster,
             flyway::link::flyway_note_rate,
+            ownshare::note_own,
             flyway::link::flyway_note_live,
             flyway::link::flyway_live,
             flyway::link::flyway_forget,

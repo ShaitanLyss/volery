@@ -1191,6 +1191,15 @@
     untrack(() => void ownShare.maybeRefresh());
   });
 
+  /* And the hard stop: a card working past your own ceiling by more than
+     `CAP_MARGIN` is interrupted rather than left to spend the reserve in one
+     turn. Once a second, and it costs a walk of the cards that are working;
+     `skein.enforceCaps` holds the rest. */
+  $effect(() => {
+    void clock.t;
+    untrack(() => skein.enforceCaps());
+  });
+
   /* Whether there is a newer Volery, asked when you are looking at the window
      and not otherwise. Nothing emits an event when a tag appears, so this has to
      go and look — but focus *is* an event and `attention.focused` already folds

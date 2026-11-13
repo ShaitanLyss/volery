@@ -16,6 +16,9 @@ import {
   importAccounts,
   mergeAccounts,
   ordered,
+  overrunFor,
+  overrunNote,
+  CAP_MARGIN,
   refuse,
   REFUSAL_BASE,
   REFUSAL_MAX,
@@ -2002,5 +2005,58 @@ describe("a cap is measured on your own share", () => {
     });
     expect(got.kind).toBe("use");
     expect(choose([a], one).kind).toBe("hold");
+  });
+});
+
+/* The other half of the ceiling: the door refuses the *next* turn at the cap,
+   and this ends the one that is already running before it spends the rest of a
+   reserve in one go. */
+describe("the hard stop past the cap", () => {
+  const own = (points: number, priced = 4) => [
+    { kind: "session", points, moved: 80, priced },
+  ];
+  const capped = () => acct("lyss", { caps: { session: 50 } });
+  const windows = () => [win({ kind: "session", used: 80 })];
+
+  test("a turn under the cap is left alone", () => {
+    expect(overrunFor(capped(), windows(), false, own(20))).toBeNull();
+  });
+
+  test("one that crossed the line but is still within the margin is left alone", () => {
+    /* A turn cannot be stopped at a percentage, so the door stops the next one
+       at 50 and this waits until 60: an ordinary turn that began at 48 is not
+       cut off for passing a line it was already past. */
+    expect(overrunFor(capped(), windows(), false, own(55))).toBeNull();
+  });
+
+  test("one past the margin is ended, with the figures on it", () => {
+    const got = overrunFor(capped(), windows(), false, own(62));
+    expect(got?.points).toBe(62);
+    expect(got?.cap).toBe(50);
+    expect(got?.window.kind).toBe("session");
+  });
+
+  test("but never on usage this wall cannot attribute", () => {
+    /* No priced fact means the share is unknown, and the account's 80% might be
+       entirely somebody else's. Ending a turn over it would be the wall
+       interrupting work for a reserve it is not spending. */
+    expect(overrunFor(capped(), windows(), false, own(62, 0))).toBeNull();
+    expect(overrunFor(capped(), windows(), false, [])).toBeNull();
+  });
+
+  test("nor with no cap, nor on a bypassed card", () => {
+    expect(overrunFor(acct("lyss"), windows(), false, own(62))).toBeNull();
+    expect(overrunFor(capped(), windows(), true, own(62))).toBeNull();
+  });
+
+  test("and it says which window and by how much", () => {
+    const said = overrunNote(overrunFor(capped(), windows(), false, own(62))!);
+    expect(said).toContain("5 hours");
+    expect(said).toContain("62%");
+    expect(said).toContain("50%");
+    /* Kept to the house voice: no em dash, and it says what the next turn does
+       rather than only that this one stopped. */
+    expect(said).not.toContain("—");
+    expect(said).toContain("the next one waits");
   });
 });

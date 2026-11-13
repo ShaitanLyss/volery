@@ -296,6 +296,83 @@ function measuredFor(w: Window, self: readonly SelfUse[]): number {
   return Math.min(Math.max(0, mine.points), used);
 }
 
+/** How far past your own ceiling a *running* turn may get before the wall ends
+ *  it.
+ *
+ *  A cap cannot be applied at a percentage, because a percentage is only read
+ *  between turns: the door refuses the next turn at the ceiling, and a turn
+ *  already on the wire has spent what it spent. So there are two halves, and
+ *  this is the second one's width. Small enough that a reserve you set is not
+ *  quietly overspent while a long turn finishes; large enough that an ordinary
+ *  turn, which moves a few points, is never cut off for crossing a line it was
+ *  already past when it started.
+ *
+ *  It is deliberately **not** a per-account setting. A fifth synced register is
+ *  a knob on every wall, a migration and a panel field, for a number nobody has
+ *  asked to tune — and the thing it protects is a matter of tens of points, not
+ *  one. If it ever needs to be a preference, the register ladder is already
+ *  there (`flyway-core/src/accounts.rs`).
+ */
+export const CAP_MARGIN = 10;
+
+/** A window whose own-share has run past your ceiling by more than the margin. */
+export type Overrun = {
+  window: Window;
+  /** Your own share, in the window's points. */
+  points: number;
+  /** The ceiling it has passed. */
+  cap: number;
+};
+
+/** Past your own ceiling by more than the margin, or null.
+ *
+ *  **Only when your share is actually measured.** The margin is a decision to
+ *  end a turn, and ending one on somebody else's usage would be the wall
+ *  interrupting work for a reserve that is not being spent — so an account
+ *  whose work this wall cannot attribute, and an account with no cap, both come
+ *  back null and the card runs on. That is the same line `measuredFor` draws
+ *  between a reading and a hole, and it has to be drawn again here rather than
+ *  inferred: `blockersFor` falls back to the account's figure, which would make
+ *  an unattributable account interrupt on the *other* person's twenty percent.
+ *
+ *  A bypassed card returns nothing: the bypass is the deliberate instruction
+ *  that this card matters more than the reserve, and it already moves the
+ *  ceiling at the door. */
+export function overrunFor(
+  account: Account,
+  windows: readonly Window[],
+  bypass: boolean,
+  self: readonly SelfUse[],
+): Overrun | null {
+  if (bypass) return null;
+  let worst: Overrun | null = null;
+  for (const w of windows) {
+    const cap = capFor(account, w.kind, bypass);
+    if (!(cap < 100)) continue;
+    const mine = self.find((s) => s.kind === w.kind);
+    if (mine === undefined || !(mine.priced > 0) || !Number.isFinite(mine.points)) continue;
+    const points = measuredFor(w, self);
+    if (!(points > cap + CAP_MARGIN)) continue;
+    if (worst === null || points - cap > worst.points - worst.cap) worst = { window: w, points, cap };
+  }
+  return worst;
+}
+
+/** What the transcript says when the hard stop fires. Said once per window,
+ *  because a card interrupted without a reason on it reads as the wall being
+ *  broken — and this is a decision the wall took on the person's behalf, which
+ *  is the class of thing that must never be silent (`swapNote`, `healNote`). */
+export function overrunNote(over: Overrun): string {
+  const what = over.window.kind === "session" ? "5 hours" : "7 days";
+  const scope = over.window.scope ? ` · ${over.window.scope}` : "";
+  return (
+    `stopped at your cap on the ${what}${scope}. this wall's own share is ` +
+    `${Math.floor(over.points)}% against the ${Math.floor(over.cap)}% you allowed, and a turn ` +
+    `still running would spend a reserve you meant to keep. ` +
+    `the next one waits until that window resets or you raise the cap.`
+  );
+}
+
 /** Every window standing in the way of new work on this account.
  *
  *  A window counts as the server's when it is at or past 100, or when the
