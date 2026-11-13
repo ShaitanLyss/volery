@@ -196,5 +196,5 @@ export function isAfarTimeline(id: string): boolean {
 
 /** A count as a surface says it: the number, or `—` for one nothing measured. */
 export function countSaid(n: number | null): string {
-  return n === null ? "—" : n.toLocaleString();
+  return n === null ? "" : n.toLocaleString();
 }

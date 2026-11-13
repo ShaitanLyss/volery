@@ -124,13 +124,13 @@ export function reportModel(input: ReportInput): ReportModel {
     { label: "requests", value: count(input.kpis.requests), note: "in this window" },
     {
       label: "cache read",
-      value: input.kpis.cacheShare === null ? "—" : `${Math.floor(input.kpis.cacheShare)}%`,
+      value: input.kpis.cacheShare === null ? "" : `${Math.floor(input.kpis.cacheShare)}%`,
       note: "of all tokens",
     },
     { label: "cards", value: count(input.kpis.cards), note: "active in this window" },
     {
       label: "leading project",
-      value: leading?.project || "—",
+      value: leading?.project || "",
       note: leading?.share !== null && leading?.share !== undefined ? `${Math.floor(leading.share)}% of tokens` : "no project yet",
     },
   ];
@@ -264,7 +264,7 @@ export function anonymizeReport(model: ReportModel, split: string | null): Repor
     return [...fromSpec, ...(split === key ? seriesLabels.map(bare) : [])].filter(Boolean);
   };
   const leading = model.kpis.find((k) => k.label === "leading project")?.value ?? "";
-  const realLeading = leading && leading !== "—" ? leading : "";
+  const realLeading = leading && leading !== "" ? leading : "";
   const accounts = relabel([...model.cover.accounts, ...valuesFor("account"), ...valuesFor("provider")], "account");
   const hosts = relabel([...model.cover.hosts, ...valuesFor("host")], "machine");
   const projects = relabel([realLeading, ...valuesFor("project")], "project");

@@ -88,8 +88,8 @@ describe("the report model", () => {
       input({ kpis: { ...KPIS, spend: null, cacheShare: null, leading: null } }),
     );
     expect(m.kpis.find((k) => k.label === "spend")!.value).toBe("not priced");
-    expect(m.kpis.find((k) => k.label === "cache read")!.value).toBe("—");
-    expect(m.kpis.find((k) => k.label === "leading project")!.value).toBe("—");
+    expect(m.kpis.find((k) => k.label === "cache read")!.value).toBe("");
+    expect(m.kpis.find((k) => k.label === "leading project")!.value).toBe("");
   });
 
   test("the methodology says what is not in the file rather than leaving a reader to wonder", () => {
@@ -197,12 +197,12 @@ describe("anonymizing", () => {
     expect(html).toContain("project: !project A");
   });
 
-  test("an empty window keeps its dash instead of inventing a project", () => {
+  test("an empty window stays blank instead of inventing a project", () => {
     const m = anonymizeReport(
       reportModel(input({ kpis: { ...KPIS, leading: null } })),
       "account",
     );
-    expect(m.kpis.find((k) => k.label === "leading project")!.value).toBe("—");
+    expect(m.kpis.find((k) => k.label === "leading project")!.value).toBe("");
   });
 });
 

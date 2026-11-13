@@ -406,9 +406,9 @@ describe("saying it", () => {
     expect(measureText("tokens", 1_400_000)).toBe("1.4M tokens");
   });
 
-  test("a value that does not exist is a dash, never a zero", () => {
-    expect(measureText("usd_modeled", null)).toBe("—");
-    expect(measureText("tokens", Number.NaN)).toBe("—");
+  test("a value that does not exist is blank, never a zero", () => {
+    expect(measureText("usd_modeled", null)).toBe("");
+    expect(measureText("tokens", Number.NaN)).toBe("");
   });
 
   test("an axis tick drops the unit the axis title carries", () => {
@@ -416,8 +416,8 @@ describe("saying it", () => {
     expect(tickText("tokens", 1_400_000)).toBe("1.4M");
   });
 
-  test("a share with no denominator is a dash", () => {
-    expect(shareText(null)).toBe("—");
+  test("a share with no denominator is blank", () => {
+    expect(shareText(null)).toBe("");
     expect(shareText(42.7)).toBe("42%");
     expect(shareText(0)).toBe("0%");
   });
@@ -484,10 +484,10 @@ describe("the strip", () => {
     const k = kpisOf([fact({ at: 0, inTok: 0, outTok: 0, cacheRead: 0, write5m: 0, write1h: 0 })], 1);
     expect(k.cacheShare).toBeNull();
     /* A project can lead a window of no tokens; its share of them is null, not
-       0% (§9.1), and the tile prints the dash. */
+       0% (§9.1), and the tile prints nothing. */
     expect(k.leading?.project).toBe("volery");
     expect(k.leading?.share).toBeNull();
-    expect(shareText(k.leading?.share ?? null)).toBe("—");
+    expect(shareText(k.leading?.share ?? null)).toBe("");
   });
 });
 

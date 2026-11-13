@@ -453,7 +453,7 @@ export function splitSaid(model: LifeModel, now = Date.now()): string {
  *  tests read the same in every timezone — the same reason `prompt.ts`'s day
  *  keys are built by hand. */
 export function daySaid(at: number, now = at): string {
-  if (!(at > 0)) return "—";
+  if (!(at > 0)) return "";
   const d = new Date(at);
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const sameYear = new Date(now).getFullYear() === d.getFullYear();

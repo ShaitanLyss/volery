@@ -245,7 +245,7 @@ describe("the percentile, over the grain the row carries", () => {
   test("a line with no completed call has no percentile at all", () => {
     const [line] = toolLines([hour({ calls: 3, msUnder50: 0, msUnder200: 0, msUnder1s: 0, msUnder5s: 0, msOver5s: 0 })], "tools");
     expect(line.p50).toBeNull();
-    expect(latencySaid(line.p50)).toBe("—");
+    expect(latencySaid(line.p50)).toBe("");
   });
 });
 
@@ -492,28 +492,28 @@ describe("saying it", () => {
     expect(rateSaid(0.004)).toBe("<1%");
     expect(rateSaid(0)).toBe("0%");
     expect(rateSaid(0.123)).toBe("12%");
-    expect(rateSaid(null)).toBe("—");
+    expect(rateSaid(null)).toBe("");
   });
 
   test("a share is floored, so nothing reads 100% while something is left", () => {
     expect(shareSaid(0.999)).toBe("99%");
-    expect(shareSaid(null)).toBe("—");
+    expect(shareSaid(null)).toBe("");
   });
 
-  test("a dash means the measure does not exist; a measured zero is a zero", () => {
+  test("an empty cell means the measure does not exist; a measured zero is a zero", () => {
     const [healthy] = toolLines([hour({ errors: 0, calls: 1 })], "tools");
     expect(cellOf(healthy, "errors")).toBe("0", "no failure is a reading, not an absence");
     expect(cellOf(healthy, "bytes")).toBe("10 B");
     expect(cellOf(healthy, "cost")).toBe("$0.10");
 
     /* No completed call has no percentile, and a cost no turn claimed is a
-       dash rather than a zero that would read as free. */
+       blank rather than a zero that would read as free. */
     const [unpriced] = toolLines(
       [hour({ calls: 0, turnUsd: 0, msUnder50: 0, msUnder200: 0, msUnder1s: 0, msUnder5s: 0, msOver5s: 0 })],
       "tools",
     );
-    expect(cellOf(unpriced, "p95")).toBe("—");
-    expect(cellOf(unpriced, "cost")).toBe("—");
+    expect(cellOf(unpriced, "p95")).toBe("");
+    expect(cellOf(unpriced, "cost")).toBe("");
   });
 
   test("a line's title carries its provenance", () => {

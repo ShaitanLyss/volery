@@ -600,7 +600,7 @@ export function habitModel(
  *  millisecond: the bands interpolate, and `812.4ms` claims precision the data
  *  does not have. */
 export function msSaid(ms: number): string {
-  if (!(ms >= 0) || !Number.isFinite(ms)) return "—";
+  if (!(ms >= 0) || !Number.isFinite(ms)) return "";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   if (ms < 60_000) {
     const s = ms / 1000;
@@ -612,7 +612,7 @@ export function msSaid(ms: number): string {
 /** A percentile's reading, with a `+` where the estimate landed in the open
  *  band: the reader is owed the difference between "5s" and "at least 5s". */
 export function latencySaid(reading: LatencyReading | null): string {
-  if (!reading) return "—";
+  if (!reading) return "";
   return `${msSaid(reading.ms)}${reading.atLeast ? "+" : ""}`;
 }
 
@@ -621,7 +621,7 @@ export function latencySaid(reading: LatencyReading | null): string {
  *  measured zero is `0 B`: nothing came back, which is a reading, where a dash
  *  would claim the size is unknown. */
 export function bytesSaid(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return "—";
+  if (!Number.isFinite(n) || n < 0) return "";
   if (n < 1024) return `${Math.round(n)} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`;
@@ -630,7 +630,7 @@ export function bytesSaid(n: number): string {
 
 /** A share, floored so nothing ever reads 100% while something is left. */
 export function shareSaid(share: number | null): string {
-  if (share === null || !Number.isFinite(share)) return "—";
+  if (share === null || !Number.isFinite(share)) return "";
   return `${Math.floor(share * 100)}%`;
 }
 
@@ -638,7 +638,7 @@ export function shareSaid(share: number | null): string {
  *  in a thousand is `<1%`, not `0%`, because a face that says nothing failed
  *  next to "1 call returned an error" is a face arguing with itself. */
 export function rateSaid(rate: number | null): string {
-  if (rate === null || !Number.isFinite(rate)) return "—";
+  if (rate === null || !Number.isFinite(rate)) return "";
   if (rate > 0 && rate < 0.01) return "<1%";
   return `${Math.floor(rate * 100)}%`;
 }
@@ -663,7 +663,7 @@ export function cellOf(line: ToolLine, key: ToolSort): string {
     case "bytes":
       return bytesSaid(line.bytes);
     case "cost":
-      return line.cost > 0 ? money(line.cost) : "—";
+      return line.cost > 0 ? money(line.cost) : "";
   }
 }
 

@@ -265,7 +265,7 @@ describe("a card's totals, and the ratios it may not have", () => {
     expect(one.costPerMerged).toBeGreaterThan(0);
     expect(two.merged).toBe(0);
     expect(two.costPerMerged).toBe(null);
-    expect(ratioText(two.costPerMerged, money)).toBe("—");
+    expect(ratioText(two.costPerMerged, money)).toBe("");
     expect(one.costPerCommit).toBeGreaterThan(0);
     expect(two.costPerCommit).toBeGreaterThan(0);
   });
@@ -601,7 +601,7 @@ describe("the room and the page agree, from one fixture", () => {
     expect(facts.get("commits")).toBe(count(model.kpis.commits));
     expect(facts.get("net lines")).toBe(signed(model.kpis.net));
     expect(facts.get("conflict minutes")).toBe(count(Math.round(model.kpis.conflictMinutes)));
-    expect(facts.get("leading project")).toBe(model.kpis.leading?.project ?? "—");
+    expect(facts.get("leading project")).toBe(model.kpis.leading?.project ?? "");
 
     const tableCost = model.cards.reduce((n, c) => n + (c.cost ?? 0), 0);
     expect(tableCost).toBeCloseTo(model.kpis.cost ?? 0, 8);

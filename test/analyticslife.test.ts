@@ -311,7 +311,7 @@ describe("the whole reading", () => {
     expect(splitSaid(model, BORN + 20 * DAY)).toContain(daySaid(BORN + 5 * DAY, BORN + 20 * DAY));
   });
 
-  test("no settled turn is a dash, never a division by zero", () => {
+  test("no settled turn is blank, never a division by zero", () => {
     const model = lifeModel(life({ turns: 0, usdReported: 0 }), BORN);
     expect(model.perTurn).toBeNull();
   });

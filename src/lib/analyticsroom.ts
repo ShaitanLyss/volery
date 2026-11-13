@@ -506,7 +506,7 @@ export function spreadLabels<T extends { y: number }>(entries: readonly T[], gap
  *  both print a dash, because a ratio whose divisor is zero has no value and
  *  printing one would invent it (§9.1). */
 export function measureText(measure: RoomMeasure, value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "—";
+  if (value === null || !Number.isFinite(value)) return "";
   return measure === "usd_modeled" ? money(value) : tokens(value);
 }
 
@@ -519,7 +519,7 @@ export function tickText(measure: RoomMeasure, value: number): string {
 
 /** A share already in percent, or a dash when there is no denominator. */
 export function shareText(share: number | null): string {
-  return share === null || !Number.isFinite(share) ? "—" : pct(share);
+  return share === null || !Number.isFinite(share) ? "" : pct(share);
 }
 
 /* ── the strip ─────────────────────────────────────────────────────────────*/

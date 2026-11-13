@@ -566,7 +566,7 @@ export function storyOf(input: StoryInput): Story {
     },
     {
       label: "tokens",
-      value: input.kpis.tokens === null ? "—" : count(input.kpis.tokens),
+      value: input.kpis.tokens === null ? "" : count(input.kpis.tokens),
       note: "in, out and cache",
       off: input.kpis.tokens === null,
     },

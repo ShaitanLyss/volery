@@ -1539,7 +1539,7 @@ export function workStoryOf(input: WorkStoryInput): WorkStory {
     },
     {
       label: "leading project",
-      value: kpis.leading?.project ?? "—",
+      value: kpis.leading?.project ?? "",
       note: kpis.leading?.share != null ? `${Math.round(kpis.leading.share)}% of artifacts` : "no artifacts to lead",
       off: kpis.leading === null,
     },
@@ -1747,5 +1747,5 @@ export function workModelOf(input: WorkModelInput): WorkModel {
 
 /** A ratio with no divisor is a dash, never a zero (§9.1). */
 export function ratioText(value: number | null, form: (v: number) => string): string {
-  return value === null || !Number.isFinite(value) ? "—" : form(value);
+  return value === null || !Number.isFinite(value) ? "" : form(value);
 }
