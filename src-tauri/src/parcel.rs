@@ -1070,13 +1070,14 @@ pub async fn parcel_measure(paths: Vec<String>, caps: String) -> Result<Summary,
             return Err(NOTHING.into());
         }
         let sources = named_paths(&paths, &base);
+        let (files, bytes) = (p.items.len(), p.bytes());
         let tops = p
             .tops
             .into_iter()
             .zip(sources)
             .map(|(t, path)| SummaryTop { name: t.name, path, dir: t.dir, files: t.files, bytes: t.bytes, secret: t.secret })
             .collect();
-        Ok(Summary { files: p.items.len(), bytes: p.bytes(), tops, left: p.left, left_more: p.left_more })
+        Ok(Summary { files, bytes, tops, left: p.left, left_more: p.left_more })
     })
     .await?
 }
