@@ -343,11 +343,29 @@ path) and puts the number in the question.
 
 The card that asked is cut off by the restart, so it cannot report. **Before the close** the
 settle writes a chronicle row naming the from and to versions and who asked. **At the exit**,
-`run_armed` leaves `underway.json` in the holding directory — what was attempted, and whether the
-installer launched — written there rather than at arming, because an arming a person then stayed
-out of is not an attempt. **At the next launch** `landed` turns it into a row — `good` if this
-build is not the one the install started from, `bad` with the installer's location if it is —
-and deletes it. The button gets the same morning-after row for free, with no `to`.
+`run_armed` leaves `underway.json` in the holding directory — what was attempted, whether the
+installer launched, and **why it did not** when the exit handler was told — written there rather
+than at arming, because an arming a person then stayed out of is not an attempt. **At the next
+launch** `landed` turns it into a row — `good` if this build is not the one the install started
+from, `bad` with the reason and whether the installer is still on disk if it is — and deletes it.
+The button gets the same morning-after row for free, with no `to`.
+
+**The reason, and the sweep, were both paid for on 2026-11-13.** Windows Defender's machine-learned
+heuristic flagged Volery's own `0.133.0` installer as `Trojan:Win32/Bearfoos.A!ml` — an hour after
+that version had installed — and quarantined it out of the holding directory. The app was fine, but
+the row it would have written had that exit been an update says only *the installer could not be
+started*, and offers the file "to run by hand" from a folder it is no longer in. Two things follow:
+
+- **The failure is recorded with its cause**, and `landing`'s row reads whether the file is
+  actually still there — asking the disk, because a file that was there when the record was
+  written and is gone at the next launch is the whole failure. A missing installer is named as
+  such: a quarantine, not a permissions problem. The exit handler says it through `log`, not
+  `eprintln` — this binary has no console, so stderr was going nowhere at all, and
+  `logs/volery.log` is the one place an exit-time failure outlives the process.
+- **The holding directory is swept at launch** (`sweep`, keeping the newest two plus whatever the
+  record names). It had never been swept: 72 installers back to August, 1.2 GB. Launch is the
+  only safe moment, because `fetch_to` fills a download under its final name and a sweep beside
+  one would delete the file being written.
 
 The tool's own answer can only ever be "armed and closing". **The close waits for the asking
 card's turn to end** (`close_soon`, at most `TURN_GRACE`), and that was learned on the first lab

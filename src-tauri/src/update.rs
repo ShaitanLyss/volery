@@ -323,6 +323,54 @@ fn holding(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// How many installers the holding directory keeps.
+///
+/// Two, and the number is the question "which of these will anything ever run
+/// again". The installer this build is about to run is one; the one a failed
+/// attempt left for a person to run by hand is the other. Everything older is a
+/// version that has either been installed or been passed, and nothing in this
+/// app reads it — so the folder had grown to 72 installers going back to August,
+/// 1.2 GB, when it was first looked at (2026-11-13).
+const KEEP_INSTALLERS: usize = 2;
+
+/// Drop the installers nothing will run again, keeping the newest few.
+///
+/// Called at launch, and the moment matters: `fetch_to` creates a download
+/// under its final name and fills it in place, so a sweep running beside a
+/// download would delete the file being written. At launch nothing is
+/// downloading and nothing is armed, which is the half-second of the day this
+/// is free.
+///
+/// `protected` is the installer the last attempt named. A launch that failed
+/// leaves it in place deliberately, for a person to run by hand, so it is kept
+/// whether or not it is one of the newest — a rule about age cannot answer a
+/// question about intent.
+fn sweep(dir: &Path, protected: Option<&Path>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut installers: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        })
+        .filter_map(|p| {
+            let at = p.metadata().ok()?.modified().ok()?;
+            Some((at, p))
+        })
+        .collect();
+    installers.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in installers.iter().skip(KEEP_INSTALLERS) {
+        if Some(path.as_path()) == protected {
+            continue;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            log::info!("[update] dropped {} — nothing will run it again", path.display());
+        }
+    }
+}
+
 /// How often the download says how it is going, in bytes.
 ///
 /// A quarter of a megabyte, so a four-megabyte installer reports about sixteen
@@ -608,18 +656,34 @@ pub fn run_armed(app: &AppHandle) {
         return;
     };
     let args = INSTALL_ARGS.iter().map(|s| s.to_string()).collect();
-    let installer = match crate::actions::launch_detached(
+    let (installer, why) = match crate::actions::launch_detached(
         armed.path.to_string_lossy().to_string(),
         args,
         String::new(),
     ) {
         Ok(pid) => {
-            eprintln!("[update] installer started as {pid}");
-            Some(pid)
+            log::info!("[update] installer started as {pid}");
+            (Some(pid), None)
         }
         Err(e) => {
-            eprintln!("[update] could not start the installer: {e}");
-            None
+            /* A file that is not there is worth naming as such, because it is
+               the one cause that is not about launching: the download
+               succeeded, something took it out afterwards, and on this machine
+               that is an anti-virus quarantine rather than anything this app
+               did. Measured 2026-11-13 — Windows Defender flagged our own
+               0.133.0 installer, in this very folder, as
+               `Trojan:Win32/Bearfoos.A!ml` an hour after it had installed, and
+               removed it. */
+            let why = if armed.path.exists() {
+                e
+            } else {
+                format!("{e} — and the file is no longer there, which a quarantine explains")
+            };
+            /* `log`, not `eprintln`: this binary is `windows_subsystem =
+               "windows"`, so stderr goes nowhere at all, and `logs/volery.log`
+               is the one place a failure at exit can still be read afterwards. */
+            log::warn!("[update] could not start the installer: {why}");
+            (None, Some(why))
         }
     };
     if let Ok(dir) = holding(app) {
@@ -629,6 +693,7 @@ pub fn run_armed(app: &AppHandle) {
             asker: armed.asker.clone(),
             installer: armed.path.file_name().map(|n| n.to_string_lossy().to_string()),
             launched: installer.is_some(),
+            error: why,
             at: now_ms(),
         };
         if let Ok(text) = serde_json::to_string(&record) {
@@ -652,6 +717,15 @@ struct Underway {
     asker: Option<String>,
     installer: Option<String>,
     launched: bool,
+    /// Why it did not start, when the exit handler knows. The row this becomes
+    /// said only "could not be started" until 2026-11-13, which names the event
+    /// and not the cause — and the cause was a quarantine, a thing a person can
+    /// act on and a thing no later launch can recover from on its own.
+    ///
+    /// Defaulted on read, because an `underway.json` written by any earlier
+    /// build is a record this one still has to be able to explain.
+    #[serde(default)]
+    error: Option<String>,
     at: i64,
 }
 
@@ -822,15 +896,22 @@ fn detached_powershell(script: &str, env: &[(&str, String)], what: &str) -> bool
 pub fn landed(app: &AppHandle) {
     let Ok(dir) = holding(app) else { return };
     let at = dir.join(UNDERWAY);
-    let Ok(text) = std::fs::read_to_string(&at) else { return };
+    let text = std::fs::read_to_string(&at).ok();
     let _ = std::fs::remove_file(&at);
-    let Ok(record) = serde_json::from_str::<Underway>(&text) else { return };
-    let (level, mark, detail) = landing(&record, &running(), &dir.to_string_lossy());
+    let record = text.and_then(|t| serde_json::from_str::<Underway>(&t).ok());
+    let named = record.as_ref().and_then(|r| r.installer.clone());
+    /* The sweep runs whether or not there is a record: the folder it tidies is
+       older than the record and larger than it, and a launch after a crash
+       leaves no record at all. */
+    sweep(&dir, named.as_ref().map(|n| dir.join(n)).as_deref());
+    let Some(record) = record else { return };
+    let present = named.is_some_and(|n| dir.join(n).is_file());
+    let (level, mark, detail) = landing(&record, &running(), &dir.to_string_lossy(), present);
     crate::chronicle::note(app, None, "volery", level, &mark, &detail);
 }
 
 /// The row `landed` writes — pure, so what a morning-after reads is tested.
-fn landing(u: &Underway, now: &str, holding: &str) -> (&'static str, String, String) {
+fn landing(u: &Underway, now: &str, holding: &str, present: bool) -> (&'static str, String, String) {
     let by = u.asker.as_deref().map(|a| format!(", asked for by {a}")).unwrap_or_default();
     if now != u.from {
         let expected = match u.to.as_deref() {
@@ -849,11 +930,23 @@ fn landing(u: &Underway, now: &str, holding: &str) -> (&'static str, String, Str
     } else {
         "the installer could not be started"
     };
+    /* What the exit handler saw, when it saw anything. Without this the row
+       said "could not be started" about a file that was not there, which sends
+       the reader looking for a permissions problem. */
+    let reason = u.error.as_deref().map(|e| format!(" — {e}")).unwrap_or_default();
     let file = u.installer.as_deref().unwrap_or("the installer");
+    /* Whether there is anything left to run is asked of the disk now rather
+       than assumed from the record: the whole failure this row was written for
+       is a file that was there when it was recorded and is not there now. */
+    let tail = if present {
+        format!("{file} is still in {holding} to run by hand")
+    } else {
+        format!("there is nothing left in {holding} to run by hand")
+    };
     (
         "bad",
         format!("the update{to} did not land — still {now}"),
-        format!("{why}{by}. {file} is still in {holding} to run by hand"),
+        format!("{why}{reason}{by}. {tail}"),
     )
 }
 
@@ -2180,6 +2273,7 @@ mod tests {
             asker: Some("update yourself (ab12cd34)".into()),
             installer: Some("Volery_0.55.0_x64-setup.exe".into()),
             launched,
+            error: None,
             at: 0,
         }
     }
@@ -2188,22 +2282,82 @@ mod tests {
     /// handler left and what this build is.
     #[test]
     fn the_next_launch_says_whether_it_landed() {
-        let (level, mark, _) = landing(&underway(Some("0.55.0"), true), "0.55.0", "C:\\u");
+        let (level, mark, _) = landing(&underway(Some("0.55.0"), true), "0.55.0", "C:\\u", true);
         assert_eq!((level, mark.as_str()), ("good", "volery updated 0.54.0 → 0.55.0"));
 
-        let (level, mark, detail) = landing(&underway(Some("0.55.0"), true), "0.54.0", "C:\\u");
+        let (level, mark, detail) = landing(&underway(Some("0.55.0"), true), "0.54.0", "C:\\u", true);
         assert_eq!(level, "bad");
         assert!(mark.contains("did not land") && mark.contains("0.55.0"), "{mark}");
         assert!(detail.contains("C:\\u") && detail.contains("Volery_0.55.0"), "{detail}");
 
-        let (_, _, detail) = landing(&underway(Some("0.55.0"), false), "0.54.0", "C:\\u");
+        let (_, _, detail) = landing(&underway(Some("0.55.0"), false), "0.54.0", "C:\\u", true);
         assert!(detail.contains("could not be started"), "{detail}");
 
         /* The button arms with no `to`, and the row is still honest. */
-        let (level, mark, _) = landing(&underway(None, true), "0.55.0", "C:\\u");
+        let (level, mark, _) = landing(&underway(None, true), "0.55.0", "C:\\u", true);
         assert_eq!((level, mark.as_str()), ("good", "volery updated 0.54.0 → 0.55.0"));
-        let (level, _, _) = landing(&underway(None, true), "0.54.0", "C:\\u");
+        let (level, _, _) = landing(&underway(None, true), "0.54.0", "C:\\u", true);
         assert_eq!(level, "bad");
+    }
+
+    /// **The row says why, and does not offer a file that is gone.** Written
+    /// because the shipped row said only *the installer could not be started*
+    /// about a file Windows Defender had quarantined an hour after it installed
+    /// (2026-11-13) — a sentence that sends the reader looking for a permissions
+    /// problem, and then to a folder to run it by hand, where it is not.
+    #[test]
+    fn a_failure_says_what_happened_and_whether_anything_is_left() {
+        let mut u = underway(Some("0.55.0"), false);
+        u.error = Some("could not run it — and the file is no longer there".into());
+
+        let (level, _, detail) = landing(&u, "0.54.0", "C:\\u", false);
+        assert_eq!(level, "bad");
+        assert!(detail.contains("no longer there"), "the cause is carried: {detail}");
+        assert!(detail.contains("nothing left in C:\\u"), "and it stops promising a file: {detail}");
+        assert!(!detail.contains("is still in"), "nothing is promised back: {detail}");
+
+        /* A record from an older build has no `error` at all, and still reads. */
+        let old: Underway = serde_json::from_str(
+            r#"{"from":"0.54.0","to":null,"asker":null,"installer":null,"launched":false,"at":0}"#,
+        )
+        .unwrap();
+        assert_eq!(old.error, None);
+        let (_, _, detail) = landing(&old, "0.54.0", "C:\\u", true);
+        assert!(detail.contains("could not be started"), "{detail}");
+    }
+
+    /// The holding directory keeps the newest two and the one the record names,
+    /// and nothing else survives.
+    #[test]
+    fn the_sweep_keeps_what_could_still_be_run() {
+        let dir = std::env::temp_dir().join(format!("volery-updates-{}", crate::store::uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        /* Written oldest first: `sweep` reads modification times, so the order
+           of creation is what decides which two are "newest". */
+        let names = ["Volery_0.1.0_x64-setup.exe", "Volery_0.2.0_x64-setup.exe",
+                     "Volery_0.3.0_x64-setup.exe", "Volery_0.4.0_x64-setup.exe"];
+        for (i, n) in names.iter().enumerate() {
+            let p = dir.join(n);
+            std::fs::write(&p, b"MZ").unwrap();
+            /* A second apart, so the clock is unambiguous between them. */
+            let at = std::time::SystemTime::now() - std::time::Duration::from_secs(3600 - i as u64);
+            let f = std::fs::File::options().write(true).open(&p).unwrap();
+            f.set_modified(at).unwrap();
+        }
+        /* Not an installer, so the sweep leaves it alone whatever its age. */
+        std::fs::write(dir.join("underway.json"), b"{}").unwrap();
+        /* The oldest one, named by the record: kept for a by-hand run even
+           though nothing about its age says so. */
+        let kept = dir.join(names[0]);
+
+        sweep(&dir, Some(&kept));
+
+        assert!(kept.is_file(), "the installer the record names is kept");
+        assert!(dir.join(names[3]).is_file(), "the newest is kept");
+        assert!(dir.join(names[2]).is_file(), "the second newest is kept");
+        assert!(!dir.join(names[1]).exists(), "the third newest goes");
+        assert!(dir.join("underway.json").is_file(), "a non-installer is not swept");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An underway record round-trips, since the next launch is a different
