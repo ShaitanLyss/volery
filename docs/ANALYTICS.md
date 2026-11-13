@@ -1378,6 +1378,25 @@ This gives every card a reading in **allowance points**, a currency that is comp
 models, machines and providers. It is an estimate of distribution, and an exact total. The
 face says so, in those words, wherever the measure appears.
 
+**As built (2026-11-13).** The card's own reading is `allowancesamples.ts::cardAllowance`,
+drawn in the inspector as *this card carried 45% of lyss's five-hour window, 71 of 158 points*.
+It runs the same division as the accounts' split, one level finer: each sample interval's
+movement is divided among the cards whose facts overlap it, by modeled cost.
+`allowance_costs` gained the card, resolved through `analytics_session` and joined on both key
+columns, because one session id can exist on two walls.
+
+Three things it refuses to overstate. A window that moved nothing is no share rather than zero
+percent. Movement in an interval no priced fact explains is counted as **blind** and named,
+never handed to a card because it happened to be active. And a card whose session row is
+missing from the read returns nothing rather than a zero drawn against a window it did work in.
+
+**Time is not a term in the division, and that is the design rather than an omission.** Two
+cards up for the same hour are not equal shares: the one re-reading a large context costs far
+more per turn and the plan charges it more, while one mostly waiting on tools with a small
+context carries almost nothing. §22 is the honest bound on all of this: the split is
+proportional to modeled cost by construction, so it assumes a plan moves in proportion to
+modeled cost, and the data cannot test that assumption from inside.
+
 ### 5.3 The residual
 
 ```text

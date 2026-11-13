@@ -8191,6 +8191,11 @@ pub struct AllowanceCostRow {
     pub provider: String,
     pub model: String,
     pub provenance: String,
+    /// **The card that spent it**, resolved through `analytics_session`, or
+    /// empty for a session this wall did not open (a terminal, an adopted
+    /// session). It is the finest grain attribution can reach, and the only
+    /// way a card can be told what share of a window it carried.
+    pub card: String,
     pub in_tok: i64,
     pub out_tok: i64,
     pub cache_read: i64,
@@ -8213,13 +8218,20 @@ pub fn allowance_cost_rows(
     }
     let mut stmt = conn
         .prepare(
-            "SELECT at, host, session, account, provider, model, provenance,
-                    SUM(in_tok), SUM(out_tok), SUM(cache_read), SUM(write_5m),
-                    SUM(write_1h), SUM(requests)
-               FROM usage_fact
-              WHERE at >= ?1 AND at < ?2
-              GROUP BY at, host, session, account, provider, model, provenance
-              ORDER BY at
+            /* **The card comes from the session row**, which is the only place
+               a session says what opened it. The join is on both key columns
+               because `analytics_session` is keyed by (session, host): one
+               session id can exist on two walls, and joining on the id alone
+               would hand a card another machine's work. */
+            "SELECT f.at, f.host, f.session, f.account, f.provider, f.model, f.provenance,
+                    COALESCE(s.card_id, ''),
+                    SUM(f.in_tok), SUM(f.out_tok), SUM(f.cache_read), SUM(f.write_5m),
+                    SUM(f.write_1h), SUM(f.requests)
+               FROM usage_fact f
+               LEFT JOIN analytics_session s ON s.session = f.session AND s.host = f.host
+              WHERE f.at >= ?1 AND f.at < ?2
+              GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+              ORDER BY 1
               LIMIT ?3",
         )
         .map_err(|e| format!("analytics: allowance costs: {e}"))?;
@@ -8233,12 +8245,13 @@ pub fn allowance_cost_rows(
                 provider: r.get(4)?,
                 model: r.get(5)?,
                 provenance: r.get(6)?,
-                in_tok: r.get(7)?,
-                out_tok: r.get(8)?,
-                cache_read: r.get(9)?,
-                write_5m: r.get(10)?,
-                write_1h: r.get(11)?,
-                requests: r.get(12)?,
+                card: r.get(7)?,
+                in_tok: r.get(8)?,
+                out_tok: r.get(9)?,
+                cache_read: r.get(10)?,
+                write_5m: r.get(11)?,
+                write_1h: r.get(12)?,
+                requests: r.get(13)?,
             })
         })
         .map_err(|e| format!("analytics: allowance costs: {e}"))?

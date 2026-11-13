@@ -65,6 +65,7 @@
     type CostReader,
   } from "./allowanceread.svelte";
   import {
+    cardAllowance,
     costBucketsOf,
     instancesOf,
     type AllowanceCost,
@@ -419,6 +420,22 @@
     lifeFailed = null;
     void tick().then(() => root?.focus());
   }
+
+  /* **What this card carried of the account's windows** (§11.10). Split by the
+     same rule the accounts' own split uses, one level finer: each sample
+     interval's movement divided among the cards whose facts overlap it, by
+     modeled cost. Over the card's own life, so a card that worked across two
+     five-hour windows sums both, the way a day's percentage does.
+
+     Null while the life is unread, and when nothing in the read could be
+     priced: a share of a window nothing explained is not zero. */
+  const cardCarry = $derived.by(() => {
+    if (!card || !lifeOf || costRows === null) return null;
+    let from = lifeOf.factsFrom;
+    for (const s of lifeOf.sessions) if (s.startedAt > 0 && (!from || s.startedAt < from)) from = s.startedAt;
+    if (!from) return null;
+    return cardAllowance(card, instances, costRows, from, fundAt);
+  });
 
   /* ── the live strip (§11.1) ──────────────────────────────────────────────
    *
@@ -1527,7 +1544,9 @@
         bucket={bucket}
         strip={strip ?? []}
         funding={{ readings: fundingRowsToday, exchange: fundingExchange, mix: fundingMix }}
-        card={card && cardInRoom ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard } : undefined}
+        card={card && cardInRoom
+          ? { life: lifeOf, failed: lifeFailed, busy: lifeBusy, onclose: closeCard, carry: cardCarry }
+          : undefined}
       />
     {:else}
       <div class="an-page">

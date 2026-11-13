@@ -32,16 +32,21 @@
     type LifeShare,
   } from "./analyticslife";
   import { shareSaid } from "./analyticsbehaviour";
+  import type { CardAllowance } from "./allowancesamples";
   import { count, money } from "./usage";
 
   let {
     life,
     onclose,
+    carry,
   }: {
     life: CardLife;
     /** Present in the room's inspector; absent on the page, which has no
      *  neighbour to go back to. */
     onclose?: () => void;
+    /** What this card carried of the account's windows, per account and kind.
+     *  Null while the life is unread, or when nothing could be priced. */
+    carry?: readonly CardAllowance[] | null;
   } = $props();
 
   const model = $derived(lifeModel(life, Date.now()));
@@ -182,6 +187,37 @@
         </li>
       {/each}
     </ol>
+  {/if}
+
+  <!-- **What this card carried of the account's windows** (§11.10). The only
+       reading on this wall that says a card "used 40% of the five-hour
+       allowance", and it says whose window, because a point on one plan is not
+       a point on another. -->
+  {#if carry && carry.length > 0}
+    <div class="cl-carry-head">of the allowance</div>
+    <ul class="cl-carry">
+      {#each carry as row (row.account + row.kind)}
+        {@const which = row.kind === "session" ? "5-hour" : "weekly"}
+        <li>
+          {#if row.share === null}
+            <span class="cl-carry-said"
+              >{row.account}'s {which} window moved nothing while this card ran</span
+            >
+          {:else}
+            <span class="cl-carry-pct">{Math.round(row.share * 100)}%</span>
+            <span class="cl-carry-said"
+              >of {row.account}'s {which} window, {Math.round(row.points)} of
+              {Math.round(row.moved)} points</span
+            >
+            {#if row.blind > 0}
+              <span class="cl-carry-note"
+                >{Math.round(row.blind)} points in windows nothing here could price</span
+              >
+            {/if}
+          {/if}
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   <footer class="cl-foot">
@@ -397,5 +433,43 @@
     border-top: 1px solid var(--cv-hair, var(--edge));
     font-size: 10.5px;
     color: var(--paper-faint);
+  }
+
+  /* What the card carried (§11.10). The percentage is the reading, so it takes
+     the readable ink and the window it belongs to stays faint beside it. */
+  .cl-carry-head {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--cv-hair, var(--edge));
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: var(--paper-faint);
+  }
+  .cl-carry {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+  }
+  .cl-carry li {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .cl-carry-pct {
+    color: var(--paper);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .cl-carry-said {
+    color: var(--paper-dim);
+  }
+  .cl-carry-note {
+    color: var(--paper-faint);
+    font-size: 10px;
   }
 </style>

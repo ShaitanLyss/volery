@@ -47,6 +47,7 @@
   import type { CardLife } from "./analyticslife";
   import type { StripTile } from "./analyticstiles";
   import type { Exchange, FundingMix, FundingReading } from "./fundings";
+  import type { CardAllowance } from "./allowancesamples";
 
   let {
     window: win,
@@ -92,7 +93,15 @@
      *  inspector's first block, above the bucket, because the room has exactly
      *  one column on the right and two panels called inspector is one too
      *  many. */
-    card?: { life: CardLife | null; failed: string | null; busy: boolean; onclose: () => void };
+    card?: {
+      life: CardLife | null;
+      failed: string | null;
+      busy: boolean;
+      onclose: () => void;
+      /** What this card carried of the account's windows (§11.10). Null while
+       *  unread, or when nothing in the read could be priced. */
+      carry: CardAllowance[] | null;
+    };
   } = $props();
 
   const list = $derived(series);
@@ -454,7 +463,7 @@
       {:else if !card.life}
         <p class="an-note">{card.busy ? "reading this card…" : "no answer yet"}</p>
       {:else}
-        <AnalyticsCardLife life={card.life} onclose={card.onclose} />
+        <AnalyticsCardLife life={card.life} onclose={card.onclose} carry={card.carry} />
       {/if}
     </div>
     <h3>bucket</h3>

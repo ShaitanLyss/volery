@@ -4,6 +4,7 @@ import {
   asAllowanceSamples,
   attributedCostOf,
   bindingOf,
+  cardAllowance,
   costBucketsOf,
   daySpend,
   FINE_BUCKET_MS,
@@ -13,6 +14,7 @@ import {
   type AllowanceCost,
   type AllowanceSample,
   type CostBucket,
+  type WindowInstance,
 } from "../src/lib/allowancesamples";
 import { stripModel, weekResidual } from "../src/lib/analyticstiles";
 import { mixOf } from "../src/lib/fundings";
@@ -551,5 +553,111 @@ describe("what the tokens were made of", () => {
   test("two fundings are two breakdowns", () => {
     const got = mixOf([cost(), cost({ account: "api", inTok: 1_000 })], NOW - 1, NOW + 1);
     expect(got.map((m) => m.label).sort()).toEqual(["api", "lyss"]);
+  });
+});
+
+describe("what one card carried of a window", () => {
+  const bucket = (account: string, card: string, inTok: number, at = NOW): AllowanceCost => ({
+    at,
+    host: "studio",
+    session: `s-${card || "none"}`,
+    account,
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    provenance: "transcript",
+    card,
+    inTok,
+    outTok: 0,
+    cacheRead: 0,
+    write5m: 0,
+    write1h: 0,
+    requests: 1,
+  });
+
+  /** An instance whose movement is `used` points over ten minutes. */
+  const instance = (kind: string, used: number[]): WindowInstance => ({
+    account: "lyss",
+    kind,
+    scope: "",
+    resetsAt: NOW + 3_600_000,
+    from: NOW,
+    to: NOW + (used.length - 1) * 10 * 60_000,
+    first: used[0]!,
+    last: used[used.length - 1]!,
+    delta: used[used.length - 1]! - used[0]!,
+    points: used.map((u, i) => ({ at: NOW + i * 10 * 60_000, used: u })),
+    hosts: ["studio"],
+  });
+
+  test("a card alone in the window carries all of it", () => {
+    const got = cardAllowance("a", [instance("session", [10, 20])], [bucket("lyss", "a", 1000)], NOW, NOW + HOUR);
+    expect(got).toHaveLength(1);
+    expect(got[0]!.points).toBeCloseTo(10, 6);
+    expect(got[0]!.share).toBeCloseTo(1, 6);
+  });
+
+  /* The whole point: the split is by modeled cost, never by time. Three parts
+     of the work to one, three parts of the movement to one. */
+  test("two cards split the movement by what each cost", () => {
+    const got = cardAllowance(
+      "a",
+      [instance("session", [10, 20])],
+      [bucket("lyss", "a", 3000), bucket("lyss", "b", 1000)],
+      NOW,
+      NOW + HOUR,
+    );
+    expect(got[0]!.points).toBeCloseTo(7.5, 6);
+    expect(got[0]!.share).toBeCloseTo(0.75, 6);
+  });
+
+  test("a card that spent nothing in the interval gets nothing of it", () => {
+    const got = cardAllowance(
+      "b",
+      [instance("session", [10, 20])],
+      [bucket("lyss", "a", 3000)],
+      NOW,
+      NOW + HOUR,
+    );
+    /* No rows for `b` at all, so there is nothing to say rather than a zero
+       drawn as one. */
+    expect(got).toEqual([]);
+  });
+
+  /* A window that moved with no priced fact under it is the one honest hole:
+     the movement is not the card's and it is not zero either. Two intervals,
+     facts under the first only. */
+  test("movement no priced fact explains is counted as blind", () => {
+    const got = cardAllowance(
+      "a",
+      [instance("session", [10, 15, 20])],
+      [bucket("lyss", "a", 1000)],
+      NOW,
+      NOW + HOUR,
+    );
+    expect(got[0]!.blind).toBeCloseTo(5, 6);
+    expect(got[0]!.points).toBeCloseTo(5, 6);
+    expect(got[0]!.moved).toBeCloseTo(10, 6);
+  });
+
+  test("the five-hour and the weekly window are two readings", () => {
+    const got = cardAllowance(
+      "a",
+      [instance("session", [10, 20]), instance("weekly_all", [40, 44])],
+      [bucket("lyss", "a", 1000)],
+      NOW,
+      NOW + HOUR,
+    );
+    expect(got.map((r) => r.kind).sort()).toEqual(["session", "weekly_all"]);
+    expect(got.find((r) => r.kind === "weekly_all")!.points).toBeCloseTo(4, 6);
+  });
+
+  test("a window that moved nothing is no share, not zero percent", () => {
+    const got = cardAllowance("a", [instance("session", [10, 10])], [bucket("lyss", "a", 1000)], NOW, NOW + HOUR);
+    expect(got).toEqual([]);
+  });
+
+  test("another account's window is not this card's", () => {
+    const got = cardAllowance("a", [instance("session", [10, 20])], [bucket("tx-team", "a", 1000)], NOW, NOW + HOUR);
+    expect(got).toEqual([]);
   });
 });

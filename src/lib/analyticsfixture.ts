@@ -1586,6 +1586,9 @@ export function fixtureAllowanceCosts(from: number, to: number): AllowanceCost[]
       provider: "anthropic",
       model: models[i % models.length],
       provenance: "transcript",
+      /* A card id here so the preview has something for the per-card
+         allowance to split; the page's fixture card is the same id. */
+      card: i % 4 === 0 ? "" : i % 3 === 0 ? "preview-other" : "preview-card",
       inTok: 700,
       outTok: 90,
       cacheRead: 24_000,

@@ -260,6 +260,8 @@ export type AllowanceCost = {
   provider: string;
   model: string;
   provenance: string;
+  /** The card that spent it, or empty for a session this wall did not open. */
+  card: string;
   inTok: number;
   outTok: number;
   cacheRead: number;
@@ -286,6 +288,7 @@ export function asAllowanceCosts(raw: unknown): AllowanceCost[] {
       provider: str(r.provider),
       model,
       provenance: str(r.provenance) === "turn" ? "turn" : "transcript",
+      card: str(r.card),
       inTok: num(r.inTok) || 0,
       outTok: num(r.outTok) || 0,
       cacheRead: num(r.cacheRead) || 0,
@@ -546,4 +549,126 @@ export function daySpend(
     else if (b.at >= yesterdayFrom && b.at < todayFrom) yesterday += b.cost;
   }
   return { today, yesterday: coveredFrom <= yesterdayFrom ? yesterday : null };
+}
+
+/* ── one card's share of a window (§11.10, §21.1) ──────────────────────────*/
+
+/** A card's share of an account's window, as a fraction of how far that window
+ *  moved.
+ *
+ *  **This is a share of the movement, not a percentage of the plan.** A window
+ *  that moved 68% and a card that carried half its cost gives 34 points, and
+ *  34% of the plan. It is derived by the same rule the accounts' split uses
+ *  (`analytics.ts::attribute`), applied one level finer: each sample interval's
+ *  delta divided among the cards whose facts overlap it, by modeled cost. */
+export type CardAllowance = {
+  account: string;
+  /** `session` or `weekly_all`: §5.5 keeps them apart and so does this. */
+  kind: string;
+  /** Points of movement this card's facts carried, over the windows it worked
+   *  in. Summed across instances of the same kind, so four five-hour windows in
+   *  a day add up the way a day's percentage does (§21.2). */
+  points: number;
+  /** How far those same windows moved while the card existed. */
+  moved: number;
+  /** `points / moved`, or null when they moved nothing: a share of no movement
+   *  is not 0%. */
+  share: number | null;
+  /** Points that moved in intervals where this account had **no priced fact at
+   *  all**, from any card. They are not the card's and not zero either: the
+   *  window moved and nothing here can say what carried it. */
+  blind: number;
+};
+
+/** What one card carried, per account and window kind.
+ *
+ *  `from`/`to` bound the reading, usually the card's own life. A card whose
+ *  session row is missing from the cost read (a terminal, an adopted session)
+ *  simply has no rows and returns nothing, rather than being counted as zero
+ *  against a window it did work in. */
+export function cardAllowance(
+  card: string,
+  instances: readonly WindowInstance[],
+  costs: readonly AllowanceCost[],
+  from: number,
+  to: number,
+): CardAllowance[] {
+  if (!card || !(to > from)) return [];
+  /* One bucket per (at, host, account, card), priced exactly as the residual
+     prices its own. */
+  const buckets: { at: number; host: string; account: string; card: string; cost: number }[] = [];
+  const merged = new Map<string, { at: number; host: string; account: string; card: string; cost: number }>();
+  for (const r of preferredCostRows(costs)) {
+    const at = r.at;
+    if (at >= to || at + FINE_BUCKET_MS <= from) continue;
+    const cost = modeledUsd({
+      at,
+      host: r.host,
+      session: r.session,
+      agent: "",
+      parentAgent: "",
+      depth: 0,
+      model: r.model,
+      effort: "",
+      cli: "",
+      source: "",
+      account: r.account,
+      accountIdentity: "",
+      provider: r.provider,
+      project: "",
+      provenance: r.provenance === "turn" ? "turn" : "transcript",
+      inTok: r.inTok,
+      outTok: r.outTok,
+      cacheRead: r.cacheRead,
+      write5m: r.write5m,
+      write1h: r.write1h,
+      requests: r.requests,
+      usdReported: 0,
+    });
+    if (cost === null || !(cost > 0)) continue;
+    const key = `${at}\u0000${r.host}\u0000${r.account}\u0000${r.card}`;
+    const one = merged.get(key) ?? { at, host: r.host, account: r.account, card: r.card, cost: 0 };
+    one.cost += cost;
+    merged.set(key, one);
+  }
+  buckets.push(...[...merged.values()].sort((a, b) => a.at - b.at));
+  if (buckets.length === 0) return [];
+  const accounts = [...new Set(buckets.filter((b) => b.card === card).map((b) => b.account))];
+  const out = new Map<string, CardAllowance>();
+  for (const account of accounts) {
+    const mine = buckets.filter((b) => b.account === account);
+    for (const one of instances) {
+      if (one.account !== account || isSentinel(one.account)) continue;
+      for (let i = 1; i < one.points.length; i++) {
+        const a = one.points[i - 1];
+        const b = one.points[i];
+        const span = a.at < from ? from : a.at;
+        const end = b.at > to ? to : b.at;
+        if (end <= span) continue;
+        const delta = Math.max(0, b.used - a.used) * ((end - span) / (b.at - a.at));
+        if (!(delta > 0)) continue;
+        const key = `${account}\u0000${one.kind}`;
+        const row =
+          out.get(key) ??
+          { account, kind: one.kind, points: 0, moved: 0, share: null, blind: 0 };
+        let total = 0;
+        let ours = 0;
+        for (const bucket of mine) {
+          if (bucket.at >= end) break;
+          const overlap = Math.min(end, bucket.at + FINE_BUCKET_MS) - Math.max(span, bucket.at);
+          if (overlap <= 0) continue;
+          const priced = bucket.cost * (overlap / FINE_BUCKET_MS);
+          total += priced;
+          if (bucket.card === card) ours += priced;
+        }
+        row.moved += delta;
+        if (total <= 0) row.blind += delta;
+        else row.points += delta * (ours / total);
+        out.set(key, row);
+      }
+    }
+  }
+  return [...out.values()]
+    .map((r) => ({ ...r, share: r.moved > 0 ? r.points / r.moved : null }))
+    .sort((a, b) => b.points - a.points);
 }
