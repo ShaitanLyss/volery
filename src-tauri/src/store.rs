@@ -374,7 +374,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 73;
+const SCHEMA_VERSION: i64 = 74;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -453,6 +453,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (71, migrate_v71),
     (72, migrate_v72),
     (73, migrate_v73),
+    (74, migrate_v74),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -4254,6 +4255,18 @@ fn migrate_v72(conn: &Connection) -> Result<(), String> {
 /// Both tables are written by the same call (`analytics::note_action_rows`),
 /// and neither is backfilled: nothing recorded a gesture before this rung, so
 /// there is nothing to derive one from.
+/// A pacing plan, per account (§14): off, throttle or brake, and the pace a
+/// brake holds at.
+///
+/// One opaque column for the reason `widget.config_json` gives: `pace.ts::planOf`
+/// normalizes it on every read and degrades to *off*, so a knob renamed by a
+/// later build costs the setting and never costs the wall a hold it cannot
+/// explain. Synced like the caps beside it, because a plan is a decision about
+/// spending and it is the same decision on every machine.
+pub(crate) fn migrate_v74(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "account", "plan", "TEXT NOT NULL DEFAULT '{}'")
+}
+
 pub(crate) fn migrate_v73(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"

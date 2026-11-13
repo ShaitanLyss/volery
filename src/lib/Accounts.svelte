@@ -16,6 +16,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { waterfall } from "./waterfall.svelte";
   import { ownShare } from "./ownshare.svelte";
+  import { planOf, type Plan } from "./pace";
   import Freshen from "./Freshen.svelte";
   import type { Stale } from "./freshen";
   import {
@@ -350,6 +351,12 @@
     const a = waterfall.allowances[label];
     const w = a?.ok ? a.windows.find((x) => x.kind === kind) : null;
     return w ? windowSaid(w) : kind.replace(/_/g, " ");
+  }
+
+  /** Write a pacing plan. `planOf` has already normalised whatever was stored,
+   *  so this always sends three keys and never the shape it found. */
+  async function setPlan(label: string, plan: Plan) {
+    await waterfall.setPlan(label, planOf(plan));
   }
 
   async function setCap(label: string, kind: string, raw: string) {
@@ -804,6 +811,57 @@
                     {:else}
                       <span class="dim">no windows read yet</span>
                     {/each}
+                  </div>
+
+                  <!-- **Pacing (§14).** A cap is a wall; a plan is a gradient:
+                       it holds the *next* turn once the week is going to run
+                       out before its reset, and it never stops a turn that is
+                       already running, which has paid for the context it
+                       built. Off by default, because turning it on is the
+                       decision to let the plan act. -->
+                  {@const plan = planOf(account.plan)}
+                  <div class="plan">
+                    <label
+                      class="pk"
+                      {@attach tipOf("hold new work when the week is going to run out before its reset. a turn already running is never stopped: it has already paid for what it read")}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={plan.on}
+                        onchange={(e) => setPlan(account.label, { ...plan, on: e.currentTarget.checked })}
+                      />
+                      <span>pace the week</span>
+                    </label>
+                    {#if plan.on}
+                      <select
+                        class="pk"
+                        value={plan.mode}
+                        onchange={(e) =>
+                          setPlan(account.label, {
+                            ...plan,
+                            mode: e.currentTarget.value === "brake" ? "brake" : "throttle",
+                          })}
+                      >
+                        <option value="throttle">when the week will not reach its reset</option>
+                        <option value="brake">once it is ahead of the plan</option>
+                      </select>
+                      {#if plan.mode === "brake"}
+                        <label class="pk" {@attach tipOf("how far ahead of the line the week may run. 1.15 is a sixth ahead")}>
+                          <span class="of">by</span>
+                          <input
+                            class="capin"
+                            type="number"
+                            min="1"
+                            max="2"
+                            step="0.05"
+                            value={plan.threshold}
+                            onchange={(e) =>
+                              setPlan(account.label, { ...plan, threshold: Number(e.currentTarget.value) })}
+                          />
+                          <span class="pc">×</span>
+                        </label>
+                      {/if}
+                    {/if}
                   </div>
                 {/if}
 
@@ -1404,6 +1462,26 @@
     flex-wrap: wrap;
     gap: 0.4rem 0.9rem;
     padding-left: 1.5ch;
+  }
+  /* Pacing is a different sentence from the ceilings above it — how fast rather
+     than how full — so it shares their indent and not their row. */
+  .plan {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 0.8rem;
+    margin-top: 0.4rem;
+    padding-left: 1.5ch;
+    font-size: 10.5px;
+    color: var(--paper-mute);
+  }
+  .pk {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+  }
+  .pk input[type="checkbox"] {
+    margin: 0;
   }
   /* The worth reading sits under the ceilings with the same indent and a rule
      above it: it is a different kind of statement (what the window is worth,

@@ -263,6 +263,10 @@ fn set_column(conn: &Connection, by: &str, key: &str, field: &str, v: &Value) ->
             &format!("UPDATE account SET caps = ?1 WHERE {by} = ?2 AND caps != ?1"),
             params![v.to_string(), key],
         ),
+        "plan" => conn.execute(
+            &format!("UPDATE account SET plan = ?1 WHERE {by} = ?2 AND plan != ?1"),
+            params![v.to_string(), key],
+        ),
         "priority" => conn.execute(
             &format!("UPDATE account SET priority = ?1 WHERE {by} = ?2 AND priority != ?1"),
             params![v.as_i64().unwrap_or(1).max(1), key],

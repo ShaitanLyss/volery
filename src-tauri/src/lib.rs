@@ -971,6 +971,7 @@ pub fn run() {
             accounts::set_account_priority,
             accounts::set_account_enabled,
             accounts::set_account_caps,
+            accounts::set_account_plan,
             accounts::stored_accounts,
             signin::begin_signin,
             signin::paste_signin,

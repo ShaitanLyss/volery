@@ -179,6 +179,10 @@ pub struct Account {
     /// Window `kind` → percentage ceiling. Free-form because the rate limiter's
     /// window vocabulary moves; see `migrate_v16`.
     pub caps: serde_json::Value,
+    /// The pacing plan (§14): `{on, mode, threshold}`. Opaque for `caps`'
+    /// reason, and `pace.ts::planOf` is what reads it — **Rust never decides
+    /// what a plan means**, only whether it is well-shaped enough to store.
+    pub plan: serde_json::Value,
     /// Whether this account's store holds a credential.
     pub signed_in: bool,
     /// Whether that credential can no longer be refreshed — see [`lapsed_in`].
@@ -215,7 +219,8 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
     let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT label, rank, enabled, caps, priority, identity, identity_email, identity_org
+            "SELECT label, rank, enabled, caps, priority, identity, identity_email, identity_org,
+                    plan
              FROM account ORDER BY priority, rank, label",
         )
         .map_err(|e| format!("read accounts: {e}"))?;
@@ -223,11 +228,13 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
         .query_map([], |r| {
             let label: String = r.get(0)?;
             let caps: String = r.get(3)?;
+            let plan: String = r.get(8)?;
             Ok((
                 label,
                 r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
                 caps,
+                plan,
                 r.get::<_, i64>(4)?,
                 (r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?),
             ))
@@ -236,11 +243,12 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
 
     let mut out = Vec::new();
     for row in rows {
-        let (label, rank, enabled, caps, priority, (identity, identity_email, identity_org)) =
+        let (label, rank, enabled, caps, plan, priority, (identity, identity_email, identity_org)) =
             row.map_err(|e| format!("read accounts: {e}"))?;
         let has = signed_in(&app, &label);
         out.push(Account {
             caps: serde_json::from_str(&caps).unwrap_or_else(|_| serde_json::json!({})),
+            plan: serde_json::from_str(&plan).unwrap_or_else(|_| serde_json::json!({})),
             signed_in: has,
             lapsed: has && lapsed(&app, &label),
             label,
@@ -501,6 +509,17 @@ pub fn set_account_caps(app: AppHandle, label: String, caps: serde_json::Value) 
 /// and announced, so every reader on this one does. The panel's setters and a
 /// card's agreed `set_account` both land here — two routes to one write, so the
 /// tool cannot do something the panel would not.
+/// Set one account's pacing plan (§14). Validated no further than its shape,
+/// like the caps beside it: what a plan *means* is `pace.ts`, and Rust storing
+/// an opinion about it would be the second policy.
+#[tauri::command]
+pub fn set_account_plan(app: AppHandle, label: String, plan: serde_json::Value) -> Result<(), String> {
+    if !plan.is_object() {
+        return Err("a plan is an object of on, mode and threshold".into());
+    }
+    set_field(&app, &label, "plan", plan)
+}
+
 pub fn set_field(app: &AppHandle, label: &str, field: &str, value: serde_json::Value) -> Result<(), String> {
     {
         let store = app.try_state::<Store>().ok_or("the store is not open")?;

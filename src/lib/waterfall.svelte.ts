@@ -27,6 +27,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { samplesOf, type AllowanceSample } from "./allowancesamples";
 import { ownShare } from "./ownshare.svelte";
+import type { Plan } from "./pace";
 import {
   type AfarSeat,
   choose,
@@ -133,6 +134,8 @@ export class Waterfall {
       /** The ceilings to stand in with, so a capped account can be looked at
        *  with no store behind it (`accounts-preview.ts`). */
       caps?: Record<string, number>;
+      /** A pacing plan to stand in with, so the control can be looked at. */
+      plan?: Record<string, unknown>;
     }[] | null,
   ) {
     if (!accounts) {
@@ -147,6 +150,7 @@ export class Waterfall {
       rank: i,
       enabled: true,
       caps: a.caps ?? {},
+      plan: a.plan ?? {},
       signedIn: true,
       lapsed: false,
     }));
@@ -518,6 +522,15 @@ export class Waterfall {
 
   async setCaps(label: string, caps: Record<string, number>) {
     await invoke("set_account_caps", { label, caps });
+    await this.refresh();
+  }
+
+  /** Set one account's pacing plan (§14). Written through `set_field` in Rust,
+   *  so it is stamped and every wall on the flyway hears it — a plan is a
+   *  decision about spending, and it is the same decision at every machine the
+   *  account is on. */
+  async setPlan(label: string, plan: Plan) {
+    await invoke("set_account_plan", { label, plan });
     await this.refresh();
   }
 

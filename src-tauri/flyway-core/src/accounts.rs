@@ -92,10 +92,12 @@ pub fn is_label(s: &str) -> bool {
 /// keeps its own settings, untouched.
 pub const WORD: &str = "accounts";
 
-/// The four settings that travel. Labels stay local — they are what *this*
-/// machine calls a subscription — and so does whether it is signed in, which
-/// is a fact about this disk.
-pub const FIELDS: [&str; 4] = ["enabled", "caps", "priority", "rank"];
+/// The settings that travel, one register each. Labels stay local — they are
+/// what *this* machine calls a subscription — and so does whether it is signed
+/// in, which is a fact about this disk. `plan` is the pacing plan (§14): a
+/// decision about how fast to spend a week, which is the same decision at every
+/// machine the account is on.
+pub const FIELDS: [&str; 5] = ["enabled", "caps", "priority", "rank", "plan"];
 
 /// The prefix a change made before an account's identity is known is stamped
 /// under. Never sent, never accepted.
@@ -310,6 +312,28 @@ pub fn normal(field: &str, v: &Value) -> Option<Value> {
                 out.insert(k.clone(), Value::from(n));
             }
             Some(Value::Object(out))
+        }
+        /* **A plan a peer may hold this wall to, and no more than it can mean.**
+           Three keys and their bounds, so a confused wall cannot make this one
+           hold work under a threshold of nought or a mode that is not a mode;
+           what the plan *means* is `pace.ts`, and this is only the shape. */
+        "plan" => {
+            let o = v.as_object()?;
+            if o.len() > 4 {
+                return None;
+            }
+            let on = o.get("on").and_then(Value::as_bool).unwrap_or(false);
+            let mode = match o.get("mode").and_then(Value::as_str) {
+                Some("brake") => "brake",
+                _ => "throttle",
+            };
+            let threshold = o
+                .get("threshold")
+                .and_then(Value::as_f64)
+                .filter(|t| t.is_finite())
+                .unwrap_or(1.15)
+                .clamp(1.0, 2.0);
+            Some(serde_json::json!({ "on": on, "mode": mode, "threshold": threshold }))
         }
         _ => None,
     }

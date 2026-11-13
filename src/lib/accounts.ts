@@ -61,6 +61,11 @@ export type Account = {
   /** Window `kind` → the percentage past which this account stops taking new
    *  work. Absent means no ceiling of yours, which leaves the server's. */
   caps: Record<string, number>;
+  /** The pacing plan (§14), exactly as stored: `pace.ts::planOf` is the one
+   *  reader, and it degrades anything it cannot understand to *off*. Opaque
+   *  here for the reason `caps` is free-form — the meaning lives where the
+   *  arithmetic does. */
+  plan?: Record<string, unknown>;
   signedIn: boolean;
   /** The credential is there but cannot be revived: its *refresh* token's own
    *  expiry has passed and the access token has too, so the CLI has nothing to

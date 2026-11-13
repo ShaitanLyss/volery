@@ -41,6 +41,9 @@ waterfall.standIn([
   {
     label: "lyss",
     caps: { session: 50 },
+    /* A brake plan, so the pacing control and its "by 1.15×" field can be
+       looked at with no store behind them. */
+    plan: { on: true, mode: "brake", threshold: 1.15 },
     windows: [
       { kind: "session", group: "session", used: 70, severity: "normal", resetsAt: NOW + HOUR, scope: null, active: true },
       { kind: "weekly_all", group: "weekly", used: 12, severity: "normal", resetsAt: NOW + 72 * HOUR, scope: null, active: false },
