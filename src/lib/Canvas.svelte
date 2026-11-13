@@ -83,7 +83,11 @@
   import Bump from "./Bump.svelte";
   import Card from "./Card.svelte";
   import type { Shadow } from "./shadows.svelte";
-  import { isShadowKey, standElsewhere, type Placed } from "./shadow";
+  import { ELSEWHERE_COLS, isShadowKey, standElsewhere, type Placed } from "./shadow";
+  import { openedHere, plateSpot } from "./solo";
+  import { parseScreen } from "./cast";
+  import type { Solo } from "./solo.svelte";
+  import SoloPlate from "./SoloPlate.svelte";
   import { tetherOf } from "./tether";
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
@@ -97,6 +101,7 @@
     convs,
     shadows = [],
     sections = {},
+    solo = null,
     onsection,
     onsectionsave,
     leaving = [],
@@ -167,6 +172,10 @@
      *  gesture they share, because its spot for a shadow is in memory and
      *  nowhere else (`ShadowGlass`). See `.claude/rules/elsewhere.md`. */
     shadows?: readonly Shadow[];
+    /** Flying solo (`solo.svelte.ts`), for the plate in the empty strip. A
+     *  plain null when the app has not handed one in, which is every test and
+     *  the showcase: no solo, no plate. */
+    solo?: Solo | null;
     /** Where sections of other walls' cards have been dragged to, and how a
      *  drag says so (`Elsewhere.moveSection`, `saveSections`). */
     sections?: Placed;
@@ -775,7 +784,12 @@
    *  read of the plans that failed. */
   function drawn(w: Widget): boolean {
     const plan = planOf(w);
-    return plan === null || !!timelines.byId(plan);
+    if (plan !== null && !timelines.byId(plan)) return false;
+    /* Flying solo: a screen onto another machine comes down with every other
+       surface of one, and its row and place are kept — it returns when the
+       shutter lifts. This wall's own monitors keep drawing (`cast.md`). */
+    if (solo?.on && w.kind === "screen" && parseScreen(String(w.config["monitor"] ?? "")).host) return false;
+    return true;
   }
   function isStacked(w: Widget): boolean {
     return planOf(w) !== null && hangOf(w) === "stack";
@@ -816,26 +830,35 @@
     widgets.items.filter((w) => !spotOf(w) && !isStacked(w) && drawn(w)).map(drawnSize),
   );
 
-  /* Other walls' cards, in the left margin of everything standing on this one.
-     Measured against the wall's own regions, images and widgets — the same set
-     `fitAll` frames — so a region of another machine's cards never lands on
-     top of something of yours. */
-  const elsewhere = $derived(
-    standElsewhere(shadows, [
-      ...wallRegions,
-      /* Less the pins of those walls' own cards (`tether.ts`): one hangs in the
-         margin beside the column it reads, and counted here it would be the
-         leftmost thing on the wall — so the column would step left of it, the
-         pin would no longer be beside its card, and every pin or drag after it
-         would shove the column again. */
-      ...[...wallImages, ...wallWidgets.filter((w) => !isShadowKey(tetherOf(w) ?? ""))].map((n) => ({
-        x: n.x,
-        y: n.y,
-        w: n.w,
-        h: n.h,
-      })),
-    ], sections),
-  );
+  /* Everything already standing on this wall, as boxes — the set `fitAll`
+     frames, measured against the wall's own regions, images and widgets. The
+     left margin is placed from this, so neither another machine's sections nor
+     the solo plate lands on top of something of yours. */
+  const wallStanding = $derived([
+    ...wallRegions,
+    /* Less the pins of those walls' own cards (`tether.ts`): one hangs in the
+       margin beside the column it reads, and counted here it would be the
+       leftmost thing on the wall — so the column would step left of it, the
+       pin would no longer be beside its card, and every pin or drag after it
+       would shove the column again. */
+    ...[...wallImages, ...wallWidgets.filter((w) => !isShadowKey(tetherOf(w) ?? ""))].map((n) => ({
+      x: n.x,
+      y: n.y,
+      w: n.w,
+      h: n.h,
+    })),
+  ]);
+
+  /* Other walls' cards, in the left margin of everything standing on this one. */
+  const elsewhere = $derived(standElsewhere(shadows, wallStanding, sections));
+
+  /* The plate that stands in the strip while this wall is flying solo: where
+     the sections would be, one column wide, at the same head y. */
+  const plate = $derived(solo?.on ? plateSpot(wallStanding, ELSEWHERE_COLS) : null);
+
+  /** How many cards here were opened by another wall: the plate says so, since
+   *  flying solo stops traffic and not work. */
+  const openedCards = $derived(openedHere(convs.map((c) => c.bornFor)));
   /** Whether a wall has gone quiet, read off its cards — every card on one wall
    *  shares the answer, so the first is asked. */
   function unheard(host: string): boolean {
@@ -3129,6 +3152,22 @@
         </div>
       {/each}
 
+      <!-- Flying solo: the plate in the strip the other walls' sections would
+           stand in. Not a card and not a section — no `data-conv`, no
+           `data-section`, so it is bare ground to every wall gesture, and
+           nothing that writes a row can be aimed at it. `.claude/rules/solo.md`. -->
+      {#if solo?.on && plate}
+        <div
+          class="solo-strip"
+          style:left="{plate.x}px"
+          style:top="{plate.y}px"
+          style:width="{plate.w}px"
+          style:z-index={Z_CHIP}
+        >
+          <SoloPlate {solo} opened={openedCards} />
+        </div>
+      {/if}
+
       <!-- Other walls, a section per project under each wall's name. Not a
            territory: no `data-cwd`, no `data-territory`, no `data-region`, so
            every press here is bare ground to the wall's gestures and nothing
@@ -3799,6 +3838,12 @@
   /* z-index is set inline from Z_CARD. A reference image sits below the cards
      by default and above everything once brought to the front — one order for
      the whole wall, described in layout.ts. */
+  /* The solo plate's slot in the left strip. Positioned like a section and
+     sized to its one column; the plate itself is `SoloPlate.svelte`'s, so this file
+     owns only where it stands. Not a card: no grab cursor, nothing to carry. */
+  .solo-strip {
+    position: absolute;
+  }
   .node {
     position: absolute;
     cursor: grab;

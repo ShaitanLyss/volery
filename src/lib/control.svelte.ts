@@ -116,6 +116,7 @@ import type { Cycle } from "./cycle.svelte";
 import { elapsed, phaseOf, phraseFor, standing } from "./timing";
 import type { Skein } from "./skein.svelte";
 import type { Elsewhere } from "./shadows.svelte";
+import type { Solo } from "./solo.svelte";
 import type { Studio } from "./studio.svelte";
 import type { Undo } from "./undo.svelte";
 import { shifted, standsOf } from "./undo";
@@ -133,6 +134,11 @@ export type ControlHost = {
    *  the other, and a prompt typed there arrives here — and only a reading
    *  from outside can hold both ends. */
   elsewhere: Elsewhere;
+  /** Flying solo (`solo.svelte.ts`). Here because the state is a setting on the
+   *  link and the thing it changes is what every surface draws: the lab holds
+   *  the one reading that says the shutter is down and the strips are empty, in
+   *  one snapshot. */
+  solo: Solo;
   studio: Studio;
   board: Board;
   widgets: Widgets;
@@ -911,12 +917,18 @@ export class Control {
          state its line is drawn in — the fourth state included. */
       elsewhere: {
         me: h.elsewhere.me,
+        /* Flying solo: the state, when it started, and — implicitly, through
+           `shadows` below — that nothing of another wall is drawn. This is how
+           the lab asserts the shutter without reaching into the window. */
+        solo: h.solo.on,
+        soloSince: h.solo.since,
+        soloKnown: h.solo.known,
         heardAt: { ...h.elsewhere.heardAt },
         /* The link's roster as this wall holds it — the half of "who is on the
            flyway" a goodbye changes and a silence does not: a wall that left is
            gone from this list, one that merely went quiet is on it with a
            `quietMs`. */
-        roster: h.elsewhere.roster.map((r) => ({ host: r.host, me: !!r.me, quietMs: r.quietMs })),
+        roster: h.elsewhere.roster.map((r) => ({ host: r.host, me: !!r.me, quietMs: r.quietMs, solo: !!r.solo })),
         shadows: h.elsewhere.shadows.map((s) => ({
           id: s.id,
           host: s.host,
@@ -1968,6 +1980,24 @@ export class Control {
       /** Put one up. With `id`, as that card; without, as you — which are two
        *  genuinely different notices, since only yours has no author to sweep
        *  away when a card closes. */
+      /* ── flying solo ───────────────────────────────────────────────────
+       *
+       * The shutter on the flyway's traffic (`.claude/rules/solo.md`). The op
+       * calls the same `Solo.set` the chord and the plate call — which invokes
+       * the one Tauri command every door on the wire reads — so a lab drives
+       * the shipped path rather than a lever beside it, and what it reads back
+       * is the state every surface derives from.
+       *
+       * `on` is explicit where it is given: a gesture made against a face a
+       * snapshot old must not flip the wrong way, which is `act.rs`'s rule for
+       * every setting that crosses. Bare, it toggles. */
+      solo: async (op) => {
+        const on = op.on === undefined ? !h.solo.on : !!op.on;
+        await h.solo.set(on);
+        await settle();
+        return { solo: h.solo.on, soloSince: h.solo.since, fault: h.solo.fault };
+      },
+
       post: async (op) => {
         const subject = String(op.subject ?? "");
         if (!subject) throw new Error("post needs a subject");

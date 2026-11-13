@@ -310,6 +310,7 @@ describe("the which-key hint", () => {
       { keys: "gr", label: "rename this grouping" },
       { keys: "h", label: "how volery works: the tour" },
       { keys: "ia", label: "I'm away / back" },
+      { keys: "is", label: "I'm solo / fly with the others" },
       { keys: "k", label: "flyway key" },
       { keys: "la", label: "archive the plan" },
       { keys: "le", label: "plans: the whole column / one at a time" },

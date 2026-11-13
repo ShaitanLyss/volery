@@ -30,6 +30,7 @@
     worthJoining,
     type Wall,
   } from "./flyway";
+  import { ACCEPTING_IS_CLOSED, PANEL_SAYS, SOLO_CHORD, soloButton, soloSince } from "./solo";
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -45,6 +46,11 @@
      `flyway/here.rs` reads anything but a yes as no. */
   let accepting = $state<boolean | null>(null);
   let walls = $state<Wall[]>([]);
+  /* Flying solo: the shutter that keeps the flyway's books and stops its
+     traffic. Read from the same `flyway_setup` the switch beside it comes from,
+     so the panel cannot show one state and act on another. */
+  let solo = $state(false);
+  let since = $state<number | null>(null);
 
   async function ask() {
     try {
@@ -55,13 +61,18 @@
          key and syncs nothing. `flyway_linked` is the second question. */
       linked = await invoke<boolean>("flyway_linked");
       if (held) {
-        accepting = (await invoke<{ accepting: boolean }>("flyway_setup")).accepting;
+        const setup = await invoke<{ accepting: boolean; solo: boolean; soloSince: number | null }>("flyway_setup");
+        accepting = setup.accepting;
+        solo = !!setup.solo;
+        since = setup.soloSince ?? null;
         walls = await invoke<Wall[]>("flyway_roster");
       } else {
         /* Not in a flyway, so no wall to list — and nothing left over from the
            one just left, which `leave` used to leave drawn until a restart. */
         walls = [];
         accepting = null;
+        solo = false;
+        since = null;
       }
     } catch (e) {
       fault = flywayError(e);
@@ -77,10 +88,21 @@
     const off = listen<Wall[]>("flyway:roster", (e) => (walls = e.payload));
     return () => void off.then((f) => f());
   });
+  /* The chord throws the shutter while the panel is up, so the section has to
+     hear it rather than keep the state it read when it opened. */
+  $effect(() => {
+    const off = listen<boolean>("flyway:solo", () => void ask());
+    return () => void off.then((f) => f());
+  });
 
   const toggle = () =>
     act(async () => {
       await invoke("flyway_set_accepting", { on: !accepting });
+    });
+
+  const toggleSolo = () =>
+    act(async () => {
+      await invoke("flyway_set_solo", { on: !solo });
     });
 
   /* `a` throws the switch while the panel is up and nothing is being typed —
@@ -91,6 +113,10 @@
     if (!typing && held && e.key === "a" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       void toggle();
+    }
+    if (!typing && held && e.key === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      void toggleSolo();
     }
   }
 
@@ -259,13 +285,35 @@
           <button class="act" disabled={busy} onclick={leave}>leave the flyway</button>
         </div>
       </section>
-      <section>
-        <h3>work from other walls</h3>
-        <p class="aside">{acceptingReading(accepting)}</p>
+      <!-- The shutter, above the switch it outranks: it is the larger boundary,
+           and while it is down every other wall is closed to this one whatever
+           that switch says. -->
+      <section data-solo={solo ? "on" : "off"}>
+        <h3>flying solo</h3>
+        {#if solo}<p class="since">{soloSince(since)}</p>{/if}
+        <p class="aside">{PANEL_SAYS}</p>
         <div class="pair">
           <button
             class="act"
-            class:go={!accepting}
+            class:go={!solo}
+            disabled={busy}
+            onclick={toggleSolo}
+            title="{soloButton(solo)} (s)"
+          >
+            {soloButton(solo)}
+          </button>
+        </div>
+        <p class="aside">
+          <code>{SOLO_CHORD}</code> from anywhere. Leaving the flyway ends it.
+        </p>
+      </section>
+      <section>
+        <h3>work from other walls</h3>
+        <p class="aside">{solo ? ACCEPTING_IS_CLOSED : acceptingReading(accepting)}</p>
+        <div class="pair">
+          <button
+            class="act"
+            class:go={!accepting && !solo}
             disabled={busy || accepting === null}
             onclick={toggle}
             title="take work from other walls, or stop (a)"
@@ -409,6 +457,14 @@
   }
   section .aside {
     margin-top: 0.1rem;
+  }
+  /* When it started, as a fact rather than a sentence — the plate in the strip
+     sets it in mono for the same reason. */
+  .since {
+    margin: -0.15rem 0 0.35rem;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--paper-mute);
   }
   code {
     font-family: var(--mono);

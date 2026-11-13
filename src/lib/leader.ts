@@ -146,6 +146,7 @@ export type Verb =
     }
   | { kind: "window"; act: "span" | "panel" | "dock" | "extent" | "glass" | "view" }
   | { kind: "presence"; act: "toggle" }
+  | { kind: "solo"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" | "expand" | "auto" }
   | { kind: "sink"; act: "open" | "drop" }
@@ -451,6 +452,13 @@ export const CHORDS: readonly Chord[] = [
   { keys: "rv", label: "float this screen over the conversation / stop", verb: { kind: "screen", act: "float" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
+  /* `is` is the flyway's shutter: the books keep reporting and the traffic
+     stops, in both directions (`.claude/rules/solo.md`). It sits in the *I'm …*
+     family beside `ia` because solo is a claim about where you are on the
+     flyway, and `is` is free there. One switch for the whole flyway — not a
+     chord per peer — because the case it exists for hides work and has no second
+     wall it wants kept. */
+  { keys: "is", label: "I'm solo / fly with the others", verb: { kind: "solo", act: "toggle" } },
   /* `d` for the data. It sits in the `b` family because that is the family of
      things you go and read, and it is written here rather than coming from a
      widget's `sheet` letter because analytics is a room you enter, not a

@@ -1,4 +1,5 @@
 import { isNewer, parseVersion } from "./update";
+import { SOLO_ROSTER_LINE } from "./solo";
 
 /* What the flyway panel says, as functions of what it knows.
  *
@@ -85,6 +86,10 @@ export type Wall = {
   build?: string;
   /** A debug build — a lab or `tauri dev` — rather than an installed release. */
   dev?: boolean;
+  /** Flying solo (`Facts::solo`): heard, its books still reporting, and taking
+   *  no part in the conversations. Absent on an older wall, which is not the
+   *  same as false but reads the same way here. */
+  solo?: boolean;
 };
 
 /** The first release whose walls say their build — a wall that sends none is
@@ -174,6 +179,11 @@ export function otherWalls(rows: Wall[]): Wall[] {
 export function wallLine(w: Wall): string {
   if (w.older) return "an older volery — its sink syncs, nothing else reaches it until it updates";
   if (w.standing === "quiet") return `quiet for ${ago(w.quietMs)} — asleep, or off the network`;
+  /* A solo wall is heard and its numbers still arrive, so this comes after
+     quiet and before the load line — the load line would read *0 of 0 working
+     · no territories*, which is a wall that is closed rather than one that is
+     flying alone. */
+  if (w.solo) return SOLO_ROSTER_LINE;
   const load = `${w.cardsWorking} of ${w.cardsLive} working`;
   const room = w.allowanceUsed === null ? "" : ` · allowance ${w.allowanceUsed}% used`;
   const where = w.territories.length ? ` · ${w.territories.join(", ")}` : " · no territories";

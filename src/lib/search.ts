@@ -146,6 +146,9 @@ export function familyOf(e: Entry): Family {
       return "window";
     case "machine":
     case "presence":
+    /* Solo is a claim about where you are on the flyway, the same sort of
+       thing as away — and it is a switch on this machine (`solo.md`). */
+    case "solo":
       return "machine";
     case "toy":
       return "toy";
@@ -184,6 +187,8 @@ export function glyphOf(e: Entry): IconName {
       return "screen";
     case "presence":
       return "moon";
+    case "solo":
+      return "globe";
     case "machine":
       return "gear";
     case "toy":

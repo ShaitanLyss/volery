@@ -196,6 +196,8 @@
   import { Attachments, boxAt, dropping, listenDrops } from "./lib/attach.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import { Elsewhere } from "./lib/shadows.svelte";
+  import { Solo } from "./lib/solo.svelte";
+  import { chromeTitle } from "./lib/solo";
   import {
     LAND_WITHIN_MS,
     landingNow,
@@ -291,6 +293,19 @@
      them. Holds subscriptions and an effect, so it is released below. */
   const elsewhere = new Elsewhere(skein);
   elsewhere.attach();
+  /* Flying solo: the shutter that keeps the flyway's books and stops its
+     traffic (`.claude/rules/solo.md`). Rust owns the setting and every door on
+     the wire reads it; this owns what the window does about it — the plate,
+     the chrome mark, and the one reaction the two fabrics cannot do for
+     themselves. Wired here because entering has to bring down the other walls'
+     cards and screens, and neither class may own the other. */
+  const solo = new Solo();
+  solo.entered = () => {
+    elsewhere.standDown();
+    casts.standDown();
+  };
+  solo.left = () => elsewhere.standUp();
+  solo.attach();
   /* Every card a gesture can reach, on this wall and on the others, as one
      kind of thing (`cards.svelte.ts`). What it borrows from here is the
      window's — a plate, the glass, the clipboard, this wall's furniture — and
@@ -767,6 +782,7 @@
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
+    else if (verb.kind === "solo") void toggleSolo();
     else if (verb.kind === "screen") screenChord(verb.act);
     else if (verb.kind === "bright") {
       /* Said back, because a tenth of a step can be small enough to doubt,
@@ -896,6 +912,24 @@
    *  Coming back then opens the pile where there is one: `comeBack` answers
    *  whether anything was waiting and sets `showing` itself, so the one place
    *  that decides it is the one place that knows. */
+  /** **Flying solo** — the one switch that closes the flyway's traffic while
+   *  its books keep reporting. Refused in words, never a dialog, when the dock
+   *  holds a half-typed reply to a card on another wall: losing what you were
+   *  typing is the failure the hold rule exists to prevent, and the switch is
+   *  reversible in one press so it does not need a plate (`solo.md`). */
+  async function toggleSolo() {
+    if (!solo.on) {
+      const typed = replies.farTyped();
+      if (typed.length) {
+        skein.fault = `not while you are typing to ${typed[0].about} — send it or clear it first, then fly solo`;
+        return;
+      }
+    }
+    await solo.set(!solo.on);
+    if (solo.fault) skein.fault = solo.fault;
+    else leader.say(solo.on ? "flying solo — the books still report" : "flying with the others again");
+  }
+
   async function togglePresence() {
     if (!presence.away) {
       await presence.goAway();
@@ -1074,6 +1108,7 @@
     starter.release();
     skein.detach();
     elsewhere.detach();
+    solo.detach();
     attention.detach();
     actions.detach();
     control.detach();
@@ -5216,6 +5251,7 @@
   const hands: ControlHost = {
     skein,
     elsewhere,
+    solo,
     studio,
     board,
     widgets,
@@ -5712,8 +5748,14 @@
       },
       {
         key: "flyway",
-        label: "flyway",
-        title: "Link your walls on several machines with one wall key (space then k)",
+        /* The button wears the state while flying solo, and it is **kept in the
+           bar** on `boost`'s argument: a state that changes what the machine is
+           doing is not given up for the zoom. No new key, so `chrome.test.ts`'s
+           three lists stay as they are; clicking it opens the panel, which
+           carries the switch, and the plate in the strip carries the direct way
+           out. */
+        label: solo.on ? "solo" : "flyway",
+        title: chromeTitle(solo.on),
         on: showFlyway,
         press: () => (showFlyway = !showFlyway),
       },
@@ -6407,6 +6449,7 @@
         convs={skein.convs}
         shadows={elsewhere.shadows}
         sections={elsewhere.sections}
+        {solo}
         onsection={(id, at) => elsewhere.moveSection(id, at)}
         onsectionsave={() => elsewhere.saveSections()}
         leaving={skein.leaving}

@@ -294,6 +294,35 @@ class Casts {
     if (this.focused === id) this.focused = null;
   }
 
+  /** **Flying solo**: every screen onto another machine comes down, and this
+   *  machine's own monitors are untouched (`.claude/rules/solo.md`).
+   *
+   *  A remote session is *detached*, not frozen: once the traffic is closed
+   *  there is nothing behind the tile, and a last frame left standing is a
+   *  picture of a machine nobody can reach. Detaching also releases a drive in
+   *  progress, so no key is held down on a wall nobody is watching. The
+   *  positions — a vignette's, an immersive's, a widget's row — are kept, and
+   *  the tile returns when the shutter lifts.
+   *
+   *  `elsewhere` is emptied here rather than waiting for the roster: a stale
+   *  row would go on offering screens that cannot be opened. `every` then
+   *  returns this machine's monitors alone, so the grid, chat view's sheet and
+   *  the picker all follow with no second filter. */
+  standDown() {
+    this.elsewhere = [];
+    for (const [id, live] of [...this.#live]) {
+      if (parseScreen(live.key).host) this.detach(id);
+    }
+    const kept = this.floats.filter((f) => !parseScreen(f.key).host);
+    if (kept.length !== this.floats.length) {
+      this.floats = kept;
+      saveFloats(this.floats);
+    }
+    /* `all` is every screen, so it stays up and now offers only this machine's;
+       a named remote screen has nothing left to show and the sheet closes. */
+    if (this.sheet && this.sheet !== "all" && parseScreen(this.sheet).host) this.sheet = null;
+  }
+
   /** The tile now shows a different screen. */
   retarget(id: string, key: string) {
     const live = this.#live.get(id);

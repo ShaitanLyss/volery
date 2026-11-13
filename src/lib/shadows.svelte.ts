@@ -163,6 +163,9 @@ export type RosterRow = {
    *  language — what the card menu reads to offer a move there. */
   territories?: string[];
   older?: boolean;
+  /** Flying solo (`Facts::solo`): heard and taking no part in the conversations.
+   *  Absent from an older wall, which reads as not solo. */
+  solo?: boolean;
   /** The verbs a person here may ask of its cards (`flyway/act.rs`), as
    *  `handle.ts::Remote.acts` reads them. Absent from an older build. */
   acts?: string[];
@@ -1080,6 +1083,36 @@ export class Elsewhere {
       void invoke("keep_shadow_glass", { host: h, alive: [] }).catch(() => {});
       this.onHeard(h, new Set());
     }
+  }
+
+  /** **Flying solo**: every other wall's cards and questions come down, and
+   *  what this wall knows about those walls stays.
+   *
+   *  Not `#left`, which forgets the wall, its heard-time and its glass spots —
+   *  solo forgets nothing, and everything returns when it flies again. The
+   *  roster and the heard-times are also what the burn rate sums, and the glass
+   *  spots are kept unpruned so a tile stuck to the pane comes back where it
+   *  was (`.claude/rules/solo.md`). `shadows` then empties, and every surface
+   *  that derives from it — the dock's far questions, the attention rows, chat
+   *  view's remote rows — goes with it, with no second filter to forget. */
+  standDown() {
+    this.walls = {};
+    this.#reconcile();
+  }
+
+  /** And flying again: the fleet as it is now, not as it was. Both reads are
+   *  for what the link already holds — the next exchange would bring the same
+   *  thing a tick later, and the wall should not stand empty until then. */
+  standUp() {
+    void invoke<RosterRow[]>("flyway_roster").then((r) => this.#heard(r)).catch(() => {});
+    void invoke<{ host: string; ageMs: number; quietMs: number; snapshot: unknown }[]>("flyway_remote_cards")
+      .then((all) => {
+        for (const w of all) {
+          this.#arrived(w, false);
+          this.#hear(w.host, w.quietMs);
+        }
+      })
+      .catch(() => {});
   }
 
   #arrived(p: { host: string; ageMs: number; snapshot: unknown }, live = true) {
