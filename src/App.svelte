@@ -4696,7 +4696,7 @@
          the one the drop made: once you have written in it those are your words
          and Escape means what it always meant. The tile's ✕ does not depend on
          this, which is why the branch failing is never a trap. */
-      if (faceDrop && faceDrop.card === focused?.id && field.shots.parcel && field.text === faceDrop.after) {
+      if (faceDrop && faceDrop.card === card?.id && field.shots.parcel && field.text === faceDrop.after) {
         const back = faceDrop;
         faceDrop = null;
         field.shots.put(back.shots);

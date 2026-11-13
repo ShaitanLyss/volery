@@ -687,15 +687,26 @@ export function encodeAs(source: MediaType): MediaType {
   return source === "image/gif" ? "image/png" : source;
 }
 
+/** A size as it reads on a tile: bytes under a kilobyte, one decimal above it.
+ *
+ *  `mb` is the *cap's* reading and rounds anything small up to 1 KB, which is
+ *  right in "the most one attachment may be" and wrong on a tile — the design
+ *  says `.env · 340 B`, and a sender's plate reading 1 KB where the receiver
+ *  reads 13 B is the two ends of one parcel disagreeing about it
+ *  (`docs/PARCEL-DROP.md`). */
+function said(n: number): string {
+  return n < 1024 ? `${n} B` : mb(n);
+}
+
 /** The reading under a chip: what it is, and whether we changed it. */
 export function sizeNote(a: Attachment): string {
   if (a.kind === "file") {
     if (a.dir) return "folder · sent as its path";
-    return a.size === null ? "sent as its path" : `${mb(a.size)} · sent as its path`;
+    return a.size === null ? "sent as its path" : `${said(a.size)} · sent as its path`;
   }
-  if (a.kind === "bytes") return `${mb(a.bytes)}${isDocument(a.mediaType, a.name) ? " · pdf" : ""}`;
+  if (a.kind === "bytes") return `${said(a.bytes)}${isDocument(a.mediaType, a.name) ? " · pdf" : ""}`;
   if (a.kind === "parcel") {
-    return a.dir ? `${a.files} ${a.files === 1 ? "file" : "files"} · ${mb(a.bytes)}` : mb(a.bytes);
+    return a.dir ? `${a.files} ${a.files === 1 ? "file" : "files"} · ${said(a.bytes)}` : said(a.bytes);
   }
   const kb = a.bytes < 1024 * 1024
     ? `${Math.max(1, Math.round(a.bytes / 1024))} KB`
@@ -728,7 +739,7 @@ export function parcelPlate(
 ): import("./relay").Parcel {
   return {
     files: files === 1 ? "1 file" : `${files} files`,
-    size: mb(bytes),
+    size: said(bytes),
     landed: "",
     to,
     sent: tops.map((t) => ({ name: t.name, dir: t.dir, detail: sizeNote(t), secret: t.secret })),
