@@ -354,10 +354,16 @@ pub fn present_elsewhere<'a>(roster: impl IntoIterator<Item = &'a Entry>, me: &s
 ///   without one cannot say it lacks Azure DevOps: git's and `az`'s sign-ins
 ///   are rungs of the same ladder (`azdo.rs`) that only a request finds out.
 /// - `github` — `gh` signed in, or a token in the environment.
+/// - `deepseek` — a DeepSeek API key in that wall's keyring. Not a credential
+///   the *work* needs: it is the money the card itself spends, which is why
+///   `spawn` adds it for you when the card opens on `provider: deepseek`
+///   rather than asking a caller to name it. A card on another wall runs on
+///   that wall's own key — the key never crosses, exactly as the other three
+///   never do — so a wall without one refuses the card before it opens.
 ///
 /// Held against `creds::holdings` by a test, so a word here that no wall ever
 /// announces cannot ship.
-pub const NEEDS: [&str; 3] = ["asana", "azdo", "github"];
+pub const NEEDS: [&str; 4] = ["asana", "azdo", "github", "deepseek"];
 
 /// What a credential is called in a sentence, and where a person fixes its
 /// absence on the machine that lacks it.
@@ -366,6 +372,7 @@ pub fn credential_said(id: &str) -> (&'static str, &'static str) {
         "asana" => ("an Asana token", "the tokens panel in its header"),
         "azdo" => ("an Azure DevOps token", "the tokens panel in its header"),
         "github" => ("a GitHub sign-in", "`gh auth login` in a terminal there"),
+        "deepseek" => ("a DeepSeek API key", "the keyring in its header (space then o)"),
         _ => ("that credential", "that machine"),
     }
 }
@@ -588,6 +595,16 @@ pub struct Ask {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Which service the card spends — `claude` (the subscription, and what an
+    /// absent field means) or `deepseek`. **A name, never a key**: the credential
+    /// stays on the wall that runs the card, which is the whole reason this can
+    /// cross at all (`flyway/mod.rs`, *the wire carries work, never secrets*).
+    /// The far wall resolves the provider's key from its own vault, and a wall
+    /// that does not know this field announces no `CAN_PROVIDER` — so an asker
+    /// refuses it rather than letting the field be read as absent and the card
+    /// opened on the wrong money.
+    #[serde(default)]
+    pub provider: Option<String>,
     /// The credentials the card will need on the machine it opens on, as
     /// words out of `NEEDS`. Weighed by the addressee against its own facts
     /// at the moment it decides (`decide`), which is the second time: the
@@ -708,9 +725,22 @@ pub const CAN_WORKTREE: &str = "worktree";
 /// parcel as absent and hand its card a message about files that never came.
 pub const CAN_PARCEL: &str = "parcel";
 
+/// The word that says a wall knows what opening a card **on a provider** means:
+/// it reads `Ask::provider`, checks its own key (`NEEDS`'s `deepseek`), and
+/// resolves the provider's models through its own keyring. Asked before
+/// sending, for `CAN_WORKTREE`'s reason and a sharper one — a wall from before
+/// it would read `provider` as absent and open an ordinary Claude card, which
+/// is the asker's DeepSeek budget quietly spent on the wrong service with every
+/// surface agreeing it was not.
+pub const CAN_PROVIDER: &str = "provider";
+
 /// Everything this wall announces in `Facts::can`.
 pub fn can_now() -> Vec<String> {
-    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES, CAN_WORKTREE, CAN_PARCEL]).map(str::to_string).collect()
+    CAN.iter()
+        .copied()
+        .chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES, CAN_WORKTREE, CAN_PARCEL, CAN_PROVIDER])
+        .map(str::to_string)
+        .collect()
 }
 
 /// One picture riding a person's prompt — what `attach.ts::Carried` is, field
@@ -1068,6 +1098,8 @@ pub struct Spawn {
     /// As the ask carried them. See `Ask::model`.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// As the ask carried it. See `Ask::provider`.
+    pub provider: Option<String>,
     /// See `Ask::worktree`.
     pub worktree: Option<String>,
     pub worktree_base: Option<String>,
@@ -1193,10 +1225,19 @@ impl Unsendable {
                  or update Volery on {host}"
             ),
             Unsendable::Older { host, what } => format!(
-                "{host} runs a Volery from before a card on another wall could {} its cards, \
-                 so nothing was sent — it would be skipped there, or handed over with nothing \
-                 to say an agent wrote it. Ask the user to update Volery on {host}",
-                if *what == CAN[0] { "message" } else { what },
+                "{host} runs a Volery from before a card on another wall could {}, so nothing \
+                 was sent — it would be skipped there, or handed over with nothing to say an \
+                 agent wrote it. Ask the user to update Volery on {host}",
+                match *what {
+                    "send" => "message its cards".to_string(),
+                    CAN_PROVIDER => {
+                        "open a card on a provider (a DeepSeek card), and a wall from before \
+                         it would open an ordinary card instead — so the wrong service would \
+                         pay for it"
+                            .to_string()
+                    }
+                    other => format!("{other} its cards"),
+                },
             ),
             Unsendable::Lacks { host, needs } => lacking(host, needs),
         };
@@ -1217,6 +1258,8 @@ pub struct Request {
     pub title: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// See `Ask::provider` — a name, never a key.
+    pub provider: Option<String>,
     /// See `Ask::needs`.
     pub needs: Vec<String>,
     /// See `Ask::worktree`.
@@ -1513,6 +1556,13 @@ impl Fleet {
         if r.worktree.is_some() && !there.facts.can.iter().any(|c| c == CAN_WORKTREE) {
             return Err(Unsendable::Older { host: r.to, what: CAN_WORKTREE });
         }
+        /* A provider is a field, and a wall from before it would read the field
+           as absent and open an ordinary Claude card — the asker's DeepSeek
+           budget quietly spent on the subscription. Refused here rather than
+           left to the far wall, which cannot say no to something it never saw. */
+        if r.provider.is_some() && !there.facts.can.iter().any(|c| c == CAN_PROVIDER) {
+            return Err(Unsendable::Older { host: r.to, what: CAN_PROVIDER });
+        }
         let ask = Ask {
             id: r.id.clone(),
             from: Origin { host: self.me.clone(), card: r.card },
@@ -1523,6 +1573,7 @@ impl Fleet {
             asked_at: now,
             model: r.model,
             effort: r.effort,
+            provider: r.provider,
             needs: r.needs,
             worktree: r.worktree,
             worktree_base: r.worktree_base,
@@ -1614,6 +1665,7 @@ impl Fleet {
             asked_at: now,
             model: None,
             effort: None,
+            provider: None,
             needs: Vec::new(),
             worktree: None,
             worktree_base: None,
@@ -2014,6 +2066,7 @@ impl Fleet {
             asked_by: ask.from.clone(),
             model: ask.model.clone(),
             effort: ask.effort.clone(),
+            provider: ask.provider.clone(),
             worktree: ask.worktree.clone(),
             worktree_base: ask.worktree_base.clone(),
         })
@@ -2265,6 +2318,7 @@ fn clean_ask(a: Ask) -> Ask {
         asked_at: a.asked_at,
         model: sc_opt(a.model),
         effort: sc_opt(a.effort),
+        provider: sc_opt(a.provider),
         needs: words(a.needs),
         worktree: sc_opt(a.worktree),
         worktree_base: sc_opt(a.worktree_base),
@@ -2451,6 +2505,7 @@ mod tests {
             title: None,
             model: None,
             effort: None,
+            provider: None,
             needs: Vec::new(),
             worktree: None,
             worktree_base: None,
@@ -2468,6 +2523,7 @@ mod tests {
             asked_at,
             model: None,
             effort: None,
+            provider: None,
             needs: Vec::new(),
             worktree: None,
             worktree_base: None,
@@ -3771,6 +3827,97 @@ mod tests {
         let older: FleetMsg = serde_json::from_value(v).expect("an ask without the new fields still reads");
         let r = desk.on(older, 0, &open_facts());
         assert_eq!(r.open[0].model, None);
+    }
+
+    /// A provider travels as its **name** and nothing else — the key lives on
+    /// the wall that runs the card (`flyway/mod.rs`: the wire carries work,
+    /// never secrets). The frame is read here for the name and against every
+    /// shape a credential would have, and an ask from a build that predates the
+    /// field must still read, as the ordinary Claude card it was.
+    #[test]
+    fn the_provider_travels_as_a_name_and_no_key_goes_with_it() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { provider: Some("deepseek".into()), ..raw_ask("r", "lap", "desk", 0) };
+        let frame = serde_json::to_value(FleetMsg::Ask { ask: ask.clone(), age_ms: 0 }).unwrap();
+        let text = frame.to_string();
+        assert_eq!(frame["ask"]["provider"], serde_json::json!("deepseek"), "{text}");
+        for secret in ["api_key", "apiKey", "token", "secret", "bearer", "sk-"] {
+            assert!(!text.contains(secret), "no credential shape crossed: {text}");
+        }
+        let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
+        assert_eq!(r.open[0].provider.as_deref(), Some("deepseek"), "and the far wall opens on it");
+
+        let mut v = serde_json::to_value(FleetMsg::Ask { ask: raw_ask("r2", "lap", "desk", 0), age_ms: 0 }).unwrap();
+        v["ask"].as_object_mut().unwrap().remove("provider");
+        let older: FleetMsg = serde_json::from_value(v).expect("an ask without the field still reads");
+        let r = desk.on(older, 0, &open_facts());
+        assert_eq!(r.open[0].provider, None, "which is the ordinary card it always was");
+    }
+
+    /// A wall from before the field knows nothing of a provider and would read
+    /// it as absent — opening an ordinary Claude card with the asker's DeepSeek
+    /// budget behind it. Refused on the spot rather than sent to fail there.
+    #[test]
+    fn a_card_on_a_provider_is_not_sent_to_a_wall_that_does_not_know_providers() {
+        let mut lap = Node::new("lap", open_facts());
+        let old_can: Vec<String> = can_now().into_iter().filter(|c| c != CAN_PROVIDER).collect();
+        lap.hear(statement("desk", 1, Facts { can: old_can, ..open_facts() }, None, 0), 0);
+
+        let why = match lap.f.ask(Request { provider: Some("deepseek".into()), ..request("a", "desk", skein()) }, 0) {
+            Err(e @ Unsendable::Older { .. }) => e.reason(),
+            other => panic!("{other:?}"),
+        };
+        assert!(why.contains("desk") && why.contains("provider"), "{why}");
+        assert!(why.contains("update Volery"), "{why}");
+        assert!(lap.f.waiting.is_empty(), "nothing was sent to be waited on");
+    }
+
+    /// The asker refuses a card on a provider whose key that wall says it does
+    /// not hold — at once, naming the machine and the key — and the far wall
+    /// weighs the same fact again against what it holds *now*. A wall that
+    /// cannot say (no `needs` word, or a credential it can only confirm by
+    /// trying) is let through, as every other need is.
+    #[test]
+    fn a_card_on_a_provider_needs_that_wall_s_own_key() {
+        let mut lap = Node::new("lap", open_facts());
+        let no_key = Facts { can: can_now(), lacks: vec!["deepseek".into()], ..open_facts() };
+        lap.hear(statement("desk", 1, no_key.clone(), None, 0), 0);
+
+        let asked = || Request {
+            provider: Some("deepseek".into()),
+            needs: vec!["deepseek".into()],
+            ..request("a", "desk", skein())
+        };
+        let why = match lap.f.ask(asked(), 0) {
+            Err(e @ Unsendable::Lacks { .. }) => e.reason(),
+            other => panic!("{other:?}"),
+        };
+        assert!(why.contains("desk") && why.contains("DeepSeek"), "names the machine and the key: {why}");
+        assert!(why.contains("never travel"), "and says why it is not sent: {why}");
+        assert!(!why.contains("lend"), "not as this machine failing to lend one: {why}");
+        assert!(lap.f.waiting.is_empty(), "nothing refused here is waited for");
+
+        /* The far wall's second weighing, after the territory and before the
+           bounds — a key removed a minute ago is not vouched for by a roster
+           entry from before it. */
+        let ask = Ask {
+            provider: Some("deepseek".into()),
+            needs: vec!["deepseek".into()],
+            ..raw_ask("r", "lap", "desk", 0)
+        };
+        let r = Fleet::new("desk", 0).on(FleetMsg::Ask { ask: ask.clone(), age_ms: 0 }, 0, &no_key);
+        assert!(r.open.is_empty());
+        assert_eq!(refusal_in(&r.say), Some(&Refusal::Lacks { needs: vec!["deepseek".into()] }));
+
+        let holds = Facts { can: can_now(), holds: vec!["deepseek".into()], ..open_facts() };
+        let r = Fleet::new("desk", 0).on(FleetMsg::Ask { ask: ask.clone(), age_ms: 0 }, 0, &holds);
+        assert_eq!(r.open.len(), 1, "held, so opened");
+
+        /* Silence is not a lack: a wall from before walls said, or one that
+           only ever confirms a credential by trying, goes ahead and is said to
+           have been unconfirmed. */
+        let r = Fleet::new("desk", 0).on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
+        assert_eq!(r.open.len(), 1, "an unknown key is let through");
     }
 
     /// A wall that says it has no Asana token: an ask for a card that needs one

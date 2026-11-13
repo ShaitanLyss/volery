@@ -133,8 +133,15 @@ enforced in `asked_provider` / `asked_model` before a card is minted:
 - `deepseek` takes `flash` or `pro` only; a Claude family name is refused, not mapped.
 - `flash`/`pro` without a provider infers `deepseek`; the three family names infer `claude`.
 - `account` with `provider: deepseek` is refused — no Claude account can take it.
-- `host` with `provider: deepseek` is refused — the key does not cross walls (`flyway`), and
-  `flyway` asks `asked_model(…, Some("claude"))` for the same reason.
+- `host` with `provider: deepseek` is **allowed**: the provider's *name* crosses and the far
+  wall resolves its own key, which never travels (`flyway`). `deepseek` is a word in
+  `fleet::NEEDS`, added to the ask automatically by `needs_for`, so both walls check it —
+  the asker against the roster, the far wall against its vault now — and a wall without one
+  refuses, naming itself. A wall too old to know `CAN_PROVIDER` is refused rather than
+  silently opening a Claude card.
+- **A provider card's child defaults to its parent's provider** (`spawn` and `host` alike)
+  unless the caller names a model, an account, or `provider: claude`. A DeepSeek card fanning
+  out is buying DeepSeek's balance; the child runs on `flash`, the provider's default.
 
 `admit::queued` is skipped at spawn for a provider card because the card's row does not exist
 yet and the provider cannot be read off the store; the argument is the only honest source.
@@ -148,8 +155,9 @@ cannot be ended under its own tool call. `CLAUDE_SECURESTORAGE_CONFIG_DIR` moves
 credential store, so the transcript is shared. A move back to Claude clears the model and
 lands on the CLI's sign-in; the waterfall chooses an account on the next send. A provider
 **move** crosses as a `work` act — the owner checks its own key and does the stop/resume, so
-a card blocked on a spent subscription can be moved from another wall — while a remote
-**spawn** on a provider is still refused: the key does not travel. No allowance stack (no
+a card blocked on a spent subscription can be moved from another wall. A remote **spawn** on
+a provider crosses the other way: the name travels and the far wall runs it on its own key,
+refusing up front when it holds none. No allowance stack (no
 OAuth, no `/api/oauth/usage`). No `account` interface
 for the key: it is an integration in `creds.rs`, stored under
 `dev.skein.studio/deepseek-key`, read at spawn, never a lendable credential.

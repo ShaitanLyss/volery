@@ -397,11 +397,12 @@ const PROVIDER_SPAWN: Record<string, string> = {
 export function spawnPairOf(
   preset: Pick<Preset, "model" | "effort" | "provider"> | null | undefined,
 ): { model: string | null; effort: string | null; provider: ProviderId | null } {
-  /* A provider's key lives on the wall that runs the card and credentials never
-     travel, so a provider preset is not degradable to a pair — it is a refusal
-     the caller has to say out loud. Returning the provider is what lets
-     `openThere` do that instead of opening an ordinary Claude card on the far
-     wall (which is what a `null` pair would have meant). */
+  /* A provider's **name** travels and its key does not: the far wall runs the
+     card on its own keyring, and refuses before anything opens if it holds
+     none (`fleet::missing` over `needs`). So a provider preset crosses as the
+     provider alone, with no model — the far wall's `presetForSpawn` resolves
+     its default (`flash`) from it — rather than degrading to a `null` pair,
+     which would open an ordinary Claude card there and spend the wrong money. */
   if (preset?.provider) return { model: null, effort: null, provider: preset.provider };
   const family = preset?.model.replace(/\[.*\]$/, "").trim().toLowerCase();
   if (!family || !(SPAWN_MODELS as readonly string[]).includes(family)) {

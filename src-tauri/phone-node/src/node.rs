@@ -496,6 +496,7 @@ impl Node {
             asked_at: now_ms(),
             model: None,
             effort: None,
+            provider: None,
             needs: Vec::new(),
             worktree: None,
             worktree_base: None,

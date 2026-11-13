@@ -251,8 +251,8 @@ fn github() -> Option<bool> {
 }
 
 /// What this wall holds and what it knows it lacks, as words out of
-/// `fleet::NEEDS` — for `Facts::holds` and `Facts::lacks`. Two vault reads, two
-/// environment reads and a remembered answer; cheap enough to ask on every
+/// `fleet::NEEDS` — for `Facts::holds` and `Facts::lacks`. Three vault reads,
+/// two environment reads and a remembered answer; cheap enough to ask on every
 /// announcement, which is what keeps a token removed a minute ago from being
 /// vouched for.
 pub fn holdings() -> (Vec<String>, Vec<String>) {
@@ -262,6 +262,11 @@ pub fn holdings() -> (Vec<String>, Vec<String>) {
         let reading = match need {
             /* `sole`: nothing else on a machine holds an Asana credential. */
             "asana" => verdict(true, crate::vault::held_at(ASANA_TARGET)),
+            /* The key a DeepSeek card's own balance comes from — sole for the
+               same reason Asana's is: the vault entry is the only DeepSeek
+               credential there is. A wall without one cannot run the card at
+               all, so saying so is a fact rather than a guess. */
+            "deepseek" => verdict(true, crate::vault::held_at(DEEPSEEK_TARGET)),
             /* A ladder (`azdo.rs`): the stored token and the environment are the
                two rungs a wall can see without a request; git's and `az`'s
                sign-ins are only found out by trying, so their absence is

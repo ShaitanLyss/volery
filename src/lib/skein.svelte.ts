@@ -1290,6 +1290,10 @@ export class Skein {
         title: string | null;
         model: string | null;
         effort: string | null;
+        /** `claude`, `deepseek`, or null for the subscription — the name only;
+         *  the key it runs on is this wall's own (`provider::apply`). Absent
+         *  from a wall before a provider could cross, which is null. */
+        provider?: string | null;
         fromHost: string;
         fromCard: string | null;
         /** This wall's admission, for a card asked for from another wall. */
@@ -1298,10 +1302,21 @@ export class Skein {
          *  absent from a wall before groups, which is no group. */
         worktree?: string | null;
       }>("flyway:spawn", (e) => {
-        const { id, cwd, prompt, title, model, effort, queued, worktree } = e.payload;
+        const { id, cwd, prompt, title, model, effort, provider, queued, worktree } = e.payload;
         const before = this.fault;
         void (async () => {
-          await this.openSpawned(id, cwd, worktree ?? null, prompt, title, null, model, effort, null, queued ?? null);
+          await this.openSpawned(
+            id,
+            cwd,
+            worktree ?? null,
+            prompt,
+            title,
+            provider ?? null,
+            model,
+            effort,
+            null,
+            queued ?? null,
+          );
           if (this.#byId.has(id)) {
             await invoke("flyway_opened", { id }).catch(() => {});
           } else {

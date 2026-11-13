@@ -130,8 +130,12 @@ Rules, all refused before a card is minted:
 - Omitting `provider` and naming `flash` or `pro` infers `deepseek`; naming `haiku`, `sonnet`
   or `opus` infers `claude`.
 - A DeepSeek card cannot name an `account` — its money is not a Claude subscription.
-- A DeepSeek card cannot be asked for on another wall (`host`): the key lives on the wall that
-  runs the card, and credentials never cross (`flyway`). The refusal names that.
+- A DeepSeek card **can** be asked for on another wall (`host`): the provider's name crosses
+  and that wall resolves its own key, which never travels (`flyway`). A wall that says it
+  holds none is refused before anything opens, naming the machine; a wall too old to
+  understand a provider refuses the field rather than dropping it.
+- A card on a provider opens its children on the same provider unless it says otherwise.
+  A DeepSeek card's child is a DeepSeek card on `flash`.
 - `effort` works on both DeepSeek models; `haiku` still takes none.
 
 ## The guards, and why each one exists
@@ -276,10 +280,11 @@ question about the conversation.
 
 ## What this deliberately does not do
 
-- **No remote spawn on a provider.** A remote `spawn` on DeepSeek is refused with words
-  rather than opened against a key the far machine may not have. A **move** is different: it
-  crosses as a work act, the owner checks its own key and does the stop/resume, and the key
-  never travels. That is the remote-unblock case (`flyway/act.rs`, `Elsewhere.#perform`).
+- **No key travels to a remote provider card.** A remote `spawn` on DeepSeek is opened: the
+  provider's name crosses, the far wall resolves its own key, and a wall that reports no
+  DeepSeek key (`Facts::holds`/`lacks`, word `deepseek`) is refused before anything opens.
+  A **move** is the other arrangement for the same rule: it crosses as a work act, the owner
+  checks its own key and does the stop/resume (`flyway/act.rs`, `Elsewhere.#perform`).
 - **No account interface for the key.** The key is an integration (`creds.rs`), not an
   account: it is stored in the Windows vault under `dev.skein.studio/deepseek-key`, read at
   spawn, and never handed to a card as a lendable credential.

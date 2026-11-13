@@ -1271,13 +1271,22 @@ impl Link {
         project: &str,
         model: Option<&str>,
         effort: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<String, String> {
         let now = self.now();
         let id = crate::store::uuid_v4();
         let msg = {
             let mut f = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
             let facts = f.entry(host).map(|e| e.facts.clone());
-            let r = super::opening::person_request(id.clone(), host, project, model, effort, facts.as_ref())?;
+            let r = super::opening::person_request(
+                id.clone(),
+                host,
+                project,
+                model,
+                effort,
+                provider,
+                facts.as_ref(),
+            )?;
             let to = r.to.clone();
             let territory = r.territory.name.clone();
             let m = f.ask(r, now).map_err(|u| u.reason())?;
@@ -1522,19 +1531,29 @@ impl Link {
                 self.route(&[m], None);
             }
         };
-        /* The same two words `spawn` takes and the same gate, asked again on
-           this side: the asker may be a different build, and a model this
-           wall's front end cannot resolve would open on the machine's own
-           setting with every surface agreeing it had not. */
-        let setup = serde_json::json!({ "model": s.model, "effort": s.effort });
-        /* Claude only: a provider is a credential on the wall that runs the
-           card, and credentials never cross (`.claude/rules/providers.md`).
-           Asking as `claude` is what refuses a provider model name arriving
-           from a wall whose own build is newer. */
-        let model = match crate::spawn::asked_model(&setup, Some("claude")) {
+        /* The same words `spawn` takes and the same gate, asked again on this
+           side: the asker may be a different build, and a model this wall's
+           front end cannot resolve would open on the machine's own setting with
+           every surface agreeing it had not. */
+        let setup = serde_json::json!({
+            "model": s.model,
+            "effort": s.effort,
+            "provider": s.provider,
+        });
+        /* A provider arrives as a **name**, and the key it runs on is this
+           wall's own — `decide` weighed the fact against the facts this wall
+           announced; this is the same gate at the moment a card is about to
+           spend it, and `asked_provider` is what refuses a word from a newer
+           build this one has never heard. */
+        let provider = match crate::spawn::asked_provider(&setup) {
+            Ok(p) => p,
+            Err(why) => return refuse(why),
+        };
+        let model = match crate::spawn::asked_model(&setup, provider.as_deref()) {
             Ok(m) => m,
             Err(why) => return refuse(why),
         };
+        let provider = crate::spawn::provider_for(provider, model.as_deref());
         let effort = match crate::spawn::asked_effort(&setup, model.as_deref()) {
             Ok(e) => e,
             Err(why) => return refuse(why),
@@ -1578,8 +1597,16 @@ impl Link {
         /* The far wall's allowance is not this one's, so a card asked for from
            there is admitted against *this* wall's accounts — the ones it will
            spend — by the rule a local spawn meets; with no ancestry here to
-           leave out, since the card that asked is on another wall. */
-        let queued = crate::admit::queued(&self.app, None, None);
+           leave out, since the card that asked is on another wall. A provider
+           card is not weighed against Claude's windows at all: its money is a
+           balance, so `admit`'s hold is the one thing that could keep it
+           waiting behind a subscription it does not spend (`do_spawn` skips the
+           same check for the same reason). */
+        let queued = if provider.as_deref() == Some("deepseek") {
+            None
+        } else {
+            crate::admit::queued(&self.app, None, None)
+        };
         if let Ok(mut o) = self.opening.lock() {
             o.insert(
                 card.clone(),
@@ -1611,6 +1638,7 @@ impl Link {
             title: s.title,
             model,
             effort,
+            provider,
             from_host: s.asked_by.host,
             from_card: s.asked_by.card,
             queued,
@@ -3172,6 +3200,9 @@ struct SpawnHere {
     title: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    /// Which service the card spends, or null for the subscription. A name —
+    /// the key it runs on is this wall's own (`provider::apply`).
+    provider: Option<String>,
     from_host: String,
     from_card: Option<String>,
     /// Set when this wall's allowance would not start it yet (`admit.rs`):
@@ -3899,10 +3930,11 @@ pub async fn flyway_open(
     project: String,
     model: Option<String>,
     effort: Option<String>,
+    provider: Option<String>,
 ) -> Result<String, String> {
     crate::off_main(move || {
         let link = current(&app).ok_or("this wall is not on a flyway, so there is no other wall to open a card on")?;
-        link.ask_open(&host, &project, model.as_deref(), effort.as_deref())
+        link.ask_open(&host, &project, model.as_deref(), effort.as_deref(), provider.as_deref())
     })
     .await?
 }

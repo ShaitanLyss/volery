@@ -61,6 +61,7 @@ pub fn person_request(
     project: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    provider: Option<&str>,
     facts: Option<&Facts>,
 ) -> Result<Request, String> {
     let host = host.trim();
@@ -77,10 +78,17 @@ pub fn person_request(
     if !facts.accepting {
         return Err(Refusal::NotAccepting.reason(host));
     }
-    let setup = json!({ "model": model, "effort": effort });
-    /* Claude only — a provider's key lives on the wall that runs the card. */
-    let model = crate::spawn::asked_model(&setup, Some("claude"))?;
+    let setup = json!({ "model": model, "effort": effort, "provider": provider });
+    /* A provider travels as its **name** and runs on the far wall's own key —
+       the preset this wall's section menu offered may be a DeepSeek one, and it
+       is that wall's keyring the card spends from. `Fleet::ask` refuses a wall
+       that does not know the word, and weighs `needs` against what it holds;
+       both are the same checks an agent's ask gets. */
+    let provider = crate::spawn::asked_provider(&setup)?;
+    let model = crate::spawn::asked_model(&setup, provider.as_deref())?;
+    let provider = crate::spawn::provider_for(provider, model.as_deref());
     let effort = crate::spawn::asked_effort(&setup, model.as_deref())?;
+    let needs = crate::spawn::needs_for(provider.as_deref(), Vec::new());
     let territory = territory_named(&facts.territories, project).ok_or_else(|| {
         let has = if facts.territories.is_empty() {
             "no projects at all".to_string()
@@ -98,7 +106,8 @@ pub fn person_request(
         title: None,
         model,
         effort,
-        needs: Vec::new(),
+        provider,
+        needs,
         worktree: None,
         worktree_base: None,
     })
@@ -141,7 +150,7 @@ mod tests {
 
     #[test]
     fn a_persons_request_is_empty_and_names_nobody() {
-        let r = person_request("r1".into(), "lab", "rise", Some("opus"), Some("xhigh"), Some(&facts())).unwrap();
+        let r = person_request("r1".into(), "lab", "rise", Some("opus"), Some("xhigh"), None, Some(&facts())).unwrap();
         assert_eq!(r.card, None, "a person's ask names no card, which is what lets it be empty");
         assert_eq!(r.brief, "");
         assert_eq!(r.to, "lab");
@@ -155,28 +164,44 @@ mod tests {
 
     #[test]
     fn the_machines_own_setting_is_no_model_and_no_effort() {
-        let r = person_request("r1".into(), "lab", "skein", None, None, Some(&facts())).unwrap();
+        let r = person_request("r1".into(), "lab", "skein", None, None, None, Some(&facts())).unwrap();
         assert_eq!((r.model, r.effort), (None, None));
+    }
+
+    /// A DeepSeek preset picked on a remote section is the same ask as any
+    /// other: the provider's **name** crosses and that wall's own key pays for
+    /// it, so the request carries the name and the key as a need — which is what
+    /// refuses a wall that holds none, before anything opens there.
+    #[test]
+    fn a_persons_preset_on_a_provider_crosses_as_a_name_and_a_need() {
+        let r = person_request("r1".into(), "lab", "skein", None, None, Some("deepseek"), Some(&facts())).unwrap();
+        assert_eq!(r.provider.as_deref(), Some("deepseek"));
+        assert_eq!(r.model, None, "the far wall's `presetForSpawn` resolves flash from the provider");
+        assert_eq!(r.needs, vec!["deepseek".to_string()]);
+        let r = person_request("r2".into(), "lab", "skein", Some("flash"), None, None, Some(&facts())).unwrap();
+        assert_eq!(r.provider.as_deref(), Some("deepseek"), "a provider model name infers it");
+        assert!(person_request("r3".into(), "lab", "skein", Some("opus"), None, Some("deepseek"), Some(&facts())).is_err(), "and a Claude name is refused on one rather than mapped");
     }
 
     #[test]
     fn what_can_be_refused_without_a_round_trip_is() {
         let f = facts();
-        let no = |host: &str, project: &str, model: Option<&str>, effort: Option<&str>, facts: Option<&Facts>| {
-            person_request("r".into(), host, project, model, effort, facts).unwrap_err()
+        let no = |host: &str, project: &str, model: Option<&str>, effort: Option<&str>, provider: Option<&str>, facts: Option<&Facts>| {
+            person_request("r".into(), host, project, model, effort, provider, facts).unwrap_err()
         };
-        assert!(no("lab", "skein", None, None, None).contains("not a wall this one has heard"));
-        assert!(no("", "skein", None, None, Some(&f)).contains("no wall"));
+        assert!(no("lab", "skein", None, None, None, None).contains("not a wall this one has heard"));
+        assert!(no("", "skein", None, None, None, Some(&f)).contains("no wall"));
         let older = Facts { can: vec!["send".into()], ..f.clone() };
-        assert!(no("lab", "skein", None, None, Some(&older)).contains("needs updating"));
+        assert!(no("lab", "skein", None, None, None, Some(&older)).contains("needs updating"));
         let closed = Facts { accepting: false, ..f.clone() };
-        assert!(no("lab", "skein", None, None, Some(&closed)).contains("not taking work"));
-        let missing = no("lab", "nova", None, None, Some(&f));
+        assert!(no("lab", "skein", None, None, None, Some(&closed)).contains("not taking work"));
+        let missing = no("lab", "nova", None, None, None, Some(&f));
         assert!(missing.contains("no project called \"nova\"") && missing.contains("skein, RISE"), "{missing}");
-        assert!(no("lab", "", None, None, Some(&f)).contains("no project"));
+        assert!(no("lab", "", None, None, None, Some(&f)).contains("no project"));
         /* `spawn`'s own gates on the pair, unchanged. */
-        assert!(no("lab", "skein", Some("gpt"), None, Some(&f)).contains("not a model"));
-        assert!(no("lab", "skein", Some("haiku"), Some("high"), Some(&f)).contains("takes no thinking effort"));
-        assert!(no("lab", "skein", None, Some("high"), Some(&f)).contains("named no model"));
+        assert!(no("lab", "skein", Some("gpt"), None, None, Some(&f)).contains("not a model"));
+        assert!(no("lab", "skein", Some("haiku"), Some("high"), None, Some(&f)).contains("takes no thinking effort"));
+        assert!(no("lab", "skein", None, Some("high"), None, Some(&f)).contains("named no model"));
+        assert!(no("lab", "skein", None, None, Some("openai"), Some(&f)).contains("not a provider"));
     }
 }

@@ -348,6 +348,47 @@ pub(crate) fn asked_provider(args: &Value) -> Result<Option<String>, String> {
     ))
 }
 
+/// The provider a spawn resolves to: what the caller named, or what a provider
+/// model name implies. `flash` and `pro` exist on DeepSeek and nowhere else, so
+/// naming one of those without naming a provider has said one thing, not left a
+/// gap. Pure, because every birth path resolves it the same way and a second
+/// spelling of the rule is a second place for it to drift.
+pub(crate) fn provider_for(provider: Option<String>, model: Option<&str>) -> Option<String> {
+    provider.or_else(|| {
+        model.filter(|m| PROVIDER_MODELS.contains(m)).map(|_| "deepseek".to_string())
+    })
+}
+
+/// The credentials a spawn is checked against: what the caller named, plus the
+/// card's own provider's key when it opens on one.
+///
+/// A provider card's money **is** its key, so the wall that runs it has to hold
+/// one — a fact no caller should have to write into `needs`, and one it would
+/// otherwise leave out every time. Pushed here rather than there so the check
+/// every other credential gets (`lacked_here`, `Fleet::ask`, `decide`) is the
+/// same check, on both walls.
+pub(crate) fn needs_for(provider: Option<&str>, mut needs: Vec<String>) -> Vec<String> {
+    if let Some(p) = provider.and_then(crate::provider::named) {
+        if !needs.iter().any(|n| n == p.key) {
+            needs.push(p.key.to_string());
+        }
+    }
+    needs
+}
+
+/// The provider a card is itself spending, off its own row — `@deepseek` and
+/// its like (`provider::of`). `None` for a card on the subscription, an
+/// account, credits, or one the store cannot answer for.
+///
+/// Asked of the store rather than passed, `kind`'s rule: the caller that would
+/// have to remember is every future spawn site.
+fn spending_provider(app: &AppHandle, card: &str) -> Option<String> {
+    let store = app.try_state::<Store>()?;
+    let conn = store.0.lock().ok()?;
+    let label = crate::store::account_of(&conn, card);
+    crate::provider::of(label.as_deref()).map(|p| p.key.to_string())
+}
+
 /// Which model the caller asked for, or why nothing was opened.
 ///
 /// Pure, and refusing rather than falling back is the whole of the decision
@@ -1052,10 +1093,18 @@ pub fn spawn_schema() -> Value {
                          and the Claude family names are refused rather than mapped. Omitting \
                          `provider` and naming `flash` or `pro` infers deepseek; naming \
                          `haiku`, `sonnet` or `opus` infers claude.\n\n\
+                         **A card on a provider opens its children on the same provider** \
+                         unless you say otherwise: a deepseek card's child is a deepseek card \
+                         on `flash`, because a fan-out should spend the balance its parent \
+                         chose rather than the subscription. Name `provider: claude`, or a \
+                         Claude model, to open one there instead.\n\n\
                          A deepseek card cannot take an `account` — its money is not a Claude \
-                         subscription — and cannot be opened on another wall, whose key it \
-                         could not borrow. Its model cannot be changed afterwards, like any \
-                         other card's: the provider is fixed at birth."
+                         subscription. Opened with `host`, it runs on **that wall's own \
+                         DeepSeek key**: the key never crosses between machines, so the wall \
+                         is asked whether it holds one and the card is refused, naming the \
+                         machine, if it does not (`walls` lists what each holds). Its model \
+                         cannot be changed afterwards, like any other card's: the provider is \
+                         fixed at birth."
                 },
                 "model": {
                     "type": "string",
@@ -1145,7 +1194,10 @@ pub fn spawn_schema() -> Value {
                            `ASANA_ACCESS_TOKEN` in a script.\n\
                          - `azdo` — an Azure DevOps token: `pipelines`, `reviews`, \
                            `pull_request`.\n\
-                         - `github` — `gh` signed in, or `GH_TOKEN`.\n\n\
+                         - `github` — `gh` signed in, or `GH_TOKEN`.\n\
+                         - `deepseek` — a DeepSeek API key: that card's own money rather than \
+                           its work's. `provider: deepseek` names it for you, so you never \
+                           need to write it by hand.\n\n\
                          **Name them whenever the work needs one, and above all with \
                          `host`.** No credential ever crosses between machines, so a card on \
                          another wall has exactly what that wall holds — and one opened \
@@ -1170,10 +1222,13 @@ pub fn spawn_schema() -> Value {
                          announces them; leave it out and the card stands in the territory \
                          there with your own project's name. `account` cannot go with it — \
                          accounts belong to a machine, and that wall's own ladder picks. \
-                         `model` and `effort` travel as they do here, and `needs` is checked \
-                         against what that wall holds. `worktree` makes the group's tree on \
-                         that machine, from that repository's main branch unless \
-                         `worktree_base` names something it has.\n\n\
+                         `model`, `effort` and `provider` travel as they do here; a card \
+                         named on a provider runs there on **that wall's own key**, and is \
+                         refused (naming it) when that wall holds none — no credential ever \
+                         crosses between machines. `needs` is checked against what that wall \
+                         holds. `worktree` makes the group's tree on that machine, from that \
+                         repository's main branch unless `worktree_base` names something it \
+                         has.\n\n\
                          The call waits for that wall to answer, which is usually a few \
                          seconds, and returns the card's handle there or the reason it \
                          refused. That wall must have been switched to take work from other \
@@ -2061,10 +2116,10 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         .and_then(Value::as_str)
         .map(|t| clip(t.trim(), MAX_TITLE))
         .filter(|t| !t.is_empty());
-    /* Before the store is touched and long before an id is minted, for the
+    /* Before anything is written down and long before an id is minted, for the
        reason a misnamed project is resolved early: an agent correcting a word is
        not an agent fanning out, and nothing should be written down about a card
-       that was never opened. */
+       that was never opened. (The default below reads one row; it writes none.) */
     let provider = match asked_provider(args) {
         Ok(p) => p,
         Err(why) => return why,
@@ -2076,12 +2131,24 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
     /* A provider model name infers the provider: `flash` and `pro` exist on
        DeepSeek and nowhere else, so a caller naming one without the other has
        said one thing, not left a gap. */
-    let provider = provider.or_else(|| {
-        model
-            .as_deref()
-            .filter(|m| PROVIDER_MODELS.contains(m))
-            .map(|_| "deepseek".to_string())
-    });
+    let provider = provider_for(provider, model.as_deref());
+    /* And a card on a provider opens its children on the same one unless the
+       caller named otherwise. A DeepSeek card fanning out a job is buying
+       DeepSeek's balance, and a child that quietly landed on the subscription
+       would spend money the parent never chose — the mirror of the bug that
+       makes `asked_model` refuse rather than fall back. `flash` is the
+       provider's default, resolved by `presetForSpawn` from the provider alone.
+       The default is only a default: a named model or a named account is a
+       choice about where the card runs, and either one wins. */
+    let named_account =
+        args.get("account").and_then(Value::as_str).is_some_and(|a| !a.trim().is_empty());
+    let from_parent = if provider.is_none() && model.is_none() && !named_account {
+        spending_provider(app, caller)
+    } else {
+        None
+    };
+    let inherited = from_parent.is_some();
+    let provider = provider.or(from_parent);
     /* A provider card has no Claude account, and an account named beside one is
        a contradiction rather than a preference — the label would be stored and
        then either ignored at spawn or (worse) routed through `usable_store`.
@@ -2107,6 +2174,9 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(n) => n,
         Err(why) => return why,
     };
+    /* The provider's own key is a need like any other, and the one nobody
+       writes down — see `needs_for`. */
+    let needs = needs_for(provider.as_deref(), needs);
     if let Some(why) = lacked_here(&needs) {
         return why;
     }
@@ -2381,10 +2451,16 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         /* A provider with no model named still has a model: `presetForSpawn`
            opens it on the provider's default, so the receipt says which rather
            than claiming the machine's setting. */
-        (None, _) if provider.as_deref() == Some("deepseek") => {
-            " You named no model, so it opens on the provider's default, billed per token."
-                .into()
-        }
+        (None, _) if provider.as_deref() == Some("deepseek") => format!(
+            " You named no model, so it opens on the provider's default, billed per token.{}",
+            if inherited {
+                " You named no provider either, and this card spends deepseek's balance, so \
+                  its child does too — name `provider: claude`, or a Claude model, to open it \
+                  on the subscription instead."
+            } else {
+                ""
+            }
+        ),
         (None, _) => " You named no model, so it opens on whatever Claude Code is set up for \
                       on this machine."
             .into(),
@@ -2577,13 +2653,21 @@ fn clip_brief(s: &str, max: usize) -> (String, usize) {
  * birth path is still one path: this side asks, and the wall the card lands on
  * opens it exactly as it would open one of its own children.
  *
- * Two of `do_spawn`'s rules change shape across the wire rather than going
+ * Three of `do_spawn`'s rules change shape across the wire rather than going
  * away. **Where it stands** is still a territory named rather than a path —
  * now a territory *that* wall announced, resolved there against its own table
  * (`flyway/here.rs`), so no path written on this machine ever reaches the
  * other. And **a card opened here** carries `account`; a card opened there
  * cannot, because an account is a credential on a machine and the wire carries
  * work, never secrets.
+ *
+ * **A `provider` is the same shape as `account` with one difference, and it is
+ * the whole of the design:** the *name* travels, because the wall that runs the
+ * card resolves its own key from it, and no key ever does. So the check is a
+ * check rather than a transport — `deepseek` joins `needs` (which every wall
+ * announces by name) and both ends weigh it against the vault before anything
+ * opens. A provider card's child defaults to its parent's provider for
+ * `do_spawn`'s reason: it is the same money, on whichever machine it runs.
  */
 
 /// Whether a spawn names a wall other than this one.
@@ -2634,19 +2718,20 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         Ok(m) => m,
         Err(why) => return Elsewhere::Now(why),
     };
-    /* A provider is a credential on *this* machine, and credentials never
-       travel (`creds.rs`). A card asked for on another wall would run there
-       against a key it may not have, so the choice is refused here rather than
-       discovered there at its first turn. */
-    if provider.as_deref() == Some("deepseek")
-        || model.as_deref().is_some_and(|m| PROVIDER_MODELS.contains(&m))
-    {
-        return Elsewhere::Now(format!(
-            "a provider card cannot be opened on another wall, so none was asked for — \
-             {host} would run it against a DeepSeek key this machine cannot lend it. Leave \
-             `provider` and its model names out, or open the card here."
-        ));
-    }
+    let provider = provider_for(provider, model.as_deref());
+    /* A card on a provider opens its children on the same one unless the caller
+       named otherwise — `do_spawn`'s rule, and the money is the same money on
+       the other machine. **The name crosses; the key does not.** That wall
+       resolves the provider's key from its own vault, and `needs` (below) is
+       how both ends find out whether it has one before anything opens: a wall
+       that says it does not is refused here, and one that has lost the key
+       since is refused there. `account` cannot go with `host` at all, so it is
+       not a competing choice here. */
+    let provider = match provider {
+        Some(p) => Some(p),
+        None if model.is_none() => spending_provider(app, caller),
+        None => None,
+    };
     let effort = match asked_effort(args, model.as_deref()) {
         Ok(e) => e,
         Err(why) => return Elsewhere::Now(why),
@@ -2657,6 +2742,10 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         Ok(n) => n,
         Err(why) => return Elsewhere::Now(why),
     };
+    /* The provider's key is a need like any other, and the far wall weighs it
+       against its own vault — this is the whole of why a DeepSeek card can be
+       asked for on another machine at all. */
+    let needs = needs_for(provider.as_deref(), needs);
     /* Validated here and carried as a key; the far wall makes the tree, from
        its own repository, and `Fleet::ask` refuses a wall too old to. */
     let (worktree, worktree_base) = match asked_group(args) {
@@ -2738,6 +2827,7 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         title,
         model,
         effort,
+        provider,
         needs,
         worktree,
         worktree_base,
@@ -3668,6 +3758,27 @@ mod tests {
         assert_eq!(asked_provider(&json!({ "provider": " DeepSeek " })), Ok(Some("deepseek".into())));
         assert_eq!(asked_provider(&json!({ "provider": "claude" })), Ok(Some("claude".into())));
         assert_eq!(asked_provider(&json!({})), Ok(None));
+    }
+
+    /// Two rules every birth path shares, pure so they are a test rather than a
+    /// belief: a provider model name infers its provider, and a card on a
+    /// provider carries that provider's **key** as a need — the check that makes
+    /// a remote DeepSeek card safe, and the one no caller should have to write.
+    #[test]
+    fn a_provider_model_infers_its_provider_and_its_key_is_a_need() {
+        assert_eq!(provider_for(None, Some("flash")), Some("deepseek".into()));
+        assert_eq!(provider_for(None, Some("pro")), Some("deepseek".into()));
+        assert_eq!(provider_for(None, Some("opus")), None, "a Claude family is not one");
+        assert_eq!(provider_for(Some("claude".into()), Some("flash")), Some("claude".into()), "named wins");
+
+        assert_eq!(needs_for(None, vec![]), Vec::<String>::new());
+        assert_eq!(needs_for(Some("claude"), vec![]), Vec::<String>::new());
+        assert_eq!(needs_for(Some("deepseek"), vec![]), vec!["deepseek".to_string()]);
+        assert_eq!(
+            needs_for(Some("deepseek"), vec!["asana".into(), "deepseek".into()]),
+            vec!["asana".to_string(), "deepseek".to_string()],
+            "named by hand is the same need, not a second one"
+        );
     }
 
     /// An unknown model refuses rather than falling back, and says what would

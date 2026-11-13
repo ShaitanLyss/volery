@@ -1748,10 +1748,20 @@ export class Elsewhere {
    *  quiet, older, not taking work, no such project), refused by that wall when
    *  it decided (its switch, its bounds), or not answered in time. Nothing is
    *  queued for a wall that is away. */
-  async openThere(host: string, project: string, pair: { model: string | null; effort: string | null }): Promise<OpenedThere> {
+  async openThere(
+    host: string,
+    project: string,
+    pair: { model: string | null; effort: string | null; provider: string | null },
+  ): Promise<OpenedThere> {
     let id: string;
     try {
-      id = await invoke<string>("flyway_open", { host, project, model: pair.model, effort: pair.effort });
+      id = await invoke<string>("flyway_open", {
+        host,
+        project,
+        model: pair.model,
+        effort: pair.effort,
+        provider: pair.provider,
+      });
     } catch (e) {
       return { why: String((e as Error)?.message ?? e) || "the link would not take it" };
     }

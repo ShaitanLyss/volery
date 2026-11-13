@@ -398,11 +398,12 @@ describe("a preset sent to another wall", () => {
     });
   });
 
-  test("a provider preset is a refusal, not a pair the far wall could open", () => {
-    /* Its key lives here and credentials never travel, so degrading it to
-       `null` would open an ordinary Claude card over there while the person
-       believed they had chosen DeepSeek. `openThere` turns the provider into
-       words. */
+  test("a provider preset crosses as its name, with no model", () => {
+    /* Its key lives on the wall that runs the card and never travels, so what
+       crosses is the provider's name — the far wall resolves its own key and
+       its own default model (`flash`) from it. Degrading it to `null` would
+       open an ordinary Claude card over there while the person believed they
+       had chosen DeepSeek. */
     for (const p of PROVIDER_PRESETS) {
       expect(spawnPairOf(p)).toEqual({ model: null, effort: null, provider: "deepseek" });
     }
