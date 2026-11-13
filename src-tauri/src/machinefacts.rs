@@ -677,8 +677,10 @@ pub fn rows(
 /// The recorder: one row a minute for the life of the wall, while it is on.
 ///
 /// A plain thread rather than a tokio task, and it holds no lock between ticks.
-/// Nothing here runs if the switch is off — the point of the switch is that the
-/// machine is not being read at all, not that the rows are hidden.
+/// Nothing here runs if the switch is off — the point of the switch is that no
+/// *history* is kept of this machine, not that the rows are hidden. The
+/// on-demand reading a watching wall asks for is outside it, and the module
+/// header says why.
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || loop {
         /* **The first row waits a full minute, and that is the switch's

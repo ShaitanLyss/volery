@@ -3833,8 +3833,8 @@ Indexes: `usage_fact(at)`, `usage_fact(host, at)`, `usage_fact(session)`,
 `tool_pending(session)`, `turn(agent_session_id, ended_at)`, `turn(conversation_id, ended_at)`,
 `work_fact(at)`, `work_fact(card, at)`, `work_fact(project, at)`, `work_hour(hour)`,
 `invalidate_fact(at)`, `invalidate_fact(tree, at)`, `allowance_fact(account, at)`,
-`machine_fact`'s `(at, host)` primary key, which is the index every read uses
-(the list below is otherwise built indexes; this one needs none),
+`machine_fact`'s `(at, host)` primary key rather than an index of its own, since
+every read is a range on `at`,
 `usage_hour(hour)`, `tool_hour(hour)`, `host_build(host, from_at)`, `prompt_fact(at)`,
 `prompt_fact(kind, at)`, `prompt_fact(card)`, `prompt_hour(hour)`.
 
@@ -3889,8 +3889,9 @@ Each phase is useful on its own and commits on its own.
    on-demand two-second reading, the switch, and the block in the room with the fleet's
    readings beside its spend. **Not built**: VRAM (needs a DXGI device), `procs` (the meter's
    process walk is the only count, by §6.3), a machine page of its own, and §6.3's two-second
-   in-memory ring for a live machine graph — the on-demand reading is used only for the beat,
-   so no surface draws the hardware finer than the minute it is recorded at.
+   in-memory ring for a live machine graph — the on-demand reading feeds the live panel's row
+   and the flyway beat at about a second, but no *history or graph* is finer than the minute
+   the wall records.
 8. **Flyway history and the live fleet.** **Built**: hourly rollups, the manifest keyed by
    owner, the day pull, the two-second `live` frame carrying its sender's machine, and the
    fine pull. **Not built**: the sealed prompt archive with its per-peer switch and
