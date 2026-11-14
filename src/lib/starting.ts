@@ -270,7 +270,7 @@ export function presetOf(choice: PresetChoice, wallDefault: Preset | undefined):
   return presetById(choice) ?? wallDefault;
 }
 
-/** The menu's rows: the five presets cheapest first, a provider's models where
+/** The menu's rows: the presets cheapest first, a provider's models where
  *  one is configured, then *as claude code is set up* — the same list the
  *  wall's `+` offers, so the two never disagree.
  *

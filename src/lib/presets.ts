@@ -10,10 +10,11 @@
  * cannot tell which from the card.
  *
  * So the `+` has a right-click, and these are what it offers. Each is a pairing
- * of a model with an effort and a sentence saying what it is for. There are
- * five on purpose: this is a menu to be read at the speed of starting work, and
- * a catalogue of every combination — six models against five levels — is a
- * decision rather than a shortcut.
+ * of a model with an effort and a sentence saying what it is for. There are six
+ * on purpose: five rungs of the Claude families, cheapest first, and one fable
+ * row at the end for the work where you want the frontier rather than the
+ * everyday model. A catalogue of every combination — every family against five
+ * levels — is a decision rather than a shortcut.
  *
  * Pure, and the ids are what the store keeps, so a preset can be renamed
  * without orphaning the cards opened from it.
@@ -28,7 +29,9 @@ export type Preset = {
   /** In the menu, in the wall's voice: what you are about to start. */
   label: string;
   /** The pair itself, shown beside the label rather than described in it. The
-   *  point of the menu is seeing what a card will cost before opening it. */
+   *  point of the menu is seeing what a card will cost before opening it. A
+   *  model alias's `[1m]` suffix is not shown: every family here is on the wide
+   *  window and the tier was never a price. */
   note: string;
   /** What goes to `--model`.
    *
@@ -64,7 +67,7 @@ export type Preset = {
   provider?: ProviderId;
 };
 
-/** The five, cheapest first.
+/** The six, cheapest first.
  *
  * Ordered by what they cost rather than by how often they are wanted, because
  * the order is the only thing in the menu that says these are a scale. The
@@ -92,7 +95,7 @@ export const PRESETS: Preset[] = [
   {
     id: "read",
     label: "reading a lot of it",
-    note: "sonnet[1m] · low",
+    note: "sonnet · low",
     model: "sonnet[1m]",
     effort: "low",
     /* Checking a claim across a codebase, or a long transcript held whole. What
@@ -111,7 +114,7 @@ export const PRESETS: Preset[] = [
   {
     id: "work",
     label: "ordinary work",
-    note: "sonnet[1m] · medium",
+    note: "sonnet · medium",
     model: "sonnet[1m]",
     effort: "medium",
     /* The everyday card: a small feature, a fix with its test, a rename across
@@ -130,7 +133,7 @@ export const PRESETS: Preset[] = [
   {
     id: "bug",
     label: "a bug that has resisted",
-    note: "opus[1m] · high",
+    note: "opus · high",
     model: "opus[1m]",
     effort: "high",
     /* The obvious fix was not it. This is the first preset worth its cost, and
@@ -146,7 +149,7 @@ export const PRESETS: Preset[] = [
   {
     id: "deep",
     label: "the hard thing",
-    note: "opus[1m] · xhigh",
+    note: "opus · xhigh",
     model: "opus[1m]",
     effort: "xhigh",
     /* Design, a migration, an audit — work where being wrong is expensive and
@@ -162,6 +165,19 @@ export const PRESETS: Preset[] = [
        to be picked from without thinking, so the level that is right only when
        you have measured it is the one that does not belong on it — `/effort
        max` is a keystroke away on a card that turns out to need it. */
+  },
+  {
+    id: "frontier",
+    label: "frontier performance",
+    note: "fable · xhigh",
+    model: "fable",
+    effort: "xhigh",
+    /* The fable family at the top of its effort scale: the second frontier
+       option, beside `deep`, for the work where the model's own frontier is
+       the point. Fable 5.2 carries the 1M window in the family itself, which
+       is why the note has no tier suffix — nor do the four above it, since
+       every family here is on the wide window and the suffix was never a
+       price. */
   },
 ];
 
@@ -229,7 +245,7 @@ export function presetPicks(): { id: string; label: string; note: string }[] {
   return [...PRESETS, ...PROVIDER_PRESETS].map((p) => ({ id: p.id, label: p.label, note: p.note }));
 }
 
-/* ── the three names an agent may spawn a card on ───────────────────────────
+/* ── the four names an agent may spawn a card on ────────────────────────────
  *
  * `mcp__skein__spawn` lets one card open another, and until now every card
  * opened that way ran on whatever Claude Code is configured for on this
@@ -239,15 +255,16 @@ export function presetPicks(): { id: string; label: string; note: string }[] {
  * fan a job out knows better than any global default which pieces are cheap,
  * because it is the thing that divided them up.
  *
- * **Three names rather than the five presets**, and the cut is deliberate.
- * A preset id is Skein vocabulary — `ask`, `work`, `read`, `bug`, `deep` — and
- * an agent choosing between them has to have read `presets.ts` to know that
- * `read` is a window rather than a mode. A model family is vocabulary the
- * caller already has: it knows what haiku costs and what opus is for, from the
- * same knowledge that made it decide the piece was small. So the tool takes the
- * word everybody already shares and this table turns it into the pairing the
- * menu would have picked, effort and window included — which is the half an
- * agent naming a bare `--model` would have got wrong for free.
+ * **Four names rather than the six presets**, and the cut is deliberate.
+ * A preset id is Skein vocabulary — `ask`, `work`, `read`, `bug`, `deep`,
+ * `frontier` — and an agent choosing between them has to have read
+ * `presets.ts` to know that `read` is a window rather than a mode. A model
+ * family is vocabulary the caller already has: it knows what haiku costs and
+ * what opus is for, from the same knowledge that made it decide the piece was
+ * small. So the tool takes the word everybody already shares and this table
+ * turns it into the pairing the menu would have picked, effort and window
+ * included — which is the half an agent naming a bare `--model` would have got
+ * wrong for free.
  *
  * Mapping to a preset rather than straight to `--model` is what buys that
  * second half. `sonnet` alone is sonnet at whatever effort the CLI defaults to;
@@ -267,12 +284,12 @@ export function presetPicks(): { id: string; label: string; note: string }[] {
  * `xhigh` against a capped window budget — sink `564bd55d`.
  */
 
-/** The three, as `spawn`'s schema offers them and in the order it does. */
-export const SPAWN_MODELS = ["haiku", "sonnet", "opus"] as const;
+/** The four, as `spawn`'s schema offers them and in the order it does. */
+export const SPAWN_MODELS = ["haiku", "sonnet", "opus", "fable"] as const;
 
 export type SpawnModel = (typeof SPAWN_MODELS)[number];
 
-/** Which preset each of the three names, and why that one.
+/** Which preset each of the four names, and why that one.
  *
  *  These are the **defaults** — what a name means when the caller said nothing
  *  about effort. Naming one overrides the level and keeps everything else the
@@ -302,11 +319,15 @@ export type SpawnModel = (typeof SPAWN_MODELS)[number];
  *    point for Opus 5; `xhigh` is one word away for the piece that earns it.
  *    Sink `564bd55d`, where five spawned cards ran `xhigh` because nothing
  *    could say otherwise.
+ *  - `fable` → **frontier**, fable · xhigh. The other frontier family, at the
+ *    top of its scale: a spawned card is the parent's lane, and a caller who
+ *    knows the piece is cheaper names a lower level.
  */
 const SPAWN_PRESET: Record<SpawnModel, string> = {
   haiku: "ask",
   sonnet: "work",
   opus: "bug",
+  fable: "frontier",
 };
 
 /** The preset a card an agent opened is set up as, or `undefined` for none.
@@ -333,9 +354,9 @@ const SPAWN_PRESET: Record<SpawnModel, string> = {
  *  pairing it was rather than claiming to be a preset you could pick.
  *
  *  An unrecognised name degrades to `undefined` rather than throwing. `do_spawn`
- *  has already refused anything but the three by the time this is reached, so
+ *  has already refused anything but the four by the time this is reached, so
  *  this is the normalizer's usual bargain (`CLAUDE.md`, opaque JSON columns):
- *  a build that gains a fourth name before this table does opens a card on the
+ *  a build that gains a fifth name before this table does opens a card on the
  *  machine's setting instead of failing to open one. An unrecognised *effort*
  *  degrades the same way, to the row's own level — a card on the right model at
  *  the wrong level is recoverable, and a refusal here would be a refusal after
@@ -345,7 +366,7 @@ export function presetForSpawn(
   effort?: string | null,
   /** Which provider the caller named, if any. A provider's model names are its
    *  own (`flash`, `pro`), so they are mapped here rather than through
-   *  `SPAWN_PRESET`, which is Claude's three families. Naming `flash` or `pro`
+   *  `SPAWN_PRESET`, which is Claude's four families. Naming `flash` or `pro`
    *  without a provider infers DeepSeek: the words mean nothing on Claude and
    *  the alternative is refusing a request whose meaning is plain. */
   provider?: string | null,
@@ -389,7 +410,7 @@ const PROVIDER_SPAWN: Record<string, string> = {
 };
 
 /** What a preset row becomes on the wire to another wall: one of `spawn`'s
- *  three family names and a level, or nulls for *as claude code is set up*.
+ *  four family names and a level, or nulls for *as claude code is set up*.
  *
  *  A section's menu offers **this wall's** presets for a card opened on another
  *  (Lyss: *"spawn remote cards based on my local presets and default preset"*),
@@ -397,7 +418,7 @@ const PROVIDER_SPAWN: Record<string, string> = {
  *  the far wall resolves the pair through its own `presetForSpawn`, which keeps
  *  the family's window. Every row here round-trips to its own model and effort
  *  that way (`test/presets.test.ts` holds it), so `deep` arrives as opus[1m] ·
- *  xhigh and not as `bug`. A model outside the three, or a level on a family
+ *  xhigh and not as `bug`. A model outside the four, or a level on a family
  *  that takes none, degrades to the family alone and then to nulls — the far
  *  wall would refuse the pair otherwise, and a card on the right model at its
  *  own level beats no card. */

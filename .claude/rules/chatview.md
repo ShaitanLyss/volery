@@ -304,7 +304,7 @@ every sign-in is a managed account — so `readiness` reads any usable account a
 `signin.rs` writes only into a store and an account is what the waterfall already spawns on.
 Claude Code not found shows the PowerShell line and runs nothing.
 
-**The model menu is the wall's five presets, one scale.** For a new conversation it is the
+**The model menu is the wall's presets, one scale.** For a new conversation it is the
 preset the card opens with (`Skein.openChat` now carries `open`'s three states, so a chat card
 stops opening on whatever Claude Code was configured for). For an open one it sends `/model`,
 and `/effort` after it only where the family's automatic level differs: `Skein.send` already

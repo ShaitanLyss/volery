@@ -293,9 +293,11 @@ const MAX_TITLE: usize = 80;
 /// is what stops them drifting apart.
 ///
 /// The order is the order the schema offers them in, and it is cheapest first
-/// for the reason `PRESETS` is: the order is the only thing in a list of three
-/// that says they are a scale.
-pub const SPAWN_MODELS: [&str; 3] = ["haiku", "sonnet", "opus"];
+/// for the reason `PRESETS` is: the order is the only thing in a list of four
+/// that says they are a scale. `fable` sits last because it is the frontier
+/// family rather than a rung between the others — a caller reaching for it knows
+/// it is asking for the dear end.
+pub const SPAWN_MODELS: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
 
 /// The provider names a caller may ask for, as `spawn`'s `provider` argument
 /// takes them.
@@ -315,7 +317,7 @@ pub const PROVIDER_MODELS: [&str; 2] = ["flash", "pro"];
 /// Every model name the tool accepts, for the error message and for the case
 /// where a caller names `flash` without naming a provider — the word is not
 /// Claude's, so it can only mean one thing.
-const ALL_MODELS: [&str; 5] = ["haiku", "sonnet", "opus", "flash", "pro"];
+const ALL_MODELS: [&str; 6] = ["haiku", "sonnet", "opus", "fable", "flash", "pro"];
 
 /// Which provider the caller asked for, or why nothing was opened.
 ///
@@ -410,8 +412,8 @@ pub(crate) fn asked_model(args: &Value, provider: Option<&str>) -> Result<Option
         return Ok(None);
     }
     /* The allowed words are the provider's, not one list with two halves. A
-       `deepseek` card takes `flash` and `pro`; a Claude card takes its three
-       families; a caller who named neither may use any of the five, and a
+       `deepseek` card takes `flash` and `pro`; a Claude card takes its four
+       families; a caller who named neither may use any of the six, and a
        provider model name then infers the provider in `do_spawn`. */
     let allowed: &[&str] = match provider {
         Some("deepseek") => &PROVIDER_MODELS,
@@ -1096,7 +1098,7 @@ pub fn spawn_schema() -> Value {
                          `model` takes `flash` (everyday, cheapest) or `pro` (the hard end), \
                          and the Claude family names are refused rather than mapped. Omitting \
                          `provider` and naming `flash` or `pro` infers deepseek; naming \
-                         `haiku`, `sonnet` or `opus` infers claude.\n\n\
+                         `haiku`, `sonnet`, `opus` or `fable` infers claude.\n\n\
                          **A card on a provider opens its children on the same provider** \
                          unless you say otherwise: a deepseek card's child is a deepseek card \
                          on `flash`, because a fan-out should spend the balance its parent \
@@ -1125,7 +1127,11 @@ pub fn spawn_schema() -> Value {
                          - `sonnet` — ordinary work: a small feature, a fix with its test, \
                            a change across a few files. Where most cards belong.\n\
                          - `opus` — design, a migration, a bug that has already resisted \
-                           one attempt, anything where being wrong is expensive.\n\n\
+                           one attempt, anything where being wrong is expensive.\n\
+                         - `fable` — the frontier family, for the piece where the hardest \
+                           thing available is the point rather than a cost to weigh. It \
+                           makes no other card dearer and it is rarely the right answer \
+                           for ordinary work.\n\n\
                          On DeepSeek, name `provider: deepseek` and one of:\n\n\
                          - `flash` — the everyday model: cheap, fast, 1M context. The \
                            default when the provider is named and the model is not.\n\
@@ -3718,7 +3724,7 @@ mod tests {
         /* Cheapest first within each provider, because the order is the only
            thing in a list that says they are a scale — `PRESETS`' own
            argument. */
-        assert_eq!(SPAWN_MODELS, ["haiku", "sonnet", "opus"]);
+        assert_eq!(SPAWN_MODELS, ["haiku", "sonnet", "opus", "fable"]);
         assert_eq!(PROVIDER_MODELS, ["flash", "pro"]);
         for name in SPAWN_MODELS {
             assert_eq!(asked_model(&json!({ "model": name }), None), Ok(Some(name.into())));
@@ -3797,7 +3803,7 @@ mod tests {
     #[test]
     fn a_model_this_wall_cannot_open_is_refused_with_the_list() {
         let why = asked_model(&json!({ "model": "opus[1m]" }), None).unwrap_err();
-        /* The three, so the retry is the right one rather than another guess. */
+        /* All four, so the retry is the right one rather than another guess. */
         for name in SPAWN_MODELS {
             assert!(why.contains(name), "{why}");
         }
@@ -3816,7 +3822,7 @@ mod tests {
     /// The knob that costs money says so, and says what omitting it means.
     ///
     /// Both halves matter and the second is the one an enum cannot carry. A
-    /// model field with three values and no guidance is answered by whatever
+    /// model field with four values and no guidance is answered by whatever
     /// word the agent last read; a model field that does not say what its
     /// absence means is left off by habit, which is the state this arrived to
     /// fix.

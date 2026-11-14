@@ -1325,7 +1325,7 @@ and says which wall.
 
 Demonstrated 2026-10-13 between two frozen labs (`opa`, `opb --peer opa`), driven by the control
 surface's `menu` and `click`: a card opened on opb in `labproj` drew a `labproj` section on opa,
-whose right-click offered opa's five presets and the plain row; *a quick question* opened a second
+whose right-click offered opa's presets and the plain row; *a quick question* opened a second
 card on opb — on haiku, `bornFor` opa, at rest with no turn spent — and opa's focus was on its
 shadow by the next snapshot. With opb's switch written off by hand (sink `4b634e26`), the same
 right-click offered no rows, only the reason. **Not shown:** `<space> e n` (the table is tested),

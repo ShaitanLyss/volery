@@ -170,7 +170,7 @@ export type MenuTarget = {
 
      Three targets read it, which is the point of it being one field: the `+`'s
      own menu, the `hand the plan to a maker` family on a card, and the
-     territory's `new conversation as…`. All three are the same five rows under
+     territory's `new conversation as…`. All three are the same rows under
      three verbs, so a fourth place that opens a card gets them for nothing. */
   presets?: { id: string; label: string; note: string; standing?: string }[];
   /** The line under a preset list: which profile the standing lines are

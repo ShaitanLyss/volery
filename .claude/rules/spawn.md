@@ -209,10 +209,10 @@ through the one door with no right-click, and it is worse here than at the `+`: 
 opening the card is the thing that *divided the job up*, so it knows which pieces are small
 and had no way to say so.
 
-`model` takes **three family names** — `haiku`, `sonnet`, `opus` — and nothing else.
+`model` takes **four family names** — `haiku`, `sonnet`, `opus`, `fable` — and nothing else.
 
-- **Families rather than preset ids.** The menu behind the `+` has five rows and their ids are
-  Skein vocabulary: an agent choosing between `read` and `bug` has to have read a file it has
+- **Families rather than preset ids.** The menu behind the `+` has a row per pairing and their
+  ids are Skein vocabulary: an agent choosing between `read` and `bug` has to have read a file it has
   never opened to know that one of them is a *window*. A model family is vocabulary the caller
   already has, from the same knowledge that made it decide the piece was small.
 - **And families rather than a bare `--model`.** The word is resolved to a whole preset —
@@ -222,17 +222,17 @@ and had no way to say so.
   cards an agent opens change with it.
 - **Rust validates the word; the front end resolves what it costs.** `SPAWN_MODELS` is the
   list and `asked_model` is the gate; `presets.ts`'s `presetForSpawn` is the table. The seam is
-  a name crossing an `emit`, so it breaks silently and in the expensive direction — a fourth
+  a name crossing an `emit`, so it breaks silently and in the expensive direction — a fifth
   name at one end only is a card the agent believes it opened on that model, a receipt that
   agrees, and a card running on the machine's setting. Both ends are held to the same array:
-  `the_three_names_are_the_ones_the_wall_resolves` reads the schema's `enum`, and
+  `the_names_are_the_ones_the_wall_resolves` reads the schema's `enum`, and
   `test/presets.test.ts` reads `SPAWN_MODELS` **out of `spawn.rs` itself** rather than a
   transcription of it.
 - **An unknown name refuses rather than falling back**, which is the one real decision in the
   file. Falling back is the tempting arm: it always opens a card. It is also a card that costs
   ten times what the parent budgeted for, with every surface agreeing it did not, and the only
   place the truth appears is the bill. So it is answered the way an unknown project is — the
-  three names, the word that was rejected, and the way out that is not a fourth guess.
+  four names, the word that was rejected, and the way out that is not another guess.
 - **Omitting it stays exactly what it was**, and is deliberately *not* the wall's default
   preset. That setting answers "what does my `+` open", and a card an agent asked for is not a
   card the user clicked for; quietly spending the dear end of the menu on every spawned card
@@ -241,7 +241,8 @@ and had no way to say so.
   argument and there will not be one — the tier is not a price (`menu.md` quotes the docs), so
   there is nothing to trade and a third knob would only be a third thing to get wrong. What
   that means for the table is that `sonnet` must resolve to `sonnet[1m]` and `opus` to
-  `opus[1m]`: a parent who needed room could not ask for it, and a spawned card is always
+  `opus[1m]` (and `fable`, which carries 1M in the family itself), a parent who needed room
+  could not ask for it, and a spawned card is always
   doing work somebody else scoped, so it cannot notice it is short of room and ask the way a
   card with a person in front of it can.
 - **The receipt says what it opened on, including when nothing was named.** The way a model

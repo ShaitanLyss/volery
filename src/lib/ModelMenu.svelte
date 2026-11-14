@@ -1,6 +1,6 @@
 <script lang="ts">
   /* One menu beside send for the model and how hard it thinks (`docs/chat-mode.md`
-     §4.3, the mockup's `sonnet 5.5 · medium`): the wall's five presets and
+     §4.3, the mockup's `sonnet 5.5 · medium`): the wall's presets and
      *as claude code is set up*, one scale rather than two levers.
 
      For a new conversation it is the preset the card opens with — the starter

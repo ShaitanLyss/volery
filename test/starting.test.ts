@@ -138,6 +138,8 @@ describe("the model chip", () => {
     expect(switchLines(presetById("work")!)).toEqual(["/model sonnet[1m]"]);
     expect(switchLines(presetById("read")!)).toEqual(["/model sonnet[1m]", "/effort low"]);
     expect(switchLines(presetById("ask")!)).toEqual(["/model haiku"]);
+    /* Fable's own level is xhigh, so the preset sends the model alone. */
+    expect(switchLines(presetById("frontier")!)).toEqual(["/model fable"]);
   });
 });
 

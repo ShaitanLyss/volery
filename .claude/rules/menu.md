@@ -156,7 +156,7 @@ on whatever Claude Code is configured for, so one setting did duty for a one-lin
 a day-long refactor alike: one of those overpays and the other is answered too cheaply, and
 nothing on the card says which.
 
-So the `+` has a second gesture. Left-click is what it always was; right-click offers five
+So the `+` has a second gesture. Left-click is what it always was; right-click offers
 pairings of a model with an effort — `presets.ts`, cheapest first, each with the pair shown
 beside the label rather than described in it, because the point is seeing what a card costs
 before opening it. `MenuItem.note` is that second column and this is the only menu that uses
@@ -173,7 +173,7 @@ Three things this arrangement is careful about.
   routes that `+` somewhere else entirely (see `chat.md`), and the branch falls through to the
   region so the answer there stays "new chat conversation".
 - **The plain opening is the last item, not the first.** It is the one that needs no reading
-  and the one you get by not right-clicking at all; at the top it would put the five things
+  and the one you get by not right-clicking at all; at the top it would put the things
   worth looking at underneath it.
 
 **Where a preset actually lives is the store, and that is the load-bearing half.** `open`
@@ -226,7 +226,7 @@ accident.
 
 **One list doing two jobs, told apart by a modifier.** A click opens a card set up that way
 once; a **ctrl-click** makes that row what the plain `+` does from now on. One menu rather than
-two because they are the same five choices under two verbs, and a second menu of the same five
+two because they are the same choices under two verbs, and a second menu of the same rows
 is a menu you read twice to discover they are the same. The row in force wears the `on` dot the
 widget variants already use, so what the `+` will cost is visible without opening a card to
 find out — and "as claude code is set up" is markable too, since it is one of the choices and a
@@ -248,7 +248,7 @@ build's catalogue of presets lives in the front end, and Rust keeping a second c
 vocabulary it does not own is what `classify.ts` exists to prevent. An unknown id is handled
 where it is read.
 
-### The same five, reached from the territory
+### The same rows, reached from the territory
 
 The `+`'s right-click answered "what is this card for" for the `+`, and left the gesture most
 often used to open a card answering nothing: **right-click a territory → new conversation
@@ -256,7 +256,7 @@ here** goes through `openIn(cwd)` with no preset, which resolves to the wall's d
 is not a bad card — the default is a real choice and ctrl-click is how it was made — but it is
 the *same* card every time, from the one menu where you have already stopped to read something.
 
-So the territory menu gains `new conversation as… ▸`, the five rows with their notes, and the
+So the territory menu gains `new conversation as… ▸`, the rows with their notes, and the
 `""` row beside them.
 
 - **A sibling of the plain row, not a submenu on it**, and that is the whole decision. This

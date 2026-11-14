@@ -50,7 +50,7 @@ describe("a menu offers only what the target can actually do", () => {
   test("a plan is handed on only where there is one", () => {
     const picks = [{ id: "work", label: "ordinary work", note: "sonnet · medium" }];
     /* `ids` reads only clickable rows, and this one is a `more` — the whole
-       point being that it opens onto the five presets rather than doing
+       point being that it opens onto the presets rather than doing
        anything itself. */
     expect(handoffOf(menuFor({ kind: "card", plan: true, presets: picks }))).not.toBeNull();
     expect(handoffOf(menuFor({ kind: "card", plan: false, presets: picks }))).toBeNull();

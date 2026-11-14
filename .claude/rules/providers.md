@@ -68,11 +68,6 @@ there. BenchLM spells the same model `deepseek-v4-pro-max` in its catalogue, whi
 `benchmarks.ts::ALIASES` maps the wall's name to *that* key: the catalogue's key and the
 provider's id are two namespaces and neither is a correction of the other.
 
-**And the provider API's Pro id is `deepseek-v4-pro`.** `deepseek-v4-pro-0813` answers 400
-there. BenchLM spells the same model `deepseek-v4-pro-max` in its catalogue, which is why
-`benchmarks.ts::ALIASES` maps the wall's name to *that* key: the catalogue's key and the
-provider's id are two namespaces and neither is a correction of the other.
-
 **Inline tools are off for a provider card** (`CLAUDE_CODE_INLINE_TOOLS=0`, 2.1.280+, removed
 again by `withhold`). From 2.1.286 the CLI can put a deferred MCP tool's whole schema in a
 system message as a `tool_definition` block; DeepSeek's endpoint only knows `tool_reference`, and
@@ -153,7 +148,7 @@ the composer would be a cap a wake walks around.
 enforced in `asked_provider` / `asked_model` before a card is minted:
 
 - `deepseek` takes `flash` or `pro` only; a Claude family name is refused, not mapped.
-- `flash`/`pro` without a provider infers `deepseek`; the three family names infer `claude`.
+- `flash`/`pro` without a provider infers `deepseek`; the four family names infer `claude`.
 - `account` with `provider: deepseek` is refused — no Claude account can take it.
 - `host` with `provider: deepseek` is **allowed**: the provider's *name* crosses and the far
   wall resolves its own key, which never travels (`flyway`). `deepseek` is a word in

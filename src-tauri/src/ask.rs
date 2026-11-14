@@ -2192,7 +2192,7 @@ pub(crate) fn roster() -> Vec<Value> {
             "open another card, start a second conversation, delegate a separate \
              job, run work in parallel, hand something to a new agent, fan out \
              the building work, spawn several agents to implement, choose which \
-             model an agent runs on, haiku sonnet opus, which account or \
+             model an agent runs on, haiku sonnet opus fable, which account or \
              subscription it spends",
         ),
         /* Deferred, and asked for by name in the `accounts` listing's own

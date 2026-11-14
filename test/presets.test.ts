@@ -54,13 +54,17 @@ describe("what the + offers before a card is opened", () => {
   });
 
   test("the note says what is actually being asked for, and nothing more", () => {
+    /* The family rather than the alias: every row is on the wide window and the
+       tier was never a price, so a note spelling `sonnet[1m]` would describe a
+       choice nobody made. */
+    const familyOf = (p: (typeof PRESETS)[number]) => p.model.replace(/\[.*\]$/, "");
     for (const p of PRESETS) {
-      expect(p.note).toContain(p.model);
+      expect(p.note).toContain(familyOf(p));
       if (p.effort) expect(p.note).toContain(p.effort);
       /* The other direction is the one that bit: a note reading "haiku · low"
          beside a spawn that sends no `--effort` is the menu lying about the
          thing it exists to show. */
-      else expect(p.note).toBe(p.model);
+      else expect(p.note).toBe(familyOf(p));
     }
   });
 
@@ -76,12 +80,12 @@ describe("what the + offers before a card is opened", () => {
        With the rate flat there is nothing left to buy: what the small window
        bought was a compaction in the middle of the work. */
     const wide = PRESETS.filter((p) => contextWindowFor(p.model) === 1_000_000);
-    expect(wide.map((p) => p.id)).toEqual(["ask", "read", "work", "bug", "deep"]);
+    expect(wide.map((p) => p.id)).toEqual(["ask", "read", "work", "bug", "deep", "frontier"]);
     expect(PRESETS.filter((p) => contextWindowFor(p.model) !== 1_000_000)).toEqual([]);
-    /* The note is the *pair*, not the window: `haiku` is 1M natively and does
-       not spell a tier it never has to ask for. */
+    /* The note is the *pair*, not the window: `haiku` and `fable` are 1M
+       natively and do not spell a tier they never have to ask for. */
     for (const p of PRESETS) {
-      expect(p.note).toContain(p.model);
+      expect(p.note).toContain(p.model.replace(/\[.*\]$/, ""));
       if (p.effort) expect(p.note).toContain(p.effort);
     }
   });
@@ -208,7 +212,7 @@ describe("what a plain + opens, and changing it", () => {
 });
 
 describe("what a card an agent opened is set up as", () => {
-  test("each of the three names resolves to a preset this build has", () => {
+  test("each of the four names resolves to a preset this build has", () => {
     /* The failure this catches is the one that costs money quietly: a name the
        tool accepts and the table does not know opens a card on the machine's
        own setting, while the agent, the receipt and the wall all say otherwise.
@@ -219,11 +223,11 @@ describe("what a card an agent opened is set up as", () => {
     }
   });
 
-  test("the three are the three `spawn` will hand over", () => {
+  test("the four are the four `spawn` will hand over", () => {
     /* The seam is a name crossing an `emit`, and the two ends are in different
        languages — so this reads the Rust array rather than a transcription of
-       it. `spawn.rs`'s `the_three_names_are_the_ones_the_wall_resolves` holds
-       the other half, that the schema's enum is what the validator accepts. */
+       it. `spawn.rs`'s `the_names_are_the_ones_the_wall_resolves` holds the
+       other half, that the schema's enum is what the validator accepts. */
     const rs = readFileSync("src-tauri/src/spawn.rs", "utf8");
     const arr = rs.match(/pub const SPAWN_MODELS: \[&str; \d+\] = \[([^\]]*)\]/);
     expect(arr).not.toBeNull();
@@ -267,10 +271,13 @@ describe("what a card an agent opened is set up as", () => {
       effort: "medium",
     });
     expect(presetForSpawn("opus")?.model).toBe("opus[1m]");
-    /* Both wide, and that is the point of the door rather than a coincidence:
-       `spawn` has no argument that says *window*, so a parent who needed room
-       could not ask for it — the name has to carry it. */
-    expect(contextWindowFor(presetForSpawn("sonnet")!.model)).toBe(1_000_000);
+    expect(presetForSpawn("fable")?.model).toBe("fable");
+    /* Every one wide, and that is the point of the door rather than a
+       coincidence: `spawn` has no argument that says *window*, so a parent who
+       needed room could not ask for it — the name has to carry it. */
+    for (const name of SPAWN_MODELS) {
+      expect(contextWindowFor(presetForSpawn(name)!.model)).toBe(1_000_000);
+    }
   });
 
   test("the default a name carries is the working level, not the dear one", () => {
@@ -282,6 +289,10 @@ describe("what a card an agent opened is set up as", () => {
        multiplied by however many cards it opened. */
     expect(presetForSpawn("sonnet")?.effort).toBe("medium");
     expect(presetForSpawn("opus")?.effort).toBe("high");
+    /* `fable` is the one name whose default *is* the dear end, and that is the
+       family's own top rather than an overspend: a caller reaching for fable has
+       said what the piece is worth, and a cheaper lane names a level. */
+    expect(presetForSpawn("fable")?.effort).toBe("xhigh");
     /* And that is a different row from what the plain `+` opens, which is the
        whole of the asymmetry — if these ever agree by accident, one of the two
        arguments has been lost. */
@@ -358,12 +369,12 @@ describe("what a card an agent opened is set up as", () => {
   });
 
   test("a name this build has never heard of opens a card rather than failing to", () => {
-    /* `do_spawn` has refused anything but the three by the time this is
-       reached, so this arm is only ever a build that gained a fourth name at
+    /* `do_spawn` has refused anything but the four by the time this is
+       reached, so this arm is only ever a build that gained a fifth name at
        one end. The normalizer's usual bargain: degrade to something that
        works. */
-    expect(presetForSpawn("fable")).toBeUndefined();
     expect(presetForSpawn("gpt-4")).toBeUndefined();
+    expect(presetForSpawn("opus[1m]")).toBeUndefined();
   });
 
   test("it reads what a model would actually write", () => {
@@ -385,13 +396,13 @@ describe("a preset sent to another wall", () => {
     expect(spawnPairOf(undefined)).toEqual({ model: null, effort: null, provider: null });
   });
 
-  test("haiku carries no level, and a model outside the three carries nothing", () => {
+  test("haiku carries no level, and a model outside the four carries nothing", () => {
     expect(spawnPairOf({ model: "haiku", effort: "high" })).toEqual({
       model: "haiku",
       effort: null,
       provider: null,
     });
-    expect(spawnPairOf({ model: "fable", effort: "high" })).toEqual({
+    expect(spawnPairOf({ model: "gpt-4", effort: "high" })).toEqual({
       model: null,
       effort: null,
       provider: null,

@@ -1232,9 +1232,9 @@ export class Skein {
         /** `claude`, `deepseek`, or null for the usual one — `asked_provider`'s
          *  two words, validated in `do_spawn` before a card is minted. */
         provider: string | null;
-        /** One of `haiku`, `sonnet`, `opus`, or null for none named — see
-         *  `presetForSpawn`. Validated in `do_spawn`, which refuses anything
-         *  else before a card is minted, so this arrives as one of the three or
+        /** One of `haiku`, `sonnet`, `opus`, `fable`, or null for none named —
+         *  see `presetForSpawn`. Validated in `do_spawn`, which refuses anything
+         *  else before a card is minted, so this arrives as one of the four or
          *  not at all. */
         model: string | null;
         /** One of the five `/effort` takes, or null to leave the level to the

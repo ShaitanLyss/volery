@@ -385,7 +385,7 @@ because it keeps the context that is the cost.
   `worktree::ensure` reads an existing one as "put a card on that branch". A plan is about a
   particular tree; building it somewhere else is building something else.
 - **The preset is chosen at the moment the card opens, because that is the only moment it is
-  free.** Same argument the `+`'s right-click makes, and the same five rows with the same
+  free.** Same argument the `+`'s right-click makes, and the same rows with the same
   notes: after the first word, changing the model is a `/model` into a card that has already
   spent a context.
 - **What goes in the brief is decided by what it must *not* contain** (`handoff.ts`). The plan
