@@ -454,8 +454,6 @@
     margin: 0.55rem 0 0.1rem;
     font-size: 0.78em;
     font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
     color: var(--paper-mute);
     border-bottom: 1px solid var(--edge);
     padding-bottom: 0.12rem;
@@ -532,7 +530,7 @@
   }
   .part {
     display: grid;
-    grid-template-columns: 1fr 3rem 8.5rem 9rem;
+    grid-template-columns: 1fr 3rem 8rem 16rem;
     gap: 0.4rem;
     font-size: 0.84em;
   }
@@ -542,6 +540,9 @@
   .weight,
   .from {
     color: var(--paper-mute);
+  }
+  .from {
+    white-space: nowrap;
   }
   /* The developer's own numbers, marked in the ramp rather than in a status
      colour: it is a qualifier on a reading, not a fault. */

@@ -84,7 +84,14 @@ describe("a provider's models are its own", () => {
        the row claimed `effort: high` on a provider whose wall effort has never
        been shown to reach its own dial (`docs/DEEPSEEK-EFFORT.md`). The model is
        still reachable through `spawn`, so it lives in the spawn-only table. */
-    expect(PROVIDER_PRESETS.map((p) => p.model)).toEqual(["deepseek-flash"]);
+    /* DeepSeek flash at its three real depths; `medium` and `xhigh` are the
+       provider's own `high`, so they are not given rows of their own. */
+    expect(PROVIDER_PRESETS.map((p) => p.model)).toEqual([
+      "deepseek-flash",
+      "deepseek-flash",
+      "deepseek-flash",
+    ]);
+    expect(PROVIDER_PRESETS.map((p) => p.effort)).toEqual(["low", "high", "max"]);
     for (const p of PROVIDER_PRESETS) expect(presetById(p.id)).toEqual(p);
 
     /* Spawn-only rows still resolve — that is how a card opened on `pro`

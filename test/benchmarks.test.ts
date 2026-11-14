@@ -392,7 +392,7 @@ describe("provenance", () => {
     expect(sayProvenance(part({ vendor: true, publisher: "DeepSeek" }))).toBe(
       "DeepSeek (the model's own developer)",
     );
-    expect(sayProvenance(part())).toBe("publisher not stated");
+    expect(sayProvenance(part())).toBe("no publisher");
   });
 
   test("a row says how many of its numbers are the developer's own", () => {

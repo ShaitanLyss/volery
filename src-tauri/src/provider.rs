@@ -150,22 +150,31 @@ pub fn apply(app: &AppHandle, cmd: &mut Command, p: &'static Provider) -> Result
        window. Volery has its own compaction, and this is the CLI's trigger —
        left at its default it fires at a Claude-sized fraction. */
     cmd.env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "786432");
-    /* **This does not turn DeepSeek's thinking off, and it never did.** Probed
-       on 2026-11-13 (`tools/probe-deepseek-effort.ts`, `docs/DEEPSEEK-EFFORT.md`):
-       the same prompt produced 692 thinking characters with this set to `0` and
-       821 with it unset, and card sessions carry thinking blocks either way.
-       DeepSeek's endpoint ignores Claude's thinking *budget*, which is what this
-       variable configures; its own control is `output_config.effort` (a 1-100
-       scalar), and the card path never sends that. What keeps a DeepSeek turn
-       replayable is the CLI, not this setting: probed 2026-11-04, the CLI keeps
-       the signed blocks in the session JSONL and strips them from the request
-       with thinking on or off — so the refusal the variable was supposed to
-       avoid is avoided by the wire, and this line only avoids paying for a
-       budget nothing reads. Kept (and removed again by `withhold`) because the
-       CLI's own refusal text still names it as the switch; a card that moves
-       back to Claude keeps the thinking already in the shared session file,
-       since nothing here touches the transcript. */
-    cmd.env("MAX_THINKING_TOKENS", "0");
+    /* **`MAX_THINKING_TOKENS` was here and it clamped the effort, so it is
+       gone.** Read out of the installed bundle (2.1.325) and probed on
+       2026-11-13 (`tools/probe-deepseek-effort.ts`, `docs/DEEPSEEK-EFFORT.md`):
+       the CLI maps `--effort` onto `output_config.effort` — which is exactly the
+       dial DeepSeek reads — and then refuses to raise it while thinking is
+       mechanically disabled, saying so in as many words: *"output_config.effort
+       '<x>' clamped to '<y>': thinking is mechanically disabled for this
+       request, and this model rejects higher effort when thinking is disabled"*
+       (`effort_thinking_disabled_clamp` in the bundle). Setting the budget to
+       zero is what disabled it; with the variable unset a probe saw high think
+       above low (medians 999 vs 554 characters), and the provider's own API
+       moves flash 314/544/772 output tokens at low/high/max.
+
+       The reason it was added is handled without it: DeepSeek's endpoint
+       refuses a request carrying Claude-shaped thinking blocks, but the CLI
+       keeps the signed blocks in the session JSONL and **strips them from the
+       outgoing request** with thinking on or off (probed 2026-11-04). Nothing
+       here needs to suppress thinking, and suppressing it cost the provider's
+       only depth control. */
+    /* The bundle gates effort on a model it recognises, and a provider card's
+       ids go through DeepSeek's own mapping — `if(i.CLAUDE_CODE_ALWAYS_ENABLE_
+       EFFORT)return!0` is its own escape hatch for exactly that. Read out of
+       2.1.325; removed again by `withhold`, since an ordinary card inheriting it
+       would have `--effort` accepted on a family that silently drops it. */
+    cmd.env("CLAUDE_CODE_ALWAYS_ENABLE_EFFORT", "1");
     /* **Claude Code 2.1.286+ can inline a deferred tool's whole schema in a
        system message**, as a `tool_definition` content block, under the
        `inline-tools-2026-09-15` beta. DeepSeek's Anthropic endpoint understands
@@ -329,10 +338,15 @@ pub fn withhold(cmd: &mut Command) {
            from seeing `tool_definition`. Inherited by a Claude card it would
            turn a Claude feature off for the rest of the wall. */
         "CLAUDE_CODE_INLINE_TOOLS",
-        /* Set for a provider card (`apply`), where it configures a budget
-           DeepSeek ignores; an ordinary card inheriting it would spend nothing
-           on thinking. See the probe note in `apply`. */
+        /* Not set by `apply` any more, and still removed from an ordinary card:
+           it caps Claude's thinking budget and, on a provider card, clamps that
+           provider's own effort (`apply` has the probe). A shell profile that
+           sets it would otherwise quietly narrow every card on the wall. */
         "MAX_THINKING_TOKENS",
+        /* Set for a provider card (`apply`) so the CLI honours `--effort` on an
+           id it does not know; inherited by an ordinary card it would have
+           effort accepted where the family drops it silently. */
+        "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT",
         /* The empty store `apply` points at. Inherited, it would make an
            ordinary card report `authMethod: "none"` on a wall it did not start
            on. The CLI's own sign-in (no variable) is what an ordinary card

@@ -119,7 +119,8 @@ describe("the model chip", () => {
       ...PROVIDER_PRESETS.map((p) => p.id),
       "",
     ]);
-    expect(presetRows().find((r) => r.id === "ds-flash")?.sep).toBe(true);
+    /* The separator rides the first provider row, whatever its id is. */
+    expect(presetRows().find((r) => r.id === PROVIDER_PRESETS[0].id)?.sep).toBe(true);
   });
 
   test("a choice resolves in Skein.open's three states", () => {

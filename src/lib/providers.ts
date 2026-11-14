@@ -84,11 +84,40 @@ export const PROVIDERS: Provider[] = [
  *  preset id is only remembered as the wall's default), so these can be renamed
  *  without orphaning a card. */
 export const PROVIDER_PRESETS: Preset[] = [
+  /* **DeepSeek flash at its own levels, one row each.** The transport was the
+     question and it is settled: the CLI maps `--effort` onto
+     `output_config.effort`, which is the dial DeepSeek actually reads — once
+     `MAX_THINKING_TOKENS=0` (which clamped it) was removed, and with
+     `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` letting the CLI honour effort on an id it
+     does not know. Probed in `docs/DEEPSEEK-EFFORT.md`: flash medians 314 / 544
+     / 772 output tokens at low / high / max.
+
+     **Three rows and not five.** DeepSeek maps `medium` and `xhigh` onto `high`
+     itself, so those would be three names for one run. A menu is a scale to pick
+     from without measuring, and two rows that buy the same thing are a menu
+     lying about its resolution. */
   {
-    id: "ds-flash",
+    id: "ds-flash-low",
     label: "a quick deepseek answer",
-    note: "flash",
+    note: "flash · low",
     model: "deepseek-flash",
+    effort: "low" as Effort,
+    provider: "deepseek",
+  },
+  {
+    id: "ds-flash-high",
+    label: "deepseek, thinking it through",
+    note: "flash · high",
+    model: "deepseek-flash",
+    effort: "high" as Effort,
+    provider: "deepseek",
+  },
+  {
+    id: "ds-flash-max",
+    label: "the hard thing, on deepseek",
+    note: "flash · max",
+    model: "deepseek-flash",
+    effort: "max" as Effort,
     provider: "deepseek",
   },
 ];
@@ -107,6 +136,22 @@ export const PROVIDER_PRESETS: Preset[] = [
  *  is read only by `presetById`, which is how a spawned `pro` card still
  *  displays as one. */
 export const SPAWN_ONLY_PRESETS: Preset[] = [
+  /* What `spawn`'s `flash` word resolves to: the model at the provider's own
+     default depth, which is the one thing a card opened without an opinion
+     should get. The menu offers the three levels instead. */
+  {
+    id: "ds-flash",
+    label: "a quick deepseek answer",
+    note: "flash",
+    model: "deepseek-flash",
+    provider: "deepseek",
+  },
+  /* Withheld from the menu on 2026-11-13 at the user's call: on the coding-agent
+     profile `flash` is both better and cheaper. The model is untouched —
+     `spawn` still takes `pro`, `ALIASES` still maps it, the benchmark rows still
+     carry it — and `presetById` still resolves it, which is how a card opened on
+     it displays as one. It claims no effort level: the wall has no probed pair
+     for `pro`'s own dial (flash's was measured, pro's is nearly flat). */
   {
     id: "ds-pro",
     label: "the hard thing, on deepseek",

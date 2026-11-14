@@ -42,22 +42,31 @@ MCP. `provider::apply` sets the base URL, the token, the five model variables an
 `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CODE_ENTRYPOINT` first. Each of those outranks something
 being set; the empty store is the second lock against falling through to the machine's sign-in.
 
-**`MAX_THINKING_TOKENS=0` is kept, and it is not what turns DeepSeek's thinking off — that
-paragraph was wrong.** Probed 2026-11-13 (`tools/probe-deepseek-effort.ts`,
-`docs/DEEPSEEK-EFFORT.md`): the same prompt gave 692 thinking characters with the variable at
-`0` and 821 with it unset, and card sessions carry thinking blocks either way. What it
-configures is Claude's thinking *budget*, which DeepSeek's endpoint ignores; DeepSeek's own
-control is `output_config.effort` (low 50 / high 75 / max 100, with `medium` and `xhigh` both
-mapping to `high`), and the card path never sends it. **And `--effort` does not reach that
-dial either**: across none/low/medium/high/xhigh/max a probe saw 244/172/321/243/222/199 output
-tokens, with no monotonic effect, while the provider's own parameter moved flash 314/544/772
-on the same task. So no wall effort level is claimed for a DeepSeek preset until Volery passes
-`output_config.effort` itself; `flash` carries none.
+**`MAX_THINKING_TOKENS` is gone from a provider card, because it was what clamped the effort.**
+The CLI already maps `--effort` onto `output_config.effort` — the dial DeepSeek reads — and then
+refuses to raise it while thinking is mechanically disabled, in the installed bundle's own
+words: *"output_config.effort '<x>' clamped to '<y>': thinking is mechanically disabled for this
+request, and this model rejects higher effort when thinking is disabled"*
+(`effort_thinking_disabled_clamp`, 2.1.325). A zero budget is what disabled it. Probed
+2026-11-13 (`tools/probe-deepseek-effort.ts`, `docs/DEEPSEEK-EFFORT.md`): with the variable
+unset a CLI probe saw high think above low (medians 999 vs 554 characters); the provider's own
+API moves flash 314/544/772 output tokens at low/high/max. So deepseek flash has **three menu
+rows — low, high and max — and not five**: the provider maps `medium` and `xhigh` onto `high`,
+and two rows that buy one run are a menu lying about its resolution.
 
-What keeps a DeepSeek turn replayable is the CLI rather than this variable — probed 2026-11-04
-against a copied session: the CLI keeps the signed blocks in the JSONL and strips them from
-the request, with thinking on or off. They are preserved as a record, not a context the model
-resumes; the move needs no sidecar. See `docs/PROVIDERS.md` and `docs/DEEPSEEK-EFFORT.md`.
+**The replay concern that variable was added for never rested on it.** Probed 2026-11-04
+against a copied session: the CLI keeps the signed blocks in the JSONL and strips them from the
+request, with thinking on or off. So DeepSeek reasons, the turn still replays, and nothing here
+needs to suppress thinking. `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` rides with a provider card
+because the bundle gates effort on a model it recognises (its own line is
+`if(i.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)return!0`) and a provider's ids are not among them;
+`withhold` takes it off every ordinary card, where effort accepted on a family that drops it
+silently is the failure the preset table exists to avoid.
+
+**And the provider API's Pro id is `deepseek-v4-pro`.** `deepseek-v4-pro-0813` answers 400
+there. BenchLM spells the same model `deepseek-v4-pro-max` in its catalogue, which is why
+`benchmarks.ts::ALIASES` maps the wall's name to *that* key: the catalogue's key and the
+provider's id are two namespaces and neither is a correction of the other.
 
 **And the provider API's Pro id is `deepseek-v4-pro`.** `deepseek-v4-pro-0813` answers 400
 there. BenchLM spells the same model `deepseek-v4-pro-max` in its catalogue, which is why

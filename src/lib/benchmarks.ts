@@ -640,7 +640,9 @@ export function tierLabel(tier: Tier): string {
 export function sayProvenance(c: Component): string {
   if (c.vendor) return c.publisher ? `${c.publisher} (the model's own developer)` : "the model's own developer";
   if (c.publisher) return c.publisher;
-  return "publisher not stated";
+  /* Short enough to sit on a component's own line, and still a statement rather
+     than a blank: an unnamed publisher is not an independent one. */
+  return "no publisher";
 }
 
 /** How many of a row's scored members are the developer's own numbers, as a
