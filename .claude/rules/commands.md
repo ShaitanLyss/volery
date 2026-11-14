@@ -105,6 +105,17 @@ deciding what to derive.
   anything that ever did want to ask a question reads EOF and exits rather than parking on a
   prompt nobody can see — the standing rule that a background read must never ask one, made
   structural rather than argued.
+- **And the one flag that is not minimal is the kit, because the palette is a list of names
+  and the wall ships one of them.** A project card is spawned with
+  `--plugin-dir <app data>/kit/volery` (`kit.md`); the throwaway is now given the same flag,
+  or `volery:coordinate` is missing from the surface built to find it and `/coordinate`
+  matches nothing. Found 2026-11-14, when Lyss typed it and nothing came up: the card had the
+  skill and the palette did not, because the two children were given different argv. Measured
+  with `examples/slash-probe` on one directory — 53 commands without the kit, 54 with, the
+  extra row `volery:coordinate  aliases=["coordinate"]`. The **chat home is the one directory
+  refused it**, because a chat card is spawned without the kit (`chat.md`), so offering the
+  method there would name something it cannot carry out; `plugin_for` asks the store rather
+  than a card, since the palette works before any card in the directory has a process.
 - **Asked once per directory, for the life of the wall** (`Skein.learnSlash` / `slashFor`).
   A one-shot read like the finder's file list, not a fourth poller. The trade is explicit: a
   command file added while the app is up is not offered until the next launch. `learnSlash`

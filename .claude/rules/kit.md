@@ -61,6 +61,17 @@ for which the method has just become relevant, so `spawn::coordinate_pointer` ad
 that receipt naming the skill. Only the first: `store::spawns_since(caller, 0) == 0`, asked
 before the new row is written.
 
+**And the second pointer is the palette, which needed the same flag.** A skill is only as
+findable as the list of names in front of the person typing, and that list is learned from a
+throwaway `claude` by `slash.rs` — which was not given `--plugin-dir`, so `volery:coordinate`
+was missing from the palette on every card that had the skill. Fixed 2026-11-14 (Lyss typed
+`/coordinate` and nothing appeared): `slash_commands` passes the kit for a project directory
+and refuses it for the chat home, where a card is spawned without the kit. Measured with
+`cargo run --example slash-probe` on this repository — 53 commands without the flag, 54 with,
+the extra row carrying the CLI's own `coordinate` alias. **A plugin loaded at spawn and not in
+the palette is the "capability an agent cannot see" failure one surface over, and it is
+invisible from the card's side:** the skill works when invoked and simply cannot be found.
+
 ### The scripts are Node, and two of them were wrong where they came from
 
 The tx-toolkit originals were `commit-split.sh`, `hunks.mjs` and `gate.sh`. Review of this

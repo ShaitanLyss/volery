@@ -10,7 +10,14 @@
 //! cd src-tauri
 //! cargo run --example slash-probe                 # this checkout
 //! cargo run --example slash-probe -- C:\some\repo # somewhere else
+//! cargo run --example slash-probe -- C:\some\repo "$env:APPDATA\dev.skein.studio\kit\volery"
+//!                                                 # and the kit a card gets
 //! ```
+//!
+//! The second argument is the `--plugin-dir` a project card is spawned with.
+//! Without it the list is what a directory offers with no kit, which is the bug
+//! this parameter exists to make visible: the wall's own `volery:coordinate`
+//! was missing because the palette's throwaway was never given it.
 //!
 //! `tools/probe-skills.ts initialize` asks the same question of the CLI
 //! directly. The difference is what is being checked: that one is about the
@@ -32,15 +39,24 @@ fn main() {
             .into_owned()
     });
 
+    let plugin = std::env::args().nth(2).map(std::path::PathBuf::from);
+
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .expect("no home directory in the environment");
     let program = skein_lib::claude::program(std::path::Path::new(&home));
     println!("claude:  {program}");
     println!("cwd:     {cwd}");
+    println!(
+        "plugin:  {}",
+        plugin
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".into())
+    );
 
     let began = std::time::Instant::now();
-    match skein_lib::slash::ask(&program, &cwd) {
+    match skein_lib::slash::ask(&program, &cwd, plugin.as_deref()) {
         Err(why) => println!("\nfailed after {:?}: {why}", began.elapsed()),
         Ok(found) => {
             println!("\n{} commands in {:?}\n", found.len(), began.elapsed());

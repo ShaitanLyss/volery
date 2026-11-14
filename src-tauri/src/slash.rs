@@ -68,6 +68,15 @@
 //! rather than argued. The account is not swapped either: plugins and command
 //! files live on disk under `~/.claude`, shared by every subscription, so the
 //! answer does not depend on who is signed in.
+//!
+//! **One flag is not minimal, and it is the kit.** A project card is spawned with
+//! `--plugin-dir <app data>/kit/volery` (`kit.md`), and the palette learns what
+//! a directory offers from *this* child. Without the same flag the wall's own
+//! bundled skill is absent from the one surface built to find names — so
+//! `/coordinate` matched nothing, which is the same failure `commands.md` names
+//! one layer up: a capability an agent cannot see is indistinguishable from one
+//! it declined to use. A chat card is the exception, because it is spawned
+//! without the kit; `plugin_for` is where the two are told apart.
 
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Write};
@@ -133,20 +142,38 @@ pub async fn slash_commands(app: AppHandle, cwd: String) -> Result<Vec<SlashComm
         let home = app.path().home_dir().map_err(|e| format!("no home dir: {e}"))?;
         crate::claude::program(&home)
     };
-    crate::off_main(move || ask(&program, &cwd)).await?
+    let plugin = plugin_for(&app, &cwd);
+    crate::off_main(move || ask(&program, &cwd, plugin.as_deref())).await?
 }
 
-/// The spawn, the request and the wait, apart from the command that carries it.
+/// The kit a card standing in this directory is spawned with, or none.
 ///
-/// `pub` so `examples/slash-probe.rs` can drive it without a Tauri app; the
-/// command above is the only caller inside it.
-pub fn ask(program: &str, cwd: &str) -> Result<Vec<SlashCommand>, String> {
-    let mut cmd = Command::new(program);
-    cmd.current_dir(cwd);
+/// The palette's child has to be given the same `--plugin-dir` the card itself
+/// gets, or the kit's skill is missing from the list of names — see the module
+/// note. One directory is refused it: the chat home, because a chat card is
+/// spawned without the kit (`chat.md`) and `coordinate` there would name a
+/// method it cannot carry out. Asked of the store rather than of a card, since
+/// the palette works before any card in the directory has a process.
+fn plugin_for(app: &AppHandle, cwd: &str) -> Option<std::path::PathBuf> {
+    if let Some(store) = app.try_state::<crate::store::Store>() {
+        let chat = crate::store::canonical_root(&store.1.join("chat").to_string_lossy());
+        if crate::supervisor::real_dir(cwd).eq_ignore_ascii_case(&chat) {
+            return None;
+        }
+    }
+    crate::kit::dir(app)
+}
+
+/// The argv the throwaway is spawned with.
+///
+/// Split out so the one flag that is not minimal — the kit — is asserted rather
+/// than eyeballed: a build that dropped it would leave the palette exactly as it
+/// was, which is a silent failure with no other symptom.
+fn argv(plugin: Option<&std::path::Path>) -> Vec<std::ffi::OsString> {
     /* Everything needed to be spoken to over stdin and nothing else. No bypass
        flag: this process never runs a tool, and an untrusted directory answers
        without one (see the module note). */
-    cmd.args([
+    let mut argv: Vec<std::ffi::OsString> = [
         "--print",
         "--input-format",
         "stream-json",
@@ -154,7 +181,29 @@ pub fn ask(program: &str, cwd: &str) -> Result<Vec<SlashCommand>, String> {
         "stream-json",
         "--verbose",
         "--strict-mcp-config",
-    ]);
+    ]
+    .into_iter()
+    .map(std::ffi::OsString::from)
+    .collect();
+    if let Some(dir) = plugin {
+        argv.push("--plugin-dir".into());
+        argv.push(dir.as_os_str().to_owned());
+    }
+    argv
+}
+
+/// The spawn, the request and the wait, apart from the command that carries it.
+///
+/// `pub` so `examples/slash-probe.rs` can drive it without a Tauri app; the
+/// command above is the only caller inside it.
+pub fn ask(
+    program: &str,
+    cwd: &str,
+    plugin: Option<&std::path::Path>,
+) -> Result<Vec<SlashCommand>, String> {
+    let mut cmd = Command::new(program);
+    cmd.current_dir(cwd);
+    cmd.args(argv(plugin));
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
@@ -378,6 +427,27 @@ mod tests {
         assert!(found[0].description.ends_with('…'));
         /* Cut on a word, not mid-word. */
         assert!(!found[0].description.contains("wor…"));
+    }
+
+    /// The palette's child gets the kit a project card gets, and nothing does
+    /// when no kit was named.
+    ///
+    /// This is the one flag that is not minimal, and the failure of dropping it
+    /// is silent and total: the wall's own `volery:coordinate` simply is not in
+    /// the list, and `/coordinate` matches nothing. Asserted rather than left to
+    /// a probe, because the probe is somebody remembering to pass the argument.
+    #[test]
+    fn the_probe_carries_the_kit_when_one_is_named() {
+        let plain = argv(None);
+        assert!(
+            !plain.iter().any(|a| a == "--plugin-dir"),
+            "no kit named is no flag"
+        );
+        let kit = argv(Some(std::path::Path::new(r"C:\kit\volery")));
+        let n = kit.len();
+        assert_eq!(kit[n - 2], "--plugin-dir");
+        assert_eq!(kit[n - 1], r"C:\kit\volery");
+        assert_eq!(n, plain.len() + 2, "one flag and its value, no duplicates");
     }
 
     #[test]
