@@ -20,7 +20,7 @@
  */
 
 import { isEffort, type Effort } from "./commands";
-import { PROVIDER_PRESETS, type ProviderId } from "./providers";
+import { PROVIDER_PRESETS, SPAWN_ONLY_PRESETS, type ProviderId } from "./providers";
 
 export type Preset = {
   /** What a menu item and a stored row call it. Stable; the label is not. */
@@ -166,7 +166,14 @@ export const PRESETS: Preset[] = [
 ];
 
 export function presetById(id: string | undefined): Preset | undefined {
-  return PRESETS.find((p) => p.id === id) ?? PROVIDER_PRESETS.find((p) => p.id === id);
+  return (
+    PRESETS.find((p) => p.id === id) ??
+    PROVIDER_PRESETS.find((p) => p.id === id) ??
+    /* A preset no menu offers, which a spawn can still name — see the note on
+       `SPAWN_ONLY_PRESETS`. Resolved so a card opened on `pro` displays as one;
+       never listed, so nobody is offered an effort it does not take. */
+    SPAWN_ONLY_PRESETS.find((p) => p.id === id)
+  );
 }
 
 /** What the plain `+` opens a card as when nobody has ever said.

@@ -166,6 +166,7 @@
   import { adrift, Portage } from "./lib/portage.svelte";
   import { sayBlocked, usable } from "./lib/accounts";
   import { waterfall } from "./lib/waterfall.svelte";
+  import { standings } from "./lib/standings.svelte";
   import { purse } from "./lib/purse.svelte";
   import { boostLabel, onCredits, sayBoost } from "./lib/credits";
   import { boost } from "./lib/boost.svelte";
@@ -180,7 +181,6 @@
   import {
     FALLBACK_DEFAULT_PRESET,
     presetById,
-    presetPicks,
     spawnPairOf,
     type Preset,
   } from "./lib/presets";
@@ -1709,6 +1709,7 @@
   $effect(() => {
     untrack(() => {
       void skein.load();
+      void standings.ensure();
       void board.load();
       void widgets.load();
       void ambience.load();
@@ -3085,7 +3086,8 @@
          `defaultPresetFor` would pick rather than nothing. */
       target = {
         kind: "spawn",
-        presets: presetPicks(),
+        presets: standings.picks(),
+        presetFoot: standings.foot(),
         presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
       };
       act = (id, mod) => {
@@ -4872,7 +4874,8 @@
            old to understand a provider, refuses the ask at once and says which
            — a refusal naming the machine is a better answer than a row that is
            not there. */
-        presets: presetPicks(),
+        presets: standings.picks(),
+        presetFoot: standings.foot(),
         presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
       },
       act: (which) => {
@@ -5048,7 +5051,8 @@
          right-click cannot come to disagree about what a card costs. The
          default rides along only to be *marked* — the row above opens on it,
          and this is the list that says which one that is. */
-      presets: presetPicks(),
+      presets: standings.picks(),
+      presetFoot: standings.foot(),
       presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
       pools: skein.pools[cwd] ?? [],
       /* Where its cards could all go: the card menu's `move` filter, for
@@ -5339,7 +5343,8 @@
          since the territory would still be carrying it. So it is not offered,
          which is a real answer here — see menu.ts. */
       held: heldByGlassTerritory(conv),
-      presets: presetPicks(),
+      presets: standings.picks(),
+      presetFoot: standings.foot(),
     };
   }
 

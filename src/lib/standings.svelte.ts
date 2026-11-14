@@ -17,9 +17,12 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { presetById, presetPicks } from "./presets";
 import {
   aliasOf,
   profileFor,
+  sayAsOf,
+  standingLine,
   type Entry,
   type Profile,
   type Ranked,
@@ -52,6 +55,11 @@ export type Catalogue = {
     vendor: boolean;
   }[];
 };
+
+/** The basis every blended price is made of, said once on a menu's foot rather
+ *  than on each row. Kept in step by nothing but its own spelling — it is prose
+ *  rather than arithmetic, and `benchmarks.rs::PRICE_BASIS` is the number. */
+const PRICE_BASIS = "blended 3:1 per 1M";
 
 class ModelStandings {
   /** Which workflow the panel is showing. Null means "the one that fits": the
@@ -135,6 +143,34 @@ class ModelStandings {
   /** The wall's name for a model, resolved to the version a reading is about. */
   entryForAlias(alias: string | null | undefined): Entry | null {
     return this.entryFor(aliasOf(alias)?.model ?? null);
+  }
+
+  /** The `+`'s preset rows with the measurement on each: the same shape
+   *  `presetPicks` builds, plus a standing line wherever there is a view. It is
+   *  the store that appends rather than `presets.ts`, because that file is pure
+   *  and a menu is not where a fetch belongs. */
+  picks(): { id: string; label: string; note: string; standing?: string }[] {
+    return presetPicks().map((p) => {
+      if (!this.view) return p;
+      const entry = this.entryForAlias(presetById(p.id)?.model ?? null);
+      return { ...p, standing: standingLine(entry, this.profile) };
+    });
+  }
+
+  /** The menu's foot: which profile those standings are on, the price basis,
+   *  and how old the reading is. Null when nothing has been read, so a menu
+   *  with no data says nothing rather than naming a profile it has not read. */
+  foot(): string | undefined {
+    if (!this.view) return undefined;
+    return `${this.profile.label} profile · ${PRICE_BASIS} · ${sayAsOf(this.sources)}`;
+  }
+
+  /** Asked once at launch so the first right-click is not a menu with no
+   *  standing lines on it. Not a poller: `load` answers from the cache inside
+   *  the day floor, and the fetch happens at most once a day whichever surface
+   *  asks first. */
+  ensure(): void {
+    if (!this.view && !this.loading) void this.load(profileFor("project").id);
   }
 }
 

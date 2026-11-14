@@ -12,6 +12,11 @@ import {
   effortLabel,
   frontierSaid,
   meets,
+  missingNames,
+  reportedNote,
+  sayProvenance,
+  tierLabel,
+  tiers,
   menuLine,
   membersOf,
   modelOf,
@@ -21,6 +26,7 @@ import {
   sayAsOf,
   sayPrice,
   scored,
+  standingLine,
   sourceLabel,
   tagsFor,
   weightsOf,
@@ -46,6 +52,11 @@ const entry = (over: Partial<Entry> = {}): Entry => ({
   toolUse: true,
   efficient: true,
   rank: 1,
+  coverage: 1,
+  present: 3,
+  members: 3,
+  reported: 0,
+  evidence: null,
   components: [],
   missing: [],
   ...over,
@@ -159,6 +170,20 @@ describe("the aliases", () => {
     expect(aliasOf("gpt-9000")).toBeNull();
     expect(modelOf("gpt-9000")).toBeNull();
   });
+
+  /* The snapshot the table was checked against, held beside it. A source that
+     renames a key leaves an alias pointing at a version nothing publishes, and
+     the menu then says "no reading" for ever with nothing red anywhere. This is
+     the guard: refresh the fixture and an alias that no longer resolves goes
+     red, in the suite rather than in a menu. */
+  test("every alias names a model the snapshot actually carries", () => {
+    const snap = JSON.parse(readFileSync(join(REPO, "test", "fixtures", "benchlm-models.json"), "utf8"));
+    const keys = new Set(snap.items.map((m: { canonicalModelKey: string }) => m.canonicalModelKey));
+    for (const a of ALIASES) {
+      expect(`${a.alias} → ${a.model}`).toBeTruthy();
+      expect(keys.has(a.model!)).toBe(true);
+    }
+  });
 });
 
 describe("task tags", () => {
@@ -252,6 +277,13 @@ describe("what a surface says", () => {
     expect(menuLine(null, profileFor("chat"), "nothing read yet")).toContain("no reading");
   });
 
+  test("a menu row says the profile, the score and a compact price", () => {
+    const line = standingLine(entry({ quality: 65.7, price: 8 }), profileFor("project"));
+    expect(line).toBe("coding agent 65.7 · $8.00/1M");
+    expect(standingLine(entry({ quality: null, price: 0.2 }), profileFor("project"))).toContain("no score");
+    expect(standingLine(null, profileFor("project"))).toContain("no reading");
+  });
+
   test("source names are the products' own", () => {
     expect(sourceLabel("benchlm")).toBe("BenchLM");
     expect(sourceLabel("artificial-analysis")).toBe("Artificial Analysis");
@@ -306,6 +338,66 @@ describe("the frontier's sentence", () => {
     const rows = [entry({ key: "good", quality: 80, price: 1 }), entry({ key: "dominated", quality: 40, price: 9, efficient: false })];
     expect(frontierSaid(rows)).not.toContain("dominated");
     expect(scored(rows)).toBe(2);
+  });
+});
+
+describe("coverage tiers", () => {
+  test("the table is grouped by how many members an entry was scored over", () => {
+    const rows = [
+      entry({ key: "a", present: 2, quality: 90 }),
+      entry({ key: "b", present: 3, quality: 50 }),
+      entry({ key: "c", present: 3, quality: 80 }),
+      entry({ key: "d", present: 1, quality: null }),
+    ];
+    const { scored, unscored } = tiers(rows);
+    expect(scored.map((t) => t.present)).toEqual([3, 2]);
+    expect(scored[0].rows.map((r) => r.key)).toEqual(["b", "c"]);
+    expect(unscored.map((r) => r.key)).toEqual(["d"]);
+  });
+
+  test("a tier says the fact rather than an adjective", () => {
+    expect(tierLabel({ present: 3, members: 3, rows: [] })).toBe("every member");
+    expect(tierLabel({ present: 2, members: 3, rows: [] })).toBe("2 of 3 members");
+  });
+
+  test("a missing member is named, not just counted", () => {
+    const row = entry({
+      components: [
+        { benchmark: "gpqa", name: "GPQA Diamond", weight: 0.5, score: 93.6, unit: "score (0-100)", source: "benchlm", published: null, vendor: false, publisher: null },
+        { benchmark: "hle", name: "HLE", weight: 0.5, score: null, unit: "", source: "", published: null, vendor: false, publisher: null },
+      ],
+      missing: ["hle"],
+    });
+    expect(missingNames(row)).toEqual(["HLE"]);
+  });
+});
+
+describe("provenance", () => {
+  const part = (over: Record<string, unknown> = {}) => ({
+    benchmark: "agentsLastExam",
+    name: "Agents' Last Exam",
+    weight: 0.1,
+    score: 35.4,
+    unit: "score (0-100)",
+    source: "benchlm" as const,
+    published: null,
+    vendor: false,
+    publisher: null,
+    ...over,
+  });
+
+  test("three states, and the third is not independence", () => {
+    expect(sayProvenance(part({ publisher: "Vals AI" }))).toBe("Vals AI");
+    expect(sayProvenance(part({ vendor: true }))).toBe("the model's own developer");
+    expect(sayProvenance(part({ vendor: true, publisher: "DeepSeek" }))).toBe(
+      "DeepSeek (the model's own developer)",
+    );
+    expect(sayProvenance(part())).toBe("publisher not stated");
+  });
+
+  test("a row says how many of its numbers are the developer's own", () => {
+    expect(reportedNote(entry({ reported: 0 }))).toBe("");
+    expect(reportedNote(entry({ reported: 2 }))).toBe("2 provider-reported");
   });
 });
 

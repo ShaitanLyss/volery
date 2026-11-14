@@ -91,12 +91,27 @@ export const PROVIDER_PRESETS: Preset[] = [
     model: "deepseek-flash",
     provider: "deepseek",
   },
+];
+
+/** The provider rows that are **not offered in a menu, but still resolve**.
+ *
+ *  `ds-pro` was withheld from `PROVIDER_PRESETS` on 2026-11-13 at the user's
+ *  call: on the coding-agent profile `flash` is both better and cheaper, and the
+ *  row's `effort: high` claimed a level this provider takes no wall effort for —
+ *  the alias table says `not-stated`, and `--effort` has never been probed to
+ *  reach DeepSeek's own depth dial (`output_config.effort`, a 1-100 scalar;
+ *  `thinking.budget_tokens` is ignored and both `medium` and `xhigh` land on
+ *  `high`). So the label is gone rather than corrected, and the model itself is
+ *  untouched: `spawn` still takes `pro`, `ALIASES` still maps it, and the
+ *  benchmark rows still carry it. Menus iterate `PROVIDER_PRESETS`; this table
+ *  is read only by `presetById`, which is how a spawned `pro` card still
+ *  displays as one. */
+export const SPAWN_ONLY_PRESETS: Preset[] = [
   {
     id: "ds-pro",
     label: "the hard thing, on deepseek",
-    note: "v4 pro · high",
+    note: "v4 pro",
     model: "deepseek-v4-pro",
-    effort: "high" as Effort,
     provider: "deepseek",
   },
 ];

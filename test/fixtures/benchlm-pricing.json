@@ -5,6 +5,36 @@
  "attribution": "Data from BenchLM.ai",
  "items": [
   {
+   "canonicalModelKey": "bonsai-1-7b",
+   "slug": "bonsai-1-7b",
+   "model": "1-bit Bonsai 1.7B",
+   "inputPrice": 0,
+   "outputPrice": 0,
+   "hasNumericPricing": true,
+   "isFreePricing": true,
+   "note": "Self-hosted open-weight model. Public hosted pricing varies by provider and infrastructure."
+  },
+  {
+   "canonicalModelKey": "claude-fable-5-2",
+   "slug": "claude-fable-5-2",
+   "model": "Claude Fable 5.2",
+   "inputPrice": 8,
+   "outputPrice": 40,
+   "hasNumericPricing": true,
+   "isFreePricing": false,
+   "note": "Anthropic's November 9, 2026 launch page and Claude API pricing page list `claude-fable-5-2` at $8 input / $40 output per million tokens, down from $10 / $50 for Fable 5.1. Cache writes cost $10 (5-minute) and $16 (1-hour), cache reads $0.20, and the Batch API halves input and output to $4 / $20. Fast mode costs $16 / $80."
+  },
+  {
+   "canonicalModelKey": "claude-haiku-5-5",
+   "slug": "claude-haiku-5-5",
+   "model": "Claude Haiku 5.5",
+   "inputPrice": 0.1,
+   "outputPrice": 0.5,
+   "hasNumericPricing": true,
+   "isFreePricing": false,
+   "note": "Anthropic lists $0.10 input / $0.50 output per million tokens for prompts up to 100,000 tokens; prompts over 100,000 tokens cost $0.50 / $2.50. Cache reads cost $0.01 / $0.05 per million tokens at those respective tiers; cache writes cost $0.125 / $0.625 (5-minute) or $0.20 / $1.00 (1-hour). Batch API input and output receive a 50% discount. Pricing fields store the lower prompt tier."
+  },
+  {
    "canonicalModelKey": "claude-opus-5-5",
    "slug": "claude-opus-5-5",
    "model": "Claude Opus 5.5",
@@ -35,6 +65,16 @@
    "note": "MIT-licensed weights for the March 2025 checkpoint are available for self-hosting. We haven't confirmed a current official API price for this checkpoint. The deepseek-chat alias has since moved to newer releases."
   },
   {
+   "canonicalModelKey": "deepseek-v4-pro-max",
+   "slug": "deepseek-v4-pro-0813",
+   "model": "DeepSeek V4 Pro 0813",
+   "inputPrice": 1.32,
+   "outputPrice": 3.96,
+   "hasNumericPricing": true,
+   "isFreePricing": false,
+   "note": "DeepSeek's pricing page, read September 25, 2026, lists `deepseek-v4-pro` (model version DeepSeek-V4-Pro-0813) with peak and off-peak rates, effective 16:00 UTC on August 16, 2026 per DeepSeek's August 13, 2026 V4-Pro GA announcement and change log (https://api-docs.deepseek.com/news/news260813, https://api-docs.deepseek.com/updates/). The stored values are the peak rates: $1.32 cache-miss input / $0.044 cache-hit input / $3.96 output per million tokens. Off-peak rates are half of peak: $0.66 / $0.022 / $1.98. Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday, excluding Chinese public holidays; all other hours are off-peak. The page lists a 1M context length, a 384K maximum output, and a 500-request concurrency limit, and no Batch API discount. DeepSeek's September 10, 2026 V4.1 Flash announcement said `deepseek-v4-pro` requests would route to DeepSeek-V4.1-Flash and bill at the V4.1 Flash rate from 04:00 UTC on September 14, 2026 until V4.1 Pro launches. DeepSeek then said V4 Pro API service continues after September 14, 2026 with the billing method unchanged and that it will give notice of any change: on its pricing page, read September 17, 2026, and in its change log entry for September 10, read September 25, 2026 (https://api-docs.deepseek.com/news/news260910). This row previously stored the flat $0.435 cache-miss input / $0.003625 cache-hit input / $0.87 output rate from the pricing page checked August 12, 2026, before the peak/off-peak schedule took effect."
+  },
+  {
    "canonicalModelKey": "deepseek-v4-1-flash",
    "slug": "deepseek-v4-1-flash",
    "model": "DeepSeek V4.1 Flash 1017",
@@ -43,16 +83,6 @@
    "hasNumericPricing": true,
    "isFreePricing": false,
    "note": "DeepSeek's pricing page read October 17, 2026 lists `deepseek-flash` with model version DeepSeek-V4.1-Flash-1017 at the same peak and off-peak rates, and DeepSeek's October 17, 2026 changelog says the upgrade leaves the API calling method and pricing unchanged (https://api-docs.deepseek.com/updates). DeepSeek's pricing page checked September 10, 2026 lists `deepseek-flash` (model version DeepSeek-V4.1-Flash) with peak and off-peak rates, effective 04:00 UTC on September 10, 2026. The stored values are the peak rates: $0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per million tokens. Off-peak rates are half of peak: $0.15 / $0.003 / $0.60. Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday; all other hours are off-peak. The page lists a 1M context length, a 384K maximum output, and a 2,500-request concurrency limit. The legacy `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` IDs route to this model at the same Flash price, and DeepSeek's September 10, 2026 announcement said `deepseek-v4-pro` requests would join them from 04:00 UTC on September 14, 2026. DeepSeek's pricing page, read September 17, 2026, says V4 Pro API service continues after September 14, 2026 with the billing method unchanged, and that DeepSeek will give notice of any change; the September 10 post had not been edited when read the same day (https://api-docs.deepseek.com/news/news260910, https://api-docs.deepseek.com/quick_start/pricing). MIT-licensed weights are also published on Hugging Face for self-hosting."
-  },
-  {
-   "canonicalModelKey": "deepseek-v3-0324",
-   "slug": "deepseek-v3-0324",
-   "model": "DeepSeek V3 0324",
-   "inputPrice": 0,
-   "outputPrice": 0,
-   "hasNumericPricing": true,
-   "isFreePricing": true,
-   "note": "Self-hosted open-weight model."
   }
  ]
 }

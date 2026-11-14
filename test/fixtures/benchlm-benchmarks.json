@@ -10,6 +10,7 @@
    "category": "knowledge",
    "capabilityCategory": "knowledge",
    "format": "Multiple choice questions",
+   "description": "A display-only GPQA Diamond reference from provider comparison charts.",
    "scoringBasis": null,
    "weight": null
   },
@@ -19,6 +20,7 @@
    "category": "knowledge",
    "capabilityCategory": "knowledge",
    "format": "10-way multiple choice",
+   "description": "An enhanced version of MMLU with 10 answer choices instead of 4, featuring more reasoning-focused questions that better differentiate frontier models.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.055555555555555546
   },
@@ -28,8 +30,19 @@
    "category": "knowledge",
    "capabilityCategory": "knowledge",
    "format": "Open-ended and multiple choice",
+   "description": "An expert-authored benchmark designed to probe frontier knowledge and reasoning. BenchLM keeps protocol differences visible because tool-assisted and closed-book HLE runs answer different questions.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.44444444444444436
+  },
+  {
+   "benchmarkKey": "valsGpqaDiamond",
+   "name": "GPQA Diamond (Vals)",
+   "category": "knowledge",
+   "capabilityCategory": "knowledge",
+   "format": "Accuracy",
+   "description": "Vals AI\u2019s independent run of the GPQA Diamond graduate-level science questions.",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.022222222222222216
   },
   {
    "benchmarkKey": "humaneval",
@@ -37,6 +50,7 @@
    "category": "coding",
    "capabilityCategory": "coding",
    "format": "Python function generation",
+   "description": "HumanEval tests whether generated Python functions pass unit tests on 164 handwritten problems. These scores describe function-level correctness; they do not measure repository work or a coding agent.",
    "scoringBasis": null,
    "weight": null
   },
@@ -46,6 +60,7 @@
    "category": "coding",
    "capabilityCategory": "coding",
    "format": "Code patch generation",
+   "description": "SWE-bench Verified tests patches for 500 human-filtered GitHub issues. A score measures how many tasks an evaluated model-and-agent setup resolved; the model name alone does not identify that setup.",
    "scoringBasis": null,
    "weight": null
   },
@@ -55,6 +70,7 @@
    "category": "coding",
    "capabilityCategory": "coding",
    "format": "Competitive-programming evaluation",
+   "description": "A continuously updated coding benchmark built from newly collected LeetCode, AtCoder, and Codeforces problems. Fresh problem windows reduce one contamination path, but results still need a release and setup check.",
    "scoringBasis": null,
    "weight": null
   },
@@ -64,6 +80,17 @@
    "category": "coding",
    "capabilityCategory": "coding",
    "format": "Cleanroom executable reimplementation",
+   "description": "A cleanroom software-engineering benchmark where agents receive only a compiled executable and documentation, then must architect and implement a complete codebase that reproduces the original program's behavior.",
+   "scoringBasis": null,
+   "weight": null
+  },
+  {
+   "benchmarkKey": "valsSweBench",
+   "name": "SWE-bench (Vals)",
+   "category": "coding",
+   "capabilityCategory": "coding",
+   "format": "Resolved rate",
+   "description": "Vals AI\u2019s independent run of the public SWE-bench issue set, reported by human time-to-fix bucket. Vals removed SWE-bench Verified from its index as saturated on 2026-05-04; this board is the standalone SWE-bench run.",
    "scoringBasis": null,
    "weight": null
   },
@@ -73,6 +100,7 @@
    "category": "coding",
    "capabilityCategory": "coding",
    "format": "Pass@1 with confidence interval, cost, time, and token metadata",
+   "description": "A long-horizon software engineering benchmark from Datacurve for measuring frontier coding agents on original tasks drawn from active open-source repositories.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.1530612244897959
   },
@@ -82,6 +110,7 @@
    "category": "math",
    "capabilityCategory": "math",
    "format": "Pass@1 math benchmark",
+   "description": "A high-difficulty mathematical reasoning benchmark reported in DeepSeek-V4 model evaluations.",
    "scoringBasis": null,
    "weight": null
   },
@@ -91,6 +120,7 @@
    "category": "reasoning",
    "capabilityCategory": "reasoning",
    "format": "Verified accuracy",
+   "description": "ARC Prize fluid-intelligence benchmark using novel visual grid transformations.",
    "scoringBasis": null,
    "weight": null
   },
@@ -100,6 +130,7 @@
    "category": "reasoning",
    "capabilityCategory": "reasoning",
    "format": "Extended-context retrieval and reasoning",
+   "description": "A long-context benchmark that measures whether models can actually use extended context windows for reasoning and retrieval.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.05
   },
@@ -109,6 +140,7 @@
    "category": "reasoning",
    "capabilityCategory": "reasoning",
    "format": "Multi-round long-context evaluation",
+   "description": "A long-context benchmark for memory, retrieval, and multi-round coherence over large contexts.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.2
   },
@@ -118,6 +150,7 @@
    "category": "reasoning",
    "capabilityCategory": "reasoning",
    "format": "Long-context retrieval MMR",
+   "description": "A million-token MRCR long-context retrieval benchmark reported in DeepSeek-V4 model evaluations.",
    "scoringBasis": null,
    "weight": null
   },
@@ -127,6 +160,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Task completion rate across 5 trials per task",
+   "description": "The current Terminal-Bench release keeps the 66 professional computer-work tasks of 4.0 and regrades every saved trial with verifiers hardened against reward hacking and overly strict checks.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.09022556390977442
   },
@@ -136,6 +170,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Elo",
+   "description": "An independently evaluated professional-work benchmark reported as Elo.",
    "scoringBasis": null,
    "weight": null
   },
@@ -145,6 +180,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Web search and evidence synthesis",
+   "description": "BrowseComp tests whether a browsing agent can find difficult, fact-seeking answers across the web. Its 1,266 problems use short answers that are easier to grade than an open-ended research report.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.09022556390977442
   },
@@ -154,6 +190,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Elo",
+   "description": "An agentic real-world work-task evaluation reported as an Elo score in DeepSeek-V4 thinking-mode evaluations.",
    "scoringBasis": null,
    "weight": null
   },
@@ -163,6 +200,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Aggregated model score",
+   "description": "A display-only Artificial Analysis agentic index.",
    "scoringBasis": null,
    "weight": null
   },
@@ -172,6 +210,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Agent task-completion score",
+   "description": "An agent benchmark for completing automation workflows in reproducible task environments.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.060150375939849614
   },
@@ -181,6 +220,7 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Provider-reported task score",
+   "description": "An agent benchmark reported in DeepSeek's V4 Flash 0731 launch comparison.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.030075187969924807
   },
@@ -190,8 +230,19 @@
    "category": "agentic",
    "capabilityCategory": "agentic",
    "format": "Search / open / find browser-agent evaluation",
+   "description": "An agentic browsing benchmark where models search the web, gather evidence, and answer list-style questions using browser tools.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.022556390977443604
+  },
+  {
+   "benchmarkKey": "valsTerminalBench21",
+   "name": "Terminal-Bench 2.1 (Vals)",
+   "category": "agentic",
+   "capabilityCategory": "agentic",
+   "format": "Task success rate",
+   "description": "Vals AI\u2019s independent run of the Terminal-Bench 2.1 terminal-task suite with published easy, medium, and hard splits.",
+   "scoringBasis": "bench-align-basket",
+   "weight": 0.037593984962406006
   },
   {
    "benchmarkKey": "chartography",
@@ -199,6 +250,7 @@
    "category": "multimodalGrounded",
    "capabilityCategory": "multimodalGrounded",
    "format": "Accuracy without tools",
+   "description": "Professional chart understanding across 100 specialized chart types with expert-set answer tolerances.",
    "scoringBasis": null,
    "weight": null
   },
@@ -208,6 +260,7 @@
    "category": "multimodalGrounded",
    "capabilityCategory": "multimodalGrounded",
    "format": "Image + text question answering",
+   "description": "A broad multimodal reasoning benchmark spanning charts, diagrams, tables, and academic visual question answering.",
    "scoringBasis": null,
    "weight": null
   },
@@ -217,6 +270,7 @@
    "category": "multimodalGrounded",
    "capabilityCategory": "multimodalGrounded",
    "format": "Image + text question answering",
+   "description": "A harder multimodal benchmark for frontier models that combines text with images, diagrams, charts, and academic visual reasoning tasks.",
    "scoringBasis": "bench-align-basket",
    "weight": 0.3
   },
@@ -226,6 +280,7 @@
    "category": "multimodalGrounded",
    "capabilityCategory": "multimodalGrounded",
    "format": "Multimodal visual reasoning",
+   "description": "A multimodal benchmark for fine-grained visual perception and grounded reasoning tasks.",
    "scoringBasis": null,
    "weight": null
   }

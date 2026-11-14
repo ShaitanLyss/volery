@@ -12,6 +12,14 @@
  "attribution": "Data from BenchLM.ai",
  "items": [
   {
+   "canonicalModelKey": "claude-haiku-5-5",
+   "slug": "claude-haiku-5-5",
+   "model": "Claude Haiku 5.5",
+   "tokensPerSecond": 241,
+   "ttft": 343.38,
+   "sourceUpdatedAt": "2026-11-12"
+  },
+  {
    "canonicalModelKey": "deepseek-v4-1-flash",
    "slug": "deepseek-v4-1-flash",
    "model": "DeepSeek V4.1 Flash 1017",
@@ -33,6 +41,14 @@
    "model": "Claude Opus 5.5",
    "tokensPerSecond": 98,
    "ttft": 663.66,
+   "sourceUpdatedAt": "2026-11-12"
+  },
+  {
+   "canonicalModelKey": "deepseek-v4-pro-max",
+   "slug": "deepseek-v4-pro-0813",
+   "model": "DeepSeek V4 Pro 0813",
+   "tokensPerSecond": 87,
+   "ttft": 1.68,
    "sourceUpdatedAt": "2026-11-12"
   }
  ]

@@ -150,14 +150,21 @@ pub fn apply(app: &AppHandle, cmd: &mut Command, p: &'static Provider) -> Result
        window. Volery has its own compaction, and this is the CLI's trigger —
        left at its default it fires at a Claude-sized fraction. */
     cmd.env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "786432");
-    /* DeepSeek's Anthropic endpoint cannot round-trip its own thinking blocks
-       through a tool-use history: the next request is refused with
-       `content[].thinking … must be passed back`, and Claude Code's stored
-       *Claude* blocks are not DeepSeek's format either. Thinking off is the one
-       setting that makes a DeepSeek turn replayable; the CLI's own refusal text
-       names this variable as the way to turn it back on. A card that moves back
-       to Claude keeps the thinking already in the shared session file — nothing
-       here touches the transcript. */
+    /* **This does not turn DeepSeek's thinking off, and it never did.** Probed
+       on 2026-11-13 (`tools/probe-deepseek-effort.ts`, `docs/DEEPSEEK-EFFORT.md`):
+       the same prompt produced 692 thinking characters with this set to `0` and
+       821 with it unset, and card sessions carry thinking blocks either way.
+       DeepSeek's endpoint ignores Claude's thinking *budget*, which is what this
+       variable configures; its own control is `output_config.effort` (a 1-100
+       scalar), and the card path never sends that. What keeps a DeepSeek turn
+       replayable is the CLI, not this setting: probed 2026-11-04, the CLI keeps
+       the signed blocks in the session JSONL and strips them from the request
+       with thinking on or off — so the refusal the variable was supposed to
+       avoid is avoided by the wire, and this line only avoids paying for a
+       budget nothing reads. Kept (and removed again by `withhold`) because the
+       CLI's own refusal text still names it as the switch; a card that moves
+       back to Claude keeps the thinking already in the shared session file,
+       since nothing here touches the transcript. */
     cmd.env("MAX_THINKING_TOKENS", "0");
     /* **Claude Code 2.1.286+ can inline a deferred tool's whole schema in a
        system message**, as a `tool_definition` content block, under the
@@ -322,8 +329,9 @@ pub fn withhold(cmd: &mut Command) {
            from seeing `tool_definition`. Inherited by a Claude card it would
            turn a Claude feature off for the rest of the wall. */
         "CLAUDE_CODE_INLINE_TOOLS",
-        /* Thinking is off for a provider card (`apply`); an ordinary card
-           inheriting the switch would quietly stop thinking for good. */
+        /* Set for a provider card (`apply`), where it configures a budget
+           DeepSeek ignores; an ordinary card inheriting it would spend nothing
+           on thinking. See the probe note in `apply`. */
         "MAX_THINKING_TOKENS",
         /* The empty store `apply` points at. Inherited, it would make an
            ordinary card report `authMethod: "none"` on a wall it did not start

@@ -42,14 +42,27 @@ MCP. `provider::apply` sets the base URL, the token, the five model variables an
 `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CODE_ENTRYPOINT` first. Each of those outranks something
 being set; the empty store is the second lock against falling through to the machine's sign-in.
 
-**Thinking is off on a provider card** (`MAX_THINKING_TOKENS=0`, removed again by
-`withhold`). DeepSeek's Anthropic endpoint refuses a tool-use history that carries thinking
-blocks (`content[].thinking … must be passed back`), and Claude's blocks are not its format;
-the CLI's own refusal text names this variable as the way back on. **Claude's thinking is
-never replayed to any endpoint anyway** — probed 2026-11-04 against a copied session: the
-CLI keeps the signed blocks in the JSONL and strips them from the request, with thinking on
-or off. They are preserved as a record, not a context the model resumes; the move needs no
-sidecar. See `docs/PROVIDERS.md`.
+**`MAX_THINKING_TOKENS=0` is kept, and it is not what turns DeepSeek's thinking off — that
+paragraph was wrong.** Probed 2026-11-13 (`tools/probe-deepseek-effort.ts`,
+`docs/DEEPSEEK-EFFORT.md`): the same prompt gave 692 thinking characters with the variable at
+`0` and 821 with it unset, and card sessions carry thinking blocks either way. What it
+configures is Claude's thinking *budget*, which DeepSeek's endpoint ignores; DeepSeek's own
+control is `output_config.effort` (low 50 / high 75 / max 100, with `medium` and `xhigh` both
+mapping to `high`), and the card path never sends it. **And `--effort` does not reach that
+dial either**: across none/low/medium/high/xhigh/max a probe saw 244/172/321/243/222/199 output
+tokens, with no monotonic effect, while the provider's own parameter moved flash 314/544/772
+on the same task. So no wall effort level is claimed for a DeepSeek preset until Volery passes
+`output_config.effort` itself; `flash` carries none.
+
+What keeps a DeepSeek turn replayable is the CLI rather than this variable — probed 2026-11-04
+against a copied session: the CLI keeps the signed blocks in the JSONL and strips them from
+the request, with thinking on or off. They are preserved as a record, not a context the model
+resumes; the move needs no sidecar. See `docs/PROVIDERS.md` and `docs/DEEPSEEK-EFFORT.md`.
+
+**And the provider API's Pro id is `deepseek-v4-pro`.** `deepseek-v4-pro-0813` answers 400
+there. BenchLM spells the same model `deepseek-v4-pro-max` in its catalogue, which is why
+`benchmarks.ts::ALIASES` maps the wall's name to *that* key: the catalogue's key and the
+provider's id are two namespaces and neither is a correction of the other.
 
 **Inline tools are off for a provider card** (`CLAUDE_CODE_INLINE_TOOLS=0`, 2.1.280+, removed
 again by `withhold`). From 2.1.286 the CLI can put a deferred MCP tool's whole schema in a

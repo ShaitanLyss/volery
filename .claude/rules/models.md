@@ -65,6 +65,39 @@ else's electricity". Those get no price reading at all.
 has a multimodal benchmark reading and `tool_use: true` when it has an agentic one; otherwise
 `null` (`not stated`). A `needs` question the sources never answered fails rather than passes.
 
+## A comparison happens inside a coverage tier, and nowhere else
+
+The table groups entries by **how many members their score was computed over** and never
+orders across a group; the rank number restarts under each heading. A model measured on three
+of four benchmarks has answered a different question from one measured on two of four, and a
+single descending column of the two is an order that does not exist — it is coverage ranking
+first and quality second, wearing one number. The `present`/`members` pair is the tier, the
+frontier is computed **inside the best-covered tier only**, every thinner entry is reported
+`not placeable` with the reason, and the curve's own foot says which tier it is and how many
+were left off. Unscored entries come last under their own heading, naming the members they
+lack — "missing HLE, GPQA Diamond" answers *why is that model not here* in a way a count
+cannot.
+
+`benchmarks.rs` computes the order and the tier; `benchmarks.ts::tiers`/`tierLabel` only group
+for drawing, and `test` holds both: the Rust suite asserts the order never interleaves tiers
+and that a better thinner entry is never made efficient, and the Bun suite holds the grouping.
+
+## Whose number it is, which is part of the number
+
+BenchLM's own definitions say it: `agentsLastExam` is "Provider-reported task score",
+Terminal-Bench 2.1 is "mostly provider-reported". A reading of one of those is the model's
+developer talking, and `provider_reported` marks it at normalization from the definition's
+own words. Where `benchmarkSources` names a publisher it is carried (`publisher`), and a
+publisher that *is* the model's creator counts as the developer; where nobody is credited the
+panel says **"publisher not stated"** rather than letting silence read as independence. The
+model-level `evidenceStatus` (`supported` / `estimated`) and `scoreConfidence` are carried and
+shown on the row.
+
+`rank` already prefers a non-vendor reading for the same benchmark, and every row says how
+many of its numbers are the developer's own ("3 of 5 members · 1 provider-reported"). Three
+states, deliberately: a named publisher, the developer, and nobody saying — the third is not
+a synonym for the first.
+
 ## Quality is partial and says so
 
 `rank` requires **half the members by count** before it will score an entry, renormalises the
@@ -96,11 +129,26 @@ of its own — the lift flattens sources and rewrites `crate::x::y` only for nam
 `` `models` `` instead of `mcp__skein__models`, and `classify.test.ts`'s vocabulary test
 refused the tool before `describeTool` could name it.
 
+## The standing line, at both choices
+
+The chat view's model menu (`ModelMenu.svelte`) and the wall's `+` right-click
+(`menu.ts::presetRows`, fed by `standings.picks()` from `App.svelte`) both carry it. The
+wall's version appends to the row's existing `note` — model and effort first, then
+"coding agent 65.7 · $8.00/1M" — and puts the profile, the price basis and the as-of on the
+menu's **foot** rather than on every row. `standings.ensure()` runs once at launch so the
+first right-click is not a menu with no lines on it; that is a *read* of the cache, and the
+fetch is still the panel's or the tool's.
+
+**An alias names a key the source publishes, and that is checkable.** `ALIASES.model` was
+written from BenchLM's model list, and the pro model is spelled `deepseek-v4-pro-max` there
+— an early read of the same page suggested `-0813`, which the live catalogue does not carry.
+An alias pointing at a key nothing publishes reads "no reading" in a menu for ever with
+nothing red anywhere, so `test/benchmarks.test.ts` holds every alias against
+`test/fixtures/benchlm-models.json`: refresh that snapshot and a key that moved goes red in
+the suite rather than in a menu.
+
 ## What is not built
 
-- The wall's `+` right-click menu (`menu.ts::presetRows`) does not carry the standing line —
-  its rows are built from `MenuTarget` in `App.svelte`, which this card did not touch. The
-  chat view's model menu does (`ModelMenu.svelte`).
 - No effort variants and no vendor cards: no source publishes either as text today.
 - `src/lib/standings.svelte.ts` is named for the subsystem because `models.svelte.ts` beside
   `Models.svelte` is two paths differing in case — the trap `accounts.md` records.

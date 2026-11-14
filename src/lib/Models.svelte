@@ -18,10 +18,15 @@
     PROFILES,
     effortLabel,
     frontierSaid,
+    missingNames,
+    reportedNote,
     sayAsOf,
+    sayProvenance,
     sayPrice,
     scored,
     sourceLabel,
+    tierLabel,
+    tiers,
     type Entry,
     type Profile,
   } from "./benchmarks";
@@ -51,8 +56,21 @@
    *  $0.20 model and a $30 one on a linear axis is four points in the left
    *  margin — and quality keeps its own scale, because that is the axis the
    *  decision is read against. */
+  /** The tier the curve is drawn from: the best-covered one that has a price.
+   *  `benchmarks.rs` decides which that is, and only its entries are efficient. */
+  const frontierTier = $derived(standings.view?.frontierTier ?? 0);
+
+  /** Entries left off the curve because they were measured on fewer members.
+   *  Counted so the sentence under the chart can say they exist rather than
+   *  leaving a reader to wonder where a model went. */
+  const thinner = $derived(
+    rows.filter((r) => r.quality !== null && r.price !== null && r.present < frontierTier).length,
+  );
+
   const chart = $derived.by(() => {
-    const placed = rows.filter((r) => r.quality !== null && r.price !== null && r.price > 0);
+    const placed = rows.filter(
+      (r) => r.quality !== null && r.price !== null && r.price > 0 && r.present === frontierTier,
+    );
     if (placed.length === 0) return null;
     const W = 340;
     const H = 190;
@@ -80,10 +98,33 @@
     return { W, H, pad, points, frontier, minP, maxP, minQ, maxQ, x, y };
   });
 
+  /** Which benchmark the catalogue is showing. With nothing picked it opens on
+   *  the one with the most readings rather than on whichever name sorts first —
+   *  a tab that opens on "1 readings" reads as a broken panel rather than as a
+   *  benchmark only one model was run on. */
+  const active = $derived.by(() => {
+    const cat = standings.catalogue;
+    if (!cat) return null;
+    if (benchmark) return benchmark;
+    const counts = new Map<string, number>();
+    for (const r of cat.readings) {
+      if (r.score !== null) counts.set(r.benchmark, (counts.get(r.benchmark) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let most = -1;
+    for (const [key, n] of counts) {
+      if (n > most) {
+        best = key;
+        most = n;
+      }
+    }
+    return best;
+  });
+
   const catalogueRows = $derived.by(() => {
     const cat = standings.catalogue;
     if (!cat) return [];
-    const wanted = benchmark ?? cat.benchmarks[0]?.key ?? null;
+    const wanted = active;
     return cat.readings
       .filter((r) => r.benchmark === wanted && r.score !== null)
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
@@ -115,6 +156,11 @@
     if (r.components.some((c) => c.score !== null)) {
       bits.push(`${Math.round(r.coverage * 100)}% of the profile`);
     }
+    /* Whose numbers the score is made of. A row that is half the developer's own
+       reports must not read like one that is all measured. */
+    const reported = reportedNote(r);
+    if (reported) bits.push(reported);
+    if (r.evidence) bits.push(`${r.evidence} evidence`);
     return bits.join(" · ");
   }
 
@@ -155,7 +201,7 @@
 
   {#if pane === "frontier"}
     {#if chart}
-      <p class="said">{frontierSaid(rows)}</p>
+      <p class="said">{frontierSaid(chart?.points.map((p) => p.row) ?? [])}</p>
       <svg class="curve" viewBox={`0 0 ${chart.W} ${chart.H}`} role="img" aria-label="quality against price">
         <line class="axis" x1={chart.pad.l} y1={chart.H - chart.pad.b} x2={chart.W - chart.pad.r} y2={chart.H - chart.pad.b} />
         <line class="axis" x1={chart.pad.l} y1={chart.pad.t} x2={chart.pad.l} y2={chart.H - chart.pad.b} />
@@ -180,8 +226,13 @@
         {/each}
       </svg>
       <p class="foot">
-        the line joins the efficient entries. a dim point gives up quality without giving up money,
-        and every one is still in the ranked table with what beat it.
+        the line joins the efficient entries, and every dim point is still in the ranked table
+        with what beat it. all of these were scored over {frontierTier} of
+        {standings.view?.memberCount ?? 0} members — one tier, one comparison.
+        {#if thinner > 0}
+          {thinner} more {thinner === 1 ? "entry has" : "entries have"} a thinner reading and
+          {thinner === 1 ? "is" : "are"} in the table under their own heading, not on this curve.
+        {/if}
       </p>
     {:else}
       <p class="empty">{standings.loading ? "asking the sources…" : "no entry has both a score and a price, so there is no curve to draw."}</p>
@@ -191,56 +242,83 @@
       <p class="empty">{standings.loading ? "asking the sources…" : "nothing has been read yet."}</p>
     {:else}
       <p class="said">
-        {scored(rows)} entries have a score on {profile.label}; the top {Math.min(SHOWN, rows.length)} are here.
-        every reading is one fold away, and the tool answers for the rest.
+        {scored(rows)} entries have a score on {profile.label}. they are ranked inside a
+        coverage tier and never across one: an entry measured on four members and one measured
+        on two answered different questions, and the numbers are not comparable.
       </p>
-      <ol class="ranked">
-        {#each rows.slice(0, SHOWN) as r (r.key)}
-          {@const beaten = dominatedLine(r.key)}
-          <li class:dim={!r.efficient} class:open={open === r.key}>
-            <button
-              type="button"
-              class="entry"
-              aria-expanded={open === r.key}
-              onclick={() => (open = open === r.key ? null : r.key)}
-            >
-              <span class="rank">{r.rank ?? "—"}</span>
-              <span class="who">
-                <span class="name">{r.name}{#if r.efficient}<span class="mark" title="on the frontier">●</span>{/if}</span>
-                <small>{under(r)}</small>
-              </span>
-              <span class="q">{r.quality === null ? "no score" : r.quality.toFixed(1)}</span>
-              <span class="p">{sayPrice(r.price, r.priceBasis)}</span>
-            </button>
-            {#if beaten}
-              <p class="beaten">{beaten}</p>
-            {/if}
-            {#if open === r.key}
-              <div class="parts">
-                {#each r.components as c (c.benchmark)}
-                  <span class="part">
-                    <b>{c.name}</b>
-                    <span class="weight">{Math.round(c.weight * 100)}%</span>
-                    <span class="score">{c.score === null ? "no reading" : `${c.score.toFixed(1)} ${c.unit}`}</span>
-                    {#if c.source}
-                      <span class="from">{sourceLabel(c.source)}{c.published ? ` · ${c.published.slice(0, 10)}` : ""}</span>
-                    {/if}
-                  </span>
-                {/each}
-                {#if r.missing.length > 0}
-                  <p class="miss">no reading for {r.missing.join(", ")} — those members are not in the score</p>
-                {/if}
+      {#each tiers(rows).scored as t (t.present)}
+        <h4 class="tier">{tierLabel(t)}</h4>
+        <ol class="ranked">
+          {#each t.rows.slice(0, SHOWN) as r (r.key)}
+            {@const beaten = dominatedLine(r.key)}
+            <li class:dim={!r.efficient} class:open={open === r.key}>
+              <button
+                type="button"
+                class="entry"
+                aria-expanded={open === r.key}
+                onclick={() => (open = open === r.key ? null : r.key)}
+              >
+                <span class="rank">{r.rank ?? "—"}</span>
+                <span class="who">
+                  <span class="name">{r.name}{#if r.efficient}<span class="mark" title="on the frontier">●</span>{/if}</span>
+                  <small>{under(r)}</small>
+                </span>
+                <span class="q">{r.quality === null ? "no score" : r.quality.toFixed(1)}</span>
+                <span class="p">{sayPrice(r.price, r.priceBasis)}</span>
+              </button>
+              {#if beaten}
+                <p class="beaten">{beaten}</p>
+              {/if}
+              {#if open === r.key}
+                <div class="parts">
+                  {#each r.components as c (c.benchmark)}
+                    <span class="part">
+                      <b>{c.name}</b>
+                      <span class="weight">{Math.round(c.weight * 100)}%</span>
+                      <span class="score">{c.score === null ? "no reading" : `${c.score.toFixed(1)} ${c.unit}`}</span>
+                      {#if c.source}
+                        <span class="from" class:reported={c.vendor}>
+                          {sourceLabel(c.source)} · {sayProvenance(c)}{c.published ? ` · ${c.published.slice(0, 10)}` : ""}
+                        </span>
+                      {/if}
+                    </span>
+                  {/each}
+                  {#if r.missing.length > 0}
+                    <p class="miss">no reading for {missingNames(r).join(", ")} — those members are not in the score</p>
+                  {/if}
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      {/each}
+      {#if tiers(rows).unscored.length > 0}
+        <h4 class="tier">not enough readings to score</h4>
+        <ul class="ranked thin">
+          {#each tiers(rows).unscored.slice(0, SHOWN) as r (r.key)}
+            <li>
+              <div class="entry">
+                <span class="rank">—</span>
+                <span class="who">
+                  <span class="name">{r.name}</span>
+                  <small>
+                    {r.present} of {r.members} members — missing {missingNames(r).join(", ")}{#if r.reported > 0}; the present
+                    {r.reported === 1 ? "one is" : "ones are"} provider-reported{/if}{#if r.evidence}; {r.evidence} evidence{/if}
+                  </small>
+                </span>
+                <span class="q">no score</span>
+                <span class="p">{sayPrice(r.price, r.priceBasis)}</span>
               </div>
-            {/if}
-          </li>
-        {/each}
-      </ol>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   {:else}
     <div class="catbar">
       <select onchange={pickBenchmark} aria-label="benchmark">
         {#each standings.catalogue?.benchmarks ?? [] as b (b.key)}
-          <option value={b.key} selected={b.key === benchmark}>{b.name} · {b.category}</option>
+          <option value={b.key} selected={b.key === active}>{b.name} · {b.category}</option>
         {/each}
       </select>
       <span class="grow"></span>
@@ -372,6 +450,19 @@
     fill: var(--paper);
     opacity: 1;
   }
+  .tier {
+    margin: 0.55rem 0 0.1rem;
+    font-size: 0.78em;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--paper-mute);
+    border-bottom: 1px solid var(--edge);
+    padding-bottom: 0.12rem;
+  }
+  .thin .entry {
+    cursor: default;
+  }
   .ranked {
     list-style: none;
     margin: 0;
@@ -441,7 +532,7 @@
   }
   .part {
     display: grid;
-    grid-template-columns: 1fr 3rem 6rem 9rem;
+    grid-template-columns: 1fr 3rem 8.5rem 9rem;
     gap: 0.4rem;
     font-size: 0.84em;
   }
@@ -452,9 +543,16 @@
   .from {
     color: var(--paper-mute);
   }
+  /* The developer's own numbers, marked in the ramp rather than in a status
+     colour: it is a qualifier on a reading, not a fault. */
+  .from.reported {
+    color: var(--paper-dim);
+    font-style: italic;
+  }
   .score {
     font-variant-numeric: tabular-nums;
     text-align: right;
+    white-space: nowrap;
   }
   .catbar {
     display: flex;

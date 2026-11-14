@@ -222,6 +222,11 @@ pub struct ModelRow {
     pub release: Option<String>,
     pub vision: Option<bool>,
     pub tool_use: Option<bool>,
+    /// BenchLM's `evidenceStatus` — `supported`, `estimated`, or absent. It is
+    /// BenchLM's own statement about how much backs the model's figures, and it
+    /// is shown rather than folded into a score.
+    pub evidence: Option<String>,
+    pub confidence: Option<i64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -246,6 +251,9 @@ pub struct Reading {
     pub harness: Option<String>,
     pub published: Option<String>,
     pub vendor: bool,
+    /// Who BenchLM credits for this number, where it credits anybody. Absent is
+    /// "not stated" and is drawn as that — never as independent.
+    pub publisher: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -258,6 +266,8 @@ pub struct Component {
     pub unit: String,
     pub source: String,
     pub published: Option<String>,
+    pub vendor: bool,
+    pub publisher: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -279,6 +289,21 @@ pub struct Entry {
     pub efficient: bool,
     pub rank: Option<usize>,
     pub coverage: f64,
+    /// How many of the profile's members this entry has a reading for, and how
+    /// many there are. **The pair is the tier**, and the tier is what a
+    /// comparison may happen inside: two entries scored over different member
+    /// sets are two different questions being answered with one number, and a
+    /// table that puts them in one column is claiming an order that does not
+    /// exist. The panel headings and the frontier both read it.
+    pub present: usize,
+    pub members: usize,
+    /// How many of the present members' numbers came from the model's own
+    /// developer. The row says it beside the coverage, because "3 of 5 members"
+    /// and "3 of 5, two of them provider-reported" are different amounts of
+    /// knowing.
+    pub reported: usize,
+    /// The model's own evidence status from the source, where it states one.
+    pub evidence: Option<String>,
     pub components: Vec<Component>,
     pub missing: Vec<String>,
 }
@@ -394,7 +419,8 @@ fn read_catalogue(conn: &rusqlite::Connection) -> Catalogue {
 
     let mut models = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT source, key, name, creator, context_window, release, vision, tool_use \
+        "SELECT source, key, name, creator, context_window, release, vision, tool_use, \
+                evidence, confidence \
          FROM benchmark_model ORDER BY name",
     ) {
         if let Ok(rows) = stmt.query_map([], |r| {
@@ -407,6 +433,8 @@ fn read_catalogue(conn: &rusqlite::Connection) -> Catalogue {
                 release: r.get(5)?,
                 vision: r.get::<_, Option<i64>>(6)?.map(|v| v != 0),
                 tool_use: r.get::<_, Option<i64>>(7)?.map(|v| v != 0),
+                evidence: r.get(8)?,
+                confidence: r.get(9)?,
             })
         }) {
             models = rows.filter_map(Result::ok).collect();
@@ -431,7 +459,7 @@ fn read_catalogue(conn: &rusqlite::Connection) -> Catalogue {
 
     let mut readings = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT source, model, benchmark, score, unit, effort, harness, published, vendor \
+        "SELECT source, model, benchmark, score, unit, effort, harness, published, vendor, publisher \
          FROM benchmark_reading",
     ) {
         if let Ok(rows) = stmt.query_map([], |r| {
@@ -445,6 +473,7 @@ fn read_catalogue(conn: &rusqlite::Connection) -> Catalogue {
                 harness: r.get(6)?,
                 published: r.get(7)?,
                 vendor: r.get::<_, i64>(8)? != 0,
+                publisher: r.get(9)?,
             })
         }) {
             readings = rows.filter_map(Result::ok).collect();
@@ -472,8 +501,8 @@ fn replace_source(
     for m in &rows.models {
         tx.execute(
             "INSERT OR REPLACE INTO benchmark_model \
-             (source, key, name, creator, context_window, release, vision, tool_use) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (source, key, name, creator, context_window, release, vision, tool_use, evidence, confidence) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 id,
                 m.key,
@@ -482,7 +511,9 @@ fn replace_source(
                 m.context_window,
                 m.release,
                 m.vision.map(|v| v as i64),
-                m.tool_use.map(|v| v as i64)
+                m.tool_use.map(|v| v as i64),
+                m.evidence,
+                m.confidence
             ],
         )
         .map_err(|e| format!("writing a model: {e}"))?;
@@ -498,8 +529,8 @@ fn replace_source(
     for r in &rows.readings {
         tx.execute(
             "INSERT OR REPLACE INTO benchmark_reading \
-             (source, model, benchmark, effort, score, unit, harness, published, vendor, fetched) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (source, model, benchmark, effort, score, unit, harness, published, vendor, publisher, fetched) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 id,
                 r.model,
@@ -510,6 +541,7 @@ fn replace_source(
                 r.harness,
                 r.published,
                 r.vendor as i64,
+                r.publisher,
                 at
             ],
         )
@@ -593,6 +625,18 @@ fn unit_for(key: &str, name: &str, format: Option<&str>, values: &[f64]) -> Stri
     }
 }
 
+/// Whether a benchmark is reported by the model's own developer, read off the
+/// definition's own words. Deliberately narrow: `provider-reported`,
+/// `model card`, `self-reported` and `developer-reported` are the four ways
+/// BenchLM says it, and a benchmark that merely *mentions* a provider in prose
+/// (a comparison, a successor note) is not one of them.
+fn provider_reported(name: &str, format: &str, description: &str) -> bool {
+    let said = format!("{name} {format} {description}").to_lowercase();
+    ["provider-reported", "provider reported", "model card", "self-reported", "developer-reported"]
+        .iter()
+        .any(|hint| said.contains(hint))
+}
+
 fn num(v: &Value) -> Option<f64> {
     v.as_f64().filter(|n| n.is_finite())
 }
@@ -617,7 +661,15 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
         .map(str::to_string);
 
     // What each benchmark is, from its own definitions file.
-    let mut defs: HashMap<String, (String, String, Option<String>)> = HashMap::new();
+    /* **Who reported a number is part of the number.** BenchLM's benchmark
+       definitions say it in as many words for the ones that are not
+       independent — `agentsLastExam`'s format is "Provider-reported task score",
+       Terminal-Bench 2.1's description says "mostly provider-reported" — and a
+       reading of one of those is the model's own developer talking. It is
+       carried on the reading rather than left to a footnote, because a profile
+       that quietly averaged a model card with a leaderboard is the exact
+       confusion this whole surface exists to prevent. */
+    let mut defs: HashMap<String, (String, String, Option<String>, bool)> = HashMap::new();
     for b in benchmarks.get("items").and_then(Value::as_array).into_iter().flatten() {
         let Some(key) = b.get("benchmarkKey").and_then(Value::as_str) else { continue };
         let name = b.get("name").and_then(Value::as_str).unwrap_or(key).to_string();
@@ -628,7 +680,9 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
             .unwrap_or("")
             .to_string();
         let format = b.get("format").and_then(Value::as_str).map(str::to_string);
-        defs.insert(key.to_string(), (name, category, format));
+        let description = b.get("description").and_then(Value::as_str).unwrap_or("");
+        let provider_reported = provider_reported(&name, format.as_deref().unwrap_or(""), description);
+        defs.insert(key.to_string(), (name, category, format, provider_reported));
     }
 
     // Pass one: every numeric value, per benchmark, so a scale can be decided
@@ -647,10 +701,10 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
 
     let mut out = Normalized::default();
     for (key, values) in &per_benchmark {
-        let (name, category, format) = defs
+        let (name, category, format, _) = defs
             .get(key)
             .cloned()
-            .unwrap_or_else(|| (key.clone(), String::new(), None));
+            .unwrap_or_else(|| (key.clone(), String::new(), None, false));
         out.defs.push(BenchmarkDef {
             key: key.clone(),
             name: name.clone(),
@@ -697,6 +751,11 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
 
         let mut vision = false;
         let mut tool_use = false;
+        /* Where BenchLM names a publisher for a reading, it is usually a
+           leaderboard rather than the vendor — but the test that decides is the
+           name, not the expectation: a publisher that *is* the model's creator
+           is the developer reporting its own number. */
+        let sources = m.get("benchmarkSources").cloned().unwrap_or(Value::Null);
         for (category, block) in m.get("benchmarks").and_then(Value::as_object).into_iter().flatten() {
             for (key, value) in block.as_object().into_iter().flatten() {
                 let Some(score) = num(value) else { continue };
@@ -712,6 +771,16 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
                 if category == "agentic" {
                     tool_use = true;
                 }
+                let publisher = sources
+                    .get(category)
+                    .and_then(|c| c.get(key))
+                    .and_then(|s| s.get("publisher"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let from_developer = match &publisher {
+                    Some(name) => name.eq_ignore_ascii_case(&creator),
+                    None => defs.get(key).map(|d| d.3).unwrap_or(false),
+                };
                 out.readings.push(Reading {
                     source: "benchlm".into(),
                     model: slug.to_string(),
@@ -721,7 +790,8 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
                     effort: "not-stated".into(),
                     harness: None,
                     published: published.clone(),
-                    vendor: false,
+                    vendor: from_developer,
+                    publisher,
                 });
             }
         }
@@ -734,6 +804,10 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
             release,
             vision: vision.then_some(true),
             tool_use: tool_use.then_some(true),
+            evidence: m.get("evidenceStatus").and_then(Value::as_str).map(str::to_string),
+            confidence: m
+                .pointer("/coverage/scoreConfidence")
+                .and_then(Value::as_i64),
         });
     }
 
@@ -766,6 +840,7 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
                     harness: None,
                     published: p.get("note").and_then(Value::as_str).map(|s| s.to_string()).or(published.clone()),
                     vendor: false,
+                    publisher: None,
                 });
             }
         }
@@ -792,6 +867,7 @@ fn normalize_benchlm(models: &Value, benchmarks: &Value, pricing: &Value, speed:
                     harness: Some("Artificial Analysis measurement, aggregated by BenchLM".into()),
                     published: stamp.clone().or(published.clone()),
                     vendor: false,
+                    publisher: Some("Artificial Analysis".into()),
                 });
             }
         }
@@ -878,6 +954,9 @@ fn normalize_aa(answer: &Value) -> Result<Normalized, String> {
             release,
             vision: None,
             tool_use: None,
+            // This source states neither, which is a fact about the answer.
+            evidence: None,
+            confidence: None,
         });
         for (field, key) in indices {
             if let Some(score) = m.pointer(&format!("/evaluations/{field}")).and_then(num) {
@@ -891,6 +970,7 @@ fn normalize_aa(answer: &Value) -> Result<Normalized, String> {
                     harness: Some("Artificial Analysis' own index, free tier".into()),
                     published: None,
                     vendor: false,
+                    publisher: Some("Artificial Analysis".into()),
                 });
             }
         }
@@ -907,6 +987,7 @@ fn normalize_aa(answer: &Value) -> Result<Normalized, String> {
                         harness: None,
                         published: None,
                         vendor: false,
+                        publisher: Some("Artificial Analysis".into()),
                     });
                 }
             }
@@ -926,6 +1007,7 @@ fn normalize_aa(answer: &Value) -> Result<Normalized, String> {
                     harness: Some("Artificial Analysis measurement".into()),
                     published: None,
                     vendor: false,
+                    publisher: Some("Artificial Analysis".into()),
                 });
             }
         }
@@ -1075,6 +1157,7 @@ fn blended(input: Option<f64>, output: Option<f64>) -> Option<f64> {
 /// failed it.
 fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
     let total_weight: f64 = profile.members.iter().filter(|m| m.weight > 0.0).map(|m| m.weight).sum();
+    let members = profile.members.iter().filter(|m| m.weight > 0.0).count();
 
     // (model, benchmark) → the reading to use. A profile member is a BenchLM
     // key; when two sources both answer for it the independent one wins, and a
@@ -1113,6 +1196,7 @@ fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
         let mut missing = Vec::new();
         let mut got = 0.0;
         let mut present = 0usize;
+        let mut reported = 0usize;
         for member in &profile.members {
             if member.weight <= 0.0 {
                 continue;
@@ -1121,6 +1205,9 @@ fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
                 Some(r) => {
                     got += member.weight * r.score.unwrap_or(0.0);
                     present += 1;
+                    if r.vendor {
+                        reported += 1;
+                    }
                     components.push(Component {
                         benchmark: member.benchmark.clone(),
                         name: def_name(&member.benchmark),
@@ -1129,6 +1216,8 @@ fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
                         unit: r.unit.clone(),
                         source: r.source.clone(),
                         published: r.published.clone(),
+                        vendor: r.vendor,
+                        publisher: r.publisher.clone(),
                     });
                 }
                 None => {
@@ -1141,11 +1230,13 @@ fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
                         unit: String::new(),
                         source: String::new(),
                         published: None,
+                        vendor: false,
+                        publisher: None,
                     });
                 }
             }
         }
-        let quality = if enough(present, profile.members.len()) && got > 0.0 {
+        let quality = if enough(present, members) && got > 0.0 {
             let present_weight: f64 = profile
                 .members
                 .iter()
@@ -1188,18 +1279,32 @@ fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
             } else {
                 0.0
             },
+            present,
+            members,
+            reported,
+            evidence: model.evidence.clone(),
             components,
             missing,
         });
     }
 
-    // The frontier: an entry is efficient when nothing else gives at least as
-    // much quality for no more money. Computed over what is *placeable*, and
-    // the rest are reported as unplaceable rather than drawn at zero.
+    /* **The frontier is computed inside one tier, and the tier is the one with
+     * the most members present.** A curve drawn through a 3-of-4 entry and a
+     * 2-of-4 one is the same false comparison the table would be, with an axis
+     * under it: the first was measured on a different set of benchmarks, so the
+     * quality gap between them is partly a gap between two questions. So the
+     * best-covered tier is placed, and every thinner one is reported as
+     * *not placeable* rather than drawn next to it. */
+    let frontier_tier = rows
+        .iter()
+        .filter(|r| r.quality.is_some() && r.price.is_some())
+        .map(|r| r.present)
+        .max()
+        .unwrap_or(0);
     let mut placeable: Vec<usize> = rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.quality.is_some() && r.price.is_some())
+        .filter(|(_, r)| r.quality.is_some() && r.price.is_some() && r.present == frontier_tier)
         .map(|(i, _)| i)
         .collect();
     placeable.sort_by(|a, b| {
@@ -1216,30 +1321,41 @@ fn rank(cat: &Catalogue, profile: &Profile) -> Vec<Entry> {
         }
     }
 
-    // Order: the profile says which side of the balance it ranks on.
+    /* **Order inside a tier, never across one.** The tier comes first and the
+     * profile's own side of the balance second; a rank number restarts at each
+     * heading, because a table whose numbers run 1..n down two groups is a
+     * total order wearing a heading as a decoration. */
+    let by_quality = |a: &Entry, b: &Entry| {
+        b.quality
+            .unwrap_or(-1.0)
+            .partial_cmp(&a.quality.unwrap_or(-1.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.price.unwrap_or(f64::MAX).partial_cmp(&b.price.unwrap_or(f64::MAX)).unwrap_or(std::cmp::Ordering::Equal))
+    };
+    let by_cost = |a: &Entry, b: &Entry| {
+        a.price
+            .unwrap_or(f64::MAX)
+            .partial_cmp(&b.price.unwrap_or(f64::MAX))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.quality.unwrap_or(-1.0).partial_cmp(&a.quality.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal))
+    };
     if profile.order == "cost" {
-        rows.sort_by(|a, b| {
-            let pa = a.price.unwrap_or(f64::MAX);
-            let pb = b.price.unwrap_or(f64::MAX);
-            pa.partial_cmp(&pb)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.quality.unwrap_or(-1.0).partial_cmp(&a.quality.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        rows.sort_by(|a, b| b.present.cmp(&a.present).then_with(|| by_cost(a, b)));
     } else {
-        rows.sort_by(|a, b| {
-            b.quality
-                .unwrap_or(-1.0)
-                .partial_cmp(&a.quality.unwrap_or(-1.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.price.unwrap_or(f64::MAX).partial_cmp(&b.price.unwrap_or(f64::MAX)).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        rows.sort_by(|a, b| b.present.cmp(&a.present).then_with(|| by_quality(a, b)));
     }
+    let mut tier = usize::MAX;
     let mut placed = 0;
     for row in rows.iter_mut() {
-        if row.quality.is_some() {
-            placed += 1;
-            row.rank = Some(placed);
+        if row.quality.is_none() {
+            continue;
         }
+        if row.present != tier {
+            tier = row.present;
+            placed = 0;
+        }
+        placed += 1;
+        row.rank = Some(placed);
     }
     rows
 }
@@ -1254,7 +1370,14 @@ fn dominated_by(rows: &[Entry], i: usize) -> Option<String> {
         return None;
     }
     rows.iter()
-        .find(|b| b.efficient && b.price.unwrap_or(f64::MAX) <= p + 1e-9 && b.quality.unwrap_or(-1.0) >= q - 1e-9)
+        .find(|b| {
+            b.efficient
+                /* Same tier, or the answer is a comparison across two different
+                   member sets — the thing the tier exists to stop. */
+                && b.present == a.present
+                && b.price.unwrap_or(f64::MAX) <= p + 1e-9
+                && b.quality.unwrap_or(-1.0) >= q - 1e-9
+        })
         .map(|b| b.name.clone())
 }
 
@@ -1293,12 +1416,37 @@ fn view(conn: &rusqlite::Connection, profile: &Profile) -> Value {
         .filter_map(|s| s.at.as_deref().and_then(parse_iso_ms))
         .max()
         .and_then(iso);
+    /* What is not on the curve, and why. Two reasons, told apart: a row with no
+     * price cannot be placed at all, and a row from a thinner tier *could* be
+     * placed but would be compared against a different set of benchmarks — the
+     * comparison the tier exists to prevent. */
+    let frontier_tier = rows
+        .iter()
+        .filter(|r| r.efficient)
+        .map(|r| r.present)
+        .max()
+        .unwrap_or(0);
+    let member_count = profile.members.iter().filter(|m| m.weight > 0.0).count();
     let unplaceable: Vec<Unplaceable> = rows
         .iter()
-        .filter(|r| !r.efficient && r.quality.is_some() && r.price.is_none())
-        .map(|r| Unplaceable {
-            key: r.key.clone(),
-            why: "no price published".into(),
+        .filter(|r| !r.efficient && r.quality.is_some())
+        .filter_map(|r| {
+            if r.price.is_none() {
+                Some(Unplaceable {
+                    key: r.key.clone(),
+                    why: "no price published".into(),
+                })
+            } else if r.present < frontier_tier {
+                Some(Unplaceable {
+                    key: r.key.clone(),
+                    why: format!(
+                        "a thinner reading: {} of {member_count} members, so not compared with the {frontier_tier}-member tier",
+                        r.present
+                    ),
+                })
+            } else {
+                None
+            }
         })
         .collect();
     let domination: Vec<Value> = rows
@@ -1316,6 +1464,8 @@ fn view(conn: &rusqlite::Connection, profile: &Profile) -> Value {
         "rows": rows,
         "unplaceable": unplaceable,
         "dominated": domination,
+        "frontierTier": frontier_tier,
+        "memberCount": member_count,
         "priceBasis": PRICE_BASIS,
     })
 }
@@ -1632,12 +1782,22 @@ fn answer(app: &tauri::AppHandle, args: &Value) -> String {
                     shown.push(entry_json(r));
                 }
             }
+            /* The runner-up is the second of the *same tier* as the first. A
+               second entry from a thinner tier is not a runner-up: it answered a
+               different set of questions, and the price difference beside it
+               would read as the cost of the quality gap. */
+            let top_tier = filtered
+                .iter()
+                .find(|r| r.quality.is_some())
+                .map(|r| r.present);
             let runner_up = filtered
                 .iter()
-                .filter(|r| r.quality.is_some())
+                .filter(|r| r.quality.is_some() && Some(r.present) == top_tier)
                 .nth(1)
                 .and_then(|r| {
-                    let first = filtered.iter().find(|x| x.quality.is_some())?;
+                    let first = filtered
+                        .iter()
+                        .find(|x| x.quality.is_some() && Some(x.present) == top_tier)?;
                     Some(json!({
                         "name": r.name,
                         "quality": r.quality,
@@ -1646,7 +1806,7 @@ fn answer(app: &tauri::AppHandle, args: &Value) -> String {
                             (Some(a), Some(b)) => json!(((a - b) * 1000.0).round() / 1000.0),
                             _ => Value::Null,
                         },
-                        "note": "price is the first entry minus the runner-up, per 1M blended tokens",
+                        "note": "price is the first entry minus the runner-up, per 1M blended tokens.                             Both were scored over the same set of benchmarks; entries with fewer                             members are ranked under their own tier and never against these.",
                     }))
                 });
             json!({
@@ -1660,9 +1820,11 @@ fn answer(app: &tauri::AppHandle, args: &Value) -> String {
                 "asOf": as_of,
                 "sources": sources,
                 "priceBasis": PRICE_BASIS,
-                "note": "Evidence, not an instruction. A model with no reading was not measured \
-                    by these sources; it did not score zero. Check `components` and `coverage` \
-                    before drawing a conclusion from a single number.",
+                "note": "Evidence, not an instruction. **Entries are ranked inside a coverage \
+                    tier and never across one**: `present` of `members` is how much of the \
+                    profile the score was computed over, and two entries scored over different \
+                    members are two different questions. A model with no reading was not \
+                    measured by these sources; it did not score zero.",
             })
             .to_string()
         }
@@ -1686,6 +1848,10 @@ fn entry_json(r: &Entry) -> Value {
         "vision": r.vision,
         "toolUse": r.tool_use,
         "efficient": r.efficient,
+        "present": r.present,
+        "members": r.members,
+        "reported": r.reported,
+        "evidence": r.evidence,
         "components": r.components,
         "missing": r.missing,
     })
@@ -1831,6 +1997,35 @@ mod tests {
     }
 
     #[test]
+    fn a_provider_reported_reading_is_marked_and_a_named_publisher_is_carried() {
+        let rows = benchlm();
+        // Agents' Last Exam is "Provider-reported task score" in BenchLM's own
+        // definition, so a reading of it is the model's developer talking.
+        let ale: Vec<&Reading> = rows.readings.iter().filter(|r| r.benchmark == "agentsLastExam").collect();
+        assert!(!ale.is_empty(), "the fixture carries Agents' Last Exam readings");
+        for r in &ale {
+            assert!(r.vendor, "{} answers a developer number as independent", r.model);
+            assert!(r.publisher.is_none(), "nobody is credited, so nobody is invented");
+        }
+        // Where a leaderboard is credited, the publisher is carried and it is
+        // not the vendor.
+        let vals: Vec<&Reading> = rows
+            .readings
+            .iter()
+            .filter(|r| r.benchmark == "valsSweBench" || r.benchmark == "valsGpqaDiamond")
+            .collect();
+        assert!(!vals.is_empty());
+        for r in &vals {
+            assert_eq!(r.publisher.as_deref(), Some("Vals AI"));
+            assert!(!r.vendor);
+        }
+        // And the model-level evidence status is carried, not dropped.
+        let fable = rows.models.iter().find(|m| m.key == "claude-fable-5-2").unwrap();
+        assert_eq!(fable.evidence.as_deref(), Some("estimated"));
+        assert_eq!(fable.confidence, Some(3));
+    }
+
+    #[test]
     fn a_price_of_zero_is_a_self_hosted_model_and_not_a_free_one() {
         let rows = benchlm();
         let freebies: Vec<&Reading> = rows
@@ -1911,9 +2106,134 @@ mod tests {
             efficient: false,
             rank: None,
             coverage: 1.0,
+            present: 0,
+            members: 0,
+            reported: 0,
+            evidence: None,
             components: Vec::new(),
             missing: Vec::new(),
         }
+    }
+
+    /// A catalogue built by hand, so a tier question can be asked of data whose
+    /// member sets are known rather than inferred from whatever was fetched.
+    fn catalogue(rows: &[(&str, &[(&str, f64)], Option<(f64, f64)>)]) -> Catalogue {
+        let mut models = Vec::new();
+        let mut readings = Vec::new();
+        for (key, scores, price) in rows {
+            models.push(ModelRow {
+                source: "benchlm".into(),
+                key: (*key).into(),
+                name: (*key).into(),
+                creator: String::new(),
+                context_window: None,
+                release: None,
+                vision: None,
+                tool_use: None,
+                evidence: None,
+                confidence: None,
+            });
+            for (benchmark, score) in *scores {
+                readings.push(Reading {
+                    source: "benchlm".into(),
+                    model: (*key).into(),
+                    benchmark: (*benchmark).into(),
+                    score: Some(*score),
+                    unit: "score (0-100)".into(),
+                    effort: "not-stated".into(),
+                    harness: None,
+                    published: None,
+                    vendor: false,
+                    publisher: None,
+                });
+            }
+            if let Some((input, output)) = price {
+                for (benchmark, value) in [("price:input", *input), ("price:output", *output)] {
+                    readings.push(Reading {
+                        source: "benchlm".into(),
+                        model: (*key).into(),
+                        benchmark: benchmark.into(),
+                        score: Some(value),
+                        unit: "USD / 1M tokens".into(),
+                        effort: "not-stated".into(),
+                        harness: None,
+                        published: None,
+                        vendor: false,
+                        publisher: None,
+                    });
+                }
+            }
+        }
+        Catalogue { sources: Vec::new(), models, defs: Vec::new(), readings }
+    }
+
+    fn three_member_profile() -> Profile {
+        Profile {
+            id: "t".into(),
+            label: "t".into(),
+            note: String::new(),
+            default_for: None,
+            order: "quality".into(),
+            members: ["a", "b", "c"]
+                .iter()
+                .map(|b| Member { benchmark: (*b).into(), weight: 1.0 })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn entries_are_ordered_inside_a_coverage_tier_and_never_across_one() {
+        let cat = catalogue(&[
+            ("two-strong", &[("a", 90.0), ("b", 90.0)], Some((1.0, 1.0))),
+            ("full-weak", &[("a", 50.0), ("b", 50.0), ("c", 50.0)], Some((1.0, 1.0))),
+            ("full-strong", &[("a", 80.0), ("b", 80.0), ("c", 80.0)], Some((2.0, 2.0))),
+            ("one", &[("a", 99.0)], Some((1.0, 1.0))),
+        ]);
+        let rows = rank(&cat, &three_member_profile());
+
+        // No higher-quality thin entry jumps above a full one.
+        let presents: Vec<usize> = rows.iter().map(|r| r.present).collect();
+        let mut sorted = presents.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(presents, sorted, "tiers must not interleave: {presents:?}");
+
+        let at = |key: &str| rows.iter().position(|r| r.key == key).unwrap();
+        assert!(at("full-strong") < at("full-weak"));
+        assert!(at("full-weak") < at("two-strong"), "a tier is a boundary, not a suggestion");
+        assert_eq!(rows[at("full-strong")].rank, Some(1));
+        assert_eq!(rows[at("full-weak")].rank, Some(2));
+        // The rank restarts under the next heading.
+        assert_eq!(rows[at("two-strong")].rank, Some(1));
+        // A model with one of three members is below the half rule: no score at all.
+        assert_eq!(rows[at("one")].quality, None);
+        assert_eq!(rows[at("one")].rank, None);
+        assert_eq!(rows[at("one")].missing.len(), 2);
+    }
+
+    #[test]
+    fn the_frontier_is_drawn_from_one_tier_and_the_rest_are_not_placeable() {
+        let cat = catalogue(&[
+            // The thinner entry is better on both axes, and must still not be
+            // placed: its quality is a mean of a different set of benchmarks.
+            ("two-strong", &[("a", 95.0), ("b", 95.0)], Some((0.1, 0.1))),
+            ("full-weak", &[("a", 50.0), ("b", 50.0), ("c", 50.0)], Some((5.0, 5.0))),
+            ("full-strong", &[("a", 80.0), ("b", 80.0), ("c", 80.0)], Some((9.0, 9.0))),
+        ]);
+        let rows = rank(&cat, &three_member_profile());
+        let efficient: Vec<&Entry> = rows.iter().filter(|r| r.efficient).collect();
+        assert!(!efficient.is_empty());
+        for r in &efficient {
+            assert_eq!(r.present, 3, "the curve must be one tier: {} is {}", r.key, r.present);
+        }
+        let thin = rows.iter().find(|r| r.key == "two-strong").unwrap();
+        assert!(!thin.efficient);
+        // And it is never told what "beat" it across tiers.
+        let i = rows.iter().position(|r| r.key == "two-strong").unwrap();
+        assert_eq!(dominated_by(&rows, i), None);
+        // Both full entries are on the curve — the dearer one holds the quality
+        // high-water mark, the cheaper one opens it.
+        assert!(rows.iter().find(|r| r.key == "full-weak").unwrap().efficient);
+        assert!(rows.iter().find(|r| r.key == "full-strong").unwrap().efficient);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import {
   DEEPSEEK,
   PROVIDERS,
   PROVIDER_PRESETS,
+  SPAWN_ONLY_PRESETS,
   onProvider,
   providerCliModel,
   providerModel,
@@ -78,9 +79,23 @@ describe("a provider's models are its own", () => {
       const provider = PROVIDERS.find((x) => x.id === p.provider)!;
       expect(Object.values(provider.models)).toContain(p.model);
     }
-    /* Two models, two rows: choosing a provider and a model is one gesture. */
-    expect(PROVIDER_PRESETS.map((p) => p.model)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    /* **One row in a menu, and that is the decision.** `ds-pro` was withheld on
+       2026-11-13: on the coding-agent profile `flash` is better and cheaper, and
+       the row claimed `effort: high` on a provider whose wall effort has never
+       been shown to reach its own dial (`docs/DEEPSEEK-EFFORT.md`). The model is
+       still reachable through `spawn`, so it lives in the spawn-only table. */
+    expect(PROVIDER_PRESETS.map((p) => p.model)).toEqual(["deepseek-flash"]);
     for (const p of PROVIDER_PRESETS) expect(presetById(p.id)).toEqual(p);
+
+    /* Spawn-only rows still resolve — that is how a card opened on `pro`
+       displays as one — and none of them claims a level. */
+    expect(SPAWN_ONLY_PRESETS.length).toBeGreaterThan(0);
+    for (const p of SPAWN_ONLY_PRESETS) {
+      expect(presetById(p.id)).toEqual(p);
+      expect(p.effort).toBeUndefined();
+      expect(Object.values(PROVIDERS.find((x) => x.id === p.provider)!.models)).toContain(p.model);
+      expect(PROVIDER_PRESETS.some((offered) => offered.id === p.id)).toBe(false);
+    }
     /* And they are not in the Claude menu's own table. */
     expect(PRESETS.some((p) => p.provider)).toBe(false);
   });

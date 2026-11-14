@@ -172,7 +172,14 @@ export type MenuTarget = {
      own menu, the `hand the plan to a maker` family on a card, and the
      territory's `new conversation as…`. All three are the same five rows under
      three verbs, so a fourth place that opens a card gets them for nothing. */
-  presets?: { id: string; label: string; note: string }[];
+  presets?: { id: string; label: string; note: string; standing?: string }[];
+  /** The line under a preset list: which profile the standing lines are
+   *  measured on, the price basis, and how old the reading is. Handed in for
+   *  the same reason the presets are — this file does not fetch anything, and
+   *  a menu that showed a score without saying which profile it was on would be
+   *  claiming a universal ranking. Absent when nothing has been read yet, and
+   *  then the menu is exactly what it was before this existed. */
+  presetFoot?: string;
   /** Which of these rows a plain opening lands on, so a menu can mark it: a
    *  preset id, or `""` for the "as claude code is set up" row, which is one of
    *  the same choices and is marked the same way.
@@ -351,7 +358,10 @@ function presetRows(t: MenuTarget): MenuItem[] {
       kind: "item" as const,
       id: `preset:${p.id}`,
       label: p.label,
-      note: p.note,
+      /* What it costs and what it is measured at, on one line under the label. A
+         row with no reading keeps the pair alone rather than carrying a blank
+         where a score would be. */
+      note: p.standing ? `${p.note} · ${p.standing}` : p.note,
       ...mark(p.id),
     })),
     sep,
@@ -359,6 +369,7 @@ function presetRows(t: MenuTarget): MenuItem[] {
        `presets.defaultPresetFor`, where it is the *chosen* absence of a
        preset rather than nobody having chosen. */
     { kind: "item" as const, id: "new", label: "as claude code is set up", ...mark("") },
+    ...(t.presetFoot ? [{ kind: "hint" as const, text: t.presetFoot }] : []),
   ];
 }
 

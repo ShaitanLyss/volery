@@ -136,6 +136,12 @@ export type Component = {
   unit: string;
   source: SourceId;
   published: string | null;
+  /** The number came from the model's own developer — a provider-reported
+   *  benchmark or a model card. Never drawn as independent. */
+  vendor: boolean;
+  /** Who the source credits for the number, where it credits anybody. Absent is
+   *  "not stated", and that is what the panel says. */
+  publisher: string | null;
 };
 
 /** One ranked entry: a model at an effort, in one profile. */
@@ -161,6 +167,18 @@ export type Entry = {
   /** How much of the profile's weight this entry has a reading for, as a
    *  fraction. A score computed from two members of five is shown sparse. */
   coverage: number;
+  /** The pair that *is* the tier. Two entries scored over different member
+   *  sets are two different questions; the rule of this whole surface is that
+   *  they are never ordered against each other, and this is what says so. */
+  present: number;
+  members: number;
+  /** How many of the present members' numbers came from the model's own
+   *  developer. Beside the coverage, because "3 of 5 members" and "3 of 5, two
+   *  of them provider-reported" are different amounts of knowing. */
+  reported: number;
+  /** The source's own evidence status for this model: `supported` or
+   *  `estimated`, where it states one. */
+  evidence: string | null;
   components: Component[];
   /** Members this entry has no reading for. Shown, never guessed. */
   missing: string[];
@@ -178,6 +196,10 @@ export type Ranked = {
   unplaceable: { key: string; why: string }[];
   /** Every dimmed row's explanation: which efficient entry beat it. */
   dominated: { key: string; by: string }[];
+  /** Which tier the frontier was computed inside, and how many members a full
+   *  profile has. `benchmarks.rs` decides both. */
+  frontierTier: number;
+  memberCount: number;
 };
 
 // ── the profiles, read from the one file both languages share ──────────────
@@ -333,7 +355,7 @@ export const ALIASES: Alias[] = [
   {
     alias: "deepseek-v4-pro",
     provider: "deepseek",
-    model: "deepseek-v4-pro-0813",
+    model: "deepseek-v4-pro-max",
     effort: "not-stated",
     checked: "2026-11-13",
     note: "deepseek's dear model; the provider takes no wall effort level",
@@ -517,7 +539,16 @@ export function menuLine(entry: Entry | null, profile: Profile, asOfLine: string
 export function standingLine(entry: Entry | null, profile: Profile): string {
   if (!entry) return `${profile.label} · no reading`;
   const q = entry.quality === null ? "no score" : entry.quality.toFixed(1);
-  return `${profile.label} ${q} · ${sayPrice(entry.price, "1M blended 3:1")}`;
+  /* Compact because this shares a row with the model and the effort: the basis
+     and the date are on the menu's own foot, once, rather than trailing every
+     row of it. */
+  const price =
+    entry.price === null
+      ? "no price"
+      : entry.price === 0
+        ? "free"
+        : `$${entry.price < 1 ? entry.price.toFixed(3) : entry.price.toFixed(2)}/1M`;
+  return `${profile.label} ${q} · ${price}`;
 }
 
 /** Whether an entry meets what an agent asked for. A need that cannot be
@@ -568,4 +599,62 @@ export function frontierSaid(rows: Entry[]): string {
  *  panel its sources are thin rather than that every model is bad. */
 export function scored(rows: Entry[]): number {
   return rows.filter((r) => r.quality !== null).length;
+}
+
+/** One coverage tier: every entry scored over the same number of members. */
+export type Tier = { present: number; members: number; rows: Entry[] };
+
+/** The ranked table split into the only groups it may be ordered in.
+ *
+ *  **The order across tiers is not a ranking, and this is what stops it being
+ *  read as one.** A model measured on three of four benchmarks has answered a
+ *  different question from one measured on two of four; its mean is not higher
+ *  or lower on the same scale, it is a mean of something else. So the table is
+ *  headings with entries under them, the ranks restart at each heading, and
+ *  entries with too few members to score at all come last under their own
+ *  heading, naming what they lack. */
+export function tiers(rows: Entry[]): { scored: Tier[]; unscored: Entry[] } {
+  const groups = new Map<number, Entry[]>();
+  for (const r of rows) {
+    if (r.quality === null) continue;
+    const list = groups.get(r.present) ?? [];
+    list.push(r);
+    groups.set(r.present, list);
+  }
+  const scored = [...groups.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([present, list]) => ({ present, members: list[0]?.members ?? 0, rows: list }));
+  return { scored, unscored: rows.filter((r) => r.quality === null) };
+}
+
+/** What a tier's heading says. "3 of 4 members" is the fact; "every member" is
+ *  the same fact for the one tier that needs no arithmetic from the reader. */
+export function tierLabel(tier: Tier): string {
+  if (tier.present === tier.members) return "every member";
+  return `${tier.present} of ${tier.members} members`;
+}
+
+/** Who is speaking, for one component. The three states are deliberately three:
+ *  a named publisher, the model's developer, and nobody saying. The third is
+ *  not independence and must never be drawn as it. */
+export function sayProvenance(c: Component): string {
+  if (c.vendor) return c.publisher ? `${c.publisher} (the model's own developer)` : "the model's own developer";
+  if (c.publisher) return c.publisher;
+  return "publisher not stated";
+}
+
+/** How many of a row's scored members are the developer's own numbers, as a
+ *  clause for the coverage line. Empty when none of them are. */
+export function reportedNote(row: Entry): string {
+  if (row.reported === 0) return "";
+  return `${row.reported} provider-reported`;
+}
+
+/** The members a row has no reading for, by their catalogue names.
+ *
+ *  Beside "not enough readings" this is the answer to *why is that model not
+ *  here*, which a count of members cannot give: a row missing GPQA Diamond and
+ *  HLE is a different absence from one missing two agentic benchmarks. */
+export function missingNames(row: Entry): string[] {
+  return row.components.filter((c) => c.score === null).map((c) => c.name || c.benchmark);
 }

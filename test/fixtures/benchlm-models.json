@@ -16,6 +16,7 @@
    "contextWindow": "1M",
    "contextWindowTokens": 1000000,
    "displayScore": 83.07,
+   "evidenceStatus": "supported",
    "releaseDate": "2026-09-28",
    "family": {
     "familyKey": "claude-sonnet-5-5",
@@ -30,11 +31,19 @@
     "isCanonicalFamilyEntry": true,
     "supersedesModelKey": "claude-sonnet-5"
    },
+   "coverage": {
+    "trustedBenchmarkCount": 61,
+    "verifiedBenchmarkCount": 61,
+    "rankableBenchmarkCount": 61,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 3
+   },
    "benchmarks": {
     "agentic": {
      "terminalBench41": 63.9,
      "gdpvalAa": 1844,
-     "aaBriefcaseElo": 1811
+     "aaBriefcaseElo": 1811,
+     "valsTerminalBench21": 83.1
     },
     "coding": {
      "deepSwe": 71,
@@ -42,6 +51,176 @@
     },
     "multimodalGrounded": {
      "chartography": 61.6
+    }
+   },
+   "benchmarkSources": {
+    "agentic": {
+     "valsTerminalBench21": {
+      "publisher": "Vals AI",
+      "publisherUrl": "https://www.vals.ai/",
+      "sourceLabel": "Vals AI",
+      "sourceRole": "published-evaluation-results",
+      "scope": "Published leaderboard aggregates and evaluation settings only. Dataset contents are not included.",
+      "datasetContentsIncluded": false,
+      "licenseGrantIncluded": false,
+      "label": "Vals AI: Terminal-Bench 2.1 leaderboard",
+      "url": "https://www.vals.ai/models/anthropic_claude-sonnet-5-5",
+      "benchmarkUrl": "https://www.vals.ai/benchmarks/terminal-bench-2-1",
+      "retrievedAt": null
+     }
+    }
+   }
+  },
+  {
+   "slug": "deepseek-v4-pro-0813",
+   "canonicalModelKey": "deepseek-v4-pro-max",
+   "model": "DeepSeek V4 Pro 0813",
+   "creator": "DeepSeek",
+   "sourceType": "Open Weight",
+   "reasoningType": "Reasoning",
+   "contextWindow": "1M",
+   "contextWindowTokens": 1000000,
+   "displayScore": 62.31,
+   "evidenceStatus": "estimated",
+   "releaseDate": "2026-08-13",
+   "family": {
+    "familyKey": "deepseek-v4-pro",
+    "familyName": "DeepSeek V4 Pro",
+    "variantType": "pro-reasoning",
+    "snapshotLabel": "0813",
+    "baseFamilyModelKey": "deepseek-v4-pro-max",
+    "relatedModelKeys": [
+     "deepseek-v4-pro-base",
+     "deepseek-v4-pro",
+     "deepseek-v4-pro-high"
+    ],
+    "isCanonicalFamilyEntry": true,
+    "supersedesModelKey": "deepseek-v4-pro"
+   },
+   "coverage": {
+    "trustedBenchmarkCount": 37,
+    "verifiedBenchmarkCount": 37,
+    "rankableBenchmarkCount": 30,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 3
+   },
+   "benchmarks": {
+    "agentic": {
+     "browseComp": 83.4,
+     "gdpvalAa": 1306,
+     "aaAgenticIndex": 49.56,
+     "agentsLastExam": 25.7,
+     "automationBench": 31.8,
+     "valsTerminalBench21": 54.7
+    },
+    "coding": {
+     "sweVerified": 80.6,
+     "deepSwe": 62.7,
+     "valsSweBench": 96.4
+    },
+    "reasoning": {
+     "mrcr1m": 83.5,
+     "arcAgi1": 90
+    },
+    "knowledge": {
+     "mmluPro": 87.5,
+     "gpqaDiamond": 90.1,
+     "hle": 42.7,
+     "valsGpqaDiamond": 92.4
+    },
+    "math": {
+     "apex": 38.3
+    }
+   },
+   "benchmarkSources": {
+    "agentic": {
+     "valsTerminalBench21": {
+      "publisher": "Vals AI",
+      "publisherUrl": "https://www.vals.ai/",
+      "sourceLabel": "Vals AI",
+      "sourceRole": "published-evaluation-results",
+      "scope": "Published leaderboard aggregates and evaluation settings only. Dataset contents are not included.",
+      "datasetContentsIncluded": false,
+      "licenseGrantIncluded": false,
+      "label": "Vals AI: Terminal-Bench 2.1 leaderboard",
+      "url": "https://www.vals.ai/models/deepseek_deepseek-v4-pro-0813",
+      "benchmarkUrl": "https://www.vals.ai/benchmarks/terminal-bench-2-1",
+      "retrievedAt": null
+     }
+    },
+    "coding": {
+     "valsSweBench": {
+      "publisher": "Vals AI",
+      "publisherUrl": "https://www.vals.ai/",
+      "sourceLabel": "Vals AI",
+      "sourceRole": "published-evaluation-results",
+      "scope": "Published leaderboard aggregates and evaluation settings only. Dataset contents are not included.",
+      "datasetContentsIncluded": false,
+      "licenseGrantIncluded": false,
+      "label": "Vals AI: SWE-bench leaderboard",
+      "url": "https://www.vals.ai/models/deepseek_deepseek-v4-pro-0813",
+      "benchmarkUrl": "https://www.vals.ai/benchmarks/swebench",
+      "retrievedAt": null
+     }
+    },
+    "knowledge": {
+     "valsGpqaDiamond": {
+      "publisher": "Vals AI",
+      "publisherUrl": "https://www.vals.ai/",
+      "sourceLabel": "Vals AI",
+      "sourceRole": "published-evaluation-results",
+      "scope": "Published leaderboard aggregates and evaluation settings only. Dataset contents are not included.",
+      "datasetContentsIncluded": false,
+      "licenseGrantIncluded": false,
+      "label": "Vals AI: GPQA Diamond leaderboard",
+      "url": "https://www.vals.ai/models/deepseek_deepseek-v4-pro-0813",
+      "benchmarkUrl": "https://www.vals.ai/benchmarks/gpqa",
+      "retrievedAt": null
+     }
+    }
+   }
+  },
+  {
+   "slug": "claude-haiku-5-5",
+   "canonicalModelKey": "claude-haiku-5-5",
+   "model": "Claude Haiku 5.5",
+   "creator": "Anthropic",
+   "sourceType": "Proprietary",
+   "reasoningType": "Reasoning",
+   "contextWindow": "1M",
+   "contextWindowTokens": 1000000,
+   "displayScore": 67.67,
+   "evidenceStatus": "supported",
+   "releaseDate": "2026-10-07",
+   "family": {
+    "familyKey": "claude-haiku-5-5",
+    "familyName": "Claude Haiku 5.5",
+    "variantType": "base",
+    "snapshotLabel": null,
+    "baseFamilyModelKey": "claude-haiku-5-5",
+    "relatedModelKeys": [
+     "claude-haiku-4-5"
+    ],
+    "isCanonicalFamilyEntry": true,
+    "supersedesModelKey": "claude-haiku-4-5"
+   },
+   "coverage": {
+    "trustedBenchmarkCount": 25,
+    "verifiedBenchmarkCount": 25,
+    "rankableBenchmarkCount": 25,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 2
+   },
+   "benchmarks": {
+    "agentic": {
+     "gdpvalAa": 1620,
+     "aaBriefcaseElo": 1578
+    },
+    "reasoning": {
+     "arcAgi1": 89
+    },
+    "multimodalGrounded": {
+     "chartography": 46.4
     }
    }
   },
@@ -55,6 +234,7 @@
    "contextWindow": "128K",
    "contextWindowTokens": 128000,
    "displayScore": 35.92,
+   "evidenceStatus": "supported",
    "releaseDate": "2025-03-24",
    "family": {
     "familyKey": "deepseek",
@@ -68,7 +248,64 @@
     "isCanonicalFamilyEntry": false,
     "supersedesModelKey": "deepseek-v3"
    },
+   "coverage": {
+    "trustedBenchmarkCount": 9,
+    "verifiedBenchmarkCount": 9,
+    "rankableBenchmarkCount": 9,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 2
+   },
    "benchmarks": {}
+  },
+  {
+   "slug": "claude-fable-5-2",
+   "canonicalModelKey": "claude-fable-5-2",
+   "model": "Claude Fable 5.2",
+   "creator": "Anthropic",
+   "sourceType": "Proprietary",
+   "reasoningType": "Reasoning",
+   "contextWindow": "1M",
+   "contextWindowTokens": 1000000,
+   "displayScore": 93.9,
+   "evidenceStatus": "estimated",
+   "releaseDate": "2026-11-09",
+   "family": {
+    "familyKey": "claude-fable",
+    "familyName": "Claude Fable",
+    "variantType": "base",
+    "snapshotLabel": null,
+    "baseFamilyModelKey": "claude-fable-5-2",
+    "relatedModelKeys": [
+     "claude-fable-5-1",
+     "claude-mythos-5-2"
+    ],
+    "isCanonicalFamilyEntry": true,
+    "supersedesModelKey": "claude-fable-5-1"
+   },
+   "coverage": {
+    "trustedBenchmarkCount": 32,
+    "verifiedBenchmarkCount": 32,
+    "rankableBenchmarkCount": 32,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 3
+   },
+   "benchmarks": {
+    "agentic": {
+     "automationBench": 51.4,
+     "gdpvalAa": 1831,
+     "aaBriefcaseElo": 1785
+    },
+    "coding": {
+     "deepSwe": 74.3,
+     "programBench": 85.6
+    },
+    "multimodalGrounded": {
+     "chartography": 73.4
+    },
+    "knowledge": {
+     "hle": 74.2
+    }
+   }
   },
   {
    "slug": "claude-opus-5-5",
@@ -80,6 +317,7 @@
    "contextWindow": "1M",
    "contextWindowTokens": 1000000,
    "displayScore": 86.64,
+   "evidenceStatus": "supported",
    "releaseDate": "2026-09-22",
    "family": {
     "familyKey": "claude-opus-5-5",
@@ -95,12 +333,20 @@
     "isCanonicalFamilyEntry": true,
     "supersedesModelKey": "claude-opus-5"
    },
+   "coverage": {
+    "trustedBenchmarkCount": 67,
+    "verifiedBenchmarkCount": 67,
+    "rankableBenchmarkCount": 67,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 3
+   },
    "benchmarks": {
     "agentic": {
      "terminalBench41": 65.8,
      "gdpvalAa": 1846,
      "automationBench": 40,
-     "aaBriefcaseElo": 1801
+     "aaBriefcaseElo": 1801,
+     "valsTerminalBench21": 87.6
     },
     "coding": {
      "deepSwe": 74.2,
@@ -111,6 +357,23 @@
     },
     "multimodalGrounded": {
      "chartography": 64.4
+    }
+   },
+   "benchmarkSources": {
+    "agentic": {
+     "valsTerminalBench21": {
+      "publisher": "Vals AI",
+      "publisherUrl": "https://www.vals.ai/",
+      "sourceLabel": "Vals AI",
+      "sourceRole": "published-evaluation-results",
+      "scope": "Published leaderboard aggregates and evaluation settings only. Dataset contents are not included.",
+      "datasetContentsIncluded": false,
+      "licenseGrantIncluded": false,
+      "label": "Vals AI: Terminal-Bench 2.1 leaderboard",
+      "url": "https://www.vals.ai/models/anthropic_claude-opus-5-5",
+      "benchmarkUrl": "https://www.vals.ai/benchmarks/terminal-bench-2-1",
+      "retrievedAt": null
+     }
     }
    }
   },
@@ -124,6 +387,7 @@
    "contextWindow": "1M",
    "contextWindowTokens": 1000000,
    "displayScore": 64.51,
+   "evidenceStatus": "supported",
    "releaseDate": "2026-10-17",
    "family": {
     "familyKey": "deepseek-v4-1-flash",
@@ -138,10 +402,18 @@
     "isCanonicalFamilyEntry": true,
     "supersedesModelKey": "deepseek-v4-flash-max"
    },
+   "coverage": {
+    "trustedBenchmarkCount": 33,
+    "verifiedBenchmarkCount": 33,
+    "rankableBenchmarkCount": 19,
+    "generatedBenchmarkCount": 0,
+    "scoreConfidence": 3
+   },
    "benchmarks": {
     "agentic": {
      "automationBench": 60.5,
-     "agentsLastExam": 35.4
+     "agentsLastExam": 35.4,
+     "valsTerminalBench21": 74.5
     },
     "coding": {
      "deepSwe": 77,
@@ -153,6 +425,23 @@
     },
     "math": {
      "apex": 65.6
+    }
+   },
+   "benchmarkSources": {
+    "agentic": {
+     "valsTerminalBench21": {
+      "publisher": "Vals AI",
+      "publisherUrl": "https://www.vals.ai/",
+      "sourceLabel": "Vals AI",
+      "sourceRole": "published-evaluation-results",
+      "scope": "Published leaderboard aggregates and evaluation settings only. Dataset contents are not included.",
+      "datasetContentsIncluded": false,
+      "licenseGrantIncluded": false,
+      "label": "Vals AI: Terminal-Bench 2.1 leaderboard",
+      "url": "https://www.vals.ai/models/deepseek_deepseek-v4.1-flash",
+      "benchmarkUrl": "https://www.vals.ai/benchmarks/terminal-bench-2-1",
+      "retrievedAt": null
+     }
     }
    }
   },

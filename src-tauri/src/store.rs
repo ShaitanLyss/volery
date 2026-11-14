@@ -4347,6 +4347,12 @@ pub(crate) fn migrate_v76(conn: &Connection) -> Result<(), String> {
             release        TEXT,
             vision         INTEGER,
             tool_use       INTEGER,
+            /* BenchLM's own reading of how well its figures for this model are
+               supported: `supported` or `estimated`, and a 0-3 confidence. Shown
+               rather than folded, because 77 of its 214 ranked models are
+               Supported and the rest are Estimated. */
+            evidence       TEXT,
+            confidence     INTEGER,
             PRIMARY KEY (source, key)
         );
 
@@ -4368,7 +4374,13 @@ pub(crate) fn migrate_v76(conn: &Connection) -> Result<(), String> {
             unit      TEXT NOT NULL DEFAULT '',
             harness   TEXT,
             published TEXT,
+            /* Whose number it is. `vendor` is 1 when the number came from the
+               model's own developer (a provider-reported benchmark, or a model
+               card); `publisher` names the organisation BenchLM credits for it
+               where it credits one. A reading with neither must not be drawn as
+               independent, and the panel says "publisher not stated". */
             vendor    INTEGER NOT NULL DEFAULT 0,
+            publisher TEXT,
             fetched   INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (source, model, benchmark, effort)
         );
